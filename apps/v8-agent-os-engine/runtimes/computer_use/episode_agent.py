@@ -211,7 +211,7 @@ class ComputerUseEpisodeAgent:
         workspace_id: str | None,
         workspace_path: str,
         task_brief: dict[str, Any],
-        heartbeat: Callable[[str], None] | None = None,
+        heartbeat: Callable[[str | dict[str, Any]], None] | None = None,
         max_rounds: int = 30,
         runtime: Any | None = None,
         shortcut_registry_instance: ComputerUseShortcutRegistry = shortcut_registry,
@@ -508,9 +508,56 @@ class ComputerUseEpisodeAgent:
             },
         }
 
-    def _emit_heartbeat(self, progress: str) -> None:
+    def _emit_heartbeat(self, progress: str | dict[str, Any]) -> None:
         if callable(self.heartbeat):
             self.heartbeat(progress)
+
+    @staticmethod
+    def _action_progress(item: dict[str, Any]) -> dict[str, Any]:
+        name = str(item.get("tool") or "").strip()
+        args = dict(item.get("args") or {}) if isinstance(item.get("args"), dict) else {}
+        index = int(item.get("index") or 0)
+        ok = bool(item.get("ok"))
+        target = _compact_text(
+            args.get("target_text")
+            or args.get("target")
+            or args.get("target_hint")
+            or args.get("app"),
+            limit=72,
+        )
+        summary = {
+            "browser_open": "正在打开网页",
+            "browser_input": "正在网页中输入内容",
+            "browser_click": f"正在点击网页控件{f'：{target}' if target else ''}",
+            "browser_scroll": "正在滚动网页",
+            "browser_download_image": "正在保存网页图片",
+            "browser_close": "正在关闭 Agent Browser",
+            "desktop_launch": f"正在启动{f' {target}' if target else '应用'}",
+            "desktop_reveal_controls": "正在显示桌面控件",
+            "desktop_input": f"正在输入内容{f'：{target}' if target else ''}",
+            "desktop_shortcut": "正在执行快捷操作",
+            "desktop_shortcut_research": "正在查找应用快捷操作",
+            "desktop_shortcut_learn": "正在验证应用快捷操作",
+            "wait": "正在等待界面更新",
+            "desktop_close": f"正在关闭{f' {target}' if target else '应用'}",
+            "finish_task": "正在核验桌面任务结果",
+        }.get(name, f"正在执行 {name or '桌面操作'}")
+        if name == "desktop_click":
+            x = args.get("x")
+            y = args.get("y")
+            if target:
+                summary = f"正在点击：{target}"
+            elif isinstance(x, (int, float)) and isinstance(y, (int, float)) and x >= 0 and y >= 0:
+                summary = f"正在点击坐标 ({x:.2f}, {y:.2f})"
+            else:
+                summary = "正在点击桌面控件"
+        return {
+            "stage": "action",
+            "status": "completed" if ok else "failed",
+            "summary": summary.replace("正在", "已", 1) if ok else summary.replace("正在", "未能", 1),
+            "toolName": name,
+            "nodeId": f"computer-use-action:{index}",
+        }
 
     def _record_action(self, *, name: str, args: dict[str, Any], result: Any, ok: bool) -> dict[str, Any]:
         compact_result = (
@@ -590,7 +637,7 @@ class ComputerUseEpisodeAgent:
         journal_path = self._frame_directory() / "actions.jsonl"
         with journal_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
-        self._emit_heartbeat(f"computer_use: {name} #{item['index']}")
+        self._emit_heartbeat(self._action_progress(item))
         return item
 
     def _browser_target_alive(self) -> bool:
@@ -2133,7 +2180,15 @@ class ComputerUseEpisodeAgent:
         no_tool_rounds = 0
         for local_round in range(1, self.max_rounds + 1):
             round_index = self._round_offset + local_round
-            self._emit_heartbeat(f"computer_use: decision round {round_index}")
+            self._emit_heartbeat(
+                {
+                    "stage": "decision",
+                    "status": "active",
+                    "summary": f"正在判断下一步桌面操作（第 {round_index} 轮）",
+                    "toolName": "computer_use_model",
+                    "nodeId": "computer-use-decision",
+                }
+            )
             context, frame = self._current_context(round_index)
             messages = self._model_messages(round_index=round_index, context=context, frame=frame)
             available_tools = self._tools_for_next_round()
@@ -2214,7 +2269,7 @@ def execute_computer_use_task_brief(
     workspace_id: str | None,
     workspace_path: str,
     task_brief: dict[str, Any],
-    heartbeat: Callable[[str], None] | None = None,
+    heartbeat: Callable[[str | dict[str, Any]], None] | None = None,
     max_rounds: int = 30,
 ) -> dict[str, Any]:
     return ComputerUseEpisodeAgent(

@@ -417,6 +417,8 @@ class RuntimeProjectionContractTests(unittest.TestCase):
 
         self.assertEqual(timeline[0]["runtimeId"], "research")
         self.assertEqual(timeline[0]["metadata"]["episodeId"], "episode_research")
+        self.assertEqual(timeline[0]["summary"], "Research Runtime 已进入队列")
+        self.assertNotIn("查证项目资料", timeline[0]["summary"])
         self.assertEqual(timeline[1]["runtimeId"], "research")
         self.assertEqual(timeline[1]["metadata"]["episodeId"], "episode_research")
 
@@ -468,6 +470,81 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertNotIn("providerMetadata", str(timeline[0]))
         self.assertNotIn("scheduler", str(timeline[0]))
         self.assertNotIn("must-not-project", str(timeline[0]))
+
+    def test_runtime_episode_progress_projects_sanitized_research_timeline_node(self):
+        events = [
+            {
+                "event_id": "evt_research_read",
+                "run_id": "run_research",
+                "seq": 10,
+                "topic": "runtime.episode.progress",
+                "payload": {
+                    "runtimeId": "research",
+                    "episode": {
+                        "episodeId": "episode_research",
+                        "kind": "research",
+                        "state": "active",
+                    },
+                    "progress": {
+                        "stage": "source_read",
+                        "status": "completed",
+                        "summary": "已读取 国家卫生健康委员会",
+                        "timelineNode": {
+                            "id": "research-read:1",
+                            "kind": "execution",
+                            "executionType": "runtime_progress",
+                            "topic": "research.progress.source_read",
+                            "label": "已读取 国家卫生健康委员会",
+                            "toolName": "web_read",
+                            "providerPayload": {"secret": "must-not-project"},
+                        },
+                    },
+                    "scheduler": {"lease": "must-not-project"},
+                },
+                "event_ts": "2026-08-25T12:00:00Z",
+                "source": {},
+            }
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["runtimeId"], "research")
+        self.assertEqual(timeline[0]["summary"], "已读取 国家卫生健康委员会")
+        self.assertEqual(
+            timeline[0]["metadata"]["dedupeKey"],
+            "runtime-timeline:research:episode_research:research-read:1",
+        )
+        self.assertNotIn("providerPayload", str(timeline[0]))
+        self.assertNotIn("scheduler", str(timeline[0]))
+        self.assertNotIn("must-not-project", str(timeline[0]))
+
+    def test_runtime_episode_progress_rejects_cross_runtime_timeline_node(self):
+        events = [
+            {
+                "event_id": "evt_cross_runtime",
+                "run_id": "run_research",
+                "seq": 11,
+                "topic": "runtime.episode.progress",
+                "payload": {
+                    "runtimeId": "research",
+                    "episode": {"episodeId": "episode_research", "kind": "research"},
+                    "progress": {
+                        "summary": "forged click",
+                        "timelineNode": {
+                            "id": "forged",
+                            "kind": "execution",
+                            "executionType": "runtime_progress",
+                            "topic": "computer_use.progress.action",
+                        },
+                    },
+                },
+                "event_ts": "2026-08-25T12:00:01Z",
+                "source": {},
+            }
+        ]
+
+        self.assertEqual(project_runtime_timeline_from_events(events), [])
 
     def test_runtime_episode_progress_without_timeline_node_stays_runtime_surface_only(self):
         events = [
@@ -742,6 +819,64 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         selected_ids = {entry["id"] for entry in selected}
         self.assertTrue({entry["id"] for entry in subagent_entries}.issubset(selected_ids))
         self.assertEqual(selected[-1]["id"], "noise-239")
+
+    def test_runtime_window_keeps_research_detail_when_later_subagents_fill_recent_groups(self):
+        research_entries = [
+            {
+                "id": f"research-{index}",
+                "seq": index,
+                "topic": "runtime.episode.progress",
+                "runtimeId": "research",
+                "metadata": {
+                    "runtimeId": "research",
+                    "episodeId": "episode-research",
+                    "progress": {
+                        "timelineNode": {
+                            "id": f"research-node-{index}",
+                            "topic": "research.progress.source_read",
+                        }
+                    },
+                },
+            }
+            for index in range(1, 7)
+        ]
+        subagent_entries = [
+            {
+                "id": f"subagent-{index}",
+                "seq": 10 + index,
+                "topic": "runtime.episode.progress",
+                "runtimeId": "subagent_swarm",
+                "metadata": {
+                    "runtimeId": "subagent_swarm",
+                    "episodeId": f"subagent::worker-{index}",
+                    "progress": {
+                        "timelineNode": {
+                            "id": f"subagent-node-{index}",
+                            "topic": "subagent.text.delta",
+                        }
+                    },
+                },
+            }
+            for index in range(1, 7)
+        ]
+        noise = [
+            {
+                "id": f"noise-{index}",
+                "seq": index,
+                "topic": "extension.route.selected",
+            }
+            for index in range(30, 260)
+        ]
+
+        selected = select_runtime_timeline_window(
+            [*research_entries, *subagent_entries, *noise],
+            recent_limit=12,
+            milestone_limit=0,
+        )
+
+        selected_ids = {entry["id"] for entry in selected}
+        self.assertTrue({entry["id"] for entry in research_entries}.issubset(selected_ids))
+        self.assertEqual(selected[-1]["id"], "noise-259")
 
     def test_tool_started_projection_sanitizes_runtime_internal_args(self):
         events = [

@@ -70,6 +70,44 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertTrue(decision["active"])
         self.assertIn("verification", decision["signals"])
 
+    def test_auto_triggers_for_bound_non_git_project_workspace(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        (root / "package.json").write_text('{"scripts":{"test":"vitest"}}', encoding="utf-8")
+        (root / "src").mkdir()
+
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()):
+            decision = engineering_lane_service.trigger_decision(
+                user_query="在绑定工作区实际执行 npm test -- --run 并回传退出码",
+                mode="auto",
+                workspace_descriptor={"workspaceRoot": str(root)},
+            )
+
+        self.assertTrue(decision["active"])
+        self.assertFalse(decision["repoDetected"])
+        self.assertTrue(decision["projectDetected"])
+        self.assertEqual(decision["workspaceMode"], "project_workspace")
+        self.assertEqual(decision["reason"], "engineering_signals_and_project_workspace")
+        self.assertEqual(decision["projectMarkers"], ["package.json"])
+
+    def test_auto_keeps_ambiguous_code_signal_in_empty_non_git_workspace_inactive(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()):
+            decision = engineering_lane_service.trigger_decision(
+                user_query="检查这个文件的测试结果",
+                mode="auto",
+                workspace_descriptor={"workspaceRoot": temp.name},
+            )
+
+        self.assertFalse(decision["active"])
+        self.assertFalse(decision["repoDetected"])
+        self.assertFalse(decision["projectDetected"])
+        self.assertEqual(decision["workspaceMode"], "unknown")
+        self.assertEqual(decision["reason"], "engineering_signals_without_repo_supervisor_route_choice")
+
     def test_manifest_summary_detects_project_subroot_package_json(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

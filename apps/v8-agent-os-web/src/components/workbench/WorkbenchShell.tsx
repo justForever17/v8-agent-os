@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, Palette, Plus, X } from "lucide-react";
+import { Activity, Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, Palette, Plus, X } from "lucide-react";
 import { motion, useReducedMotion } from "framer-motion";
 
 import { cn } from "@/lib/utils";
@@ -17,6 +17,7 @@ import { McpAppRenderer } from "@/components/chat/McpAppFrame";
 import { ArtifactRenderer } from "./ArtifactRenderer";
 import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./WorkspaceFileRenderer";
 import { SubagentActivityRenderer } from "./SubagentActivityRenderer";
+import { RuntimeActivityRenderer } from "./RuntimeActivityRenderer";
 import type { WorkbenchTab } from "@/lib/workbench";
 import { isTranslationKey } from "@/lib/locale";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -61,6 +62,7 @@ type WorkbenchShellProps = {
 
 function documentIcon(kind: string) {
     if (kind === "subagent_activity") return LayoutPanelTop;
+    if (kind === "runtime_activity") return Activity;
     if (kind === "workspace_file") return FileCode2;
     if (kind === "artifact") return Box;
     return LayoutPanelTop;
@@ -303,6 +305,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         }
         if (document.kind === "session_overview") return <WorkspaceWorkbenchPanel {...props} />;
         if (document.kind === "subagent_activity") return <SubagentActivityRenderer document={document} messages={props.messages} runtimeModel={props.runtimeModel} processes={props.processes} />;
+        if (document.kind === "runtime_activity") return <RuntimeActivityRenderer document={document} runtimeModel={props.runtimeModel} />;
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer key={document.documentId} document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;

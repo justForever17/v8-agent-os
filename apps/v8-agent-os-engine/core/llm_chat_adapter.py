@@ -1121,6 +1121,7 @@ class V8ChatModelAdapter(BaseChatModel):
                 )
         try:
             include_stream_identity = True
+            aggregate_chunk: AIMessageChunk | None = None
             for chunk in self._get_runtime_model().stream(
                 prepared.messages,
                 config=self._provider_internal_config(),
@@ -1136,10 +1137,38 @@ class V8ChatModelAdapter(BaseChatModel):
                     include_diagnostics=include_stream_identity,
                 )
                 include_stream_identity = False
+                aggregate_chunk = ai_chunk if aggregate_chunk is None else aggregate_chunk + ai_chunk
                 yield ChatGenerationChunk(
                     message=ai_chunk,
                     text=_message_text(ai_chunk),
                     generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
+                )
+            native_message = self._coerce_ai_message(aggregate_chunk) if aggregate_chunk is not None else AIMessage(content="")
+            if self._can_prompt_retry_required_tool(native_message):
+                fallback_prepared = self._prepare_prompt_cache_request(
+                    self._tool_prompt_messages(normalized_messages),
+                    stop=stop,
+                    streaming=False,
+                    **kwargs,
+                )
+                fallback_response = self._get_base_model().invoke(
+                    fallback_prepared.messages,
+                    config=self._provider_internal_config(),
+                    stop=stop,
+                    **fallback_prepared.kwargs,
+                )
+                fallback_message = self._finalize_prompt_cache_response(
+                    self._coerce_ai_message(fallback_response, force_prompt_emulated_tools=True),
+                    fallback_prepared,
+                )
+                fallback_chunk = self._decorate_prompt_cache_chunk(
+                    self._coerce_chunk(fallback_message),
+                    fallback_prepared.diagnostics,
+                )
+                yield ChatGenerationChunk(
+                    message=fallback_chunk,
+                    text=_message_text(fallback_chunk),
+                    generation_info=dict(getattr(fallback_chunk, "response_metadata", {}) or {}),
                 )
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
@@ -1210,6 +1239,7 @@ class V8ChatModelAdapter(BaseChatModel):
                 )
         try:
             include_stream_identity = True
+            aggregate_chunk: AIMessageChunk | None = None
             async for chunk in self._get_runtime_model().astream(
                 prepared.messages,
                 config=self._provider_internal_config(),
@@ -1225,10 +1255,38 @@ class V8ChatModelAdapter(BaseChatModel):
                     include_diagnostics=include_stream_identity,
                 )
                 include_stream_identity = False
+                aggregate_chunk = ai_chunk if aggregate_chunk is None else aggregate_chunk + ai_chunk
                 yield ChatGenerationChunk(
                     message=ai_chunk,
                     text=_message_text(ai_chunk),
                     generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
+                )
+            native_message = self._coerce_ai_message(aggregate_chunk) if aggregate_chunk is not None else AIMessage(content="")
+            if self._can_prompt_retry_required_tool(native_message):
+                fallback_prepared = self._prepare_prompt_cache_request(
+                    self._tool_prompt_messages(normalized_messages),
+                    stop=stop,
+                    streaming=False,
+                    **kwargs,
+                )
+                fallback_response = await self._get_base_model().ainvoke(
+                    fallback_prepared.messages,
+                    config=self._provider_internal_config(),
+                    stop=stop,
+                    **fallback_prepared.kwargs,
+                )
+                fallback_message = self._finalize_prompt_cache_response(
+                    self._coerce_ai_message(fallback_response, force_prompt_emulated_tools=True),
+                    fallback_prepared,
+                )
+                fallback_chunk = self._decorate_prompt_cache_chunk(
+                    self._coerce_chunk(fallback_message),
+                    fallback_prepared.diagnostics,
+                )
+                yield ChatGenerationChunk(
+                    message=fallback_chunk,
+                    text=_message_text(fallback_chunk),
+                    generation_info=dict(getattr(fallback_chunk, "response_metadata", {}) or {}),
                 )
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):

@@ -56,6 +56,40 @@ test("Workbench uses a compact overflow-safe tab row without embedded Agent Brow
   assert.doesNotMatch(shell, /aria-label="关闭工作台"/);
 });
 
+test("runtime activity is a persistent Workbench timeline with bounded micro motion", () => {
+  const sharedContract = readText("packages/session-realtime/src/contract.ts");
+  const workbench = readText("apps/v8-agent-os-web/src/lib/workbench.ts");
+  const overview = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const shell = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
+  const renderer = readText("apps/v8-agent-os-web/src/components/workbench/RuntimeActivityRenderer.tsx");
+  const runtimeStage = readText("apps/v8-agent-os-web/src/lib/runtime-stage.ts");
+  const projection = readText("apps/v8-agent-os-engine/core/runtime_projection.py");
+  const locale = readText("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json");
+
+  assert.match(sharedContract, /RuntimeActivityWorkbenchDocumentRef/);
+  assert.match(workbench, /createRuntimeActivityDocument/);
+  assert.match(workbench, /runtime-activity:\$\{input\.sessionId\}:\$\{input\.runtimeId\}/);
+  assert.match(overview, /web\.workbench\.section\.runtimeActivity/);
+  assert.match(overview, /data-runtime-activity-runtime/);
+  assert.match(shell, /<RuntimeActivityRenderer document=\{document\} runtimeModel=\{props\.runtimeModel\}/);
+  assert.match(renderer, /runtimeModel\.messageActivities/);
+  assert.match(renderer, /left\.eventSeq - right\.eventSeq/);
+  assert.match(renderer, /data-runtime-activity-seq/);
+  assert.match(renderer, /animate-\[spin_1\.6s_linear_infinite\]/);
+  assert.match(renderer, /data-runtime-activity-detail=\{runtimeId\}/);
+  assert.match(renderer, /data-runtime-activity-motion=/);
+  assert.match(renderer, /latestActivityStatus/);
+  assert.match(renderer, /MousePointerClick/);
+  assert.match(runtimeStage, /export function selectRuntimeActivityWindow/);
+  assert.match(runtimeStage, /perRuntimeLimit = 400/);
+  assert.match(runtimeStage, /selectRuntimeActivityWindow\(compacted, 80, 20\)/);
+  assert.doesNotMatch(runtimeStage, /\.slice\(0, 1200\)/);
+  assert.match(projection, /embedded_runtime_id != runtime_id/);
+  assert.match(projection, /runtime-timeline:\{runtime_id\}/);
+  assert.match(locale, /"web\.workbench\.runtimeActivity\.timeline": "运行过程时间线"/);
+  assert.doesNotMatch(renderer, /providerPayload|workspacePath|rawOutput/);
+});
+
 test("Agent Browser remains Engine-managed and parent-bounded outside Workbench", () => {
   const service = readText("apps/v8-agent-os-engine/runtimes/computer_use/browser_session_service.py");
   const proxy = readText("apps/v8-agent-os-engine/scripts/browser_cdp_proxy.mjs");
@@ -166,6 +200,23 @@ test("Artifact subtitles keep runtime paths on the Runtime Surface", () => {
   assert.match(overview, /function humanSafeOutputPath/);
   assert.match(overview, /\^\[A-Za-z\]:\\\//);
   assert.match(overview, /const safePath = humanSafeOutputPath\(output\.path \|\| ""\)/);
+});
+
+test("message and Workbench output lists prioritize media and documents before a five-item disclosure", () => {
+  const artifacts = readText("apps/v8-agent-os-web/src/lib/artifacts.ts");
+  const message = readText("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  const overview = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const locale = readText("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json");
+  assert.match(artifacts, /export function artifactPresentationPriority/);
+  assert.match(artifacts, /export function prioritizeArtifactItems/);
+  assert.match(artifacts, /export function dedupeArtifactItemsForPresentation/);
+  assert.match(message, /dedupeArtifactItemsForPresentation/);
+  assert.match(message, /prioritizedArtifacts\.slice\(0, 5\)/);
+  assert.match(message, /data-artifact-disclosure="message"/);
+  assert.match(overview, /prioritizedOutputs\.slice\(0, 5\)/);
+  assert.match(overview, /data-artifact-disclosure="workbench"/);
+  assert.match(overview, /data-session-output-row=\{output\.id\}/);
+  assert.match(locale, /"web\.artifacts\.showRemaining": "展开其余 \{count\} 个产物"/);
 });
 
 test("Collapsed Web task sidebar removes its rail, keeps hidden controls inert, and avoids duplicate workspace controls", () => {

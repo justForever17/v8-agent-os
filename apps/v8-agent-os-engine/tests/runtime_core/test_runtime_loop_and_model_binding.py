@@ -3,10 +3,10 @@ import sqlite3
 import threading
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
 from core.llm_chat_adapter import V8ChatModelAdapter
-from core.prompt_cache_gateway import prompt_cache_gateway
+from core.prompt_cache_gateway import PreparedPromptCacheRequest, prompt_cache_gateway
 from erc.checkpoint_store import CheckpointStore, V8AsyncSqliteSaver
 
 
@@ -43,6 +43,57 @@ class _PromptFallbackNativeModel:
         self.messages.append(list(messages))
         if self.calls == 1:
             return AIMessage(content="我会先调用 runtime_broker。")
+        return AIMessage(
+            content=(
+                '{"tool_name":"runtime_broker","arguments":'
+                '{"mode":"route","need":{"kind":"engineering"}}}'
+            )
+        )
+
+
+class _StreamingPromptFallbackNativeModel:
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.astream_calls = 0
+        self.invoke_calls = 0
+        self.ainvoke_calls = 0
+        self.messages = []
+        self.bind_kwargs = []
+
+    def bind_tools(self, _tools, **kwargs):
+        self.bind_kwargs.append(dict(kwargs))
+        return self
+
+    def stream(self, messages, *, config=None, **_kwargs):
+        self.stream_calls += 1
+        self.messages.append(list(messages))
+        yield AIMessageChunk(
+            content="",
+            additional_kwargs={"reasoning_content": "internal-only"},
+            response_metadata={"finish_reason": "length"},
+        )
+
+    async def astream(self, messages, *, config=None, **_kwargs):
+        self.astream_calls += 1
+        self.messages.append(list(messages))
+        yield AIMessageChunk(
+            content="",
+            additional_kwargs={"reasoning_content": "internal-only"},
+            response_metadata={"finish_reason": "length"},
+        )
+
+    def invoke(self, messages, *, config=None, **_kwargs):
+        self.invoke_calls += 1
+        self.messages.append(list(messages))
+        return self._tool_response()
+
+    async def ainvoke(self, messages, *, config=None, **_kwargs):
+        self.ainvoke_calls += 1
+        self.messages.append(list(messages))
+        return self._tool_response()
+
+    @staticmethod
+    def _tool_response():
         return AIMessage(
             content=(
                 '{"tool_name":"runtime_broker","arguments":'
@@ -394,6 +445,103 @@ def test_required_native_tool_call_falls_back_to_strict_prompt_emulation():
     assert response.content == ""
     assert response.tool_calls[0]["name"] == "runtime_broker"
     assert response.tool_calls[0]["args"] == {
+        "mode": "route",
+        "need": {"kind": "engineering"},
+    }
+    assert "本次必须调用工具 runtime_broker" in native.messages[1][0].content
+
+
+def _required_streaming_tool_adapter(native):
+    adapter = V8ChatModelAdapter(
+        model_id="test-model",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True},
+        },
+        model_kwargs={},
+        builder=lambda: native,
+    )
+    return adapter.bind_tools(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "runtime_broker",
+                    "description": "Route a typed runtime episode.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string"},
+                            "need": {"type": "object"},
+                        },
+                        "required": ["mode", "need"],
+                    },
+                },
+            }
+        ],
+        tool_choice="runtime_broker",
+    )
+
+
+def _disable_prompt_cache_side_effects(monkeypatch):
+    monkeypatch.setattr(
+        prompt_cache_gateway,
+        "prepare_request",
+        lambda **kwargs: PreparedPromptCacheRequest(
+            messages=list(kwargs["messages"]),
+            kwargs={},
+            diagnostics={},
+        ),
+    )
+    monkeypatch.setattr(prompt_cache_gateway, "decorate_response", lambda *_args: None)
+    monkeypatch.setattr(prompt_cache_gateway, "store_response", lambda *_args: None)
+
+
+def test_required_native_tool_call_retries_once_after_sync_stream_ends_without_tool(monkeypatch):
+    _disable_prompt_cache_side_effects(monkeypatch)
+    native = _StreamingPromptFallbackNativeModel()
+    adapter = _required_streaming_tool_adapter(native)
+
+    chunks = list(adapter._stream([HumanMessage(content="route engineering")]))
+    combined = chunks[0].message
+    for chunk in chunks[1:]:
+        combined = combined + chunk.message
+
+    assert native.stream_calls == 1
+    assert native.invoke_calls == 1
+    assert native.bind_kwargs == [{"tool_choice": "runtime_broker"}]
+    assert combined.tool_calls[0]["name"] == "runtime_broker"
+    assert combined.tool_calls[0]["args"] == {
+        "mode": "route",
+        "need": {"kind": "engineering"},
+    }
+    assert "本次必须调用工具 runtime_broker" in native.messages[1][0].content
+
+
+def test_required_native_tool_call_retries_once_after_async_stream_ends_without_tool(monkeypatch):
+    _disable_prompt_cache_side_effects(monkeypatch)
+    native = _StreamingPromptFallbackNativeModel()
+    adapter = _required_streaming_tool_adapter(native)
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in adapter._astream([HumanMessage(content="route engineering")])
+        ]
+
+    chunks = asyncio.run(collect())
+    combined = chunks[0].message
+    for chunk in chunks[1:]:
+        combined = combined + chunk.message
+
+    assert native.astream_calls == 1
+    assert native.ainvoke_calls == 1
+    assert native.bind_kwargs == [{"tool_choice": "runtime_broker"}]
+    assert combined.tool_calls[0]["name"] == "runtime_broker"
+    assert combined.tool_calls[0]["args"] == {
         "mode": "route",
         "need": {"kind": "engineering"},
     }

@@ -1450,6 +1450,43 @@ def test_runtime_broker_blocks_explicit_artifact_outside_exhaustive_write_set():
     assert failure["undeclaredArtifactPaths"] == ["baseline/.tmp/probe.json"]
 
 
+def test_runtime_broker_requires_ordered_safe_verification_contract_in_non_git_workspace(tmp_path):
+    implementation = _bounded_engineering_route_task(
+        task_id="implementation",
+        write_set=["package.json", "src/App.jsx"],
+    )
+    verification = _bounded_engineering_route_task(
+        task_id="verification",
+        write_set=["reports/verification.json"],
+    )
+    verification["goal"] = "Build and verify the implemented React app."
+    verification["acceptanceContract"] = [
+        "npm install completes with exit code 0",
+        "npm run build produces dist/index.html",
+        "node tests/calc.test.mjs exits 0",
+    ]
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "ordered engineering contract",
+            "inputs": {"workspacePath": str(tmp_path), "taskBriefs": [implementation, verification]},
+        },
+        state={"workspace_path": str(tmp_path), "current_route_context": {}},
+        tool_call_id="call-runtime-ordered-engineering-contract",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    failure = next(item for item in payload["routeBriefQuality"]["tasks"] if item["taskBriefId"] == "verification")
+    assert "dependencies(prior_write_task)" in failure["missingFields"]
+    assert failure["requiredDependencies"] == ["implementation"]
+    assert "acceptance(direct_workspace_safe_verification)" in failure["missingFields"]
+    assert len(failure["unsupportedDirectCommands"]) == 3
+    assert failure["unsupportedDirectCommands"] == ["npm install", "npm run build", "node tests/calc.test.mjs"]
+
+
 def test_runtime_broker_does_not_guess_write_paths_from_acceptance_prose():
     command = runtime_broker.func(
         mode="route",
@@ -1525,6 +1562,221 @@ def _terminal_research_attempt(*, episode_id: str, state: str, task_ids: list[st
             ]
         },
     }
+
+
+def test_runtime_broker_blocks_duplicate_in_flight_engineering_write_scope():
+    write_set = ["src/App.jsx", "src/App.css"]
+    active = _terminal_engineering_attempt(
+        episode_id="episode-engineering-active",
+        state="active",
+        task_id="implementation-active",
+        write_set=write_set,
+    )
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "duplicate the active delivery",
+            "inputs": {
+                "taskBriefs": [
+                    _bounded_engineering_route_task(task_id="renamed-active", write_set=list(reversed(write_set)))
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": [active]}},
+        tool_call_id="call-runtime-engineering-active-duplicate",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "engineering_episode_in_flight"
+    assert payload["routeBriefQuality"]["inFlightEpisodeIds"] == ["episode-engineering-active"]
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 1
+
+
+def test_runtime_broker_reuses_completed_engineering_write_scope_in_same_run():
+    write_set = ["src/App.jsx", "src/App.css"]
+    completed = _terminal_engineering_attempt(
+        episode_id="episode-engineering-completed",
+        state="completed",
+        task_id="implementation-completed",
+        write_set=write_set,
+    )
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "repeat the completed delivery",
+            "inputs": {
+                "taskBriefs": [
+                    _bounded_engineering_route_task(task_id="renamed-completed", write_set=list(reversed(write_set)))
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": [completed]}},
+        tool_call_id="call-runtime-engineering-completed-duplicate",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["routeBriefQuality"]["reason"] == "same_run_completed_engineering_scope"
+    assert payload["routeBriefQuality"]["completedEpisodeIds"] == ["episode-engineering-completed"]
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "accept_existing_handoff"
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 1
+
+
+def test_runtime_broker_reuses_completed_engineering_read_only_scope_in_same_run():
+    task = {
+        "taskBriefId": "engineering-read-only-verification",
+        "goal": "Run the exact current-run verification command.",
+        "context": {"verificationCommand": "npm test -- --run"},
+        "readOnly": True,
+        "writeRequired": False,
+        "readSet": [],
+        "writeSet": [],
+        "expectedOutputs": ["Current-run exit code, stdout, and stderr"],
+        "acceptanceContract": ["The exact command succeeds without workspace writes."],
+    }
+    completed = {
+        "episodeId": "episode-read-only-completed",
+        "kind": "engineering",
+        "state": "completed",
+        "inputs": {"taskBriefs": [task]},
+    }
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "repeat the completed read-only verification",
+            "inputs": {"taskBriefs": [{**task, "goal": "Do the same verification again."}]},
+        },
+        state={"current_route_context": {"capabilityEpisodes": [completed]}},
+        tool_call_id="call-runtime-read-only-completed-duplicate",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["routeBriefQuality"]["reason"] == "same_run_completed_engineering_scope"
+    assert payload["routeBriefQuality"]["completedEpisodeIds"] == ["episode-read-only-completed"]
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "accept_existing_handoff"
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 1
+
+
+def test_engineering_route_retry_state_never_reuses_completed_scope_from_prior_run(monkeypatch):
+    write_set = ["src/App.jsx", "src/App.test.jsx"]
+    prior = _terminal_engineering_attempt(
+        episode_id="episode-engineering-prior-run",
+        state="completed",
+        task_id="implementation-prior-run",
+        write_set=write_set,
+    )
+    prior["runId"] = "run-prior"
+    monkeypatch.setattr(native_runtime, "get_runtime_context", lambda: {"run_id": "run-current"})
+    monkeypatch.setattr(native_runtime.db, "list_runtime_episodes", lambda **_kwargs: [])
+
+    result = native_runtime._engineering_route_retry_state(
+        tasks=[_bounded_engineering_route_task(task_id="implementation-current", write_set=write_set)],
+        route_context={"runId": "run-current", "capabilityEpisodes": [prior]},
+        state={"run_id": "run-current"},
+    )
+
+    assert result == {
+        "priorFailedAttempts": 0,
+        "repairBudget": 1,
+        "repairAttempt": 0,
+        "exhausted": False,
+    }
+
+
+def test_runtime_broker_blocks_same_run_read_only_repair_from_adding_report_write():
+    read_only_task = {
+        "taskBriefId": "engineering-read-only-verification",
+        "goal": "Run the exact verification command once without modifying files.",
+        "context": {"verificationCommand": "npm test -- --run"},
+        "readOnly": True,
+        "writeRequired": False,
+        "writeSet": [],
+        "expectedOutputs": ["Current-run command result"],
+        "acceptanceContract": ["The command exits successfully without workspace writes."],
+    }
+    prior = {
+        "episodeId": "episode-read-only-degraded",
+        "kind": "engineering",
+        "state": "degraded",
+        "inputs": {"taskBriefs": [read_only_task]},
+    }
+    write_repair = _bounded_engineering_route_task(
+        task_id="write-verification-report",
+        write_set=["reports/verification.json"],
+    )
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "persist a report after the read-only worker failed",
+            "inputs": {"taskBriefs": [write_repair]},
+        },
+        state={"current_route_context": {"capabilityEpisodes": [prior]}},
+        tool_call_id="call-runtime-read-only-scope-expansion",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "execution_intent_conflict"
+    assert payload["routeBriefQuality"]["reason"] == "same_run_read_only_scope_expansion"
+    assert payload["routeBriefQuality"]["readOnlyEpisodeIds"] == ["episode-read-only-degraded"]
+    assert payload["routeBriefQuality"]["incomingWriteSet"] == ["reports/verification.json"]
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "repair_read_only_task_contract"
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 1
+
+
+def test_runtime_broker_keeps_initial_mixed_read_then_write_contract_extensible():
+    initial = {
+        "episodeId": "episode-mixed-engineering",
+        "kind": "engineering",
+        "state": "degraded",
+        "inputs": {
+            "taskBriefs": [
+                {
+                    "taskBriefId": "inspect",
+                    "goal": "Inspect the current implementation.",
+                    "readOnly": True,
+                    "writeRequired": False,
+                    "writeSet": [],
+                    "expectedOutputs": ["Inspection evidence"],
+                    "acceptanceContract": ["Current behavior is identified."],
+                },
+                _bounded_engineering_route_task(
+                    task_id="implement",
+                    write_set=["src/App.jsx"],
+                ),
+            ]
+        },
+    }
+    follow_up = _bounded_engineering_route_task(
+        task_id="focused-test",
+        write_set=["src/App.test.jsx"],
+    )
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "continue the already write-capable mixed contract",
+            "inputs": {"taskBriefs": [follow_up]},
+        },
+        state={"current_route_context": {"capabilityEpisodes": [initial]}},
+        tool_call_id="call-runtime-mixed-scope-follow-up",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload.get("error") != "execution_intent_conflict"
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 2
 
 
 def test_runtime_broker_allows_one_bounded_engineering_repair_for_same_write_scope():
@@ -1644,6 +1896,45 @@ def test_runtime_broker_allows_one_bounded_research_repair_for_same_briefs():
     assert payload["ok"] is True
     assert episode["inputs"]["researchRepair"]["priorAttempts"] == 1
     assert episode["inputs"]["researchRepair"]["finalRepairAttempt"] is True
+
+
+def test_runtime_broker_blocks_duplicate_research_when_episode_state_is_active():
+    task_ids = ["brief-a", "brief-b"]
+    active = _terminal_research_attempt(
+        episode_id="episode-research-active",
+        state="active",
+        task_ids=task_ids,
+    )
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "research",
+            "reason": "do not duplicate the live branch",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": task_id,
+                        "goal": f"Verify {task_id}.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": [],
+                    }
+                    for task_id in task_ids
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": [active]}},
+        tool_call_id="call-runtime-research-active-dedup",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "research_episode_in_flight"
+    assert payload["routeBriefQuality"]["inFlightEpisodeIds"] == [
+        "episode-research-active"
+    ]
 
 
 def test_runtime_broker_blocks_third_research_attempt_for_same_briefs():
@@ -2574,7 +2865,14 @@ def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path)
     assert "Shared Spec context" in by_id["TASK-002"]["context"]["specExecutionSummary"]
 
 
-def test_runtime_broker_preserves_spec_research_fanout_without_route_compression(tmp_path):
+def test_runtime_broker_preserves_spec_research_fanout_without_route_compression(tmp_path, monkeypatch):
+    monkeypatch.setattr(native_runtime.db, "list_runtime_episodes", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda episode, **_kwargs: dict(episode),
+    )
+    monkeypatch.setattr(native_runtime, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     created = spec_service.create_stage(
@@ -2642,6 +2940,7 @@ def test_runtime_broker_preserves_spec_research_fanout_without_route_compression
             "#### TASK-011: 三项测试验证\n"
             "- **ID**: TASK-011\n"
             "- **执行层级**: Engineering Runtime / 验证 Agent\n"
+            "- **Depends On**: TASK-010\n"
             "- **需求引用**: REQ-001, DES-001\n"
             "- **输出文件**: `.agents/skills/ling-perspective/verification-report.md`\n\n"
             "#### TASK-012: 生成最终交付文档\n"
@@ -2669,6 +2968,9 @@ def test_runtime_broker_preserves_spec_research_fanout_without_route_compression
             tool_call_id="call-runtime-spec-research-fanout",
         )
 
+    assert _tool_message_payload(command)["ok"] is True, json.dumps(
+        _tool_message_payload(command), ensure_ascii=False, indent=2
+    )
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
     briefs = episode["inputs"]["workerBriefs"]
     ids = [item["taskBriefId"] for item in briefs]
@@ -3343,6 +3645,29 @@ def test_handoff_only_readonly_delegation_receives_no_workspace_tools():
     assert tasks[0]["toolPolicy"] == {"mode": "none", "allowedTools": [], "forbiddenTools": []}
     assert tasks[0]["allowedTools"] == []
     assert "No readable recovery" in tasks[0]["context"]["handoffConsumptionDiscipline"]
+
+
+def test_handoff_context_does_not_remove_explicit_read_only_verification_tool():
+    tasks = native_delegation._apply_delegation_tool_defaults(
+        [
+            {
+                "taskBriefId": "read-only-command",
+                "goal": "Run the exact verification command once.",
+                "context": {
+                    "verificationCommand": "npm test -- --run",
+                    "injectedEvidenceRefs": ["Existing CSS fix is already present."],
+                },
+                "readOnly": True,
+                "writeRequired": False,
+                "readSet": [],
+                "writeSet": [],
+                "toolPolicy": {"mode": "default"},
+            }
+        ]
+    )
+
+    assert tasks[0]["toolPolicy"] == {"mode": "default"}
+    assert "allowedTools" not in tasks[0]
 
 
 def test_handoff_only_readonly_delegation_keeps_exact_tool_observation_recovery_channel():

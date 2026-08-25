@@ -11,8 +11,10 @@ from urllib.parse import urlparse
 from core.tools.research_source_identity import canonical_source_url, research_document_identity
 
 
-MIN_RESEARCH_ANSWER_CHARS = 3000
-MIN_RESEARCH_SOURCE_COUNT = 5
+# The minimum tier is a reviewed, reusable answer rather than a long-form
+# report. High-quality targets below remain unchanged for broad/deep research.
+MIN_RESEARCH_ANSWER_CHARS = 1200
+MIN_RESEARCH_SOURCE_COUNT = 4
 MIN_RESEARCH_DISTINCT_HOST_COUNT = 3
 MIN_RESEARCH_CLAIM_COUNT = 5
 MIN_RESEARCH_DATED_SOURCE_COUNT = 3

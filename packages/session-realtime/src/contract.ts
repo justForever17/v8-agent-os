@@ -554,6 +554,12 @@ export type SubagentActivityWorkbenchDocumentRef = WorkbenchDocumentBase<
   { sessionId: string; delegationId: string }
 >;
 
+export type RuntimeActivityWorkbenchDocumentRef = WorkbenchDocumentBase<
+  "runtime_activity",
+  "runtime_activity",
+  { sessionId: string; runtimeId: SessionRuntimeId }
+>;
+
 export type WorkspaceFileWorkbenchDocumentRef = WorkbenchDocumentBase<
   "workspace_file",
   "code" | "text" | "markdown" | "html" | "metadata",
@@ -581,6 +587,7 @@ export type BrowserWorkbenchDocumentRef = WorkbenchDocumentBase<
 export type WorkbenchDocumentRef =
   | SessionOverviewWorkbenchDocumentRef
   | SubagentActivityWorkbenchDocumentRef
+  | RuntimeActivityWorkbenchDocumentRef
   | WorkspaceFileWorkbenchDocumentRef
   | ArtifactWorkbenchDocumentRef
   | UiAppWorkbenchDocumentRef

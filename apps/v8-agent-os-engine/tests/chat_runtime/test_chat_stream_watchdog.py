@@ -152,6 +152,95 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event["payload"]["projectionDiagnostics"]["writeSetReconciledFromTaskBrief"])
         self.assertEqual(event["payload"]["traceRef"], {"runId": "run_test"})
 
+    async def test_engineering_projection_prefers_current_run_read_only_contract_over_stale_write_set(self):
+        runtime = ChatRuntime()
+        chat_run = FakeChatRun()
+        chat_run.prepared = SimpleNamespace(
+            engineering_trigger_decision={"active": True},
+            engineering_context_pack={
+                "contextPack": {
+                    "codingExecutionContractPreview": {
+                        "enabled": True,
+                        "readSet": ["package.json"],
+                        "writeSet": ["src/App.jsx", "reports/verification.json"],
+                        "riskFlags": ["write_set_missing", "repo_not_detected"],
+                        "verificationMatrix": [
+                            {"kind": "test", "command": "vitest", "requiredForVerified": True}
+                        ],
+                    }
+                }
+            },
+            engineering_mode="auto",
+        )
+        bundle = ChatExecutionBundle(
+            run_handle=object(),
+            runner_bundle=SupervisorExecutionBundle(graph=None, payload=None, graph_config={}, diagnostics={}),
+        )
+        stale_write_episode = {
+            "runId": "run_old",
+            "kind": "engineering",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "old-implementation",
+                        "goal": "Implement the old project.",
+                        "writeSet": ["src/App.jsx", "reports/verification.json"],
+                    }
+                ]
+            },
+        }
+        current_read_only_episode = {
+            "runId": "run_test",
+            "kind": "engineering",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "engineering-read-only-verification",
+                        "goal": "Run the exact command once without workspace writes.",
+                        "context": {"verificationCommand": "npm test -- --run"},
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "readSet": [],
+                        "writeSet": [],
+                    }
+                ]
+            },
+        }
+
+        with mock.patch.object(
+            chat_runtime_module.supervisor_runner,
+            "get_state_snapshot",
+            new=mock.AsyncMock(
+                return_value={
+                    "parallel_results": [],
+                    "current_route_context": {
+                        "capabilityEpisodes": [stale_write_episode, current_read_only_episode]
+                    },
+                }
+            ),
+        ):
+            await runtime.emit_engineering_lane_projection(chat_run, bundle)
+
+        payload = chat_run.events[-1]["payload"]
+        self.assertEqual(payload["projectionSource"], "runtime_task_briefs")
+        self.assertEqual(payload["taskCapsules"][0]["taskBriefId"], "engineering-read-only-verification")
+        self.assertEqual(payload["readSet"], [])
+        self.assertEqual(payload["writeSet"], [])
+        self.assertEqual(payload["ownershipPlan"], [])
+        self.assertEqual(
+            payload["verificationMatrix"],
+            [
+                {
+                    "kind": "verification",
+                    "command": "npm test -- --run",
+                    "requiredForVerified": True,
+                }
+            ],
+        )
+        self.assertEqual(payload["riskFlags"], ["repo_not_detected"])
+        self.assertTrue(payload["projectionDiagnostics"]["writeSetReconciledFromTaskBrief"])
+        self.assertTrue(payload["projectionDiagnostics"]["authoritativeReadOnly"])
+
     async def test_engineering_projection_does_not_project_research_brief_as_engineering(self):
         runtime = ChatRuntime()
         chat_run = FakeChatRun()

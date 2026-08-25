@@ -12,11 +12,13 @@ from core.engineering_capsule import effective_engineering_capsule
 from core.tools.native.delegation import (
     _apply_legacy_dispatch_target_count,
     _compact_upstream_handoff_for_agent,
+    _delegation_task_has_parallel_peer,
     _terminalize_grandchild_task_brief,
 )
 from graph.agent_factories import _format_delegated_task_contract
 from graph.parallel_support import (
     _fallback_child_delegation_request,
+    _subagent_governance_terminal_failure,
     _subagent_reported_terminal_failure,
 )
 
@@ -66,6 +68,18 @@ def test_legacy_dispatch_target_count_uses_canonical_branch_identities() -> None
         "review#worker-3",
     ]
     assert [item["parentTaskBriefId"] for item in expanded[1:]] == ["review"] * 3
+
+
+def test_ordered_engineering_chain_is_not_misclassified_as_parallel() -> None:
+    tasks = [
+        {"taskBriefId": "implementation", "goal": "write the app"},
+        {"taskBriefId": "verification", "goal": "test the app", "dependencies": ["implementation"]},
+    ]
+
+    assert _delegation_task_has_parallel_peer(tasks, 0) is False
+    assert _delegation_task_has_parallel_peer(tasks, 1) is False
+    tasks.append({"taskBriefId": "independent-docs", "goal": "write unrelated docs"})
+    assert _delegation_task_has_parallel_peer(tasks, 0) is True
 
 
 def test_task_brief_snake_aliases_round_trip_without_granting_unknown_policy() -> None:
@@ -570,6 +584,9 @@ def test_explicit_blocker_handoff_cannot_be_normalized_to_success():
     assert _subagent_reported_terminal_failure(
         "### 验收结论\n**未通过**：输出与合同不一致。"
     ) == ("failed", "subagent_reported_verification_failure")
+    assert _subagent_reported_terminal_failure(
+        "Verification Result: BLOCKED — execution_intent_conflict"
+    ) == ("blocked", "execution_intent_conflict")
 
 
 def test_empty_blocker_section_does_not_poison_successful_handoff():
@@ -584,11 +601,77 @@ def test_empty_blocker_section_does_not_poison_successful_handoff():
 """
     ) is None
     assert _subagent_reported_terminal_failure(
+        """### Risks / Blockers / Handoff Notes
+
+- Write set boundary respected: only the declared report was modified.
+- No source files, configs, lockfiles, or dependencies were touched.
+- The command produced no FAIL/Error markers and no stderr; this is truthful capture, not an omission.
+- Exit code provenance is inferred from a successful completion marker because the display omitted zero.
+- Local self-check only; Supervisor remains the acceptance authority.
+
+### Local Self-Check Status
+
+- Acceptance contract items: 2/2 satisfied.
+"""
+    ) is None
+    assert _subagent_reported_terminal_failure(
         """## Blockers
 
 No blockers. The independent verification passed.
 """
     ) is None
+
+
+def test_mixed_risks_blockers_section_preserves_explicit_dynamic_verification_blocker():
+    assert _subagent_reported_terminal_failure(
+        """## Risks, Blockers, Handoff Notes
+
+- **Dynamic test run blocked**: npm test could not run.
+
+## Local Self-Check Status
+
+- Build / runtime tests: DEFERRED.
+"""
+    ) == ("blocked", "subagent_reported_terminal_failure")
+
+
+def test_typed_delegation_blocker_metadata_is_authoritative_over_wrapper_prose():
+    from langchain_core.messages import HumanMessage
+
+    message = HumanMessage(
+        content="[Implementation Engineer 执行被阻断]\n结果: existing files look complete",
+        additional_kwargs={
+            "v8_delegation_status": "blocked",
+            "v8_delegation_error": "required_artifact_tool_not_called",
+        },
+    )
+
+    assert _subagent_governance_terminal_failure([message]) == (
+        "blocked",
+        "required_artifact_tool_not_called",
+    )
+    assert _subagent_reported_terminal_failure(message.content) == (
+        "blocked",
+        "subagent_reported_terminal_failure",
+    )
+
+
+def test_latest_typed_delegation_status_supersedes_corrected_blocker():
+    from langchain_core.messages import HumanMessage
+
+    blocked = HumanMessage(
+        content="first final was blocked",
+        additional_kwargs={
+            "v8_delegation_status": "blocked",
+            "v8_delegation_error": "required_artifact_tool_not_called",
+        },
+    )
+    completed = HumanMessage(
+        content="bounded correction wrote the files",
+        additional_kwargs={"v8_delegation_status": "completed"},
+    )
+
+    assert _subagent_governance_terminal_failure([blocked, completed]) is None
 
 
 def test_in_graph_incomplete_child_dispatch_repairs_to_read_only_parent_mirror():

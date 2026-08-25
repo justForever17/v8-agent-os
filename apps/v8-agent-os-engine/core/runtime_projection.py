@@ -1413,16 +1413,24 @@ def _runtime_episode_metadata(payload: Dict[str, Any], record: Dict[str, Any]) -
 
 
 def _runtime_episode_progress_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Project only the already-sanitized worker timeline node.
+    """Project only an already-sanitized, runtime-owned timeline node.
 
     Runtime episode progress also carries scheduler and recovery details. Those remain
-    on Runtime Surface; the session timeline only needs stable lineage plus the
-    bounded node produced by the worker progress adapter.
+    on Runtime Surface; the session timeline only needs stable lineage plus a bounded
+    node produced by the owning runtime.
     """
     progress = _runtime_nested_record(payload, "progress")
     timeline_node = _runtime_nested_record(progress, "timelineNode", "timeline_node")
     embedded_topic = _read_string(timeline_node, ["topic"])
-    if not timeline_node or not embedded_topic.startswith("subagent."):
+    runtime_id = _runtime_kind_from_payload(payload, topic=embedded_topic)
+    embedded_runtime_id = _runtime_kind_from_hint(embedded_topic.split(".", 1)[0])
+    if (
+        not timeline_node
+        or not embedded_topic
+        or not runtime_id
+        or runtime_id == "chat"
+        or embedded_runtime_id != runtime_id
+    ):
         return {}
 
     allowed_node_keys = {
@@ -1466,12 +1474,18 @@ def _runtime_episode_progress_metadata(payload: Dict[str, Any]) -> Dict[str, Any
         if value not in (None, ""):
             compact_progress[target_key] = value
 
-    metadata = _runtime_episode_metadata(payload, payload)
+    episode = _runtime_nested_record(payload, "episode")
+    metadata = _runtime_episode_metadata(payload, {**payload, **episode})
+    metadata["runtimeId"] = runtime_id
     metadata["progress"] = compact_progress
     timeline_node_id = _read_string(compact_node, ["id"])
     episode_id = _read_string(metadata, ["episodeId"])
     if timeline_node_id:
-        metadata["dedupeKey"] = f"subagent-timeline:{episode_id or 'episode'}:{timeline_node_id}"
+        metadata["dedupeKey"] = (
+            f"subagent-timeline:{episode_id or 'episode'}:{timeline_node_id}"
+            if runtime_id == "subagent_swarm"
+            else f"runtime-timeline:{runtime_id}:{episode_id or 'episode'}:{timeline_node_id}"
+        )
     return metadata
 
 
@@ -1613,16 +1627,17 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
         metadata = _runtime_episode_progress_metadata(payload)
         if not metadata:
             # Scheduler chatter remains Runtime Surface only. A server-sanitized
-            # timeline node is the explicit opt-in for the subagent detail surface.
+            # timeline node is the explicit opt-in for a runtime detail surface.
             return None
         progress = _runtime_nested_record(payload, "progress")
+        runtime_id = _read_string(metadata, ["runtimeId"]) or _runtime_kind_from_payload(payload, topic=topic)
         return _runtime_timeline_entry(
             event,
-            runtime_id="subagent_swarm",
+            runtime_id=runtime_id,
             kind="progress",
-            summary=_truncate_runtime_summary(_read_string(progress, ["summary"]) or "协作过程已更新", 140),
+            summary=_truncate_runtime_summary(_read_string(progress, ["summary"]) or "运行过程已更新", 140),
             status=_runtime_status_from_topic(topic, progress),
-            actor_label=_read_string(progress, ["agentName", "agent_name"]) or _runtime_actor_label("subagent_swarm"),
+            actor_label=_read_string(progress, ["agentName", "agent_name"]) or _runtime_actor_label(runtime_id),
             metadata=metadata,
         )
     if topic in {"subagent.text.delta", "subagent.reasoning.delta"}:
@@ -1650,8 +1665,23 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
         record = _runtime_nested_record(payload, "episode") or payload
         runtime_id = _runtime_kind_from_payload({**payload, **record}, topic=topic)
         state = _read_string(record, ["state", "status", "phase"]) or topic.rsplit(".", 1)[-1]
-        reason = _read_string(record, ["reason", "summary", "message"])
-        summary = reason or f"{_runtime_actor_label(runtime_id)} episode {state}"
+        normalized_state = state.strip().lower()
+        state_label = {
+            "queued": "已进入队列",
+            "started": "已开始执行",
+            "active": "正在执行",
+            "running": "正在执行",
+            "resumed": "已恢复执行",
+            "waiting": "正在等待后续步骤",
+            "waiting_input": "正在等待输入",
+            "completed": "已完成",
+            "ready": "已完成",
+            "degraded": "结果不完整",
+            "failed": "执行失败",
+            "cancelled": "已取消",
+            "canceled": "已取消",
+        }.get(normalized_state, "状态已更新")
+        summary = f"{_runtime_actor_label(runtime_id)} {state_label}"
         kind = "progress"
     elif topic.startswith("handoff.ref."):
         record = _runtime_nested_record(payload, "handoffRef", "handoff") or payload
@@ -1761,40 +1791,51 @@ def select_runtime_timeline_window(
     milestone_count = max(0, int(milestone_limit or 0))
     recent = list(timeline[-recent_count:])
 
-    # The compact global window is intentionally small, but a subagent detail
-    # panel must not collapse to the last "completed" status. Preserve the
-    # bounded worker timeline nodes for the most recent delegation episodes;
-    # phone/desktop compact surfaces still apply their own 160-entry limit.
+    # The compact global window is intentionally small, but runtime detail
+    # panels must not collapse to the last "completed" status after a reload.
+    # Preserve a bounded history per owning runtime. Subagents remain grouped
+    # by worker episode so several concurrent workers are still inspectable.
     subagent_groups: Dict[str, List[Dict[str, Any]]] = {}
+    runtime_progress_groups: Dict[str, List[Dict[str, Any]]] = {}
     for entry in timeline:
         if str(entry.get("topic") or "").strip().lower() != "runtime.episode.progress":
             continue
         metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
         progress = metadata.get("progress") if isinstance(metadata.get("progress"), dict) else {}
-        if not isinstance(progress.get("timelineNode"), dict):
+        timeline_node = progress.get("timelineNode")
+        if not isinstance(timeline_node, dict):
             continue
+        runtime_id = str(entry.get("runtimeId") or metadata.get("runtimeId") or "").strip().lower()
+        node_topic = str(timeline_node.get("topic") or "").strip().lower()
+        if not runtime_id and node_topic.startswith("subagent."):
+            runtime_id = "subagent_swarm"
         episode_id = str(metadata.get("episodeId") or progress.get("delegationId") or "").strip()
-        if not episode_id:
+        if runtime_id == "subagent_swarm":
+            if episode_id:
+                subagent_groups.setdefault(episode_id, []).append(entry)
             continue
-        subagent_groups.setdefault(episode_id, []).append(entry)
-    selected_subagent: List[Dict[str, Any]] = []
+        if runtime_id:
+            runtime_progress_groups.setdefault(runtime_id, []).append(entry)
+    selected_progress: List[Dict[str, Any]] = []
+    for rows in runtime_progress_groups.values():
+        selected_progress.extend(rows[-320:])
     latest_groups = sorted(
         subagent_groups.items(),
         key=lambda item: max(int(row.get("seq") or 0) for row in item[1]),
         reverse=True,
     )[:4]
     for _episode_id, rows in latest_groups:
-        selected_subagent.extend(rows[-320:])
+        selected_progress.extend(rows[-320:])
 
     selected_by_identity = {
         (str(entry.get("id") or ""), int(entry.get("seq") or 0)): entry
-        for entry in [*recent, *selected_subagent]
+        for entry in [*recent, *selected_progress]
     }
     recent = sorted(
         selected_by_identity.values(),
         key=lambda entry: int(entry.get("seq") or 0),
     )
-    if len(timeline) <= recent_count and not selected_subagent:
+    if len(timeline) <= recent_count and not selected_progress:
         return recent
     if milestone_count <= 0:
         return recent

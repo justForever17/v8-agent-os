@@ -489,20 +489,19 @@ def test_project_inspection_rejects_workspace_without_side_effect_authority(scop
         service.inspect_project(session_id="session-project", project_path=".")
 
 
-def test_project_dev_start_uses_terminal_session_and_proven_output_url(scoped_service, monkeypatch: pytest.MonkeyPatch):
+def test_project_dev_start_uses_managed_pipe_session_and_proven_output_url(scoped_service, monkeypatch: pytest.MonkeyPatch):
     service, workspace = scoped_service
     (workspace / "package.json").write_text(
         '{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}',
         encoding="utf-8",
     )
     (workspace / "package-lock.json").write_text("{}", encoding="utf-8")
-    sent: list[tuple[str, str]] = []
+    launched: list[dict[str, object]] = []
     terminated: list[str] = []
 
-    monkeypatch.setattr("core.client_terminal_broker.create_terminal_session", lambda **_: {"sessionId": "term_project"})
     monkeypatch.setattr(
-        "core.client_terminal_broker.send_terminal_input",
-        lambda session_id, value: sent.append((session_id, value)) or {"ok": True},
+        "core.client_terminal_broker.create_managed_command_session",
+        lambda **kwargs: launched.append(kwargs) or {"sessionId": "term_project"},
     )
     monkeypatch.setattr(
         "core.client_terminal_broker.read_terminal_session",
@@ -512,15 +511,31 @@ def test_project_dev_start_uses_terminal_session_and_proven_output_url(scoped_se
         "core.client_terminal_broker.terminate_terminal_session",
         lambda session_id: terminated.append(session_id) or {"ok": True},
     )
-    monkeypatch.setattr(service, "_probe_local_url", lambda url: url == "http://127.0.0.1:4317")
+    monkeypatch.setattr(service, "_probe_local_url", lambda url: url == "http://localhost:4317")
 
     project, target_url, terminal_id = service._start_project_dev(session_id="session-project", project_path=".")
 
     assert project["devCommand"] == "npm run dev"
-    assert target_url == "http://127.0.0.1:4317"
+    assert target_url == "http://localhost:4317"
     assert terminal_id == "term_project"
-    assert sent == [("term_project", "npm run dev" + ("\r" if ui_patch.os.name == "nt" else "\n"))]
+    assert launched[0]["command"] == "npm run dev"
+    assert launched[0]["profile_reason"] == "ui_patch_project_dev"
+    assert launched[0]["timeout_seconds"] == ui_patch.PREVIEW_SESSION_TTL_SECONDS
     assert terminated == []
+
+
+def test_project_dev_url_candidates_preserve_loopback_binding_and_normalize_wildcards(scoped_service):
+    service, _workspace = scoped_service
+
+    candidates = service._project_url_candidates(
+        "Local: http://localhost:4317/ Network: http://0.0.0.0:4318/ IPv6: http://[::]:4319/"
+    )
+
+    assert candidates == [
+        "http://localhost:4317",
+        "http://127.0.0.1:4318",
+        "http://[::1]:4319",
+    ]
 
 
 def test_project_dev_start_terminates_owned_session_when_readiness_is_unproven(scoped_service, monkeypatch: pytest.MonkeyPatch):
@@ -528,8 +543,10 @@ def test_project_dev_start_terminates_owned_session_when_readiness_is_unproven(s
     (workspace / "package.json").write_text('{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}', encoding="utf-8")
     terminated: list[str] = []
     monkeypatch.setattr(ui_patch, "PROJECT_DEV_START_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr("core.client_terminal_broker.create_terminal_session", lambda **_: {"sessionId": "term_project"})
-    monkeypatch.setattr("core.client_terminal_broker.send_terminal_input", lambda *_args: {"ok": True})
+    monkeypatch.setattr(
+        "core.client_terminal_broker.create_managed_command_session",
+        lambda **_: {"sessionId": "term_project"},
+    )
     monkeypatch.setattr("core.client_terminal_broker.read_terminal_session", lambda _session_id: {"isRunning": False, "outputDelta": "failed"})
     monkeypatch.setattr(
         "core.client_terminal_broker.terminate_terminal_session",

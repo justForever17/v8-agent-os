@@ -80,3 +80,31 @@ def test_subagent_stream_deduplicates_cumulative_provider_snapshots() -> None:
         if item["timelineNode"]["topic"] == "subagent.text.delta"
     ]
     assert text_updates[-1]["content"] == "ab"
+
+
+def test_subagent_stream_projects_bounded_activity_when_chunks_have_no_visible_text(monkeypatch) -> None:
+    ticks = iter([10.0, 12.0, 18.1])
+    monkeypatch.setattr("core.subagent_streaming.time.monotonic", lambda: next(ticks))
+    emitted: list[dict] = []
+    aggregator = SubagentStreamProgressAggregator(
+        progress_callback=lambda payload: emitted.append(payload),
+        agent_id="worker-one",
+        agent_name="Worker One",
+        delegation_id="delegation-one",
+        model_turn=1,
+    )
+
+    empty_chunk = AIMessageChunk(content="")
+    aggregator.observe(empty_chunk)
+    aggregator.observe(empty_chunk)
+    aggregator.observe(empty_chunk)
+
+    heartbeats = [
+        item["timelineNode"]
+        for item in emitted
+        if item["timelineNode"]["topic"] == "subagent.model.stream.activity"
+    ]
+    assert len(heartbeats) == 2
+    assert len({item["id"] for item in heartbeats}) == 1
+    assert heartbeats[-1]["data"] == {"rawChunkCount": 3, "modelTurn": 1}
+    assert all(item["content"] == "" for item in heartbeats)

@@ -59,6 +59,7 @@ from core.graph_stream_watchdog import (
 from core.json_safe import to_jsonable
 from core.realtime_protocol import protocol_connected_event
 from core.runtime_episodes import TERMINAL_EPISODE_STATES, normalize_capability_kind
+from core.runtime_contract_errors import SupervisorRuntimeRouteContractError
 from core.scoped_workspace_resource import (
     build_workspace_resource_ref,
     resolve_scoped_workspace_resource,
@@ -4845,7 +4846,10 @@ class ChatRuntime:
             if isinstance(resume_value.get("supervisorNativeToolCorrection"), dict)
             else {}
         )
-        runtime_dispatch_status: dict[str, Any] | None = None
+        # A true new submit owns a new run. Explicitly replace any terminal
+        # dispatch status retained by the session checkpoint; handoff resumes
+        # below install their own current-run status.
+        runtime_dispatch_status: dict[str, Any] | None = {}
         if runtime_handoff_resume:
             resume_episode_id = str(runtime_handoff_resume.get("episodeId") or "").strip()
             resume_episode_kind = str(runtime_handoff_resume.get("episodeKind") or "runtime").strip() or "runtime"
@@ -9798,7 +9802,7 @@ class ChatRuntime:
             )
 
         route_context = (state or {}).get("current_route_context")
-        engineering_episodes = (
+        all_engineering_episodes = (
             [
                 dict(episode)
                 for episode in list(route_context.get("capabilityEpisodes") or [])
@@ -9811,8 +9815,27 @@ class ChatRuntime:
             if isinstance(route_context, dict)
             else []
         )
+        active_run_id = str(chat_run.active_run_id or "").strip()
+        current_run_engineering_episodes = [
+            episode
+            for episode in all_engineering_episodes
+            if active_run_id
+            and str(episode.get("runId") or episode.get("run_id") or "").strip() == active_run_id
+        ]
+        if current_run_engineering_episodes:
+            engineering_episodes = current_run_engineering_episodes
+        elif any(
+            str(episode.get("runId") or episode.get("run_id") or "").strip()
+            for episode in all_engineering_episodes
+        ):
+            engineering_episodes = []
+        else:
+            # Older snapshots did not project run lineage. Use them only when
+            # every Engineering episode is unscoped; never mix them with an
+            # explicitly current-run episode.
+            engineering_episodes = all_engineering_episodes
         task_briefs: list[dict[str, Any]] = []
-        for episode in engineering_episodes:
+        for episode in reversed(engineering_episodes):
             inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
             for key in ("workerBriefs", "taskBriefs"):
                 candidates = [dict(item) for item in list(inputs.get(key) or []) if isinstance(item, dict)]
@@ -9854,31 +9877,87 @@ class ChatRuntime:
             for flag in list(coding_contract.get("riskFlags") or [])
             if str(flag).strip()
         ]
+        authoritative_read_set = list(dict.fromkeys(
+            str(path).strip()
+            for capsule in task_capsules
+            for path in list(capsule.get("readSet") or [])
+            if str(path).strip()
+        ))
         authoritative_write_set = list(dict.fromkeys(
             str(path).strip()
             for capsule in task_capsules
             for path in list(capsule.get("writeSet") or [])
             if str(path).strip()
         ))
+        authoritative_verification_matrix: list[dict[str, Any]] = []
+        for item in task_briefs:
+            context = item.get("context") if isinstance(item.get("context"), dict) else {}
+            command = str(
+                item.get("verificationCommand")
+                or item.get("verification_command")
+                or context.get("verificationCommand")
+                or context.get("verification_command")
+                or ""
+            ).strip()
+            if command and command not in {
+                str(row.get("command") or "").strip()
+                for row in authoritative_verification_matrix
+            }:
+                authoritative_verification_matrix.append(
+                    {
+                        "kind": "verification",
+                        "command": command,
+                        "requiredForVerified": True,
+                    }
+                )
+        authoritative_read_only = bool(task_briefs) and all(
+            bool(item.get("readOnly") or item.get("read_only"))
+            for item in task_briefs
+        )
         projection_source = "optimistic_context_pack"
-        if authoritative_write_set:
-            authoritative_read_set = list(coding_contract.get("readSet") or [])
-            authoritative_verification_matrix = list(coding_contract.get("verificationMatrix") or [])
-            coding_contract = {
-                **coding_contract,
-                "writeSet": authoritative_write_set[:24],
-                "ownershipPlan": engineering_lane_service._ownership_plan(  # type: ignore[attr-defined]
+        if task_briefs:
+            if not authoritative_verification_matrix:
+                authoritative_verification_matrix = list(coding_contract.get("verificationMatrix") or [])
+            ownership_plan = (
+                []
+                if authoritative_read_only
+                else engineering_lane_service._ownership_plan(  # type: ignore[attr-defined]
                     write_set=authoritative_write_set,
                     read_set=authoritative_read_set,
-                ),
-                "mergeOrder": engineering_lane_service._merge_order(  # type: ignore[attr-defined]
+                )
+            )
+            merge_order = (
+                [
+                    "Keep the bound workspace read-only",
+                    "Run the declared current-run verification or inspection",
+                    "Record the outcome and residual risk without creating an artifact",
+                ]
+                if authoritative_read_only
+                else engineering_lane_service._merge_order(  # type: ignore[attr-defined]
                     write_set=authoritative_write_set,
                     verification_matrix=authoritative_verification_matrix,
-                ),
-                "proofExpectations": engineering_lane_service._proof_expectations(  # type: ignore[attr-defined]
+                )
+            )
+            proof_expectations = (
+                [
+                    "No workspace file is modified.",
+                    "Proof comes from the current-run command or inspection result.",
+                    "A failed check remains an explicit blocker rather than a prose success.",
+                ]
+                if authoritative_read_only
+                else engineering_lane_service._proof_expectations(  # type: ignore[attr-defined]
                     verification_matrix=authoritative_verification_matrix,
                     write_set=authoritative_write_set,
-                ),
+                )
+            )
+            coding_contract = {
+                **coding_contract,
+                "readSet": authoritative_read_set[:24],
+                "writeSet": authoritative_write_set[:24],
+                "verificationMatrix": authoritative_verification_matrix[:8],
+                "ownershipPlan": ownership_plan,
+                "mergeOrder": merge_order,
+                "proofExpectations": proof_expectations,
                 "riskFlags": [
                     str(flag).strip()
                     for flag in list(coding_contract.get("riskFlags") or [])
@@ -9932,7 +10011,8 @@ class ChatRuntime:
                 "projectionDiagnostics": {
                     "optimisticContextPackRiskFlags": optimistic_risk_flags[:8],
                     "authoritativeTaskBriefObserved": bool(task_briefs),
-                    "writeSetReconciledFromTaskBrief": bool(authoritative_write_set),
+                    "writeSetReconciledFromTaskBrief": bool(task_briefs),
+                    "authoritativeReadOnly": authoritative_read_only,
                     "selectedDelegationCountObserved": len(selected_delegations),
                 },
                 "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
@@ -10846,7 +10926,19 @@ class ChatRuntime:
             chat_run.run_handle.refresh_chat_snapshot()
             if str(approval.get("status") or "").strip().lower() == "pending":
                 return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
-        if isinstance(exc, V8LLMError):
+        if isinstance(exc, SupervisorRuntimeRouteContractError):
+            normalized = {
+                "code": exc.code,
+                "provider": "runtime",
+                "model": "",
+                "retryable": False,
+                "recoverable": False,
+                "message": "Supervisor 未能形成有效的受管运行路由；本轮没有启动对应 runtime。",
+                "userAction": "请在修复路由合同后重新发送任务。",
+                "diagnostic": {"reason": exc.reason},
+                "failureClass": exc.code,
+            }
+        elif isinstance(exc, V8LLMError):
             normalized = {
                 "code": exc.code,
                 "provider": exc.provider,
@@ -10961,7 +11053,16 @@ class ChatRuntime:
                 )
             try:
                 chat_run.run_handle.fail(normalized["message"], node="run_manager")
-                if isinstance(exc, CompatBridgeHardStop):
+                if isinstance(exc, SupervisorRuntimeRouteContractError):
+                    run_service.update_metadata(
+                        chat_run.active_run_id,
+                        {
+                            "failureClass": exc.code,
+                            "recoverable": False,
+                            "routeContractReason": exc.reason,
+                        },
+                    )
+                elif isinstance(exc, CompatBridgeHardStop):
                     failure_class = getattr(exc, "failure_class", CompatBridgeHardStop.failure_class)
                     run_service.update_metadata(
                         chat_run.active_run_id,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, ChevronDown, ChevronRight, CircleDot, FileText, ListTodo, Paperclip, TerminalSquare, Users } from "lucide-react";
+import { Activity, Blocks, Box, ChevronDown, ChevronRight, ChevronUp, CircleDot, Code2, Database, FileText, ListTodo, MousePointerClick, Paperclip, Search, Sparkles, TerminalSquare, Users, Workflow } from "lucide-react";
 import {
     buildSessionOutputProjection,
     buildSessionSourceProjection,
@@ -9,18 +9,19 @@ import {
     isActiveCommandSessionStatus,
     type AdminProcessRef,
     type SessionOutputProjection,
+    type SessionRuntimeId,
     type SessionSourceProjection,
     type SessionSourceRef,
     type SubagentReturnProjection,
 } from "@v8/session-realtime";
 
-import { createArtifactDocument, createExternalArtifactDocument, createSubagentActivityDocument } from "@/lib/workbench";
+import { createArtifactDocument, createExternalArtifactDocument, createRuntimeActivityDocument, createSubagentActivityDocument } from "@/lib/workbench";
 import { resolveAndOpenWorkspaceFile } from "@/lib/workbench-actions";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import { useT } from "@/components/providers/LocaleProvider";
-import type { RuntimeStageModel } from "@/lib/runtime-stage";
+import type { RuntimeStageCard, RuntimeStageModel } from "@/lib/runtime-stage";
 import type { Message } from "@/store/chat-types";
-import { normalizeRuntimeArtifact } from "@/lib/artifacts";
+import { normalizeRuntimeArtifact, prioritizeArtifactItems } from "@/lib/artifacts";
 import type { TodoHudItem } from "./TodosHUD";
 
 interface WorkspaceWorkbenchPanelProps {
@@ -141,6 +142,49 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
     );
 }
 
+function isRuntimeActivityCard(item: RuntimeStageCard): item is RuntimeStageCard & { id: SessionRuntimeId } {
+    return item.eventCount > 0 && !["chat", "subagent_swarm", "context_governance", "desktop_live"].includes(item.id);
+}
+
+const RUNTIME_ACTIVITY_ICONS: Partial<Record<SessionRuntimeId, typeof Activity>> = {
+    research: Search,
+    network_supervisor: Search,
+    computer_use: MousePointerClick,
+    engineering: Code2,
+    engineering_lane: Code2,
+    creative_media: Sparkles,
+    rpa: Workflow,
+    automation: Workflow,
+    memory: Database,
+    extensions: Blocks,
+};
+
+function RuntimeActivityRow({ item, onOpen }: { item: RuntimeStageCard & { id: SessionRuntimeId }; onOpen: (item: RuntimeStageCard & { id: SessionRuntimeId }) => void }) {
+    const t = useT();
+    const Icon = RUNTIME_ACTIVITY_ICONS[item.id] || Activity;
+    const active = item.status === "active";
+    const attention = item.status === "attention";
+    return (
+        <button
+            data-v8-context-open-workbench
+            data-runtime-activity-runtime={item.id}
+            type="button"
+            onClick={() => onOpen(item)}
+            className="group flex min-h-11 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+        >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/65 bg-muted/25 text-muted-foreground">
+                <Icon className={`h-3.5 w-3.5 ${active ? "animate-pulse text-primary" : attention ? "text-amber-500" : ""}`} />
+            </span>
+            <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground">{item.label}</span>
+                <span className="block truncate text-[10px] text-muted-foreground">{item.lastActivity || item.description}</span>
+            </span>
+            <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground">{active ? t("web.workbench.runtimeActivity.running") : t("web.workbench.runtimeActivity.eventCount", { count: item.eventCount })}</span>
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+        </button>
+    );
+}
+
 function outputSubtitle(output: SessionOutputProjection): string {
     const safePath = humanSafeOutputPath(output.path || "");
     if (safePath) return parentPathOf(safePath) || output.source;
@@ -163,6 +207,7 @@ export function WorkspaceWorkbenchPanel({
     const [fileError, setFileError] = useState("");
     const [runtimeArtifacts, setRuntimeArtifacts] = useState<Array<Record<string, unknown>>>([]);
     const [sessionSources, setSessionSources] = useState<SessionSourceRef[]>([]);
+    const [outputsExpanded, setOutputsExpanded] = useState(false);
     const resourceRevision = useMemo(
         () => runtimeModel.messageActivities
             .filter((activity) => {
@@ -184,6 +229,12 @@ export function WorkspaceWorkbenchPanel({
         () => buildSessionOutputProjection(messages, runtimeArtifacts, { sessionId, evidence: outputEvidence }),
         [messages, outputEvidence, runtimeArtifacts, sessionId],
     );
+    const prioritizedOutputs = useMemo(
+        () => prioritizeArtifactItems(outputs, (output) => output.rawArtifact || output),
+        [outputs],
+    );
+    const visibleOutputs = outputsExpanded ? prioritizedOutputs : prioritizedOutputs.slice(0, 5);
+    const hiddenOutputCount = Math.max(0, prioritizedOutputs.length - 5);
     const sources = useMemo(
         () => buildSessionSourceProjection(messages, sessionSources),
         [messages, sessionSources],
@@ -200,7 +251,19 @@ export function WorkspaceWorkbenchPanel({
             || null,
         [runtimeModel.items],
     );
-    const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || outputs.length > 0 || sources.length > 0 || activeProcesses.length > 0;
+    const runtimeActivityCards = useMemo(
+        () => runtimeModel.items.filter(isRuntimeActivityCard),
+        [runtimeModel.items],
+    );
+    const hasSecondaryContent = visibleTodos.length > 0 || runtimeActivityCards.length > 0 || subagentReturns.length > 0 || outputs.length > 0 || sources.length > 0 || activeProcesses.length > 0;
+
+    const openRuntimeActivity = useCallback((item: RuntimeStageCard & { id: SessionRuntimeId }) => {
+        openDocument(createRuntimeActivityDocument({
+            sessionId,
+            runtimeId: item.id,
+            title: item.label,
+        }), { activate: true, mode: "split" });
+    }, [openDocument, sessionId]);
 
     const openSubagentReturn = useCallback((item: SubagentReturnProjection) => {
         openDocument(createSubagentActivityDocument({
@@ -365,16 +428,21 @@ export function WorkspaceWorkbenchPanel({
                 })}
             </Section> : null}
 
+            {runtimeActivityCards.length ? <Section title={t("web.workbench.section.runtimeActivity")} icon={Activity} count={runtimeActivityCards.length}>
+                {runtimeActivityCards.map((item) => <RuntimeActivityRow key={item.id} item={item} onOpen={openRuntimeActivity} />)}
+            </Section> : null}
+
             {subagentReturns.length ? <Section title={t("web.workbench.section.subagents")} icon={Users} count={subagentReturns.length}>
                 {subagentReturns.map((item) => <SubagentReturnRow key={item.id} item={item} onOpen={openSubagentReturn} />)}
             </Section> : null}
 
             {outputs.length || fileError ? <Section title={t("web.workbench.section.outputs")} icon={Box} count={outputs.length}>
                 {fileError ? <div className="border-b border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] text-destructive">{fileError}</div> : null}
-                {outputs.map((output) => (
+                {visibleOutputs.map((output) => (
                     <button
                         key={output.id}
                         data-v8-context-open-workbench
+                        data-session-output-row={output.id}
                         type="button"
                         onClick={() => openOutput(output)}
                         className="group flex min-h-10 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
@@ -388,6 +456,20 @@ export function WorkspaceWorkbenchPanel({
                         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                     </button>
                 ))}
+                {hiddenOutputCount > 0 ? (
+                    <button
+                        type="button"
+                        data-artifact-disclosure="workbench"
+                        aria-expanded={outputsExpanded}
+                        onClick={() => setOutputsExpanded((value) => !value)}
+                        className="flex h-8 w-full items-center justify-center gap-1.5 border-t border-border/30 px-3 text-[10px] font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                    >
+                        {outputsExpanded
+                            ? t("web.artifacts.collapse")
+                            : t("web.artifacts.showRemaining", { count: hiddenOutputCount })}
+                        {outputsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    </button>
+                ) : null}
             </Section> : null}
 
             {sources.length ? <Section title={t("web.workbench.section.sources")} icon={Paperclip} count={sources.length} defaultOpen={false}>

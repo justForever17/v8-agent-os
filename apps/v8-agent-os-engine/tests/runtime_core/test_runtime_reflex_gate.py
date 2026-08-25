@@ -50,7 +50,7 @@ def test_gate_detects_route_candidate_spread_without_inventing_task_contracts():
         skillEntries=[{"id": "a"}, {"id": "b"}, {"id": "c"}],
     )
     decision = RuntimePreflightGate().evaluate(
-        user_query="修复代码并跑测试",
+        user_query="使用 skill 修复代码并跑测试",
         scope="project:test1",
         scope_chain=["global", "project:test1"],
         session_id="s1",
@@ -81,6 +81,29 @@ def test_gate_preserves_existing_hard_stale_barrier_signal():
     assert decision.status == "blocked"
     assert decision.riskLevel == "high"
     assert "inventory_barrier_timed_out" in decision.reasons
+
+
+def test_gate_does_not_block_native_read_only_verification_on_extension_inventory_refresh():
+    decision = RuntimePreflightGate().evaluate(
+        user_query="不要改源码，只在绑定工作区实际执行 npm test -- --run 并回传退出码。",
+        scope="workspace:test1",
+        scope_chain=["global", "workspace:test1"],
+        session_id="s1",
+        route_bundle=_route_bundle(
+            selected_skill_names=["a", "b", "c", "d"],
+            inventoryReadyState="refreshing",
+            inventoryBarrierTimedOut=True,
+            dirtyVisibleRoots=["E:/Projects/test1/.agents/skills"],
+            skillStage1Entries=[{"id": str(i)} for i in range(10)],
+            skillEntries=[{"id": str(i)} for i in range(4)],
+        ),
+        state={},
+    )
+
+    assert decision.status == "clean"
+    assert decision.reasons == []
+    assert decision.diagnostics["inventoryBarrierTimedOut"] is True
+    assert decision.diagnostics["extensionInventoryRequired"] is False
 
 
 def test_read_only_reviewer_without_write_set_is_safe():

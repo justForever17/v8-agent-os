@@ -1088,7 +1088,7 @@ def test_segmented_writer_preserves_accepted_sections_when_whole_answer_gate_rej
     )
     monkeypatch.setattr(
         research_module,
-        "research_high_quality_issues",
+        "research_acceptance_issues",
         lambda _payload: ["forced_whole_answer_gate_rejection"],
     )
 

@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit, AtSign, FileText, Download } from "lucide-react";
+import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, ChevronUp, Orbit, AtSign, FileText, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo, useCallback } from "react";
 import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
@@ -33,7 +33,7 @@ import { ContentDispatcher } from "./ContentDispatcher";
 import { cn } from "@/lib/utils";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { ArtifactCard } from "./ArtifactCard";
-import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
+import { dedupeArtifactItemsForPresentation, inferArtifactCardType, prioritizeArtifactItems, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
 import { downloadArtifact } from "@/lib/artifact-download";
 import { createArtifactDocument, createSessionOverviewDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
@@ -519,6 +519,19 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     // Lightbox State
     const [viewerOpen, setViewerOpen] = useState(false);
     const [viewerStartingIndex, setViewerStartingIndex] = useState(0);
+    const [artifactsExpanded, setArtifactsExpanded] = useState(false);
+    const prioritizedArtifacts = useMemo(
+        () => prioritizeArtifactItems(
+            dedupeArtifactItemsForPresentation(
+                Array.isArray(message.artifacts) ? message.artifacts : [],
+                (artifact) => artifact,
+            ),
+            (artifact) => artifact,
+        ),
+        [message.artifacts],
+    );
+    const visibleArtifacts = artifactsExpanded ? prioritizedArtifacts : prioritizedArtifacts.slice(0, 5);
+    const hiddenArtifactCount = Math.max(0, prioritizedArtifacts.length - 5);
 
     // Prepare media items for Lightbox (if message has images)
     const imagesArray = useMemo(
@@ -1116,10 +1129,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                     )}
 
                     <div className="space-y-4">
-                        {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (
-                            <div className="space-y-2">
-                                {message.artifacts.map((artifact) => {
-                                    const artifactUrl = resolveRuntimeArtifactUrl(artifact);
+                        {prioritizedArtifacts.length > 0 && (
+                             <div className="space-y-2">
+                                {visibleArtifacts.map((artifact) => {
+                                     const artifactUrl = resolveRuntimeArtifactUrl(artifact);
                                     return (
                                         <ArtifactCard
                                             key={artifact.id}
@@ -1130,10 +1143,24 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             onClick={workbenchSessionId ? () => openWorkbenchDocument(createArtifactDocument(artifact, workbenchSessionId), { activate: true, mode: "split" }) : undefined}
                                             onDownload={artifactUrl ? () => downloadArtifact(artifactUrl, artifact.title || artifact.id) : undefined}
                                         />
-                                    );
-                                })}
-                            </div>
-                        )}
+                                     );
+                                 })}
+                                {hiddenArtifactCount > 0 ? (
+                                    <button
+                                        type="button"
+                                        data-artifact-disclosure="message"
+                                        aria-expanded={artifactsExpanded}
+                                        onClick={() => setArtifactsExpanded((value) => !value)}
+                                        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-3 text-[11px] font-medium text-muted-foreground hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                                    >
+                                        {artifactsExpanded
+                                            ? t("web.artifacts.collapse")
+                                            : t("web.artifacts.showRemaining", { count: hiddenArtifactCount })}
+                                        {artifactsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                    </button>
+                                ) : null}
+                             </div>
+                         )}
                         {imagesArray.length > 0 && (
                             <div className="mb-1 flex flex-wrap gap-2">
                                 {imagesArray.map((url, i) => {

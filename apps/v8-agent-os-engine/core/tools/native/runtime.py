@@ -21,6 +21,8 @@ from core.delegation_broker import (
     task_brief_contract_diagnostics,
 )
 from core.runtime_episodes import (
+    ACTIVE_EPISODE_STATES,
+    TERMINAL_EPISODE_STATES,
     build_runtime_episode,
     emit_runtime_episode_event,
     enqueue_runtime_episode,
@@ -1133,6 +1135,48 @@ def _route_brief_is_write_task(brief: dict[str, Any], *, kind: str) -> bool:
     )
 
 
+def _engineering_verification_evidence_task(brief: dict[str, Any]) -> bool:
+    write_set = [str(item or "").strip().replace("\\", "/").lower() for item in list(brief.get("writeSet") or [])]
+    if not write_set or not all(
+        path.startswith(("reports/", "report/", "verification/", "evidence/"))
+        or Path(path).name.startswith(("verification", "test-report", "evidence"))
+        for path in write_set
+    ):
+        return False
+    probe = json.dumps(
+        {
+            "goal": brief.get("goal"),
+            "expectedOutputs": brief.get("expectedOutputs"),
+            "acceptance": brief.get("acceptanceContract") or brief.get("acceptance"),
+        },
+        ensure_ascii=False,
+    ).lower()
+    return bool(re.search(r"\b(?:verify|verification|test|build|install|lint|audit)\b|验证|测试|构建|安装|验收|审计", probe))
+
+
+def _engineering_managed_shell_expectations(brief: dict[str, Any]) -> list[str]:
+    acceptance = brief.get("acceptanceContract") or brief.get("acceptance")
+    values = acceptance if isinstance(acceptance, list) else [acceptance]
+    patterns = (
+        r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci|add)\b",
+        r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b",
+        r"\b(?:vite|next|webpack|rollup)\s+build\b",
+        r"\bnode(?:\.exe)?\s+(?!--check\b)[^\s-][^\s]*",
+    )
+    found: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        for pattern in patterns:
+            found.extend(
+                match.group(0).strip()[:240]
+                for match in re.finditer(pattern, text, flags=re.IGNORECASE)
+                if match.group(0).strip()
+            )
+    return list(dict.fromkeys(found))[:8]
+
+
 _URLISH_HOST_PATH = re.compile(
     r"^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*"
     r"\.(?:ai|app|cloud|cn|co|com|dev|edu|gov|io|net|org)(?:/|$)",
@@ -1235,6 +1279,13 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
 
     failures: list[dict[str, Any]] = []
     normalized_workspace = str(Path(workspace_path).resolve()).lower() if workspace_path else ""
+    workspace_has_git_boundary = bool(workspace_path and (Path(workspace_path) / ".git").exists())
+    engineering_write_task_ids = [
+        str(brief.get("taskBriefId") or brief.get("id") or f"task-{index + 1}").strip()
+        for index, brief in enumerate(tasks)
+        if _route_brief_is_write_task(brief, kind=kind)
+        and not _engineering_verification_evidence_task(brief)
+    ]
     for index, brief in enumerate(tasks):
         task_id = str(brief.get("taskBriefId") or brief.get("id") or f"task-{index + 1}").strip()
         missing: list[str] = []
@@ -1277,9 +1328,38 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
             )
             if undeclared_output_paths:
                 missing.append("writeSet(expected_artifact_not_declared)")
+            dependencies = [
+                str(item or "").strip()
+                for item in list(brief.get("dependencies") or brief.get("dependency") or [])
+                if str(item or "").strip()
+            ]
+            required_dependencies: list[str] = []
+            if (
+                kind == "engineering"
+                and len(tasks) > 1
+                and _engineering_verification_evidence_task(brief)
+                and engineering_write_task_ids
+                and not dependencies
+            ):
+                missing.append("dependencies(prior_write_task)")
+                required_dependencies = engineering_write_task_ids
+            managed_shell_expectations = (
+                _engineering_managed_shell_expectations(brief)
+                if kind == "engineering"
+                and normalized_workspace
+                and not workspace_has_git_boundary
+                and not bool(brief.get("requiresIsolation") or brief.get("requires_isolation"))
+                else []
+            )
+            if managed_shell_expectations:
+                missing.append("acceptance(direct_workspace_safe_verification)")
             failure = {"taskBriefId": task_id, "missingFields": missing}
             if undeclared_output_paths:
                 failure["undeclaredArtifactPaths"] = undeclared_output_paths
+            if required_dependencies:
+                failure["requiredDependencies"] = required_dependencies
+            if managed_shell_expectations:
+                failure["unsupportedDirectCommands"] = managed_shell_expectations
             if missing:
                 failures.append(failure)
                 continue
@@ -1294,7 +1374,12 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
             "message": (
                 "Write-capable runtime tasks require an exhaustive writeSet, expectedOutputs, and acceptance contract. "
                 "Every explicit expectedArtifacts path must be covered by writeSet; acceptance prose, the workspace root, "
-                "dependencies, and input files are never write grants."
+                "dependencies, and input files are never write grants. Verification tasks that consume sibling writes must "
+                "declare dependencies. A direct non-Git worker may use native writes plus read-only/test commands, but package "
+                "installation, build side effects, and arbitrary scripts belong to a user-enabled managed worktree or the "
+                "Supervisor's final post-handoff acceptance step. If one acceptance sentence combines an unsupported install/build "
+                "with a safe test command, remove only the unsupported command and preserve the exact test as required verification; "
+                "do not drop user-requested dynamic acceptance merely to pass route validation."
             ),
             "tasks": failures,
             "requiredFields": ["writeSet", "expectedOutputs", "acceptance"],
@@ -1305,8 +1390,8 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
 _ENGINEERING_REPAIR_FAILURE_STATES = {"degraded", "failed"}
 _ENGINEERING_REPAIR_BUDGET = 1
 _RESEARCH_REPAIR_BUDGET = 1
-_RESEARCH_TERMINAL_STATES = {"completed", "degraded", "failed", "cancelled"}
-_RESEARCH_ACTIVE_STATES = {"queued", "leased", "running", "waiting_external_tool", "waiting_input"}
+_RESEARCH_TERMINAL_STATES = frozenset(TERMINAL_EPISODE_STATES)
+_RESEARCH_ACTIVE_STATES = frozenset(ACTIVE_EPISODE_STATES)
 _RESEARCH_NON_CONSUMING_FAILURE_CODES = {"episode_runner_unavailable"}
 
 
@@ -1329,22 +1414,79 @@ def _normalized_engineering_write_scope(tasks: list[dict[str, Any]]) -> tuple[st
     return tuple(sorted(normalized))
 
 
+def _normalized_engineering_read_only_scope(tasks: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return a stable identity for one explicitly read-only Engineering route."""
+
+    if not tasks or any(
+        not isinstance(task, dict)
+        or not bool(task.get("readOnly") or task.get("read_only"))
+        or _route_brief_is_write_task(task, kind="engineering")
+        for task in tasks
+    ):
+        return ()
+    normalized: list[str] = []
+    for task in tasks:
+        context = dict(task.get("context") or {}) if isinstance(task.get("context"), dict) else {}
+
+        def _values(value: Any) -> list[Any]:
+            return list(value) if isinstance(value, (list, tuple, set)) else [value]
+
+        commands = sorted(
+            {
+                " ".join(str(value or "").strip().split())
+                for value in (
+                    task.get("verificationCommand"),
+                    task.get("verification_command"),
+                    context.get("verificationCommand"),
+                    context.get("verification_command"),
+                    *_values(task.get("requiredCommands") or task.get("required_commands")),
+                    *_values(context.get("requiredCommands") or context.get("required_commands")),
+                )
+                if str(value or "").strip()
+            }
+        )
+        read_set = sorted(
+            {
+                str(value or "").strip().replace("\\", "/").casefold()
+                for value in list(task.get("readSet") or task.get("read_set") or [])
+                if str(value or "").strip()
+            }
+        )
+        normalized.append(
+            json.dumps(
+                {
+                    "taskBriefId": str(
+                        task.get("taskBriefId") or task.get("task_brief_id") or ""
+                    ).strip(),
+                    "commands": commands,
+                    "readSet": read_set,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    return tuple(sorted(normalized))
+
+
 def _engineering_route_retry_state(
     *,
     tasks: list[dict[str, Any]],
     route_context: dict[str, Any] | None,
     state: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Enforce one durable repair for the same Engineering write scope.
+    """Enforce one durable repair for the same Engineering execution scope.
 
     Task IDs and brief grouping are not identity: a model must not bypass the
-    budget by renaming or recombining tasks that grant the same union of paths.
-    Persisted run episodes supplement the checkpoint projection so a restart
-    cannot silently reset the budget.
+    write budget by renaming or recombining tasks that grant the same union of
+    paths. Explicitly read-only tasks use their task IDs, exact commands, and
+    readSet as identity. Persisted run episodes supplement the checkpoint
+    projection so a restart cannot silently reset either budget.
     """
 
     write_scope = _normalized_engineering_write_scope(tasks)
-    if not write_scope:
+    read_only_scope = _normalized_engineering_read_only_scope(tasks)
+    if not write_scope and not read_only_scope:
         return {
             "priorFailedAttempts": 0,
             "repairBudget": _ENGINEERING_REPAIR_BUDGET,
@@ -1390,24 +1532,137 @@ def _engineering_route_retry_state(
             pass
 
     prior_failed_attempts = 0
+    in_flight_episode_ids: list[str] = []
+    completed_episode_ids: list[str] = []
     for episode in [*episode_by_id.values(), *anonymous_episodes]:
         if str(episode.get("kind") or "").strip().lower() != "engineering":
             continue
-        if str(episode.get("state") or "").strip().lower() not in _ENGINEERING_REPAIR_FAILURE_STATES:
+        episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+        if run_id and episode_run_id != run_id:
+            # Session route context intentionally retains historical episodes.
+            # Only current-run execution may suppress or budget a new route.
             continue
         inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
         if not inputs and isinstance(episode.get("need"), dict):
             candidate_inputs = episode["need"].get("inputs")
             inputs = candidate_inputs if isinstance(candidate_inputs, dict) else {}
         episode_tasks = _explicit_task_briefs_from_inputs(inputs)
-        if _normalized_engineering_write_scope(episode_tasks) == write_scope:
+        if write_scope:
+            if _normalized_engineering_write_scope(episode_tasks) != write_scope:
+                continue
+        elif _normalized_engineering_read_only_scope(episode_tasks) != read_only_scope:
+            continue
+        episode_state = str(episode.get("state") or "").strip().lower()
+        episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+        if episode_state in _ENGINEERING_REPAIR_FAILURE_STATES:
             prior_failed_attempts += 1
+        elif episode_state in ACTIVE_EPISODE_STATES and episode_id:
+            in_flight_episode_ids.append(episode_id)
+        elif episode_state == "completed" and episode_id:
+            completed_episode_ids.append(episode_id)
 
-    return {
+    result = {
         "priorFailedAttempts": prior_failed_attempts,
         "repairBudget": _ENGINEERING_REPAIR_BUDGET,
         "repairAttempt": min(prior_failed_attempts, _ENGINEERING_REPAIR_BUDGET),
         "exhausted": prior_failed_attempts > _ENGINEERING_REPAIR_BUDGET,
+    }
+    if in_flight_episode_ids:
+        result["inFlightEpisodeIds"] = sorted(set(in_flight_episode_ids))
+    if completed_episode_ids:
+        result["completedEpisodeIds"] = sorted(set(completed_episode_ids))
+    return result
+
+
+def _engineering_route_execution_intent_conflict(
+    *,
+    tasks: list[dict[str, Any]],
+    route_context: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Block a same-run repair from widening a purely read-only route to writes."""
+
+    incoming_write_tasks = [
+        task
+        for task in tasks
+        if isinstance(task, dict) and _route_brief_is_write_task(task, kind="engineering")
+    ]
+    if not incoming_write_tasks:
+        return {}
+
+    context = dict(route_context or {})
+    runtime_context = get_runtime_context()
+    state_payload = dict(state or {})
+    run_id = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or state_payload.get("run_id")
+        or state_payload.get("runId")
+        or context.get("run_id")
+        or context.get("runId")
+        or ""
+    ).strip()
+    episode_by_id: dict[str, dict[str, Any]] = {}
+    anonymous_episodes: list[dict[str, Any]] = []
+
+    def _remember_episode(raw_episode: Any) -> None:
+        if not isinstance(raw_episode, dict):
+            return
+        episode = dict(raw_episode)
+        episode_id = str(
+            episode.get("episodeId") or episode.get("id") or episode.get("needId") or ""
+        ).strip()
+        if episode_id:
+            episode_by_id[episode_id] = {**episode_by_id.get(episode_id, {}), **episode}
+        else:
+            anonymous_episodes.append(episode)
+
+    for raw_episode in list(context.get("capabilityEpisodes") or []):
+        _remember_episode(raw_episode)
+    if run_id:
+        try:
+            for raw_episode in db.list_runtime_episodes(run_id=run_id, limit=100):
+                _remember_episode(raw_episode)
+        except Exception:
+            pass
+
+    read_only_episode_ids: list[str] = []
+    prior_write_episode_ids: list[str] = []
+    for episode in [*episode_by_id.values(), *anonymous_episodes]:
+        if str(episode.get("kind") or "").strip().lower() != "engineering":
+            continue
+        episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+        if run_id and episode_run_id != run_id:
+            continue
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        if not inputs and isinstance(episode.get("need"), dict):
+            candidate_inputs = episode["need"].get("inputs")
+            inputs = candidate_inputs if isinstance(candidate_inputs, dict) else {}
+        episode_tasks = _explicit_task_briefs_from_inputs(inputs)
+        if not episode_tasks:
+            continue
+        episode_id = str(
+            episode.get("episodeId") or episode.get("id") or episode.get("needId") or ""
+        ).strip()
+        if any(_route_brief_is_write_task(task, kind="engineering") for task in episode_tasks):
+            if episode_id:
+                prior_write_episode_ids.append(episode_id)
+            continue
+        if all(bool(task.get("readOnly") or task.get("read_only")) for task in episode_tasks):
+            if episode_id:
+                read_only_episode_ids.append(episode_id)
+
+    if not read_only_episode_ids or prior_write_episode_ids:
+        return {}
+    return {
+        "reason": "same_run_read_only_scope_expansion",
+        "readOnlyEpisodeIds": sorted(set(read_only_episode_ids)),
+        "incomingWriteSet": list(_normalized_engineering_write_scope(incoming_write_tasks)),
+        "incomingTaskBriefIds": [
+            str(task.get("taskBriefId") or task.get("task_brief_id") or "").strip()
+            for task in incoming_write_tasks
+            if str(task.get("taskBriefId") or task.get("task_brief_id") or "").strip()
+        ],
     }
 
 
@@ -4280,11 +4535,128 @@ def runtime_broker(
         research_repair_state: dict[str, Any] | None = None
         if route_kind == "engineering":
             engineering_tasks = _explicit_task_briefs_from_inputs(route_inputs)
+            execution_intent_conflict = _engineering_route_execution_intent_conflict(
+                tasks=engineering_tasks,
+                route_context=route_context,
+                state=state,
+            )
+            if execution_intent_conflict:
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=_runtime_broker_payload(
+                                    mode=normalized_mode,
+                                    ok=False,
+                                    summary=(
+                                        "The current run established a purely read-only Engineering contract. "
+                                        "A recovery route cannot add file writes or verification artifacts."
+                                    ),
+                                    error="execution_intent_conflict",
+                                    detail_level=detail_level,
+                                    route_brief_quality={
+                                        "status": "blocked",
+                                        "blocking": True,
+                                        **execution_intent_conflict,
+                                    },
+                                    next_action=(
+                                        "Repair the original read-only task's tool policy and retry the same command/check "
+                                        "without a writeSet. A write-capable scope requires a new user instruction and run."
+                                    ),
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        "current_route_context": route_context,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_broker_route",
+                            "dispatched": False,
+                            "blocked": True,
+                            "reason": "execution_intent_conflict",
+                            "episodeKind": route_kind,
+                            "episodeCount": 0,
+                            "nextAction": "repair_read_only_task_contract",
+                        },
+                    },
+                )
             repair_state = _engineering_route_retry_state(
                 tasks=engineering_tasks,
                 route_context=route_context,
                 state=state,
             )
+            if list(repair_state.get("inFlightEpisodeIds") or []):
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=_runtime_broker_payload(
+                                    mode=normalized_mode,
+                                    ok=False,
+                                    summary="The same managed Engineering write scope is already running; no duplicate episode was queued.",
+                                    error="engineering_episode_in_flight",
+                                    detail_level=detail_level,
+                                    route_brief_quality={
+                                        "status": "blocked",
+                                        "reason": "engineering_episode_in_flight",
+                                        "blocking": True,
+                                        **repair_state,
+                                    },
+                                    next_action="Wait for the graph-owned typed handoff. Do not poll or queue the same write scope again.",
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        "current_route_context": route_context,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_broker_route",
+                            "dispatched": False,
+                            "blocked": True,
+                            "reason": "engineering_episode_in_flight",
+                            "episodeKind": route_kind,
+                            "episodeCount": 0,
+                            "nextAction": "wait_episode",
+                        },
+                    },
+                )
+            completed_episode_ids = list(repair_state.get("completedEpisodeIds") or [])
+            if completed_episode_ids:
+                completed_episode_id = str(completed_episode_ids[-1])
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=_runtime_broker_payload(
+                                    mode=normalized_mode,
+                                    ok=True,
+                                    summary="The same Engineering write scope already completed in this run; its typed handoff must be accepted instead of creating a duplicate episode.",
+                                    detail_level=detail_level,
+                                    detail_ref=f"runtime_episode:{completed_episode_id}",
+                                    route_brief_quality={
+                                        "status": "reused",
+                                        "reason": "same_run_completed_engineering_scope",
+                                        "blocking": False,
+                                        **repair_state,
+                                    },
+                                    next_action="Use the existing typed handoff and record the Supervisor acceptance decision.",
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        "current_route_context": route_context,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_broker_route",
+                            "dispatched": False,
+                            "blocked": False,
+                            "reason": "engineering_episode_already_completed",
+                            "episodeKind": route_kind,
+                            "episodeCount": 0,
+                            "nextAction": "accept_existing_handoff",
+                        },
+                    },
+                )
             if bool(repair_state.get("exhausted")):
                 return Command(
                     goto="supervisor",

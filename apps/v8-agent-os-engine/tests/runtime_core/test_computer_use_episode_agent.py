@@ -13,6 +13,30 @@ from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
 from runtimes.computer_use.episode_agent import ComputerUseEpisodeAgent
 
 
+def test_action_progress_humanizes_click_and_hides_input_text():
+    click = ComputerUseEpisodeAgent._action_progress(
+        {
+            "index": 3,
+            "tool": "desktop_click",
+            "args": {"x": 0.42, "y": 0.75},
+            "ok": True,
+        }
+    )
+    typed = ComputerUseEpisodeAgent._action_progress(
+        {
+            "index": 4,
+            "tool": "desktop_input",
+            "args": {"text": "private user text", "target": "搜索框"},
+            "ok": True,
+        }
+    )
+
+    assert click["summary"] == "已点击坐标 (0.42, 0.75)"
+    assert click["toolName"] == "desktop_click"
+    assert typed["summary"] == "已输入内容：搜索框"
+    assert "private user text" not in str(typed)
+
+
 class _FakeRuntime:
     browser_automation = SimpleNamespace()
 

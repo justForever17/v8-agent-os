@@ -22,6 +22,7 @@ _CODE_INTENT_RE = re.compile(
 )
 _VOICE_INTENT_RE = re.compile(r"(语音|朗读|播报|tts|voice|speak|发语音)", re.IGNORECASE)
 _ROUTE_INTENT_RE = re.compile(r"(skill|工具|插件|mcp|公众号|微信|文档|视频|图片|财报|会议纪要|代码审查)", re.IGNORECASE)
+_EXPLICIT_EXTENSION_DEPENDENCY_RE = re.compile(r"(?:\bskill\b|插件|\bplugin\b|\bmcp\b)", re.IGNORECASE)
 _READ_ONLY_EXECUTION_RE = re.compile(
     r"(只读(?:审查|检查|分析|任务)?|仅规划|仅方案)"
     r"|(?:不要|不需要|禁止|无需|不真实).{0,8}(?:写入|写|修改|改动|变更|落盘)"
@@ -302,19 +303,30 @@ class RuntimePreflightGate:
         clarify = False
         read_only_execution = _read_only_execution_intent(user_query, state)
         diagnostics["readOnlyExecutionIntent"] = read_only_execution
+        extension_inventory_required = bool(
+            _EXPLICIT_EXTENSION_DEPENDENCY_RE.search(str(user_query or ""))
+            or _truthy_nested(state, "requiresExtensionInventory")
+            or _truthy_nested(state, "requires_extension_inventory")
+        )
+        diagnostics["extensionInventoryRequired"] = extension_inventory_required
 
         if _truthy_nested(summary, "inventoryBarrierTimedOut"):
-            reasons.append("inventory_barrier_timed_out")
             diagnostics["inventoryBarrierTimedOut"] = True
-            blocked = True
+            if extension_inventory_required:
+                reasons.append("inventory_barrier_timed_out")
+                blocked = True
 
         ready_state = str(diagnostics.get("inventoryReadyState") or "").strip().lower()
-        if ready_state and ready_state not in {"ready", "fresh", "hot_ready", "ready_snapshot"}:
+        if (
+            extension_inventory_required
+            and ready_state
+            and ready_state not in {"ready", "fresh", "hot_ready", "ready_snapshot"}
+        ):
             reasons.append("inventory_not_ready")
 
         stage1_entries = _safe_list(summary.get("skillStage1Entries")) or _safe_list(summary.get("stage1Entries"))
         final_entries = _safe_list(summary.get("skillEntries")) or _safe_list(summary.get("finalEntries"))
-        if len(stage1_entries) >= 8 and len(selected_skills) >= 3:
+        if extension_inventory_required and len(stage1_entries) >= 8 and len(selected_skills) >= 3:
             reasons.append("route_candidate_spread")
         if not selected_skills and not selected_mcp and _ROUTE_INTENT_RE.search(str(user_query or "")):
             reasons.append("route_no_candidate_for_tool_like_query")

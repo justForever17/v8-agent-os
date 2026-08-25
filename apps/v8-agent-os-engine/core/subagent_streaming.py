@@ -23,6 +23,7 @@ class SubagentStreamProgressAggregator:
     FLUSH_INTERVAL_SECONDS = 0.5
     FLUSH_CHAR_THRESHOLD = 320
     MAX_PROJECTED_CHARS = 6000
+    ACTIVITY_HEARTBEAT_SECONDS = 8.0
 
     def __init__(
         self,
@@ -42,6 +43,8 @@ class SubagentStreamProgressAggregator:
             "analysis": _StreamChannel(),
             "text": _StreamChannel(),
         }
+        self._raw_chunk_count = 0
+        self._last_projected_at = 0.0
 
     def _node_id(self, kind: str) -> str:
         return (
@@ -62,8 +65,40 @@ class SubagentStreamProgressAggregator:
     def observe(self, chunk: Any) -> None:
         text, reasoning = extract_text_and_reasoning(chunk)
         now = time.monotonic()
+        self._raw_chunk_count += 1
+        previous_sequences = tuple(channel.sequence for channel in self._channels.values())
         self._append("analysis", self._delta_for("analysis", reasoning), now=now)
         self._append("text", self._delta_for("text", text), now=now)
+        current_sequences = tuple(channel.sequence for channel in self._channels.values())
+        if current_sequences != previous_sequences:
+            self._last_projected_at = now
+            return
+        if self._last_projected_at and now - self._last_projected_at < self.ACTIVITY_HEARTBEAT_SECONDS:
+            return
+        self._last_projected_at = now
+        self._progress_callback(
+            {
+                "stage": "model_stream_active",
+                "status": "running",
+                "summary": f"{self._agent_name} 正在接收模型响应。",
+                "timelineNode": {
+                    "id": self._node_id("activity"),
+                    "kind": "execution",
+                    "executionType": "runtime_progress",
+                    "topic": "subagent.model.stream.activity",
+                    "content": "",
+                    "partial": True,
+                    "finalized": False,
+                    "streamSequence": self._raw_chunk_count,
+                    "ownerStreamKey": self._node_id("activity"),
+                    "timestamp": int(time.time() * 1000),
+                    "data": {
+                        "rawChunkCount": self._raw_chunk_count,
+                        "modelTurn": self._model_turn,
+                    },
+                },
+            }
+        )
 
     def _delta_for(self, kind: str, value: str) -> str:
         """Normalize providers that send cumulative snapshots instead of deltas."""
@@ -102,6 +137,7 @@ class SubagentStreamProgressAggregator:
         channel.sequence += 1
         channel.emitted_chars = len(channel.content)
         channel.last_emitted_at = float(now if now is not None else time.monotonic())
+        self._last_projected_at = channel.last_emitted_at
         redacted = redact_observability_text(channel.content)
         bounded = (
             redacted

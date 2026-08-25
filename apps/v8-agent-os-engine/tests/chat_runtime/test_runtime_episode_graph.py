@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from core.database import db
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
+from core.runtime_contract_errors import SupervisorRuntimeRouteContractError
 from graph import parallel_support
 from graph.parallel_support import build_parallel_delegate_join_node
 from graph.supervisor_context import (
@@ -30,6 +31,7 @@ from graph.supervisor_turn import (
     _required_orchestration_tool_name,
     _response_has_required_broker_attempt,
     _runtime_route_compiler_contract_error,
+    _runtime_route_compiler_input_messages,
     _response_runtime_route_kinds,
     _runtime_route_correction_message,
     _runtime_handoff_continuation_message,
@@ -37,6 +39,12 @@ from graph.supervisor_turn import (
     _should_use_runtime_route_compiler,
 )
 from graph.workflow_assembly import build_runtime_episode_wait_node
+from runtimes.chat.runtime import ChatRuntime
+
+
+def test_supervisor_contract_keeps_new_user_repair_authority_above_prior_handoffs():
+    assert "A later true user message starts new run authority" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "Do not ask the user to say redo" in _SUPERVISOR_OPERATING_CONTRACT
 
 
 def test_supervisor_request_context_ignores_runtime_handoff_envelope() -> None:
@@ -65,6 +73,22 @@ def test_supervisor_request_context_ignores_runtime_handoff_envelope() -> None:
     assert context["user_query"] == "先调研，再进入编程模式，最后让子代理复核。"
     assert context["session_id"] == "session-test"
     assert context["current_scope"] == "workspace:test"
+
+
+def test_runtime_route_compiler_input_isolates_latest_true_user_request() -> None:
+    old_request = HumanMessage(content="old task")
+    old_handoff = HumanMessage(
+        content="[Runtime Episode Handoff Ready]\nold evidence is complete",
+        additional_kwargs={"v8_governance_type": "runtime_handoff"},
+    )
+    old_acceptance = AIMessage(content="验收决定：ACCEPT")
+    current_request = HumanMessage(content="这是新的用户指令，请重新执行只读验证。")
+
+    selected = _runtime_route_compiler_input_messages(
+        [old_request, old_handoff, old_acceptance, current_request]
+    )
+
+    assert selected == [current_request]
 
 
 def test_mixed_direct_and_runtime_slices_do_not_globally_narrow_supervisor_tools() -> None:
@@ -269,6 +293,76 @@ def test_auto_supervisor_runtime_mode_adds_no_route_and_preserves_existing_engin
     }) == ["engineering"]
 
 
+def test_auto_engineering_routes_explicit_source_research_before_project_delivery() -> None:
+    query = (
+        "先查清楚权威指南里的建议并给出可追溯来源，然后做成一个 React 项目并验证。"
+    )
+    state = {
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "supervisorRuntimeMode": "auto",
+            "engineeringTriggerDecision": {
+                "active": True,
+                "deferred": False,
+                "reason": "project_creation_workspace",
+            },
+            "capabilityEpisodes": [],
+        },
+    }
+
+    required = _authoritative_runtime_route_kinds(state, query)
+
+    assert required == ["research", "engineering"]
+    assert _should_use_runtime_route_compiler(
+        state=state,
+        messages=[HumanMessage(content=query)],
+        pending_required_runtime_kinds=required,
+        required_orchestration_tool="runtime_broker",
+        selected_tools=[SimpleNamespace(name="runtime_broker")],
+        gate_decision=SimpleNamespace(status="clean", diagnostics={}),
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+        user_query=query,
+    ) is True
+
+    state["current_route_context"]["capabilityEpisodes"] = [
+        {"episodeId": "episode-research", "kind": "research", "state": "completed"}
+    ]
+    observed = _observed_runtime_episode_kinds(state)
+    assert [kind for kind in required if kind not in observed] == ["engineering"]
+
+
+def test_auto_engineering_does_not_treat_local_bug_inspection_as_web_research() -> None:
+    query = "先查清楚本地失败测试的原因，然后修复项目并重新验证。"
+    state = {
+        "current_route_context": {
+            "supervisorRuntimeMode": "auto",
+            "engineeringTriggerDecision": {"active": True, "deferred": False},
+        }
+    }
+
+    assert _authoritative_runtime_route_kinds(state, query) == ["engineering"]
+
+
+def test_supervisor_route_contract_failure_is_not_reported_as_provider_failure() -> None:
+    events = ChatRuntime().finalize_failed_run(
+        None,
+        SupervisorRuntimeRouteContractError(
+            "runtime_route_compiler_contract_invalid:route_kind_mismatch:research:engineering"
+        ),
+    )
+
+    failure = events[-1]
+    assert failure["type"] == "error"
+    assert failure["providerError"]["code"] == "supervisor_runtime_route_contract_invalid"
+    assert failure["providerError"]["provider"] == "runtime"
+    assert "Provider" not in failure["error"]
+    assert failure["providerError"]["diagnostic"]["reason"].startswith(
+        "runtime_route_compiler_contract_invalid"
+    )
+
+
 def test_supervisor_cognition_keeps_multi_runtime_continuation_and_atomic_capability_priority() -> None:
     assert "Auto mode" in _SUPERVISOR_OPERATING_CONTRACT
     assert "ordered runtime chain" in _SUPERVISOR_OPERATING_CONTRACT
@@ -339,6 +433,43 @@ def test_selected_runtime_mode_requires_a_new_episode_for_each_guidance_message(
     })
 
     assert _observed_runtime_episode_kinds(state) == {"research"}
+
+
+def test_auto_engineering_ignores_prior_run_episode_but_observes_current_run_episode() -> None:
+    state = {
+        "run_id": "run-current",
+        "current_route_context": {
+            "runId": "run-current",
+            "supervisorRuntimeMode": "auto",
+            "engineeringTriggerDecision": {
+                "active": True,
+                "deferred": False,
+                "reason": "engineering_signals_and_project_workspace",
+            },
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "episode-prior",
+                    "kind": "engineering",
+                    "state": "failed",
+                    "runId": "run-prior",
+                }
+            ],
+        },
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+    assert _observed_runtime_episode_kinds(state) == set()
+
+    state["current_route_context"]["capabilityEpisodes"].append(
+        {
+            "episodeId": "episode-current",
+            "kind": "engineering",
+            "state": "queued",
+            "runId": "run-current",
+        }
+    )
+
+    assert _observed_runtime_episode_kinds(state) == {"engineering"}
 
 
 @pytest.mark.parametrize(
@@ -543,6 +674,15 @@ def test_selected_read_only_engineering_uses_compiler_instead_of_guessing_execut
         session_coordination={},
         explicit_coordination_send=False,
     ) is True
+    guidance = _authoritative_runtime_route_guidance(
+        ["engineering"],
+        state=state,
+        read_only=True,
+    )
+    assert '"writeRequired": false' in guidance.content
+    assert '"readOnly": true' in guidance.content
+    assert '"writeSet": []' in guidance.content
+    assert "verification result path" not in guidance.content
 
     conflicting_request = "先只读分析问题，然后修改 src/app.py 修复它。"
     assert _deterministic_authoritative_runtime_route_response(
@@ -978,6 +1118,46 @@ def test_runtime_route_kind_normalizes_literal_encoded_need_before_execution() -
 
     assert normalized.tool_calls[0]["args"]["need"]["kind"] == "engineering"
     assert _response_runtime_route_kinds(normalized) == ["engineering"]
+
+
+def test_runtime_route_normalizes_wrapped_task_arrays_and_boolean_strings() -> None:
+    response = SimpleNamespace(
+        tool_calls=[
+            {
+                "name": "runtime_broker",
+                "args": {
+                    "mode": "route",
+                    "routeKind": "engineering",
+                    "taskBriefs": {
+                        "item": {
+                            "taskBriefId": "verify-1",
+                            "goal": "Run the exact test command.",
+                            "writeRequired": "false",
+                            "readOnly": "true",
+                            "writeSet": {"item": ""},
+                            "expectedOutputs": {"item": ["exit code", "stdout"]},
+                            "acceptanceContract": {"item": "npm test -- --run exits 0"},
+                            "dependencies": "",
+                        }
+                    },
+                    "proofExpectations": {"item": "real command output"},
+                },
+            }
+        ],
+        additional_kwargs={},
+    )
+
+    normalized = _normalize_runtime_broker_response_arguments(response)
+    args = normalized.tool_calls[0]["args"]
+    task = args["taskBriefs"][0]
+
+    assert task["writeRequired"] is False
+    assert task["readOnly"] is True
+    assert task["writeSet"] == []
+    assert task["expectedOutputs"] == ["exit code", "stdout"]
+    assert task["acceptanceContract"] == ["npm test -- --run exits 0"]
+    assert task["dependencies"] == []
+    assert args["proofExpectations"] == ["real command output"]
 
 
 def test_delegation_arguments_normalize_wrapped_json_and_drop_optional_nulls() -> None:

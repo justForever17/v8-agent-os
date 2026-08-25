@@ -1891,6 +1891,45 @@ def test_completion_gate_blocks_omitted_required_failure_in_current_delegation_r
     assert decision.details["failures"][0]["errorCode"] == "required_review_failed"
 
 
+def test_completion_gate_rejects_ok_result_that_explicitly_reports_blocked_execution():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_engineering_false_ready",
+                "state": "completed",
+                "kind": "engineering",
+                "resultRef": "handoff_engineering_false_ready",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_engineering_false_ready": [
+                {
+                    "handoffRefId": "handoff_engineering_false_ready",
+                    "kind": "engineering_patch_bundle",
+                    "status": "ready",
+                    "delegationHandoff": {
+                        "results": [
+                            {
+                                "taskBriefId": "write-app",
+                                "status": "ok",
+                                "resultText": (
+                                    "[Implementation Engineer 执行被阻断]\n"
+                                    "写入证据缺失：没有成功的 write_native_file ToolMessage。"
+                                ),
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        final_text="验收决定：ACCEPT\n依据：artifact 列表存在。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_delegation_result_failed"
+    assert decision.details["failures"][0]["reason"] == "worker_reported_terminal_blocker"
+
+
 def test_completion_gate_uses_current_delegation_result_ref_for_nested_failures():
     ready_results = [
         {"taskBriefId": f"brief-{index}", "status": "ready"}

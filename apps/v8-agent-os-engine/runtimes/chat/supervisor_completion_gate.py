@@ -360,6 +360,21 @@ def _delegation_result_block_reason(result: Mapping[str, Any]) -> str:
         return "research_result_not_accepted"
     if str(result.get("error") or result.get("errorCode") or result.get("errorMessage") or "").strip():
         return "typed_error"
+    result_text = str(
+        result.get("resultText")
+        or result.get("workerReportedResultText")
+        or ""
+    ).strip()
+    if result_text and any(
+        re.search(pattern, result_text, re.IGNORECASE | re.MULTILINE)
+        for pattern in (
+            r"^\s*\[[^\]\r\n]*(?:执行被阻断|execution\s+blocked)[^\]\r\n]*\]\s*$",
+            r"^\s*[-*]?\s*(?:\*\*)?dynamic\s+test\s+run\s+blocked\b",
+            r"^\s*[-*]?\s*(?:\*\*)?build\s*/\s*runtime\s+tests\s*:\s*(?:deferred|blocked|failed)\b",
+            r"dynamicAcceptanceStatus.{0,80}blocked_by_environment",
+        )
+    ):
+        return "worker_reported_terminal_blocker"
     sandbox = result.get("sandboxEvidence") if isinstance(result.get("sandboxEvidence"), Mapping) else {}
     sandbox_state = str(sandbox.get("state") or "").strip().lower()
     if sandbox_state in {"failed", "merge_failed"}:

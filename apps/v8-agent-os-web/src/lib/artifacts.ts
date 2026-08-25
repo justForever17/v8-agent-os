@@ -79,6 +79,82 @@ function resolveHumanArtifactSubtitle(record: ArtifactRecord, mimeType: string):
 
 type ArtifactRecord = Record<string, unknown>;
 
+function artifactPresentationRecord(raw: unknown): ArtifactRecord {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const record = raw as ArtifactRecord;
+    return record.rawArtifact && typeof record.rawArtifact === "object" && !Array.isArray(record.rawArtifact)
+        ? { ...record, ...(record.rawArtifact as ArtifactRecord) }
+        : record;
+}
+
+export function artifactPresentationPriority(raw: unknown): number {
+    const record = artifactPresentationRecord(raw);
+    const metadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+        ? record.metadata as ArtifactRecord
+        : {};
+    const probe = [
+        record.kind,
+        record.artifact_kind,
+        record.mimeType,
+        record.mime_type,
+        record.name,
+        record.title,
+        record.displayLabel,
+        record.path,
+        record.workspaceRelativePath,
+        metadata.modality,
+        metadata.musicKind,
+        metadata.music_kind,
+    ].map((value) => String(value || "").toLowerCase()).join(" ");
+    if (
+        /(?:^|[\s/_.-])(image|video|audio|music)(?:$|[\s/_.-])/.test(probe)
+        || /\.(?:png|jpe?g|gif|webp|avif|svg|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|flac)(?:\s|$)/.test(probe)
+    ) return 0;
+    if (
+        /(?:^|[\s/_.-])(document|markdown|pdf|presentation|spreadsheet)(?:$|[\s/_.-])/.test(probe)
+        || /\.(?:md|mdx|pdf|docx?|xlsx?|pptx?|rtf|odt|ods|odp|txt|csv)(?:\s|$)/.test(probe)
+    ) return 1;
+    return 2;
+}
+
+export function prioritizeArtifactItems<T>(items: readonly T[], selector: (item: T) => unknown): T[] {
+    return items
+        .map((item, index) => ({ item, index, priority: artifactPresentationPriority(selector(item)) }))
+        .sort((left, right) => left.priority - right.priority || left.index - right.index)
+        .map(({ item }) => item);
+}
+
+function artifactPresentationIdentity(raw: unknown): string {
+    const record = artifactPresentationRecord(raw);
+    const metadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+        ? record.metadata as ArtifactRecord
+        : {};
+    const path = [
+        record.canonicalPath,
+        record.canonical_path,
+        record.workspaceRelativePath,
+        record.workspace_relative_path,
+        record.workspacePath,
+        record.workspace_path,
+        metadata.workspaceRelativePath,
+        metadata.workspace_relative_path,
+    ].map((value) => String(value || "").trim()).find(Boolean);
+    if (path) return `path:${path.replace(/\\/g, "/").toLowerCase()}`;
+    const artifactId = String(record.artifactId || record.artifact_id || record.id || "").trim();
+    return artifactId ? `artifact:${artifactId.toLowerCase()}` : "";
+}
+
+export function dedupeArtifactItemsForPresentation<T>(items: readonly T[], selector: (item: T) => unknown): T[] {
+    const deduped = new Map<string, T>();
+    items.forEach((item, index) => {
+        const identity = artifactPresentationIdentity(selector(item)) || `index:${index}`;
+        // Projected message artifacts are chronological. Replacing the value
+        // keeps the newest write while Map insertion order keeps a stable row.
+        deduped.set(identity, item);
+    });
+    return [...deduped.values()];
+}
+
 function resolveRuntimeArtifactResource(record: ArtifactRecord) {
     return deriveAdminResourceRefFromArtifactLike(record);
 }

@@ -34,6 +34,10 @@ test("project UI workbench starts governed projects and observes HMR without wea
   assert.match(workbench, /projectPath: projectPath\.trim\(\), startDevServer: true/);
   assert.match(workbench, /projects\/inspect/);
   assert.match(workbench, /v8-ui-patch:runtime-changed/);
+  assert.match(workbench, /changeRevisionRef/);
+  assert.match(workbench, /preservePendingChanges/);
+  assert.match(workbench, /previousSelector === mapped\.selector/);
+  assert.match(workbench, /data-ui-patch-save/);
   assert.match(workbench, /!Object\.keys\(changes\)\.length/);
   assert.match(workbench, /PROJECT_SOURCE_SETTLE_MS = 900/);
   assert.match(workbench, /preview\?\.mode === "project" \? PROJECT_SOURCE_SETTLE_MS : 0/);
@@ -41,8 +45,8 @@ test("project UI workbench starts governed projects and observes HMR without wea
   assert.match(proxy, /v8-ui-patch:refresh-selection/);
   assert.match(proxy, /mode === "dev" \|\| mode === "project"/);
   assert.match(proxy, /mode !== "dev" && mode !== "project"/);
-  assert.match(service, /create_terminal_session/);
-  assert.match(service, /send_terminal_input/);
+  assert.match(service, /create_managed_command_session/);
+  assert.doesNotMatch(service, /send_terminal_input/);
   assert.match(service, /terminate_terminal_session/);
   assert.match(service, /Project dev server did not become ready/);
   assert.match(service, /dynamicBindings": "read_only"/);

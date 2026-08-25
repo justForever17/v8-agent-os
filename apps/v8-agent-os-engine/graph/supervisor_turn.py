@@ -25,6 +25,7 @@ from core.prompt_cache_segments import hash_prompt_segment
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.runtime_route_contract import render_runtime_route_contract
+from core.runtime_contract_errors import SupervisorRuntimeRouteContractError
 from core.runtime.reflex_gate import (
     render_gate_prompt_addition,
     render_reflex_prompt_addition,
@@ -42,6 +43,38 @@ _SUPERVISOR_RUNTIME_MODE_KINDS = frozenset({
     "computer_use",
     "rpa",
 })
+
+_ORDERED_RESEARCH_ACTION_RE = re.compile(
+    r"(?:调研|查清楚|查证|核实|搜索|检索|查找|搜集|research|verify|search|find)",
+    re.IGNORECASE,
+)
+_ORDERED_RESEARCH_EVIDENCE_RE = re.compile(
+    r"(?:来源|出处|权威|可追溯|引用|联网|资料|source|citation|authoritative|evidence)",
+    re.IGNORECASE,
+)
+_ORDERED_ENGINEERING_DELIVERY_RE = re.compile(
+    r"(?:react|vue|前端|项目|应用|网页|源码|实现|开发|搭建|写入|修复|build|implement|develop|create)",
+    re.IGNORECASE,
+)
+_ORDERED_FIRST_RE = re.compile(r"(?:先|首先|第一步|first(?:ly)?)", re.IGNORECASE)
+_ORDERED_THEN_RE = re.compile(r"(?:然后|再|随后|接着|then|after\s+that)", re.IGNORECASE)
+
+
+def _ordered_research_before_engineering_requested(user_query: str) -> bool:
+    query = str(user_query or "").strip()
+    if not query or not _ORDERED_RESEARCH_EVIDENCE_RE.search(query):
+        return False
+    research_match = _ORDERED_RESEARCH_ACTION_RE.search(query)
+    if research_match is None:
+        return False
+    first_window = query[max(0, research_match.start() - 36):research_match.start()]
+    if not _ORDERED_FIRST_RE.search(first_window):
+        return False
+    engineering_match = _ORDERED_ENGINEERING_DELIVERY_RE.search(query, research_match.end())
+    if engineering_match is None:
+        return False
+    between = query[research_match.end():engineering_match.start()]
+    return bool(_ORDERED_THEN_RE.search(between))
 
 
 def _last_memory_session_context_diagnostics() -> dict:
@@ -681,10 +714,18 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
     return []
 
 
-def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
+def _explicit_runtime_orchestration_guidance(
+    kinds: list[str],
+    *,
+    correction: bool = False,
+    read_only: bool = False,
+) -> SystemMessage:
     prefix = "[Explicit Runtime Orchestration Correction]" if correction else "[Explicit Runtime Orchestration]"
     first_kind = kinds[0] if kinds else "engineering"
-    contract_example = render_runtime_route_contract(first_kind)
+    contract_example = render_runtime_route_contract(
+        first_kind,
+        read_only=bool(read_only and first_kind == "engineering"),
+    )
     downstream_task_contract = (
         '\nFor each non-Research downstream route, use the same route envelope with a typed task array such as:\n'
         '{\n  "taskBriefs": [\n    {\n      "taskBriefId": "<stable task id>",\n'
@@ -745,8 +786,12 @@ def _authoritative_runtime_route_kinds(state, user_query: str = "") -> list[str]
         continuation = task_shape.get("engineeringContinuation") if isinstance(task_shape.get("engineeringContinuation"), dict) else {}
     if _has_mixed_direct_and_runtime_execution_boundaries(user_query):
         return []
+    ordered_research_then_engineering = bool(
+        selected_runtime_mode == "auto"
+        and _ordered_research_before_engineering_requested(user_query)
+    )
     if bool(route_context.get("engineeringRequired")):
-        return ["engineering"]
+        return ["research", "engineering"] if ordered_research_then_engineering else ["engineering"]
     if bool(continuation.get("active")) and bool(route_context.get("engineeringRequired", True)):
         return ["engineering"]
     engineering_trigger = (
@@ -759,7 +804,7 @@ def _authoritative_runtime_route_kinds(state, user_query: str = "") -> list[str]
         and bool(engineering_trigger.get("active"))
         and not bool(engineering_trigger.get("deferred"))
     ):
-        return ["engineering"]
+        return ["research", "engineering"] if ordered_research_then_engineering else ["engineering"]
     return []
 
 
@@ -768,6 +813,7 @@ def _authoritative_runtime_route_guidance(
     *,
     correction: bool = False,
     state=None,
+    read_only: bool = False,
 ) -> SystemMessage:
     required_kind = kinds[0] if kinds else "engineering"
     route_context = (
@@ -798,7 +844,10 @@ def _authoritative_runtime_route_guidance(
     contract_example = (
         json.dumps(canvas_route, ensure_ascii=False, indent=2)
         if validated_canvas_route
-        else render_runtime_route_contract(required_kind)
+        else render_runtime_route_contract(
+            required_kind,
+            read_only=bool(read_only and required_kind == "engineering"),
+        )
     )
     prefix = "[Required Runtime Route Correction]" if correction else "[Required Runtime Route]"
     correction_line = (
@@ -856,6 +905,8 @@ def _authoritative_runtime_route_guidance(
             "never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
             f"{contract_example}\n"
             "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
+            "If a verification brief reads, tests, builds, or reports on files produced by an implementation brief, it MUST declare that implementation taskBriefId in dependencies; never dispatch producer and consumer as independent siblings. "
+            "In a bound workspace without user-enabled Git isolation, delegated direct-write tasks use write_native_file plus read-only or standard test commands. Do not require them to run package installation, build side effects, or arbitrary scripts; after the typed source/test handoff, the Supervisor may perform final install/build/startup acceptance with its own governed tools. "
             "When one direct child is required to delegate a grandchild verifier, keep implementation and nested verification in one parent taskBrief; "
             "do not create the intended grandchild as a sibling top-level taskBrief. "
             f"{handoff_discipline}"
@@ -911,8 +962,10 @@ def _runtime_route_shortcut_common_eligible(
     runtime_handoff_ready: bool,
     session_coordination: dict,
     explicit_coordination_send: bool,
+    allow_ordered_chain: bool = False,
 ) -> bool:
-    if len(list(pending_required_runtime_kinds or [])) != 1:
+    pending_kinds = list(pending_required_runtime_kinds or [])
+    if not pending_kinds or (len(pending_kinds) != 1 and not allow_ordered_chain):
         return False
     if required_orchestration_tool != "runtime_broker" or not _has_tool(selected_tools, "runtime_broker"):
         return False
@@ -1016,6 +1069,7 @@ def _should_use_runtime_route_compiler(
     runtime_handoff_ready: bool,
     session_coordination: dict,
     explicit_coordination_send: bool,
+    user_query: str = "",
 ) -> bool:
     if not _runtime_route_shortcut_common_eligible(
         state=state,
@@ -1026,6 +1080,7 @@ def _should_use_runtime_route_compiler(
         runtime_handoff_ready=runtime_handoff_ready,
         session_coordination=session_coordination,
         explicit_coordination_send=explicit_coordination_send,
+        allow_ordered_chain=True,
     ):
         return False
     route_context = dict((state or {}).get("current_route_context") or {})
@@ -1040,7 +1095,15 @@ def _should_use_runtime_route_compiler(
         and engineering_trigger.get("active")
         and not engineering_trigger.get("deferred")
     )
-    if not selected_mode_matches and not governed_inferred_match:
+    ordered_research_predecessor = bool(
+        required_kind == "research"
+        and "engineering" in list(pending_required_runtime_kinds or [])[1:]
+        and _selected_supervisor_runtime_mode(state) == "auto"
+        and engineering_trigger.get("active")
+        and not engineering_trigger.get("deferred")
+        and _ordered_research_before_engineering_requested(user_query)
+    )
+    if not selected_mode_matches and not governed_inferred_match and not ordered_research_predecessor:
         return False
     gate_status = str(getattr(gate_decision, "status", "clean") or "clean").strip().lower()
     if gate_status == "clean":
@@ -1112,13 +1175,23 @@ def _runtime_route_correction_message(
     *,
     authoritative: bool,
     state=None,
+    read_only: bool = False,
 ) -> HumanMessage:
     """Return a transient correction turn without creating a late system turn."""
 
     guidance = (
-        _authoritative_runtime_route_guidance(kinds, correction=True, state=state)
+        _authoritative_runtime_route_guidance(
+            kinds,
+            correction=True,
+            state=state,
+            read_only=read_only,
+        )
         if authoritative
-        else _explicit_runtime_orchestration_guidance(kinds, correction=True)
+        else _explicit_runtime_orchestration_guidance(
+            kinds,
+            correction=True,
+            read_only=read_only,
+        )
     )
     return HumanMessage(
         content=(
@@ -1240,6 +1313,79 @@ def _normalize_delegation_task_arguments(value) -> list[dict]:
     return normalized
 
 
+def _normalize_tool_argument_sequence(value) -> list:
+    if value in (None, "", [], {}):
+        return []
+    parsed = value
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(parsed)
+            except Exception:
+                return [parsed]
+    if isinstance(parsed, dict):
+        for key in ("item", "items", "value", "values"):
+            if key in parsed:
+                return _normalize_tool_argument_sequence(parsed.get(key))
+        return [dict(parsed)]
+    if isinstance(parsed, (list, tuple, set)):
+        return list(parsed)
+    return [parsed]
+
+
+def _normalize_tool_argument_bool(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return value
+
+
+def _normalize_runtime_task_arguments(value) -> list[dict]:
+    normalized: list[dict] = []
+    raw_tasks = _coerce_json_sequence(
+        value,
+        nested_keys=("taskBriefs", "tasks", "item", "items"),
+    )
+    sequence_fields = (
+        "writeSet",
+        "write_set",
+        "readSet",
+        "read_set",
+        "expectedOutputs",
+        "expected_outputs",
+        "expectedArtifacts",
+        "expected_artifacts",
+        "acceptanceContract",
+        "acceptance_contract",
+        "constraints",
+        "detailRefs",
+        "detail_refs",
+        "dependencies",
+        "requiredSkills",
+        "required_skills",
+        "requiredCapabilities",
+        "required_capabilities",
+    )
+    for raw_task in raw_tasks:
+        task = _coerce_json_mapping(raw_task)
+        if not task:
+            continue
+        task = {key: item for key, item in task.items() if item is not None}
+        for field in sequence_fields:
+            if field in task:
+                task[field] = _normalize_tool_argument_sequence(task.get(field))
+        for field in ("writeRequired", "write_required", "readOnly", "read_only", "optional"):
+            if field in task:
+                task[field] = _normalize_tool_argument_bool(task.get(field))
+        normalized.append(task)
+    return normalized
+
+
 def _normalize_runtime_broker_response_arguments(response):
     for call in list(getattr(response, "tool_calls", None) or []):
         if not isinstance(call, dict):
@@ -1252,6 +1398,19 @@ def _normalize_runtime_broker_response_arguments(response):
             normalized_need = _coerce_json_mapping(args.get("need"))
             if normalized_need:
                 args["need"] = normalized_need
+            for container in (args, normalized_need):
+                if not isinstance(container, dict):
+                    continue
+                if "taskBriefs" in container:
+                    container["taskBriefs"] = _normalize_runtime_task_arguments(container.get("taskBriefs"))
+                for field in (
+                    "researchBriefIds",
+                    "researchBriefGoals",
+                    "researchBriefContexts",
+                    "proofExpectations",
+                ):
+                    if field in container:
+                        container[field] = _normalize_tool_argument_sequence(container.get(field))
         elif tool_name == "delegation_broker":
             if "tasks" in args:
                 args["tasks"] = _normalize_delegation_task_arguments(args.get("tasks"))
@@ -1790,6 +1949,15 @@ def _latest_message_is_true_user_input(messages) -> bool:
     return not any(content.startswith(prefix) for prefix in internal_prefixes)
 
 
+def _runtime_route_compiler_input_messages(messages) -> list:
+    """Isolate route compilation from prior-run handoffs and acceptance prose."""
+
+    ordered = list(messages or [])
+    if not _latest_message_is_true_user_input(ordered):
+        return ordered
+    return [ordered[-1]]
+
+
 def _should_include_extensions_prefilter_prompt(*, state, messages, user_query: str, route_bundle) -> bool:
     if _latest_message_is_true_user_input(messages):
         return True
@@ -1919,6 +2087,13 @@ def _pending_runtime_milestone_kinds(state) -> list[str]:
 
 def _observed_runtime_episode_kinds(state) -> set[str]:
     route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    current_run_id = str(
+        (state or {}).get("run_id")
+        or (state or {}).get("runId")
+        or route_context.get("run_id")
+        or route_context.get("runId")
+        or ""
+    ).strip()
     request_scope = (
         dict(route_context.get("supervisorRuntimeModeRequestScope") or {})
         if isinstance(route_context.get("supervisorRuntimeModeRequestScope"), dict)
@@ -1937,6 +2112,9 @@ def _observed_runtime_episode_kinds(state) -> set[str]:
             episode.get("episodeId") or episode.get("id") or episode.get("needId") or ""
         ).strip()
         if episode_id and episode_id in prior_episode_ids:
+            continue
+        episode_run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+        if current_run_id and episode_run_id != current_run_id:
             continue
         kind = str(episode.get("kind") or episode.get("runtimeKind") or "").strip().lower()
         if kind:
@@ -3176,11 +3354,22 @@ def execute_supervisor_turn(
         reflex_prompt_addition = render_reflex_prompt_addition(reflex_decision)
         gate_prompt_addition = render_gate_prompt_addition(gate_decision)
         route_guidance = None
+        read_only_engineering_route = bool(
+            required_orchestration_kind == "engineering"
+            and dict(getattr(gate_decision, "diagnostics", None) or {}).get("readOnlyExecutionIntent")
+        )
         if pending_required_runtime_kinds:
             route_guidance = (
-                _authoritative_runtime_route_guidance(pending_required_runtime_kinds, state=state)
+                _authoritative_runtime_route_guidance(
+                    pending_required_runtime_kinds,
+                    state=state,
+                    read_only=read_only_engineering_route,
+                )
                 if authoritative_runtime_kinds
-                else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds)
+                else _explicit_runtime_orchestration_guidance(
+                    pending_required_runtime_kinds,
+                    read_only=read_only_engineering_route,
+                )
             )
 
         deterministic_route_response = _deterministic_authoritative_runtime_route_response(
@@ -3251,6 +3440,7 @@ def execute_supervisor_turn(
             runtime_handoff_ready=runtime_handoff_ready,
             session_coordination=session_coordination,
             explicit_coordination_send=explicit_coordination_send,
+            user_query=user_query,
         )
         plugin_catalog_prompt_addition = ""
         if not use_runtime_route_compiler:
@@ -3324,7 +3514,7 @@ def execute_supervisor_turn(
         )
 
         if use_runtime_route_compiler:
-            prepared_messages = messages
+            prepared_messages = _runtime_route_compiler_input_messages(messages)
             passive_rag_duration_ms = 0.0
             passive_rag_diagnostics = {
                 "injection_allowed": False,
@@ -3599,7 +3789,7 @@ def execute_supervisor_turn(
                 else None
             )
             if compiler_contract_error:
-                raise RuntimeError(
+                raise SupervisorRuntimeRouteContractError(
                     f"runtime_route_compiler_contract_invalid:{compiler_contract_error}"
                 )
             if not use_runtime_route_compiler and (
@@ -3616,6 +3806,7 @@ def execute_supervisor_turn(
                         pending_required_runtime_kinds,
                         authoritative=bool(authoritative_runtime_kinds),
                         state=state,
+                        read_only=read_only_engineering_route,
                     ),
                 ]
                 response = robust_invoke(
@@ -3643,7 +3834,7 @@ def execute_supervisor_turn(
                         required_orchestration_tool,
                     )
                 ):
-                    raise RuntimeError(
+                    raise SupervisorRuntimeRouteContractError(
                         f"required_runtime_route_missing_after_correction:{required_kind}"
                     )
         if (

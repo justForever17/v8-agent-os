@@ -282,6 +282,8 @@ export function UiPatchWorkbench() {
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
     const patchSessionRef = useRef("");
     const selectionSequenceRef = useRef(0);
+    const selectionRef = useRef<MappedSelection | null>(null);
+    const changeRevisionRef = useRef(0);
     const previewComputedRef = useRef<Record<string, string>>({});
     const previewResolverRef = useRef<((value: Record<string, string>) => void) | null>(null);
     const pendingVerificationRef = useRef<PendingVerification | null>(null);
@@ -355,6 +357,8 @@ export function UiPatchWorkbench() {
     const mapRawSelection = useCallback(async (rawSelection: RawSelection) => {
         if (!preview || !sessionId) return;
         const sequence = ++selectionSequenceRef.current;
+        const changeRevision = changeRevisionRef.current;
+        const previousSelector = selectionRef.current?.selector || "";
         setMappingSelection(true);
         setError("");
         try {
@@ -363,12 +367,20 @@ export function UiPatchWorkbench() {
                 { method: "POST", body: JSON.stringify({ selection: rawSelection }) },
             );
             if (sequence !== selectionSequenceRef.current) return;
+            const preservePendingChanges = Boolean(
+                previousSelector
+                && previousSelector === mapped.selector
+                && changeRevisionRef.current !== changeRevision,
+            );
             setSelection(mapped);
+            selectionRef.current = mapped;
             setCandidateId(mapped.sourceCandidates[0]?.candidateId || "");
-            setChanges({});
-            previewComputedRef.current = {};
-            setLastCommit(null);
-            setVerificationState("idle");
+            if (!preservePendingChanges) {
+                setChanges({});
+                previewComputedRef.current = {};
+                setLastCommit(null);
+                setVerificationState("idle");
+            }
         } catch (reason) {
             if (sequence === selectionSequenceRef.current) setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
@@ -658,6 +670,7 @@ export function UiPatchWorkbench() {
 
     const updateProperty = useCallback((property: string, value: string) => {
         const normalized = property === "__text_content" ? value : value.trim();
+        changeRevisionRef.current += 1;
         setChanges((current) => {
             const next = { ...current };
             if ((property !== "__text_content" && !normalized) || normalized === baseValue(property)) delete next[property];
@@ -714,6 +727,7 @@ export function UiPatchWorkbench() {
                     ) : null}
                     <button
                         type="button"
+                        data-ui-patch-save
                         disabled={!selection?.writable || !selectedCandidate || !Object.keys(changes).length || verificationState === "saving" || verificationState === "reloading"}
                         onClick={() => void savePatch()}
                         className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"

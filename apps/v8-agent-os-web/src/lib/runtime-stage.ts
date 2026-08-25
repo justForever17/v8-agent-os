@@ -293,9 +293,11 @@ function compactRuntimeStatusActivities(input: RuntimeStageActivity[]) {
             seenProgress.add(progressKey);
         }
         compacted.push(activity);
-        if (compacted.length >= 80) break;
     }
-    return compacted;
+    // Summary cards need a global recent window and a small per-runtime floor.
+    // Otherwise a noisy Engineering branch can temporarily evict an earlier
+    // Research/Computer Use entry until a history reload rebuilds the model.
+    return selectRuntimeActivityWindow(compacted, 80, 20);
 }
 
 function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode {
@@ -452,6 +454,41 @@ interface BuildRuntimeStageModelOptions {
     locale?: Locale;
 }
 
+function runtimeActivityIdentity(activity: RuntimeStageActivity): string {
+    if (activity.eventSeq) return `seq:${activity.runtimeId}:${activity.eventSeq}`;
+    return `${activity.runtimeId}:${activity.id}:${activity.timestamp}`;
+}
+
+export function selectRuntimeActivityWindow(
+    activities: RuntimeStageActivity[],
+    recentLimit = 600,
+    perRuntimeLimit = 400,
+): RuntimeStageActivity[] {
+    const ordered = [...activities].sort((left, right) => {
+        if (left.eventSeq && right.eventSeq && left.eventSeq !== right.eventSeq) return right.eventSeq - left.eventSeq;
+        return right.timestamp - left.timestamp;
+    });
+    const selected = new Map<string, RuntimeStageActivity>();
+    const remember = (activity: RuntimeStageActivity) => {
+        const key = runtimeActivityIdentity(activity);
+        const previous = selected.get(key);
+        if (!previous || activity.timestamp >= previous.timestamp) selected.set(key, activity);
+    };
+
+    ordered.slice(0, Math.max(1, recentLimit)).forEach(remember);
+    const runtimeCounts = new Map<RuntimeId, number>();
+    for (const activity of ordered) {
+        const count = runtimeCounts.get(activity.runtimeId) || 0;
+        if (count >= Math.max(1, perRuntimeLimit)) continue;
+        runtimeCounts.set(activity.runtimeId, count + 1);
+        remember(activity);
+    }
+    return [...selected.values()].sort((left, right) => {
+        if (left.eventSeq && right.eventSeq && left.eventSeq !== right.eventSeq) return right.eventSeq - left.eventSeq;
+        return right.timestamp - left.timestamp;
+    });
+}
+
 export function buildRuntimeStageModel(
     messages: Message[],
     options?: BuildRuntimeStageModelOptions,
@@ -598,16 +635,10 @@ export function buildRuntimeStageModel(
         });
     }
 
-    const messageActivities = [...activities]
-        .sort((left, right) => {
-            if (left.eventSeq && right.eventSeq && left.eventSeq !== right.eventSeq) return right.eventSeq - left.eventSeq;
-            return right.timestamp - left.timestamp;
-        })
-        // Keep enough durable worker timeline for the right-side subagent
-        // document. The compact runtime cards below still use the 80-entry
-        // summary; this list is the detail surface and must not collapse to
-        // the final status after a long delegated run.
-        .slice(0, 1200);
+    // Preserve a bounded detail history for every runtime. A single noisy
+    // Engineering/Subagent branch must not evict earlier Research or Computer
+    // Use activity from the live document before history reloads it.
+    const messageActivities = selectRuntimeActivityWindow(activities);
     const summaryActivities = compactRuntimeStatusActivities(messageActivities);
 
     const realActivities = summaryActivities.filter((activity) => !activity.synthetic);

@@ -20,7 +20,11 @@ from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
-from core.tools.research_quality import build_research_review_binding
+from core.tools.research_quality import (
+    MIN_RESEARCH_ANSWER_CHARS,
+    MIN_RESEARCH_SOURCE_COUNT,
+    build_research_review_binding,
+)
 
 
 def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: str = "worker") -> Send:
@@ -42,6 +46,54 @@ def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: s
             }
         },
     )
+
+
+def test_publish_episode_progress_emits_runtime_owned_timeline_node(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    heartbeats: list[tuple[str, str]] = []
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        runner,
+        "_heartbeat",
+        lambda episode_id, progress: heartbeats.append((episode_id, progress)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_emit",
+        lambda topic, **kwargs: emitted.append((topic, kwargs)),
+    )
+    episode = {
+        "episodeId": "episode_research",
+        "kind": "research",
+        "state": "active",
+        "session_id": "session_1",
+        "run_id": "run_1",
+    }
+
+    runner._publish_episode_progress(
+        episode,
+        {
+            "stage": "source_read",
+            "status": "completed",
+            "summary": "已读取权威来源",
+            "toolName": "web_read",
+            "nodeId": "research-read:1",
+            "private": "must-not-project",
+        },
+    )
+
+    assert heartbeats == [("episode_research", "已读取权威来源")]
+    assert emitted[0][0] == "runtime.episode.progress"
+    progress = emitted[0][1]["progress"]
+    assert progress["timelineNode"] == {
+        "id": "research-read:1",
+        "kind": "execution",
+        "executionType": "runtime_progress",
+        "topic": "research.progress.source_read",
+        "label": "已读取权威来源",
+        "toolName": "web_read",
+    }
+    assert "private" not in progress
 
 
 def _accepted_research_payload(
@@ -1528,6 +1580,41 @@ def test_engineering_research_artifact_guard_still_rejects_unresolved_marker_aft
         workspace_path=str(tmp_path),
         worker_briefs=[brief],
     ) == ["V8OS测评.md"]
+
+
+def test_engineering_research_artifact_guard_does_not_classify_software_source_note_as_research(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# 每日膳食搭配器\n\n"
+        "推荐数据保留来源占位，并明确标注本轮尚未独立复核。\n",
+        encoding="utf-8",
+    )
+    brief = {
+        "taskBriefId": "engineering-implementation",
+        "goal": (
+            "搭建 React 单页工具，推荐数据放在单文件并对每条注明来源占位；"
+            "附测试与 README 启动文档。"
+        ),
+        "familyHint": "engineering",
+        "writeRequired": True,
+        "expectedArtifacts": ["README.md"],
+        "context": {
+            "symptom": "上游 Research 已降级，软件不得替未核实数值背书。",
+        },
+    }
+
+    assert RuntimeEpisodeRunner._engineering_brief_is_research_like(brief) is False
+    assert RuntimeEpisodeRunner._engineering_unready_expected_artifacts(
+        workspace_path=str(tmp_path),
+        worker_briefs=[brief],
+    ) == []
+    guarded = RuntimeEpisodeRunner._delegation_summary_with_expected_artifact_guard(
+        {"status": "ok", "artifactRefs": [{"path": str(readme)}]},
+        branch={"taskBrief": brief},
+        workspace_path=str(tmp_path),
+    )
+    assert guarded["status"] == "ok"
+    assert "error" not in guarded
 
 
 def test_engineering_expected_artifact_guard_reads_managed_child_worktree(monkeypatch, tmp_path):
@@ -3767,8 +3854,8 @@ def test_research_episode_enforces_explicit_source_count_contract(monkeypatch):
     assert handoff["status"] == "degraded"
     result = handoff["taskBriefResults"][0]
     assert "source_floor_not_met:2" in result["evidenceStatusReasons"]
-    assert "evidence_source_floor_not_met:5" in result["evidenceStatusReasons"]
-    assert "detailed_answer_floor_not_met:3000" in result["evidenceStatusReasons"]
+    assert f"evidence_source_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in result["evidenceStatusReasons"]
+    assert f"detailed_answer_floor_not_met:{MIN_RESEARCH_ANSWER_CHARS}" in result["evidenceStatusReasons"]
 
 
 def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):
@@ -6506,6 +6593,370 @@ def test_verification_contract_requires_successful_read_and_command_results():
     ]
 
 
+def test_write_task_acceptance_run_via_command_requires_real_successful_tool_evidence():
+    from graph.parallel_support import _validate_required_verification_evidence
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    branch = {
+        "taskBrief": {
+            "writeRequired": True,
+            "writeSet": ["src/App.jsx", "src/App.test.jsx"],
+            "acceptanceContract": [
+                "src/App.test.jsx contains four cases; all tests PASS when run via npm test -- --run",
+            ],
+        }
+    }
+    command_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "run-tests", "name": "run_system_command", "args": {"command": "npm test -- --run"}}
+        ],
+    )
+    blocked_command = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": False,
+                "kind": "git_parallel_isolation_required",
+                "returnCode": None,
+            }
+        ),
+        name="run_system_command",
+        tool_call_id="run-tests",
+    )
+    successful_command = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "kind": "command_result",
+                "returnCode": 0,
+                "keyOutput": "Tests 4 passed (4)",
+            }
+        ),
+        name="run_system_command",
+        tool_call_id="run-tests",
+    )
+
+    missing = _validate_required_verification_evidence(branch=branch, delta_messages=[])
+    blocked = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[command_call, blocked_command],
+    )
+    passed = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[command_call, successful_command],
+    )
+
+    assert missing is not None
+    assert missing["missingVerificationTools"] == ["run_system_command"]
+    assert missing["verificationEvidenceMismatches"] == [
+        "required_command_not_executed:npm test -- --run"
+    ]
+    assert blocked is not None
+    assert blocked["missingVerificationTools"] == ["run_system_command"]
+    assert passed is None
+
+
+def test_command_first_expected_output_requires_real_verification_command():
+    from graph.parallel_support import _validate_required_verification_evidence
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    branch = {
+        "taskBrief": {
+            "readOnly": True,
+            "expectedOutputs": [
+                "npm test -- --run invoked exactly once in the bound workspace with its real exit code",
+            ],
+            "acceptanceContract": ["All existing regression tests remain green."],
+        }
+    }
+    call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "command-first", "name": "run_system_command", "args": {"command": "npm test -- --run"}}
+        ],
+    )
+    result = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "kind": "command_result",
+                "returnCode": 0,
+                "keyOutput": "Tests 8 passed (8)",
+            }
+        ),
+        name="run_system_command",
+        tool_call_id="command-first",
+    )
+
+    missing = _validate_required_verification_evidence(branch=branch, delta_messages=[])
+    assert missing is not None
+    assert missing["verificationEvidenceMismatches"] == [
+        "required_command_not_executed:npm test -- --run"
+    ]
+    assert _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[call, result],
+    ) is None
+
+
+def test_verification_command_exactness_rejects_shell_wrappers_and_probes():
+    from graph.parallel_support import _verification_command_matches_exact
+
+    required = ["npm test -- --run"]
+
+    assert _verification_command_matches_exact("npm test -- --run", required)
+    assert _verification_command_matches_exact("  npm   test -- --run  ", required)
+    assert not _verification_command_matches_exact('cmd /c "npm test -- --run"', required)
+    assert not _verification_command_matches_exact("npm test -- --run 2>&1", required)
+    assert not _verification_command_matches_exact("npm --version", required)
+
+
+def test_verification_command_preflight_flags_wrapper_before_execution():
+    from graph.parallel_support import _verification_command_preflight_deviations
+    from langchain_core.messages import AIMessage
+
+    wrapper = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "wrapped-command",
+                "name": "run_system_command",
+                "args": {"command": 'npm test -- --run; "EXITCODE=$LASTEXITCODE"'},
+            }
+        ],
+    )
+    exact = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "exact-command",
+                "name": "run_system_command",
+                "args": {"command": "npm test -- --run"},
+            }
+        ],
+    )
+
+    assert _verification_command_preflight_deviations(
+        [wrapper],
+        ["npm test -- --run"],
+    ) == [
+        {
+            "toolCallId": "wrapped-command",
+            "command": 'npm test -- --run; "EXITCODE=$LASTEXITCODE"',
+        }
+    ]
+    assert _verification_command_preflight_deviations(
+        [exact],
+        ["npm test -- --run"],
+    ) == []
+
+
+def test_exact_short_verification_is_normalized_before_tool_execution():
+    from graph.parallel_support import _normalize_exact_verification_command_invocations
+    from langchain_core.messages import AIMessage
+
+    exact = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "run-session",
+                "name": "run_system_command",
+                "args": {
+                    "command": "npm test -- --run",
+                    "mode": "session",
+                    "timeout_seconds": 600,
+                    "cwd": "E:/workspace",
+                },
+            }
+        ],
+    )
+    unrelated = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "list-files",
+                "name": "run_system_command",
+                "args": {"command": "Get-ChildItem", "mode": "session", "timeout_seconds": 600},
+            }
+        ],
+    )
+
+    adjustments = _normalize_exact_verification_command_invocations(
+        [exact, unrelated],
+        ["npm test -- --run"],
+    )
+
+    assert len(adjustments) == 1
+    assert exact.tool_calls[0]["args"] == {
+        "command": "npm test -- --run",
+        "mode": "sync",
+        "timeout_seconds": 90,
+        "cwd": "E:/workspace",
+    }
+    assert unrelated.tool_calls[0]["args"]["mode"] == "session"
+
+
+def test_parallel_verifier_rejects_wrapper_before_tool_node_and_runs_exact_once():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langgraph.types import Command
+
+    agent_calls: list[list] = []
+    executed_commands: list[dict] = []
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "verification_worker",
+            "agentName": "Verification Worker",
+            "delegationId": "delegation-exact-preflight",
+            "invocationId": "invoke-exact-preflight",
+            "taskBriefId": "brief-exact-preflight",
+            "reason": "Execute the exact project verification command once.",
+            "taskBrief": {
+                "taskBriefId": "brief-exact-preflight",
+                "readOnly": True,
+                "writeRequired": False,
+                "writeSet": [],
+                "context": {"verificationCommand": "npm test -- --run"},
+                "expectedOutputs": ["A successful current-run command result."],
+            },
+        },
+    }
+
+    def _node_func(state):
+        agent_calls.append(list(state.get("messages") or []))
+        if len(agent_calls) == 1:
+            return Command(
+                goto="verification_worker_tools",
+                update={
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "wrapped-command",
+                                    "name": "run_system_command",
+                                    "args": {
+                                        "command": 'npm test -- --run; "EXITCODE=$LASTEXITCODE"',
+                                        "mode": "sync",
+                                        "timeout_seconds": 60,
+                                    },
+                                }
+                            ],
+                        )
+                    ]
+                },
+            )
+        if len(agent_calls) == 2:
+            assert any(
+                isinstance(message, HumanMessage)
+                and "rejected before execution" in str(message.content)
+                for message in agent_calls[-1]
+            )
+            assert any(
+                isinstance(message, ToolMessage)
+                and message.tool_call_id == "wrapped-command"
+                and message.status == "error"
+                for message in agent_calls[-1]
+            )
+            return Command(
+                goto="verification_worker_tools",
+                update={
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "exact-command",
+                                    "name": "run_system_command",
+                                    "args": {
+                                        "command": "npm test -- --run",
+                                        "mode": "session",
+                                        "timeout_seconds": 600,
+                                    },
+                                }
+                            ],
+                        )
+                    ]
+                },
+            )
+        return Command(
+            goto="supervisor",
+            update={"messages": [AIMessage(content="Verified once with the exact command.")]},
+        )
+
+    async def _tool_node_func(state, *, config=None):
+        del config
+        latest_call = next(
+            call
+            for message in reversed(list(state.get("messages") or []))
+            for call in getattr(message, "tool_calls", []) or []
+        )
+        executed_commands.append(dict(latest_call.get("args") or {}))
+        return Command(
+            goto="verification_worker",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "ok": True,
+                                "kind": "command_result",
+                                "returnCode": 0,
+                                "keyOutput": "Tests 8 passed (8)",
+                            }
+                        ),
+                        name="run_system_command",
+                        tool_call_id=str(latest_call.get("id") or ""),
+                    )
+                ]
+            },
+        )
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(
+            parent_state,
+            {
+                "node_func": _node_func,
+                "tool_node_func": _tool_node_func,
+                "tool_mode": "test",
+            },
+        )
+    )
+
+    assert len(agent_calls) == 3
+    assert executed_commands == [
+        {
+            "command": "npm test -- --run",
+            "mode": "sync",
+            "timeout_seconds": 90,
+        }
+    ]
+    assert child_requests == []
+    assert summary["status"] == "ok"
+    assert "run_system_command" in summary["toolsUsed"]
+
+
+def test_verification_context_command_requires_exact_current_run_evidence():
+    from graph.parallel_support import _validate_required_verification_evidence
+
+    branch = {
+        "taskBrief": {
+            "readOnly": True,
+            "context": {"verificationCommand": "npm test -- --run"},
+            "expectedOutputs": ["Current-run command result"],
+        }
+    }
+
+    missing = _validate_required_verification_evidence(branch=branch, delta_messages=[])
+
+    assert missing is not None
+    assert missing["verificationEvidenceMismatches"] == [
+        "required_command_not_executed:npm test -- --run"
+    ]
+
+
 def test_verification_contract_parses_english_exact_stdout_without_treating_filler_as_value():
     from graph.parallel_support import _validate_required_verification_evidence
     from langchain_core.messages import AIMessage, ToolMessage
@@ -7075,7 +7526,7 @@ def test_parallel_branch_bounded_artifact_correction_returns_typed_write_tool_fa
     ) == 2
 
 
-def test_parallel_branch_does_not_report_artifact_stall_after_expected_file_exists(tmp_path):
+def test_parallel_branch_requires_write_evidence_even_when_expected_file_preexists(tmp_path):
     from graph.parallel_support import _run_parallel_agent_branch, _runtime_context_from_parallel_state
     from langchain_core.messages import HumanMessage
     from langgraph.types import Command
@@ -7120,12 +7571,27 @@ def test_parallel_branch_does_not_report_artifact_stall_after_expected_file_exis
         )
 
     _messages, _todos, summary, _children = asyncio.run(
-        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+        _run_parallel_agent_branch(
+            state,
+            {
+                "node_func": _node_func,
+                "tool_mode": "test",
+                "tools": [SimpleNamespace(name="write_native_file")],
+            },
+        )
     )
 
     assert counter > 80
-    assert summary["status"] == "ok"
+    assert summary["status"] == "blocked"
+    assert summary["error"] == "required_artifact_tool_not_called"
+    assert summary["missingRequiredTool"] == "write_native_file"
     assert summary["missingExpectedArtifacts"] == []
+    assert sum(
+        1
+        for message in _messages
+        if getattr(message, "additional_kwargs", {}).get("v8_governance_type")
+        == "required_artifact_tool_correction"
+    ) == 2
 
 
 def test_parallel_branch_preserves_explicit_workspace_blocker_as_failure(tmp_path):
@@ -7326,6 +7792,37 @@ def test_runtime_runner_extracts_missing_skill_root_from_goal_text(tmp_path):
     assert result["status"] == "skill_artifact_invalid"
     assert any(item.get("skillRoot") == str(target_dir.resolve()) for item in result["results"])
     assert any("缺少 SKILL.md" in finding for finding in result["findings"])
+
+
+def test_runtime_runner_ignores_advisory_skill_candidates_for_ordinary_react_task(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    result = RuntimeEpisodeRunner()._validate_skill_artifact_if_requested(
+        {"episodeId": "episode-react-app"},
+        need={
+            "workspacePath": str(tmp_path),
+            "reason": "Build and verify the requested React nutrition calculator.",
+        },
+        inputs={
+            "workspacePath": str(tmp_path),
+            "taskBriefs": [
+                {
+                    "taskBriefId": "TASK-REACT",
+                    "goal": "Implement the React application and README.",
+                    "writeRequired": True,
+                    "writeSet": ["src/App.jsx", "src/App.css", "README.md"],
+                    "expectedArtifacts": ["src/App.jsx", "src/App.css", "README.md"],
+                    "context": {
+                        "extensionRouteContext": {
+                            "selectedSkillNames": ["frontend-design", "skill-creator", "huashu-nuwa"],
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+    assert result is None
 
 
 def test_engineering_worker_briefs_for_skill_artifact_delegate_to_writing_family(tmp_path):

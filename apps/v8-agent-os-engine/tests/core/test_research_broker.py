@@ -17,6 +17,7 @@ import core.tools.research_broker as research_module
 from core.agents import default_subagent_configs
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor
 from core.tools.research_quality import (
+    MIN_RESEARCH_CLAIM_COUNT,
     MIN_RESEARCH_SOURCE_COUNT,
     TARGET_RESEARCH_ANSWER_CHARS,
     TARGET_RESEARCH_DATED_SOURCE_COUNT,
@@ -101,9 +102,14 @@ def _high_quality_architect_pack(**kwargs):
         "decision hotel",
     )
     claims = []
-    for index, source in enumerate(sources, start=1):
+    for index in range(1, max(len(sources), MIN_RESEARCH_CLAIM_COUNT) + 1):
+        source_position = ((index - 1) % len(sources)) + 1
+        source = sources[source_position - 1]
         citation_key = str(source.get("citationKey") or f"S{index}").strip("[]")
-        body = str((fetched.get(source.get("url")) or {}).get("text") or _test_source_body(source, index))
+        body = str(
+            (fetched.get(source.get("url")) or {}).get("text")
+            or _test_source_body(source, source_position)
+        )
         excerpt = " ".join(body.split())
         if len(excerpt) > 180:
             excerpt = excerpt[:180].rsplit(" ", 1)[0]
@@ -759,6 +765,42 @@ def test_parallel_search_shards_read_duplicate_url_only_once(monkeypatch):
         for item in shard.get("fetchedTopSources") or []
     ) == 2
     assert ledger.snapshot()["cachedProjectionCount"] >= 1
+
+
+def test_parallel_search_shards_reports_human_safe_search_and_read_progress(monkeypatch):
+    def fake_run_search_shard(shard, **_kwargs):
+        return {
+            **shard,
+            "ok": True,
+            "fetchedTopSources": [
+                {
+                    "ok": True,
+                    "title": "权威指南",
+                    "url": "https://authority.example/guide?private=1",
+                    "text": "可读正文",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(research_module, "_run_search_shard", fake_run_search_shard)
+    progress: list[dict] = []
+
+    with research_module.bind_research_progress_reporter(progress.append):
+        completed = research_module._run_search_shards(
+            [{"shardId": "shard-1", "query": "权威膳食指南"}],
+            allowed_domains=[],
+            blocked_domains=[],
+            source_policy="authoritative",
+            max_rounds=1,
+            use_agent_browser_profile=False,
+            tool_call_id="call-1",
+        )
+
+    assert len(completed) == 1
+    assert [item["stage"] for item in progress] == ["source_search", "source_read"]
+    assert progress[0]["summary"] == "正在搜索：权威膳食指南"
+    assert progress[1]["summary"] == "已读取 权威指南"
+    assert "private=1" not in str(progress)
 
 
 def test_parallel_search_shards_are_bounded_without_becoming_serial(monkeypatch):
@@ -1614,9 +1656,9 @@ def test_research_catalog_rewrites_retired_langchain_host_and_exposes_current_hi
 @pytest.mark.parametrize(
     "diagnostic",
     [
-        "Research should continue until at least 8 readable sources are available; 5 is only the rejection floor.",
-        "Research needs at least 5 readable sources before a reviewed answer can be delivered.",
-        "Architect-answerable source minimum not met: 3/5.",
+        f"Research should continue until at least 8 readable sources are available; {research_module.MIN_RESEARCH_SOURCE_COUNT} is only the rejection floor.",
+        f"Research needs at least {research_module.MIN_RESEARCH_SOURCE_COUNT} readable sources before a reviewed answer can be delivered.",
+        f"Architect-answerable source minimum not met: 3/{research_module.MIN_RESEARCH_SOURCE_COUNT}.",
         "No source-backed claims were extracted from readable page bodies.",
         "research_source_transport_exhausted",
     ],
@@ -7848,6 +7890,83 @@ def test_research_source_excerpt_finds_visible_variant_of_query_identifier():
 
     assert len(excerpt) <= 2400
     assert "The Path type validates file-system paths" in excerpt
+
+
+def test_research_source_excerpt_keeps_late_chinese_noun_fact_from_verbose_facet_query():
+    body = (
+        "页面导航和膳食指南背景介绍。" * 120
+        + "\n\n在温和气候条件下，低身体活动水平成年男性每天饮水1700毫升，"
+        "成年女性每天饮水1500毫升。\n\n"
+        + "其他健康科普内容。" * 120
+    )
+    query = (
+        "查证《中国居民膳食指南（2022）》对成年人（一般人群/一般成年人）每日饮水量的"
+        "权威建议数值与适用人群范围，并定位可追溯的中文官方/学会来源。"
+    )
+
+    excerpt = research_module._research_source_excerpt(body, query, limit=2400)
+    candidates = research_module._architect_evidence_candidates(
+        {
+            "citationKey": "S1",
+            "title": "中国居民平衡膳食宝塔",
+            "url": "https://example.gov.cn/dietary-guidelines",
+            "text": excerpt,
+            "evidenceQuery": query,
+            "researchFacetId": "water-recommendation-2022",
+        },
+        query,
+        limit=4,
+    )
+
+    assert "成年男性每天饮水1700毫升" in excerpt
+    assert "成年女性每天饮水1500毫升" in excerpt
+    assert any(
+        "饮水" in candidate["text"]
+        and ("1500" in candidate["text"] or "1700" in candidate["text"])
+        for candidate in candidates
+    )
+
+
+def test_exact_excerpt_repair_keeps_chinese_daily_measurement_after_candidate_punctuation_normalization():
+    query = (
+        "查证《中国居民膳食指南（2022）》对成年人每日饮水量的权威建议数值与适用人群范围。"
+    )
+    source = {
+        "sourceId": "dietary-guideline-water",
+        "citationKey": "S4",
+        "title": "中国居民平衡膳食宝塔",
+        "url": "https://example.gov.cn/dietary-guidelines",
+        "tier": "primary",
+        "text": (
+            "在温和气候条件下，低身体活动水平成年男性每天饮水1700毫升，"
+            "成年女性每天饮水1500毫升。"
+        ),
+    }
+    candidates = research_module._architect_multi_query_evidence_candidates(
+        source,
+        [query],
+        facet_by_query={query: "water-intake"},
+    )
+    source["evidenceCandidates"] = candidates
+
+    assert candidates
+    assert not candidates[0]["text"].endswith("。")
+    claim = research_module._architect_exact_excerpt_source_fact(
+        source,
+        query,
+        required_facet_id="water-intake",
+    )
+
+    assert claim is not None
+    assert claim["claim"] == candidates[0]["text"] + "。"
+    assert claim["claimType"] == "source_fact"
+    verified, issues = research_module._verify_architect_claim_excerpts(
+        [claim],
+        [source],
+        require_evidence_key=True,
+    )
+    assert issues == []
+    assert verified[0]["supportingSources"][0]["researchFacetId"] == "water-intake"
 
 
 def test_research_source_excerpt_reserves_late_structured_anchors_across_unicode_whitespace():
@@ -17005,6 +17124,77 @@ def test_minimum_qualified_reviewed_answer_remains_deliverable():
     assert answer_pack["answer"].startswith("结论：")
     assert f"target_source_count_not_met:{TARGET_RESEARCH_SOURCE_COUNT}" in answer_pack["missingOrStaleReasons"]
     assert answer_pack["recommendedNextAction"] == "use_research_answer_pack"
+
+
+def test_architect_delivery_gate_does_not_promote_quality_targets_to_refusal(monkeypatch):
+    monkeypatch.setattr(
+        research_module,
+        "research_acceptance_issues",
+        lambda _payload: ["minimum_contract_issue"],
+    )
+    monkeypatch.setattr(
+        research_module,
+        "research_high_quality_issues",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("target gate must stay diagnostic")),
+    )
+
+    assert research_module._architect_delivery_quality_issues({}) == ["minimum_contract_issue"]
+
+
+def test_architect_delivery_gate_accepts_seven_verified_claims_without_claiming_high_quality():
+    sources = [
+        {
+            "sourceId": f"delivery-{index}",
+            "citationKey": f"S{index}",
+            "title": f"Delivery source {index}",
+            "url": f"https://delivery-{index}.example/research",
+            "host": f"delivery-{index}.example",
+            "selectedForEvidence": True,
+            "retrievedAt": "2026-08-25T00:00:00Z",
+            "contentChars": 6000,
+            "readEvidence": {
+                "verified": True,
+                "contentChars": 6000,
+                "contentSha256": hashlib.sha256(f"delivery-{index}".encode()).hexdigest(),
+                "retrievedAt": "2026-08-25T00:00:00Z",
+            },
+        }
+        for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)
+    ]
+    agent_pack = _high_quality_architect_pack(
+        question="bounded seven claim delivery",
+        source_matrix=sources,
+    )
+    merged = research_module._merge_web_research_architect_agent_pack(
+        {
+            "sourceUrls": sources,
+            "confidence": "medium",
+            "asOf": "2026-08-25T00:00:00Z",
+            "_sourceTexts": _test_source_text_map(sources),
+        },
+        agent_pack,
+        question="bounded seven claim delivery",
+    )
+    payload = {
+        "question": "bounded seven claim delivery",
+        "freshness": "current",
+        "reviewDecision": "accept",
+        "answer": merged["answer"],
+        "sourceUrls": sources,
+        "claimTable": merged["claimTable"][:-1],
+        "criticalMissingEvidence": [],
+        "asOf": merged["asOf"],
+    }
+
+    delivery_issues = [
+        issue
+        for issue in research_module._architect_delivery_quality_issues(payload)
+        if issue != "independent_semantic_review_not_accepted"
+    ]
+    target_issues = research_module.research_high_quality_issues(payload)
+
+    assert delivery_issues == []
+    assert f"target_claim_depth_not_met:{research_module.TARGET_RESEARCH_CLAIM_COUNT}" in target_issues
 
 
 def test_web_research_architect_merge_keeps_the_exact_reviewed_read_receipts():

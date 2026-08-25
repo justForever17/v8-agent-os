@@ -1,7 +1,9 @@
 import type {
     ArtifactWorkbenchDocumentRef,
     McpAppViewRef,
+    RuntimeActivityWorkbenchDocumentRef,
     SessionOverviewWorkbenchDocumentRef,
+    SessionRuntimeId,
     SubagentActivityWorkbenchDocumentRef,
     UiAppWorkbenchDocumentRef,
     WorkbenchDocumentCapability as SharedWorkbenchDocumentCapability,
@@ -11,6 +13,7 @@ import type {
     WorkbenchMode as SharedWorkbenchMode,
     WorkspaceFileWorkbenchDocumentRef,
 } from "@v8/session-realtime";
+import { normalizeRuntimeId as normalizeSharedRuntimeId } from "@v8/session-realtime";
 
 import type { RuntimeArtifact } from "@/lib/artifacts";
 import { inferArtifactCardType } from "@/lib/artifacts";
@@ -21,6 +24,7 @@ export type WorkbenchDocumentStatus = SharedWorkbenchDocumentStatus;
 export type WorkbenchDocumentCapability = SharedWorkbenchDocumentCapability;
 export type SessionOverviewWorkbenchDocument = SessionOverviewWorkbenchDocumentRef;
 export type SubagentActivityWorkbenchDocument = SubagentActivityWorkbenchDocumentRef;
+export type RuntimeActivityWorkbenchDocument = RuntimeActivityWorkbenchDocumentRef;
 export type WorkspaceFileWorkbenchDocument = WorkspaceFileWorkbenchDocumentRef;
 export type ArtifactWorkbenchDocument = Omit<ArtifactWorkbenchDocumentRef, "subjectRef"> & {
     subjectRef: ArtifactWorkbenchDocumentRef["subjectRef"] & { sessionId: string };
@@ -80,6 +84,7 @@ export type WorkbenchTab = {
 const DOCUMENT_KINDS = new Set<WorkbenchDocument["kind"]>([
     "session_overview",
     "subagent_activity",
+    "runtime_activity",
     "workspace_file",
     "artifact",
     "ui_app",
@@ -158,6 +163,12 @@ export function normalizeWorkbenchDocument(value: unknown): WorkbenchDocument | 
         const delegationId = stringOf(subjectRef.delegationId || subjectRef.delegation_id);
         if (!sessionId || !delegationId || renderer !== "subagent_activity") return null;
         return { ...base, kind, renderer: "subagent_activity", subjectRef: { sessionId, delegationId } };
+    }
+    if (kind === "runtime_activity") {
+        const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
+        const runtimeId = normalizeSharedRuntimeId(stringOf(subjectRef.runtimeId || subjectRef.runtime_id));
+        if (!sessionId || !runtimeId || renderer !== "runtime_activity") return null;
+        return { ...base, kind, renderer: "runtime_activity", subjectRef: { sessionId, runtimeId } };
     }
     if (kind === "workspace_file") {
         const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
@@ -251,6 +262,23 @@ export function createSubagentActivityDocument(input: {
         status: "ready",
         capabilities: ["read", "focus"],
         subjectRef: { sessionId: input.sessionId, delegationId: input.delegationId },
+    };
+}
+
+export function createRuntimeActivityDocument(input: {
+    sessionId: string;
+    runtimeId: SessionRuntimeId;
+    title: string;
+}): RuntimeActivityWorkbenchDocument {
+    return {
+        kind: "runtime_activity",
+        documentId: `runtime-activity:${input.sessionId}:${input.runtimeId}`,
+        title: input.title,
+        renderer: "runtime_activity",
+        lifecycle: "session",
+        status: "ready",
+        capabilities: ["read", "focus"],
+        subjectRef: { sessionId: input.sessionId, runtimeId: input.runtimeId },
     };
 }
 

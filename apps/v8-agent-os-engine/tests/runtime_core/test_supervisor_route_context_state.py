@@ -69,3 +69,14 @@ def test_supervisor_initial_state_preserves_context_session_refs():
     assert state["context_session_refs"] == refs
     assert state["contextSessionRefs"] == refs
     assert state["current_route_context"]["contextSessionRefs"] == refs
+
+
+def test_supervisor_initial_state_can_clear_stale_runtime_dispatch_status():
+    state = SupervisorAgentRunner().create_state(
+        [HumanMessage(content="new run")],
+        current_route_context={"runId": "run-new"},
+        runtime_dispatch_status={},
+    )
+
+    assert "runtime_dispatch_status" in state
+    assert state["runtime_dispatch_status"] == {}

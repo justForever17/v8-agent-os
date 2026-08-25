@@ -879,7 +879,12 @@ class UiPatchService:
             port = int(match.group("port") or 0)
             if not 1 <= port <= 65535:
                 continue
-            candidates.append(f"http://127.0.0.1:{port}")
+            host = str(match.group("host") or "").lower()
+            if host == "0.0.0.0":
+                host = "127.0.0.1"
+            elif host in {"[::]", "::1"}:
+                host = "[::1]"
+            candidates.append(f"http://{host}:{port}")
         return list(dict.fromkeys(candidates))
 
     @staticmethod
@@ -898,20 +903,26 @@ class UiPatchService:
         project = self.inspect_project(session_id=session_id, project_path=project_path)
         root, _ = self._resolve_project_root(session_id, project_path)
         authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=session_id)
-        from core.client_terminal_broker import create_terminal_session, send_terminal_input, read_terminal_session, terminate_terminal_session
+        from core.client_terminal_broker import (
+            create_managed_command_session,
+            read_terminal_session,
+            terminate_terminal_session,
+        )
 
-        terminal = create_terminal_session(
+        command = str(project["devCommand"])
+        terminal = create_managed_command_session(
+            command=command,
             cwd=str(root),
             conversation_id=str(session_id),
             workspace_id=str(getattr(authority, "workspace_id", "") or "") or None,
             project_id=str(getattr(authority, "project_id", "") or "") or None,
+            profile_reason="ui_patch_project_dev",
+            timeout_seconds=PREVIEW_SESSION_TTL_SECONDS,
         )
         terminal_id = str(terminal.get("sessionId") or "").strip()
         if not terminal_id:
             raise RuntimeError("Project terminal session could not be created")
-        command = str(project["devCommand"])
         try:
-            send_terminal_input(terminal_id, command + ("\r" if os.name == "nt" else "\n"))
             deadline = time.monotonic() + PROJECT_DEV_START_TIMEOUT_SECONDS
             output_parts: list[str] = []
             while time.monotonic() < deadline:

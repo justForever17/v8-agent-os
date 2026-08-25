@@ -243,6 +243,8 @@ class EngineeringLaneService:
         normalized_mode = self.normalize_mode(mode)
         root = Path(str((workspace_descriptor or {}).get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())).expanduser()
         repo = self._repo_brief(root)
+        project = self._manifest_summary(root)
+        project_detected = bool(project.get("manifests"))
         signals = self._detect_code_signals(user_query)
         if not cfg.get("enabled", True):
             return {
@@ -251,6 +253,7 @@ class EngineeringLaneService:
                 "matched": False,
                 "signals": signals,
                 "repoDetected": bool(repo.get("repoDetected")),
+                "projectDetected": project_detected,
                 "reason": "engineering_lane_disabled",
             }
         if normalized_mode == "off":
@@ -260,6 +263,7 @@ class EngineeringLaneService:
                 "matched": bool(signals),
                 "signals": signals,
                 "repoDetected": bool(repo.get("repoDetected")),
+                "projectDetected": project_detected,
                 "reason": "request_override_off",
             }
         if normalized_mode == "force":
@@ -269,7 +273,8 @@ class EngineeringLaneService:
                 "matched": True,
                 "signals": signals or ["force"],
                 "repoDetected": bool(repo.get("repoDetected")),
-                "workspaceMode": "repo" if repo.get("repoDetected") else "project_creation_workspace",
+                "projectDetected": project_detected,
+                "workspaceMode": "repo" if repo.get("repoDetected") else ("project_workspace" if project_detected else "project_creation_workspace"),
                 "reason": "request_override_force",
             }
 
@@ -281,6 +286,7 @@ class EngineeringLaneService:
                 "matched": bool(signals),
                 "signals": signals,
                 "repoDetected": bool(repo.get("repoDetected")),
+                "projectDetected": project_detected,
                 "reason": "config_trigger_off",
             }
         if trigger_mode == "force":
@@ -290,15 +296,19 @@ class EngineeringLaneService:
                 "matched": True,
                 "signals": signals or ["config_force"],
                 "repoDetected": bool(repo.get("repoDetected")),
+                "projectDetected": project_detected,
+                "workspaceMode": "repo" if repo.get("repoDetected") else ("project_workspace" if project_detected else "project_creation_workspace"),
                 "reason": "config_trigger_force",
             }
 
         project_creation_workspace = "project_creation_candidate" in signals
-        active = bool(signals) and (bool(repo.get("repoDetected")) or project_creation_workspace)
+        active = bool(signals) and (bool(repo.get("repoDetected")) or project_detected or project_creation_workspace)
         reason = "engineering_signals_and_repo" if active and repo.get("repoDetected") else "no_engineering_signal_or_repo"
+        if active and project_detected and not repo.get("repoDetected"):
+            reason = "engineering_signals_and_project_workspace"
         if active and project_creation_workspace and not repo.get("repoDetected"):
             reason = "project_creation_workspace"
-        if signals and not repo.get("repoDetected"):
+        if signals and not repo.get("repoDetected") and not project_detected:
             reason = "project_creation_workspace" if project_creation_workspace else "engineering_signals_without_repo_supervisor_route_choice"
         return {
             "mode": normalized_mode,
@@ -306,7 +316,13 @@ class EngineeringLaneService:
             "matched": bool(signals),
             "signals": signals,
             "repoDetected": bool(repo.get("repoDetected")),
-            "workspaceMode": "project_creation_workspace" if project_creation_workspace and not repo.get("repoDetected") else ("repo" if repo.get("repoDetected") else "unknown"),
+            "projectDetected": project_detected,
+            "projectMarkers": [str(item.get("path") or "") for item in list(project.get("manifests") or [])[:12]],
+            "workspaceMode": (
+                "repo"
+                if repo.get("repoDetected")
+                else ("project_workspace" if project_detected else ("project_creation_workspace" if project_creation_workspace else "unknown"))
+            ),
             "reason": reason,
         }
 
@@ -594,7 +610,11 @@ class EngineeringLaneService:
         elif normalized_mode == "off":
             expected_active = False
         else:
-            expected_active = bool(trigger.get("matched")) and bool(trigger.get("repoDetected"))
+            expected_active = bool(trigger.get("matched")) and bool(
+                trigger.get("repoDetected")
+                or trigger.get("projectDetected")
+                or trigger.get("workspaceMode") == "project_creation_workspace"
+            )
 
         scenarios = [
             scenario(
@@ -636,8 +656,8 @@ class EngineeringLaneService:
                     ),
                     check(
                         "repo_detected_when_active",
-                        "pass" if (not bool(trigger.get("active")) or bool(workspace_scope["repoDetected"])) else "warning",
-                        "Active engineering mode should normally have a detected repo; no-repo is allowed but diagnostic.",
+                        "pass" if (not bool(trigger.get("active")) or bool(workspace_scope["repoDetected"]) or bool(trigger.get("projectDetected"))) else "warning",
+                        "Active engineering mode should have either Git truth or an existing project manifest; project creation remains diagnostic.",
                         workspace_scope,
                     ),
                 ],

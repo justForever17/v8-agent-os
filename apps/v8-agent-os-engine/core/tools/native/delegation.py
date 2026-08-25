@@ -351,6 +351,29 @@ def _handoff_recovery_requirements(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _delegation_task_required_native_tools(task: dict[str, Any]) -> set[str]:
+    """Return native tools explicitly required by a typed task contract."""
+
+    context = dict(task.get("context") or {}) if isinstance(task.get("context"), dict) else {}
+    required: set[str] = set()
+    def _values(value: Any) -> list[Any]:
+        return list(value) if isinstance(value, (list, tuple, set)) else [value]
+
+    command_values = [
+        task.get("verificationCommand"),
+        task.get("verification_command"),
+        context.get("verificationCommand"),
+        context.get("verification_command"),
+        *_values(task.get("requiredCommands") or task.get("required_commands")),
+        *_values(context.get("requiredCommands") or context.get("required_commands")),
+    ]
+    if any(str(value or "").strip() for value in command_values):
+        required.add("run_system_command")
+    if any(str(value or "").strip() for value in list(task.get("readSet") or [])):
+        required.add("read_native_file")
+    return required
+
+
 def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep injected-handoff review work out of unrelated workspace tools."""
 
@@ -370,6 +393,7 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
             or context.get("handoffUsage")
         )
         read_only = bool(context.get("readOnly") or context.get("noSideEffect") or item.get("readOnly"))
+        required_native_tools = _delegation_task_required_native_tools(item)
         recovery_requirements = _handoff_recovery_requirements(context)
         if (
             handoff_evidence
@@ -377,6 +401,7 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
             and not read_set
             and not write_set
             and not allowed_tools
+            and not required_native_tools
             and tool_mode in {"", "default", "none"}
         ):
             forbidden_tools = _unique_handoff_values(
@@ -1044,6 +1069,38 @@ def _active_collaborator_summaries(
             }
         )
     return summaries
+
+
+def _delegation_task_has_parallel_peer(tasks: list[dict[str, Any]], current_index: int) -> bool:
+    task_ids = [
+        str(task.get("taskBriefId") or task.get("taskId") or f"task-{index + 1}").strip()
+        for index, task in enumerate(tasks)
+    ]
+    dependencies: dict[str, set[str]] = {}
+    for index, task in enumerate(tasks):
+        raw = task.get("dependencies") or task.get("dependency") or task.get("dependsOn") or []
+        values = raw if isinstance(raw, list) else [raw]
+        dependencies[task_ids[index]] = {str(item or "").strip() for item in values if str(item or "").strip()}
+
+    def ancestors(task_id: str) -> set[str]:
+        result: set[str] = set()
+        pending = list(dependencies.get(task_id) or set())
+        while pending:
+            dependency = pending.pop()
+            if dependency in result:
+                continue
+            result.add(dependency)
+            pending.extend(dependencies.get(dependency) or set())
+        return result
+
+    current_id = task_ids[current_index]
+    current_ancestors = ancestors(current_id)
+    for peer_id in task_ids:
+        if peer_id == current_id:
+            continue
+        if peer_id not in current_ancestors and current_id not in ancestors(peer_id):
+            return True
+    return False
 
 
 # --- Background Command Manager ---
@@ -2743,6 +2800,7 @@ def delegation_broker(
                     agent_id=target_id,
                 )
                 managed_workspace: dict[str, Any] | None = None
+                parallel_dispatch = _delegation_task_has_parallel_peer(normalized_tasks, index)
                 try:
                     managed_workspace = prepare_delegated_engineering_workspace(
                         base_state=base_state,
@@ -2750,9 +2808,9 @@ def delegation_broker(
                         delegation_id=delegation_id_value,
                         current_depth=current_depth,
                         runtime_context=runtime_context,
-                        parallel_dispatch=len(normalized_tasks) > 1,
+                        parallel_dispatch=parallel_dispatch,
                         allow_parallel_direct_fallback=bool(
-                            len(normalized_tasks) > 1
+                            parallel_dispatch
                             and not workset_decision.get("worksetConflictGroup")
                         ),
                     )

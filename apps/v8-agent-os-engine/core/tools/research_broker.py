@@ -9,11 +9,13 @@ import time
 import uuid
 import concurrent.futures
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import requests
@@ -98,6 +100,41 @@ _RESEARCH_ARCHITECT_SOURCE_TEXT_CHARS = 32_000
 _RESEARCH_ARCHITECT_EVIDENCE_CANDIDATE_COUNT = 6
 _RESEARCH_ARCHITECT_PLAN_MAX_TOKENS = 4_000
 _RESEARCH_ARCHITECT_QUERY_PLAN_MAX_TOKENS = 3_200
+
+
+_RESEARCH_PROGRESS_REPORTER: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "research_progress_reporter",
+    default=None,
+)
+
+
+@contextmanager
+def bind_research_progress_reporter(
+    reporter: Callable[[dict[str, Any]], None] | None,
+) -> Iterator[None]:
+    """Bind a managed-episode progress sink without changing the public tool schema."""
+
+    token = _RESEARCH_PROGRESS_REPORTER.set(reporter)
+    try:
+        yield
+    finally:
+        _RESEARCH_PROGRESS_REPORTER.reset(token)
+
+
+def _report_research_progress(**payload: Any) -> None:
+    reporter = _RESEARCH_PROGRESS_REPORTER.get()
+    if reporter is None:
+        return
+    compact = {
+        str(key): value
+        for key, value in payload.items()
+        if value not in (None, "", [], {})
+    }
+    try:
+        reporter(compact)
+    except Exception:
+        # Product progress must never alter Research evidence or retry truth.
+        return
 _RESEARCH_ARCHITECT_QUERY_PLAN_TIMEOUT_SECONDS = 60
 _RESEARCH_ARCHITECT_DECISION_MAX_TOKENS = 1_600
 _RESEARCH_ARCHITECT_DECISION_TIMEOUT_SECONDS = 28
@@ -1194,7 +1231,18 @@ def _research_source_excerpt(text: Any, query: Any, *, limit: int = _RESEARCH_SO
             if visible_variant != normalized and visible_variant not in terms:
                 terms.append(visible_variant)
     for run in re.findall(r"[\u4e00-\u9fff]{2,}", raw_query):
-        candidates = [run] if len(run) <= 8 else [run[index : index + 4] for index in range(0, len(run) - 3, 2)]
+        if len(run) <= 8:
+            candidates = [run]
+        else:
+            # Chinese pages often omit the query's surrounding grammar. For
+            # example, ``每日饮水量`` may appear in the body only as ``饮水``.
+            # Put two-character noun anchors ahead of the wider context windows
+            # so they survive the bounded query-term budget.
+            candidates = [run[index : index + 2] for index in range(len(run) - 1)]
+            candidates.extend(
+                run[index : index + 4]
+                for index in range(0, len(run) - 3, 2)
+            )
         for candidate in candidates:
             if candidate not in terms:
                 terms.append(candidate)
@@ -1248,10 +1296,12 @@ def _research_source_excerpt(text: Any, query: Any, *, limit: int = _RESEARCH_SO
 
     separator_text = "\n\n[... query-focused excerpt ...]\n\n"
     selected_intervals: list[tuple[int, int]] = []
-    # Structural anchors receive budget before the page head and generic term
-    # matches. The selected windows are sorted only after admission, so a long
-    # preamble cannot consume the budget before a late Article or Annex.
-    for interval in [*anchor_intervals, (0, head_chars), *generic_intervals]:
+    # Query matches are evidence; the page head is only general context. Admit
+    # structured and generic query windows first, then retain as much of the
+    # head as the remaining budget allows. This prevents a long navigation or
+    # introduction block from clipping the numeric clause immediately before
+    # a late matching noun.
+    for interval in [*anchor_intervals, *generic_intervals, (0, head_chars)]:
         candidate_intervals = merge_intervals([*selected_intervals, interval])
         candidate_chars = sum(end - start for start, end in candidate_intervals)
         candidate_chars += max(0, len(candidate_intervals) - 1) * len(separator_text)
@@ -4497,6 +4547,14 @@ def _architect_evidence_candidates(source: dict[str, Any], question: str, *, lim
             re.IGNORECASE,
         )
     )
+    numeric_fact_requested = bool(
+        re.search(
+            r"\b(?:amount|quantity|dose|range|threshold|limit|numeric|daily|per\s+day)\b|"
+            r"(?:数值|数量|摄入量|饮水量|推荐量|范围|阈值|每天|每日|毫升|千克|公斤|克)",
+            ranking_question,
+            re.IGNORECASE,
+        )
+    )
     focus_patterns: list[str] = []
     if re.search(
         r"\b(?:windows|powershell|wsl|install(?:ation|er|s|ed|ing)?|setup|runtime|"
@@ -4733,6 +4791,27 @@ def _architect_evidence_candidates(source: dict[str, Any], question: str, *, lim
                 )
                 if focus_hits:
                     relevance += min(120, focus_hits * 35)
+                numeric_unit_fact = bool(
+                    re.search(
+                        r"\d+(?:[.,]\d+)?\s*(?:[-~～–—至]\s*\d+(?:[.,]\d+)?)?\s*"
+                        r"(?:%|ml|l|mg|kg|g|毫升|升|毫克|千克|公斤|克|岁|人|天|日)\b",
+                        segment,
+                        re.IGNORECASE,
+                    )
+                )
+                if numeric_fact_requested and numeric_unit_fact:
+                    # A query asking for an amount/range needs the operative
+                    # numeric clause, not another title or background match.
+                    # Exact-excerpt verification still decides whether the
+                    # model may cite the selected segment.
+                    relevance += 100
+                    if re.search(
+                        r"\b(?:at\s+least|at\s+most|per\s+day|daily|recommended?)\b|"
+                        r"(?:至少|至多|每天|每日|建议|推荐)",
+                        segment,
+                        re.IGNORECASE,
+                    ):
+                        relevance += 35
                 if command_segment_pattern.search(segment):
                     # Commands are easy to lose when a page uses one large
                     # fenced block. Prefer a complete command over a nearby
@@ -6530,6 +6609,27 @@ def _architect_exact_excerpt_source_fact(
             ):
                 continue
             ends_as_sentence = fact.endswith((".", "。", "!", "！"))
+            chinese_numeric_measure_fact = bool(
+                not ends_as_sentence
+                and re.search(r"[\u4e00-\u9fff]", fact)
+                and re.search(
+                    r"\b(?:amount|quantity|dose|range|threshold|limit|numeric|daily|per\s+day)\b|"
+                    r"(?:数值|数量|摄入量|饮水量|推荐量|范围|阈值|每天|每日|毫升|千克|公斤|克)",
+                    candidate_question,
+                    re.IGNORECASE,
+                )
+                and re.search(
+                    r"\d+(?:[.,]\d+)?\s*(?:[-~～–—至]\s*\d+(?:[.,]\d+)?)?\s*"
+                    r"(?:%|ml|l|mg|kg|g|毫升|升|毫克|千克|公斤|克|岁|人|天|日)\b",
+                    fact,
+                    re.IGNORECASE,
+                )
+                and re.search(
+                    r"(?:每天|每日|每人|成年人|成人|摄入|饮水|建议|推荐|至少|至多|达到|范围)",
+                    fact,
+                    re.IGNORECASE,
+                )
+            )
             english_legal_clause = bool(
                 not ends_as_sentence
                 and ends_with_clause_colon
@@ -6564,6 +6664,10 @@ def _architect_exact_excerpt_source_fact(
                 and (
                     english_legal_clause
                     or english_decision_fact
+                    # Evidence candidate generation removes terminal Chinese
+                    # punctuation. Keep a complete quantitative clause atomic
+                    # when the facet explicitly asks for that measurement.
+                    or chinese_numeric_measure_fact
                     or (
                         re.search(r"[\u4e00-\u9fff]", fact)
                         and factual_predicate.search(fact)
@@ -14523,6 +14627,13 @@ def _invoke_web_research_architect_staged(
     per_call_timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
+    _report_research_progress(
+        stage="evidence_plan",
+        status="active",
+        summary="正在建立证据与结论的对应关系",
+        toolName="research_architect",
+        nodeId="research-evidence-plan",
+    )
     total_budget = max(5, int(timeout_seconds or 0))
     configured_call_timeout = (
         _as_int(per_call_timeout_seconds, 0)
@@ -14770,11 +14881,6 @@ def _invoke_web_research_architect_staged(
         TARGET_RESEARCH_CLAIM_COUNT
         if normal_target_mode
         else MIN_RESEARCH_CLAIM_COUNT
-    )
-    required_answer_chars = (
-        TARGET_RESEARCH_ANSWER_CHARS
-        if normal_target_mode
-        else MIN_RESEARCH_ANSWER_CHARS
     )
     plan_claim_upper = min(
         _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
@@ -16355,6 +16461,13 @@ def _invoke_web_research_architect_staged(
             )
 
     if plan is None or plan_candidate is None:
+        _report_research_progress(
+            stage="evidence_plan",
+            status="failed",
+            summary="证据计划未能通过结构校验",
+            toolName="research_architect",
+            nodeId="research-evidence-plan",
+        )
         return {
             "_agentError": "architect_evidence_plan_unavailable",
             "_architectMode": "full_synthesis",
@@ -16364,6 +16477,14 @@ def _invoke_web_research_architect_staged(
             "_planAttempts": plan_attempts[-6:],
             "_contextPreparations": context_preparations[-24:],
         }
+
+    _report_research_progress(
+        stage="evidence_plan",
+        status="completed",
+        summary=f"证据计划已锁定 {len(verified_claims)} 条结论",
+        toolName="research_architect",
+        nodeId="research-evidence-plan",
+    )
 
     plan["_planAttempts"] = plan_attempts[-6:]
 
@@ -16691,7 +16812,8 @@ def _invoke_web_research_architect_staged(
         "已登记且其全部 premise 明确支持这一关系。"
         "来源摘录只有月日而没有年份时，必须明确写‘来源未标明年份’，不得补成当前年份、2026 或其他年份，"
         "也不得把这条未定年事实单独当作当前选型依据。"
-        "五个来源和三千字只是拒收线；正常交付必须有足够深度、差异、限制、时效证据和可执行结论，禁止重复凑字。"
+        f"{MIN_RESEARCH_SOURCE_COUNT} 个来源和 {MIN_RESEARCH_ANSWER_CHARS} 个有效字只是拒收线；"
+        "正常交付必须有足够深度、差异、限制、时效证据和可执行结论，禁止重复凑字。"
         "QUESTION 含多个 [facet-id] 时，正文必须逐项实质回答每个 facet，并在对应内容单元引用支持该 facet 的来源。"
         "QUESTION 含 Deliverable requirements/交付要求时，必须在正文中完成这些输出目标；它们只综合已验证证据，"
         "不得被误当成需要另行搜索的新事实，也不得凭空增加行动建议。"
@@ -16715,12 +16837,37 @@ def _invoke_web_research_architect_staged(
             "digest": research_runtime_prompt_digest(writer_system_prompt),
         },
     }
+    verified_citation_keys = {
+        _safe_text(support.get("citationKey")).strip("[]")
+        for claim in verified_claims
+        for support in list(claim.get("supportingSources") or [])
+        if isinstance(support, dict) and _safe_text(support.get("citationKey"))
+    }
+    writer_required_claim_count = max(
+        MIN_RESEARCH_CLAIM_COUNT,
+        min(required_claim_count, len(verified_claims)),
+    )
+    writer_required_source_count = max(
+        MIN_RESEARCH_SOURCE_COUNT,
+        min(required_source_count, len(verified_citation_keys)),
+    )
+    delivery_target_min_chars = max(
+        MIN_RESEARCH_ANSWER_CHARS,
+        min(
+            TARGET_RESEARCH_ANSWER_CHARS,
+            600 + len(verified_claims) * 260 + max(1, len(required_plan_facet_ids)) * 180,
+        ),
+    )
+    delivery_target_max_chars = min(
+        _RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS,
+        max(delivery_target_min_chars + 800, int(delivery_target_min_chars * 1.5)),
+    )
     writer_prompt = (
         f"用与 QUESTION 相同的主要语言撰写详细 Markdown 答案。正常目标是去空白后 "
-        f"{_RESEARCH_ARCHITECT_IDEAL_ANSWER_MIN_CHARS}-{_RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS} 个有效 Unicode 字符；"
-        f"本次可交付下限是 {required_answer_chars} 个有效字符，不得重复凑字。"
+        f"{delivery_target_min_chars}-{delivery_target_max_chars} 个有效 Unicode 字符；"
+        f"本次可交付下限是 {MIN_RESEARCH_ANSWER_CHARS} 个有效字符，不得重复凑字。"
         f"答案不得超过 {_MAX_RESEARCH_VISIBLE_ANSWER_CHARS} 字。先给直接结论，再逐层回答问题；至少形成 "
-        f"{required_claim_count} 个有实质内容的证据单元，并让至少 {required_source_count} 个不同来源分别出现在相关段落的 [S#] 引用中。"
+        f"{writer_required_claim_count} 个有实质内容的证据单元，并让至少 {writer_required_source_count} 个不同来源分别出现在相关段落的 [S#] 引用中。"
         "必须明确 as-of 时点，区分来源直接事实、跨来源综合推论、冲突或限制；结尾列出实际使用的来源标题、URL、日期/版本。"
         "只输出答案正文，不要 JSON、不要代码围栏。完成全部正文和来源列表后，最后单独输出完成标记 "
         f"{_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\nQUESTION: {question}"
@@ -16764,14 +16911,9 @@ def _invoke_web_research_architect_staged(
             "criticalMissingEvidence": [],
             "asOf": verified_plan["asOf"],
         }
-        quality_check = (
-            research_high_quality_issues
-            if normal_target_mode
-            else research_acceptance_issues
-        )
         issues = [
             issue
-            for issue in quality_check(candidate_payload)
+            for issue in _architect_delivery_quality_issues(candidate_payload)
             if issue != "independent_semantic_review_not_accepted"
         ]
         brief_coverage = _research_brief_coverage(
@@ -17325,18 +17467,44 @@ def _invoke_web_research_architect_staged(
                 )
                 return "", revision_count, produced_section_count, errors, section_results
         with ThreadPoolExecutor(max_workers=min(2, len(pending_tasks) or 1)) as executor:
+            if pending_tasks:
+                _report_research_progress(
+                    stage="answer_writer",
+                    status="active",
+                    summary=f"正在撰写 {len(pending_tasks)} 个答案章节",
+                    toolName="research_architect",
+                    nodeId="research-answer-writer",
+                )
             futures = [executor.submit(generate_section, task) for task in pending_tasks]
             for future in as_completed(futures):
                 try:
                     sequence, section, revisions, section_errors, produced_count = future.result()
                 except Exception as exc:  # noqa: BLE001 - never deliver a partial segmented answer.
                     errors.append(f"{model_label}: segmented_section_{type(exc).__name__}: {_safe_text(exc)[:180]}")
+                    _report_research_progress(
+                        stage="answer_section",
+                        status="failed",
+                        summary="一个答案章节未能通过校验",
+                        toolName="research_architect",
+                        nodeId=f"research-answer-section:error:{len(errors)}",
+                    )
                     continue
                 errors.extend(section_errors)
                 if section:
                     section_results[sequence] = section
                     revision_count += revisions
                     produced_section_count += produced_count
+                _report_research_progress(
+                    stage="answer_section",
+                    status="completed" if section else "failed",
+                    summary=(
+                        f"答案章节 {len(section_results)}/{len(tasks)} 已完成"
+                        if section
+                        else f"答案章节 {sequence}/{len(tasks)} 未通过校验"
+                    ),
+                    toolName="research_architect",
+                    nodeId=f"research-answer-section:{sequence}",
+                )
         if len(section_results) != len(tasks):
             errors.append(f"{model_label}: segmented_section_coverage:{len(section_results)}/{len(tasks)}")
             return "", revision_count, produced_section_count, errors, section_results
@@ -17372,10 +17540,18 @@ def _invoke_web_research_architect_staged(
     def stable_segmented_profile(profile: dict[str, Any]) -> dict[str, Any]:
         nonlocal segmented_contract_profile
         if segmented_contract_profile is None:
+            section_count = int(profile.get("sectionCount") or 4)
             segmented_contract_profile = {
-                "sectionCount": int(profile.get("sectionCount") or 4),
-                "targetMinChars": int(profile.get("targetMinChars") or 0),
-                "targetMaxChars": int(profile.get("targetMaxChars") or 0),
+                "sectionCount": section_count,
+                "targetMinChars": max(
+                    700,
+                    (delivery_target_min_chars + section_count - 1) // section_count,
+                ),
+                "targetMaxChars": max(
+                    int(profile.get("targetMaxChars") or 0),
+                    1_100,
+                    (delivery_target_max_chars + section_count - 1) // section_count,
+                ),
             }
         return {
             **profile,
@@ -17897,6 +18073,14 @@ def _invoke_web_research_architect_staged(
                         32.0,
                         max(3.0, (remaining - 2.0) / max(1, remaining_modes)),
                     )
+                    review_node_id = f"research-review:{review_mode}:{review_attempt + 1}"
+                    _report_research_progress(
+                        stage=f"{review_mode}_review",
+                        status="active",
+                        summary="正在进行语义复核" if review_mode == "semantic" else "正在进行对抗性复核",
+                        toolName="research_architect",
+                        nodeId=review_node_id,
+                    )
                     review, review_error = invoke_independent_review(
                         candidate,
                         candidate_answer,
@@ -17910,6 +18094,13 @@ def _invoke_web_research_architect_staged(
                         retry_reason=retry_reason,
                     )
                     if review_error:
+                        _report_research_progress(
+                            stage=f"{review_mode}_review",
+                            status="failed",
+                            summary="复核调用未返回有效结构",
+                            toolName="research_architect",
+                            nodeId=review_node_id,
+                        )
                         candidate_errors.append(review_error)
                         retry_reason = review_error
                         retry_budget_available = remaining_seconds() > max(
@@ -17920,6 +18111,13 @@ def _invoke_web_research_architect_staged(
                             continue
                         break
                     if not _independent_architect_review_accepts(review):
+                        _report_research_progress(
+                            stage=f"{review_mode}_review",
+                            status="failed",
+                            summary="语义复核未通过" if review_mode == "semantic" else "对抗性复核未通过",
+                            toolName="research_architect",
+                            nodeId=review_node_id,
+                        )
                         model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
                         reasons = review.get("reviewReasons") or ["independent_semantic_review_rejected"]
                         candidate_errors.append(f"{model_label}: " + ",".join(str(value) for value in reasons[:4]))
@@ -17928,6 +18126,13 @@ def _invoke_web_research_architect_staged(
                         # reviewer cannot override it.
                         return [], review, candidate
                     accepted.append((review, candidate, review_mode))
+                    _report_research_progress(
+                        stage=f"{review_mode}_review",
+                        status="completed",
+                        summary="语义复核已通过" if review_mode == "semantic" else "对抗性复核已通过",
+                        toolName="research_architect",
+                        nodeId=review_node_id,
+                    )
                     mode_accepted = True
                     break
                 if mode_accepted:
@@ -18534,12 +18739,7 @@ def _invoke_web_research_architect_staged(
         "consensusReviews": bound_consensus_reviews,
     }
     validation_payload["independentReview"] = independent_review
-    quality_check = (
-        research_high_quality_issues
-        if normal_target_mode
-        else research_acceptance_issues
-    )
-    quality_issues = quality_check(validation_payload)
+    quality_issues = _architect_delivery_quality_issues(validation_payload)
     if quality_issues:
         return {
             "_agentError": "architect_post_review_quality_gate_failed",
@@ -20339,8 +20539,26 @@ def _run_search_shards(
         max_workers=max(1, min(len(shards), _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS))
     )
     try:
-        futures = {
-            executor.submit(
+        futures: dict[Any, int] = {}
+        for index, shard in enumerate(shards):
+            query = _safe_text(shard.get("evidenceQuery") or shard.get("query"))
+            seed_url = _safe_text(shard.get("seedUrl"))
+            host = _host(seed_url) if seed_url else ""
+            summary = (
+                f"正在读取 {host}"
+                if host
+                else f"正在搜索：{query[:96]}"
+                if query
+                else "正在搜索可用来源"
+            )
+            _report_research_progress(
+                stage="source_search",
+                status="active",
+                summary=summary,
+                toolName="web_read" if host else "web_search",
+                nodeId=f"research-search:{read_round}:{index + 1}",
+            )
+            future = executor.submit(
                 _run_search_shard,
                 shard,
                 allowed_domains=allowed_domains,
@@ -20354,9 +20572,8 @@ def _run_search_shards(
                 read_attempt_ledger=attempt_ledger,
                 read_round=read_round,
                 cancel_event=cancel_event,
-            ): index
-            for index, shard in enumerate(shards)
-        }
+            )
+            futures[future] = index
         try:
             for future in as_completed(futures, timeout=max(_RESEARCH_TOOL_DEADLINE_MS / 1000.0, 0.1)):
                 index = futures[future]
@@ -20373,6 +20590,34 @@ def _run_search_shards(
                         "fetchedTopSources": [],
                         "errors": [str(exc) or "research_shard_failed"],
                     }
+                completed_shard = completed[index] or {}
+                readable = [
+                    dict(item)
+                    for item in list(completed_shard.get("fetchedTopSources") or [])
+                    if isinstance(item, dict)
+                    and item.get("ok") is True
+                    and _safe_text(item.get("text") or item.get("markdown") or item.get("textPreview"))
+                ]
+                if readable:
+                    for source_index, source in enumerate(readable[:3], start=1):
+                        source_url = _safe_text(source.get("finalUrl") or source.get("url"))
+                        source_host = _host(source_url)
+                        source_title = _safe_text(source.get("title"))[:88]
+                        _report_research_progress(
+                            stage="source_read",
+                            status="completed",
+                            summary=f"已读取 {source_title or source_host or '一个来源'}",
+                            toolName="web_read",
+                            nodeId=f"research-read:{read_round}:{index + 1}:{source_index}",
+                        )
+                else:
+                    _report_research_progress(
+                        stage="source_search",
+                        status="failed",
+                        summary=f"该轮未读取到正文：{_safe_text(shard.get('query'))[:88] or '当前来源'}",
+                        toolName="web_search",
+                        nodeId=f"research-search-result:{read_round}:{index + 1}",
+                    )
         except TimeoutError:
             timed_out = True
             cancel_event.set()
@@ -20399,6 +20644,13 @@ def _run_search_shards(
                         recommended_next_action="Use partial evidence, narrow the query, or run another focused research pass.",
                     ).get("toolExecution"),
                 }
+                _report_research_progress(
+                    stage="source_search",
+                    status="failed",
+                    summary="来源检索超过本轮时限",
+                    toolName="web_search",
+                    nodeId=f"research-search-timeout:{read_round}:{index + 1}",
+                )
     finally:
         if timed_out:
             cancel_event.set()
@@ -23056,6 +23308,12 @@ def _architect_model_failure_without_evidence_gap(model_synthesis: dict[str, Any
     return reason != "architect_evidence_candidates_insufficient"
 
 
+def _architect_delivery_quality_issues(payload: dict[str, Any]) -> list[str]:
+    """Keep normal quality targets diagnostic instead of turning them into refusal."""
+
+    return research_acceptance_issues(payload)
+
+
 def _research_loop_report(question: str, shards: list[dict[str, Any]], *, source_policy: str) -> dict[str, Any]:
     covered_claims: list[str] = []
     rejected_sources: list[dict[str, Any]] = []
@@ -24546,6 +24804,13 @@ def research_broker(
     )
     query_plan_state["recentDiscoverySeedCount"] = len(recent_discovery_seeds)
     read_attempt_ledger = _ResearchReadAttemptLedger(question=clean_question)
+    _report_research_progress(
+        stage="discovery",
+        status="active",
+        summary=f"开始并行检索 {len(shards)} 个来源方向",
+        toolName="web_search",
+        nodeId="research-discovery:start",
+    )
     completed_shards, research_loop_state = _run_research_loop(
         question=clean_question,
         initial_shards=shards,
@@ -24564,6 +24829,14 @@ def research_broker(
         "fullSynthesisAttempts": 0,
         "gapReviewAttempts": 0,
     }
+    readable_source_count = _read_source_count(completed_shards, question=clean_question)
+    _report_research_progress(
+        stage="synthesis",
+        status="active",
+        summary=f"已读取 {readable_source_count} 个来源，正在整合证据",
+        toolName="research_architect",
+        nodeId="research-synthesis:start",
+    )
     bundle = _synthesize_bundle(
         question=clean_question,
         research_intent=researchIntent,
@@ -24574,6 +24847,13 @@ def research_broker(
         research_loop_state=research_loop_state,
         experience_reuse=experience_reuse,
         architect_call_state=architect_call_state,
+    )
+    _report_research_progress(
+        stage="review",
+        status="completed" if bundle.get("deliveryReady") else "active",
+        summary="调研答案已通过复核" if bundle.get("deliveryReady") else "首轮复核发现证据缺口，正在定向补查",
+        toolName="research_architect",
+        nodeId="research-review:initial",
     )
     initial_architect_pack = (
         bundle.get("finalExperiencePack")

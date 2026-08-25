@@ -14,7 +14,7 @@ RUNTIME_ROUTE_KINDS = (
 )
 
 
-def runtime_route_contract_example(kind: str = "engineering") -> dict[str, Any]:
+def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool = False) -> dict[str, Any]:
     """Return one copyable route example with stable JSON types.
 
     The values are intentionally obvious placeholders, while the object/array
@@ -24,8 +24,8 @@ def runtime_route_contract_example(kind: str = "engineering") -> dict[str, Any]:
     normalized_kind = str(kind or "engineering").strip().lower()
     if normalized_kind not in RUNTIME_ROUTE_KINDS:
         normalized_kind = "engineering"
-    write_required = normalized_kind in {"engineering", "creative_media"}
-    read_only = normalized_kind == "research"
+    effective_read_only = normalized_kind == "research" or bool(read_only and normalized_kind == "engineering")
+    write_required = normalized_kind in {"engineering", "creative_media"} and not effective_read_only
     task_id = f"{normalized_kind}-task-001"
     if normalized_kind == "research":
         research_brief_ids = ["research-domain-a", "research-domain-b"]
@@ -36,6 +36,31 @@ def runtime_route_contract_example(kind: str = "engineering") -> dict[str, Any]:
         task_briefs = []
         proof_expectations = [
             "One source-backed terminal result or explicit evidence gap per taskBriefId",
+        ]
+    elif normalized_kind == "engineering" and effective_read_only:
+        task_briefs = [
+            {
+                "taskBriefId": "engineering-read-only-verification",
+                "goal": "Perform the requested read-only inspection or verification and return current-run evidence.",
+                "context": {
+                    "verificationCommand": "<exact user-requested command when one was supplied>",
+                },
+                "writeRequired": False,
+                "readOnly": True,
+                "writeSet": [],
+                "expectedOutputs": ["Current-run command/check result with exit code, stdout, and stderr when applicable"],
+                "acceptanceContract": [
+                    "The requested read-only command or check runs in the bound workspace",
+                    "The handoff reports current-run evidence without modifying workspace files",
+                ],
+                "constraints": ["Do not install dependencies or start a persistent process"],
+                "detailRefs": [],
+                "dependencies": [],
+            },
+        ]
+        proof_expectations = [
+            "current-run command/check and outcome",
+            "no workspace file modifications",
         ]
     elif normalized_kind == "engineering":
         task_briefs = [
@@ -255,8 +280,13 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
     return guidance
 
 
-def render_runtime_route_contract(kind: str = "engineering", *, indent: int | None = 2) -> str:
-    return json.dumps(runtime_route_contract_example(kind), ensure_ascii=False, indent=indent)
+def render_runtime_route_contract(
+    kind: str = "engineering",
+    *,
+    indent: int | None = 2,
+    read_only: bool = False,
+) -> str:
+    return json.dumps(runtime_route_contract_example(kind, read_only=read_only), ensure_ascii=False, indent=indent)
 
 
 def render_runtime_route_repair_hint(

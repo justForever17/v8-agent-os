@@ -4,6 +4,7 @@ import hashlib
 
 from core.tools.research_quality import (
     MIN_RESEARCH_ANSWER_CHARS,
+    MIN_RESEARCH_CLAIM_COUNT,
     MIN_RESEARCH_SOURCE_COUNT,
     TARGET_RESEARCH_ANSWER_CHARS,
     TARGET_RESEARCH_SOURCE_COUNT,
@@ -73,9 +74,10 @@ def _accepted_payload(*, current: bool = True, source_count: int = MIN_RESEARCH_
     citations = " ".join(f"[S{index}]" for index in range(1, source_count + 1))
     answer = _detailed_answer(citations)
     claims = []
-    for index in range(1, source_count + 1):
+    for index in range(1, max(source_count, MIN_RESEARCH_CLAIM_COUNT) + 1):
+        source_index = ((index - 1) % source_count) + 1
         excerpt = (
-            f"Authoritative source {index} records a concrete fact, its operating condition, "
+            f"Authoritative source {source_index} records a concrete fact, its operating condition, "
             "and the evidence boundary used for this research conclusion."
         )
         claims.append({
@@ -83,13 +85,13 @@ def _accepted_payload(*, current: bool = True, source_count: int = MIN_RESEARCH_
             "claimType": "source_fact",
             "supportingSources": [
                 {
-                    "sourceId": f"src_{index}",
-                    "citationKey": f"S{index}",
-                    "url": f"https://source{index}.example/research",
+                    "sourceId": f"src_{source_index}",
+                    "citationKey": f"S{source_index}",
+                    "url": f"https://source{source_index}.example/research",
                 }
             ],
             "confidence": "high",
-            "evidenceExcerptKey": f"S{index}:E1",
+            "evidenceExcerptKey": f"S{source_index}:E{index}",
             "evidenceExcerpt": excerpt,
             "evidenceExcerptSha256": hashlib.sha256(excerpt.lower().encode("utf-8")).hexdigest(),
             "evidenceVerified": True,
@@ -157,7 +159,7 @@ def _rebind_review_consensus(payload: dict) -> None:
     independent_review.update(consensus_reviews[0])
 
 
-def test_research_quality_accepts_detailed_current_five_source_answer() -> None:
+def test_research_quality_accepts_detailed_current_minimum_source_answer() -> None:
     payload = _accepted_payload()
 
     assert research_bundle_is_accepted(payload)
@@ -169,8 +171,8 @@ def test_research_quality_accepts_detailed_current_five_source_answer() -> None:
     assert metrics["retrievedSourceCount"] == MIN_RESEARCH_SOURCE_COUNT
     assert metrics["readVerifiedSourceCount"] == MIN_RESEARCH_SOURCE_COUNT
     assert metrics["datedSourceCount"] == MIN_RESEARCH_SOURCE_COUNT
-    assert metrics["supportedClaimCount"] == MIN_RESEARCH_SOURCE_COUNT
-    assert metrics["evidenceVerifiedClaimCount"] == MIN_RESEARCH_SOURCE_COUNT
+    assert metrics["supportedClaimCount"] == MIN_RESEARCH_CLAIM_COUNT
+    assert metrics["evidenceVerifiedClaimCount"] == MIN_RESEARCH_CLAIM_COUNT
     assert metrics["claimSupportedSourceCount"] == MIN_RESEARCH_SOURCE_COUNT
     assert metrics["answerCitedSourceCount"] == MIN_RESEARCH_SOURCE_COUNT
     assert metrics["answerCitedContentUnitCount"] >= MIN_RESEARCH_SOURCE_COUNT
@@ -724,7 +726,7 @@ def test_research_quality_rejects_numbered_duplicates_as_distinct_claims() -> No
     issues = research_acceptance_issues(payload)
 
     assert metrics["uniqueClaimCount"] == 1
-    assert f"distinct_claim_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in issues
+    assert f"distinct_claim_floor_not_met:{MIN_RESEARCH_CLAIM_COUNT}" in issues
 
 
 def test_research_quality_distinguishes_minimum_from_high_quality() -> None:

@@ -213,6 +213,74 @@ def create_terminal_session(
     return _snapshot_for_session(terminal_id, output_delta=process.get_new_output())
 
 
+def create_managed_command_session(
+    *,
+    command: str,
+    cwd: str | None = None,
+    conversation_id: str | None = None,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+    profile_reason: str = "managed_command",
+    timeout_seconds: float | int | None = None,
+) -> dict[str, Any]:
+    """Start a governed, observable non-interactive command without allocating a PTY."""
+
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        raise RuntimeError("Managed command cannot be empty.")
+    requested_cwd = str(cwd or "").strip() or workspace_resolution_service.get_main_workspace_path()
+    binding = build_workspace_binding(
+        {
+            "runtime_kind": "chat",
+            "workspace_path": requested_cwd,
+            "workspace_id": str(workspace_id or "").strip() or None,
+            "project_id": str(project_id or "").strip() or None,
+        },
+        runtime_kind="chat",
+    )
+    if not binding.side_effects_allowed:
+        raise RuntimeError(
+            json.dumps(
+                workspace_side_effect_block_payload(
+                    binding,
+                    operation="managed_command_session",
+                    subject=normalized_command,
+                ),
+                ensure_ascii=False,
+            )
+        )
+    resolved_cwd = _resolve_cwd(str(binding.active_workspace_root))
+    terminal_id = f"term_{uuid.uuid4().hex[:12]}"
+    marker_session_id = f"{MANUAL_TERMINAL_SESSION_PREFIX}{terminal_id}"
+    reason = str(profile_reason or "managed_command").strip() or "managed_command"
+    process = BackgroundProcess(
+        normalized_command,
+        session_id=marker_session_id,
+        run_id=None,
+        interactive=False,
+        terminal_mode="pipe",
+        profile="shell",
+        profile_reason=reason,
+        cwd=str(resolved_cwd),
+        timeout_seconds=timeout_seconds,
+    )
+    process.command_id = terminal_id
+    _bg_processes[terminal_id] = process
+    created_at = _now_iso()
+    _manual_terminal_sessions[terminal_id] = {
+        "sessionId": terminal_id,
+        "commandId": terminal_id,
+        "conversationId": str(conversation_id or ""),
+        "profileId": "managed-pipe",
+        "profileLabel": "Managed command",
+        "cwd": str(resolved_cwd),
+        "status": "running",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+    }
+    return _snapshot_for_session(terminal_id, output_delta=process.get_new_output())
+
+
 def list_terminal_sessions(*, conversation_id: str | None = None) -> dict[str, Any]:
     normalized_conversation_id = str(conversation_id or "").strip()
     sessions: list[dict[str, Any]] = []

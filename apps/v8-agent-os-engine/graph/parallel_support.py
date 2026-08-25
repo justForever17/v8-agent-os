@@ -695,12 +695,13 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
         )
     if not match:
         section_match = re.search(
-            r"(?im)^\s*#{1,6}\s*(?:(?:verification|execution|验收|验证)\s+)?"
-            r"(blockers?|blocked|failed|errors?|阻塞|失败)"
-            r"(?:\s*/\s*degraded\s+handoff)?\s*$",
+            r"(?im)^\s*#{1,6}\s*[^\r\n]*?"
+            r"(blockers?|blocked|failures?|failed|errors?|阻塞|失败)"
+            r"[^\r\n]*$",
             text,
         )
         if section_match:
+            heading = section_match.group(0).strip().lower()
             section_body = text[section_match.end() :]
             next_heading = re.search(r"(?m)^\s*#{1,6}\s+", section_body)
             if next_heading:
@@ -718,7 +719,34 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
                     normalized_first_line,
                 )
             )
-            if first_line and not explicitly_empty:
+            heading_explicitly_empty = bool(
+                re.search(r"\bno\s+(?:known\s+)?(?:blockers?|failures?|errors?)\b", heading)
+                or re.search(r"无(?:阻塞|失败|错误)", heading)
+            )
+            body_reports_terminal_failure = any(
+                re.search(
+                    r"(?:\b(?:blocked|failed|failure|deferred|unable|unavailable|cannot|"
+                    r"could\s+not|did\s+not\s+run|not\s+verified)\b|"
+                    r"\bmissing\s+(?:required|expected|artifact|file|evidence|dependency|output)\b|"
+                    r"^(?:blocker|error|missing)\s*[:：]|"
+                    r"阻断|阻塞|失败|无法|未运行|未验证|未通过|缺失)",
+                    re.sub(r"^[\s>*_`~-]+", "", line).strip(),
+                    re.IGNORECASE,
+                )
+                for line in section_body.splitlines()
+                if line.strip()
+                and not re.match(
+                    r"^[\s>*_`~-]*(?:none\b|n/?a\b|no\s+|无(?:阻塞|风险|错误)?\b|暂无\b|没有\b|未发现\b)",
+                    line.strip(),
+                    re.IGNORECASE,
+                )
+            )
+            if (
+                first_line
+                and not explicitly_empty
+                and not heading_explicitly_empty
+                and body_reports_terminal_failure
+            ):
                 match = section_match
     if not match:
         match = re.search(
@@ -729,6 +757,18 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
         match = re.search(
             r"(?im)^\s*#{1,6}\s*(?:verdict|结论|验收结论)\s*(?:[:：]\s*)?\n?\s*"
             r"(?:\*\*)?(not\s+verified|failed|blocked|未通过|未验证|失败|阻塞)\b",
+            text,
+        )
+    if not match:
+        match = re.search(
+            r"(?im)^\s*(?:#{1,6}\s*)?(?:\*\*)?"
+            r"(?:verification|execution)\s+result(?:\*\*)?\s*[:：]\s*"
+            r"(?:\*\*)?(blocked|failed|error)\b",
+            text,
+        )
+    if not match:
+        match = re.search(
+            r"(?im)^\s*\[[^\]\r\n]*(执行被阻断|execution\s+blocked)[^\]\r\n]*\]\s*$",
             text,
         )
     if not match:
@@ -748,6 +788,8 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
                 "workspace_boundary_violation",
                 "workspace_command_path_violation",
                 "global_skill_mutation_violation",
+                "execution_intent_conflict",
+                "git_parallel_isolation_required",
             )
             if code in text.lower()
         ),
@@ -758,6 +800,28 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
         ),
     )
     return status, known_error
+
+
+def _subagent_governance_terminal_failure(messages: list[Any]) -> tuple[str, str] | None:
+    """Read the typed delegation terminal state before considering prose."""
+
+    for message in reversed(messages):
+        metadata = getattr(message, "additional_kwargs", None)
+        if not isinstance(metadata, dict):
+            continue
+        if "v8_delegation_status" not in metadata:
+            continue
+        status = str(metadata.get("v8_delegation_status") or "").strip().lower()
+        if status not in {"blocked", "degraded", "failed", "error"}:
+            # A later successful terminal wrapper supersedes an earlier
+            # correctable blocker from the same branch.
+            return None
+        error = str(metadata.get("v8_delegation_error") or "").strip()
+        return (
+            "failed" if status in {"failed", "error"} else "blocked",
+            error or "subagent_reported_terminal_failure",
+        )
+    return None
 
 
 def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
@@ -1207,6 +1271,87 @@ def _verification_command_text(value: Any) -> str:
     return command.strip().rstrip("。.!?").strip().strip("`'\"")
 
 
+def _verification_command_matches_exact(command: Any, required_commands: list[Any]) -> bool:
+    normalized = re.sub(r"\s+", " ", str(command or "").strip().replace("\\", "/")).casefold()
+    if not normalized:
+        return False
+    required = {
+        re.sub(r"\s+", " ", str(item or "").strip().replace("\\", "/")).casefold()
+        for item in required_commands
+        if str(item or "").strip()
+    }
+    return normalized in required
+
+
+def _normalize_exact_verification_command_invocations(
+    messages: list[Any],
+    required_commands: list[Any],
+) -> list[dict[str, Any]]:
+    """Normalize a bounded exact command before ToolNode starts a process."""
+
+    adjustments: list[dict[str, Any]] = []
+    if not required_commands:
+        return adjustments
+    for message in messages:
+        calls = getattr(message, "tool_calls", None)
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict) or str(call.get("name") or "").strip() != "run_system_command":
+                continue
+            args = _normalize_tool_call_args(call.get("args"))
+            command = str(args.get("command") or "").strip()
+            if not _verification_command_matches_exact(command, required_commands):
+                continue
+            mode = str(args.get("mode") or "auto").strip().lower()
+            raw_timeout = args.get("timeout_seconds", args.get("timeoutSeconds"))
+            try:
+                timeout_seconds = float(raw_timeout) if raw_timeout not in (None, "") else 90.0
+            except (TypeError, ValueError):
+                timeout_seconds = 90.0
+            if mode == "sync" and 0 < timeout_seconds <= 90:
+                continue
+            normalized_args = dict(args)
+            normalized_args["mode"] = "sync"
+            normalized_args["timeout_seconds"] = max(1, min(int(timeout_seconds or 90), 90))
+            normalized_args.pop("timeoutSeconds", None)
+            call["args"] = normalized_args
+            adjustments.append(
+                {
+                    "toolCallId": str(call.get("id") or "").strip(),
+                    "command": command,
+                    "fromMode": mode or "auto",
+                    "fromTimeoutSeconds": raw_timeout,
+                    "toMode": "sync",
+                    "toTimeoutSeconds": normalized_args["timeout_seconds"],
+                }
+            )
+    return adjustments
+
+
+def _verification_command_preflight_deviations(
+    messages: list[Any],
+    required_commands: list[Any],
+) -> list[dict[str, Any]]:
+    deviations: list[dict[str, Any]] = []
+    if not required_commands:
+        return deviations
+    for message in messages:
+        for call in _tool_call_dicts_from_message(message):
+            if str(call.get("name") or "").strip() != "run_system_command":
+                continue
+            args = _normalize_tool_call_args(call.get("args"))
+            command = str(args.get("command") or "").strip()
+            if command and not _verification_command_matches_exact(command, required_commands):
+                deviations.append(
+                    {
+                        "toolCallId": str(call.get("id") or "").strip(),
+                        "command": command,
+                    }
+                )
+    return deviations
+
+
 def _verification_declared_path(value: Any) -> str:
     """Normalize common task-brief labels without treating them as paths."""
 
@@ -1268,6 +1413,13 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     )
     contract_blob = "\n".join(_stringify_for_acceptance(value) for value in contract_values)
     required_commands = _texts(explicit.get("requiredCommands"))
+    for source in (task_brief, context, capsule):
+        for key in ("verificationCommand", "verification_command", "requiredCommands", "required_commands"):
+            required_commands.extend(
+                command
+                for value in _texts(source.get(key))
+                if (command := _verification_command_text(value))
+            )
     required_commands.extend(
         command
         for item in declared_read_values
@@ -1283,7 +1435,8 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     required_commands = list(dict.fromkeys(required_commands))
     if not required_commands:
         command_pattern = re.compile(
-            r"(?:执行|运行|execute|executing|run|running)\s+(?:命令\s*)?[`'\"]?"
+            r"(?:执行|运行|execute|executing|run|running)\s+"
+            r"(?:(?:via|using)\s+)?(?:命令\s*)?[`'\"]?"
             r"((?:python(?:3)?|pytest|npm|pnpm|yarn|npx|node|bun|deno|go|cargo|dotnet|gradle|mvn)\b"
             r"[^，,；;。\n\]\)）`\"']*)",
             re.IGNORECASE,
@@ -1292,6 +1445,22 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
             dict.fromkeys(
                 command
                 for match in command_pattern.finditer(contract_blob)
+                if (command := _verification_command_text(match.group(1)))
+            )
+        )
+    if not required_commands:
+        command_first_pattern = re.compile(
+            r"(?:^|[\n\"'`\[,])\s*[`'\"]?"
+            r"((?:python(?:3)?|pytest|npm|pnpm|yarn|npx|node|bun|deno|go|cargo|dotnet|gradle|mvn)\b"
+            r"[^，,；;。\n\]\)）`\"']*?)\s+"
+            r"(?:(?:is|was|must\s+be)\s+)?"
+            r"(?:executed|invoked|run|passes?|succeeds?|returns?|exits?|exit\s+code)\b",
+            re.IGNORECASE,
+        )
+        required_commands = list(
+            dict.fromkeys(
+                command
+                for match in command_first_pattern.finditer(contract_blob)
                 if (command := _verification_command_text(match.group(1)))
             )
         )
@@ -1341,8 +1510,10 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     expect_empty_stderr = bool(explicit.get("expectEmptyStderr")) or bool(
         re.search(r"stderr[^\n，,；;]{0,32}(?:为空|empty|blank|must\s+be\s+empty)", contract_blob, re.IGNORECASE)
     )
-    required_tools = _required_verification_tools(branch)
     command_targets = _texts(explicit.get("requiredCommandTargets"))
+    required_tools = _required_verification_tools(branch)
+    if required_commands or command_targets:
+        required_tools.add("run_system_command")
     if "run_system_command" in required_tools and not required_commands:
         command_targets = command_targets or read_paths
     return {
@@ -1435,7 +1606,7 @@ def _validate_required_verification_evidence(
     branch: dict[str, Any],
     delta_messages: list[Any],
 ) -> dict[str, Any] | None:
-    required_tools = _required_verification_tools(branch)
+    required_tools = set(_verification_expectations(branch)["requiredTools"])
     if not required_tools:
         return None
     _evidence, missing, mismatches = _verification_evidence_result(
@@ -2418,10 +2589,14 @@ async def _run_parallel_agent_branch(
     repeat_tool_correction_used = False
     required_child_correction_count = 0
     verification_correction_count = 0
+    verification_command_correction_count = 0
+    seen_verification_command_call_ids: set[str] = set()
     creative_evidence_correction_count = 0
     artifact_correction_count = 0
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
+    verification_expectations = _verification_expectations(branch)
+    required_verification_commands = list(verification_expectations.get("requiredCommands") or [])
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
     initial_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
     required_child_delegation = task_brief_requires_child_delegation(
@@ -2593,7 +2768,77 @@ async def _run_parallel_agent_branch(
             )
 
         result_update = getattr(result, "update", None) or {}
+        update_messages = list(result_update.get("messages") or []) if isinstance(result_update, dict) else []
+        preflight_command_deviations = (
+            _verification_command_preflight_deviations(
+                update_messages,
+                required_verification_commands,
+            )
+            if current_node == agent_id
+            else []
+        )
+        if preflight_command_deviations:
+            verification_command_correction_count += 1
+            exact_commands = json.dumps(required_verification_commands, ensure_ascii=False, separators=(",", ":"))
+            rejected_messages: list[Any] = []
+            pending_calls = [
+                call
+                for message in update_messages
+                for call in _tool_call_dicts_from_message(message)
+                if str(call.get("id") or "").strip()
+            ]
+            for pending_call in pending_calls:
+                tool_call_id = str(pending_call.get("id") or "").strip()
+                tool_name = str(pending_call.get("name") or "tool").strip() or "tool"
+                seen_verification_command_call_ids.add(tool_call_id)
+                rejected_messages.append(
+                    ToolMessage(
+                        content=(
+                            "V8OS did not execute this tool call because the batch contained a shell command that "
+                            "deviated from the exact verification contract. Reissue only the exact bounded command."
+                        ),
+                        name=tool_name,
+                        tool_call_id=tool_call_id,
+                        status="error",
+                    )
+                )
+            rejected_messages.append(
+                HumanMessage(
+                    content=(
+                        "[V8OS exact verification command preflight correction]\n"
+                        "The latest tool batch was rejected before execution; no command or sibling tool in that batch ran. "
+                        f"Your next action must be exactly one `run_system_command` call whose `command` value equals one of: {exact_commands}. "
+                        "Do not add shell variables, redirection, pipes, wrappers, probes, or alternate runners. "
+                        "Use mode='sync', timeout_seconds<=90, and preserve cwd separately."
+                    ),
+                    additional_kwargs={
+                        "v8_governance_type": "verification_command_preflight_correction",
+                        "v8_correction_attempt": verification_command_correction_count,
+                    },
+                )
+            )
+            result_update = {
+                **dict(result_update),
+                "messages": [*update_messages, *rejected_messages],
+            }
+            update_messages = list(result_update["messages"])
+        exact_command_adjustments = (
+            _normalize_exact_verification_command_invocations(
+                update_messages,
+                required_verification_commands,
+            )
+            if isinstance(result_update, dict) and current_node == agent_id and not preflight_command_deviations
+            else []
+        )
         local_state = _merge_state_update(local_state, result_update)
+        if exact_command_adjustments:
+            _publish_parallel_progress(
+                progress_callback,
+                stage="execution_normalized",
+                status="running",
+                summary=f"{branch.get('agentName') or agent_id} 的精确短验证已在执行前规范为同步命令。",
+                commandCount=len(exact_command_adjustments),
+            )
         for message in list(result_update.get("messages") or []) if isinstance(result_update, dict) else []:
             for timeline_node in _subagent_timeline_nodes_from_message(message):
                 topic = str(timeline_node.get("topic") or "").strip()
@@ -2624,6 +2869,46 @@ async def _run_parallel_agent_branch(
                     toolName=tool_name or None,
                     timelineNode=timeline_node,
                 )
+        if preflight_command_deviations:
+            delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
+            delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
+            if verification_command_correction_count > 2:
+                return delta_messages, delta_todos, {
+                    "invocationId": branch.get("invocationId"),
+                    "taskBriefId": branch.get("taskBriefId"),
+                    "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "lane": branch.get("lane") or "subagent",
+                    "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+                    "targetLabel": branch.get("agentName") or agent_id,
+                    "branchIndex": branch.get("branchIndex"),
+                    "status": "failed",
+                    "error": "verification_command_not_exact",
+                    "requiredCommands": required_verification_commands,
+                    "attemptedCommand": str(preflight_command_deviations[0].get("command") or "")[:1000],
+                    "completedAt": _now_iso(),
+                    "messageCount": len(delta_messages),
+                    "todoDeltaCount": len(delta_todos),
+                    "toolMode": agent_data.get("tool_mode"),
+                    "toolsUsed": _extract_tool_names(delta_messages),
+                    "compactTranscript": _compact_transcript(delta_messages),
+                    "localSelfCheck": "The worker ignored two pre-execution exact-command corrections; no deviating command was executed.",
+                    "acceptanceHint": "Retry only with the exact declared verification command; do not widen shell policy.",
+                }, []
+            _publish_parallel_progress(
+                progress_callback,
+                stage="discipline_corrected",
+                status="running",
+                summary=(
+                    f"{branch.get('agentName') or agent_id} 的非精确验证命令已在执行前拒绝"
+                    f"（{verification_command_correction_count}/2）。"
+                ),
+            )
+            current_node = agent_id
+            continue
         delta_messages_for_guard = list(local_state.get("messages") or [])[initial_message_count:]
         child_requests = _extract_child_delegation_requests(
             result,
@@ -2674,6 +2959,93 @@ async def _run_parallel_agent_branch(
                 "localSelfCheck": "Subagent requested child delegation through delegation_broker. The durable router must schedule the returned Send instead of swallowing the Command goto.",
                 "acceptanceHint": "Wait for the brokered child delegation result before merging or judging this branch.",
             }, child_requests
+        new_command_records = [
+            record
+            for record in _tool_execution_records(delta_messages_for_guard)
+            if record.get("tool") == "run_system_command"
+            and str(record.get("toolCallId") or "").strip()
+            and str(record.get("toolCallId") or "").strip() not in seen_verification_command_call_ids
+        ]
+        for record in new_command_records:
+            seen_verification_command_call_ids.add(str(record.get("toolCallId") or "").strip())
+        command_deviation = next(
+            (
+                record
+                for record in new_command_records
+                if required_verification_commands
+                and not _verification_command_matches_exact(
+                    record.get("command"),
+                    required_verification_commands,
+                )
+            ),
+            None,
+        )
+        if command_deviation:
+            verification_command_correction_count += 1
+            if verification_command_correction_count > 2:
+                delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
+                return delta_messages_for_guard, delta_todos, {
+                    "invocationId": branch.get("invocationId"),
+                    "taskBriefId": branch.get("taskBriefId"),
+                    "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "lane": branch.get("lane") or "subagent",
+                    "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+                    "targetLabel": branch.get("agentName") or agent_id,
+                    "branchIndex": branch.get("branchIndex"),
+                    "status": "failed",
+                    "error": "verification_command_not_exact",
+                    "requiredCommands": required_verification_commands,
+                    "attemptedCommand": str(command_deviation.get("command") or "").strip()[:1000],
+                    "completedAt": _now_iso(),
+                    "messageCount": len(delta_messages_for_guard),
+                    "todoDeltaCount": len(delta_todos),
+                    "toolMode": agent_data.get("tool_mode"),
+                    "toolsUsed": _extract_tool_names(delta_messages_for_guard),
+                    "compactTranscript": _compact_transcript(delta_messages_for_guard),
+                    "localSelfCheck": (
+                        "The verification worker ignored two exact-command corrections and continued using wrappers, "
+                        "redirection, probes, or alternate commands. Those calls are not acceptance evidence."
+                    ),
+                    "acceptanceHint": "Retry only with the exact declared verification command; do not widen shell policy.",
+                }, []
+            exact_commands = json.dumps(required_verification_commands, ensure_ascii=False, separators=(",", ":"))
+            local_state = _merge_state_update(
+                local_state,
+                {
+                    "messages": [
+                        HumanMessage(
+                            content=(
+                                "[V8OS exact verification command correction]\n"
+                                f"The last command was not executed as acceptance evidence because it deviated from the declared command: "
+                                f"{str(command_deviation.get('command') or '').strip()[:800]}. "
+                                f"Your next action must be exactly one `run_system_command` call whose `command` value equals one of: {exact_commands}. "
+                                "Do not add shell variables, redirection, pipes, cmd/powershell wrappers, path discovery, version probes, "
+                                "temporary files, or alternate runners. Preserve cwd separately in the tool argument. For a bounded test "
+                                "command use mode='sync' with timeout_seconds no greater than 90 so the ToolMessage contains the terminal exit code."
+                            ),
+                            additional_kwargs={
+                                "v8_governance_type": "verification_command_exactness_correction",
+                                "v8_correction_attempt": verification_command_correction_count,
+                            },
+                        )
+                    ]
+                },
+            )
+            _publish_parallel_progress(
+                progress_callback,
+                stage="discipline_corrected",
+                status="running",
+                summary=(
+                    f"{branch.get('agentName') or agent_id} 正在改用验收合同声明的精确验证命令"
+                    f"（{verification_command_correction_count}/2）。"
+                ),
+            )
+            current_node = agent_id
+            continue
         repeated_tool_violation: tuple[str, str] | None = None
         for message in delta_messages_for_guard:
             for call in _tool_call_dicts_from_message(message):
@@ -2784,6 +3156,14 @@ async def _run_parallel_agent_branch(
                     agent_id=agent_id,
                 )
                 if continuation_request:
+                    break
+                terminal_failure = (
+                    _subagent_governance_terminal_failure(control_messages)
+                    or _subagent_reported_terminal_failure(
+                        _subagent_result_text(control_messages)
+                    )
+                )
+                if terminal_failure:
                     break
                 if _is_creative_runtime_execution_branch(branch):
                     creative_evidence = _creative_tool_evidence(control_messages, branch=branch)
@@ -2913,9 +3293,22 @@ async def _run_parallel_agent_branch(
                             "Retry the direct worker with delegation_broker available; do not accept this result."
                         ),
                     }, []
-                verification_failure = _validate_required_verification_evidence(
+                artifact_status = _required_artifact_write_status(
                     branch=branch,
-                    delta_messages=list(local_state.get("messages") or [])[initial_message_count:],
+                    state=local_state,
+                    delta_messages=control_messages,
+                    agent_data=agent_data,
+                )
+                write_evidence_missing = bool(
+                    artifact_status and artifact_status.get("missingRequiredTool")
+                )
+                verification_failure = (
+                    None
+                    if write_evidence_missing
+                    else _validate_required_verification_evidence(
+                        branch=branch,
+                        delta_messages=list(local_state.get("messages") or [])[initial_message_count:],
+                    )
                 )
                 if verification_failure and verification_correction_count < 2:
                     verification_correction_count += 1
@@ -2932,7 +3325,8 @@ async def _run_parallel_agent_branch(
                     if "run_system_command" in missing_tools:
                         required_steps.append(
                             "Call `run_system_command` once with the exact verification command from the acceptance contract, "
-                            "using the current Active Workspace Root as cwd; require returnCode=0 and preserve stdout/stderr."
+                            "using the current Active Workspace Root as cwd and mode='sync' with timeout_seconds <= 90; "
+                            "require returnCode=0 and preserve stdout/stderr."
                         )
                     mismatches = [
                         str(item).strip()
@@ -2980,21 +3374,17 @@ async def _run_parallel_agent_branch(
                     )
                     current_node = agent_id
                     continue
-                artifact_status = _required_artifact_write_status(
-                    branch=branch,
-                    state=local_state,
-                    delta_messages=control_messages,
-                    agent_data=agent_data,
-                )
                 missing_artifacts = list((artifact_status or {}).get("missingExpectedArtifacts") or [])
-                if artifact_status and missing_artifacts:
+                missing_write_tool = bool((artifact_status or {}).get("missingRequiredTool"))
+                if artifact_status and (missing_artifacts or missing_write_tool):
                     if (
                         bool(artifact_status.get("requiredToolVisible"))
                         and artifact_correction_count < 2
                     ):
                         artifact_correction_count += 1
                         final_retry = artifact_correction_count == 2
-                        exact_paths = ", ".join(f"`{path}`" for path in missing_artifacts[:16])
+                        correction_paths = missing_artifacts or list(artifact_status.get("expectedArtifacts") or [])
+                        exact_paths = ", ".join(f"`{path}`" for path in correction_paths[:16])
                         local_state = _merge_state_update(
                             local_state,
                             {
@@ -3002,7 +3392,7 @@ async def _run_parallel_agent_branch(
                                     HumanMessage(
                                         content=(
                                             "[V8OS delegated artifact correction]\n"
-                                            "The delegated task is write-required, but its declared artifact is still missing. "
+                                            "The delegated task is write-required, but successful write evidence is still missing. "
                                             f"You MUST now call the real `write_native_file` tool for these exact workspace paths: {exact_paths}. "
                                             + (
                                                 "This is the second and final correction; make the real write call now or return a typed blocker. "
@@ -3141,8 +3531,12 @@ async def _run_parallel_agent_branch(
             "localSelfCheck": "The worker paused only for explicit missing input; execution evidence remains attached to the same runtime episode.",
             "acceptanceHint": "Supply the requested values and resume the same parent runtime episode; do not create a replacement route.",
         }, []
+    reported_failure = (
+        _subagent_governance_terminal_failure(delta_messages)
+        or _subagent_reported_terminal_failure(result_text)
+    )
     creative_evidence: dict[str, Any] | None = None
-    if _is_creative_runtime_execution_branch(branch):
+    if not reported_failure and _is_creative_runtime_execution_branch(branch):
         creative_evidence = _creative_tool_evidence(delta_messages, branch=branch)
         missing_creative_evidence = list(creative_evidence.get("missingEvidence") or [])
         if missing_creative_evidence:
@@ -3175,10 +3569,14 @@ async def _run_parallel_agent_branch(
                 ),
                 "acceptanceHint": "Repair or resume this same Creative runtime branch; do not accept planning prose as delivery.",
             }, []
-    artifact_failure = _validate_required_skill_artifacts(
-        branch=branch,
-        state=local_state,
-        delta_messages=delta_messages,
+    artifact_failure = (
+        None
+        if reported_failure
+        else _validate_required_skill_artifacts(
+            branch=branch,
+            state=local_state,
+            delta_messages=delta_messages,
+        )
     )
     if artifact_failure:
         return delta_messages, delta_todos, {
@@ -3200,13 +3598,20 @@ async def _run_parallel_agent_branch(
             "toolsUsed": _extract_tool_names(delta_messages),
             **artifact_failure,
         }, []
-    artifact_status = _required_artifact_write_status(
-        branch=branch,
-        state=local_state,
-        delta_messages=delta_messages,
-        agent_data=agent_data,
+    artifact_status = (
+        None
+        if reported_failure
+        else _required_artifact_write_status(
+            branch=branch,
+            state=local_state,
+            delta_messages=delta_messages,
+            agent_data=agent_data,
+        )
     )
-    if artifact_status and artifact_status.get("missingExpectedArtifacts"):
+    if artifact_status and (
+        artifact_status.get("missingExpectedArtifacts")
+        or artifact_status.get("missingRequiredTool")
+    ):
         write_tool_succeeded = bool(artifact_status.get("writeToolSucceeded"))
         return delta_messages, delta_todos, {
             "invocationId": branch.get("invocationId"),
@@ -3233,8 +3638,8 @@ async def _run_parallel_agent_branch(
             "toolsUsed": _extract_tool_names(delta_messages),
             "compactTranscript": _compact_transcript(delta_messages),
             "localSelfCheck": (
-                "The worker returned after bounded artifact corrections without a successful write_native_file "
-                "ToolMessage and a ready expected artifact. Prose completion is not delivery evidence."
+                "The worker returned after bounded artifact corrections without both a successful write_native_file "
+                "ToolMessage and ready expected artifacts. Pre-existing files or prose completion are not write evidence."
             ),
             "acceptanceHint": (
                 "Retry the same delegated task with write_native_file visible and call it for every exact "
@@ -3242,9 +3647,13 @@ async def _run_parallel_agent_branch(
             ),
             **artifact_status,
         }, []
-    verification_failure = _validate_required_verification_evidence(
-        branch=branch,
-        delta_messages=delta_messages,
+    verification_failure = (
+        None
+        if reported_failure
+        else _validate_required_verification_evidence(
+            branch=branch,
+            delta_messages=delta_messages,
+        )
     )
     if verification_failure:
         return delta_messages, delta_todos, {
@@ -3273,7 +3682,6 @@ async def _run_parallel_agent_branch(
             branch=branch,
             delta_messages=delta_messages,
         )
-    reported_failure = _subagent_reported_terminal_failure(result_text)
     final_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
     initial_by_path = {item[0]: item for item in initial_artifact_snapshot}
     final_by_path = {item[0]: item for item in final_artifact_snapshot}

@@ -46,7 +46,10 @@ test("web realtime keeps the full detail stream and refreshes durable resources 
   assert.match(chatClient, /conversationSummaryTimerRef\.current = setTimeout/);
   assert.match(chatClient, /const processRefreshIntervalMs = activeConversationRunning \? 1800 : 5000/);
   assert.match(chatClient, /setInterval\(\(\) => \{[\s\S]*?loadSessionProcesses\(activeConversationId\)[\s\S]*?processRefreshIntervalMs/);
-  assert.match(runtimeStage, /\.slice\(0, 1200\)/);
+  assert.match(runtimeStage, /export function selectRuntimeActivityWindow\(/);
+  assert.match(runtimeStage, /recentLimit = 600/);
+  assert.match(runtimeStage, /perRuntimeLimit = 400/);
+  assert.match(runtimeStage, /const messageActivities = selectRuntimeActivityWindow\(activities\)/);
   assert.match(adminStream, /RUNTIME_EVENT_PAGE_LIMIT = 128/);
   assert.match(adminStream, /events\.length >= RUNTIME_EVENT_PAGE_LIMIT \? 0 : 260/);
 });

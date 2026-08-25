@@ -125,8 +125,8 @@ class SupervisorAgentRunner:
                 value = current_route_context.get(source_key)
                 if value:
                     state[state_key] = value
-        if isinstance(runtime_dispatch_status, dict) and runtime_dispatch_status:
-            state["runtime_dispatch_status"] = runtime_dispatch_status
+        if isinstance(runtime_dispatch_status, dict):
+            state["runtime_dispatch_status"] = dict(runtime_dispatch_status)
         if isinstance(engineering_context, dict) and engineering_context:
             state["engineering_context"] = engineering_context
         if isinstance(task_shape_hint, dict) and task_shape_hint:

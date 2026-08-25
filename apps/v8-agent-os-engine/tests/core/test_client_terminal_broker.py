@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import core.client_terminal_broker as broker
 
 
@@ -179,3 +181,50 @@ def test_terminal_ws_ticket_requires_existing_session(monkeypatch):
         assert "not found" in str(exc).lower()
     else:
         raise AssertionError("missing terminal session should not receive a ws ticket")
+
+
+def test_managed_command_session_uses_observable_pipe_without_allocating_pty(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    class FakeManagedProcess(FakeTerminalProcess):
+        def __init__(self, command: str, **kwargs) -> None:
+            super().__init__()
+            captured.update({"command": command, **kwargs})
+
+        def status_snapshot(self) -> dict[str, object]:
+            return {
+                **super().status_snapshot(),
+                "uses_tty": False,
+                "tty_mode": "pipe",
+                "interactive": False,
+                "backend": "pipe",
+            }
+
+    monkeypatch.setattr(
+        broker,
+        "build_workspace_binding",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            side_effects_allowed=True,
+            active_workspace_root=str(tmp_path),
+        ),
+    )
+    monkeypatch.setattr(broker, "BackgroundProcess", FakeManagedProcess)
+    monkeypatch.setattr(broker, "_manual_terminal_sessions", {})
+    monkeypatch.setattr(broker, "_bg_processes", {})
+    monkeypatch.setattr(broker, "_prune_stale_background_processes", lambda: None)
+
+    result = broker.create_managed_command_session(
+        command="npm run dev",
+        cwd=str(tmp_path),
+        conversation_id="session-project",
+        profile_reason="ui_patch_project_dev",
+        timeout_seconds=3600,
+    )
+
+    assert result["ok"] is True
+    assert result["usesTty"] is False
+    assert result["ttyMode"] == "pipe"
+    assert captured["command"] == "npm run dev"
+    assert captured["interactive"] is False
+    assert captured["terminal_mode"] == "pipe"
+    assert captured["profile_reason"] == "ui_patch_project_dev"

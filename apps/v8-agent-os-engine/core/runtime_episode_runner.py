@@ -1747,6 +1747,54 @@ class RuntimeEpisodeRunner:
                 f"Runtime episode {episode_id or '<unknown>'} heartbeat was rejected for a stale or missing lease."
             )
 
+    def _publish_episode_progress(
+        self,
+        episode: dict[str, Any],
+        progress: str | dict[str, Any],
+    ) -> None:
+        """Persist one human-safe runtime step while retaining the lease heartbeat."""
+
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        payload = dict(progress) if isinstance(progress, dict) else {}
+        raw_summary = str(payload.get("summary") or progress or "").strip()
+        summary = _preview(raw_summary, limit=240) or "运行阶段已更新"
+        self._heartbeat(episode_id, summary)
+
+        runtime_id = _runtime_surface_id_for_episode(episode)
+        stage = re.sub(
+            r"[^a-z0-9_.-]+",
+            "_",
+            str(payload.get("stage") or "working").strip().lower(),
+        ).strip("_") or "working"
+        status = str(payload.get("status") or "active").strip().lower() or "active"
+        tool_name = str(payload.get("toolName") or payload.get("tool_name") or "").strip()
+        node_id = str(payload.get("nodeId") or payload.get("node_id") or "").strip()
+        if not node_id:
+            node_id = f"{episode_id or runtime_id}:{stage}"
+        content = _preview(payload.get("content"), limit=500)
+        timeline_node = {
+            "id": node_id,
+            "kind": "execution",
+            "executionType": "runtime_progress",
+            "topic": f"{runtime_id}.progress.{stage}",
+            "label": summary,
+            **({"content": content} if content else {}),
+            **({"toolName": tool_name} if tool_name else {}),
+        }
+        self._emit(
+            "runtime.episode.progress",
+            episode=episode,
+            session_id=str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None,
+            run_id=str(episode.get("run_id") or episode.get("runId") or "").strip() or None,
+            progress={
+                "stage": stage,
+                "status": status,
+                "summary": summary,
+                **({"toolName": tool_name} if tool_name else {}),
+                "timelineNode": timeline_node,
+            },
+        )
+
     async def _await_with_heartbeat(self, episode_id: str, awaitable: Any, *, progress: str, interval_seconds: float = 20.0) -> Any:
         return await self._await_cancellable_task(
             episode_id,
@@ -2386,7 +2434,15 @@ class RuntimeEpisodeRunner:
         return await asyncio.to_thread(self._execute_research_sync, episode)
 
     def _execute_research_sync(self, episode: dict[str, Any]) -> dict[str, Any]:
-        self._heartbeat(str(episode.get("episodeId")), "research: experience lookup")
+        self._publish_episode_progress(
+            episode,
+            {
+                "stage": "experience_lookup",
+                "summary": "正在查找可复用的调研经验",
+                "toolName": "research_broker",
+                "nodeId": "research-experience-lookup",
+            },
+        )
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
         research_repair = inputs.get("researchRepair") if isinstance(inputs.get("researchRepair"), dict) else {}
@@ -2499,7 +2555,15 @@ class RuntimeEpisodeRunner:
                 tool_call_id=f"episode:{episode.get('episodeId')}:search_experience",
             )
             search_visible = _first_tool_message_content(search_result)
-            self._heartbeat(str(episode.get("episodeId")), "research: plan")
+            self._publish_episode_progress(
+                episode,
+                {
+                    "stage": "plan",
+                    "summary": "正在整理调研计划",
+                    "toolName": "research_broker",
+                    "nodeId": "research-plan",
+                },
+            )
             plan_result = research_broker.func(
                 mode="plan",
                 question=query,
@@ -2537,8 +2601,8 @@ class RuntimeEpisodeRunner:
         )
         if single_bundle_mode and len(unique_queries) > 1:
             # Public Supervisor Research routes describe facets of one user
-            # question. The 5-source/3000-character rejection floor applies to
-            # the complete answer, not independently to every facet. Let the
+            # question. The shared rejection floor applies to the complete
+            # answer, not independently to every facet. Let the
             # Research Architect plan the combined question and return one
             # evidence bundle while preserving every stable brief ID below.
             run_units = [
@@ -2626,7 +2690,15 @@ class RuntimeEpisodeRunner:
                 else:
                     allowed_domain_items.extend(list(allowed_domains_value or []))
             allowed_domains = [str(item).strip() for item in allowed_domain_items if str(item).strip()]
-            self._heartbeat(episode_id, f"research: brief {index}/{len(run_units)}")
+            self._publish_episode_progress(
+                episode,
+                {
+                    "stage": "brief",
+                    "summary": f"正在处理调研问题 {index}/{len(run_units)}",
+                    "toolName": "research_broker",
+                    "nodeId": f"research-brief:{index}:start",
+                },
+            )
             search_result = research_broker.func(
                 mode="search_experience",
                 query=unit_query,
@@ -2638,18 +2710,23 @@ class RuntimeEpisodeRunner:
                 tool_call_id=f"episode:{episode_id}:brief:{index}:search_experience",
             )
             search_payload = _tool_result_payload(search_result)
-            run_result = research_broker.func(
-                mode="run",
-                question=unit_query,
-                query=unit_query,
-                freshness=freshness,
-                sourcePolicy=source_policy,
-                seedUrls=seed_urls,
-                allowedDomains=allowed_domains,
-                forceRefresh=force_refresh,
-                state=state,
-                tool_call_id=f"episode:{episode_id}:brief:{index}:research_run",
-            )
+            from core.tools.research_broker import bind_research_progress_reporter
+
+            with bind_research_progress_reporter(
+                lambda progress: self._publish_episode_progress(episode, progress)
+            ):
+                run_result = research_broker.func(
+                    mode="run",
+                    question=unit_query,
+                    query=unit_query,
+                    freshness=freshness,
+                    sourcePolicy=source_policy,
+                    seedUrls=seed_urls,
+                    allowedDomains=allowed_domains,
+                    forceRefresh=force_refresh,
+                    state=state,
+                    tool_call_id=f"episode:{episode_id}:brief:{index}:research_run",
+                )
             transport_run_payload = _tool_result_payload(run_result)
             run_payload = _hydrate_research_run_payload(
                 transport_run_payload,
@@ -2725,6 +2802,20 @@ class RuntimeEpisodeRunner:
                 source_policy=source_policy,
                 seed_urls=seed_urls,
                 allowed_domains=allowed_domains,
+            )
+            self._publish_episode_progress(
+                episode,
+                {
+                    "stage": "evidence_review",
+                    "status": "completed" if ready else "failed",
+                    "summary": (
+                        f"调研问题 {index}/{len(run_units)} 已通过证据复核"
+                        if ready
+                        else f"调研问题 {index}/{len(run_units)} 未通过证据复核"
+                    ),
+                    "toolName": "research_architect",
+                    "nodeId": f"research-brief:{index}:review",
+                },
             )
             quality_tier = research_quality.research_quality_tier(run_payload)
             handoff_sources = [_research_handoff_source(item) for item in source_items]
@@ -4233,19 +4324,33 @@ class RuntimeEpisodeRunner:
             return False
         context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
         capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), dict) else {}
-        text = json.dumps(
+        routing_text = json.dumps(
             {
-                "goal": brief.get("goal"),
-                "title": brief.get("title"),
                 "familyHint": brief.get("familyHint"),
                 "preferredAgentId": brief.get("preferredAgentId"),
                 "executionLaneHint": brief.get("executionLaneHint"),
                 "runtimeLane": context.get("runtimeLane") or capsule.get("runtimeLane"),
+            },
+            ensure_ascii=False,
+        ).lower()
+        if any(marker in routing_text for marker in ("research", "web-research", "调研")):
+            return True
+        task_text = json.dumps(
+            {
+                "goal": brief.get("goal"),
+                "title": brief.get("title"),
                 "taskExcerpt": context.get("taskExcerpt"),
             },
             ensure_ascii=False,
         ).lower()
-        return any(marker in text for marker in ("research", "web-research", "调研", "证据", "来源"))
+        return bool(
+            re.search(
+                r"\b(?:web\s+research|research\s+(?:report|evidence|sources?))\b|"
+                r"(?:调研|研究报告|证据报告|来源调研|查证|核查.{0,12}(?:证据|来源))",
+                task_text,
+                re.IGNORECASE,
+            )
+        )
 
     @classmethod
     def _engineering_unready_expected_artifacts(
@@ -5359,7 +5464,41 @@ class RuntimeEpisodeRunner:
         need: dict[str, Any],
         inputs: dict[str, Any],
     ) -> dict[str, Any] | None:
-        blob = json.dumps({"need": need, "inputs": inputs}, ensure_ascii=False).lower()
+        task_contracts = [
+            item
+            for key in ("taskBriefs", "workerBriefs", "tasks")
+            for item in list(inputs.get(key) or [])
+            if isinstance(item, dict)
+        ]
+        semantic_keys = (
+            "reason",
+            "summary",
+            "title",
+            "goal",
+            "brief",
+            "targetSkillRoot",
+            "target_skill_root",
+            "writeSet",
+            "write_set",
+            "expectedArtifacts",
+            "expected_artifacts",
+            "expectedOutputs",
+            "expected_outputs",
+        )
+
+        def _semantic_contract(source: dict[str, Any]) -> dict[str, Any]:
+            return {key: source.get(key) for key in semantic_keys if source.get(key) is not None}
+
+        # Extension prefilter candidates are advisory context, not task
+        # authority. In particular, selectedSkillNames may contain
+        # ``skill-creator`` for an ordinary React task and must not activate a
+        # skill artifact gate.
+        semantic_payload = {
+            "need": _semantic_contract(need),
+            "inputs": _semantic_contract(inputs),
+            "taskContracts": [_semantic_contract(item) for item in task_contracts],
+        }
+        blob = json.dumps(semantic_payload, ensure_ascii=False).lower()
         requested = bool(inputs.get("validateSkillArtifact") or need.get("validateSkillArtifact"))
         requested = requested or any(
             marker in blob
@@ -6365,7 +6504,14 @@ class RuntimeEpisodeRunner:
             if isinstance(item, dict)
         ]
         if task_briefs:
-            self._heartbeat(episode_id, "computer_use: execute task brief")
+            self._publish_episode_progress(
+                episode,
+                {
+                    "stage": "task_start",
+                    "summary": "正在准备桌面操作任务",
+                    "nodeId": "computer-use-task-start",
+                },
+            )
             from runtimes.computer_use.episode_agent import execute_computer_use_task_brief
 
             workspace_path = str(
@@ -6401,7 +6547,7 @@ class RuntimeEpisodeRunner:
                         workspace_id=str(inputs.get("workspaceId") or inputs.get("workspace_id") or "").strip() or None,
                         workspace_path=workspace_path,
                         task_brief=task_brief,
-                        heartbeat=lambda progress: self._heartbeat(episode_id, progress),
+                        heartbeat=lambda progress: self._publish_episode_progress(episode, progress),
                         max_rounds=int(inputs.get("maxRounds") or inputs.get("max_rounds") or 30),
                     ),
                     progress=f"computer_use: executing {task_brief_id}",
@@ -6455,7 +6601,15 @@ class RuntimeEpisodeRunner:
                 },
             )
 
-        self._heartbeat(episode_id, "computer_use: observe")
+        self._publish_episode_progress(
+            episode,
+            {
+                "stage": "observe",
+                "summary": "正在观察当前桌面",
+                "toolName": "observe_desktop",
+                "nodeId": "computer-use-observe",
+            },
+        )
         if not bool(inputs.get("observe", True)):
             return build_handoff_ref(
                 producer_episode_id=episode_id,
@@ -6558,7 +6712,15 @@ class RuntimeEpisodeRunner:
 
     async def _execute_rpa(self, episode: dict[str, Any]) -> dict[str, Any]:
         episode_id = str(episode.get("episodeId") or "")
-        self._heartbeat(episode_id, "rpa: route")
+        self._publish_episode_progress(
+            episode,
+            {
+                "stage": "route",
+                "summary": "正在准备自动流程",
+                "toolName": "rpa_runtime",
+                "nodeId": "rpa-route",
+            },
+        )
         inputs = self._rpa_inputs_from_task_execution(dict(episode.get("inputs") or {}))
         from runtimes.rpa.runtime import rpa_runtime
 
@@ -6593,7 +6755,10 @@ class RuntimeEpisodeRunner:
                 run_ids = [str(item).strip() for item in list(inputs.get("traceRunIds") or inputs.get("runIds") or []) if str(item).strip()]
                 if not run_ids:
                     raise ValueError("RPA trace compile episode 缺少 traceRunIds/runIds。")
-                self._heartbeat(episode_id, "rpa: compile traces")
+                self._publish_episode_progress(
+                    episode,
+                    {"stage": "compile", "summary": "正在根据操作记录生成自动流程", "toolName": "rpa_runtime", "nodeId": "rpa-compile-traces"},
+                )
                 draft = await self._await_with_heartbeat(
                     episode_id,
                     asyncio.to_thread(rpa_runtime.compile_traces_to_draft, run_ids, save=bool(inputs.get("save", True))),
@@ -6605,7 +6770,10 @@ class RuntimeEpisodeRunner:
                 summary = f"RPA traces compiled into draft {draft_id or '<unsaved>'}."
             elif inputs.get("traceRunId") or inputs.get("traceId"):
                 trace_run_id = str(inputs.get("traceRunId") or inputs.get("traceId") or "").strip()
-                self._heartbeat(episode_id, "rpa: compile trace")
+                self._publish_episode_progress(
+                    episode,
+                    {"stage": "compile", "summary": "正在根据操作记录生成自动流程", "toolName": "rpa_runtime", "nodeId": "rpa-compile-trace"},
+                )
                 draft = await self._await_with_heartbeat(
                     episode_id,
                     asyncio.to_thread(rpa_runtime.compile_trace_to_draft, trace_run_id, save=bool(inputs.get("save", True))),
@@ -6618,7 +6786,10 @@ class RuntimeEpisodeRunner:
             elif inputs.get("draftId") or inputs.get("scriptId") or inputs.get("templateId"):
                 script_id = str(inputs.get("draftId") or inputs.get("scriptId") or inputs.get("templateId") or "").strip()
                 if action in {"run", "execute", "run_draft", "execute_draft", "live"} or inputs.get("execute") is True:
-                    self._heartbeat(episode_id, f"rpa: execute draft {script_id}")
+                    self._publish_episode_progress(
+                        episode,
+                        {"stage": "execute", "summary": "正在执行自动流程草稿", "toolName": "rpa_runtime", "nodeId": "rpa-execute-draft"},
+                    )
                     result = await self._await_with_heartbeat(
                         episode_id,
                         asyncio.to_thread(
@@ -6643,7 +6814,10 @@ class RuntimeEpisodeRunner:
                     prepared = dict(result)
                     summary = f"RPA draft executed: {script_id} ({result.get('status') or 'completed'})."
                 else:
-                    self._heartbeat(episode_id, f"rpa: prepare draft {script_id}")
+                    self._publish_episode_progress(
+                        episode,
+                        {"stage": "prepare", "summary": "正在检查自动流程草稿", "toolName": "rpa_runtime", "nodeId": "rpa-prepare-draft"},
+                    )
                     prepared = await asyncio.to_thread(
                         rpa_runtime.prepare_draft_run,
                         script_id=script_id,
@@ -6658,7 +6832,10 @@ class RuntimeEpisodeRunner:
             elif inputs.get("robotFile"):
                 robot_file = str(inputs.get("robotFile") or "").strip()
                 if action in {"run", "execute", "run_existing", "execute_existing", "live"} or inputs.get("execute") is True:
-                    self._heartbeat(episode_id, f"rpa: execute robot {robot_file}")
+                    self._publish_episode_progress(
+                        episode,
+                        {"stage": "execute", "summary": "正在执行自动流程", "toolName": "rpa_runtime", "nodeId": "rpa-execute-robot"},
+                    )
                     result = await self._await_with_heartbeat(
                         episode_id,
                         asyncio.to_thread(
@@ -6683,7 +6860,10 @@ class RuntimeEpisodeRunner:
                     prepared = dict(result)
                     summary = f"RPA robot flow executed: {robot_file} ({result.get('status') or 'completed'})."
                 else:
-                    self._heartbeat(episode_id, f"rpa: prepare robot {robot_file}")
+                    self._publish_episode_progress(
+                        episode,
+                        {"stage": "prepare", "summary": "正在检查自动流程", "toolName": "rpa_runtime", "nodeId": "rpa-prepare-robot"},
+                    )
                     prepared = await asyncio.to_thread(
                         rpa_runtime.prepare_existing_run,
                         robot_file=robot_file,

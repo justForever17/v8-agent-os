@@ -31,6 +31,7 @@ from core.research_runtime_prompts import (
     research_runtime_prompt_digest,
 )
 from core.storage import storage
+from core.user_language import infer_preferred_language, normalize_preferred_language
 from core.tools.research_ledger import (
     archive_experience_pack,
     delete_experience_pack,
@@ -74,6 +75,7 @@ from core.tools.research_source_identity import (
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope, classify_failure
 from core.tools.web_fetcher import (
     MAX_RESEARCH_TEXT_CHARS,
+    source_router_read,
     source_router_search,
     web_read,
     web_search,
@@ -84,9 +86,10 @@ from runtimes.extensions.mcp.client import mcp_manager
 _EVIDENCE_TTL_SECONDS = 6 * 60 * 60
 # Per parallel search batch. Architect synthesis has its own downstream
 # budget and is intentionally not wrapped by this value.
-_RESEARCH_TOOL_DEADLINE_MS = 120_000
-_RESEARCH_SHARD_DEADLINE_MS = 45_000
-_RESEARCH_SOURCE_READ_DEADLINE_MS = 35_000
+_RESEARCH_TOOL_DEADLINE_MS = 45_000
+_RESEARCH_SHARD_DEADLINE_MS = 30_000
+_RESEARCH_SEARCH_DEADLINE_MS = 14_000
+_RESEARCH_SOURCE_READ_DEADLINE_MS = 8_000
 _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS = 2
 # One low-output provider needs four bounded writer sections, two independent
 # reviews, and enough reserve for one reviewer-guided rewrite. This is a hard
@@ -699,6 +702,7 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
     evidence_id = _safe_text(payload.get("evidenceBundleId"))
     return {
         "kind": "research_answer_pack",
+        "deliveryRequirements": payload.get("deliveryRequirements") or pack.get("deliveryRequirements") or {},
         "reviewDecision": review_decision,
         "reviewReasons": list(pack.get("reviewReasons") or payload.get("reviewReasons") or [])[:12],
         "answer": answer,
@@ -910,7 +914,41 @@ def _catalog_official_entity_hints(question: Any) -> list[dict[str, Any]]:
                 "matchedAliases": aliases,
             }
         )
-    return entity_hints
+
+    def alias_spans(alias: str) -> list[tuple[int, int]]:
+        if not alias:
+            return []
+        if re.fullmatch(r"[a-z0-9][a-z0-9 ._+-]*", alias):
+            pattern = rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
+            return [match.span() for match in re.finditer(pattern, lowered_question)]
+        return [
+            (match.start(), match.end())
+            for match in re.finditer(re.escape(alias), lowered_question)
+        ]
+
+    filtered: list[dict[str, Any]] = []
+    for index, hint in enumerate(entity_hints):
+        candidate_spans = [
+            span
+            for alias in list(hint.get("matchedAliases") or [])
+            for span in alias_spans(_safe_text(alias).lower())
+        ]
+        containing_spans = [
+            (start, end)
+            for other_index, other in enumerate(entity_hints)
+            if other_index != index
+            for alias in list(other.get("matchedAliases") or [])
+            if len(_safe_text(alias))
+            > max([len(_safe_text(value)) for value in list(hint.get("matchedAliases") or [])] or [0])
+            for start, end in alias_spans(_safe_text(alias).lower())
+        ]
+        has_standalone_occurrence = any(
+            not any(container_start <= start and end <= container_end for container_start, container_end in containing_spans)
+            for start, end in candidate_spans
+        )
+        if has_standalone_occurrence:
+            filtered.append(hint)
+    return filtered
 
 
 def _research_entity_indexes_in_text(
@@ -1951,7 +1989,10 @@ def _source_quality_gate(
     intent_match = _source_matches_intent(quality, effective_source_intent)
     if effective_source_intent == "official_primary":
         authority_floor = max(authority_floor, 70)
-    minimum_relevance = 15
+    source_capability = _safe_text(
+        read_payload.get("sourceCapability") or result.get("sourceCapability")
+    ).lower()
+    minimum_relevance = 5 if source_capability == "official_technical_docs" else 15
     source_selected = bool(
         read_payload.get("ok") is not False
         and not error_page
@@ -2538,6 +2579,7 @@ def _compact_visible_answer_pack(value: Any) -> dict[str, Any]:
     if not pack:
         return {}
     compact = {
+        "deliveryRequirements": pack.get("deliveryRequirements") or {},
         "reviewDecision": pack.get("reviewDecision"),
         "reviewReasons": list(pack.get("reviewReasons") or [])[:12],
         "answer": _truncate_research_text(pack.get("answer"), limit=_MAX_RESEARCH_VISIBLE_ANSWER_CHARS),
@@ -2627,10 +2669,18 @@ def _deterministic_facet_search_query(value: Any, *, max_chars: int = 180) -> st
         flags=re.IGNORECASE,
     )
     query = re.sub(
-        r"^(?:(?:请)?(?:确认|核实|验证|查证|调查|研究|分析|比较|评估|说明|生成|形成|制定|整理|梳理|给出|输出|提供)[：:,，\s]*)+",
+        r"^(?:(?:请)?(?:确认|核实|核查|验证|查证|调查|研究|分析|比较|评估|说明|生成|形成|制定|整理|梳理|给出|输出|提供)[：:,，\s]*)+",
         "",
         query,
     )
+    query = re.split(
+        r"(?:[,，;；]\s*)(?:并(?:给出|输出|形成|提供)|给出|输出|形成|提供)"
+        r"(?:有来源的|带来源的|source-backed|cited)?(?:简体中文|中文|English)?(?:结论|答案|报告|summary|answer|report).*$|"
+        r"(?:[,;]\s*)(?:and\s+)?(?:provide|return|write|produce)\s+(?:a\s+)?(?:cited|source-backed|Chinese|English).*$",
+        query,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,，;；.。:-")
     query = re.split(
         r"(?:[.;。；]\s*)(?:cite|consult|请?引用|请?参照)\b",
         query,
@@ -2648,6 +2698,55 @@ def _deterministic_facet_search_query(value: Any, *, max_chars: int = 180) -> st
     return query if len(query) >= 8 else original[:max_chars].rstrip()
 
 
+def _technical_atomic_search_query(value: Any) -> str:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", _safe_text(value))
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "answer",
+        "chinese",
+        "core",
+        "current",
+        "directly",
+        "documentation",
+        "english",
+        "explain",
+        "for",
+        "from",
+        "in",
+        "official",
+        "only",
+        "pattern",
+        "please",
+        "provide",
+        "report",
+        "research",
+        "return",
+        "simplified",
+        "source",
+        "sources",
+        "the",
+        "usable",
+        "using",
+        "verify",
+        "with",
+    }
+    selected: list[str] = []
+    for token in tokens:
+        normalized_token = token.strip("._-")
+        if (
+            not normalized_token
+            or normalized_token.lower() in stop_words
+            or normalized_token.lower() in {item.lower() for item in selected}
+        ):
+            continue
+        selected.append(normalized_token)
+        if len(selected) >= 12:
+            break
+    return " ".join(selected) if len(selected) >= 2 else ""
+
+
 def _build_shards(
     *,
     question: str,
@@ -2658,6 +2757,7 @@ def _build_shards(
     max_shards: int,
 ) -> list[dict[str, Any]]:
     base_question = _safe_text(question)
+    search_question = _deterministic_facet_search_query(base_question) or base_question
     intent = _safe_text(research_intent) or "general_research"
     policy = _safe_text(source_policy).lower()
     video_research = _is_video_research(base_question, intent, policy)
@@ -2710,20 +2810,67 @@ def _build_shards(
                 )
             )
     else:
-        queries.append((base_question, "baseline"))
-        if policy in {"official", "authoritative", "primary", ""}:
-            queries.append((f"{base_question} official documentation", "official_docs"))
-            queries.append((f"{base_question} official statement primary source", "primary_source"))
-        if intent:
-            queries.append((f"{base_question} {intent}", "intent"))
-        queries.extend(
-            [
-                (f"{base_question} research report data statistics", "data_report"),
-                (f"{base_question} independent analysis comparison", "independent_analysis"),
-                (f"{base_question} limitations criticism counterevidence", "counterevidence"),
-                (f"{base_question} latest update {datetime.now(timezone.utc).year}", "freshness_update"),
-            ]
+        technical_research = _is_technical_research_question(base_question)
+        atomic_search_question = (
+            _technical_atomic_search_query(base_question)
+            if technical_research
+            else ""
+        ) or search_question
+        queries.append((atomic_search_question, "baseline"))
+        official_host_hints = _catalog_official_host_hints(base_question)
+        ranked_host_hints = sorted(
+            official_host_hints,
+            key=lambda item: max(
+                [len(_safe_text(alias)) for alias in list(item.get("matchedAliases") or [])]
+                or [0]
+            ),
+            reverse=True,
         )
+        best_alias_length = max(
+            [
+                len(_safe_text(alias))
+                for item in ranked_host_hints
+                for alias in list(item.get("matchedAliases") or [])
+            ]
+            or [0]
+        )
+        relevant_host_hints = [
+            item
+            for item in ranked_host_hints
+            if max(
+                [len(_safe_text(alias)) for alias in list(item.get("matchedAliases") or [])]
+                or [0]
+            )
+            >= max(6, int(best_alias_length * 0.65))
+        ][:3]
+        for hint in relevant_host_hints:
+            host = _safe_text(hint.get("host"))
+            if host:
+                queries.append((f"site:{host} {atomic_search_question}", f"official_site:{host}"))
+        if policy in {"official", "authoritative", "primary", ""}:
+            queries.append((f"{atomic_search_question} official documentation", "official_docs"))
+        if technical_research:
+            if re.search(r"\b(?:install|setup|package|pip|npm|version)\b|(?:安装|版本|依赖包)", base_question, re.I):
+                queries.append((f"{atomic_search_question} installation package version", "technical_installation"))
+            queries.append((f"{atomic_search_question} API reference examples", "technical_api"))
+            if re.search(r"\b(?:current|latest|release)\b|(?:当前|最新|发布)", base_question, re.I):
+                queries.append(
+                    (
+                        f"{atomic_search_question} release notes {datetime.now(timezone.utc).year}",
+                        "freshness_update",
+                    )
+                )
+        else:
+            if intent and intent != "general_research":
+                queries.append((f"{search_question} {intent}", "intent"))
+            queries.extend(
+                [
+                    (f"{search_question} research report data statistics", "data_report"),
+                    (f"{search_question} independent analysis comparison", "independent_analysis"),
+                    (f"{search_question} limitations criticism counterevidence", "counterevidence"),
+                    (f"{search_question} latest update {datetime.now(timezone.utc).year}", "freshness_update"),
+                ]
+            )
     if video_research:
         queries.append((f"{base_question} top videos views likes ranking", "video_popularity"))
         queries.append((f"{base_question} 榜单 播放量 点赞", "video_popularity_cn"))
@@ -3684,6 +3831,7 @@ def _deterministic_web_research_architect_pack(
     shards: list[dict[str, Any]],
     confidence: str,
     average_authority: float,
+    delivery_requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the final research-result pack consumed by Supervisor and detail tools.
 
@@ -3781,9 +3929,14 @@ def _deterministic_web_research_architect_pack(
     headline = "Readable evidence is prepared for independent Research review."
     limitations: list[str] = []
     critical_missing: list[str] = []
-    if len(source_urls) < MIN_RESEARCH_SOURCE_COUNT:
+    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
+    minimum_sources = _as_int(
+        requirements.get("minimumSources"),
+        MIN_RESEARCH_SOURCE_COUNT,
+    )
+    if len(source_urls) < minimum_sources:
         critical_missing.append(
-            f"Research needs at least {MIN_RESEARCH_SOURCE_COUNT} readable sources before a reviewed answer can be delivered."
+            f"Research needs at least {minimum_sources} readable sources before a reviewed answer can be delivered."
         )
     elif len(source_urls) < TARGET_RESEARCH_SOURCE_COUNT:
         limitations.append(
@@ -3802,6 +3955,7 @@ def _deterministic_web_research_architect_pack(
         "reviewDecision": "retry",
         "reviewReasons": ["A model-backed Architect review is required before this evidence can be delivered."],
         "question": question,
+        "deliveryRequirements": requirements,
         "headline": headline,
         "answer": "",
         "researchResult": "",
@@ -4000,6 +4154,11 @@ def _research_architect_sources_for_prompt(
             re.search(r"\b(?:change|changes|changelog|release notes?|version history|what'?s new)\b", question.lower())
         )
         detail_priority = -1 if change_document and not question_requests_changes else 0
+        source_capability = _safe_text(
+            read_payload.get("sourceCapability") or source.get("sourceCapability")
+        ).lower()
+        if source_capability == "official_technical_docs":
+            detail_priority += 4
         if any(
             marker in document_text
             for marker in ("/library/", "/api", "parameter-type", "entry-point", "specification", "argparse", "pathlib")
@@ -4114,6 +4273,7 @@ def _research_architect_sources_for_prompt(
                 "freshness": source.get("freshness"),
                 "provider": source.get("provider"),
                 "networkRoute": source.get("networkRoute"),
+                "sourceCapability": read_payload.get("sourceCapability") or source.get("sourceCapability"),
                 "shardId": source.get("shardId"),
                 "researchFacetId": source.get("researchFacetId"),
                 "researchFacetIds": facet_ids,
@@ -5202,6 +5362,10 @@ def _architect_required_claim_source_keys(
     ranked = sorted(
         enumerate(eligible),
         key=lambda pair: (
+            1
+            if _safe_text(pair[1].get("sourceCapability")).lower()
+            == "official_technical_docs"
+            else 0,
             int(pair[1].get("answerabilityScore") or 0),
             tier_rank.get(_safe_text(pair[1].get("tier")).lower(), 0),
             1 if research_source_has_dated_evidence(pair[1]) else 0,
@@ -5596,6 +5760,15 @@ def _research_architect_structural_stats(
     *,
     freshness: str,
 ) -> dict[str, Any]:
+    delivery_requirements = _research_delivery_requirements(question)
+    minimum_sources = _as_int(
+        delivery_requirements.get("minimumSources"),
+        MIN_RESEARCH_SOURCE_COUNT,
+    )
+    minimum_hosts = _as_int(
+        delivery_requirements.get("minimumDistinctHosts"),
+        MIN_RESEARCH_DISTINCT_HOST_COUNT,
+    )
     selected = [
         source
         for source in sources
@@ -5667,8 +5840,8 @@ def _research_architect_structural_stats(
         facet_id for facet_id in required_facet_ids if facet_id not in covered_facet_ids
     ]
     minimum_met = bool(
-        len(identities) >= MIN_RESEARCH_SOURCE_COUNT
-        and len(hosts) >= MIN_RESEARCH_DISTINCT_HOST_COUNT
+        len(identities) >= minimum_sources
+        and len(hosts) >= minimum_hosts
         and not missing_facet_ids
     )
     target_met = bool(
@@ -5686,6 +5859,7 @@ def _research_architect_structural_stats(
         "coveredFacetIds": covered_facet_ids,
         "missingFacetIds": missing_facet_ids,
         "facetEvidenceComplete": not missing_facet_ids,
+        "deliveryRequirements": delivery_requirements,
         "structuralMinimumMet": minimum_met,
         "structuralTargetMet": target_met,
     }
@@ -14618,6 +14792,22 @@ def _architect_review_claim_ledger(
     }
 
 
+def _architect_unbound_answer_citations(
+    answer: Any,
+    claims: list[dict[str, Any]] | None,
+) -> list[str]:
+    verified = {
+        _safe_text(support.get("citationKey") or support.get("citation")).strip("[]")
+        for claim in list(claims or [])
+        if isinstance(claim, dict)
+        for support in list(claim.get("supportingSources") or [])
+        if isinstance(support, dict)
+        and _safe_text(support.get("citationKey") or support.get("citation"))
+    }
+    used = set(re.findall(r"\[(S\d+)\]", _safe_text(answer), re.IGNORECASE))
+    return sorted(used - verified)
+
+
 def _invoke_web_research_architect_staged(
     *,
     question: str,
@@ -14625,6 +14815,8 @@ def _invoke_web_research_architect_staged(
     freshness: str,
     timeout_seconds: int,
     per_call_timeout_seconds: int | None = None,
+    preferred_language: str = "",
+    delivery_requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     _report_research_progress(
@@ -14635,6 +14827,13 @@ def _invoke_web_research_architect_staged(
         nodeId="research-evidence-plan",
     )
     total_budget = max(5, int(timeout_seconds or 0))
+    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
+    minimum_sources = _as_int(requirements.get("minimumSources"), MIN_RESEARCH_SOURCE_COUNT)
+    minimum_claims = _as_int(requirements.get("minimumClaims"), MIN_RESEARCH_CLAIM_COUNT)
+    minimum_answer_chars = _as_int(
+        requirements.get("minimumAnswerChars"),
+        MIN_RESEARCH_ANSWER_CHARS,
+    )
     configured_call_timeout = (
         _as_int(per_call_timeout_seconds, 0)
         if per_call_timeout_seconds is not None
@@ -14756,6 +14955,7 @@ def _invoke_web_research_architect_staged(
             "authorityScore": source.get("authorityScore"),
             "catalogCategory": source.get("catalogCategory"),
             "catalogSourceId": source.get("catalogSourceId"),
+            "sourceCapability": source.get("sourceCapability"),
             "runtimeOfficialSeed": source.get("runtimeOfficialSeed") is True,
             "qualityDimensions": source.get("qualityDimensions") or {},
             "retrievedAt": retrieved_at,
@@ -14838,6 +15038,9 @@ def _invoke_web_research_architect_staged(
         }
         for source in compact_sources
     ]
+    # Architect repair shard IDs are acquisition bookkeeping and must never
+    # become self-referential answer gates in the next synthesis pass. Other
+    # planned facet IDs remain valid for root-question decomposition.
     required_plan_facet_ids = [
         facet_id
         for facet_id in list(
@@ -14875,12 +15078,12 @@ def _invoke_web_research_architect_staged(
     required_source_count = (
         TARGET_RESEARCH_SOURCE_COUNT
         if normal_target_mode
-        else MIN_RESEARCH_SOURCE_COUNT
+        else minimum_sources
     )
     required_claim_count = (
         TARGET_RESEARCH_CLAIM_COUNT
         if normal_target_mode
-        else MIN_RESEARCH_CLAIM_COUNT
+        else minimum_claims
     )
     plan_claim_upper = min(
         _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
@@ -14909,7 +15112,7 @@ def _invoke_web_research_architect_staged(
                 f"evidence_candidate_source_coverage:{len(required_claim_sources)}/{required_source_count}"
             ],
         }
-    plan_claim_source_floor = MIN_RESEARCH_SOURCE_COUNT
+    plan_claim_source_floor = minimum_sources
     named_decision_audiences = _research_named_decision_audiences(question)
     runtime_named_decision_fallback_allowed = (
         _architect_runtime_named_decision_fallback_allowed(question)
@@ -15004,7 +15207,6 @@ def _invoke_web_research_architect_staged(
             f"QUESTION: {question}"
         ),
     ]
-
     def near_duplicate_claim(candidate_text: str, existing_text: str) -> bool:
         candidate_terms = {
             term
@@ -16797,7 +16999,13 @@ def _invoke_web_research_architect_staged(
         for candidate in ordered_writer_candidates
         if candidate[0] is not plan_candidate[0]
     ]
-    answer_language = "简体中文" if re.search(r"[\u4e00-\u9fff]", question) else "English"
+    resolved_language = normalize_preferred_language(preferred_language) or infer_preferred_language(question)
+    answer_language = {
+        "zh-CN": "简体中文",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "ru": "Russian",
+    }.get(resolved_language, "English")
     writer_system_prompt = (
         "你是 Research Runtime 的最终答案撰写器。只使用 VERIFIED PLAN 和 SOURCES 中已经读取并由 Runtime 验真的事实，"
         "不要添加常识性补写、未经证据支持的数据或虚构的官方立场。直接回答用户问题，不要描述调研流程。"
@@ -16812,7 +17020,7 @@ def _invoke_web_research_architect_staged(
         "已登记且其全部 premise 明确支持这一关系。"
         "来源摘录只有月日而没有年份时，必须明确写‘来源未标明年份’，不得补成当前年份、2026 或其他年份，"
         "也不得把这条未定年事实单独当作当前选型依据。"
-        f"{MIN_RESEARCH_SOURCE_COUNT} 个来源和 {MIN_RESEARCH_ANSWER_CHARS} 个有效字只是拒收线；"
+        f"{minimum_sources} 个来源和 {minimum_answer_chars} 个有效字只是本任务形状的拒收线；"
         "正常交付必须有足够深度、差异、限制、时效证据和可执行结论，禁止重复凑字。"
         "QUESTION 含多个 [facet-id] 时，正文必须逐项实质回答每个 facet，并在对应内容单元引用支持该 facet 的来源。"
         "QUESTION 含 Deliverable requirements/交付要求时，必须在正文中完成这些输出目标；它们只综合已验证证据，"
@@ -16843,16 +17051,25 @@ def _invoke_web_research_architect_staged(
         for support in list(claim.get("supportingSources") or [])
         if isinstance(support, dict) and _safe_text(support.get("citationKey"))
     }
+    writer_prompt_sources = [
+        source
+        for source in prompt_sources
+        if _safe_text(source.get("citationKey")).strip("[]")
+        in verified_citation_keys
+    ]
+    if len(writer_prompt_sources) < minimum_sources:
+        writer_prompt_sources = list(prompt_sources)
+    writer_source_material = json.dumps(writer_prompt_sources, ensure_ascii=False)
     writer_required_claim_count = max(
-        MIN_RESEARCH_CLAIM_COUNT,
+        minimum_claims,
         min(required_claim_count, len(verified_claims)),
     )
     writer_required_source_count = max(
-        MIN_RESEARCH_SOURCE_COUNT,
+        minimum_sources,
         min(required_source_count, len(verified_citation_keys)),
     )
     delivery_target_min_chars = max(
-        MIN_RESEARCH_ANSWER_CHARS,
+        minimum_answer_chars,
         min(
             TARGET_RESEARCH_ANSWER_CHARS,
             600 + len(verified_claims) * 260 + max(1, len(required_plan_facet_ids)) * 180,
@@ -16865,9 +17082,12 @@ def _invoke_web_research_architect_staged(
     writer_prompt = (
         f"用与 QUESTION 相同的主要语言撰写详细 Markdown 答案。正常目标是去空白后 "
         f"{delivery_target_min_chars}-{delivery_target_max_chars} 个有效 Unicode 字符；"
-        f"本次可交付下限是 {MIN_RESEARCH_ANSWER_CHARS} 个有效字符，不得重复凑字。"
+        f"本次可交付下限是 {minimum_answer_chars} 个有效字符，不得重复凑字。"
         f"答案不得超过 {_MAX_RESEARCH_VISIBLE_ANSWER_CHARS} 字。先给直接结论，再逐层回答问题；至少形成 "
         f"{writer_required_claim_count} 个有实质内容的证据单元，并让至少 {writer_required_source_count} 个不同来源分别出现在相关段落的 [S#] 引用中。"
+        "只能使用 VERIFIED PLAN 已绑定的引用编号："
+        + " ".join(f"[{key}]" for key in sorted(verified_citation_keys))
+        + "；不得引用规划候选中未绑定到 claim 的其他编号。"
         "必须明确 as-of 时点，区分来源直接事实、跨来源综合推论、冲突或限制；结尾列出实际使用的来源标题、URL、日期/版本。"
         "只输出答案正文，不要 JSON、不要代码围栏。完成全部正文和来源列表后，最后单独输出完成标记 "
         f"{_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\nQUESTION: {question}"
@@ -16904,6 +17124,7 @@ def _invoke_web_research_architect_staged(
         candidate_payload = {
             "question": question,
             "freshness": freshness,
+            "deliveryRequirements": requirements,
             "reviewDecision": "accept",
             "answer": candidate_answer,
             "sourceUrls": compact_sources,
@@ -16916,6 +17137,13 @@ def _invoke_web_research_architect_staged(
             for issue in _architect_delivery_quality_issues(candidate_payload)
             if issue != "independent_semantic_review_not_accepted"
         ]
+        issues.extend(
+            f"answer_citation_not_bound_to_verified_claim:{citation_key}"
+            for citation_key in _architect_unbound_answer_citations(
+                candidate_answer,
+                verified_claims,
+            )
+        )
         brief_coverage = _research_brief_coverage(
             question=question,
             source_matrix=compact_sources,
@@ -17536,6 +17764,7 @@ def _invoke_web_research_architect_staged(
     segmented_contract_profile: dict[str, Any] | None = None
     productive_writer_candidates: list[tuple[float, int, int, tuple[Any, str, str]]] = []
     deterministic_answer = ""
+    compact_writer_mode = requirements.get("mode") == "narrow_authoritative_technical"
 
     def stable_segmented_profile(profile: dict[str, Any]) -> dict[str, Any]:
         nonlocal segmented_contract_profile
@@ -17567,6 +17796,8 @@ def _invoke_web_research_architect_staged(
     for writer_index, candidate in enumerate(writer_candidates):
         model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
         segmented_profile = _architect_segmented_writer_profile(candidate)
+        if compact_writer_mode:
+            segmented_profile = {**segmented_profile, "enabled": False}
         if segmented_profile.get("enabled") or accepted_segmented_sections:
             effective_segmented_profile = stable_segmented_profile(segmented_profile)
             attempt_started_at = time.perf_counter()
@@ -17656,7 +17887,7 @@ def _invoke_web_research_architect_staged(
                 instruction=writer_instruction,
                 materials=[
                     {"title": "Verified evidence plan", "kind": "research_plan", "content": json.dumps(verified_plan, ensure_ascii=False)},
-                    {"title": "Research evidence candidates", "kind": "research_sources", "content": source_material},
+                    {"title": "Research evidence candidates", "kind": "research_sources", "content": writer_source_material},
                 ],
                 target_role="web-research-answer-writer",
                 node="web_research_architect_answer_revision" if attempt_index else "web_research_architect_answer",
@@ -17666,12 +17897,16 @@ def _invoke_web_research_architect_staged(
                     candidate,
                     messages,
                     seconds=per_call_budget,
-                    max_tokens=_RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS,
+                    max_tokens=(
+                        min(3_200, _RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS)
+                        if compact_writer_mode
+                        else _RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS
+                    ),
                     disable_thinking=True,
                 )
             except concurrent.futures.TimeoutError:
                 candidate_errors.append(f"{model_label}: architect_answer_timeout")
-                if remaining_seconds() > review_reserve + 12:
+                if not compact_writer_mode and remaining_seconds() > review_reserve + 12:
                     fallback_profile = stable_segmented_profile(segmented_profile)
                     segmented_answer, revisions, section_count, segmented_errors, _accepted_sections = write_segmented_answer(
                         candidate,
@@ -17687,7 +17922,7 @@ def _invoke_web_research_architect_staged(
                 break
             except Exception as exc:  # noqa: BLE001 - try the next configured writer model.
                 candidate_errors.append(f"{model_label}: architect_answer_{type(exc).__name__}: {_safe_text(exc)[:220]}")
-                if remaining_seconds() > review_reserve + 12:
+                if not compact_writer_mode and remaining_seconds() > review_reserve + 12:
                     fallback_profile = stable_segmented_profile(segmented_profile)
                     segmented_answer, revisions, section_count, segmented_errors, _accepted_sections = write_segmented_answer(
                         candidate,
@@ -17720,7 +17955,11 @@ def _invoke_web_research_architect_staged(
                 writer_revision_count += attempt_index
                 break
             candidate_errors.append(f"{model_label}: " + ",".join(structural_issues[:8]))
-            if observed_truncation and remaining_seconds() > review_reserve + 12:
+            if (
+                not compact_writer_mode
+                and observed_truncation
+                and remaining_seconds() > review_reserve + 12
+            ):
                 fallback_profile = stable_segmented_profile(segmented_profile)
                 segmented_answer, revisions, section_count, segmented_errors, _accepted_sections = write_segmented_answer(
                     candidate,
@@ -17739,7 +17978,7 @@ def _invoke_web_research_architect_staged(
             writer_instruction = (
                 "完整重写上一份候选答案，不要补写附录，也不要解释门禁。保留所有正确事实和引用，修复以下 Runtime 门禁："
                 + ", ".join(structural_issues[:8])
-                + f"。正常目标仍是 {_RESEARCH_ARCHITECT_IDEAL_ANSWER_MIN_CHARS}-{_RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS} 个去空白有效字符，"
+                + f"。正常目标仍是 {delivery_target_min_chars}-{delivery_target_max_chars} 个去空白有效字符，"
                 + "每个重要结论在对应内容单元内放置正确 [S#]；完成来源列表后必须输出完成标记。\n"
                 + f"QUESTION: {question}\nPREVIOUS_DRAFT:\n{candidate_answer[:_MAX_RESEARCH_VISIBLE_ANSWER_CHARS]}"
             )
@@ -18236,7 +18475,7 @@ def _invoke_web_research_architect_staged(
                             {
                                 "title": "Research evidence candidates",
                                 "kind": "research_sources",
-                                "content": source_material,
+                                "content": writer_source_material,
                             },
                         ],
                         target_role="web-research-answer-writer",
@@ -18452,7 +18691,7 @@ def _invoke_web_research_architect_staged(
                         {
                             "title": "Research evidence candidates",
                             "kind": "research_sources",
-                            "content": source_material,
+                            "content": writer_source_material,
                         },
                     ],
                     target_role="web-research-answer-writer",
@@ -18706,6 +18945,7 @@ def _invoke_web_research_architect_staged(
     validation_payload = {
         "question": question,
         "freshness": freshness,
+        "deliveryRequirements": requirements,
         "reviewDecision": "accept",
         "answer": answer,
         "sourceUrls": reviewed_source_urls,
@@ -18803,7 +19043,10 @@ def _invoke_web_research_architect_agent(
     timeout_seconds: int,
     per_call_timeout_seconds: int | None = None,
     architect_mode: str = "",
+    preferred_language: str = "",
+    delivery_requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
     sources = _research_architect_sources_for_prompt(
         source_matrix,
         shards,
@@ -18823,6 +19066,8 @@ def _invoke_web_research_architect_agent(
                 freshness=freshness,
                 timeout_seconds=timeout_seconds,
                 per_call_timeout_seconds=per_call_timeout_seconds,
+                preferred_language=preferred_language,
+                delivery_requirements=requirements,
             )
         except Exception as exc:  # noqa: BLE001 - deterministic fallback must keep Research Runtime alive.
             return {"_agentError": f"{type(exc).__name__}: {exc}", "_architectMode": mode}
@@ -18878,7 +19123,8 @@ def _invoke_web_research_architect_agent(
         prompt = (
             "只输出严格 JSON：reviewDecision, reviewReasons, criticalMissingEvidence, recommendedNextQueries。"
             "reviewDecision 必须是 retry 或 reject；recommendedNextQueries 最多4项，每项应能直接交给搜索工具。"
-            f"最低结构目标：{MIN_RESEARCH_SOURCE_COUNT} 个逻辑来源、{MIN_RESEARCH_DISTINCT_HOST_COUNT} 个独立主机；"
+            f"最低结构目标：{_as_int(requirements.get('minimumSources'), MIN_RESEARCH_SOURCE_COUNT)} 个逻辑来源、"
+            f"{_as_int(requirements.get('minimumDistinctHosts'), MIN_RESEARCH_DISTINCT_HOST_COUNT)} 个独立主机；"
             "时效充分性不是固定发布日期数量门槛：根据每个来源明确标注的发布/更新/版本/检索时间与问题风险判断，"
             "只有确实无法判断关键当前性时才建议补搜。检索时间只表示本轮读取时间，不等于文档发布时间。"
             f"\nQUESTION: {question}"
@@ -19397,7 +19643,10 @@ def _web_research_architect_pack(
     average_authority: float,
     freshness: str,
     architect_call_state: dict[str, Any] | None = None,
+    preferred_language: str = "",
+    delivery_requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
     prompt_sources = _research_architect_sources_for_prompt(
         source_matrix,
         shards,
@@ -19410,6 +19659,7 @@ def _web_research_architect_pack(
         shards=shards,
         confidence=confidence,
         average_authority=average_authority,
+        delivery_requirements=requirements,
     )
     config = _research_config()
     if not config.get("architectAgentSynthesisEnabled", True):
@@ -19439,16 +19689,24 @@ def _web_research_architect_pack(
             },
         }
     if mode == "gap_review":
+        minimum_sources = _as_int(
+            requirements.get("minimumSources"),
+            MIN_RESEARCH_SOURCE_COUNT,
+        )
+        minimum_hosts = _as_int(
+            requirements.get("minimumDistinctHosts"),
+            MIN_RESEARCH_DISTINCT_HOST_COUNT,
+        )
         structural_gaps: list[str] = []
-        if int(structural_stats.get("selectedSourceCount") or 0) < MIN_RESEARCH_SOURCE_COUNT:
+        if int(structural_stats.get("selectedSourceCount") or 0) < minimum_sources:
             structural_gaps.append(
                 "Architect-answerable source minimum not met: "
-                f"{structural_stats.get('selectedSourceCount', 0)}/{MIN_RESEARCH_SOURCE_COUNT}."
+                f"{structural_stats.get('selectedSourceCount', 0)}/{minimum_sources}."
             )
-        if int(structural_stats.get("distinctHostCount") or 0) < MIN_RESEARCH_DISTINCT_HOST_COUNT:
+        if int(structural_stats.get("distinctHostCount") or 0) < minimum_hosts:
             structural_gaps.append(
                 "Architect-answerable independent host minimum not met: "
-                f"{structural_stats.get('distinctHostCount', 0)}/{MIN_RESEARCH_DISTINCT_HOST_COUNT}."
+                f"{structural_stats.get('distinctHostCount', 0)}/{minimum_hosts}."
             )
         missing_facet_ids = [
             _safe_text(value)
@@ -19462,9 +19720,9 @@ def _web_research_architect_pack(
                 + "."
             )
         minimum_reviewable = bool(
-            int(structural_stats.get("selectedSourceCount") or 0) >= MIN_RESEARCH_SOURCE_COUNT
+            int(structural_stats.get("selectedSourceCount") or 0) >= minimum_sources
             and int(structural_stats.get("distinctHostCount") or 0)
-            >= MIN_RESEARCH_DISTINCT_HOST_COUNT
+            >= minimum_hosts
         )
         if (
             minimum_reviewable
@@ -19484,6 +19742,8 @@ def _web_research_architect_pack(
                 ),
                 per_call_timeout_seconds=int(config.get("architectAgentTimeoutSeconds") or 60),
                 architect_mode="gap_review",
+                preferred_language=preferred_language,
+                delivery_requirements=requirements,
             )
             merged = _merge_web_research_architect_agent_pack(
                 base_pack,
@@ -19546,6 +19806,9 @@ def _web_research_architect_pack(
             },
         }
     call_state["fullSynthesisAttempts"] = int(call_state.get("fullSynthesisAttempts") or 0) + 1
+    synthesis_timeout_seconds = int(_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000)
+    if requirements.get("mode") == "narrow_authoritative_technical":
+        synthesis_timeout_seconds = min(120, synthesis_timeout_seconds)
     agent_pack = _invoke_web_research_architect_agent(
         question=question,
         # The deterministic base pack and the model/reviewer chain must see
@@ -19557,9 +19820,11 @@ def _web_research_architect_pack(
         confidence=confidence,
         average_authority=average_authority,
         freshness=freshness,
-        timeout_seconds=int(_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000),
+        timeout_seconds=synthesis_timeout_seconds,
         per_call_timeout_seconds=int(config.get("architectAgentTimeoutSeconds") or 60),
         architect_mode=mode,
+        preferred_language=preferred_language,
+        delivery_requirements=requirements,
     )
     merged = _merge_web_research_architect_agent_pack(
         base_pack,
@@ -19690,8 +19955,83 @@ def _source_router_search(**kwargs: Any) -> str:
     # production routes through the Source Router rather than the raw web_search
     # primitive.
     if web_search is not None and getattr(web_search, "func", None) and not getattr(web_search, "name", None):
-        return web_search.func(**kwargs)
+        legacy_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in {
+                "total_timeout_seconds",
+                "locale_hint",
+                "allow_browser_profile_fallback",
+            }
+        }
+        return web_search.func(**legacy_kwargs)
     return source_router_search(**kwargs)
+
+
+def _source_router_read(**kwargs: Any) -> str:
+    if web_read is not None and getattr(web_read, "func", None) and not getattr(web_read, "name", None):
+        legacy_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key != "timeout_seconds"
+        }
+        return web_read.func(**legacy_kwargs)
+    return source_router_read(**kwargs)
+
+
+def _is_technical_research_question(question: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:api|sdk|framework|library|package|module|next\.js|react|expo|electron|python|typescript)\b|"
+            r"(?:软件|开发框架|代码库|程序库|依赖包|接口文档|技术文档)",
+            _safe_text(question),
+            re.IGNORECASE,
+        )
+    )
+
+
+def _research_delivery_requirements(question: str) -> dict[str, Any]:
+    text = _safe_text(question)
+    explicit_facets = _build_explicit_question_facets(text)
+    broad_or_comparative = bool(
+        explicit_facets
+        or re.search(
+            r"\b(?:compare|comparison|versus|vs\.?|comprehensive|deep research|landscape|market)\b|"
+            r"(?:比较|对比|竞品|全面|深入调研|行业格局|市场格局|多方|多个产品)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    narrow_technical = _is_technical_research_question(text) and not broad_or_comparative
+    explicit_source_floor = 0
+    match = re.search(
+        r"(?:at\s+least|minimum(?:\s+of)?)\s*(\d+)\s+(?:independent\s+|official\s+|readable\s+)?sources?|"
+        r"(?:至少|不少于)\s*(\d+)\s*(?:个|条)?(?:独立|官方|可读)?来源",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        explicit_source_floor = _as_int(match.group(1) or match.group(2), 0)
+    minimum_sources = max(
+        explicit_source_floor,
+        2 if narrow_technical else MIN_RESEARCH_SOURCE_COUNT,
+    )
+    minimum_hosts = (
+        1
+        if narrow_technical and minimum_sources <= 2
+        else min(MIN_RESEARCH_DISTINCT_HOST_COUNT, minimum_sources)
+    )
+    return {
+        "mode": "narrow_authoritative_technical" if narrow_technical else "standard_research",
+        "minimumSources": minimum_sources,
+        "minimumDistinctHosts": minimum_hosts,
+        "minimumClaims": MIN_RESEARCH_CLAIM_COUNT,
+        "minimumAnswerChars": MIN_RESEARCH_ANSWER_CHARS,
+        "targetSources": TARGET_RESEARCH_SOURCE_COUNT,
+        "targetDistinctHosts": TARGET_RESEARCH_DISTINCT_HOST_COUNT,
+        "targetClaims": TARGET_RESEARCH_CLAIM_COUNT,
+        "targetAnswerChars": TARGET_RESEARCH_ANSWER_CHARS,
+    }
 
 
 def _should_try_context7_source(question: str, source_policy: str) -> bool:
@@ -19702,14 +20042,7 @@ def _should_try_context7_source(question: str, source_policy: str) -> bool:
     # Context7 is a software/library documentation source, not a generic
     # "official or primary" source.  A legal or policy question mentioning
     # documentation obligations must stay on the normal Source Router.
-    return bool(
-        re.search(
-            r"\b(?:api|sdk|framework|library|package|module|next\.js|react|expo|electron|python|typescript)\b|"
-            r"(?:软件|开发框架|代码库|程序库|依赖包|接口文档|技术文档)",
-            text,
-            re.IGNORECASE,
-        )
-    )
+    return _is_technical_research_question(text)
 
 
 def _run_coro_blocking(coro: Any, *, timeout_seconds: float) -> Any:
@@ -19810,7 +20143,26 @@ async def _call_context7_source_async(question: str) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     library_id = ""
     if resolve_tool:
-        for arguments in ({"query": question[:120]}, {"libraryName": question[:120]}):
+        entity_labels = [
+            _safe_text(item.get("label"))
+            for item in sorted(
+                _catalog_official_entity_hints(question),
+                key=lambda item: len(_safe_text(item.get("label"))),
+                reverse=True,
+            )
+            if _safe_text(item.get("label"))
+        ]
+        fallback_label = _deterministic_facet_search_query(question, max_chars=80)
+        library_names = list(dict.fromkeys([*entity_labels, fallback_label]))[:4]
+        scoped_query = (
+            _technical_atomic_search_query(question)
+            or _deterministic_facet_search_query(question, max_chars=240)
+        )
+        for library_name in library_names:
+            arguments = {
+                "query": scoped_query or question[:240],
+                "libraryName": library_name,
+            }
             try:
                 resolved = await mcp_manager.call_tool(
                     server_name=server_name,
@@ -19828,12 +20180,13 @@ async def _call_context7_source_async(question: str) -> dict[str, Any]:
                 attempts.append({"tool": resolve_tool, "ok": False, "argumentsShape": sorted(arguments), "error": str(exc)[:300]})
     docs_attempts: list[dict[str, Any]] = []
     if library_id:
-        docs_attempts.extend(
-            [
-                {"libraryId": library_id, "topic": question[:240], "tokens": 3000},
-                {"context7CompatibleLibraryID": library_id, "topic": question[:240], "tokens": 3000},
-                {"libraryId": library_id, "query": question[:240]},
-            ]
+        docs_attempts.append(
+            {
+                "libraryId": library_id,
+                "query": _technical_atomic_search_query(question)
+                or _deterministic_facet_search_query(question, max_chars=240)
+                or question[:240],
+            }
         )
     else:
         return {"ok": False, "error": "context7_library_id_not_resolved", "serverName": server_name, "attempts": attempts}
@@ -19892,7 +20245,12 @@ def _run_context7_source(question: str, *, tool_call_id: str) -> dict[str, Any]:
             "sourceRouter": {"selectedProvider": "context7", "fallbackReason": "context7_unavailable"},
         }
     original_text = _safe_text(payload.get("text"))
-    text = _research_source_excerpt(original_text, question, limit=_RESEARCH_SOURCE_CAPTURE_CHARS)
+    evidence_query = _technical_atomic_search_query(question) or question
+    text = _research_source_excerpt(
+        original_text,
+        evidence_query,
+        limit=_RESEARCH_SOURCE_CAPTURE_CHARS,
+    )
     library_id = _safe_text(payload.get("libraryId"))
     url = f"mcp://context7/{library_id.lstrip('/')}" if library_id else "mcp://context7/docs"
     quality = {
@@ -19906,6 +20264,7 @@ def _run_context7_source(question: str, *, tool_call_id: str) -> dict[str, Any]:
         "shardId": "context7_docs",
         "kind": "technical_docs",
         "query": question,
+        "evidenceQuery": evidence_query,
         "ok": True,
         "provider": "context7",
         "networkRoute": "mcp",
@@ -20017,21 +20376,18 @@ def _run_seed_url_shard(
         read_payload = dict(cached_read.get("readPayload") or {})
         original_text = _safe_text(cached_read.get("originalText"))
     else:
-        read_payload = _call_with_deadline(
-            lambda: web_read.func(
+        read_payload = _parse_tool_json(
+            _source_router_read(
                 url=url,
-                mode="auto",
+                mode="auto" if use_agent_browser_profile else "static",
                 headless=True,
                 referer_mode="none",
                 referer_url="",
                 maxTextChars=_RESEARCH_SOURCE_READ_CHARS,
                 useAgentBrowserProfile=bool(use_agent_browser_profile),
                 tool_call_id=tool_call_id,
-            ),
-            deadline_ms=_RESEARCH_SOURCE_READ_DEADLINE_MS,
-            tool_name="web_read",
-            family="research",
-            recommended_next_action="保留该 seed 为 unavailable，或在同一 Research brief 内补充另一条官方来源。",
+                timeout_seconds=_RESEARCH_SOURCE_READ_DEADLINE_MS / 1000.0,
+            )
         )
         original_text = _safe_text(
             read_payload.get("text")
@@ -20147,7 +20503,13 @@ def _run_search_shard(
     read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
     read_round: int = 1,
     cancel_event: threading.Event | None = None,
+    preferred_language: str = "",
 ) -> dict[str, Any]:
+    shard_deadline_at = time.monotonic() + (_RESEARCH_SHARD_DEADLINE_MS / 1000.0)
+
+    def remaining_shard_ms() -> int:
+        return max(0, int((shard_deadline_at - time.monotonic()) * 1000))
+
     if cancel_event is not None and cancel_event.is_set():
         return {
             **shard,
@@ -20175,22 +20537,35 @@ def _run_search_shard(
     source_intent = _safe_text(shard.get("sourceIntent")).lower()
     site_domains = _query_site_domains(query)
     video_research = _is_video_research(query, source_policy, shard.get("kind"))
-    search_payload = _call_with_deadline(
-        lambda: _source_router_search(
+    try:
+        search_payload = _parse_tool_json(
+            _source_router_search(
             query=query,
             limit=8,
             search_engine="auto",
-            mode="auto",
+            mode="static",
             referer_mode="none",
             referer_url="",
-            useAgentBrowserProfile=bool(use_agent_browser_profile),
+            useAgentBrowserProfile=False,
             tool_call_id=tool_call_id,
-        ),
-        deadline_ms=min(_RESEARCH_SHARD_DEADLINE_MS, 45_000),
-        tool_name="source_router_search",
-        family="research",
-        recommended_next_action="换关键词、限定权威域名，或保留该 shard 为 failed_source。",
-    )
+                total_timeout_seconds=min(
+                    _RESEARCH_SEARCH_DEADLINE_MS,
+                    remaining_shard_ms(),
+                ) / 1000.0,
+                locale_hint=preferred_language,
+                allow_browser_profile_fallback=False,
+            )
+        )
+    except Exception as exc:
+        search_payload = _deadline_failure(
+            tool_name="source_router_search",
+            family="research",
+            deadline_ms=_RESEARCH_SEARCH_DEADLINE_MS,
+            summary="Source Router search failed.",
+            failure_class=classify_failure(exc),
+            error=str(exc),
+            recommended_next_action="换关键词、限定权威域名，或保留该 shard 为 failed_source。",
+        )
     if cancel_event is not None and cancel_event.is_set():
         return {
             **shard,
@@ -20295,6 +20670,9 @@ def _run_search_shard(
     for result in top_results:
             if cancel_event is not None and cancel_event.is_set():
                 break
+            remaining_ms = remaining_shard_ms()
+            if remaining_ms < 1_000:
+                break
             if len(fetched) >= 4 or accepted_read_count >= 2:
                 break
             url = _safe_text(result.get("url"))
@@ -20310,7 +20688,10 @@ def _run_search_shard(
                 if not read_claim:
                     cached_read = read_attempt_ledger.cached_payload(
                         url,
-                        wait_seconds=_RESEARCH_SOURCE_READ_DEADLINE_MS / 1000.0,
+                        wait_seconds=min(
+                            _RESEARCH_SOURCE_READ_DEADLINE_MS,
+                            remaining_ms,
+                        ) / 1000.0,
                     )
                     if cached_read is None:
                         continue
@@ -20323,21 +20704,26 @@ def _run_search_shard(
                 read_payload = dict(cached_read.get("readPayload") or {})
                 original_text = _safe_text(cached_read.get("originalText"))
             else:
-                read_payload = _call_with_deadline(
-                    lambda: web_read.func(
+                read_timeout_ms = min(
+                    _RESEARCH_SOURCE_READ_DEADLINE_MS,
+                    remaining_shard_ms(),
+                )
+                if read_timeout_ms < 1_000:
+                    if read_attempt_ledger is not None:
+                        read_attempt_ledger.finish(read_claim, retryable=True)
+                    break
+                read_payload = _parse_tool_json(
+                    _source_router_read(
                         url=url,
-                        mode="auto",
+                        mode="static",
                         headless=True,
                         referer_mode="none",
                         referer_url="",
                         maxTextChars=_RESEARCH_SOURCE_READ_CHARS,
-                        useAgentBrowserProfile=bool(use_agent_browser_profile),
+                        useAgentBrowserProfile=False,
                         tool_call_id=tool_call_id,
-                    ),
-                    deadline_ms=_RESEARCH_SOURCE_READ_DEADLINE_MS,
-                    tool_name="web_read",
-                    family="research",
-                    recommended_next_action="标记该 source unavailable，换可访问来源或降低置信度。",
+                        timeout_seconds=read_timeout_ms / 1000.0,
+                    )
                 )
                 original_text = _safe_text(
                     read_payload.get("text")
@@ -20521,6 +20907,7 @@ def _run_search_shards(
     already_read_urls: set[str] | None = None,
     read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
     read_round: int = 1,
+    preferred_language: str = "",
 ) -> list[dict[str, Any]]:
     if not shards:
         return []
@@ -20572,6 +20959,7 @@ def _run_search_shards(
                 read_attempt_ledger=attempt_ledger,
                 read_round=read_round,
                 cancel_event=cancel_event,
+                preferred_language=preferred_language,
             )
             futures[future] = index
         try:
@@ -20875,7 +21263,12 @@ def _required_research_facet_queries(
             or shard.get("evidenceQuery")
             or shard.get("query")
         )
-        if not facet_id or not goal or facet_id in seen:
+        if (
+            not facet_id
+            or not goal
+            or facet_id in seen
+            or not _research_facet_requires_atomic_claim(facet_id)
+        ):
             continue
         seen.add(facet_id)
         derived.append((goal, f"facet:{facet_id}"))
@@ -21214,6 +21607,12 @@ def _research_architect_plan_failure_gaps(
                 "telemetry, and limitations official documentation with dated boundaries"
             )
         return gaps
+    if labels and _is_technical_research_question(question):
+        subject = _technical_atomic_search_query(question) or labels[0]
+        return [
+            f"{subject} official API reference signatures examples",
+            f"{subject} official migration guide release notes version boundaries",
+        ]
     subject = _research_query_subject(question)
     return [
         f"{subject} Windows installation runtime model tool calling MCP extensions official documentation current",
@@ -22205,6 +22604,8 @@ def _research_facet_requires_atomic_claim(facet_id: Any) -> bool:
     normalized = re.sub(r"[_\s]+", "-", _safe_text(facet_id).lower()).strip("-")
     if not normalized:
         return False
+    if normalized.startswith("architect-gap-"):
+        return False
     return not bool(
         re.search(
             r"(?:^|-)(?:cross-check|crosscheck|corroboration|source-comparison|"
@@ -22356,6 +22757,7 @@ def _invoke_web_research_architect_query_plan(
     source_policy: str,
     freshness: str,
     max_shards: int,
+    preferred_language: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Ask the bound Research Architect to design atomic search queries.
 
@@ -22444,6 +22846,7 @@ def _invoke_web_research_architect_query_plan(
         + f"总数不得超过 {max_shards}。每条 query 必须单行、8-280 字符、可直接交给搜索引擎；禁止解释文字。"
         f"\nSOURCE_POLICY: {_safe_text(source_policy) or 'authoritative'}"
         f"\nFRESHNESS: {_safe_text(freshness) or 'auto'}"
+        f"\nUSER_VISIBLE_LANGUAGE: {normalize_preferred_language(preferred_language) or infer_preferred_language(question)}"
     )
     material = json.dumps(
         {
@@ -22962,13 +23365,24 @@ def _research_query_subject(question: str) -> str:
         "evidence",
         "for",
         "latest",
+        "only",
         "official",
+        "answer",
+        "chinese",
+        "core",
+        "directly",
         "practice",
         "practices",
+        "explain",
+        "pattern",
+        "please",
+        "return",
+        "simplified",
         "source",
         "sources",
         "the",
         "tools",
+        "usable",
         "using",
         "what",
         "with",
@@ -22982,7 +23396,7 @@ def _research_query_subject(question: str) -> str:
     for run in cjk_runs[:2]:
         if run not in terms:
             terms.append(run[:40])
-    return " ".join(terms[:8]) or _safe_text(question)[:160]
+    return " ".join(terms[:10]) or _safe_text(question)[:160]
 
 
 def _build_temporal_refinement_queries(
@@ -23778,6 +24192,7 @@ def _run_research_loop(
     tool_call_id: str,
     read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
     recent_discovery_seed_shards: list[dict[str, Any]] | None = None,
+    preferred_language: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     loop_state: dict[str, Any] = {
         "phase": "research_loop",
@@ -23839,6 +24254,7 @@ def _run_research_loop(
             tool_call_id=tool_call_id,
             read_attempt_ledger=attempt_ledger,
             read_round=round_index,
+            preferred_language=preferred_language,
         )
         all_shards.extend(completed)
         final_stats = _selected_source_stats(question, all_shards, source_policy=source_policy)
@@ -24131,7 +24547,9 @@ def _synthesize_bundle(
     research_loop_state: dict[str, Any] | None = None,
     experience_reuse: dict[str, Any] | None = None,
     architect_call_state: dict[str, Any] | None = None,
+    preferred_language: str = "",
 ) -> dict[str, Any]:
+    delivery_requirements = _research_delivery_requirements(question)
     source_matrix: list[dict[str, Any]] = []
     citations: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
@@ -24165,6 +24583,7 @@ def _synthesize_bundle(
                 "snippet": _safe_text(result.get("snippet"))[:240],
                 "provider": shard.get("provider"),
                 "networkRoute": shard.get("networkRoute"),
+                "sourceCapability": read_payload.get("sourceCapability") or shard.get("sourceCapability"),
                 "shardId": shard.get("shardId"),
                 "researchFacetId": (
                     _safe_text(shard.get("researchFacetId"))
@@ -24219,7 +24638,12 @@ def _synthesize_bundle(
     confidence = (
         "high"
         if average_authority >= 75 and len(selected_source_matrix) >= TARGET_RESEARCH_SOURCE_COUNT
-        else ("medium" if len(selected_source_matrix) >= MIN_RESEARCH_SOURCE_COUNT else "low")
+        else (
+            "medium"
+            if len(selected_source_matrix)
+            >= _as_int(delivery_requirements.get("minimumSources"), MIN_RESEARCH_SOURCE_COUNT)
+            else "low"
+        )
     )
     if not source_matrix:
         conflicts.append({"kind": "no_sources", "summary": "No usable source result was collected."})
@@ -24234,6 +24658,8 @@ def _synthesize_bundle(
         average_authority=average_authority,
         freshness=freshness,
         architect_call_state=architect_call_state,
+        preferred_language=preferred_language,
+        delivery_requirements=delivery_requirements,
     )
     claim_table = list(architect_pack.get("claimTable") or [])
     conflict_matrix = list(architect_pack.get("conflictMatrix") or [])
@@ -24274,6 +24700,7 @@ def _synthesize_bundle(
         "sourcePolicy": source_policy,
         "freshness": freshness,
         "deliverable": deliverable,
+        "deliveryRequirements": delivery_requirements,
         "answer": architect_pack.get("answer") or "",
         "resultPreview": architect_pack.get("answer") or "",
         "researchResult": architect_pack,
@@ -24392,6 +24819,7 @@ def research_broker(
     includeArchived: bool = False,
     confirm: bool = False,
     useAgentBrowserProfile: bool = False,
+    preferredLanguage: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
@@ -24648,6 +25076,15 @@ def research_broker(
             }
         )
 
+    route_context = (
+        (state or {}).get("current_route_context")
+        if isinstance((state or {}).get("current_route_context"), dict)
+        else {}
+    )
+    preferred_language = normalize_preferred_language(
+        preferredLanguage or route_context.get("preferredLanguage")
+    ) or infer_preferred_language(clean_question)
+
     seed_urls = _as_list(seedUrls)
     # A URL embedded in the user's brief is an explicit read request even
     # when the caller did not populate the structured ``seedUrls`` field.
@@ -24694,6 +25131,7 @@ def research_broker(
             "researchIntent": researchIntent,
             "freshness": freshness,
             "sourcePolicy": sourcePolicy,
+            "preferredLanguage": preferred_language,
             "sourceCatalogRef": "research_source_quality_catalog:v1",
             "experienceFirstPolicy": {
                 "summary": "Before running new research, search reusable experience packs for repeat topics.",
@@ -24788,6 +25226,7 @@ def research_broker(
             source_policy=sourcePolicy,
             freshness=freshness,
             max_shards=max(0, shard_cap - len(seed_shards)),
+            preferred_language=preferred_language,
         )
         if planned_shards:
             planned_shards, catalog_seed_audit = _apply_catalog_official_entity_seeds(
@@ -24823,6 +25262,7 @@ def research_broker(
         tool_call_id=tool_call_id,
         read_attempt_ledger=read_attempt_ledger,
         recent_discovery_seed_shards=recent_discovery_seeds,
+        preferred_language=preferred_language,
     )
     research_loop_state["queryPlan"] = query_plan_state
     architect_call_state: dict[str, Any] = {
@@ -24847,6 +25287,7 @@ def research_broker(
         research_loop_state=research_loop_state,
         experience_reuse=experience_reuse,
         architect_call_state=architect_call_state,
+        preferred_language=preferred_language,
     )
     _report_research_progress(
         stage="review",
@@ -25097,6 +25538,7 @@ def research_broker(
             already_read_urls=already_read_urls,
             read_attempt_ledger=read_attempt_ledger,
             read_round=repair_round,
+            preferred_language=preferred_language,
         )
         for shard in repaired:
             for item in list(shard.get("fetchedTopSources") or []):
@@ -25139,6 +25581,7 @@ def research_broker(
                     already_read_urls=already_read_urls,
                     read_attempt_ledger=read_attempt_ledger,
                     read_round=repair_round,
+                    preferred_language=preferred_language,
                 )
             )
         completed_shards.extend(repaired)
@@ -25227,6 +25670,7 @@ def research_broker(
             research_loop_state=research_loop_state,
             experience_reuse=experience_reuse,
             architect_call_state=architect_call_state,
+            preferred_language=preferred_language,
         )
         refreshed_architect_pack = (
             bundle.get("finalExperiencePack")

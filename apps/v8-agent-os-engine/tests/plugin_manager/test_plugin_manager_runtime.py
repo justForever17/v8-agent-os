@@ -257,6 +257,62 @@ def test_skills_cli_runs_without_a_console_window_on_windows(
     assert result["returnCode"] == 0
     assert captured["args"][0][0] == "C:/npm/npx.cmd"
     assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["env"]["npm_config_registry"] == "https://registry.npmmirror.com"
+
+
+def test_skills_cli_falls_back_to_official_registry_within_one_deadline(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    registries: list[str] = []
+    monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: "C:/npm/npx.cmd")
+
+    def fake_run(argv, **kwargs):
+        registry = kwargs["env"]["npm_config_registry"]
+        registries.append(registry)
+        if registry == "https://registry.npmmirror.com":
+            raise service_module.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return type("Completed", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+    monkeypatch.setattr(service_module, "run_windowless", fake_run)
+
+    result = service._run_skills_cli(["list", "--global"], timeout_seconds=4)
+
+    assert result["returnCode"] == 0
+    assert registries == list(service_module.SKILLS_CLI_NPM_REGISTRIES)
+    assert result["registry"] == "https://registry.npmjs.org"
+
+
+def test_unavailable_skills_cli_does_not_block_independent_plugin_cli(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+    monkeypatch.setattr(service_module, "_architecture_name", lambda: "amd64")
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": False,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [],
+            "lockEntries": {},
+            "error": "skills CLI timed out",
+        },
+    )
+
+    plan = service.build_install_plan("volcengine-mediakit")
+
+    assert plan["installable"] is True
+    assert plan["componentPolicy"]["blockingReasons"] == []
+    assert plan["componentPolicy"]["degradedReasons"] == ["skills_cli_unavailable"]
+    assert "mediakit-cli" in plan["componentPolicy"]["selectedComponentIds"]
+    assert "mediakit-official-skills" in plan["componentPolicy"]["skippedComponentIds"]
+    skill_step = next(item for item in plan["steps"]["skills"] if item["id"] == "mediakit-official-skills")
+    assert skill_step["supported"] is False
+    assert skill_step["blockedReason"] == "skills_cli_unavailable"
 
 
 def test_skills_cli_inventory_probes_the_installed_tool_version(
@@ -1005,8 +1061,14 @@ def test_machine_discovery_surfaces_skill_name_conflict_instead_of_overwriting(r
     discovery = service.discover_machine_components("github")
     assert discovery["skills"][0]["state"] == "conflict"
     plan = service.build_install_plan("github")
-    assert plan["installable"] is False
-    assert "skill_name_conflict" in plan["componentPolicy"]["blockingReasons"]
+    assert plan["installable"] is True
+    assert plan["componentPolicy"]["blockingReasons"] == []
+    assert plan["componentPolicy"]["degradedReasons"] == ["skill_name_conflict"]
+    assert "gh" in plan["componentPolicy"]["selectedComponentIds"]
+    assert "github-cli-skill" in plan["componentPolicy"]["skippedComponentIds"]
+    skill_step = plan["steps"]["skills"][0]
+    assert skill_step["supported"] is False
+    assert skill_step["blockedReason"] == "skill_name_conflict"
 
 
 def test_reviewed_official_skills_are_mandatory_cli_companions(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2123,6 +2185,47 @@ def test_managed_archive_download_extracts_only_the_declared_entry(
     assert failed["returnCode"] == 1
     assert "archive entry not found" in failed["stderrTail"]
     assert not target.exists()
+
+
+def test_managed_github_release_download_uses_hash_verified_mirror_fallback(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("volcengine-mediakit")
+    target = service._plugin_root(manifest.id) / "bin" / "mediakit-cli.exe"
+    content = b"verified mirror executable"
+    urls: list[str] = []
+
+    class _Response:
+        def __init__(self, body: bytes) -> None:
+            self.content = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(url, **_kwargs):
+        urls.append(str(url))
+        if str(url).startswith("https://github.com/"):
+            raise TimeoutError("international route unavailable")
+        return _Response(content)
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    spec = CommandSpec(
+        argv=["v8-managed-download"],
+        downloadUrl="https://github.com/volcengine/mediakit-cli/releases/download/v0.2.0/mediakit-cli.exe",
+        downloadTarget="{pluginRoot}/bin/mediakit-cli.exe",
+        downloadSha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    result = service._execute_spec(manifest, spec)
+
+    assert result["returnCode"] == 0
+    assert urls == [
+        spec.downloadUrl,
+        f"https://ghproxy.net/{spec.downloadUrl}",
+    ]
+    assert target.read_bytes() == content
 
 
 def test_cli_configuration_requirements_store_secret_refs_without_plaintext(runtime, monkeypatch: pytest.MonkeyPatch) -> None:

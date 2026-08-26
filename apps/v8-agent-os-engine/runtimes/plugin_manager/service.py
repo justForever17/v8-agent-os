@@ -56,6 +56,11 @@ from .schema import CliAction, CliProfile, CommandSpec, PluginConfigRequirement,
 AGENT_SKILLS_ROOT = Path.home() / ".agents" / "skills"
 SKILLS_CLI_PACKAGE = "skills@1.5.19"
 SKILLS_CLI_CACHE_SECONDS = 30.0
+SKILLS_CLI_NPM_REGISTRIES = (
+    "https://registry.npmmirror.com",
+    "https://registry.npmjs.org",
+)
+MANAGED_GITHUB_RELEASE_MIRROR_PREFIXES = ("https://ghproxy.net/",)
 SECRET_KEY_RE = re.compile(r"(token|secret|password|api[_-]?key|authorization|credential)", re.I)
 SAFE_COMPONENT_ID_RE = re.compile(r"^[a-zA-Z0-9_.:-]{1,160}$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -329,37 +334,66 @@ class PluginManagerService:
                 "stdoutTail": "",
                 "stderrTail": "npx is not installed",
             }
-        environment = dict(os.environ)
-        environment.update({"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"})
-        try:
-            completed = run_windowless(
-                [executable, "--yes", SKILLS_CLI_PACKAGE, *arguments],
-                cwd=str(cwd) if cwd else None,
-                env=environment,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
-                check=False,
+        deadline = time.monotonic() + max(1, int(timeout_seconds or 0))
+        attempts: list[dict[str, Any]] = []
+        for index, registry in enumerate(SKILLS_CLI_NPM_REGISTRIES):
+            remaining = deadline - time.monotonic()
+            if remaining < 1:
+                break
+            remaining_registries = len(SKILLS_CLI_NPM_REGISTRIES) - index
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "CI": "1",
+                    "NO_COLOR": "1",
+                    "FORCE_COLOR": "0",
+                    "npm_config_registry": registry,
+                }
             )
-            return {
-                "returnCode": int(completed.returncode),
-                "stdoutTail": str(completed.stdout or "")[-1000000:],
-                "stderrTail": str(completed.stderr or "")[-8000:],
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "returnCode": 124,
-                "stdoutTail": "",
-                "stderrTail": "skills CLI timed out",
-            }
-        except OSError as exc:
-            return {
-                "returnCode": 127,
-                "stdoutTail": "",
-                "stderrTail": str(exc),
-            }
+            try:
+                completed = run_windowless(
+                    [executable, "--yes", SKILLS_CLI_PACKAGE, *arguments],
+                    cwd=str(cwd) if cwd else None,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=max(1.0, remaining / remaining_registries),
+                    check=False,
+                )
+                result = {
+                    "returnCode": int(completed.returncode),
+                    "stdoutTail": str(completed.stdout or "")[-1000000:],
+                    "stderrTail": str(completed.stderr or "")[-8000:],
+                    "registry": registry,
+                }
+                attempts.append(
+                    {"registry": registry, "returnCode": result["returnCode"]}
+                )
+                if result["returnCode"] == 0:
+                    return {**result, "attempts": attempts}
+            except subprocess.TimeoutExpired:
+                attempts.append({"registry": registry, "returnCode": 124})
+            except OSError as exc:
+                attempts.append(
+                    {
+                        "registry": registry,
+                        "returnCode": 127,
+                        "error": str(exc)[:240],
+                    }
+                )
+        last = attempts[-1] if attempts else {"returnCode": 124}
+        return {
+            "returnCode": int(last.get("returnCode") or 1),
+            "stdoutTail": "",
+            "stderrTail": (
+                "skills CLI timed out across configured npm registries"
+                if int(last.get("returnCode") or 0) == 124
+                else str(last.get("error") or "skills CLI failed across configured npm registries")
+            ),
+            "attempts": attempts,
+        }
 
     @staticmethod
     def _repository_identity(value: str) -> str:
@@ -2546,6 +2580,9 @@ class PluginManagerService:
             str(item.get("componentId") or ""): item
             for item in list(machine_discovery.get("mcp") or [])
         }
+        skills_cli_available = bool(
+            (machine_discovery.get("skillsCli") or {}).get("available")
+        )
         cli_steps = []
         approval_classes = set(manifest.governance.approvalClasses)
         for profile in component_policy["cliProfiles"]:
@@ -2578,11 +2615,37 @@ class PluginManagerService:
         skill_steps = []
         for skill in component_policy["skills"]:
             discovery = dict(discovered_skills.get(skill.id) or {})
+            skill_conflict = bool(
+                str(discovery.get("state") or "").strip().lower() == "conflict"
+                or list(discovery.get("conflicts") or [])
+            )
+            skill_supported = bool(skills_cli_available and not skill_conflict)
+            blocked_reason = (
+                "skill_name_conflict"
+                if skill_conflict
+                else "skills_cli_unavailable"
+                if not skills_cli_available
+                else ""
+            )
             skill_steps.append(
                 {
                     **skill.model_dump(mode="json"),
-                    "action": str(discovery.get("action") or "install"),
-                    "state": str(discovery.get("state") or "missing"),
+                    "action": (
+                        str(discovery.get("action") or "install")
+                        if skill_supported
+                        else "blocked"
+                    ),
+                    "state": (
+                        str(discovery.get("state") or "missing")
+                        if skill_supported
+                        else "blocked"
+                    ),
+                    "supported": skill_supported,
+                    **(
+                        {"blockedReason": blocked_reason}
+                        if blocked_reason
+                        else {}
+                    ),
                     "detectedNames": list(discovery.get("detectedNames") or []),
                     "missingNames": list(discovery.get("missingNames") or []),
                     "conflicts": list(discovery.get("conflicts") or []),
@@ -2611,14 +2674,35 @@ class PluginManagerService:
                     f"godot_setup_{item}"
                     for item in list((setup_projection.get("status") or {}).get("blockingReasons") or [])
                 )
-        if component_policy["skills"] and not bool((machine_discovery.get("skillsCli") or {}).get("available")):
-            blocking_reasons.append("skills_cli_unavailable")
-        if any(item.get("state") == "conflict" for item in skill_steps):
-            blocking_reasons.append("skill_name_conflict")
+        deferred_reasons: list[str] = []
+        unavailable_skill_ids = {
+            item.id for item in component_policy["skills"]
+            if not skills_cli_available
+        }
+        conflicting_skill_ids = {
+            str(item.get("id") or "")
+            for item in skill_steps
+            if item.get("blockedReason") == "skill_name_conflict"
+            and str(item.get("id") or "")
+        }
+        deferred_skill_ids = unavailable_skill_ids | conflicting_skill_ids
+        if unavailable_skill_ids:
+            deferred_reasons.append("skills_cli_unavailable")
+        if conflicting_skill_ids:
+            deferred_reasons.append("skill_name_conflict")
+        if deferred_skill_ids and not component_policy["cliProfiles"] and not component_policy["mcpServers"]:
+            blocking_reasons.extend(deferred_reasons)
         selected_mcp_names = {item.serverName for item in component_policy["mcpServers"]}
         if any(item.get("serverName") in selected_mcp_names for item in machine_discovery.get("ordinaryMcp") or []):
             blocking_reasons.append("ordinary_mcp_name_conflict")
         installable = bool(component_policy["installable"] and not blocking_reasons)
+        selected_component_ids = set(component_policy["activeComponentIds"]) - deferred_skill_ids
+        skipped_component_ids = sorted(
+            {
+                *component_policy["skippedComponentIds"],
+                *deferred_skill_ids,
+            }
+        )
         plan = {
             "pluginId": manifest.id,
             "displayName": manifest.displayName,
@@ -2643,8 +2727,9 @@ class PluginManagerService:
                 "transport": component_policy["transport"],
                 "installable": installable,
                 "blockingReasons": blocking_reasons,
-                "selectedComponentIds": sorted(component_policy["activeComponentIds"]),
-                "skippedComponentIds": list(component_policy["skippedComponentIds"]),
+                "degradedReasons": deferred_reasons,
+                "selectedComponentIds": sorted(selected_component_ids),
+                "skippedComponentIds": skipped_component_ids,
             },
             "machineDiscovery": machine_discovery,
             "installable": installable,
@@ -2983,15 +3068,19 @@ class PluginManagerService:
                 return self.get_install_job(job_id)
             component_policy = self._component_policy(manifest)
             selected_cli_profiles = list(component_policy["cliProfiles"])
-            selected_skills = list(component_policy["skills"])
+            skill_plan_steps = {
+                str(item.get("id") or ""): dict(item)
+                for item in list((current_plan.get("steps") or {}).get("skills") or [])
+            }
+            selected_skills = [
+                skill
+                for skill in component_policy["skills"]
+                if (skill_plan_steps.get(skill.id) or {}).get("supported") is not False
+            ]
             selected_mcp_servers = list(component_policy["mcpServers"])
             cli_plan_steps = {
                 str(item.get("componentId") or ""): dict(item)
                 for item in list((current_plan.get("steps") or {}).get("cli") or [])
-            }
-            skill_plan_steps = {
-                str(item.get("id") or ""): dict(item)
-                for item in list((current_plan.get("steps") or {}).get("skills") or [])
             }
             mcp_plan_steps = {
                 str(item.get("id") or ""): dict(item)
@@ -3584,38 +3673,70 @@ class PluginManagerService:
             try:
                 import httpx
 
-                response = httpx.get(spec.downloadUrl, timeout=spec.timeoutSeconds, follow_redirects=True)
-                response.raise_for_status()
-                actual = hashlib.sha256(response.content).hexdigest()
-                if actual != spec.downloadSha256:
-                    raise ValueError(f"download SHA-256 mismatch: expected {spec.downloadSha256}, got {actual}")
-                payload = response.content
-                if spec.archiveFormat == "zip" and spec.archiveEntry:
-                    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-                        normalized_entries = {
-                            str(item.filename).replace("\\", "/"): item
-                            for item in archive.infolist()
-                            if not item.is_dir()
+                sources = [spec.downloadUrl]
+                if re.match(
+                    r"^https://github\.com/[^/]+/[^/]+/releases/download/",
+                    spec.downloadUrl,
+                    re.I,
+                ):
+                    sources.extend(
+                        f"{prefix}{spec.downloadUrl}"
+                        for prefix in MANAGED_GITHUB_RELEASE_MIRROR_PREFIXES
+                    )
+                sources = list(dict.fromkeys(sources))
+                deadline = time.monotonic() + spec.timeoutSeconds
+                failures: list[str] = []
+                for source_url in sources:
+                    remaining = deadline - time.monotonic()
+                    if remaining < 1:
+                        failures.append("global_deadline_exceeded")
+                        break
+                    try:
+                        response = httpx.get(
+                            source_url,
+                            timeout=max(1.0, min(45.0, remaining)),
+                            follow_redirects=True,
+                        )
+                        response.raise_for_status()
+                        actual = hashlib.sha256(response.content).hexdigest()
+                        if actual != spec.downloadSha256:
+                            raise ValueError(
+                                f"download SHA-256 mismatch: expected {spec.downloadSha256}, got {actual}"
+                            )
+                        payload = response.content
+                        if spec.archiveFormat == "zip" and spec.archiveEntry:
+                            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                                normalized_entries = {
+                                    str(item.filename).replace("\\", "/"): item
+                                    for item in archive.infolist()
+                                    if not item.is_dir()
+                                }
+                                archive_info = normalized_entries.get(spec.archiveEntry)
+                                if archive_info is None:
+                                    raise ValueError(f"archive entry not found: {spec.archiveEntry}")
+                                unix_mode = (archive_info.external_attr >> 16) & 0xFFFF
+                                if unix_mode and stat.S_ISLNK(unix_mode):
+                                    raise ValueError("managed archive entry must not be a symbolic link")
+                                if archive_info.file_size > 512 * 1024 * 1024:
+                                    raise ValueError("managed archive entry exceeds the 512 MiB safety limit")
+                                payload = archive.read(archive_info)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        partial.write_bytes(payload)
+                        partial.replace(target)
+                        return {
+                            "argv": ["managed-download", source_url, str(target)],
+                            "returnCode": 0,
+                            "stdoutTail": f"verified {actual}; source={source_url}",
+                            "stderrTail": "",
+                            "durationMs": int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
                         }
-                        archive_info = normalized_entries.get(spec.archiveEntry)
-                        if archive_info is None:
-                            raise ValueError(f"archive entry not found: {spec.archiveEntry}")
-                        unix_mode = (archive_info.external_attr >> 16) & 0xFFFF
-                        if unix_mode and stat.S_ISLNK(unix_mode):
-                            raise ValueError("managed archive entry must not be a symbolic link")
-                        if archive_info.file_size > 512 * 1024 * 1024:
-                            raise ValueError("managed archive entry exceeds the 512 MiB safety limit")
-                        payload = archive.read(archive_info)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                partial.write_bytes(payload)
-                partial.replace(target)
-                return {
-                    "argv": ["managed-download", spec.downloadUrl, str(target)],
-                    "returnCode": 0,
-                    "stdoutTail": f"verified {actual}",
-                    "stderrTail": "",
-                    "durationMs": int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
-                }
+                    except Exception as source_error:
+                        failures.append(
+                            f"{source_url}: {type(source_error).__name__}: {source_error}"[:1000]
+                        )
+                raise RuntimeError(
+                    "managed download sources exhausted: " + " | ".join(failures)
+                )
             except Exception as exc:
                 partial.unlink(missing_ok=True)
                 return {
@@ -3628,28 +3749,64 @@ class PluginManagerService:
         try:
             search_path = self._refresh_process_cli_path()
             execution_argv = self._resolve_execution_argv(argv, search_path=search_path, manifest=manifest)
-            completed = run_windowless(
-                execution_argv,
-                cwd=spec.cwd or None,
-                shell=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=spec.timeoutSeconds,
-                env={
+            executable_name = Path(execution_argv[0]).stem.lower() if execution_argv else ""
+            registries: tuple[str, ...] = (
+                SKILLS_CLI_NPM_REGISTRIES
+                if executable_name in {"npm", "npx"}
+                else ("",)
+            )
+            deadline = time.monotonic() + spec.timeoutSeconds
+            completed = None
+            timeout_error: subprocess.TimeoutExpired | None = None
+            registry_attempts: list[str] = []
+            for index, registry in enumerate(registries):
+                remaining = deadline - time.monotonic()
+                if remaining < 1:
+                    break
+                remaining_registries = len(registries) - index
+                command_env = {
                     **os.environ,
                     "PATH": f"{self._bin_root()}{os.pathsep}{search_path}",
                     **dict(env_overlay or {}),
-                },
-            )
+                }
+                if registry:
+                    command_env["npm_config_registry"] = registry
+                try:
+                    completed = run_windowless(
+                        execution_argv,
+                        cwd=spec.cwd or None,
+                        shell=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=max(1.0, remaining / remaining_registries),
+                        env=command_env,
+                    )
+                    registry_attempts.append(
+                        f"{registry or 'default'}:{completed.returncode}"
+                    )
+                    if completed.returncode == 0:
+                        break
+                except subprocess.TimeoutExpired as exc:
+                    timeout_error = exc
+                    registry_attempts.append(f"{registry or 'default'}:timeout")
+                    completed = None
+                    continue
+            if completed is None:
+                if timeout_error is not None:
+                    raise timeout_error
+                raise subprocess.TimeoutExpired(execution_argv, spec.timeoutSeconds)
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
             return {
                 "argv": argv,
                 "returnCode": completed.returncode,
                 "stdoutTail": stdout[-4000:],
-                "stderrTail": stderr[-4000:],
+                "stderrTail": (
+                    stderr[-3600:]
+                    + (f"\nregistryAttempts={','.join(registry_attempts)}" if len(registry_attempts) > 1 else "")
+                )[-4000:],
                 "durationMs": int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
             }
         except FileNotFoundError as exc:

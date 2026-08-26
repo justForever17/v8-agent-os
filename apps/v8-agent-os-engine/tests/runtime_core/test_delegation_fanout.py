@@ -1,6 +1,8 @@
 import json
 from copy import deepcopy
 
+from langchain_core.messages import HumanMessage
+
 from core.delegation_broker import (
     expand_delegation_task_briefs,
     normalize_task_brief,
@@ -15,7 +17,10 @@ from core.tools.native.delegation import (
     _delegation_task_has_parallel_peer,
     _terminalize_grandchild_task_brief,
 )
-from graph.agent_factories import _format_delegated_task_contract
+from graph.agent_factories import (
+    _delegated_preferred_language,
+    _format_delegated_task_contract,
+)
 from graph.parallel_support import (
     _fallback_child_delegation_request,
     _subagent_governance_terminal_failure,
@@ -996,3 +1001,25 @@ def test_terminal_grandchild_keeps_default_read_verifier_surface_when_parent_is_
     assert terminal["toolPolicy"]["mode"] == "default"
     assert terminal["allowedTools"] == []
     assert "delegation_broker" in terminal["forbiddenTools"]
+
+
+def test_delegated_task_contract_preserves_user_visible_language() -> None:
+    prompt = _format_delegated_task_contract(
+        {
+            "taskBriefId": "brief-language",
+            "goal": "Implement the requested fix",
+            "context": {"preferredLanguage": "zh-CN"},
+        }
+    )
+
+    assert "User-visible language: zh-CN" in prompt
+    assert "progress text, reasoning summaries, handoff prose" in prompt
+
+
+def test_delegated_task_language_prefers_structured_user_language_over_english_brief() -> None:
+    messages = [HumanMessage(content="Implement the requested fix")]
+
+    assert _delegated_preferred_language(
+        messages,
+        {"context": {"preferredLanguage": "zh-CN"}},
+    ) == "zh-CN"

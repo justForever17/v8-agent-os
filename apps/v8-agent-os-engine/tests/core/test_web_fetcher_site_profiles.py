@@ -4,12 +4,41 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from bs4 import BeautifulSoup
 
 from core.tools import web_fetcher
+
+
+def test_internal_source_router_options_are_scoped_and_reset(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_search(**_kwargs):
+        observed["timeout"] = web_fetcher._SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.get()
+        observed["locale"] = web_fetcher._SOURCE_ROUTER_LOCALE_HINT.get()
+        observed["browserFallback"] = web_fetcher._SOURCE_ROUTER_BROWSER_FALLBACK.get()
+        return json.dumps({"ok": True, "results": []})
+
+    monkeypatch.setattr(web_fetcher, "web_search", SimpleNamespace(func=fake_search))
+
+    web_fetcher.source_router_search(
+        query="LangChain current API",
+        total_timeout_seconds=14,
+        locale_hint="zh-CN",
+        allow_browser_profile_fallback=False,
+    )
+
+    assert observed == {
+        "timeout": 14.0,
+        "locale": "zh-CN",
+        "browserFallback": False,
+    }
+    assert web_fetcher._SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.get() == 0.0
+    assert web_fetcher._SOURCE_ROUTER_LOCALE_HINT.get() == ""
+    assert web_fetcher._SOURCE_ROUTER_BROWSER_FALLBACK.get() is True
 
 
 def _soup(html: str) -> BeautifulSoup:
@@ -317,6 +346,82 @@ def test_auto_search_continues_when_provider_ignores_site_constraint(monkeypatch
     assert payload.get("siteConstraintRelaxed") is not True
     assert payload["attemptedProviders"][0]["status"] == "relaxed_candidate"
     assert payload["attemptedProviders"][0]["failureClass"] == "site_constraint_not_honored"
+
+
+def test_site_query_rejects_a_lone_homepage_and_keeps_only_exact_site_results(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {
+                "cnPreferred": ["bing_cn", "yahoo"],
+                "globalPreferred": ["bing_cn", "yahoo"],
+            },
+            "providers": {
+                "bing_cn": {"enabled": True},
+                "yahoo": {"enabled": True},
+            },
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+
+    def fake_html_search(_url, *, provider, **_kwargs):
+        if provider == "bing_cn":
+            results = [
+                {
+                    "title": "Home - Docs by LangChain",
+                    "url": "https://docs.langchain.com/",
+                    "snippet": "LangChain documentation home.",
+                },
+                {
+                    "title": "LangChain product home",
+                    "url": "https://www.langchain.com/langchain",
+                    "snippet": "LangChain agent framework.",
+                },
+            ]
+        else:
+            results = [
+                {
+                    "title": "Agents - Docs by LangChain",
+                    "url": "https://docs.langchain.com/oss/python/langchain/agents",
+                    "snippet": "create_agent API documentation.",
+                },
+                {
+                    "title": "Middleware overview - Docs by LangChain",
+                    "url": "https://docs.langchain.com/oss/python/langchain/middleware/overview",
+                    "snippet": "LangChain middleware API documentation.",
+                },
+                {
+                    "title": "Unrelated mirror",
+                    "url": "https://example.com/langchain",
+                    "snippet": "LangChain mirror.",
+                },
+            ]
+        return {
+            "ok": True,
+            "statusCode": 200,
+            "finalUrl": _url,
+            "results": results,
+        }
+
+    monkeypatch.setattr(web_fetcher, "_html_search_public", fake_html_search)
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="site:docs.langchain.com LangChain Python create_agent middleware API",
+            search_engine="auto",
+        )
+    )
+
+    assert payload["provider"] == "yahoo"
+    assert {item["url"] for item in payload["results"]} == {
+        "https://docs.langchain.com/oss/python/langchain/agents",
+        "https://docs.langchain.com/oss/python/langchain/middleware/overview",
+    }
+    bing_attempt = next(item for item in payload["attemptedProviders"] if item["provider"] == "bing_cn")
+    assert bing_attempt["status"] == "relaxed_candidate"
+    assert bing_attempt["exactSiteResultCount"] == 1
 
 
 def test_explicit_metaso_empty_results_fail_instead_of_reporting_success(monkeypatch) -> None:

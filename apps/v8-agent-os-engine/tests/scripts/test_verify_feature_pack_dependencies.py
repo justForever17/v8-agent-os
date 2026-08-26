@@ -74,3 +74,25 @@ def test_feature_pack_dependency_check_rejects_missing_dependency_and_ignores_ex
     assert result["conflictCount"] == 1
     assert result["conflicts"][0]["requirement"] == "required-lib>=1"
     assert result["conflicts"][0]["reason"] == "dependency_missing"
+
+
+def test_hashed_feature_pack_can_defer_missing_metadata_to_smoke_without_ignoring_versions(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    target = tmp_path / "target"
+    _write_distribution(target, "reader", "1.0", ("missing-addon>=1", "provider>=2"))
+    _write_distribution(target, "provider", "1.5")
+
+    result = verify_dependency_compatibility(
+        target,
+        base_paths=[base],
+        allow_missing=True,
+    )
+
+    assert result["ok"] is False
+    assert result["conflictCount"] == 1
+    assert result["conflicts"][0]["reason"] == "version_conflict"
+    assert result["advisoryCount"] == 1
+    assert result["advisories"][0]["reason"] == "dependency_missing"
+    assert result["missingDependencyPolicy"] == "smoke_check"

@@ -15,6 +15,10 @@
       "id": "holistic_landmarker",
       "target": "holistic-landmarker-float16-v1.task",
       "url": "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/1/holistic_landmarker.task",
+      "mirrors": [
+        "https://hf-mirror.com/Skunk0/openglasses-fingerspelling-ctc/resolve/00f0d96ce7ddd022d16f9a565d1756b1cc617269/holistic_landmarker.task",
+        "https://huggingface.co/Skunk0/openglasses-fingerspelling-ctc/resolve/00f0d96ce7ddd022d16f9a565d1756b1cc617269/holistic_landmarker.task"
+      ],
       "size": 13683609,
       "sha256": "e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8"
     }

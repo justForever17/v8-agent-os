@@ -36,6 +36,7 @@ from core.runtime_tool_access import (
     runtime_tool_names_for_groups,
 )
 from core.time_truth import utc_now_iso
+from core.user_language import infer_preferred_language, normalize_preferred_language
 from core.workspace_capability import build_workspace_binding
 from erc.runtime_context import bind_runtime_context, build_runtime_callback_config, get_runtime_context
 from .tool_routing import create_routed_tool_node
@@ -45,6 +46,30 @@ from .route_context import merge_route_context
 _MAX_DELEGATED_CONTEXT_MESSAGES = 28
 _MAX_DELEGATED_TOOL_CALLS = 48
 _MAX_DELEGATED_EXACT_TOOL_REPEATS = 3
+
+
+def _delegated_preferred_language(
+    messages: list[Any],
+    task_brief: dict[str, Any] | None = None,
+) -> str:
+    task_context = (
+        task_brief.get("context")
+        if isinstance(task_brief, dict) and isinstance(task_brief.get("context"), dict)
+        else {}
+    )
+    explicit_language = normalize_preferred_language(task_context.get("preferredLanguage"))
+    if explicit_language:
+        return explicit_language
+    for message in reversed(list(messages or [])):
+        if not isinstance(message, HumanMessage):
+            continue
+        additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+        if str(additional_kwargs.get("v8_governance_type") or "").strip():
+            continue
+        content = message.content if isinstance(message.content, str) else str(message.content)
+        if content.strip():
+            return infer_preferred_language(content, default="zh-CN")
+    return "zh-CN"
 
 
 def subagent_model_kwargs(model_id: str | None) -> dict[str, int]:
@@ -1033,6 +1058,7 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Shared Context", "sharedContext", 3600),
     ("Worker Context", "workerContext", 2600),
     ("Task Context", "notes", 1800),
+    ("User-Visible Language", "preferredLanguage", 120),
     ("Upstream Handoffs", "upstreamHandoffs", 7200),
     ("Handoff Usage", "handoffUsage", 900),
     ("Requested Evidence Refs", "requestedEvidenceRefs", 1200),
@@ -1243,6 +1269,12 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
         "If the task is to configure MCP servers, use the supervisor-provided MCP config route/tool; do not call Admin login-only APIs or edit V8OS config files directly.",
     ]
     if isinstance(task_brief, dict) and task_brief:
+        context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        preferred_language = normalize_preferred_language(context.get("preferredLanguage"))
+        if preferred_language:
+            lines.append(
+                f"User-visible language: {preferred_language}. All progress text, reasoning summaries, handoff prose, and final text MUST use this language; preserve code, commands, identifiers, URLs, and literal tool output."
+            )
         agent_surface_extensions, redacted_extension_paths = _redact_agent_surface_extensions(
             task_brief.get("extensions")
         )
@@ -1837,6 +1869,22 @@ def build_agent_node(
     def agent_node_func(state):
         try:
             messages = state["messages"]
+            task_messages = extract_task_context(messages)
+            delegated_query = _extract_delegated_query(task_messages)
+            inherited_route_context = _resolve_inherited_route_context(
+                state,
+                task_messages,
+                agent_id=agent_id,
+            )
+            delegated_task_brief = (
+                inherited_route_context.get("taskBrief")
+                if isinstance(inherited_route_context.get("taskBrief"), dict)
+                else None
+            )
+            preferred_language = _delegated_preferred_language(
+                messages,
+                delegated_task_brief,
+            )
 
             workspace_binding = _resolved_workspace_binding_for_state(state)
             workspace_path = str(workspace_binding.get("activeWorkspaceRoot") or workspace_binding.get("mainWorkspaceRoot") or "")
@@ -1855,7 +1903,7 @@ def build_agent_node(
                 f"<environment>\n"
                 f"OS: {os_name}\n"
                 f"Command Shell: {command_environment['commandLanguage']} (shell_dialect={command_environment['shellDialect']})\n"
-                "Default Language: zh-CN (简体中文). If the user's current message clearly uses another language, reply in that language.\n"
+                f"User-Visible Language: {preferred_language}. Use it for all progress text, reasoning summaries, task prose, handoffs, and final replies. Preserve code, commands, identifiers, URLs, and literal tool output.\n"
                 f"Current Time: {current_time}\n"
                 f"{render_host_load_line()}\n"
                 f"{host_alerts_context}"
@@ -1892,15 +1940,20 @@ def build_agent_node(
                         active_plan_context += f"  [{icon}] #{i}: {item.get('text', '???')}\n"
                     active_plan_context += "</current_progress>\n</active_task_plan>\n"
 
-            task_messages = extract_task_context(messages)
-            delegated_query = _extract_delegated_query(task_messages)
-            inherited_route_context = _resolve_inherited_route_context(state, task_messages, agent_id=agent_id)
-            delegated_task_brief = inherited_route_context.get("taskBrief") if isinstance(inherited_route_context.get("taskBrief"), dict) else None
             delegated_context = (
                 delegated_task_brief.get("context")
                 if isinstance(delegated_task_brief, dict) and isinstance(delegated_task_brief.get("context"), dict)
                 else {}
             )
+            delegated_context = {
+                **delegated_context,
+                "preferredLanguage": preferred_language,
+            }
+            if isinstance(delegated_task_brief, dict):
+                delegated_task_brief = {
+                    **delegated_task_brief,
+                    "context": delegated_context,
+                }
             ephemeral_info = delegated_context.get("ephemeralMirror") if isinstance(delegated_context.get("ephemeralMirror"), dict) else {}
             ephemeral_mirror = bool(ephemeral_info or (delegated_task_brief or {}).get("ephemeralMirror"))
             try:

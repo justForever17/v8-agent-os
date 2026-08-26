@@ -28,6 +28,7 @@ from core.runtime_episodes import (
     resolve_runtime_episode_current_handoff,
 )
 from core.time_truth import utc_now_iso
+from core.user_language import infer_preferred_language, normalize_preferred_language
 
 
 logger = logging.getLogger(__name__)
@@ -2448,6 +2449,36 @@ class RuntimeEpisodeRunner:
         research_repair = inputs.get("researchRepair") if isinstance(inputs.get("researchRepair"), dict) else {}
         final_repair_attempt = bool(research_repair.get("finalRepairAttempt"))
         task_briefs = [dict(item) for item in list(inputs.get("taskBriefs") or inputs.get("tasks") or []) if isinstance(item, dict)]
+        structured_preferred_language = normalize_preferred_language(
+            inputs.get("preferredLanguage") or need.get("preferredLanguage")
+        )
+        original_language_sources = [
+            inputs.get("userRequest"),
+            inputs.get("latestUserContent"),
+            *[
+                (brief.get("context") or {}).get("userRequest")
+                for brief in task_briefs
+                if isinstance(brief.get("context"), dict)
+            ],
+            need.get("userRequest"),
+            inputs.get("query"),
+            inputs.get("question"),
+            need.get("reason"),
+        ]
+        preferred_language = structured_preferred_language or infer_preferred_language(
+            *original_language_sources,
+            default="zh-CN",
+        )
+        task_briefs = [
+            {
+                **brief,
+                "context": {
+                    **(dict(brief.get("context") or {}) if isinstance(brief.get("context"), dict) else {}),
+                    "preferredLanguage": preferred_language,
+                },
+            }
+            for brief in task_briefs
+        ]
         brief_queries: list[tuple[str, str]] = []
         synthesis_requirements: list[tuple[str, str]] = []
         for brief in task_briefs:
@@ -2516,6 +2547,7 @@ class RuntimeEpisodeRunner:
         state = {
             "current_route_context": {
                 "runtimeToolGrants": [{"group": "research.core", "runtimeKind": "research"}],
+                "preferredLanguage": preferred_language,
             },
             **({"run_id": run_id, "runId": run_id} if run_id else {}),
             **({"session_id": session_id, "sessionId": session_id} if session_id else {}),
@@ -2551,6 +2583,7 @@ class RuntimeEpisodeRunner:
             search_result = research_broker.func(
                 mode="search_experience",
                 query=query,
+                preferredLanguage=preferred_language,
                 state=state,
                 tool_call_id=f"episode:{episode.get('episodeId')}:search_experience",
             )
@@ -2568,6 +2601,7 @@ class RuntimeEpisodeRunner:
                 mode="plan",
                 question=query,
                 query=query,
+                preferredLanguage=preferred_language,
                 state=state,
                 tool_call_id=f"episode:{episode.get('episodeId')}:research_plan",
             )
@@ -2702,6 +2736,7 @@ class RuntimeEpisodeRunner:
             search_result = research_broker.func(
                 mode="search_experience",
                 query=unit_query,
+                preferredLanguage=preferred_language,
                 freshness=freshness,
                 sourcePolicy=source_policy,
                 seedUrls=seed_urls,
@@ -2719,6 +2754,7 @@ class RuntimeEpisodeRunner:
                     mode="run",
                     question=unit_query,
                     query=unit_query,
+                    preferredLanguage=preferred_language,
                     freshness=freshness,
                     sourcePolicy=source_policy,
                     seedUrls=seed_urls,
@@ -4624,6 +4660,15 @@ class RuntimeEpisodeRunner:
             worker_briefs=worker_briefs,
         )
         normalized: list[dict[str, Any]] = []
+        preferred_language = normalize_preferred_language(
+            inputs.get("preferredLanguage") or need.get("preferredLanguage")
+        ) or infer_preferred_language(
+            inputs.get("userRequest"),
+            inputs.get("latestUserContent"),
+            need.get("userRequest"),
+            need.get("reason"),
+            default="zh-CN",
+        )
         for brief in worker_briefs:
             item = dict(brief)
             lane = str(item.get("executionLaneHint") or "").strip().lower()
@@ -4631,6 +4676,7 @@ class RuntimeEpisodeRunner:
                 item["executionLaneHint"] = "subagent"
             deliverable_kind = str(item.get("deliverableKind") or item.get("deliverable_kind") or "").strip().lower()
             context = dict(item.get("context") or {}) if isinstance(item.get("context"), dict) else {}
+            context.setdefault("preferredLanguage", preferred_language)
             if workspace_path:
                 item["workspacePath"] = workspace_path
                 context.setdefault("workspacePath", workspace_path)

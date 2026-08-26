@@ -72,6 +72,7 @@ def verify_dependency_compatibility(
     target_root: str | os.PathLike[str],
     *,
     base_paths: Sequence[str | os.PathLike[str]] | None = None,
+    allow_missing: bool = False,
 ) -> dict[str, Any]:
     target = os.path.realpath(os.fspath(target_root))
     if not os.path.isdir(target):
@@ -142,23 +143,45 @@ def verify_dependency_compatibility(
         f"{record['displayName']}=={record['version']}"
         for record in sorted(target_index.values(), key=lambda item: item["name"])
     ]
+    blocking_conflicts = [
+        item
+        for item in conflicts
+        if not (allow_missing and item.get("reason") == "dependency_missing")
+    ]
+    advisories = [
+        item
+        for item in conflicts
+        if allow_missing and item.get("reason") == "dependency_missing"
+    ]
     return {
-        "ok": not conflicts,
+        "ok": not blocking_conflicts,
         "kind": "python_dependency_compatibility",
         "checkedPackages": len(effective),
         "targetPackages": target_packages,
-        "conflictCount": len(conflicts),
-        "conflicts": conflicts[:MAX_REPORTED_CONFLICTS],
-        "conflictsTruncated": len(conflicts) > MAX_REPORTED_CONFLICTS,
+        "conflictCount": len(blocking_conflicts),
+        "conflicts": blocking_conflicts[:MAX_REPORTED_CONFLICTS],
+        "conflictsTruncated": len(blocking_conflicts) > MAX_REPORTED_CONFLICTS,
+        "advisoryCount": len(advisories),
+        "advisories": advisories[:MAX_REPORTED_CONFLICTS],
+        "advisoriesTruncated": len(advisories) > MAX_REPORTED_CONFLICTS,
+        "missingDependencyPolicy": "smoke_check" if allow_missing else "blocking",
     }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Report missing metadata dependencies as advisories; the caller must run a feature-specific smoke check.",
+    )
     args = parser.parse_args(argv)
     try:
-        result = verify_dependency_compatibility(Path(args.target))
+        result = verify_dependency_compatibility(
+            Path(args.target),
+            allow_missing=bool(args.allow_missing),
+        )
     except Exception as error:
         result = {
             "ok": False,

@@ -978,14 +978,86 @@ def research_acceptance_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _delivery_requirement(payload: dict[str, Any], key: str, default: int) -> int:
+    candidates = [
+        payload.get("deliveryRequirements"),
+        (payload.get("researchAnswerPack") or {}).get("deliveryRequirements")
+        if isinstance(payload.get("researchAnswerPack"), dict)
+        else None,
+        (payload.get("finalExperiencePack") or {}).get("deliveryRequirements")
+        if isinstance(payload.get("finalExperiencePack"), dict)
+        else None,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            value = int(candidate.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return int(default)
+
+
 def research_acceptance_issues(
     payload: dict[str, Any],
     *,
-    min_sources: int = MIN_RESEARCH_SOURCE_COUNT,
-    min_answer_chars: int = MIN_RESEARCH_ANSWER_CHARS,
+    min_sources: int | None = None,
+    min_answer_chars: int | None = None,
+    min_distinct_hosts: int | None = None,
+    min_claims: int | None = None,
 ) -> list[str]:
     issues: list[str] = []
     metrics = research_acceptance_metrics(payload)
+    source_floor = max(
+        1,
+        int(
+            min_sources
+            if min_sources is not None
+            else _delivery_requirement(
+                payload,
+                "minimumSources",
+                MIN_RESEARCH_SOURCE_COUNT,
+            )
+        ),
+    )
+    answer_floor = max(
+        1,
+        int(
+            min_answer_chars
+            if min_answer_chars is not None
+            else _delivery_requirement(
+                payload,
+                "minimumAnswerChars",
+                MIN_RESEARCH_ANSWER_CHARS,
+            )
+        ),
+    )
+    host_floor = max(
+        1,
+        int(
+            min_distinct_hosts
+            if min_distinct_hosts is not None
+            else _delivery_requirement(
+                payload,
+                "minimumDistinctHosts",
+                min(MIN_RESEARCH_DISTINCT_HOST_COUNT, source_floor),
+            )
+        ),
+    )
+    claim_floor = max(
+        1,
+        int(
+            min_claims
+            if min_claims is not None
+            else _delivery_requirement(
+                payload,
+                "minimumClaims",
+                MIN_RESEARCH_CLAIM_COUNT,
+            )
+        ),
+    )
     if metrics["reviewDecision"] != "accept":
         issues.append("architect_review_not_accepted")
     if not metrics["independentReviewAccepted"]:
@@ -994,11 +1066,11 @@ def research_acceptance_issues(
         issues.append("research_brief_coverage_incomplete")
 
     answer = research_answer_text(payload)
-    if metrics["effectiveAnswerChars"] < max(1, int(min_answer_chars)):
-        issues.append(f"detailed_answer_floor_not_met:{max(1, int(min_answer_chars))}")
+    if metrics["effectiveAnswerChars"] < answer_floor:
+        issues.append(f"detailed_answer_floor_not_met:{answer_floor}")
     if (
-        metrics["rawAnswerChars"] >= max(1, int(min_answer_chars))
-        and metrics["effectiveAnswerChars"] < max(1, int(min_answer_chars))
+        metrics["rawAnswerChars"] >= answer_floor
+        and metrics["effectiveAnswerChars"] < answer_floor
         and metrics["uniqueContentRatio"] < 0.7
     ):
         issues.append("answer_repetition_excessive")
@@ -1006,11 +1078,10 @@ def research_acceptance_issues(
     if any(marker in lowered_answer for marker in _FAILED_ANSWER_MARKERS):
         issues.append("process_or_failure_text_used_as_answer")
 
-    source_floor = max(1, int(min_sources))
     if metrics["selectedSourceCount"] < source_floor:
         issues.append(f"evidence_source_floor_not_met:{source_floor}")
-    if metrics["distinctHostCount"] < min(MIN_RESEARCH_DISTINCT_HOST_COUNT, source_floor):
-        issues.append(f"independent_host_floor_not_met:{min(MIN_RESEARCH_DISTINCT_HOST_COUNT, source_floor)}")
+    if metrics["distinctHostCount"] < host_floor:
+        issues.append(f"independent_host_floor_not_met:{host_floor}")
     if metrics["retrievedSourceCount"] < source_floor:
         issues.append(f"retrieval_evidence_floor_not_met:{source_floor}")
     if metrics["readVerifiedSourceCount"] < source_floor:
@@ -1024,10 +1095,10 @@ def research_acceptance_issues(
     # Retrieval time is not publication time, and slow-changing/versioned
     # evidence can remain applicable. The independent reviewer receives the
     # explicit temporal fields and decides adequacy for the concrete question.
-    if metrics["claimCount"] < MIN_RESEARCH_CLAIM_COUNT:
-        issues.append(f"claim_floor_not_met:{MIN_RESEARCH_CLAIM_COUNT}")
-    if metrics["uniqueClaimCount"] < MIN_RESEARCH_CLAIM_COUNT:
-        issues.append(f"distinct_claim_floor_not_met:{MIN_RESEARCH_CLAIM_COUNT}")
+    if metrics["claimCount"] < claim_floor:
+        issues.append(f"claim_floor_not_met:{claim_floor}")
+    if metrics["uniqueClaimCount"] < claim_floor:
+        issues.append(f"distinct_claim_floor_not_met:{claim_floor}")
     if metrics["supportedClaimCount"] != metrics["claimCount"]:
         issues.append("unsupported_claim_present")
     if metrics["evidenceVerifiedClaimCount"] != metrics["claimCount"]:
@@ -1052,13 +1123,17 @@ def research_acceptance_issues(
 def research_bundle_is_accepted(
     payload: dict[str, Any],
     *,
-    min_sources: int = MIN_RESEARCH_SOURCE_COUNT,
-    min_answer_chars: int = MIN_RESEARCH_ANSWER_CHARS,
+    min_sources: int | None = None,
+    min_answer_chars: int | None = None,
+    min_distinct_hosts: int | None = None,
+    min_claims: int | None = None,
 ) -> bool:
     return not research_acceptance_issues(
         payload,
         min_sources=min_sources,
         min_answer_chars=min_answer_chars,
+        min_distinct_hosts=min_distinct_hosts,
+        min_claims=min_claims,
     )
 
 

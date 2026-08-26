@@ -178,6 +178,26 @@ def test_research_quality_accepts_detailed_current_minimum_source_answer() -> No
     assert metrics["answerCitedContentUnitCount"] >= MIN_RESEARCH_SOURCE_COUNT
 
 
+def test_task_shaped_contract_accepts_two_official_documents_without_lowering_answer_or_claim_floor() -> None:
+    payload = _accepted_payload(source_count=2)
+    payload["deliveryRequirements"] = {
+        "mode": "narrow_authoritative_technical",
+        "minimumSources": 2,
+        "minimumDistinctHosts": 1,
+        "minimumClaims": MIN_RESEARCH_CLAIM_COUNT,
+        "minimumAnswerChars": MIN_RESEARCH_ANSWER_CHARS,
+    }
+    _rebind_review_consensus(payload)
+
+    assert research_acceptance_issues(payload) == []
+    assert research_bundle_is_accepted(payload) is True
+    assert research_acceptance_metrics(payload)["effectiveAnswerChars"] >= MIN_RESEARCH_ANSWER_CHARS
+    assert research_acceptance_metrics(payload)["claimCount"] >= MIN_RESEARCH_CLAIM_COUNT
+
+    standard = _accepted_payload(source_count=2)
+    assert f"evidence_source_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in research_acceptance_issues(standard)
+
+
 def test_research_quality_rejects_incomplete_structured_brief_coverage() -> None:
     payload = _accepted_payload()
     payload["briefCoverageRequired"] = True

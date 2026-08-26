@@ -195,7 +195,7 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.match(installerSource, /new URL\(location, currentUrl\)/);
   assert.match(installerSource, /feature_pack_asset_redirect_limit/);
   assert.match(installerSource, /new Transform/);
-  assert.match(installerSource, /offset \+ received > asset\.size/);
+  assert.match(installerSource, /attemptOffset \+ received > asset\.size/);
   assert.match(installerSource, /feature_pack_asset_size_exceeded/);
   assert.match(installerSource, /featurePackAssetSources/);
   assert.match(installerSource, /feature_pack_asset_sources_exhausted/);
@@ -338,6 +338,15 @@ test("feature pack transactions use Engine authority, bounded workers, and compa
   assert.match(installerSource, /resolvedPackages,/);
   assert.match(installerSource, /dependencyCompatibility,/);
   assert.match(installerSource, /FEATURE_PACK_ASSET_TIMEOUT_MS/);
+  assert.match(installerSource, /FEATURE_PACK_ASSET_SOURCE_CONNECT_TIMEOUT_MS/);
+  assert.match(installerSource, /FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT = 3/);
+  assert.match(installerSource, /content-range/);
+  assert.match(installerSource, /feature_pack_asset_resume_contract_invalid/);
+  assert.match(installerSource, /\[Asset stream retry\]/);
+  assert.match(installerSource, /const sourceController = new AbortController\(\)/);
+  assert.match(installerSource, /removeEventListener\("abort", abortSource\)/);
+  assert.match(installerSource, /Boolean\(lockFile\)/);
+  assert.match(installerSource, /"--allow-missing"/);
   assert.match(installerSource, /terminateFeaturePackChild/);
   assert.match(installerSource, /waitForFeaturePackChildExit/);
   assert.match(installerSource, /process\.kill\(-child\.pid, "SIGKILL"\)/);
@@ -382,6 +391,8 @@ test("feature pack transactions use Engine authority, bounded workers, and compa
   assert.match(installerSource, /String\(requirements\.sha256/);
   assert.match(installerSource, /!manifest \|\| String\(receipt\.packVersion \|\| ""\) === manifest\.version/);
   assert.match(installerSource, /sys\.path\.insert\(0,root\)/);
+  assert.match(installerSource, /'win32','win32\/lib','Pythonwin'/);
+  assert.match(installerSource, /import pywin32_bootstrap/);
   assert.match(installerSource, /module_not_loaded_from_staging/);
 });
 

@@ -846,9 +846,70 @@ def test_parallel_search_shards_are_bounded_without_becoming_serial(monkeypatch)
 
 
 def test_source_router_finishes_before_the_research_shard_envelope():
-    from core.tools import web_fetcher
+    assert research_module._RESEARCH_SEARCH_DEADLINE_MS < research_module._RESEARCH_SHARD_DEADLINE_MS
+    assert research_module._RESEARCH_SOURCE_READ_DEADLINE_MS < research_module._RESEARCH_SHARD_DEADLINE_MS
 
-    assert int(web_fetcher.WEB_SEARCH_TOTAL_TIMEOUT_SECONDS * 1000) < research_module._RESEARCH_SHARD_DEADLINE_MS
+
+def test_research_shard_uses_cn_routing_without_browser_fallback(monkeypatch):
+    search_calls: list[dict] = []
+    read_calls: list[dict] = []
+
+    def fake_search(**kwargs):
+        search_calls.append(dict(kwargs))
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "bing_cn",
+                "networkRoute": "cn_direct",
+                "results": [
+                    {
+                        "title": "Python pathlib documentation",
+                        "url": "https://docs.python.org/3/library/pathlib.html",
+                        "snippet": "Official pathlib API documentation for Path.resolve.",
+                    }
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        read_calls.append(dict(kwargs))
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "finalUrl": kwargs["url"],
+                "title": "pathlib",
+                "text": "Path.resolve resolves a path and handles symlinks according to strict mode. " * 20,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "source_router_search", fake_search)
+    monkeypatch.setattr(research_module, "source_router_read", fake_read)
+
+    completed = research_module._run_search_shard(
+        {
+            "shardId": "bounded-cn-route",
+            "kind": "facet:pathlib",
+            "query": "Python pathlib Path.resolve strict symlink behavior",
+            "sourceIntent": "official_primary",
+        },
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=1,
+        use_agent_browser_profile=True,
+        tool_call_id="bounded-cn-route-test",
+        preferred_language="zh-CN",
+    )
+
+    assert completed["provider"] == "bing_cn"
+    assert search_calls[0]["mode"] == "static"
+    assert search_calls[0]["locale_hint"] == "zh-CN"
+    assert search_calls[0]["allow_browser_profile_fallback"] is False
+    assert search_calls[0]["useAgentBrowserProfile"] is False
+    assert read_calls[0]["mode"] == "static"
+    assert read_calls[0]["useAgentBrowserProfile"] is False
+    assert 0 < read_calls[0]["timeout_seconds"] <= 8
 
 
 def test_parallel_facets_reuse_one_long_document_read_for_distinct_excerpts(monkeypatch):
@@ -4394,6 +4455,25 @@ def test_architect_plan_failure_gaps_split_named_entities_before_repair_search()
         question,
         {"fallbackReason": "architect_agent_missing_research_result"},
     ) == []
+
+
+def test_architect_plan_failure_gaps_keep_single_technical_entity_atomic():
+    question = (
+        "Using official documentation, explain LangChain Python v1 create_agent and "
+        "middleware APIs, minimal usage, and migration notes."
+    )
+
+    gaps = research_module._research_architect_plan_failure_gaps(
+        question,
+        {"fallbackReason": "architect_evidence_plan_unavailable"},
+    )
+
+    assert len(gaps) == 2
+    assert all("LangChain Python" in gap for gap in gaps)
+    assert "API reference signatures examples" in gaps[0]
+    assert "migration guide release notes" in gaps[1]
+    assert all("Windows installation" not in gap for gap in gaps)
+    assert all("account pricing privacy" not in gap for gap in gaps)
 
 
 def test_catalog_official_entity_seeds_replace_matching_atomic_dimension_queries():
@@ -15782,6 +15862,124 @@ def test_context7_mcp_error_payload_is_not_usable_text():
     assert research_module._mcp_payload_is_error(payload) is True
 
 
+def test_context7_calls_current_required_argument_schema(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeManager:
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, *, server_name, tool_name, arguments):
+            calls.append((tool_name, dict(arguments)))
+            if tool_name == "resolve-library-id":
+                return {"content": [{"text": "Context7-compatible library ID: /langchain-ai/langchain"}]}
+            return {"content": [{"text": "LangChain create_agent and middleware documentation. " * 20}]}
+
+    monkeypatch.setattr(research_module, "mcp_manager", FakeManager())
+    monkeypatch.setattr(
+        research_module,
+        "_context7_tool_names",
+        lambda: ("context7", "resolve-library-id", "query-docs"),
+    )
+
+    result = asyncio.run(
+        research_module._call_context7_source_async(
+            "LangChain Python v1 create_agent middleware API"
+        )
+    )
+
+    assert result["ok"] is True
+    assert set(calls[0][1]) == {"query", "libraryName"}
+    assert calls[0][1]["libraryName"] == "LangChain Python"
+    assert set(calls[1][1]) == {"libraryId", "query"}
+    assert calls[1][1]["libraryId"] == "/langchain-ai/langchain"
+
+
+def test_narrow_technical_shards_use_compact_official_queries() -> None:
+    question = (
+        "核查 LangChain Python v1 当前 create_agent 与 middleware API 的官方用法、"
+        "版本边界和安装方式，并给出有来源的简体中文结论。"
+    )
+
+    shards = research_module._build_shards(
+        question=question,
+        research_intent="",
+        source_policy="authoritative",
+        seed_urls=[],
+        allowed_domains=[],
+        max_shards=6,
+    )
+    queries = [str(item.get("query") or "") for item in shards]
+
+    assert queries[0] == "LangChain Python v1 create_agent middleware API"
+    assert all("并给出" not in query for query in queries)
+    assert all("research report data statistics" not in query for query in queries)
+    assert all("independent analysis comparison" not in query for query in queries)
+    assert any(query.startswith("site:docs.langchain.com ") for query in queries)
+    assert any("API reference examples" in query for query in queries)
+
+    requirements = research_module._research_delivery_requirements(question)
+    assert requirements["mode"] == "narrow_authoritative_technical"
+    assert requirements["minimumSources"] == 2
+    assert requirements["minimumDistinctHosts"] == 1
+    assert requirements["minimumAnswerChars"] == research_module.MIN_RESEARCH_ANSWER_CHARS
+
+    entity_hints = research_module._catalog_official_entity_hints(question)
+    assert [item["label"] for item in entity_hints] == ["LangChain Python"]
+
+
+def test_narrow_technical_english_query_drops_delivery_wording() -> None:
+    question = (
+        "Using only official documentation, explain the LangChain Python v1 create_agent "
+        "and middleware core APIs, a minimal usage pattern, and migration notes. "
+        "Return a directly usable answer in Simplified Chinese."
+    )
+
+    shards = research_module._build_shards(
+        question=question,
+        research_intent="",
+        source_policy="authoritative",
+        seed_urls=[],
+        allowed_domains=[],
+        max_shards=6,
+    )
+    query = str(shards[0].get("query") or "")
+
+    assert query == "LangChain Python v1 create_agent middleware APIs minimal usage migration notes"
+    assert "using only" not in query
+    assert "simplified chinese" not in query
+
+
+def test_architect_rejects_answer_citations_without_verified_claim_binding() -> None:
+    claims = [
+        {
+            "claimId": "C1",
+            "supportingSources": [{"citationKey": "S1"}],
+        }
+    ]
+
+    assert research_module._architect_unbound_answer_citations(
+        "Supported [S1], but the writer invented [S8].",
+        claims,
+    ) == ["S8"]
+
+
+def test_comparative_or_explicit_multifacet_research_keeps_standard_floor() -> None:
+    comparison = research_module._research_delivery_requirements(
+        "Compare React versus Vue runtime behavior and migration limits."
+    )
+    explicit = research_module._research_delivery_requirements(
+        "1. [api] Verify LangChain API behavior.\n2. [install] Verify package installation."
+    )
+
+    for requirements in (comparison, explicit):
+        assert requirements["mode"] == "standard_research"
+        assert requirements["minimumSources"] == research_module.MIN_RESEARCH_SOURCE_COUNT
+        assert requirements["minimumDistinctHosts"] == research_module.MIN_RESEARCH_DISTINCT_HOST_COUNT
+
+    assert research_module._research_facet_requires_atomic_claim("architect-gap-1a0fc13d") is False
+
+
 def test_research_broker_plan_clamps_shards_to_config(monkeypatch):
     monkeypatch.setattr(
         research_module.storage,
@@ -15805,6 +16003,25 @@ def test_research_broker_plan_clamps_shards_to_config(monkeypatch):
     assert payload["shardDefaults"]["sideEffects"] == "read_only"
     assert payload["shardDefaults"]["contextIsolation"] == "atomic_brief_only"
     assert set(payload["shards"][0]) == {"shardId", "kind", "query", "evidenceQuery", "reason"}
+
+
+def test_research_broker_plan_uses_explicit_user_visible_language(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 2, "maxShardCount": 4, "maxRounds": 2}},
+    )
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="plan",
+            question="Verify the current LangChain API",
+            preferredLanguage="zh-CN",
+            state={"run_id": "run-language"},
+        )
+    )
+
+    assert payload["preferredLanguage"] == "zh-CN"
 
 
 def test_research_broker_plan_splits_structured_bundle_into_atomic_facets(monkeypatch):
@@ -16730,6 +16947,32 @@ def test_web_research_architect_agent_falls_back_across_model_candidates(monkeyp
 @pytest.mark.parametrize("writer_succeeds", [True, False])
 def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, writer_succeeds):
     question = "当前证据足够时，Research Runtime 应如何形成可复用结论？"
+    delivery_requirements = {
+        "mode": "standard_research",
+        "minimumSources": 2,
+        "minimumDistinctHosts": 1,
+        "minimumClaims": 5,
+        "minimumAnswerChars": 1200,
+        "targetSources": TARGET_RESEARCH_SOURCE_COUNT,
+        "targetDistinctHosts": TARGET_RESEARCH_DISTINCT_HOST_COUNT,
+        "targetClaims": research_module.TARGET_RESEARCH_CLAIM_COUNT,
+        "targetAnswerChars": TARGET_RESEARCH_ANSWER_CHARS,
+    }
+    reviewed_delivery_requirements: list[dict] = []
+    original_acceptance_issues = research_module.research_acceptance_issues
+
+    def capture_acceptance_issues(payload):
+        if isinstance(payload.get("independentReview"), dict):
+            reviewed_delivery_requirements.append(
+                dict(payload.get("deliveryRequirements") or {})
+            )
+        return original_acceptance_issues(payload)
+
+    monkeypatch.setattr(
+        research_module,
+        "research_acceptance_issues",
+        capture_acceptance_issues,
+    )
     source_matrix = [
         {
             "sourceId": f"runtime_fallback_{index}",
@@ -16857,9 +17100,13 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
         freshness="current",
         timeout_seconds=30,
         per_call_timeout_seconds=7,
+        delivery_requirements=delivery_requirements,
     )
 
-    assert fallback_calls == ([] if writer_succeeds else ["called"])
+    assert fallback_calls == ([] if writer_succeeds else ["called"]), (
+        result.get("_modelFallbackAttempts"),
+        result.get("_writerAttempts"),
+    )
     assert ModelWriterFirstLLM.plan_calls == 1
     assert ModelWriterFirstLLM.writer_calls == 1
     assert IndependentReviewerLLM.review_calls == 2
@@ -16874,6 +17121,7 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
         assert result["_writerRuntimeFallback"] is True
         assert result["_writerAttempts"][-1]["mode"] == "deterministic_claim_report_after_writer"
     assert result["_reviewerConsensusCount"] == 2
+    assert reviewed_delivery_requirements == [delivery_requirements]
     assert result["_architectPerCallTimeoutSeconds"] == 7
     assert all(0 < timeout <= 7 for timeout in ModelWriterFirstLLM.timeouts_seen)
 

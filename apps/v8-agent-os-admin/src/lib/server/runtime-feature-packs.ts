@@ -227,6 +227,8 @@ let FEATURE_PACK_INSTALL_RESERVATION: string | null = null;
 const FEATURE_PACK_CONFIG_TIMEOUT_MS = 8_000;
 const FEATURE_PACK_PIP_TIMEOUT_MS = 45 * 60_000;
 const FEATURE_PACK_ASSET_TIMEOUT_MS = 30 * 60_000;
+const FEATURE_PACK_ASSET_SOURCE_CONNECT_TIMEOUT_MS = 20_000;
+const FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT = 3;
 const FEATURE_PACK_ASSET_MAX_REDIRECTS = 3;
 const FEATURE_PACK_STALE_INSTALL_MS = 90 * 60_000;
 const FEATURE_PACK_LOG_ERRORS = new WeakMap<fs.WriteStream, Error>();
@@ -304,6 +306,7 @@ const FEATURE_PACK_ASSET_HOSTS = new Set([
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    "ghproxy.net",
     "storage.googleapis.com",
     "huggingface.co",
     "hf-mirror.com",
@@ -1316,8 +1319,8 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
     const sources = featurePackAssetSources(asset);
     if (!sources.length) throw new Error(`feature_pack_asset_source_missing:${asset.id}`);
     sources.forEach(assertTrustedFeaturePackAssetUrl);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FEATURE_PACK_ASSET_TIMEOUT_MS);
+    const globalController = new AbortController();
+    const globalTimeout = setTimeout(() => globalController.abort(), FEATURE_PACK_ASSET_TIMEOUT_MS);
     const target = path.resolve(modelRoot, asset.target);
     const root = path.resolve(modelRoot);
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
@@ -1335,86 +1338,145 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
             const failures: string[] = [];
             for (const sourceUrl of sources) {
                 const sourceHost = new URL(sourceUrl).hostname.toLowerCase();
+                const sourceStartedAt = Date.now();
+                const sourceController = new AbortController();
+                const abortSource = () => sourceController.abort();
+                globalController.signal.addEventListener("abort", abortSource, { once: true });
+                const sourceTimeout = setTimeout(
+                    abortSource,
+                    FEATURE_PACK_ASSET_SOURCE_CONNECT_TIMEOUT_MS,
+                );
                 try {
                     const response = await fetchTrustedFeaturePackAsset(
                         sourceUrl,
                         resumeOffset,
-                        controller.signal,
+                        sourceController.signal,
                     );
                     if (!response.ok || !response.body) {
                         const status = response.status;
                         await response.body?.cancel().catch(() => undefined);
                         throw new Error(`HTTP ${status}`);
                     }
-                    if (failures.length) output.write(`[Asset source recovered] ${asset.id} via ${sourceHost}\n`);
+                    if (failures.length) {
+                        output.write(
+                            `[Asset source recovered] ${asset.id} via ${sourceHost} after ${Date.now() - sourceStartedAt}ms\n`,
+                        );
+                    }
                     return { response, sourceUrl };
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
                     failures.push(`${sourceHost}:${reason.slice(0, 160)}`);
-                    output.write(`[Asset source failed] ${asset.id} ${sourceHost}: ${reason.slice(0, 240)}\n`);
+                    output.write(
+                        `[Asset source failed] ${asset.id} ${sourceHost} after ${Date.now() - sourceStartedAt}ms: ${reason.slice(0, 240)}\n`,
+                    );
+                } finally {
+                    clearTimeout(sourceTimeout);
+                    globalController.signal.removeEventListener("abort", abortSource);
                 }
             }
             throw new Error(`feature_pack_asset_sources_exhausted:${asset.id}:${failures.join("|")}`);
         };
-        let attempt = await request(offset);
-        let response = attempt.response;
-        if (offset > 0 && response.status !== 206) {
-            await response.body?.cancel().catch(() => undefined);
+        if (offset === asset.size) {
+            const resumedHash = sha256File(partial);
+            if (resumedHash.toLowerCase() === asset.sha256.toLowerCase()) {
+                fs.renameSync(partial, target);
+                output.write(`[Asset verified] ${asset.id} sha256=${resumedHash}\n`);
+                return { ...asset, sourceUrl: sources[0], path: target, verifiedSha256: resumedHash };
+            }
             fs.rmSync(partial, { force: true });
             offset = 0;
-            attempt = await request(0);
-            response = attempt.response;
         }
-        const responseBody = response.body;
-        if (!responseBody) throw new Error(`feature_pack_asset_body_missing:${asset.id}`);
-        const contentLength = Number(response.headers.get("content-length"));
-        if (Number.isFinite(contentLength) && contentLength > asset.size - offset) {
-            await responseBody.cancel().catch(() => undefined);
-            fs.rmSync(partial, { force: true });
-            throw new Error(`feature_pack_asset_size_exceeded:${asset.id}`);
-        }
-        output.write(`[Asset] ${asset.id} ${offset ? `resuming at ${offset}` : "starting"}\n`);
-        let received = 0;
-        let sizeExceeded = false;
-        const sizeLimiter = new Transform({
-            transform(chunk, _encoding, callback) {
-                received += Buffer.byteLength(chunk);
-                if (offset + received > asset.size) {
-                    sizeExceeded = true;
-                    controller.abort();
-                    callback(new Error("feature_pack_asset_size_exceeded"));
-                    return;
+        let streamRetryCount = 0;
+        while (true) {
+            const attempt = await request(offset);
+            const response = attempt.response;
+            if (offset > 0) {
+                const contentRange = String(response.headers.get("content-range") || "").toLowerCase();
+                if (response.status !== 206 || !contentRange.startsWith(`bytes ${offset}-`)) {
+                    await response.body?.cancel().catch(() => undefined);
+                    fs.rmSync(partial, { force: true });
+                    offset = 0;
+                    streamRetryCount += 1;
+                    if (streamRetryCount > FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT) {
+                        throw new Error(`feature_pack_asset_resume_contract_invalid:${asset.id}`);
+                    }
+                    output.write(`[Asset resume reset] ${asset.id} source did not honor Range\n`);
+                    continue;
                 }
-                callback(null, chunk);
-            },
-        });
-        try {
-            await pipeline(
-                Readable.fromWeb(responseBody as never),
-                sizeLimiter,
-                fs.createWriteStream(partial, { flags: offset > 0 ? "a" : "w" }),
-                { signal: controller.signal },
-            );
-        } catch (error) {
-            if (sizeExceeded) {
+            }
+            const responseBody = response.body;
+            if (!responseBody) throw new Error(`feature_pack_asset_body_missing:${asset.id}`);
+            const contentLength = Number(response.headers.get("content-length"));
+            if (Number.isFinite(contentLength) && contentLength > asset.size - offset) {
+                await responseBody.cancel().catch(() => undefined);
                 fs.rmSync(partial, { force: true });
                 throw new Error(`feature_pack_asset_size_exceeded:${asset.id}`);
             }
-            throw error;
+            output.write(`[Asset] ${asset.id} ${offset ? `resuming at ${offset}` : "starting"}\n`);
+            let received = 0;
+            let sizeExceeded = false;
+            const attemptOffset = offset;
+            const sizeLimiter = new Transform({
+                transform(chunk, _encoding, callback) {
+                    received += Buffer.byteLength(chunk);
+                    if (attemptOffset + received > asset.size) {
+                        sizeExceeded = true;
+                        globalController.abort();
+                        callback(new Error("feature_pack_asset_size_exceeded"));
+                        return;
+                    }
+                    callback(null, chunk);
+                },
+            });
+            try {
+                await pipeline(
+                    Readable.fromWeb(responseBody as never),
+                    sizeLimiter,
+                    fs.createWriteStream(partial, { flags: attemptOffset > 0 ? "a" : "w" }),
+                    { signal: globalController.signal },
+                );
+            } catch (error) {
+                if (sizeExceeded) {
+                    fs.rmSync(partial, { force: true });
+                    throw new Error(`feature_pack_asset_size_exceeded:${asset.id}`);
+                }
+                if (globalController.signal.aborted) {
+                    throw new Error(`feature_pack_asset_global_timeout:${asset.id}`);
+                }
+                offset = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
+                streamRetryCount += 1;
+                if (streamRetryCount > FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT) throw error;
+                output.write(
+                    `[Asset stream retry] ${asset.id} retained=${offset} attempt=${streamRetryCount}/${FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT}\n`,
+                );
+                continue;
+            }
+            const actualSize = fs.statSync(partial).size;
+            if (actualSize < asset.size) {
+                offset = actualSize;
+                streamRetryCount += 1;
+                if (streamRetryCount > FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT) {
+                    throw new Error(`Asset size mismatch for ${asset.id}: expected ${asset.size}, received ${actualSize}`);
+                }
+                output.write(
+                    `[Asset stream retry] ${asset.id} retained=${offset} attempt=${streamRetryCount}/${FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT}\n`,
+                );
+                continue;
+            }
+            if (actualSize > asset.size) {
+                fs.rmSync(partial, { force: true });
+                throw new Error(`feature_pack_asset_size_exceeded:${asset.id}`);
+            }
+            const actualHash = sha256File(partial);
+            if (actualHash.toLowerCase() !== asset.sha256.toLowerCase()) {
+                throw new Error(`Asset SHA-256 mismatch for ${asset.id}`);
+            }
+            fs.renameSync(partial, target);
+            output.write(`[Asset verified] ${asset.id} sha256=${actualHash}\n`);
+            return { ...asset, sourceUrl: attempt.sourceUrl, path: target, verifiedSha256: actualHash };
         }
-        const actualSize = fs.statSync(partial).size;
-        if (actualSize !== asset.size) {
-            throw new Error(`Asset size mismatch for ${asset.id}: expected ${asset.size}, received ${actualSize}`);
-        }
-        const actualHash = sha256File(partial);
-        if (actualHash.toLowerCase() !== asset.sha256.toLowerCase()) {
-            throw new Error(`Asset SHA-256 mismatch for ${asset.id}`);
-        }
-        fs.renameSync(partial, target);
-        output.write(`[Asset verified] ${asset.id} sha256=${actualHash}\n`);
-        return { ...asset, sourceUrl: attempt.sourceUrl, path: target, verifiedSha256: actualHash };
     } finally {
-        clearTimeout(timeout);
+        clearTimeout(globalTimeout);
     }
 }
 
@@ -1728,6 +1790,13 @@ async function runPythonImportSmokeCheck(
         "import importlib,json,os,sys",
         "root=os.path.realpath(sys.argv[1])",
         "sys.path.insert(0,root)",
+        "for relative in ('win32','win32/lib','Pythonwin'):",
+        " candidate=os.path.join(root,*relative.split('/'))",
+        " if os.path.isdir(candidate): sys.path.insert(0,candidate)",
+        "try:",
+        " import pywin32_bootstrap",
+        "except ImportError:",
+        " pass",
         "def is_from_staging(root,item):",
         " try:",
         "  normalized_root=os.path.normcase(os.path.realpath(root))",
@@ -1766,12 +1835,18 @@ async function runFeaturePackDependencyCompatibilityCheck(
     pythonExe: string,
     pythonRoot: string,
     output: fs.WriteStream,
+    allowMissingDependencies = false,
 ) {
     const verifier = path.join(resolveEngineRoot(), "scripts", "verify_feature_pack_dependencies.py");
     if (!fs.existsSync(verifier)) throw new Error("feature_pack_dependency_verifier_missing");
     const result = await runProbeProcess(
         pythonExe,
-        [verifier, "--target", pythonRoot],
+        [
+            verifier,
+            "--target",
+            pythonRoot,
+            ...(allowMissingDependencies ? ["--allow-missing"] : []),
+        ],
         60_000,
     );
     output.write(`\n[Python dependency compatibility]\n${result.output}`);
@@ -1788,6 +1863,8 @@ async function runFeaturePackDependencyCompatibilityCheck(
         kind: "python_dependency_compatibility",
         checkedPackages: Number(payload.checkedPackages || 0),
         targetPackages: Array.isArray(payload.targetPackages) ? payload.targetPackages.map(String) : [],
+        advisoryCount: Number(payload.advisoryCount || 0),
+        missingDependencyPolicy: String(payload.missingDependencyPolicy || "blocking"),
     };
 }
 
@@ -1826,11 +1903,19 @@ async function runRpaDryRunSmokeCheck(
             suiteRef,
         ];
         const isolatedRunner = [
-            "import json,runpy,sys",
-            "sys.path.insert(0,sys.argv[1])",
+            "import json,os,runpy,sys",
+            "root=os.path.realpath(sys.argv[1])",
+            "sys.path.insert(0,root)",
+            "for relative in ('win32','win32/lib','Pythonwin'):",
+            " candidate=os.path.join(root,*relative.split('/'))",
+            " if os.path.isdir(candidate): sys.path.insert(0,candidate)",
+            "try:",
+            " import pywin32_bootstrap",
+            "except ImportError:",
+            " pass",
             "sys.argv=['robot',*json.loads(sys.argv[2])]",
             "runpy.run_module('robot',run_name='__main__')",
-        ].join(";");
+        ].join("\n");
         const result = await runProbeProcess(
             pythonExe,
             [
@@ -1908,6 +1993,7 @@ async function runTransactionalPythonPackInstall(input: {
             pythonExe,
             stagingPython,
             output,
+            Boolean(lockFile),
         );
         const importSmoke = await runPythonImportSmokeCheck(
             pythonExe,
@@ -2041,6 +2127,7 @@ async function runTransactionalAssetPackInstall(input: {
             pythonExe,
             stagingPython,
             output,
+            Boolean(lockFile),
         );
         const verifiedAssets = [];
         for (const asset of manifest.assets) {

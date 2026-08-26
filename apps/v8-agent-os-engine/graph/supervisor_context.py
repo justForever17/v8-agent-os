@@ -23,6 +23,7 @@ from core.safety_active_defense import render_host_alerts_line
 from core.system_base import get_engine_origin
 from core.runtime_tool_access import normalize_subagent_runtime_bindings
 from core.time_truth import utc_now_iso
+from core.user_language import infer_preferred_language
 from core.v8_agent_os_identity import render_system_identity_line
 from core.workspace_capability import WorkspaceBinding, build_workspace_binding
 from core.workspace_resolution import workspace_resolution_service
@@ -629,16 +630,7 @@ def render_agent_tool_surface_summary(agent: dict) -> str:
 
 
 def _infer_preferred_language(user_query: str) -> str:
-    text = str(user_query or "")
-    if re.search(r"[\u4e00-\u9fff]", text):
-        return "zh-CN"
-    if re.search(r"[\u3040-\u30ff]", text):
-        return "ja"
-    if re.search(r"[\uac00-\ud7af]", text):
-        return "ko"
-    if re.search(r"[\u0400-\u04ff]", text):
-        return "ru"
-    return "en"
+    return infer_preferred_language(user_query)
 
 
 def _render_language_context(user_query: str) -> str:

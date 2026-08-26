@@ -4,6 +4,7 @@ import json
 import mimetypes
 import re
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -1531,6 +1532,18 @@ WEB_READ_TIMEOUT_SECONDS = 45.0
 WEB_READER_FALLBACK_ENDPOINT = "https://r.jina.ai/"
 WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 10.0
 WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 40.0
+_SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS: ContextVar[float] = ContextVar(
+    "source_router_search_timeout_seconds",
+    default=0.0,
+)
+_SOURCE_ROUTER_LOCALE_HINT: ContextVar[str] = ContextVar(
+    "source_router_locale_hint",
+    default="",
+)
+_SOURCE_ROUTER_BROWSER_FALLBACK: ContextVar[bool] = ContextVar(
+    "source_router_browser_fallback",
+    default=True,
+)
 # Anonymous HTML search is shared by parallel Research shards. Yahoo accepts
 # sequential requests reliably but responds with 429 to short request bursts.
 _YAHOO_SEARCH_SEMAPHORE = BoundedSemaphore(1)
@@ -2188,6 +2201,12 @@ def _source_router_plan(
     profile_promoted_providers: list[str] = []
     if not requested_provider or requested_provider == "auto":
         planned, profile_promoted_providers = _prioritize_governed_browser_providers(planned)
+        if re.search(r"(?:^|\s)site:[A-Za-z0-9.-]+", query, re.IGNORECASE):
+            site_constraint_order = ("bing_cn", "yahoo", "bing", "duckduckgo", "google")
+            planned = [
+                *[provider for provider in site_constraint_order if provider in planned],
+                *[provider for provider in planned if provider not in site_constraint_order],
+            ]
     executable: list[str] = []
     skipped: list[dict[str, Any]] = []
     for provider in planned:
@@ -5978,6 +5997,7 @@ def web_search(
     router_plan = _source_router_plan(
         query=query,
         requested_provider=requested_provider,
+        locale_hint=_SOURCE_ROUTER_LOCALE_HINT.get(),
         needs_login=bool(useAgentBrowserProfile),
     )
     providers = list(router_plan.get("providers") or [])
@@ -5987,19 +6007,19 @@ def web_search(
     site_hosts = list(_search_query_relevance_signals(query).get("siteHosts") or [])
     relaxed_site_fallback: dict[str, Any] | None = None
 
-    def _matches_requested_site(results: list[Any]) -> bool:
+    def _requested_site_results(results: list[Any]) -> list[Any]:
         if not site_hosts:
-            return True
-        for item in results:
-            if not isinstance(item, dict):
-                continue
-            result_host = (urlparse(_safe_text(item.get("url"))).hostname or "").lower()
-            if any(
-                result_host == host or result_host.endswith(f".{host}")
+            return list(results)
+        return [
+            item
+            for item in results
+            if isinstance(item, dict)
+            and any(
+                (urlparse(_safe_text(item.get("url"))).hostname or "").lower() == host
+                or (urlparse(_safe_text(item.get("url"))).hostname or "").lower().endswith(f".{host}")
                 for host in site_hosts
-            ):
-                return True
-        return False
+            )
+        ]
 
     def _assess_provider_results(
         provider: str,
@@ -6050,32 +6070,60 @@ def web_search(
                 ),
                 relevance,
             )
-        if (
-            requested_provider == "auto"
-            and site_hosts
-            and bool(relevance.get("relevant"))
-            and not _matches_requested_site(results)
-        ):
-            if relaxed_site_fallback is None:
-                relaxed_site_fallback = {
-                    "provider": provider,
-                    "results": list(results),
-                    "relevance": relevance,
-                }
-            failure_class = "site_constraint_not_honored"
-            attempted_providers.append(
-                {
-                    "provider": provider,
-                    "status": "relaxed_candidate",
-                    "failureClass": failure_class,
-                    "reason": failure_class,
-                    "resultCount": len(results),
-                    "requestedSiteHosts": site_hosts,
-                    "relevance": relevance,
-                }
+        if requested_provider == "auto" and site_hosts and bool(relevance.get("relevant")):
+            exact_site_results = _requested_site_results(results)
+            exact_site_relevance = _assess_search_result_relevance(
+                query,
+                exact_site_results,
             )
-            last_error = failure_class
-            return False, None, relevance
+            has_specific_site_result = any(
+                len(
+                    [
+                        segment
+                        for segment in urlparse(_safe_text(item.get("url"))).path.split("/")
+                        if segment
+                    ]
+                )
+                >= 1
+                for item in exact_site_results
+                if isinstance(item, dict)
+            )
+            exact_site_sufficient = bool(
+                exact_site_results
+                and exact_site_relevance.get("relevant")
+                and (
+                    len(exact_site_results) >= 2
+                    or (
+                        has_specific_site_result
+                        and bool(exact_site_relevance.get("strongMatch"))
+                    )
+                )
+            )
+            if exact_site_sufficient:
+                results[:] = exact_site_results
+                relevance = exact_site_relevance
+            else:
+                if relaxed_site_fallback is None:
+                    relaxed_site_fallback = {
+                        "provider": provider,
+                        "results": list(results),
+                        "relevance": relevance,
+                    }
+                failure_class = "site_constraint_not_honored"
+                attempted_providers.append(
+                    {
+                        "provider": provider,
+                        "status": "relaxed_candidate",
+                        "failureClass": failure_class,
+                        "reason": failure_class,
+                        "resultCount": len(results),
+                        "exactSiteResultCount": len(exact_site_results),
+                        "requestedSiteHosts": site_hosts,
+                        "relevance": relevance,
+                    }
+                )
+                last_error = failure_class
+                return False, None, relevance
         # Bing's public HTML endpoint is known to return a normal-looking result
         # page for an unrelated localized query. Keep this failover narrow:
         # explicit provider requests and other adapters retain their established
@@ -6156,7 +6204,11 @@ def web_search(
 
     for provider in providers:
         elapsed = time.monotonic() - started_at
-        remaining = WEB_SEARCH_TOTAL_TIMEOUT_SECONDS - elapsed
+        total_timeout_seconds = (
+            _SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.get()
+            or WEB_SEARCH_TOTAL_TIMEOUT_SECONDS
+        )
+        remaining = total_timeout_seconds - elapsed
         if remaining <= 0:
             attempted_providers.append(
                 {
@@ -6341,7 +6393,13 @@ def web_search(
                 }
                 return json.dumps(response, ensure_ascii=False, indent=2)
             if provider == "metaso":
-                use_browser_for_provider = bool(useAgentBrowserProfile) or bool(_agent_browser_profile_allowed(search_url)[0])
+                use_browser_for_provider = bool(
+                    _SOURCE_ROUTER_BROWSER_FALLBACK.get()
+                    and (
+                        bool(useAgentBrowserProfile)
+                        or bool(_agent_browser_profile_allowed(search_url)[0])
+                    )
+                )
                 if use_browser_for_provider:
                     structured_route = "api" if _provider_api_key("metaso") else "public_sse"
                     metaso_structured = (
@@ -6524,8 +6582,15 @@ def web_search(
                         ),
                     }
                     return json.dumps(response, ensure_ascii=False, indent=2)
-            effective_use_agent_browser_profile = bool(useAgentBrowserProfile) or bool(
-                _provider_prefers_agent_browser_profile(provider) and _agent_browser_profile_allowed(search_url)[0]
+            effective_use_agent_browser_profile = bool(
+                _SOURCE_ROUTER_BROWSER_FALLBACK.get()
+                and (
+                    bool(useAgentBrowserProfile)
+                    or bool(
+                        _provider_prefers_agent_browser_profile(provider)
+                        and _agent_browser_profile_allowed(search_url)[0]
+                    )
+                )
             )
             if (
                 provider in {"duckduckgo", "google", "bing", "bing_cn", "baidu", "yahoo"}
@@ -6819,6 +6884,9 @@ def source_router_search(
     referer_url: str = "",
     useAgentBrowserProfile: bool = False,
     tool_call_id: str = "",
+    total_timeout_seconds: float | None = None,
+    locale_hint: str = "",
+    allow_browser_profile_fallback: bool = True,
 ) -> str:
     """Internal Source Router search primitive used by Research/Web runtimes.
 
@@ -6826,17 +6894,88 @@ def source_router_search(
     agents should prefer web_broker for one-off use and research_broker for
     multi-source evidence work.
     """
-    return web_search.func(
-        query=query,
-        limit=limit,
-        search_engine=search_engine,
-        search_vertical=search_vertical,
-        mode=mode,
-        referer_mode=referer_mode,
-        referer_url=referer_url,
-        useAgentBrowserProfile=useAgentBrowserProfile,
-        tool_call_id=tool_call_id,
+    timeout_token = _SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.set(
+        max(1.0, float(total_timeout_seconds or 0.0))
+        if total_timeout_seconds
+        else 0.0
     )
+    locale_token = _SOURCE_ROUTER_LOCALE_HINT.set(str(locale_hint or "").strip())
+    browser_token = _SOURCE_ROUTER_BROWSER_FALLBACK.set(
+        bool(allow_browser_profile_fallback)
+    )
+    try:
+        return web_search.func(
+            query=query,
+            limit=limit,
+            search_engine=search_engine,
+            search_vertical=search_vertical,
+            mode=mode,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            useAgentBrowserProfile=useAgentBrowserProfile,
+            tool_call_id=tool_call_id,
+        )
+    finally:
+        _SOURCE_ROUTER_BROWSER_FALLBACK.reset(browser_token)
+        _SOURCE_ROUTER_LOCALE_HINT.reset(locale_token)
+        _SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.reset(timeout_token)
+
+
+def source_router_read(
+    *,
+    url: str,
+    mode: WebFetchMode = "static",
+    headless: bool = True,
+    referer_mode: WebRefererMode = "none",
+    referer_url: str = "",
+    maxTextChars: int = MAX_TEXT_CHARS,
+    useAgentBrowserProfile: bool = False,
+    tool_call_id: str = "",
+    timeout_seconds: float = 10.0,
+) -> str:
+    """Internal bounded page read for Source Router and Research."""
+
+    allowed, error_message = _guard_url(url, tool_call_id=tool_call_id)
+    if not allowed:
+        return _render_error_payload(
+            url=url,
+            requested_mode=mode,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            error=error_message or "Safety Guardian 已阻止网页读取。",
+            blocked=True,
+        )
+    try:
+        payload = _fetch_with_scrapling_internal(
+            url,
+            mode=mode,
+            headless=headless,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            timeout_seconds=max(1.0, float(timeout_seconds or 0.0)),
+            use_agent_browser_profile=bool(useAgentBrowserProfile),
+        )
+        if _detect_login_wall(payload):
+            return _render_needs_login_payload(
+                page=payload,
+                use_agent_browser_profile=bool(useAgentBrowserProfile),
+            )
+        return json.dumps(
+            _render_page_summary(payload, max_text_chars=maxTextChars),
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as exc:
+        error = str(exc)
+        return _render_error_payload(
+            url=url,
+            requested_mode=mode,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            error=f"Error reading webpage with Scrapling: {error}",
+            attempted_modes=_error_attempted_modes(error),
+            elapsed_ms=_error_elapsed_ms(error),
+        )
 
 
 @tool

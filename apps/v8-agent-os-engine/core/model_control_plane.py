@@ -109,7 +109,12 @@ def _fact_provenance_for_patch(model_patch: Dict[str, Any], source: str) -> Dict
         provenance = {"source": normalized_source, "confidence": "hint"}
     for key in ("contextWindow", "maxTokens", "type", "capabilities", "capabilityClass"):
         if key in patch and patch.get(key) not in (None, "", {}):
-            existing[key] = {**provenance, **dict(existing.get(key) or {})}
+            current = dict(existing.get(key) or {})
+            existing[key] = (
+                {**current, **provenance}
+                if normalized_source == "manual"
+                else {**provenance, **current}
+            )
     patch["factProvenance"] = existing
     return patch
 

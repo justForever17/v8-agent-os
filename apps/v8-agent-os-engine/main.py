@@ -135,6 +135,10 @@ def _get_runtime_episode_runner():
     return _import_module("core.runtime_episode_runner").runtime_episode_runner
 
 
+def _get_chat_run_scheduler():
+    return _import_module("core.chat_run_scheduler").chat_run_scheduler
+
+
 def _get_config_broker_service():
     return _import_module("core.config_broker_service").config_broker_service
 
@@ -299,6 +303,7 @@ def _new_lifespan_state(app: FastAPI) -> dict[str, object]:
         "phase": "initializing",
         "started": {
             "checkpoint_store": False,
+            "chat_scheduler": False,
             "mcp": False,
             "extensions": False,
             "cron": False,
@@ -438,6 +443,8 @@ async def _shutdown_lifespan_services(
         await _attempt("mcp.cleanup", _safe_cleanup)
     if reason == "shutdown":
         await _attempt("ui_patch.shutdown", _shutdown_ui_patch_preview)
+    if started.get("chat_scheduler"):
+        await _attempt("chat_scheduler.stop", lambda: _get_chat_run_scheduler().stop())
     if started.get("checkpoint_store"):
         await _attempt("checkpoint_store.close", _safe_close_checkpoints)
 
@@ -644,7 +651,12 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
     _set_lifespan_phase(state, "checkpoint_preflight")
     state_preflight_started_at = time.perf_counter()
     _mark_lifespan_service_starting(state, "checkpoint_store")
-    checkpoint_preflight = await checkpoint_store.ensure_preflight()
+    _mark_lifespan_service_starting(state, "chat_scheduler")
+    await _get_chat_run_scheduler().start()
+    checkpoint_preflight = await _get_chat_run_scheduler().run(
+        checkpoint_store.ensure_preflight(),
+        task_name="checkpoint-preflight",
+    )
     print(
         "[Engine] Checkpoint security preflight completed:",
         {
@@ -1023,7 +1035,8 @@ async def serve_workspace_file(file_path: str):
 @app.get("/readyz")
 async def readiness_check(response: Response):
     runner_status = _get_runtime_episode_runner().readiness_status()
-    ready = bool(runner_status.get("ready"))
+    chat_scheduler_status = _get_chat_run_scheduler().readiness_status()
+    ready = bool(runner_status.get("ready") and chat_scheduler_status.get("ready"))
     if not ready:
         response.status_code = 503
     return {
@@ -1034,6 +1047,7 @@ async def readiness_check(response: Response):
         "lifespan": dict(getattr(app.state, "lifespan_diagnostics", {}) or {}),
         "configBrokerRecovery": dict(getattr(app.state, "config_broker_recovery", {}) or {}),
         "runtimeEpisodeRunner": runner_status,
+        "chatRunScheduler": chat_scheduler_status,
     }
 
 
@@ -1052,6 +1066,7 @@ async def health_check():
     )
     inspect_memory_backend = _get_memory_backend_health()
     runner_status = _get_runtime_episode_runner().readiness_status()
+    chat_scheduler_status = _get_chat_run_scheduler().readiness_status()
     return {
         "status": "ok",
         "service": "v8-agent-os-engine",
@@ -1075,6 +1090,7 @@ async def health_check():
         "lifespan": dict(getattr(app.state, "lifespan_diagnostics", {}) or {}),
         "configBrokerRecovery": dict(getattr(app.state, "config_broker_recovery", {}) or {}),
         "runtimeEpisodeRunner": runner_status,
+        "chatRunScheduler": chat_scheduler_status,
         "memory": inspect_memory_backend(),
         "identity": storage.get_system_identity(),
     }

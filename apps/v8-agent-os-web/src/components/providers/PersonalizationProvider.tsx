@@ -9,6 +9,8 @@ import {
     resolveLightBackgroundMediaSrc,
 } from "@/lib/personalization";
 
+const VIDEO_RELOAD_DELAYS_MS = [250, 750, 1_500] as const;
+
 function clearWallpaper(root: HTMLElement) {
     if (root.dataset.v8Wallpaper) delete root.dataset.v8Wallpaper;
     if (root.dataset.v8WallpaperKind) delete root.dataset.v8WallpaperKind;
@@ -45,12 +47,25 @@ export function useBackgroundVideoAudio() {
 export function PersonalizationProvider({ children }: { children: React.ReactNode }) {
     const { profile, canonicalLoaded } = useClientProfile();
     const videoRef = useRef<HTMLVideoElement | null>(null);
+    const videoReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const videoReloadAttemptRef = useRef(0);
     const [videoSrc, setVideoSrc] = useState("");
     const [videoReady, setVideoReady] = useState(false);
     const [videoMuted, setVideoMuted] = useState(true);
 
     useEffect(() => {
+        return () => {
+            if (videoReloadTimerRef.current) clearTimeout(videoReloadTimerRef.current);
+        };
+    }, []);
+
+    useEffect(() => {
         if (!canonicalLoaded) return;
+        if (videoReloadTimerRef.current) {
+            clearTimeout(videoReloadTimerRef.current);
+            videoReloadTimerRef.current = null;
+        }
+        videoReloadAttemptRef.current = 0;
         const root = document.documentElement;
         const appearance = normalizeAppearance(profile?.appearance);
         const media = appearance.lightBackgroundMedia || appearance.lightBackgroundImage || "";
@@ -77,6 +92,7 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
                 if (current === src) return current;
                 setVideoReady(false);
                 setVideoMuted(true);
+                videoReloadAttemptRef.current = 0;
                 return src;
             });
             return;
@@ -148,6 +164,11 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
                 tabIndex={-1}
                 onCanPlay={(event) => {
                     if (!videoSrc) return;
+                    if (videoReloadTimerRef.current) {
+                        clearTimeout(videoReloadTimerRef.current);
+                        videoReloadTimerRef.current = null;
+                    }
+                    videoReloadAttemptRef.current = 0;
                     const root = document.documentElement;
                     root.style.removeProperty("--v8-wallpaper-image");
                     root.dataset.v8WallpaperKind = "video";
@@ -158,6 +179,19 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
                 }}
                 onError={() => {
                     setVideoReady(false);
+                    const attempt = videoReloadAttemptRef.current;
+                    if (videoSrc && attempt < VIDEO_RELOAD_DELAYS_MS.length) {
+                        videoReloadAttemptRef.current = attempt + 1;
+                        if (videoReloadTimerRef.current) clearTimeout(videoReloadTimerRef.current);
+                        videoReloadTimerRef.current = setTimeout(() => {
+                            videoReloadTimerRef.current = null;
+                            const video = videoRef.current;
+                            if (!video || !videoSrc) return;
+                            video.load();
+                            void video.play().catch(() => undefined);
+                        }, VIDEO_RELOAD_DELAYS_MS[attempt]);
+                        return;
+                    }
                     if (document.documentElement.dataset.v8WallpaperKind === "video") {
                         clearWallpaper(document.documentElement);
                     }

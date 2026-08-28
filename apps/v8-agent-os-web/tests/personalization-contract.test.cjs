@@ -34,6 +34,16 @@ test("wallpaper uses center cropping with theme-specific light and dark surfaces
   assert.match(provider, /muted=\{videoMuted\}/);
   assert.doesNotMatch(provider, /resolvedTheme/);
   assert.match(provider, /root\.style\.getPropertyValue\("--v8-wallpaper-image"\) !== cssValue/);
+  assert.match(provider, /VIDEO_RELOAD_DELAYS_MS = \[250, 750, 1_500\]/);
+  assert.match(provider, /videoReloadAttemptRef\.current < VIDEO_RELOAD_DELAYS_MS\.length|attempt < VIDEO_RELOAD_DELAYS_MS\.length/);
+  const profileEffectStart = provider.indexOf("if (!canonicalLoaded) return;");
+  const profileEffectTimerReset = provider.indexOf("if (videoReloadTimerRef.current)", profileEffectStart);
+  const appearanceRead = provider.indexOf("normalizeAppearance(profile?.appearance)", profileEffectStart);
+  assert.ok(profileEffectStart >= 0 && profileEffectTimerReset > profileEffectStart && profileEffectTimerReset < appearanceRead);
+  assert.ok(
+    provider.indexOf("video.load()") < provider.lastIndexOf("clearWallpaper(document.documentElement)"),
+    "transient video errors must retry before the wallpaper is cleared",
+  );
   assert.match(styles, /html\.light\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /html\.dark\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /background-size: cover/);

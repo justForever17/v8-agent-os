@@ -1,5 +1,6 @@
 import fs from "fs";
 import crypto from "crypto";
+import https from "https";
 import os from "os";
 import path from "path";
 import { spawn, type ChildProcess } from "child_process";
@@ -1276,12 +1277,55 @@ function assertTrustedFeaturePackAssetUrl(rawUrl: string) {
     }
 }
 
-function featurePackAssetSources(asset: FeaturePackAsset) {
-    return Array.from(new Set(
+function featurePackAssetSources(asset: FeaturePackAsset, locale = "en") {
+    const sources = Array.from(new Set(
         [asset.url, ...(asset.mirrors || [])]
             .map((value) => String(value || "").trim())
             .filter(Boolean),
     ));
+    if (!String(locale || "").trim().toLowerCase().startsWith("zh")) return sources;
+    const domesticRank = (value: string) => {
+        const host = new URL(value).hostname.toLowerCase();
+        if (host === "hf-mirror.com") return 0;
+        if (host === "ghproxy.net") return 1;
+        return 2;
+    };
+    return sources
+        .map((value, index) => ({ value, index, rank: domesticRank(value) }))
+        .sort((left, right) => left.rank - right.rank || left.index - right.index)
+        .map((item) => item.value);
+}
+
+function fetchFeaturePackAssetOverIpv4(
+    rawUrl: string,
+    headers: Record<string, string> | undefined,
+    signal: AbortSignal,
+) {
+    return new Promise<Response>((resolve, reject) => {
+        const request = https.request(rawUrl, {
+            method: "GET",
+            headers,
+            family: 4,
+            signal,
+        }, (incoming) => {
+            const responseHeaders = new Headers();
+            for (const [name, rawValue] of Object.entries(incoming.headers)) {
+                if (Array.isArray(rawValue)) {
+                    for (const value of rawValue) responseHeaders.append(name, value);
+                } else if (rawValue !== undefined) {
+                    responseHeaders.set(name, rawValue);
+                }
+            }
+            responseHeaders.set("x-v8-asset-transport", "ipv4");
+            resolve(new Response(Readable.toWeb(incoming) as BodyInit, {
+                status: incoming.statusCode || 500,
+                statusText: incoming.statusMessage,
+                headers: responseHeaders,
+            }));
+        });
+        request.on("error", reject);
+        request.end();
+    });
 }
 
 async function fetchTrustedFeaturePackAsset(
@@ -1292,12 +1336,19 @@ async function fetchTrustedFeaturePackAsset(
     let currentUrl = rawUrl;
     for (let redirectCount = 0; redirectCount <= FEATURE_PACK_ASSET_MAX_REDIRECTS; redirectCount += 1) {
         assertTrustedFeaturePackAssetUrl(currentUrl);
-        const response = await fetch(currentUrl, {
-            headers: resumeOffset > 0 ? { Range: `bytes=${resumeOffset}-` } : undefined,
-            redirect: "manual",
-            cache: "no-store",
-            signal,
-        });
+        const headers = resumeOffset > 0 ? { Range: `bytes=${resumeOffset}-` } : undefined;
+        let response: Response;
+        try {
+            response = await fetch(currentUrl, {
+                headers,
+                redirect: "manual",
+                cache: "no-store",
+                signal,
+            });
+        } catch (error) {
+            if (signal.aborted) throw error;
+            response = await fetchFeaturePackAssetOverIpv4(currentUrl, headers, signal);
+        }
         if (![301, 302, 303, 307, 308].includes(response.status)) {
             assertTrustedFeaturePackAssetUrl(response.url || currentUrl);
             return response;
@@ -1315,8 +1366,13 @@ async function fetchTrustedFeaturePackAsset(
     throw new Error("feature_pack_asset_redirect_limit");
 }
 
-async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: string, output: fs.WriteStream) {
-    const sources = featurePackAssetSources(asset);
+async function downloadFeaturePackAsset(
+    asset: FeaturePackAsset,
+    modelRoot: string,
+    output: fs.WriteStream,
+    locale: string,
+) {
+    const sources = featurePackAssetSources(asset, locale);
     if (!sources.length) throw new Error(`feature_pack_asset_source_missing:${asset.id}`);
     sources.forEach(assertTrustedFeaturePackAssetUrl);
     const globalController = new AbortController();
@@ -1356,6 +1412,9 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
                         const status = response.status;
                         await response.body?.cancel().catch(() => undefined);
                         throw new Error(`HTTP ${status}`);
+                    }
+                    if (response.headers.get("x-v8-asset-transport") === "ipv4") {
+                        output.write(`[Asset transport] ${asset.id} ${sourceHost} connected via IPv4 fallback\n`);
                     }
                     if (failures.length) {
                         output.write(
@@ -1750,7 +1809,7 @@ async function runAssetSmokeCheck(
         const result = await runProbeProcess(
             pythonExe,
             ["-I", "-S", "-c", assetSmokeScript(smokeCheck.kind), pythonRoot, modelPath, provider],
-            60_000,
+            provider === "GPU" ? 20_000 : 180_000,
         );
         output.write(`\n[${provider} smoke]\n${result.output}`);
         const marker = result.output.split(/\r?\n/).find((line) => line.startsWith("__V8_SMOKE__"));
@@ -2079,8 +2138,9 @@ async function runTransactionalAssetPackInstall(input: {
     requirementsFile: string;
     output: fs.WriteStream;
     sources: PipSource[];
+    locale: string;
 }) {
-    const { definition, manifest, pythonExe, requirementsFile, output, sources } = input;
+    const { definition, manifest, pythonExe, requirementsFile, output, sources, locale } = input;
     let journal = input.journal;
     const { stagingRoot, versionRoot, targetDir, assetRoot, receiptRef } = journal.paths;
     const stagingPython = path.join(stagingRoot, "python");
@@ -2133,7 +2193,7 @@ async function runTransactionalAssetPackInstall(input: {
         for (const asset of manifest.assets) {
             verifiedAssets.push(
                 reuseVerifiedFeaturePackAsset(asset, existingModels, stagingModels, output)
-                || await downloadFeaturePackAsset(asset, stagingModels, output),
+                || await downloadFeaturePackAsset(asset, stagingModels, output, locale),
             );
         }
         const primaryModel = verifiedAssets[0]?.path;
@@ -2222,8 +2282,9 @@ async function runFeaturePackInstallSequence(input: {
     requirementsFile: string;
     output: fs.WriteStream;
     sources: PipSource[];
+    locale: string;
 }) {
-    const { definition, journal, pythonExe, requirementsFile, output, sources } = input;
+    const { definition, journal, pythonExe, requirementsFile, output, sources, locale } = input;
     const assetManifest = readAssetManifest(definition);
     if (assetManifest) {
         await runTransactionalAssetPackInstall({
@@ -2234,6 +2295,7 @@ async function runFeaturePackInstallSequence(input: {
             requirementsFile,
             output,
             sources,
+            locale,
         });
         return;
     }
@@ -2409,6 +2471,7 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false, 
         requirementsFile,
         output,
         sources,
+        locale,
     }).catch(async (error) => {
         const message = featurePackErrorMessage(error);
         safeFeaturePackLogWrite(output, `[Unhandled install failure] ${message}\n`);

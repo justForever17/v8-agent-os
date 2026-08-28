@@ -176,6 +176,7 @@ def test_lifespan_cleanup_stops_services_and_tasks_in_reverse_order(
         monkeypatch.setattr(main, "_get_network_supervisor_service", lambda: AsyncService("supervisor"))
         monkeypatch.setattr(main, "_get_cron_manager", lambda: CronService())
         monkeypatch.setattr(main, "_get_extensions_runtime_service", lambda: AsyncService("extensions"))
+        monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: AsyncService("chat_scheduler"))
 
         async def cleanup_mcp() -> None:
             events.append("mcp.cleanup")
@@ -200,6 +201,7 @@ def test_lifespan_cleanup_stops_services_and_tasks_in_reverse_order(
         state = main._new_lifespan_state(app)
         for service in (
             "checkpoint_store",
+            "chat_scheduler",
             "mcp",
             "extensions",
             "cron",
@@ -228,6 +230,7 @@ def test_lifespan_cleanup_stops_services_and_tasks_in_reverse_order(
             "task.cancel:engineering",
             "mcp.cleanup",
             "ui_patch.shutdown",
+            "chat_scheduler.stop",
             "checkpoint_store.close",
         ]
         assert result["cleanupCompleted"] is True
@@ -236,7 +239,7 @@ def test_lifespan_cleanup_stops_services_and_tasks_in_reverse_order(
         assert app.state.mcp_task is None
 
         await main._shutdown_lifespan_services(app, state, reason="duplicate")
-        assert len(events) == 11
+        assert len(events) == 12
         assert state["cleanup_reason"] == "shutdown"
 
     asyncio.run(exercise())

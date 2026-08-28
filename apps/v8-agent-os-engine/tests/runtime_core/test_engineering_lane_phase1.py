@@ -153,6 +153,40 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
             )
         self.assertFalse(decision["active"])
 
+    def test_auto_does_not_trigger_for_response_only_verification_probe_in_repo(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()):
+            decision = engineering_lane_service.trigger_decision(
+                user_query="这是本机发布前首响测试。请只回复：收到。不要调用工具。",
+                mode="auto",
+                workspace_descriptor={"workspaceRoot": str(root)},
+            )
+
+        self.assertFalse(decision["active"])
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["signals"], [])
+
+    def test_auto_requires_actionable_target_for_verification_only_signal(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()):
+            nominal = engineering_lane_service.trigger_decision(
+                user_query="这是一次发布前测试",
+                mode="auto",
+                workspace_descriptor={"workspaceRoot": str(root)},
+            )
+            actionable = engineering_lane_service.trigger_decision(
+                user_query="请运行这个项目的测试",
+                mode="auto",
+                workspace_descriptor={"workspaceRoot": str(root)},
+            )
+
+        self.assertFalse(nominal["active"])
+        self.assertEqual(nominal["signals"], [])
+        self.assertTrue(actionable["active"])
+        self.assertEqual(actionable["signals"], ["verification"])
+
     def test_context_pack_suppresses_daily_and_map_but_keeps_workflow_slot(self) -> None:
         temp, root = self._repo()
         self.addCleanup(temp.cleanup)

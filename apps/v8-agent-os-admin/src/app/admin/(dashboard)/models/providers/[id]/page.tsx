@@ -546,9 +546,9 @@ export default function ProviderConfigPage({ params
                                 </div> : <input type="hidden" name="credentialMode" value="oauthFile" />}
                             {platformProviderSelected || credentialMode === "oauthFile" ? <div className="grid gap-2">
                                     <Label htmlFor="oauthPath">{t("app.admin.dashboard.models.providers.id.page.k686313b2")}</Label>
-                                    <div className="flex items-center rounded-xl border border-input bg-background">
+                                    <div className="flex items-center rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring">
                                         <span className="shrink-0 border-r border-border/60 px-3 text-sm text-muted-foreground">oauth:</span>
-                                        <Input id="oauthPath" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath} />
+                                        <Input id="oauthPath" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath} />
                                     </div>
                                     <p className={`text-xs ${(platformProviderSelected ? activePlatformPreset.supportState === "preset-only" : apiStandard === "gemini") ? "text-amber-600" : "text-muted-foreground"}`}>{oauthHint}</p>
                                 </div> : <div className="grid gap-2">

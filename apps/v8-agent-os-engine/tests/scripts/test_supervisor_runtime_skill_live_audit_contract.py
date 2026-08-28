@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import core.database as database_module
@@ -158,7 +159,11 @@ def test_research_handoff_assessment_recomputes_instead_of_trusting_forged_metri
 
 def test_research_handoff_assessment_accepts_complete_projected_review_binding():
     question = "Verify the current compliance timeline with fresh primary evidence."
-    raw = _accepted_research_payload("bundle-valid", question)
+    raw = _accepted_research_payload(
+        "bundle-valid",
+        question,
+        fixture_time=datetime.now(timezone.utc),
+    )
     answer = raw["researchAnswerPack"]["answer"]
     sources = raw["researchAnswerPack"]["sources"]
     claims = raw["researchAnswerPack"]["claimTable"]
@@ -173,7 +178,7 @@ def test_research_handoff_assessment_accepts_complete_projected_review_binding()
         "reviewDecision": "accept",
         "qualityTier": "high_quality",
         "freshness": "current",
-        "asOf": "2026-07-28",
+        "asOf": raw["asOf"],
         "answer": answer,
         "answerSha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
         "sources": sources,
@@ -194,7 +199,7 @@ def test_research_handoff_assessment_accepts_complete_projected_review_binding()
         "coverageComplete": True,
         "reviewDecision": "accept",
         "qualityTier": "high_quality",
-        "asOf": "2026-07-28",
+        "asOf": raw["asOf"],
         "answer": answer,
         "answerSha256": unit["answerSha256"],
         "sources": sources,

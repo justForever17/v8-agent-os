@@ -187,7 +187,7 @@ test("Web rejects a delayed terminal event from a previous run", () => {
   assert.equal(shouldApplyRunScopedStatus("run-previous", "", true), false);
   assert.match(chatClientSource, /isRunAcceptancePending\(\)/);
   assert.match(chatClientSource, /getSubmittedRunId\(\) \|\| projectionRunIdRef\.current/);
-  assert.match(chatClientSource, /if \(terminalTargetsCurrentRun\) \{[\s\S]*?patchConversationSummary\(conversationId, \{ status: terminalRunStatus \}\)/);
+  assert.match(chatClientSource, /if \(terminalTargetsCurrentRun\) \{[\s\S]*?patchConversationSummary\(conversationId, \{[\s\S]*?status: terminalRunStatus,[\s\S]*?workflowStatus: terminalRunStatus/);
 });
 
 test("session realtime subscription remains stable while the active run identity changes", () => {
@@ -289,7 +289,7 @@ test("an external active run exposes the same stop target before compact control
 });
 
 test("Web reconciles remote runs and hydrates history when an initial snapshot has no messages", () => {
-  assert.match(chatClientSource, /patchConversationSummary\(conversationId, \{ status: latestStatus \}\)/);
+  assert.match(chatClientSource, /patchConversationSummary\(conversationId, \{[\s\S]*?status: latestStatus,[\s\S]*?workflowStatus: latestStatus/);
   assert.match(chatClientSource, /isTerminalRunStatus\(latestStatus\)[\s\S]*?settleTerminalStreamRef\.current\(latestRun\.id\)/);
   assert.match(chatClientSource, /\.finally\(\(\) => \{[\s\S]*?void loadRuns\(conversationId\)/);
   assert.match(streamHookSource, /dispatchRunCommand[\s\S]*?signal: AbortSignal\.timeout\(10_000\)/);

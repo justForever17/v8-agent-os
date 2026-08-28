@@ -137,6 +137,57 @@ function verifyPackagedPython(python, engineRoot, platform) {
   }
 }
 
+function findFile(start, predicate, maxDepth = 8) {
+  if (!fs.existsSync(start) || maxDepth < 0) return "";
+  for (const entry of fs.readdirSync(start, { withFileTypes: true })) {
+    const fullPath = path.join(start, entry.name);
+    if (entry.isFile() && predicate(entry.name, fullPath)) return fullPath;
+    if (entry.isDirectory()) {
+      const nested = findFile(fullPath, predicate, maxDepth - 1);
+      if (nested) return nested;
+    }
+  }
+  return "";
+}
+
+function verifyPackagedNpm(engineRoot, platform) {
+  const npmCli = path.join(engineRoot, ".plugin-node-runtime", "npm", "bin", "npm-cli.js");
+  const nodeName = platform.startsWith("windows-") ? "node.exe" : "node";
+  const playwrightRoot = path.join(engineRoot, ".python");
+  const node = findFile(
+    playwrightRoot,
+    (name, fullPath) => name === nodeName && /[\\/]playwright[\\/]driver[\\/]/.test(fullPath),
+  );
+  if (!node || !fs.existsSync(npmCli)) {
+    return {
+      name: "pluginManager.packagedNpmExecutable",
+      ok: false,
+      node: node || "missing",
+      npmCli,
+      error: "packaged Node or npm CLI is missing",
+    };
+  }
+  const result = spawnSync(node, [npmCli, "--version"], {
+    cwd: engineRoot,
+    encoding: "utf8",
+    timeout: 15000,
+    env: Object.fromEntries(
+      Object.entries(process.env).filter(([key]) =>
+        !/(API[_-]?KEY|TOKEN|SECRET|PASSWORD|COOKIE|AUTHORIZATION|BEARER|CREDENTIAL)/i.test(key),
+      ),
+    ),
+  });
+  const version = String(result.stdout || "").trim();
+  return {
+    name: "pluginManager.packagedNpmExecutable",
+    ok: !result.error && result.status === 0 && /^\d+\.\d+\.\d+$/.test(version),
+    node: path.relative(repoRoot, node),
+    npmCli: path.relative(repoRoot, npmCli),
+    version,
+    error: result.error?.message || String(result.stderr || "").trim().slice(-1000),
+  };
+}
+
 function verifyDesktopPetServerBundle(serverBundle) {
   if (!fs.existsSync(serverBundle)) {
     return { name: "desktopPet.selfContainedServer", ok: false, path: path.relative(repoRoot, serverBundle) };
@@ -223,6 +274,7 @@ try {
     releaseManifestPath,
     path.join(resourceRoot, "apps", "v8-agent-os-cli", "src", "shell_api.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-engine", "main.py"),
+    path.join(engineRoot, ".plugin-node-runtime", "npm", "bin", "npm-cli.js"),
     ...nextStandaloneRequired(resourceRoot, "admin"),
     ...nextStandaloneRequired(resourceRoot, "web"),
     desktopPetServerBundle,
@@ -252,6 +304,15 @@ try {
   if (platform.startsWith("linux-")) {
     required.push(path.join(engineRoot, ".python", "THIRD_PARTY_NOTICES", "pyatspi2-COPYING"));
   }
+  if (platform === "windows-x64") {
+    required.push(
+      path.join(
+        engineRoot,
+        ".plugin-release-assets",
+        "d69a22ce1e28f69db5f0048f6bbe6a4186f32412a4bdbc00bf0e8f8ab2caf14d.asset",
+      ),
+    );
+  }
   const checks = required.map((filePath) => ({ path: filePath, ok: fs.existsSync(filePath) }));
   checks.push(...verifyNextStandaloneAssets(resourceRoot, "admin"));
   checks.push(...verifyNextStandaloneAssets(resourceRoot, "web"));
@@ -261,6 +322,7 @@ try {
   checks.push({ path: python.join(" | "), ok: python.some((filePath) => fs.existsSync(filePath)) });
   const packagedPython = python.find((filePath) => fs.existsSync(filePath));
   if (packagedPython) checks.push(verifyPackagedPython(packagedPython, engineRoot, platform));
+  checks.push(verifyPackagedNpm(engineRoot, platform));
   const failures = checks.filter((check) => !check.ok);
   const payload = {
     generatedAt: new Date().toISOString(),

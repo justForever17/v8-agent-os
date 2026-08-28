@@ -119,6 +119,18 @@ def _media_endpoint_defaults(
     }
 
 
+def _user_confirmed_model_fact(model: Mapping[str, Any], key: str) -> tuple[Any, dict[str, Any]]:
+    value = model.get(key)
+    provenance = _mapping(_mapping(model.get("factProvenance")).get(key))
+    if (
+        value not in (None, "")
+        and _clean(provenance.get("source")) == "user_confirmed"
+        and _clean(provenance.get("confidence")) == "authoritative"
+    ):
+        return value, provenance
+    return None, {}
+
+
 def build_catalog_model_connection_plan(
     *,
     provider: Mapping[str, Any],
@@ -310,14 +322,39 @@ def build_catalog_model_connection_plan(
     # OAuth runtimes may choose not to send a max-output field, but clearing the
     # facts here makes a connected model ineligible for every governed role.
     clear_runtime_budget = is_media_provider or (is_custom_provider and not registry_known_chat_model and not is_retrieval_model)
-    managed_context_window = None if clear_runtime_budget else model_row.get("contextWindow")
-    managed_max_tokens = None if clear_runtime_budget or is_retrieval_model else model_row.get("maxTokens")
+    user_context_window, user_context_provenance = _user_confirmed_model_fact(
+        existing_model_row,
+        "contextWindow",
+    )
+    user_max_tokens, user_max_tokens_provenance = _user_confirmed_model_fact(
+        existing_model_row,
+        "maxTokens",
+    )
+    managed_context_window = (
+        user_context_window
+        if user_context_window is not None
+        else None
+        if clear_runtime_budget
+        else model_row.get("contextWindow")
+    )
+    managed_max_tokens = (
+        user_max_tokens
+        if user_max_tokens is not None
+        else None
+        if clear_runtime_budget or is_retrieval_model
+        else model_row.get("maxTokens")
+    )
+    managed_fact_provenance = _mapping(model_row.get("factProvenance"))
+    if user_context_provenance:
+        managed_fact_provenance["contextWindow"] = user_context_provenance
+    if user_max_tokens_provenance:
+        managed_fact_provenance["maxTokens"] = user_max_tokens_provenance
 
     model_patch: dict[str, Any] = {
         "type": normalized_model_type or "TEXT",
         "contextWindow": managed_context_window,
         "maxTokens": managed_max_tokens,
-        "factProvenance": _mapping(model_row.get("factProvenance")),
+        "factProvenance": managed_fact_provenance,
         "capabilities": _mapping(model_row.get("capabilities")),
         "capabilityClass": capability_class
         or ("media_generation" if is_media_provider else "vision_multimodal" if _mapping(model_row.get("capabilities")).get("vision") else "chat_general"),

@@ -1410,7 +1410,10 @@ export default function ChatClient() {
                         canInterrupt: runStatusAllowsInterrupt(latestStatus),
                     },
                 } : current);
-                patchConversationSummary(conversationId, { status: latestStatus });
+                patchConversationSummary(conversationId, {
+                    status: latestStatus,
+                    workflowStatus: latestStatus,
+                });
                 if (isTerminalRunStatus(latestStatus)) {
                     const settled = settleTerminalStreamRef.current(latestRun.id);
                     if (settled) {
@@ -1714,7 +1717,10 @@ export default function ChatClient() {
                             workflowStatus: "interrupted",
                         } : current.controls,
                     } : current);
-                    if (conversationId) patchConversationSummary(conversationId, { status: "interrupted" });
+                    if (conversationId) patchConversationSummary(conversationId, {
+                        status: "interrupted",
+                        workflowStatus: "interrupted",
+                    });
                 }
             })
             .catch((error) => {
@@ -3283,7 +3289,10 @@ export default function ChatClient() {
                         workflowStatus: terminalRunStatus,
                     } : current.controls,
                 } : current);
-                patchConversationSummary(conversationId, { status: terminalRunStatus });
+                patchConversationSummary(conversationId, {
+                    status: terminalRunStatus,
+                    workflowStatus: terminalRunStatus,
+                });
                 if (!canonicalReloadDeferredToStreamCompletion) {
                     void loadConversationHistory(conversationId, {
                         mergeWithCurrent: false,

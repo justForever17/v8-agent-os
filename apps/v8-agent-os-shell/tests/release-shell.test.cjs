@@ -372,7 +372,8 @@ test('packaged desktop pet reuses the Shell Electron runtime without packaged pe
 
 test('desktop release scripts build native installers for every supported desktop target', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(shellRoot, 'package.json'), 'utf8'));
-  assert.equal(pkg.devDependencies.electron, '43.4.0');
+  assert.equal(pkg.devDependencies.electron, '43.4.1');
+  assert.equal(pkg.devDependencies.npm, '11.19.1');
   assert.equal(pkg.engines?.node, '>=22.12.0');
   assert.equal(pkg.scripts['dist:win'], 'npm run dist:win:preview');
   assert.match(pkg.scripts['dist:win:preview'], /^cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder /);
@@ -387,6 +388,8 @@ test('desktop release scripts build native installers for every supported deskto
   assert.equal(pkg.desktopName, 'v8-agent-os.desktop');
 
   const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
+  assert.match(config, /from: \.\/node_modules\/npm[\s\S]*?to: v8os\/apps\/v8-agent-os-engine\/\.plugin-node-runtime\/npm/);
+  assert.match(config, /from: \.\/node_modules\/npm\/node_modules[\s\S]*?to: v8os\/apps\/v8-agent-os-engine\/\.plugin-node-runtime\/npm\/node_modules/);
   assert.match(
     config,
     /from: \.\.\/\.\.\/apps\/v8-agent-os-cli[\s\S]*?to: v8os\/apps\/v8-agent-os-cli[\s\S]*?- "\*\*\/\*"/,
@@ -465,6 +468,31 @@ test('desktop release scripts build native installers for every supported deskto
     /from: \.\.\/\.\.\/apps\/v8-agent-os-engine[\s\S]*?- "!\.venv\/\*\*"/,
   );
   assert.match(config, /to: v8os\/apps\/v8-agent-os-shell\/scripts/);
+});
+
+test('desktop release bundles only hash-pinned small managed plugin assets', () => {
+  const prepare = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-plugin-release-assets.mjs'),
+    'utf8',
+  );
+  const workflow = fs.readFileSync(
+    path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'),
+    'utf8',
+  );
+  const layout = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'verify-desktop-package-layout.mjs'),
+    'utf8',
+  );
+
+  assert.match(prepare, /install\.argv\?\.\[0\] !== "v8-managed-download"/);
+  assert.match(prepare, /estimatedDownloadMb \|\| 0\) > 20/);
+  assert.match(prepare, /startsWith\("https:\/\/github\.com\/"\)/);
+  assert.match(prepare, /Managed plugin asset SHA-256 mismatch/);
+  assert.match(workflow, /prepare-plugin-release-assets\.mjs --target "\$\{\{ matrix\.id \}\}"/);
+  assert.match(layout, /\.plugin-node-runtime/);
+  assert.match(layout, /pluginManager\.packagedNpmExecutable/);
+  assert.match(layout, /spawnSync\(node, \[npmCli, "--version"\]/);
+  assert.match(layout, /d69a22ce1e28f69db5f0048f6bbe6a4186f32412a4bdbc00bf0e8f8ab2caf14d\.asset/);
 });
 
 test('desktop release notes advertise the multi-platform unsigned preview assets', () => {
@@ -1156,7 +1184,7 @@ test('desktop pet consumes packaged realtime contract instead of rebuilding work
   const pkg = JSON.parse(
     fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'package.json'), 'utf8'),
   );
-  assert.equal(pkg.devDependencies.electron, '43.4.0');
+  assert.equal(pkg.devDependencies.electron, '43.4.1');
   assert.equal(pkg.engines?.node, '>=22.12.0');
   const desktopPetMain = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs'),

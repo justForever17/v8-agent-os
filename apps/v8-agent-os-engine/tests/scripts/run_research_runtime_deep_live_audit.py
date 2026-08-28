@@ -723,7 +723,9 @@ def _run_domestic_delivery_case() -> AuditCaseResult:
         providers = {
             str(item.get("provider") or "")
             for item in route_rows
-            if isinstance(item, dict) and item.get("provider")
+            if isinstance(item, dict)
+            and str(item.get("provider") or "").strip().lower()
+            not in {"", "explicit_seed_url", "context7"}
         }
         validation_payload = persisted_bundle if isinstance(persisted_bundle, dict) else payload
         result.failures.extend(research_acceptance_issues(validation_payload))

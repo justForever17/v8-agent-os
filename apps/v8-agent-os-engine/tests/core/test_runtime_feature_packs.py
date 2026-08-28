@@ -382,6 +382,7 @@ def test_creative_media_image_analysis_pack_has_pinned_verified_asset():
             "target": "isnet-general-use.onnx",
             "url": "https://huggingface.co/tomjackson2023/rembg/resolve/cd3a3d6767a7859efea31ef0f2f373582cf06d82/isnet-general-use.onnx",
             "mirrors": [
+                "https://ghproxy.net/https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
                 "https://hf-mirror.com/tomjackson2023/rembg/resolve/cd3a3d6767a7859efea31ef0f2f373582cf06d82/isnet-general-use.onnx",
                 "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
             ],
@@ -407,6 +408,10 @@ def test_creative_media_motion_capture_pack_has_pinned_verified_asset():
             "id": "holistic_landmarker",
             "target": "holistic-landmarker-float16-v1.task",
             "url": "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/1/holistic_landmarker.task",
+            "mirrors": [
+                "https://hf-mirror.com/Skunk0/openglasses-fingerspelling-ctc/resolve/00f0d96ce7ddd022d16f9a565d1756b1cc617269/holistic_landmarker.task",
+                "https://huggingface.co/Skunk0/openglasses-fingerspelling-ctc/resolve/00f0d96ce7ddd022d16f9a565d1756b1cc617269/holistic_landmarker.task",
+            ],
             "size": 13683609,
             "sha256": "e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8",
         }

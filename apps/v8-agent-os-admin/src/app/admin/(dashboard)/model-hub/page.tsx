@@ -2829,7 +2829,7 @@ export default function ModelHubPage() {
                                     <span className="truncate">{selectedCatalogProvider.auth.path || selectedCatalogProvider.name}</span>
                                 </div>
                             ) : (
-                                <div className="flex min-w-0 items-center rounded-xl border border-input bg-background">
+                                <div className="flex min-w-0 items-center rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring">
                                     {selectedCredentialHelpUrl ? (
                                         <Button
                                             type="button"
@@ -2842,7 +2842,7 @@ export default function ModelHubPage() {
                                             <ExternalLink className="h-4 w-4"/>
                                         </Button>
                                     ) : null}
-                                    <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
+                                    <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
                                 </div>
                             )}
                             <Button disabled={isCatalogBusy} onClick={() => void handleProbeCatalogProvider()}>{t("app.admin.dashboard.model.hub.catalog.probe")}</Button>
@@ -3407,9 +3407,9 @@ export default function ModelHubPage() {
                             </div>) : (<input type="hidden" name="credentialMode" value="oauthFile"/>)}
                         {platformProviderSelected || providerCredentialMode === "oauthFile" ? (<div className="space-y-2">
                                 <Label htmlFor="provider-oauth-path">{t("app.admin.dashboard.model.hub.page.k686313b2")}</Label>
-                                <div className="flex items-center rounded-xl border border-input bg-background">
+                                <div className="flex items-center rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring">
                                     <span className="shrink-0 border-r border-border/60 px-3 text-sm text-muted-foreground">oauth:</span>
-                                        <Input id="provider-oauth-path" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath}/>
+                                        <Input id="provider-oauth-path" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath}/>
                                     </div>
                                 <p className={`text-xs ${(platformProviderSelected ? activePlatformPreset.supportState === "preset-only" : providerApiStandard === "gemini") ? "text-amber-600" : "text-muted-foreground"}`}>{oauthHint}</p>
                             </div>) : (<div className="space-y-2">

@@ -233,8 +233,8 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             stage="evidence_plan",
             stage_prompt="Return the verified evidence plan.",
         )
-        self.assertIn("Hard rejection floor: 5 readable selected sources", runtime_prompt)
-        self.assertIn("3000 effective non-URL answer characters", runtime_prompt)
+        self.assertIn("Hard rejection floor: 4 readable selected sources", runtime_prompt)
+        self.assertIn("1200 effective non-URL answer characters", runtime_prompt)
         self.assertIn("Normal delivery target: at least 8 sources", runtime_prompt)
         self.assertIn("8 supported conclusions", runtime_prompt)
         self.assertIn("5000 effective answer characters", runtime_prompt)

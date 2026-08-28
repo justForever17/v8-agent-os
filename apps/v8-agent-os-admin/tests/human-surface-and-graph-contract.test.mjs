@@ -74,6 +74,32 @@ test("Operations heavy diagnostics stay unmounted until explicitly expanded", ()
     assert.match(operations, /k428237fe"\} defaultOpen=\{false\}/);
 });
 
+test("Operations database logs use authenticated Engine proxy routes", () => {
+    const auditRoute = read("src/app/api/audit/logs/route.ts");
+    const cronRoute = read("src/app/api/cron/logs/route.ts");
+    const operations = read("src/app/admin/(dashboard)/operations-center/page.tsx");
+
+    assert.match(auditRoute, /requireAdminIdentity\(req\)/);
+    assert.match(auditRoute, /proxyEngineJson\(enginePath\(req\)/);
+    assert.match(auditRoute, /export async function DELETE/);
+    assert.match(cronRoute, /requireAdminIdentity\(req\)/);
+    assert.match(cronRoute, /proxyEngineJson\(`\/cron\/logs/);
+    assert.match(operations, /fetch\(`\/api\/audit\/logs/);
+    assert.match(operations, /fetch\("\/api\/cron\/logs\?limit=80"/);
+});
+
+test("composite model inputs keep the focus ring inside their owning field", () => {
+    const hub = read("src/app/admin/(dashboard)/model-hub/page.tsx");
+    const provider = read("src/app/admin/(dashboard)/models/providers/[id]/page.tsx");
+    const plugins = read("src/components/plugins/PluginManagerWorkbench.tsx");
+
+    assert.match(hub, /border border-input bg-background focus-within:ring-2 focus-within:ring-ring/);
+    assert.match(hub, /border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0/);
+    assert.match(provider, /border border-input bg-background focus-within:ring-2 focus-within:ring-ring/);
+    assert.match(provider, /border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0/);
+    assert.match(plugins, /focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/);
+});
+
 test("subagent orchestration cards retain editable research and recursive budgets", () => {
     const subagents = read("src/app/admin/(dashboard)/subagents/page.tsx");
 

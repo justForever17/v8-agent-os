@@ -1,3 +1,4 @@
+from core.model_control_plane import _fact_provenance_for_patch
 from core.model_eligibility import evaluate_model_eligibility, model_category
 
 
@@ -34,6 +35,46 @@ def test_user_confirmed_model_facts_remain_visible_in_eligibility() -> None:
     assert result["status"] == "ready"
     assert result["selectable"] is True
     assert result["factProvenance"] == provenance
+
+
+def test_manual_model_limit_edit_replaces_stale_catalog_provenance() -> None:
+    patched = _fact_provenance_for_patch(
+        {
+            "maxTokens": 65_536,
+            "factProvenance": {
+                "maxTokens": {
+                    "source": "v8_conservative_2026_default",
+                    "confidence": "estimated",
+                }
+            },
+        },
+        "manual",
+    )
+
+    assert patched["factProvenance"]["maxTokens"] == {
+        "source": "user_confirmed",
+        "confidence": "authoritative",
+    }
+
+
+def test_quick_connect_keeps_existing_catalog_provenance() -> None:
+    patched = _fact_provenance_for_patch(
+        {
+            "maxTokens": 65_536,
+            "factProvenance": {
+                "maxTokens": {
+                    "source": "model_capability_registry",
+                    "confidence": "authoritative",
+                }
+            },
+        },
+        "quick_connect",
+    )
+
+    assert patched["factProvenance"]["maxTokens"] == {
+        "source": "model_capability_registry",
+        "confidence": "authoritative",
+    }
 
 
 def test_media_model_does_not_inherit_text_window_requirements() -> None:

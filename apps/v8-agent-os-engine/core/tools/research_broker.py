@@ -31,6 +31,7 @@ from core.research_runtime_prompts import (
     research_runtime_prompt_digest,
 )
 from core.storage import storage
+from core.system_base import get_web_fetch_config
 from core.user_language import infer_preferred_language, normalize_preferred_language
 from core.tools.research_ledger import (
     archive_experience_pack,
@@ -97,6 +98,7 @@ _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS = 2
 _RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS = 360_000
 _MAX_RESEARCH_ARCHITECT_FULL_SYNTHESIS_ATTEMPTS = 3
 _MAX_RESEARCH_READ_ATTEMPTS = 2
+_MAX_RESEARCH_HOST_RETRYABLE_FAILURES = 2
 _RESEARCH_SOURCE_READ_CHARS = MAX_RESEARCH_TEXT_CHARS
 _RESEARCH_SOURCE_CAPTURE_CHARS = 32_000
 _RESEARCH_ARCHITECT_SOURCE_TEXT_CHARS = 32_000
@@ -184,6 +186,8 @@ class _ResearchReadAttemptLedger:
         self._aliases: dict[str, str] = {}
         self._dedupe_skips = 0
         self._cached_projection_count = 0
+        self._host_retryable_failures: dict[str, int] = {}
+        self._host_circuit_skips = 0
         for identity in set(terminal_identities or set()):
             normalized = _safe_text(identity)
             if normalized:
@@ -213,8 +217,16 @@ class _ResearchReadAttemptLedger:
         identity = self.identity(url)
         if not identity:
             return ""
+        host = _host(_safe_text(url))
         bounded_round = max(1, int(round_index or 1))
         with self._lock:
+            if (
+                host
+                and self._host_retryable_failures.get(host, 0)
+                >= _MAX_RESEARCH_HOST_RETRYABLE_FAILURES
+            ):
+                self._host_circuit_skips += 1
+                return ""
             root = self._root(identity)
             record = self._records.get(root)
             if record is not None:
@@ -242,6 +254,7 @@ class _ResearchReadAttemptLedger:
             record["attempts"] = int(record.get("attempts") or 0) + 1
             record["lastRound"] = bounded_round
             record["state"] = "inflight"
+            record["host"] = host
             ready = record.get("ready")
             if isinstance(ready, threading.Event):
                 ready.clear()
@@ -254,6 +267,8 @@ class _ResearchReadAttemptLedger:
         *,
         final_url: Any = "",
         retryable: bool,
+        succeeded: bool = False,
+        record_host_failure: bool = True,
         cache_payload: dict[str, Any] | None = None,
     ) -> None:
         if not claim_identity:
@@ -271,6 +286,17 @@ class _ResearchReadAttemptLedger:
             )
             if cache_payload:
                 record["cachePayload"] = dict(cache_payload)
+            host = _safe_text(record.get("host"))
+            final_host = _host(_safe_text(final_url))
+            if succeeded:
+                if host:
+                    self._host_retryable_failures.pop(host, None)
+                if final_host:
+                    self._host_retryable_failures.pop(final_host, None)
+            elif retryable and host and record_host_failure:
+                self._host_retryable_failures[host] = (
+                    self._host_retryable_failures.get(host, 0) + 1
+                )
             final_identity = self.identity(final_url)
             if final_identity:
                 existing_root = self._root(final_identity)
@@ -282,6 +308,19 @@ class _ResearchReadAttemptLedger:
             ready = record.get("ready")
             if isinstance(ready, threading.Event):
                 ready.set()
+
+    def host_circuit_open(self, url: Any, *, register_skip: bool = False) -> bool:
+        host = _host(_safe_text(url))
+        if not host:
+            return False
+        with self._lock:
+            is_open = (
+                self._host_retryable_failures.get(host, 0)
+                >= _MAX_RESEARCH_HOST_RETRYABLE_FAILURES
+            )
+            if is_open and register_skip:
+                self._host_circuit_skips += 1
+            return is_open
 
     def cached_payload(
         self,
@@ -348,6 +387,11 @@ class _ResearchReadAttemptLedger:
                 ),
                 "deduplicatedReadCount": self._dedupe_skips,
                 "cachedProjectionCount": self._cached_projection_count,
+                "openHostCircuitCount": sum(
+                    count >= _MAX_RESEARCH_HOST_RETRYABLE_FAILURES
+                    for count in self._host_retryable_failures.values()
+                ),
+                "hostCircuitSkipCount": self._host_circuit_skips,
             }
 _AUTHORITATIVE_HOST_HINTS = (
     "learn.microsoft.com",
@@ -20349,6 +20393,21 @@ def _run_seed_url_shard(
             "fetchedTopSources": [],
             "errors": ["seed_url_outside_allowed_domains"],
         }
+    if (
+        read_attempt_ledger is not None
+        and read_attempt_ledger.host_circuit_open(url, register_skip=True)
+    ):
+        return {
+            **shard,
+            "ok": False,
+            "provider": "explicit_seed_url",
+            "failureClass": "source_host_circuit_open",
+            "sourceHost": host,
+            "resultCount": 0,
+            "results": [],
+            "fetchedTopSources": [],
+            "errors": ["source_host_circuit_open"],
+        }
 
     read_claim = (
         read_attempt_ledger.claim(url, round_index=read_round)
@@ -20384,7 +20443,10 @@ def _run_seed_url_shard(
                 referer_mode="none",
                 referer_url="",
                 maxTextChars=_RESEARCH_SOURCE_READ_CHARS,
-                useAgentBrowserProfile=bool(use_agent_browser_profile),
+                # Let the fetcher auto-promote only allowlisted hosts to the
+                # login-backed profile; search results may point at unrelated
+                # public domains and must remain readable without that profile.
+                useAgentBrowserProfile=False,
                 tool_call_id=tool_call_id,
                 timeout_seconds=_RESEARCH_SOURCE_READ_DEADLINE_MS / 1000.0,
             )
@@ -20465,6 +20527,7 @@ def _run_seed_url_shard(
             retryable=bool(
                 not ok and _research_read_failure_is_retryable(read_payload)
             ),
+            succeeded=ok,
             cache_payload=(
                 {
                     "readPayload": read_payload,
@@ -20540,20 +20603,23 @@ def _run_search_shard(
     try:
         search_payload = _parse_tool_json(
             _source_router_search(
-            query=query,
-            limit=8,
-            search_engine="auto",
-            mode="static",
-            referer_mode="none",
-            referer_url="",
-            useAgentBrowserProfile=False,
-            tool_call_id=tool_call_id,
+                query=query,
+                limit=8,
+                search_engine="auto",
+                mode="auto" if use_agent_browser_profile else "static",
+                referer_mode="none",
+                referer_url="",
+                # The router promotes only providers whose search host is
+                # allowlisted. Passing true here would force every fallback
+                # (including public Bing results) through that profile.
+                useAgentBrowserProfile=False,
+                tool_call_id=tool_call_id,
                 total_timeout_seconds=min(
                     _RESEARCH_SEARCH_DEADLINE_MS,
                     remaining_shard_ms(),
                 ) / 1000.0,
                 locale_hint=preferred_language,
-                allow_browser_profile_fallback=False,
+                allow_browser_profile_fallback=use_agent_browser_profile,
             )
         )
     except Exception as exc:
@@ -20666,6 +20732,7 @@ def _run_search_shard(
         reverse=True,
     )
     fetched: list[dict[str, Any]] = []
+    circuit_open_hosts: set[str] = set()
     accepted_read_count = 0
     for result in top_results:
             if cancel_event is not None and cancel_event.is_set():
@@ -20679,6 +20746,14 @@ def _run_search_shard(
             if not url:
                 continue
             if url not in read_eligible_urls:
+                continue
+            if (
+                read_attempt_ledger is not None
+                and read_attempt_ledger.host_circuit_open(url, register_skip=True)
+            ):
+                source_host = _host(url)
+                if source_host:
+                    circuit_open_hosts.add(source_host)
                 continue
             source_identity = _research_document_identity(url, question=query)
             read_claim = ""
@@ -20710,16 +20785,23 @@ def _run_search_shard(
                 )
                 if read_timeout_ms < 1_000:
                     if read_attempt_ledger is not None:
-                        read_attempt_ledger.finish(read_claim, retryable=True)
+                        read_attempt_ledger.finish(
+                            read_claim,
+                            retryable=True,
+                            record_host_failure=False,
+                        )
                     break
                 read_payload = _parse_tool_json(
                     _source_router_read(
                         url=url,
-                        mode="static",
+                        mode="auto" if use_agent_browser_profile else "static",
                         headless=True,
                         referer_mode="none",
                         referer_url="",
                         maxTextChars=_RESEARCH_SOURCE_READ_CHARS,
+                        # See the seed read above: profile use is opportunistic
+                        # for allowlisted hosts, never a blanket requirement for
+                        # every result URL in a research shard.
                         useAgentBrowserProfile=False,
                         tool_call_id=tool_call_id,
                         timeout_seconds=read_timeout_ms / 1000.0,
@@ -20793,6 +20875,7 @@ def _run_search_shard(
                         not (read_payload.get("ok") and text)
                         and _research_read_failure_is_retryable(read_payload)
                     ),
+                    succeeded=bool(read_payload.get("ok") and text),
                     cache_payload=(
                         {
                             "readPayload": read_payload,
@@ -20891,6 +20974,7 @@ def _run_search_shard(
         "resultCount": len(results),
         "results": top_results,
         "fetchedTopSources": fetched,
+        "sourceHostCircuitOpen": sorted(circuit_open_hosts),
         "errors": [] if search_payload.get("ok") else [_safe_text(search_payload.get("error")) or "search_failed"],
     }
 
@@ -24831,9 +24915,27 @@ def research_broker(
     initial researchBriefIds/researchBriefGoals arrays. A brief already owned by that episode must be repaired there, not through this direct tool.
     Reuse a suitable current experience pack; refresh stale, low-confidence, or conflicting evidence.
     forceRefresh=true is reserved for explicit live validation that must prove a fresh search/read/synthesis pass.
-    useAgentBrowserProfile=true directly uses the allowlisted login-backed Agent browser profile.
+    Research inherits the governed System Base browser-profile setting when the caller omits the flag. Only
+    allowlisted provider/page hosts may reuse that login state; public fallback providers remain profile-free.
     """
     config = _research_config()
+    web_fetch_config = get_web_fetch_config()
+    configured_agent_browser_profile = bool(
+        web_fetch_config.get("useAgentBrowserProfile")
+        and list(web_fetch_config.get("agentBrowserProfileAllowlist") or [])
+    )
+    effective_agent_browser_profile = bool(
+        useAgentBrowserProfile or configured_agent_browser_profile
+    )
+    agent_browser_profile_source = (
+        "tool_and_system_config"
+        if useAgentBrowserProfile and configured_agent_browser_profile
+        else "tool_request"
+        if useAgentBrowserProfile
+        else "system_base"
+        if configured_agent_browser_profile
+        else "disabled"
+    )
     normalized_mode = _safe_text(mode).lower() or "plan"
     supported_modes = {
         "plan",
@@ -25144,7 +25246,8 @@ def research_broker(
                 "sideEffects": "read_only",
                 "deadlineMs": _RESEARCH_SHARD_DEADLINE_MS,
                 "sourceReadDeadlineMs": _RESEARCH_SOURCE_READ_DEADLINE_MS,
-                "useAgentBrowserProfile": bool(useAgentBrowserProfile),
+                "useAgentBrowserProfile": effective_agent_browser_profile,
+                "agentBrowserProfileSource": agent_browser_profile_source,
             },
             "limits": {
                 "defaultShardCount": config["defaultShardCount"],
@@ -25258,7 +25361,7 @@ def research_broker(
         source_policy=sourcePolicy,
         freshness=freshness,
         max_rounds=round_cap,
-        use_agent_browser_profile=bool(useAgentBrowserProfile),
+        use_agent_browser_profile=effective_agent_browser_profile,
         tool_call_id=tool_call_id,
         read_attempt_ledger=read_attempt_ledger,
         recent_discovery_seed_shards=recent_discovery_seeds,
@@ -25533,7 +25636,7 @@ def research_broker(
             blocked_domains=blocked_domains,
             source_policy=sourcePolicy,
             max_rounds=round_cap,
-            use_agent_browser_profile=bool(useAgentBrowserProfile),
+            use_agent_browser_profile=effective_agent_browser_profile,
             tool_call_id=tool_call_id,
             already_read_urls=already_read_urls,
             read_attempt_ledger=read_attempt_ledger,
@@ -25576,7 +25679,7 @@ def research_broker(
                     blocked_domains=blocked_domains,
                     source_policy=sourcePolicy,
                     max_rounds=round_cap,
-                    use_agent_browser_profile=bool(useAgentBrowserProfile),
+                    use_agent_browser_profile=effective_agent_browser_profile,
                     tool_call_id=tool_call_id,
                     already_read_urls=already_read_urls,
                     read_attempt_ledger=read_attempt_ledger,

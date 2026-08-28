@@ -198,6 +198,11 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.match(installerSource, /attemptOffset \+ received > asset\.size/);
   assert.match(installerSource, /feature_pack_asset_size_exceeded/);
   assert.match(installerSource, /featurePackAssetSources/);
+  assert.match(installerSource, /function featurePackAssetSources\(asset: FeaturePackAsset, locale = "en"\)/);
+  assert.match(installerSource, /host === "hf-mirror\.com"/);
+  assert.match(installerSource, /fetchFeaturePackAssetOverIpv4/);
+  assert.match(installerSource, /family: 4/);
+  assert.match(installerSource, /x-v8-asset-transport/);
   assert.match(installerSource, /feature_pack_asset_sources_exhausted/);
   assert.match(installerSource, /hostname\.endsWith\("\.hf\.co"\)/);
   assert.match(installerSource, /\[Asset source recovered\]/);
@@ -352,6 +357,7 @@ test("feature pack transactions use Engine authority, bounded workers, and compa
   assert.match(installerSource, /process\.kill\(-child\.pid, "SIGKILL"\)/);
   assert.match(installerSource, /await waitForFeaturePackChildExit\(child, 5_000\)/);
   assert.match(installerSource, /feature_pack_worker_termination_unconfirmed/);
+  assert.match(installerSource, /provider === "GPU" \? 20_000 : 180_000/);
   assert.match(installerSource, /void terminateFeaturePackChild\(child\)/);
   assert.match(installerSource, /preserveStaging: workerTerminationUnconfirmed/);
   assert.doesNotMatch(installerSource, /\[Backup cleanup warning\]/);

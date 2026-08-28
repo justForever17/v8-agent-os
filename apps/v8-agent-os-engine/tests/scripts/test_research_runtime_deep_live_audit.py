@@ -267,7 +267,13 @@ def test_domestic_delivery_case_restricts_and_restores_source_router(monkeypatch
                     "selectedForEvidence": True,
                 },
             ],
-            "shards": [],
+            "shards": [
+                {
+                    "provider": "explicit_seed_url",
+                    "networkRoute": "direct_read",
+                    "fetchedTopSources": [{"ok": True}],
+                }
+            ],
         }
 
     monkeypatch.setattr(audit, "_research_run", fake_research_run)

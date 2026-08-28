@@ -220,6 +220,52 @@ def test_catalog_connection_preserves_server_audited_fact_provenance() -> None:
     assert plan["modelPatch"]["factProvenance"] == provenance
 
 
+def test_catalog_reconnect_never_overwrites_user_confirmed_model_limits() -> None:
+    user_provenance = {
+        "contextWindow": {"source": "user_confirmed", "confidence": "authoritative"},
+        "maxTokens": {"source": "user_confirmed", "confidence": "authoritative"},
+    }
+    plan = build_catalog_model_connection_plan(
+        provider=_provider(),
+        model=_model(contextWindow=300_000, maxTokens=4_096),
+        model_id="reasoning-model",
+        existing_model={
+            "contextWindow": 1_000_000,
+            "maxTokens": 65_536,
+            "factProvenance": user_provenance,
+        },
+    )
+
+    assert plan["modelPatch"]["contextWindow"] == 1_000_000
+    assert plan["modelPatch"]["maxTokens"] == 65_536
+    assert plan["modelPatch"]["factProvenance"] == user_provenance
+
+
+def test_custom_catalog_provider_preserves_user_confirmed_limits_without_registry_match() -> None:
+    user_provenance = {
+        "contextWindow": {"source": "user_confirmed", "confidence": "authoritative"},
+        "maxTokens": {"source": "user_confirmed", "confidence": "authoritative"},
+    }
+    plan = build_catalog_model_connection_plan(
+        provider=_provider(isCustom=True),
+        model=_model(
+            contextWindow=32_768,
+            maxTokens=4_096,
+            capabilityRegistryMatched=False,
+        ),
+        model_id="custom-dynamic-model",
+        existing_model={
+            "contextWindow": 1_000_000,
+            "maxTokens": 65_536,
+            "factProvenance": user_provenance,
+        },
+    )
+
+    assert plan["modelPatch"]["contextWindow"] == 1_000_000
+    assert plan["modelPatch"]["maxTokens"] == 65_536
+    assert plan["modelPatch"]["factProvenance"] == user_provenance
+
+
 def test_oauth_connection_preserves_catalog_context_facts_for_role_governance() -> None:
     plan = build_catalog_model_connection_plan(
         provider=_provider(

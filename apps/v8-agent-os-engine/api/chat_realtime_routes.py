@@ -5,7 +5,6 @@ import logging
 import mimetypes
 import re
 import shutil
-import threading
 import uuid
 import time
 from datetime import datetime, timezone
@@ -16,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 
 from .models import ChatMessage, ChatRequest
+from core.chat_run_scheduler import chat_run_scheduler
 from core.database import db
 from core.json_safe import to_jsonable
 from core.process_launch import run_windowless
@@ -789,11 +789,29 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
 
 def _schedule_chat_run(request: ChatRequest, *, transport: str, run_id: str | None = None) -> str | None:
     scheduled_run_id = run_id or request.resume_run_id
-    threading.Thread(
-        target=lambda: asyncio.run(_drain_chat_run(request, transport=transport, run_id=run_id)),
-        name=f"chat-run-{scheduled_run_id or uuid.uuid4().hex[:8]}",
-        daemon=True,
-    ).start()
+    try:
+        chat_run_scheduler.submit(
+            _drain_chat_run(request, transport=transport, run_id=run_id),
+            task_name=f"chat-run-{scheduled_run_id or uuid.uuid4().hex[:8]}",
+        )
+    except Exception as exc:
+        _emit_background_chat_run_event(
+            "run.resume.worker.schedule_failed",
+            request,
+            transport=transport,
+            run_id=scheduled_run_id,
+            payload={"failureType": type(exc).__name__},
+        )
+        if scheduled_run_id:
+            run_service.transition_run_if_status(
+                scheduled_run_id,
+                expected_statuses=_FALLBACK_ACTIVE_CHAT_STATUSES,
+                status="failed",
+                error_message="Persistent chat scheduler is unavailable.",
+                metadata={"chat_scheduler_unavailable": True, "transport": transport},
+            )
+        logger.exception("Unable to schedule chat run '%s'", scheduled_run_id or "<unknown>")
+        return None
     return scheduled_run_id
 
 

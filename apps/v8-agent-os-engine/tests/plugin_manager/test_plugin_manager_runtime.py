@@ -243,6 +243,7 @@ def test_skills_cli_runs_without_a_console_window_on_windows(
     service, _, _ = runtime
     captured: dict[str, object] = {}
 
+    monkeypatch.setattr(service_module, "_packaged_npm_command", lambda _command: None)
     monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: "C:/npm/npx.cmd")
 
     def fake_run(*args, **kwargs):
@@ -266,6 +267,7 @@ def test_skills_cli_falls_back_to_official_registry_within_one_deadline(
 ) -> None:
     service, _, _ = runtime
     registries: list[str] = []
+    monkeypatch.setattr(service_module, "_packaged_npm_command", lambda _command: None)
     monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: "C:/npm/npx.cmd")
 
     def fake_run(argv, **kwargs):
@@ -1761,6 +1763,7 @@ def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_dem
     )
     refreshed_path = str(service_module.AGENT_SKILLS_ROOT.parent / "cli-bin")
     monkeypatch.setattr(service, "_cli_search_path", lambda: refreshed_path)
+    original_path = service_module.os.environ.get("PATH")
 
     payload = service.supervisor_catalog(plugin_id="github", session_id="s1", run_id="r1")
     usage = payload["items"][0]["usage"]
@@ -1787,7 +1790,7 @@ def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_dem
     assert "plugin_cli" in payload["nextAction"]
     assert "Never bypass the plugin grant with run_system_command" in payload["nextAction"]
     assert "does not need a plugin grant" not in payload["nextAction"]
-    assert service_module.os.environ["PATH"] == refreshed_path
+    assert service_module.os.environ.get("PATH") == original_path
 
 
 @pytest.mark.parametrize(
@@ -2041,6 +2044,7 @@ def test_execute_spec_resolves_batch_launcher_without_shell(
     launcher.write_text("@echo off\r\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
+    monkeypatch.setattr(service_module, "_packaged_npm_command", lambda _command: None)
     monkeypatch.setattr(service, "_refresh_process_cli_path", lambda: str(tmp_path))
     monkeypatch.setattr(
         service_module.shutil,
@@ -2128,6 +2132,29 @@ def test_managed_cli_shim_resolves_to_native_argv_without_batch_forwarding(
     assert json.loads(completed.stdout.strip()) == arguments
 
 
+def test_npm_install_prefers_the_packaged_node_runtime(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(
+        service_module,
+        "_packaged_npm_command",
+        lambda command: ["/managed/node", f"/managed/{command}-cli.js"],
+    )
+
+    resolved = service._resolve_execution_argv(
+        ["npm", "install", "--prefix", "/plugin", "fixture@1.0.0"],
+        search_path="",
+    )
+
+    assert resolved == [
+        "/managed/node",
+        "/managed/npm-cli.js",
+        "install",
+        "--prefix",
+        "/plugin",
+        "fixture@1.0.0",
+    ]
+
+
 def test_managed_cli_shim_rejects_unparseable_batch_forwarders(runtime) -> None:
     service, _, _ = runtime
     manifest = service._manifest("cloudflare")
@@ -2185,6 +2212,43 @@ def test_managed_archive_download_extracts_only_the_declared_entry(
     assert failed["returnCode"] == 1
     assert "archive entry not found" in failed["stderrTail"]
     assert not target.exists()
+
+
+def test_managed_archive_uses_verified_packaged_asset_before_network(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("volcengine-mediakit")
+    target = service._plugin_root(manifest.id) / "bin" / "mediakit-cli.exe"
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("mediakit-cli.exe", b"packaged executable")
+    content = archive_bytes.getvalue()
+    digest = hashlib.sha256(content).hexdigest()
+    monkeypatch.setattr(
+        service_module,
+        "_bundled_managed_download",
+        lambda requested: content if requested == digest else None,
+    )
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *_args, **_kwargs: pytest.fail("packaged asset must avoid network access"),
+    )
+    spec = CommandSpec(
+        argv=["v8-managed-download"],
+        downloadUrl="https://github.com/volcengine/mediakit-cli/releases/download/v0.2.0/fixture.zip",
+        downloadTarget="{pluginRoot}/bin/mediakit-cli.exe",
+        downloadSha256=digest,
+        archiveFormat="zip",
+        archiveEntry="mediakit-cli.exe",
+    )
+
+    result = service._execute_spec(manifest, spec)
+
+    assert result["returnCode"] == 0
+    assert result["argv"][1] == "packaged_verified_asset"
+    assert target.read_bytes() == b"packaged executable"
 
 
 def test_managed_github_release_download_uses_hash_verified_mirror_fallback(

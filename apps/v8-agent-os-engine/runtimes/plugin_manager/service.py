@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -135,6 +136,57 @@ def _architecture_name() -> str:
     if machine in {"arm64", "aarch64"}:
         return "arm64"
     return "amd64"
+
+
+def _packaged_node_executable() -> Path | None:
+    for module_name in ("playwright", "patchright"):
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        for package_root in spec.submodule_search_locations:
+            for executable_name in ("node.exe", "node"):
+                candidate = Path(package_root) / "driver" / executable_name
+                if candidate.is_file():
+                    return candidate.resolve()
+    resolved = shutil.which("node")
+    return Path(resolved).resolve() if resolved else None
+
+
+def _packaged_npm_command(command: str) -> list[str] | None:
+    command_name = str(command or "").strip().lower()
+    if command_name not in {"npm", "npx"}:
+        return None
+    engine_root = Path(__file__).resolve().parents[2]
+    npm_roots = (
+        engine_root / ".plugin-node-runtime" / "npm",
+        engine_root.parent / "v8-agent-os-shell" / "node_modules" / "npm",
+    )
+    script_name = "npx-cli.js" if command_name == "npx" else "npm-cli.js"
+    node = _packaged_node_executable()
+    if node is None:
+        return None
+    for npm_root in npm_roots:
+        script = npm_root / "bin" / script_name
+        if script.is_file():
+            return [str(node), str(script.resolve())]
+    return None
+
+
+def _bundled_managed_download(sha256: str) -> bytes | None:
+    digest = str(sha256 or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        return None
+    asset = Path(__file__).resolve().parents[2] / ".plugin-release-assets" / f"{digest}.asset"
+    try:
+        if not asset.is_file() or asset.stat().st_size > 512 * 1024 * 1024:
+            return None
+        payload = asset.read_bytes()
+    except OSError:
+        return None
+    return payload if hashlib.sha256(payload).hexdigest() == digest else None
 
 
 def _background_process_creation_flags() -> int:
@@ -327,8 +379,11 @@ class PluginManagerService:
         cwd: Path | None = None,
         timeout_seconds: int = 300,
     ) -> dict[str, Any]:
-        executable = shutil.which("npx") or shutil.which("npx.cmd")
-        if not executable:
+        command = _packaged_npm_command("npx")
+        if command is None:
+            executable = shutil.which("npx") or shutil.which("npx.cmd")
+            command = [executable] if executable else None
+        if not command:
             return {
                 "returnCode": 127,
                 "stdoutTail": "",
@@ -352,7 +407,7 @@ class PluginManagerService:
             )
             try:
                 completed = run_windowless(
-                    [executable, "--yes", SKILLS_CLI_PACKAGE, *arguments],
+                    [*command, "--yes", SKILLS_CLI_PACKAGE, *arguments],
                     cwd=str(cwd) if cwd else None,
                     env=environment,
                     capture_output=True,
@@ -510,12 +565,9 @@ class PluginManagerService:
         return os.pathsep.join(entries)
 
     def _refresh_process_cli_path(self) -> str:
-        """Make CLIs installed after Engine launch visible to governed commands."""
+        """Return a fresh CLI search path without mutating the Engine process."""
 
-        search_path = self._cli_search_path()
-        if search_path:
-            os.environ["PATH"] = search_path
-        return search_path
+        return self._cli_search_path()
 
     def _discover_cli_commands(self, profile: CliProfile) -> dict[str, str]:
         search_path = self._cli_search_path()
@@ -1767,7 +1819,6 @@ class PluginManagerService:
     def _plugin_usage_preview(self, manifest: PluginManifest) -> dict[str, Any]:
         """Load bounded usage hints only after a named plugin status request."""
 
-        self._refresh_process_cli_path()
         policy = self._component_policy(manifest)
         active_ids = self._active_installed_component_ids(manifest)
         component_rows = {
@@ -3673,39 +3724,48 @@ class PluginManagerService:
             try:
                 import httpx
 
-                sources = [spec.downloadUrl]
+                bundled_payload = _bundled_managed_download(spec.downloadSha256)
+                sources: list[tuple[str, bytes | None]] = (
+                    [("packaged_verified_asset", bundled_payload)]
+                    if bundled_payload is not None
+                    else []
+                )
+                network_sources = [spec.downloadUrl]
                 if re.match(
                     r"^https://github\.com/[^/]+/[^/]+/releases/download/",
                     spec.downloadUrl,
                     re.I,
                 ):
-                    sources.extend(
+                    network_sources.extend(
                         f"{prefix}{spec.downloadUrl}"
                         for prefix in MANAGED_GITHUB_RELEASE_MIRROR_PREFIXES
                     )
-                sources = list(dict.fromkeys(sources))
+                sources.extend((source_url, None) for source_url in dict.fromkeys(network_sources))
                 deadline = time.monotonic() + spec.timeoutSeconds
                 failures: list[str] = []
-                for source_url in sources:
+                for source_url, packaged_payload in sources:
                     remaining = deadline - time.monotonic()
                     if remaining < 1:
                         failures.append("global_deadline_exceeded")
                         break
                     try:
-                        response = httpx.get(
-                            source_url,
-                            timeout=max(1.0, min(45.0, remaining)),
-                            follow_redirects=True,
-                        )
-                        response.raise_for_status()
-                        actual = hashlib.sha256(response.content).hexdigest()
+                        response_content = packaged_payload
+                        if response_content is None:
+                            response = httpx.get(
+                                source_url,
+                                timeout=max(1.0, min(45.0, remaining)),
+                                follow_redirects=True,
+                            )
+                            response.raise_for_status()
+                            response_content = response.content
+                        actual = hashlib.sha256(response_content).hexdigest()
                         if actual != spec.downloadSha256:
                             raise ValueError(
                                 f"download SHA-256 mismatch: expected {spec.downloadSha256}, got {actual}"
                             )
-                        payload = response.content
+                        payload = response_content
                         if spec.archiveFormat == "zip" and spec.archiveEntry:
-                            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                            with zipfile.ZipFile(io.BytesIO(response_content)) as archive:
                                 normalized_entries = {
                                     str(item.filename).replace("\\", "/"): item
                                     for item in archive.infolist()
@@ -3749,7 +3809,7 @@ class PluginManagerService:
         try:
             search_path = self._refresh_process_cli_path()
             execution_argv = self._resolve_execution_argv(argv, search_path=search_path, manifest=manifest)
-            executable_name = Path(execution_argv[0]).stem.lower() if execution_argv else ""
+            executable_name = Path(argv[0]).stem.lower() if argv else ""
             registries: tuple[str, ...] = (
                 SKILLS_CLI_NPM_REGISTRIES
                 if executable_name in {"npm", "npx"}
@@ -3838,6 +3898,9 @@ class PluginManagerService:
         if not resolved_argv:
             return resolved_argv
         executable = resolved_argv[0]
+        packaged_npm = _packaged_npm_command(Path(executable).stem.lower())
+        if packaged_npm is not None:
+            return [*packaged_npm, *resolved_argv[1:]]
         candidate = Path(executable).expanduser()
         resolved_path: Path | None = None
         if candidate.is_file():

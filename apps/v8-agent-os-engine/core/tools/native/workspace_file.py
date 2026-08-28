@@ -687,9 +687,10 @@ def write_native_file(
     allow_full_replace: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Create a text file, or modify an existing text file after reading it first.
+    """Author governed text/JSON/Markdown/source artifacts in the active workspace.
 
-    New files may be created directly. Before changing or appending to an existing file,
+    Use this instead of shell commands or redirection for content-bearing project files. New files may be created
+    directly. Before changing or appending to an existing file,
     call `read_native_file` in the same run. A successful write consumes that read receipt,
     so read the file again before another modification. For an existing file, choose exactly
     one explicit mutation intent: append=True, a line/expected-text scoped patch, or

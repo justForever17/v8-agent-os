@@ -255,6 +255,10 @@ jobs:
         timeout-minutes: 15
         run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
 
+      - name: Prepare verified managed plugin assets
+        timeout-minutes: 8
+        run: node scripts/desktop/prepare-plugin-release-assets.mjs --target "${{ matrix.id }}"
+
       - name: Acquire and verify pinned Electron runtimes
         timeout-minutes: 20
         run: node scripts/desktop/ensure-electron-runtime.mjs

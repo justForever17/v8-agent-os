@@ -77,8 +77,13 @@ apps/v8-agent-os-phone-tmp/
 
 # Temporary runtime output
 **/logs/
+!apps/v8-agent-os-admin/src/app/api/audit/logs/
+!apps/v8-agent-os-admin/src/app/api/audit/logs/route.ts
+!apps/v8-agent-os-admin/src/app/api/cron/logs/
+!apps/v8-agent-os-admin/src/app/api/cron/logs/route.ts
 **/tmp/
 **/temp/
+apps/v8-agent-os-engine/.plugin-release-assets/
 
 # Keep committed public docs and launchers
 !docs/

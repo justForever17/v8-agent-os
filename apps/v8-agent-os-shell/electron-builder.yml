@@ -35,6 +35,14 @@ extraResources:
       - "!native/**/target/**"
       - "!*.db"
       - "!*.log"
+  - from: ./node_modules/npm
+    to: v8os/apps/v8-agent-os-engine/.plugin-node-runtime/npm
+    filter:
+      - "**/*"
+  - from: ./node_modules/npm/node_modules
+    to: v8os/apps/v8-agent-os-engine/.plugin-node-runtime/npm/node_modules
+    filter:
+      - "**/*"
   - from: ../../apps/v8-agent-os-admin
     to: v8os/apps/v8-agent-os-admin
     filter:

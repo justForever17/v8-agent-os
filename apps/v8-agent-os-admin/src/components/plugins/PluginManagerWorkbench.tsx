@@ -650,7 +650,7 @@ export function PluginManagerWorkbench() {
             {(tab === "store" || tab === "installed") ? (
                 <div className="grid grid-cols-1 border border-border/70 lg:h-[calc(100vh-230px)] lg:min-h-[620px] lg:max-h-[820px] lg:grid-cols-[minmax(500px,1fr)_460px] lg:overflow-hidden">
                     <section className="flex min-h-0 flex-col border-b border-border/70 lg:border-b-0 lg:border-r">
-                        <div className="flex items-center gap-2 border-b border-border/60 p-2.5"><Search className="size-4 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("components.plugins.PluginManagerWorkbench.searchPlaceholder")} className="h-10 rounded-md border-0 bg-transparent px-1 shadow-none focus-visible:ring-0" /></div>
+                        <div className="flex items-center gap-2 border-b border-border/60 p-2.5 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring"><Search className="size-4 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("components.plugins.PluginManagerWorkbench.searchPlaceholder")} className="h-10 rounded-md border-0 bg-transparent px-1 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" /></div>
                         <div className="max-h-[420px] divide-y divide-border/55 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] lg:max-h-none lg:min-h-0 lg:flex-1">
                             {visiblePlugins.map((plugin) => {
                                 const state = stateLabel(plugin.installation);

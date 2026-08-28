@@ -850,7 +850,7 @@ def test_source_router_finishes_before_the_research_shard_envelope():
     assert research_module._RESEARCH_SOURCE_READ_DEADLINE_MS < research_module._RESEARCH_SHARD_DEADLINE_MS
 
 
-def test_research_shard_uses_cn_routing_without_browser_fallback(monkeypatch):
+def test_research_shard_reuses_allowlisted_browser_profile_for_cn_routing(monkeypatch):
     search_calls: list[dict] = []
     read_calls: list[dict] = []
 
@@ -903,13 +903,90 @@ def test_research_shard_uses_cn_routing_without_browser_fallback(monkeypatch):
     )
 
     assert completed["provider"] == "bing_cn"
-    assert search_calls[0]["mode"] == "static"
+    assert search_calls[0]["mode"] == "auto"
     assert search_calls[0]["locale_hint"] == "zh-CN"
-    assert search_calls[0]["allow_browser_profile_fallback"] is False
+    assert search_calls[0]["allow_browser_profile_fallback"] is True
+    # Search keeps profile fallback enabled but does not force every provider
+    # (and every later public result URL) through the login-backed browser.
     assert search_calls[0]["useAgentBrowserProfile"] is False
-    assert read_calls[0]["mode"] == "static"
+    assert read_calls[0]["mode"] == "auto"
+    # Result URLs are not necessarily on the login allowlist.  The fetcher
+    # auto-promotes matching hosts while keeping public sources readable.
     assert read_calls[0]["useAgentBrowserProfile"] is False
     assert 0 < read_calls[0]["timeout_seconds"] <= 8
+
+
+def test_research_shard_keeps_public_static_route_when_browser_profile_is_disabled(monkeypatch):
+    search_calls: list[dict] = []
+
+    def fake_search(**kwargs):
+        search_calls.append(dict(kwargs))
+        return json.dumps({"ok": True, "provider": "bing_cn", "results": []})
+
+    monkeypatch.setattr(research_module, "source_router_search", fake_search)
+
+    research_module._run_search_shard(
+        {"shardId": "public-cn", "kind": "baseline", "query": "国内公开资料"},
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="mixed",
+        max_rounds=1,
+        use_agent_browser_profile=False,
+        tool_call_id="public-cn-route-test",
+        preferred_language="zh-CN",
+    )
+
+    assert search_calls[0]["mode"] == "static"
+    assert search_calls[0]["allow_browser_profile_fallback"] is False
+    assert search_calls[0]["useAgentBrowserProfile"] is False
+
+
+def test_research_plan_inherits_governed_browser_profile_when_tool_flag_is_omitted(monkeypatch):
+    monkeypatch.setattr(
+        research_module,
+        "get_web_fetch_config",
+        lambda: {
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn", "baidu.com"],
+        },
+    )
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="plan",
+            question="核对国内公开资料",
+            maxShards=1,
+            maxRounds=1,
+            tool_call_id="configured-profile-plan",
+        )
+    )
+
+    assert payload["shardDefaults"]["useAgentBrowserProfile"] is True
+    assert payload["shardDefaults"]["agentBrowserProfileSource"] == "system_base"
+
+
+def test_research_plan_keeps_browser_profile_disabled_without_governed_allowlist(monkeypatch):
+    monkeypatch.setattr(
+        research_module,
+        "get_web_fetch_config",
+        lambda: {
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="plan",
+            question="核对国内公开资料",
+            maxShards=1,
+            maxRounds=1,
+            tool_call_id="missing-allowlist-plan",
+        )
+    )
+
+    assert payload["shardDefaults"]["useAgentBrowserProfile"] is False
+    assert payload["shardDefaults"]["agentBrowserProfileSource"] == "disabled"
 
 
 def test_parallel_facets_reuse_one_long_document_read_for_distinct_excerpts(monkeypatch):
@@ -1322,6 +1399,86 @@ def test_transient_read_retries_once_in_a_later_round_and_then_stops(monkeypatch
     assert read_urls == [url, url]
     assert ledger.snapshot()["networkAttemptCount"] == 2
     assert ledger.snapshot()["terminalIdentityCount"] == 1
+
+
+def test_retryable_host_failures_open_per_run_circuit_without_blocking_other_hosts(monkeypatch):
+    failing_urls = [
+        "https://docs.python.org/failure-one",
+        "https://docs.python.org/failure-two",
+        "https://docs.python.org/failure-three",
+    ]
+    success_url = "https://docs.pydantic.dev/latest/success"
+    urls_by_query = {
+        f"Python pathlib CLI official documentation evidence {index}": url
+        for index, url in enumerate([*failing_urls, success_url], start=1)
+    }
+    read_urls: list[str] = []
+
+    def fake_search(**kwargs):
+        query = kwargs["query"]
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "offline-fixture",
+                "results": [
+                    {
+                        "title": query,
+                        "url": urls_by_query[query],
+                        "snippet": query,
+                    }
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        url = kwargs["url"]
+        read_urls.append(url)
+        if "docs.python.org" in url:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": 503,
+                    "failureClass": "service_unavailable",
+                    "error": "temporary upstream failure",
+                }
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "finalUrl": url,
+                "title": "Pydantic official documentation",
+                "text": "Python pathlib CLI official documentation evidence. " * 20,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+    monkeypatch.setattr(research_module, "_jina_api_key", lambda: "")
+    ledger = research_module._ResearchReadAttemptLedger(
+        question="Python pathlib CLI official documentation evidence"
+    )
+    completed = []
+    for index, query in enumerate(urls_by_query, start=1):
+        completed.append(
+            research_module._run_search_shards(
+                [{"shardId": f"host-{index}", "kind": "baseline", "query": query}],
+                allowed_domains=[],
+                blocked_domains=[],
+                source_policy="authoritative",
+                max_rounds=4,
+                use_agent_browser_profile=False,
+                tool_call_id=f"host-circuit-{index}",
+                read_attempt_ledger=ledger,
+                read_round=index,
+            )[0]
+        )
+
+    assert read_urls == [failing_urls[0], failing_urls[1], success_url]
+    assert completed[2]["sourceHostCircuitOpen"] == ["docs.python.org"]
+    assert completed[3]["fetchedTopSources"][0]["ok"] is True
+    assert ledger.snapshot()["openHostCircuitCount"] == 1
+    assert ledger.snapshot()["hostCircuitSkipCount"] == 1
 
 
 def test_seed_and_search_result_share_the_same_read_attempt_identity(monkeypatch):

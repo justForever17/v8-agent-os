@@ -3860,9 +3860,10 @@ def run_system_command(
 ) -> str:
     """Run shell work with V8OS choosing the safest command path.
 
-    Use this for shell work the task actually needs: checking the environment, running tests, launching scripts,
-    installing dependencies, starting dev servers, or executing a user-requested command. Keep mode=auto by
-    default. V8OS will run quick commands directly, and will open an observable terminal session for installers,
+    Use this for shell execution, tests, dependency installation, dev servers, and verification. Never create,
+    append, replace, or populate content-bearing text/JSON/Markdown/source artifacts with this tool, shell
+    redirection, echo, Set-Content, Out-File, or a script; use `write_native_file` for that content. Keep mode=auto
+    by default. V8OS runs quick commands directly and opens an observable terminal session for installers,
     scaffolding, dev servers, TUI prompts, password/confirmation flows, and long-running/watch commands.
 
     Do not use this just to read or write a known text/JSON/Markdown/source file. Use `read_native_file` and

@@ -40,6 +40,21 @@ NON_ENGINEERING_PATTERNS = (
     "演示稿",
 )
 
+RESPONSE_ONLY_PATTERNS = (
+    r"(?:只|仅)(?:需|要)?回复",
+    r"不要(?:调用|使用)(?:任何)?工具",
+    r"无需(?:调用|使用)(?:任何)?工具",
+    r"\b(?:reply|respond)\s+only\b",
+    r"\bdo\s+not\s+(?:call|use)\s+(?:any\s+)?tools?\b",
+)
+
+ACTIONABLE_VERIFICATION_PATTERNS = (
+    r"\b(?:run|execute|rerun)\s+(?:the\s+)?(?:tests?|pytest|typecheck|lint|build)\b",
+    r"\b(?:test|verify|validate|build|lint|compile)\s+(?:the\s+)?(?:repo|repository|project|code|app|application|package|workspace|file)\b",
+    r"(?:运行|执行|跑|重跑|复跑|检查|验证|测试|构建|编译|回归)(?:一下|下)?(?:这(?:个|份))?(?:项目|仓库|代码|应用|文件|测试|构建|命令|用例)",
+    r"补(?:充)?(?:单元|集成|回归)?测试",
+)
+
 IGNORED_DIRS = {
     ".git",
     ".hg",
@@ -1944,6 +1959,8 @@ class EngineeringLaneService:
         raw = str(text or "").strip().lower()
         if not raw:
             return []
+        if any(re.search(pattern, raw, re.I) for pattern in RESPONSE_ONLY_PATTERNS):
+            return []
         code_media_markers = ("remotion", "manim", "ffmpeg", "ffprobe", "three.js", "threejs", "p5.js", "p5js", "processing", "webgl", "canvas")
         if any(pattern in raw for pattern in NON_ENGINEERING_PATTERNS) and not any(marker in raw for marker in ("代码", "code", "repo", "仓库", "组件", "接口", *code_media_markers)):
             return []
@@ -1951,6 +1968,11 @@ class EngineeringLaneService:
         for name, patterns in CODE_SIGNAL_PATTERNS:
             if any(pattern in raw for pattern in patterns):
                 signals.append(name)
+        if signals == ["verification"] and not any(
+            re.search(pattern, raw, re.I)
+            for pattern in ACTIONABLE_VERIFICATION_PATTERNS
+        ):
+            signals.remove("verification")
         if self._detect_project_creation_signal(raw):
             signals.append("project_creation_candidate")
         return list(dict.fromkeys(signals))

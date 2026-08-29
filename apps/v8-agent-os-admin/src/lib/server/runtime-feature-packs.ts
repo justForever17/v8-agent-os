@@ -228,7 +228,8 @@ let FEATURE_PACK_INSTALL_RESERVATION: string | null = null;
 const FEATURE_PACK_CONFIG_TIMEOUT_MS = 8_000;
 const FEATURE_PACK_PIP_TIMEOUT_MS = 45 * 60_000;
 const FEATURE_PACK_ASSET_TIMEOUT_MS = 30 * 60_000;
-const FEATURE_PACK_ASSET_SOURCE_CONNECT_TIMEOUT_MS = 20_000;
+const FEATURE_PACK_ASSET_SOURCE_CONNECT_TIMEOUT_MS = 30_000;
+const FEATURE_PACK_ASSET_PRIMARY_CONNECT_TIMEOUT_MS = 7_500;
 const FEATURE_PACK_ASSET_STREAM_RETRY_LIMIT = 3;
 const FEATURE_PACK_ASSET_MAX_REDIRECTS = 3;
 const FEATURE_PACK_STALE_INSTALL_MS = 90 * 60_000;
@@ -307,7 +308,6 @@ const FEATURE_PACK_ASSET_HOSTS = new Set([
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
-    "ghproxy.net",
     "storage.googleapis.com",
     "huggingface.co",
     "hf-mirror.com",
@@ -1287,8 +1287,7 @@ function featurePackAssetSources(asset: FeaturePackAsset, locale = "en") {
     const domesticRank = (value: string) => {
         const host = new URL(value).hostname.toLowerCase();
         if (host === "hf-mirror.com") return 0;
-        if (host === "ghproxy.net") return 1;
-        return 2;
+        return 1;
     };
     return sources
         .map((value, index) => ({ value, index, rank: domesticRank(value) }))
@@ -1338,16 +1337,27 @@ async function fetchTrustedFeaturePackAsset(
         assertTrustedFeaturePackAssetUrl(currentUrl);
         const headers = resumeOffset > 0 ? { Range: `bytes=${resumeOffset}-` } : undefined;
         let response: Response;
+        const primaryController = new AbortController();
+        const abortPrimary = () => primaryController.abort();
+        if (signal.aborted) abortPrimary();
+        else signal.addEventListener("abort", abortPrimary, { once: true });
+        const primaryTimeout = setTimeout(
+            abortPrimary,
+            FEATURE_PACK_ASSET_PRIMARY_CONNECT_TIMEOUT_MS,
+        );
         try {
             response = await fetch(currentUrl, {
                 headers,
                 redirect: "manual",
                 cache: "no-store",
-                signal,
+                signal: primaryController.signal,
             });
         } catch (error) {
             if (signal.aborted) throw error;
             response = await fetchFeaturePackAssetOverIpv4(currentUrl, headers, signal);
+        } finally {
+            clearTimeout(primaryTimeout);
+            signal.removeEventListener("abort", abortPrimary);
         }
         if (![301, 302, 303, 307, 308].includes(response.status)) {
             assertTrustedFeaturePackAssetUrl(response.url || currentUrl);

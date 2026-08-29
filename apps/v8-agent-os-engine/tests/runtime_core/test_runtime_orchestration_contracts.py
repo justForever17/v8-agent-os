@@ -911,6 +911,111 @@ def test_non_spec_completed_repair_supersedes_degraded_same_task_contract(tmp_pa
     assert decision.action == "complete"
 
 
+def test_completed_read_only_repair_supersedes_degraded_same_task_with_tool_evidence(tmp_path) -> None:
+    def episode(episode_id: str, state: str, updated_at: str) -> dict:
+        return {
+            "episodeId": episode_id,
+            "kind": "engineering",
+            "state": state,
+            "updated_at": updated_at,
+            "inputs": {
+                "workspacePath": str(tmp_path),
+                "taskBriefs": [{
+                    "taskBriefId": "READ-README-FIRST-LINE",
+                    "goal": "Read README.md first line.",
+                    "readOnly": True,
+                    "writeRequired": False,
+                    "readSet": ["README.md"],
+                    "writeSet": [],
+                }],
+            },
+        }
+
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            episode("episode-read-failed", "degraded", "2026-08-29T08:00:00.000Z"),
+            episode("episode-read-repaired", "completed", "2026-08-29T08:01:00.000Z"),
+        ],
+        handoffs_by_episode={
+            "episode-read-failed": [{
+                "status": "degraded",
+                "kind": "engineering_patch_bundle",
+                "delegationHandoff": {
+                    "results": [{
+                        "taskBriefId": "READ-README-FIRST-LINE",
+                        "status": "blocked",
+                        "errorCode": "subagent_reported_terminal_failure",
+                    }],
+                },
+            }],
+            "episode-read-repaired": [{
+                "status": "ready",
+                "kind": "engineering_patch_bundle",
+                "delegationHandoff": {
+                    "results": [{
+                        "taskBriefId": "READ-README-FIRST-LINE",
+                        "status": "ok",
+                        "toolsUsed": ["read_native_file"],
+                        "resultText": "README.md first line is <div align=\"center\">.",
+                    }],
+                },
+            }],
+        },
+        final_text="验收决定：ACCEPT\n依据：重试使用 read_native_file 完成同一只读 brief。",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
+
+
+def test_read_only_retry_without_tool_evidence_cannot_hide_degraded_attempt(tmp_path) -> None:
+    base = {
+        "kind": "engineering",
+        "inputs": {
+            "workspacePath": str(tmp_path),
+            "taskBriefs": [{
+                "taskBriefId": "READ-README-FIRST-LINE",
+                "readOnly": True,
+                "writeRequired": False,
+                "writeSet": [],
+            }],
+        },
+    }
+    failed = {**base, "episodeId": "episode-read-failed", "state": "degraded", "updated_at": "2026-08-29T08:00:00.000Z"}
+    repaired = {**base, "episodeId": "episode-read-prose", "state": "completed", "updated_at": "2026-08-29T08:01:00.000Z"}
+
+    decision = evaluate_supervisor_completion(
+        episodes=[failed, repaired],
+        handoffs_by_episode={
+            "episode-read-failed": [{
+                "status": "degraded",
+                "delegationHandoff": {
+                    "results": [{
+                        "taskBriefId": "READ-README-FIRST-LINE",
+                        "status": "blocked",
+                        "errorCode": "read_failed",
+                    }],
+                },
+            }],
+            "episode-read-prose": [{
+                "status": "ready",
+                "delegationHandoff": {
+                    "results": [{
+                        "taskBriefId": "READ-README-FIRST-LINE",
+                        "status": "ok",
+                        "resultText": "I read the file.",
+                    }],
+                },
+            }],
+        },
+        final_text="验收决定：ACCEPT",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+
+
 def test_non_spec_completed_other_task_does_not_hide_degraded_write(tmp_path) -> None:
     (tmp_path / "new.md").write_text("done", encoding="utf-8")
     failed = _required_write_episode(str(tmp_path), state="degraded")

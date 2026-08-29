@@ -84,6 +84,80 @@ class PreparedEngineeringWorkspace:
         }
 
 
+def abort_engineering_run_workspaces(
+    *,
+    run_id: str,
+    error_code: str,
+    database: Any = db,
+) -> dict[str, Any]:
+    """Close persisted managed work without initializing optional Git support."""
+
+    normalized_run_id = str(run_id or "").strip()
+    normalized_error = str(error_code or "run_aborted").strip() or "run_aborted"
+    if not normalized_run_id:
+        return {"worktreeIds": [], "leaseIds": [], "errorCode": normalized_error}
+    now = _utc_now_iso()
+    open_worktree_states = (
+        "planned",
+        "ready",
+        "active",
+        "finalizing",
+        "recoverable",
+        "retry_requested",
+    )
+    open_lease_states = (
+        SandboxLeaseState.PLANNED.value,
+        SandboxLeaseState.ACTIVE.value,
+        SandboxLeaseState.FINALIZING.value,
+    )
+
+    def _write() -> tuple[list[str], list[str]]:
+        with database.get_connection() as conn:
+            worktree_rows = conn.execute(
+                f"""
+                SELECT worktree_id FROM engineering_worktrees
+                WHERE run_id = ? AND state IN ({','.join('?' for _ in open_worktree_states)})
+                """,
+                (normalized_run_id, *open_worktree_states),
+            ).fetchall()
+            lease_rows = conn.execute(
+                f"""
+                SELECT lease_id FROM sandbox_execution_leases
+                WHERE run_id = ? AND state IN ({','.join('?' for _ in open_lease_states)})
+                """,
+                (normalized_run_id, *open_lease_states),
+            ).fetchall()
+            worktree_ids = [str(row["worktree_id"]) for row in worktree_rows]
+            lease_ids = [str(row["lease_id"]) for row in lease_rows]
+            if worktree_ids:
+                conn.execute(
+                    f"""
+                    UPDATE engineering_worktrees
+                    SET state = 'cancelled', error_code = ?, finished_at = ?, updated_at = ?
+                    WHERE worktree_id IN ({','.join('?' for _ in worktree_ids)})
+                    """,
+                    (normalized_error, now, now, *worktree_ids),
+                )
+            if lease_ids:
+                conn.execute(
+                    f"""
+                    UPDATE sandbox_execution_leases
+                    SET state = ?, error_code = ?, finished_at = ?, updated_at = ?
+                    WHERE lease_id IN ({','.join('?' for _ in lease_ids)})
+                    """,
+                    (SandboxLeaseState.FAILED.value, normalized_error, now, now, *lease_ids),
+                )
+            conn.commit()
+            return worktree_ids, lease_ids
+
+    worktree_ids, lease_ids = database._run_write_with_retry(_write)
+    return {
+        "worktreeIds": worktree_ids,
+        "leaseIds": lease_ids,
+        "errorCode": normalized_error,
+    }
+
+
 class EngineeringSandboxService:
     def __init__(
         self,
@@ -1088,71 +1162,11 @@ class EngineeringSandboxService:
 
     def abort_run_workspaces(self, *, run_id: str, error_code: str) -> dict[str, Any]:
         """Close non-terminal worktrees without deleting their recovery evidence."""
-
-        normalized_run_id = str(run_id or "").strip()
-        normalized_error = str(error_code or "run_aborted").strip() or "run_aborted"
-        if not normalized_run_id:
-            return {"worktreeIds": [], "leaseIds": [], "errorCode": normalized_error}
-        now = _utc_now_iso()
-        open_worktree_states = (
-            "planned",
-            "ready",
-            "active",
-            "finalizing",
-            "recoverable",
-            "retry_requested",
+        return abort_engineering_run_workspaces(
+            run_id=run_id,
+            error_code=error_code,
+            database=self.database,
         )
-        open_lease_states = (
-            SandboxLeaseState.PLANNED.value,
-            SandboxLeaseState.ACTIVE.value,
-            SandboxLeaseState.FINALIZING.value,
-        )
-
-        def _write() -> tuple[list[str], list[str]]:
-            with self.database.get_connection() as conn:
-                worktree_rows = conn.execute(
-                    f"""
-                    SELECT worktree_id FROM engineering_worktrees
-                    WHERE run_id = ? AND state IN ({','.join('?' for _ in open_worktree_states)})
-                    """,
-                    (normalized_run_id, *open_worktree_states),
-                ).fetchall()
-                lease_rows = conn.execute(
-                    f"""
-                    SELECT lease_id FROM sandbox_execution_leases
-                    WHERE run_id = ? AND state IN ({','.join('?' for _ in open_lease_states)})
-                    """,
-                    (normalized_run_id, *open_lease_states),
-                ).fetchall()
-                worktree_ids = [str(row["worktree_id"]) for row in worktree_rows]
-                lease_ids = [str(row["lease_id"]) for row in lease_rows]
-                if worktree_ids:
-                    conn.execute(
-                        f"""
-                        UPDATE engineering_worktrees
-                        SET state = 'cancelled', error_code = ?, finished_at = ?, updated_at = ?
-                        WHERE worktree_id IN ({','.join('?' for _ in worktree_ids)})
-                        """,
-                        (normalized_error, now, now, *worktree_ids),
-                    )
-                if lease_ids:
-                    conn.execute(
-                        f"""
-                        UPDATE sandbox_execution_leases
-                        SET state = ?, error_code = ?, finished_at = ?, updated_at = ?
-                        WHERE lease_id IN ({','.join('?' for _ in lease_ids)})
-                        """,
-                        (SandboxLeaseState.FAILED.value, normalized_error, now, now, *lease_ids),
-                    )
-                conn.commit()
-                return worktree_ids, lease_ids
-
-        worktree_ids, lease_ids = self.database._run_write_with_retry(_write)
-        return {
-            "worktreeIds": worktree_ids,
-            "leaseIds": lease_ids,
-            "errorCode": normalized_error,
-        }
 
     def mark_task_workspace_failed(self, *, worktree_id: str, error_code: str) -> None:
         row = self._get_worktree_row(worktree_id)

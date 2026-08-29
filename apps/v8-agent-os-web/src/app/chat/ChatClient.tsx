@@ -1525,6 +1525,7 @@ export default function ChatClient() {
     const isLoadingRef = useRef(isLoading);
     const messagesRef = useRef<Message[]>(messages);
     const messageCacheRef = useRef(new Map<string, Message[]>());
+    const historyLoadControllerRef = useRef<AbortController | null>(null);
     const renderedConversationIdRef = useRef<string | null>(activeConversationId);
     const realtimeMessageStateRef = useRef(
         createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS),
@@ -2241,6 +2242,8 @@ export default function ChatClient() {
         latestRealtimeSeqRef.current = 0;
         snapshotCoveredRealtimeSeqRef.current = 0;
         seenRealtimeEventIdentitiesRef.current.clear();
+        historyLoadControllerRef.current?.abort();
+        historyLoadControllerRef.current = null;
         if (previousConversationId && messagesRef.current.length > 0) {
             messageCacheRef.current.set(previousConversationId, cloneMessages(messagesRef.current));
         }
@@ -2310,7 +2313,7 @@ export default function ChatClient() {
 
     const loadConversationTurnPage = useCallback(async (
         conversationId: string,
-        options?: { before?: string | null; around?: string | null; radius?: number },
+        options?: { before?: string | null; around?: string | null; radius?: number; signal?: AbortSignal },
     ) => {
         const params = new URLSearchParams({ limit: "1" });
         params.set("surface", "web");
@@ -2328,6 +2331,7 @@ export default function ChatClient() {
         }
         const turnsRes = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/turns?${params.toString()}`, {
             cache: "no-store",
+            signal: options?.signal,
         });
         if (!turnsRes.ok) {
             throw new Error(`Failed to load conversation turns: ${turnsRes.status}`);
@@ -2384,7 +2388,7 @@ export default function ChatClient() {
 
     const loadConversationTurnIndexPage = useCallback(async (
         conversationId: string,
-        options?: { before?: number; limit?: number; commit?: boolean },
+        options?: { before?: number; limit?: number; commit?: boolean; signal?: AbortSignal },
     ) => {
         const params = new URLSearchParams({
             limit: String(Math.max(1, Math.min(500, Number(options?.limit || 200)))),
@@ -2394,6 +2398,7 @@ export default function ChatClient() {
         }
         const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/turn-index?${params.toString()}`, {
             cache: "no-store",
+            signal: options?.signal,
         });
         if (!response.ok) {
             throw new Error(`Failed to load conversation turn index: ${response.status}`);
@@ -2509,18 +2514,29 @@ export default function ChatClient() {
         conversationId: string,
         options?: { mergeWithCurrent?: boolean; preserveCurrentOnEmpty?: boolean },
     ) => {
+        historyLoadControllerRef.current?.abort();
+        const controller = new AbortController();
+        historyLoadControllerRef.current = controller;
         setQueuedMessages([]);
         turnIndexRef.current = [];
         setTurnIndex([]);
         setTotalTurnCount(0);
         setFocusedTurnId(null);
-        const indexPagePromise = loadConversationTurnIndexPage(conversationId, { commit: false })
-            .catch(() => ({ entries: [], totalTurnCount: 0, pageInfo: {} }));
-        const [detailRes, turnPage] = await Promise.all([
-            fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=1`, { cache: "no-store" }),
-            loadConversationTurnPage(conversationId),
-        ]);
-        if (activeConversationIdRef.current !== conversationId) return;
+        let detailRes: Response;
+        let turnPage: Awaited<ReturnType<typeof loadConversationTurnPage>>;
+        try {
+            [detailRes, turnPage] = await Promise.all([
+                fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=1`, {
+                    cache: "no-store",
+                    signal: controller.signal,
+                }),
+                loadConversationTurnPage(conversationId, { signal: controller.signal }),
+            ]);
+        } catch (error) {
+            if (controller.signal.aborted) return;
+            throw error;
+        }
+        if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
         if (!detailRes.ok) {
             if (detailRes.status === 404) {
                 router.replace("/chat");
@@ -2583,14 +2599,30 @@ export default function ChatClient() {
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);
         }
-        const indexPage = await indexPagePromise;
-        if (activeConversationIdRef.current === conversationId) {
-            mergeTurnIndexEntries(indexPage.entries);
-            const resolvedTotal = Number(indexPage.totalTurnCount || turnPage.pageInfo.totalTurnCount || 0);
-            if (resolvedTotal > 0) {
-                setTotalTurnCount(resolvedTotal);
+        const hydrateTurnIndex = async () => {
+            if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+            try {
+                const indexPage = await loadConversationTurnIndexPage(conversationId, {
+                    commit: false,
+                    signal: controller.signal,
+                });
+                if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+                mergeTurnIndexEntries(indexPage.entries);
+                const resolvedTotal = Number(indexPage.totalTurnCount || turnPage.pageInfo.totalTurnCount || 0);
+                if (resolvedTotal > 0) {
+                    setTotalTurnCount(resolvedTotal);
+                }
+            } catch (error) {
+                if (!controller.signal.aborted) {
+                    console.warn("[ChatClient] Failed to load conversation turn index:", error);
+                }
+            } finally {
+                if (historyLoadControllerRef.current === controller) {
+                    historyLoadControllerRef.current = null;
+                }
             }
-        }
+        };
+        window.setTimeout(() => void hydrateTurnIndex(), 0);
     }, [applyAskUserPendingApproval, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router]);
 
     const loadOlderConversationTurn = useCallback(async () => {

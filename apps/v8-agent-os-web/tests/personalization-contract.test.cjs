@@ -36,6 +36,9 @@ test("wallpaper uses center cropping with theme-specific light and dark surfaces
   assert.match(provider, /root\.style\.getPropertyValue\("--v8-wallpaper-image"\) !== cssValue/);
   assert.match(provider, /VIDEO_RELOAD_DELAYS_MS = \[250, 750, 1_500\]/);
   assert.match(provider, /videoReloadAttemptRef\.current < VIDEO_RELOAD_DELAYS_MS\.length|attempt < VIDEO_RELOAD_DELAYS_MS\.length/);
+  assert.match(provider, /document\.visibilityState !== "visible"/);
+  assert.match(provider, /video\.pause\(\)/);
+  assert.match(provider, /preload="metadata"/);
   const profileEffectStart = provider.indexOf("if (!canonicalLoaded) return;");
   const profileEffectTimerReset = provider.indexOf("if (videoReloadTimerRef.current)", profileEffectStart);
   const appearanceRead = provider.indexOf("normalizeAppearance(profile?.appearance)", profileEffectStart);
@@ -47,6 +50,8 @@ test("wallpaper uses center cropping with theme-specific light and dark surfaces
   assert.match(styles, /html\.light\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /html\.dark\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /background-size: cover/);
+  assert.match(styles, /data-v8-wallpaper-kind="video"[\s\S]*backdrop-filter: none !important/);
+  assert.match(styles, /data-v8-wallpaper-kind="video"[\s\S]*transition: none/);
   assert.match(styles, /\.v8-chat-viewport-surface/);
   assert.match(chatWindow, /v8-chat-viewport-surface/);
   assert.match(sidebar, /group\/sidebar relative z-20 hidden h-full/);

@@ -1342,10 +1342,33 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
         else:
             lines.append("- Tool discipline: call a granted tool only when it is necessary for this task's acceptance contract; do not probe unrelated capabilities.")
         if bool(task_brief.get("readOnly") or task_brief.get("read_only")):
-            lines.append(
-                "- Read-only evidence discipline: use the command/file ToolMessage already returned in memory. "
-                "Do not redirect output or create temporary evidence, stdout/stderr capture, log, or report files."
+            capsule = (
+                task_brief.get("engineeringTaskCapsule")
+                if isinstance(task_brief.get("engineeringTaskCapsule"), dict)
+                else {}
             )
+            declared_read_paths = [
+                str(item or "").strip()
+                for item in list(
+                    capsule.get("readSet")
+                    or capsule.get("mustRead")
+                    or task_brief.get("readSet")
+                    or []
+                )
+                if str(item or "").strip()
+            ]
+            if declared_read_paths:
+                lines.append(
+                    "- Read-only file evidence discipline: for declared Read Set paths, call `read_native_file` first; "
+                    "do not replace a file read with a shell command. Once a successful ToolMessage proves the item, "
+                    "reuse it instead of reading the same path again."
+                )
+            else:
+                lines.append(
+                    "- Read-only evidence discipline: use the smallest granted read-only tool required by the contract. "
+                    "Do not redirect output or create temporary evidence, stdout/stderr capture, log, or report files; "
+                    "if the read boundary is missing, return a blocker instead of inventing a shell workaround."
+                )
         lines.append(
             "- Evidence sufficiency: once prior ToolMessages directly prove an acceptance item, reuse that evidence. Do not recapture the same file or command result through alternate encodings; stop probing and return the typed handoff (or dispatch the one required child) promptly."
         )

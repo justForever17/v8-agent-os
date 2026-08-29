@@ -1595,6 +1595,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocation(monkeypatch):
     emitted: list[tuple[str, object]] = []
     model_calls: list[list[object]] = []
+    model_creations: list[tuple[str, dict]] = []
     route_bundle = SimpleNamespace(
         filtered_tools=[SimpleNamespace(name="runtime_broker")],
         prompt_addition="",
@@ -1707,6 +1708,10 @@ def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocati
             ],
         )
 
+    def create_chat_model(model_id, **kwargs):
+        model_creations.append((model_id, dict(kwargs)))
+        return object()
+
     response = execute_supervisor_turn(
         state=state,
         config={},
@@ -1722,7 +1727,10 @@ def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocati
         supervisor_base_llm=object(),
         sup_model_name="test-model",
         caller_kwargs={},
-        llm_factory=SimpleNamespace(create_chat_model=lambda *_args, **_kwargs: object()),
+        llm_factory=SimpleNamespace(
+            create_chat_model=create_chat_model,
+            get_model_max_output_tokens=lambda _model_id: 4096,
+        ),
         sanitize_response_tool_calls=lambda response: response,
     )
 
@@ -1730,6 +1738,17 @@ def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocati
     assert response.content == ""
     assert response.tool_calls[0]["args"]["taskBriefs"][0]["readOnly"] is True
     assert len(model_calls) == 1
+    assert model_creations == [
+        (
+            "test-model",
+            {
+                "streaming": True,
+                "_role": "supervisor",
+                "max_tokens": 1024,
+                "_reasoning_effort": "minimal",
+            },
+        )
+    ]
     assert "Runtime Route Compiler" in str(model_calls[0][0].content)
     diagnostics = next(payload for topic, payload in emitted if topic == "diagnostics")
     assert diagnostics["promptProfile"] == "runtime_route_compiler"

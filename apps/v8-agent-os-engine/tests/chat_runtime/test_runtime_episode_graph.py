@@ -30,6 +30,7 @@ from graph.supervisor_turn import (
     _pending_runtime_continuation_kinds,
     _required_orchestration_tool_name,
     _response_has_required_broker_attempt,
+    _retry_runtime_route_compiler_once,
     _runtime_route_compiler_contract_error,
     _runtime_route_compiler_input_messages,
     _response_runtime_route_kinds,
@@ -681,7 +682,9 @@ def test_selected_read_only_engineering_uses_compiler_instead_of_guessing_execut
     )
     assert '"writeRequired": false' in guidance.content
     assert '"readOnly": true' in guidance.content
+    assert '"readSet": [' in guidance.content
     assert '"writeSet": []' in guidance.content
+    assert "verificationCommand" not in guidance.content
     assert "verification result path" not in guidance.content
 
     conflicting_request = "先只读分析问题，然后修改 src/app.py 修复它。"
@@ -1078,6 +1081,91 @@ def test_runtime_route_compiler_contract_requires_one_exact_selected_runtime_cal
     assert _runtime_route_compiler_contract_error(extra_call, "creative_media") == (
         "expected_exactly_one_tool_call"
     )
+
+
+def test_runtime_route_compiler_repairs_missing_tool_once_without_replaying_failed_output() -> None:
+    failed = AIMessage(content="internal reasoning " * 4000)
+    calls: list[tuple[list, dict]] = []
+    corrected = AIMessage(
+        content="internal correction prose",
+        tool_calls=[
+            {
+                "id": "call-corrected",
+                "name": "runtime_broker",
+                "args": {
+                    "mode": "route",
+                    "routeKind": "engineering",
+                    "routeReason": "Implement and verify the current request.",
+                    "taskBriefs": [{"taskBriefId": "implementation", "goal": "Implement the request."}],
+                },
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    def robust_invoke(_llm, messages, _tools, **kwargs):
+        calls.append((list(messages), dict(kwargs)))
+        return corrected
+
+    result = _retry_runtime_route_compiler_once(
+        failed,
+        required_kind="engineering",
+        pending_required_runtime_kinds=["engineering"],
+        authoritative_runtime_kinds=["engineering"],
+        state={"current_route_context": {"supervisorRuntimeMode": "engineering"}},
+        read_only_engineering_route=False,
+        prepared_messages=[SystemMessage(content="compiler"), HumanMessage(content="修复项目")],
+        invoke_llm=object(),
+        filtered_supervisor_tools=[SimpleNamespace(name="runtime_broker")],
+        robust_invoke=robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert result is corrected
+    assert result.content == ""
+    assert len(calls) == 1
+    assert failed not in calls[0][0]
+    assert calls[0][1]["tool_choice"] == "runtime_broker"
+    assert calls[0][1]["result_validator"] is None
+    assert calls[0][1]["invocation_config"]["metadata"]["v8_internal_model_surface"] == (
+        "runtime_route_compiler_correction"
+    )
+    assert result.additional_kwargs["v8_runtime_route_compiler_correction"]["initialError"] == (
+        "expected_exactly_one_tool_call"
+    )
+
+
+def test_runtime_route_compiler_fails_closed_after_one_invalid_correction() -> None:
+    calls = 0
+
+    def robust_invoke(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return AIMessage(content="still no tool")
+
+    with pytest.raises(
+        SupervisorRuntimeRouteContractError,
+        match="runtime_route_compiler_contract_invalid_after_correction:expected_exactly_one_tool_call",
+    ):
+        _retry_runtime_route_compiler_once(
+            AIMessage(content="no tool"),
+            required_kind="research",
+            pending_required_runtime_kinds=["research"],
+            authoritative_runtime_kinds=["research"],
+            state={"current_route_context": {"supervisorRuntimeMode": "research"}},
+            read_only_engineering_route=False,
+            prepared_messages=[SystemMessage(content="compiler"), HumanMessage(content="调研问题")],
+            invoke_llm=object(),
+            filtered_supervisor_tools=[SimpleNamespace(name="runtime_broker")],
+            robust_invoke=robust_invoke,
+            preferred_model_id="test-model",
+            build_model=lambda _model_id: object(),
+            sanitize_response_tool_calls=lambda response: response,
+        )
+
+    assert calls == 1
 
 
 def test_runtime_route_kind_normalizes_json_encoded_need_before_execution() -> None:

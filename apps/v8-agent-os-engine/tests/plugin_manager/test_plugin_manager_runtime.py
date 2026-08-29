@@ -62,6 +62,7 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[PluginMana
     monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: None)
     test_db.create_or_update_session("s1", "Plugin test", user_id="user-1")
     service = PluginManagerService(credential_store=CredentialRefStore(MemoryCredentialBackend()))
+    monkeypatch.setattr(service, "_skill_git_executable", lambda: "git")
     monkeypatch.setattr(
         service,
         "_skills_cli_inventory",
@@ -315,6 +316,63 @@ def test_unavailable_skills_cli_does_not_block_independent_plugin_cli(
     skill_step = next(item for item in plan["steps"]["skills"] if item["id"] == "mediakit-official-skills")
     assert skill_step["supported"] is False
     assert skill_step["blockedReason"] == "skills_cli_unavailable"
+
+
+def test_unavailable_git_does_not_roll_back_independent_plugin_cli(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+    monkeypatch.setattr(service_module, "_architecture_name", lambda: "amd64")
+    monkeypatch.setattr(service, "_skill_git_executable", lambda: "")
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [],
+            "lockEntries": {},
+            "error": "",
+        },
+    )
+
+    plan = service.build_install_plan("volcengine-mediakit")
+
+    assert plan["installable"] is True
+    assert plan["componentPolicy"]["blockingReasons"] == []
+    assert plan["componentPolicy"]["degradedReasons"] == ["skill_git_unavailable"]
+    assert "mediakit-cli" in plan["componentPolicy"]["selectedComponentIds"]
+    assert "mediakit-official-skills" in plan["componentPolicy"]["skippedComponentIds"]
+    skill_step = next(item for item in plan["steps"]["skills"] if item["id"] == "mediakit-official-skills")
+    assert skill_step["supported"] is False
+    assert skill_step["blockedReason"] == "skill_git_unavailable"
+
+
+def test_managed_cli_skill_does_not_require_git(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(service, "_skill_git_executable", lambda: "")
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [],
+            "lockEntries": {},
+            "error": "",
+        },
+    )
+
+    plan = service.build_install_plan("amap")
+
+    skill_step = next(item for item in plan["steps"]["skills"] if item["id"] == "amap-map-cli-skill")
+    assert skill_step["supported"] is True
+    assert "blockedReason" not in skill_step
 
 
 def test_skills_cli_inventory_probes_the_installed_tool_version(
@@ -1034,6 +1092,78 @@ def test_machine_discovery_trusts_registered_skill_receipt_when_public_lock_is_m
     assert discovery["skills"][0]["state"] == "registered"
     assert discovery["summary"]["coverage"] == "complete"
     assert discovery["summary"]["presentUnits"] == discovery["summary"]["totalUnits"]
+
+
+def test_skill_keep_reuses_registered_receipt_without_git_or_reinstall(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("aliyun-bailian")
+    skill = manifest.skills[0].model_dump(mode="json")
+    name = skill["skillNames"][0]
+    target = service_module.AGENT_SKILLS_ROOT / name
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    service._upsert_installation(
+        manifest,
+        state="installed",
+        health={"ok": True, "online": True, "checks": []},
+        external=False,
+    )
+    service._register_component(
+        manifest.id,
+        skill["id"],
+        "skill",
+        owned_path=str(target),
+        source_url=skill["repository"],
+        source_version=skill["revision"],
+        ownership="skills_cli",
+        metadata={
+            "skillNames": [name],
+            "skillPaths": [str(target)],
+            "managedSkillNames": [name],
+            "adoptedSkillNames": [],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [{"name": name, "path": str(target), "scope": "global", "agents": ["Codex"]}],
+            "lockEntries": {},
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_skill_git_step",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a verified keep action must not use Git")
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_skills_cli",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a verified keep action must not reinstall Skills")
+        ),
+    )
+
+    components = service._install_skill_component(manifest, skill, action="keep")
+
+    assert len(components) == 1
+    registered = next(
+        row
+        for row in service._component_rows(manifest.id)
+        if row["component_id"] == skill["id"]
+    )
+    metadata = json.loads(registered["metadata_json"])
+    assert registered["ownership"] == "skills_cli"
+    assert metadata["managedSkillNames"] == [name]
+    assert metadata["installAction"] == "keep"
 
 
 def test_machine_discovery_surfaces_skill_name_conflict_instead_of_overwriting(runtime, monkeypatch: pytest.MonkeyPatch) -> None:

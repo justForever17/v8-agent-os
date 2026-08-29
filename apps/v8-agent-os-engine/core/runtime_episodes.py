@@ -424,7 +424,69 @@ def superseded_runtime_episode_ids(
             index,
         )
 
-    proven: list[tuple[dict[str, Any], set[str], set[str], tuple[str, int]]] = []
+    def _verified_read_delivery(
+        handoff: Mapping[str, Any],
+        required_task_brief_ids: set[str],
+    ) -> bool:
+        payload = handoff.get("payload") if isinstance(handoff.get("payload"), Mapping) else {}
+        root = {**dict(handoff), **dict(payload)}
+        if str(root.get("status") or "").strip().lower() not in {"ready", "completed"}:
+            return False
+        results: list[dict[str, Any]] = []
+
+        def _collect(value: Any, depth: int = 0) -> None:
+            if depth > 8 or not isinstance(value, Mapping):
+                return
+            for key in ("results", "taskBriefResults"):
+                for raw_result in list(value.get(key) or []):
+                    if isinstance(raw_result, Mapping):
+                        results.append(dict(raw_result))
+                        _collect(raw_result, depth + 1)
+            for key in ("delegationHandoff", "payload"):
+                nested = value.get(key)
+                if isinstance(nested, Mapping):
+                    _collect(nested, depth + 1)
+            for child in list(value.get("childHandoffs") or []):
+                if isinstance(child, Mapping):
+                    _collect(child, depth + 1)
+
+        _collect(root)
+        successful_ids: set[str] = set()
+        for result in results:
+            task_brief_id = str(
+                result.get("taskBriefId") or result.get("taskId") or ""
+            ).strip()
+            status = str(
+                result.get("status") or result.get("workerStatus") or ""
+            ).strip().lower()
+            error = str(
+                result.get("error")
+                or result.get("errorCode")
+                or result.get("errorMessage")
+                or ""
+            ).strip()
+            tools_used = {
+                str(tool or "").strip()
+                for tool in list(
+                    result.get("toolsUsed")
+                    or result.get("toolNames")
+                    or result.get("tools")
+                    or []
+                )
+                if str(tool or "").strip()
+            }
+            if (
+                task_brief_id
+                and status in {"ok", "ready", "success", "completed", "verified", "passed"}
+                and not error
+                and tools_used
+            ):
+                successful_ids.add(task_brief_id)
+        return bool(required_task_brief_ids) and required_task_brief_ids.issubset(successful_ids)
+
+    proven: list[
+        tuple[dict[str, Any], set[str], set[str], tuple[str, int], bool]
+    ] = []
     for index, episode in enumerate(rows):
         episode_id = _episode_id(episode)
         write_set = set(runtime_episode_write_set(episode))
@@ -434,28 +496,59 @@ def superseded_runtime_episode_ids(
             episode,
             handoffs_by_episode.get(episode_id, []),
         )
-        if (
-            episode_id
-            and state in {"completed", "merged"}
+        verified_write_delivery = bool(
+            write_set
             and current_handoff is not None
             and runtime_handoffs_have_verified_write_delivery(
                 [current_handoff],
                 write_set=write_set,
             )
+        )
+        verified_read_delivery = bool(
+            not write_set
+            and normalize_capability_kind(episode.get("kind")) == "engineering"
+            and current_handoff is not None
+            and _verified_read_delivery(current_handoff, task_brief_ids)
+        )
+        if (
+            episode_id
+            and state in {"completed", "merged"}
+            and (verified_write_delivery or verified_read_delivery)
         ):
-            proven.append((episode, write_set, task_brief_ids, _time_key(episode, index)))
+            proven.append(
+                (
+                    episode,
+                    write_set,
+                    task_brief_ids,
+                    _time_key(episode, index),
+                    verified_read_delivery,
+                )
+            )
 
     superseded: set[str] = set()
     for index, episode in enumerate(rows):
         episode_id = _episode_id(episode)
         write_set = set(runtime_episode_write_set(episode))
         task_brief_ids = set(runtime_episode_task_brief_ids(episode))
-        if not episode_id or not write_set:
+        episode_state = str(episode.get("state") or "").strip().lower()
+        episode_kind = normalize_capability_kind(episode.get("kind"))
+        read_only_repair_candidate = bool(
+            not write_set
+            and episode_kind == "engineering"
+            and task_brief_ids
+            and episode_state in {"degraded", "failed", "cancelled"}
+        )
+        if not episode_id or (not write_set and not read_only_repair_candidate):
             continue
         episode_time = _time_key(episode, index)
         workspace = _runtime_episode_workspace_identity(episode)
-        episode_kind = normalize_capability_kind(episode.get("kind"))
-        for candidate, candidate_write_set, candidate_task_brief_ids, candidate_time in proven:
+        for (
+            candidate,
+            candidate_write_set,
+            candidate_task_brief_ids,
+            candidate_time,
+            candidate_verified_read,
+        ) in proven:
             candidate_id = _episode_id(candidate)
             candidate_workspace = _runtime_episode_workspace_identity(candidate)
             if candidate_id == episode_id or candidate_time <= episode_time:
@@ -470,6 +563,16 @@ def superseded_runtime_episode_ids(
             if candidate_kind != episode_kind and not cross_kind_same_task:
                 continue
             if workspace and candidate_workspace and workspace != candidate_workspace:
+                continue
+            if read_only_repair_candidate:
+                if (
+                    candidate_kind == "engineering"
+                    and not candidate_write_set
+                    and candidate_verified_read
+                    and task_brief_ids.issubset(candidate_task_brief_ids)
+                ):
+                    superseded.add(episode_id)
+                    break
                 continue
             same_task_repair = (
                 bool(task_brief_ids)

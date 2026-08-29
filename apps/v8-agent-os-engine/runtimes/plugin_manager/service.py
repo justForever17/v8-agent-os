@@ -569,6 +569,11 @@ class PluginManagerService:
 
         return self._cli_search_path()
 
+    def _skill_git_executable(self) -> str:
+        return str(
+            shutil.which("git", path=self._refresh_process_cli_path()) or ""
+        ).strip()
+
     def _discover_cli_commands(self, profile: CliProfile) -> dict[str, str]:
         search_path = self._cli_search_path()
         return {
@@ -2634,6 +2639,7 @@ class PluginManagerService:
         skills_cli_available = bool(
             (machine_discovery.get("skillsCli") or {}).get("available")
         )
+        skill_git_available = bool(self._skill_git_executable())
         cli_steps = []
         approval_classes = set(manifest.governance.approvalClasses)
         for profile in component_policy["cliProfiles"]:
@@ -2666,16 +2672,23 @@ class PluginManagerService:
         skill_steps = []
         for skill in component_policy["skills"]:
             discovery = dict(discovered_skills.get(skill.id) or {})
+            skill_requires_git = str(skill.sourceKind or "git").strip().lower() == "git"
             skill_conflict = bool(
                 str(discovery.get("state") or "").strip().lower() == "conflict"
                 or list(discovery.get("conflicts") or [])
             )
-            skill_supported = bool(skills_cli_available and not skill_conflict)
+            skill_supported = bool(
+                skills_cli_available
+                and not skill_conflict
+                and (not skill_requires_git or skill_git_available)
+            )
             blocked_reason = (
                 "skill_name_conflict"
                 if skill_conflict
                 else "skills_cli_unavailable"
                 if not skills_cli_available
+                else "skill_git_unavailable"
+                if skill_requires_git and not skill_git_available
                 else ""
             )
             skill_steps.append(
@@ -2727,8 +2740,16 @@ class PluginManagerService:
                 )
         deferred_reasons: list[str] = []
         unavailable_skill_ids = {
-            item.id for item in component_policy["skills"]
-            if not skills_cli_available
+            str(item.get("id") or "")
+            for item in skill_steps
+            if item.get("blockedReason") == "skills_cli_unavailable"
+            and str(item.get("id") or "")
+        }
+        git_unavailable_skill_ids = {
+            str(item.get("id") or "")
+            for item in skill_steps
+            if item.get("blockedReason") == "skill_git_unavailable"
+            and str(item.get("id") or "")
         }
         conflicting_skill_ids = {
             str(item.get("id") or "")
@@ -2736,9 +2757,15 @@ class PluginManagerService:
             if item.get("blockedReason") == "skill_name_conflict"
             and str(item.get("id") or "")
         }
-        deferred_skill_ids = unavailable_skill_ids | conflicting_skill_ids
+        deferred_skill_ids = (
+            unavailable_skill_ids
+            | git_unavailable_skill_ids
+            | conflicting_skill_ids
+        )
         if unavailable_skill_ids:
             deferred_reasons.append("skills_cli_unavailable")
+        if git_unavailable_skill_ids:
+            deferred_reasons.append("skill_git_unavailable")
         if conflicting_skill_ids:
             deferred_reasons.append("skill_name_conflict")
         if deferred_skill_ids and not component_policy["cliProfiles"] and not component_policy["mcpServers"]:
@@ -3038,7 +3065,11 @@ class PluginManagerService:
         ]
         plan_steps = dict(plan.get("steps") or {})
         total_components = sum(
-            len(list(plan_steps.get(key) or []))
+            len([
+                item
+                for item in list(plan_steps.get(key) or [])
+                if not isinstance(item, dict) or item.get("supported") is not False
+            ])
             for key in ("cli", "skills", "mcp", "uiAdapters", "providerAdapters")
         )
         completed_components: set[str] = set()
@@ -4121,11 +4152,19 @@ class PluginManagerService:
             )
         return rows
 
-    @staticmethod
-    def _run_skill_git_step(argv: list[str], *, timeout_seconds: int = 300) -> dict[str, Any]:
+    def _run_skill_git_step(self, argv: list[str], *, timeout_seconds: int = 300) -> dict[str, Any]:
         command = [str(item) for item in argv]
+        git_executable = self._skill_git_executable()
+        if not git_executable:
+            raise PluginManagerError(
+                "Skill 安装需要受支持的 Git 可执行文件",
+                code="skill_git_unavailable",
+            )
+        if command and Path(command[0]).name.lower() in {"git", "git.exe"}:
+            command[0] = git_executable
         environment = dict(os.environ)
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["PATH"] = self._refresh_process_cli_path()
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
             try:
                 completed = run_windowless(
@@ -4174,6 +4213,94 @@ class PluginManagerService:
                 names.append(name)
         return names
 
+    def _reuse_registered_skill_component(
+        self,
+        manifest: PluginManifest,
+        skill: dict[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any] | None:
+        """Validate a managed Skill receipt locally for a no-op keep action."""
+
+        if action != "keep" or str(skill.get("sourceKind") or "git").strip().lower() != "git":
+            return None
+        registered = next(
+            (
+                row
+                for row in self._component_rows(manifest.id)
+                if str(row.get("component_id") or "") == str(skill.get("id") or "")
+                and str(row.get("component_type") or "") == "skill"
+                and str(row.get("ownership") or "") == "skills_cli"
+            ),
+            None,
+        )
+        if not registered or (
+            self._repository_identity(str(registered.get("source_url") or ""))
+            != self._repository_identity(str(skill.get("repository") or ""))
+        ):
+            return None
+        expected_revision = str(skill.get("revision") or "").strip().lower()
+        registered_revision = str(registered.get("source_version") or "").strip().lower()
+        if expected_revision and expected_revision != registered_revision:
+            return None
+
+        metadata = _loads(registered.get("metadata_json"), {})
+        selected_names = [
+            str(name).strip()
+            for name in list(skill.get("skillNames") or metadata.get("skillNames") or [])
+            if str(name).strip()
+        ]
+        managed_names = {
+            str(name).strip()
+            for name in list(metadata.get("managedSkillNames") or [])
+            if str(name).strip()
+        }
+        registered_paths = {
+            os.path.normcase(os.path.abspath(str(path)))
+            for path in list(metadata.get("skillPaths") or [])
+            if str(path).strip()
+        }
+        if not selected_names or not set(selected_names).issubset(managed_names) or not registered_paths:
+            return None
+
+        inventory = self._skills_cli_inventory(force=True)
+        if not inventory.get("ok"):
+            return None
+        inventory_by_name = {
+            str(item.get("name") or ""): item
+            for item in list(inventory.get("items") or [])
+            if str(item.get("name") or "").strip()
+        }
+        skill_paths: list[str] = []
+        for name in selected_names:
+            installed_path = str((inventory_by_name.get(name) or {}).get("path") or "").strip()
+            normalized_path = os.path.normcase(os.path.abspath(installed_path)) if installed_path else ""
+            if (
+                not installed_path
+                or normalized_path not in registered_paths
+                or not (Path(installed_path) / "SKILL.md").is_file()
+            ):
+                return None
+            skill_paths.append(installed_path)
+
+        return self._register_component(
+            manifest.id,
+            str(skill["id"]),
+            "skill",
+            owned_path=skill_paths[0],
+            source_url=str(skill["repository"]),
+            source_version=str(skill["revision"]),
+            ownership="skills_cli",
+            metadata={
+                **metadata,
+                "skillNames": selected_names,
+                "skillPaths": skill_paths,
+                "managedSkillNames": selected_names,
+                "adoptedSkillNames": [],
+                "installAction": "keep",
+            },
+        )
+
     def _install_skill_component(
         self,
         manifest: PluginManifest,
@@ -4182,6 +4309,13 @@ class PluginManagerService:
         action: str = "install",
     ) -> list[dict[str, Any]]:
         source_kind = str(skill.get("sourceKind") or "git").strip().lower()
+        reused = self._reuse_registered_skill_component(
+            manifest,
+            skill,
+            action=action,
+        )
+        if reused is not None:
+            return [reused]
         temp_root: Path | None = None
         if source_kind == "managed_cli":
             source_component_id = str(skill.get("sourceComponentId") or "").strip()
@@ -4284,6 +4418,7 @@ class PluginManagerService:
             )
             adopted_names: list[str] = []
             adopted_paths: list[str] = []
+            receipt_owned_names: list[str] = []
             conflicts: list[str] = []
             for name in selected_names:
                 installed = inventory_by_name.get(name)
@@ -4291,7 +4426,7 @@ class PluginManagerService:
                     continue
                 installed_path = str(installed.get("path") or "").strip()
                 receipt_owns_installed_path = bool(
-                    action == "update"
+                    action in {"keep", "update"}
                     and registered_source_matches
                     and name in registered_names
                     and installed_path
@@ -4302,6 +4437,8 @@ class PluginManagerService:
                     and self._skill_source_matches(lock_entries.get(name) or {}, skill)
                 ) or receipt_owns_installed_path:
                     adopted_names.append(name)
+                    if receipt_owns_installed_path:
+                        receipt_owned_names.append(name)
                     if installed_path:
                         adopted_paths.append(installed_path)
                 else:
@@ -4355,7 +4492,8 @@ class PluginManagerService:
                 for name in selected_names
                 if str(after_by_name[name].get("path") or "").strip()
             ]
-            ownership = "skills_cli" if install_names else "external"
+            managed_skill_names = list(dict.fromkeys([*install_names, *receipt_owned_names]))
+            ownership = "skills_cli" if managed_skill_names else "external"
             return [
                 self._register_component(
                     manifest.id,
@@ -4376,8 +4514,8 @@ class PluginManagerService:
                         "installer": SKILLS_CLI_PACKAGE,
                         "skillNames": selected_names,
                         "skillPaths": skill_paths,
-                        "managedSkillNames": install_names,
-                        "adoptedSkillNames": [name for name in adopted_names if name not in install_names],
+                        "managedSkillNames": managed_skill_names,
+                        "adoptedSkillNames": [name for name in adopted_names if name not in managed_skill_names],
                         "installAction": action,
                     },
                 )

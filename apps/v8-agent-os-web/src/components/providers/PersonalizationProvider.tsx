@@ -60,6 +60,22 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
     }, []);
 
     useEffect(() => {
+        if (!videoSrc) return;
+        const syncPlaybackWithVisibility = () => {
+            const video = videoRef.current;
+            if (!video) return;
+            if (document.visibilityState !== "visible") {
+                video.pause();
+                return;
+            }
+            if (videoReady) void video.play().catch(() => undefined);
+        };
+        document.addEventListener("visibilitychange", syncPlaybackWithVisibility);
+        syncPlaybackWithVisibility();
+        return () => document.removeEventListener("visibilitychange", syncPlaybackWithVisibility);
+    }, [videoReady, videoSrc]);
+
+    useEffect(() => {
         if (!canonicalLoaded) return;
         if (videoReloadTimerRef.current) {
             clearTimeout(videoReloadTimerRef.current);
@@ -158,7 +174,7 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
                 muted={videoMuted}
                 loop
                 playsInline
-                preload="auto"
+                preload="metadata"
                 disablePictureInPicture
                 aria-hidden="true"
                 tabIndex={-1}

@@ -42,15 +42,14 @@ def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool
             {
                 "taskBriefId": "engineering-read-only-verification",
                 "goal": "Perform the requested read-only inspection or verification and return current-run evidence.",
-                "context": {
-                    "verificationCommand": "<exact user-requested command when one was supplied>",
-                },
+                "context": {},
                 "writeRequired": False,
                 "readOnly": True,
+                "readSet": [],
                 "writeSet": [],
-                "expectedOutputs": ["Current-run command/check result with exit code, stdout, and stderr when applicable"],
+                "expectedOutputs": ["Current-run file/check result with exact native-tool evidence"],
                 "acceptanceContract": [
-                    "The requested read-only command or check runs in the bound workspace",
+                    "The requested read-only file or explicitly supplied command/check is inspected in the bound workspace",
                     "The handoff reports current-run evidence without modifying workspace files",
                 ],
                 "constraints": ["Do not install dependencies or start a persistent process"],
@@ -59,7 +58,7 @@ def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool
             },
         ]
         proof_expectations = [
-            "current-run command/check and outcome",
+            "current-run native read/check and outcome",
             "no workspace file modifications",
         ]
     elif normalized_kind == "engineering":
@@ -238,6 +237,7 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
         ],
         "arrayPaths": [
             "taskBriefs",
+            "taskBriefs[].readSet",
             "taskBriefs[].writeSet",
             "taskBriefs[].expectedOutputs",
             "taskBriefs[].constraints",
@@ -270,6 +270,7 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
             "Preserve object and array types; use [] or omit an optional array, never an empty string.",
             "Do not JSON-encode researchBriefIds, researchBriefGoals, or taskBriefs into strings.",
             "For a write task include a bounded writeSet, expectedOutputs, and acceptanceContract.",
+            "For a read-only file task include the exact workspace-relative path in readSet and omit verificationCommand. Set verificationCommand only when the user or approved Spec supplied an exact executable command; never synthesize a descriptive pseudo-command.",
         ],
         "example": runtime_route_contract_example(kind),
     }

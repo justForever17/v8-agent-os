@@ -177,6 +177,7 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.equal(manifest.id, "creative_media_image_analysis");
   assert.equal(manifest.assets[0].size, 178648008);
   assert.equal(String(manifest.assets[0].sha256).toLowerCase(), "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a");
+  assert.doesNotMatch(JSON.stringify(manifest.assets[0]), /ghproxy\.net/);
   assert.match(installerSource, /runTransactionalAssetPackInstall/);
   assert.match(installerSource, /staging/);
   assert.match(installerSource, /receipt\.json/);
@@ -203,6 +204,14 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.match(installerSource, /fetchFeaturePackAssetOverIpv4/);
   assert.match(installerSource, /family: 4/);
   assert.match(installerSource, /x-v8-asset-transport/);
+  assert.match(installerSource, /FEATURE_PACK_ASSET_PRIMARY_CONNECT_TIMEOUT_MS = 7_500/);
+  assert.match(installerSource, /signal: primaryController\.signal/);
+  assert.match(installerSource, /response = await fetchFeaturePackAssetOverIpv4\(currentUrl, headers, signal\)/);
+  assert.ok(
+    installerSource.indexOf("FEATURE_PACK_ASSET_PRIMARY_CONNECT_TIMEOUT_MS")
+      < installerSource.indexOf("FEATURE_PACK_ASSET_SOURCE_CONNECT_TIMEOUT_MS", installerSource.indexOf("FEATURE_PACK_ASSET_PRIMARY_CONNECT_TIMEOUT_MS") + 1),
+    "the primary connection deadline must leave time for the IPv4 fallback inside the source deadline",
+  );
   assert.match(installerSource, /feature_pack_asset_sources_exhausted/);
   assert.match(installerSource, /hostname\.endsWith\("\.hf\.co"\)/);
   assert.match(installerSource, /\[Asset source recovered\]/);

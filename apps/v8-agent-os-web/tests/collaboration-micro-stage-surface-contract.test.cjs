@@ -303,6 +303,15 @@ test("Local clients consume the packed message-bound execution exports with matc
   const archiveName = `v8-session-realtime-${sharedPackage.version}.tgz`;
   const tgzRelativePath = `packages/session-realtime/${archiveName}`;
   const tgzPath = path.join(repoRoot, tgzRelativePath);
+  const packedArchives = fs
+    .readdirSync(path.join(repoRoot, "packages/session-realtime"))
+    .filter((name) => /^v8-session-realtime-.*\.tgz$/.test(name))
+    .sort();
+  assert.deepEqual(
+    packedArchives,
+    [archiveName],
+    "only the package referenced by current clients may remain in the source tree",
+  );
   const tgz = readBinary(tgzRelativePath);
   const expectedIntegrity = `sha512-${crypto.createHash("sha512").update(tgz).digest("base64")}`;
   for (const lockPath of [

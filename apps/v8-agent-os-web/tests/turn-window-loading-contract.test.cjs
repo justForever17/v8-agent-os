@@ -16,8 +16,17 @@ test("Web renders the newest canonical turn before the optional navigation index
   const route = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/turn-index/route.ts");
 
   assert.match(client, /new URLSearchParams\(\{ limit: "1" \}\)/);
-  assert.match(client, /const indexPagePromise = loadConversationTurnIndexPage/);
-  assert.ok(client.indexOf("setMessages(normalized)") < client.indexOf("const indexPage = await indexPagePromise"));
+  assert.doesNotMatch(client, /const indexPagePromise = loadConversationTurnIndexPage/);
+  assert.match(client, /historyLoadControllerRef\.current\?\.abort\(\)/);
+  assert.match(client, /loadConversationTurnPage\(conversationId, \{ signal: controller\.signal \}\)/);
+  assert.match(client, /window\.setTimeout\(\(\) => void hydrateTurnIndex\(\), 0\)/);
+  const historyStart = client.indexOf("const loadConversationHistory = useCallback");
+  const historyEnd = client.indexOf("const loadOlderConversationTurn", historyStart);
+  const historySource = client.slice(historyStart, historyEnd);
+  assert.ok(
+    historySource.indexOf("applyProjectedSnapshot(") < historySource.indexOf("const hydrateTurnIndex = async"),
+    "the newest turn must render before the optional navigation index starts",
+  );
   assert.match(client, /around: target\.turnId/);
   assert.match(client, /messagesRef\.current\.some\(\(message\) => message\.turnId === target\.turnId\)/);
   assert.match(client, /\.\.\.messagesRef\.current,\s*\.\.\.turnPage\.messages/);

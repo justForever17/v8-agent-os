@@ -2,7 +2,7 @@ from typing import Annotated, NotRequired, TypedDict
 import operator
 
 from runtimes.memory.scope_resolution import scope_resolution_service
-from core.models.provider_compatibility import install_provider_compatibility_patches
+from core.provider_compatibility import install_provider_compatibility_patches
 from core.response_normalizer import ensure_reasoning_content
 
 from langchain_core.messages import AnyMessage

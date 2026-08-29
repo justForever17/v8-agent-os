@@ -24,7 +24,10 @@ from core.engineering_sandbox.platform_driver import (
     build_sanitized_environment,
     locate_sandbox_host,
 )
-from core.engineering_sandbox.service import EngineeringSandboxService
+from core.engineering_sandbox.service import (
+    EngineeringSandboxService,
+    abort_engineering_run_workspaces,
+)
 from core.engineering_sandbox.workspace_topology import resolve_workspace_topology
 from graph.parallel_support import (
     _delegation_summary_allows_changeset_promotion,
@@ -479,6 +482,22 @@ def test_aborting_run_closes_only_nonterminal_worktrees_and_leases(tmp_path: Pat
     assert worktrees["done"] == ("candidate", None)
     assert leases["lease-open"] == ("failed", "run_cancelled")
     assert leases["lease-done"] == ("completed", None)
+
+
+def test_terminal_cleanup_does_not_require_optional_git_support(tmp_path: Path) -> None:
+    database = DatabaseManager(tmp_path / "state.db")
+
+    result = abort_engineering_run_workspaces(
+        run_id="run-without-worktrees",
+        error_code="run_failed",
+        database=database,
+    )
+
+    assert result == {
+        "worktreeIds": [],
+        "leaseIds": [],
+        "errorCode": "run_failed",
+    }
 
 
 def test_one_monorepo_keeps_distinct_workspace_binding_identities(tmp_path: Path) -> None:

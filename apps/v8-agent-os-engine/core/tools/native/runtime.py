@@ -3340,6 +3340,91 @@ def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> 
     return _normalize_capability_kind(joined)
 
 
+def _enrich_read_only_route_task_read_set(
+    brief: dict[str, Any],
+    *,
+    request_text: str = "",
+) -> dict[str, Any]:
+    """Project explicit file targets into a read-only task's readSet.
+
+    The route compiler can express a bounded read in the goal while omitting
+    ``readSet``.  That omission leaves the worker to choose between file and
+    shell tools.  Paths inferred here are evidence hints only; workspace
+    binding and the native file tool still enforce the actual read boundary.
+    """
+
+    task = dict(brief or {})
+    if not bool(task.get("readOnly") or task.get("read_only")):
+        return task
+    context = dict(task.get("context") or {}) if isinstance(task.get("context"), dict) else {}
+    read_set = [
+        str(item or "").strip()
+        for item in list(task.get("readSet") or task.get("read_set") or [])
+        if str(item or "").strip()
+    ]
+    if not read_set:
+        explicit_path_values = [
+            context.get(key)
+            for key in (
+                "targetRelativePath",
+                "target_relative_path",
+                "targetPath",
+                "target_path",
+                "filePath",
+                "file_path",
+                "sourcePath",
+                "source_path",
+            )
+        ]
+        read_set = _spec_task_expected_paths(
+            *explicit_path_values,
+            task.get("goal"),
+            task.get("title"),
+            task.get("brief"),
+            task.get("expectedOutputs"),
+            task.get("acceptanceContract"),
+        )[:8]
+        if read_set:
+            task["readSet"] = read_set
+
+    no_shell_probe = json.dumps(
+        {
+            "request": request_text,
+            "goal": task.get("goal"),
+            "constraints": task.get("constraints"),
+            "acceptance": task.get("acceptanceContract"),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    forbids_shell = bool(
+        re.search(
+            r"(?:禁止|不得|不(?:要|得|允许|调用|使用)|而非).{0,20}(?:shell|命令行)|"
+            r"(?:do\s+not|don't|must\s+not|without|rather\s+than|instead\s+of)"
+            r".{0,20}(?:shell(?:\s+command)?|command\s+line)",
+            no_shell_probe,
+            re.IGNORECASE,
+        )
+    )
+    if read_set and forbids_shell:
+        for key in ("verificationCommand", "verification_command", "requiredCommands", "required_commands"):
+            task.pop(key, None)
+            context.pop(key, None)
+        evidence_contract = (
+            dict(task.get("verificationEvidenceContract") or {})
+            if isinstance(task.get("verificationEvidenceContract"), dict)
+            else {}
+        )
+        if evidence_contract:
+            evidence_contract.pop("requiredCommands", None)
+            evidence_contract.pop("required_commands", None)
+            evidence_contract.pop("requiredCommandTargets", None)
+            evidence_contract.pop("required_command_targets", None)
+            task["verificationEvidenceContract"] = evidence_contract
+        task["context"] = context
+    return task
+
+
 def _enrich_route_need_for_episode(
     need: dict[str, Any],
     *,
@@ -3398,6 +3483,17 @@ def _enrich_route_need_for_episode(
             inputs["researchContext"] = merged_context
 
     if kind in {"engineering", "delegation"}:
+        route_context = (
+            dict((state or {}).get("current_route_context") or {})
+            if isinstance(state, dict)
+            else {}
+        )
+        request_text = str(
+            route_context.get("userRequest")
+            or route_context.get("user_request")
+            or enriched.get("reason")
+            or ""
+        ).strip()
         explicit_route_tasks = _explicit_task_briefs_from_inputs(inputs)
         route_tasks = explicit_route_tasks
         task_filter_applied = False
@@ -3430,6 +3526,10 @@ def _enrich_route_need_for_episode(
             }
             inputs["targetCount"] = len(route_tasks)
             task_filter_applied = True
+        route_tasks = [
+            _enrich_read_only_route_task_read_set(task, request_text=request_text)
+            for task in route_tasks
+        ]
         if not bool((inputs.get("routeBriefQuality") or {}).get("blocking")):
             inputs["routeBriefQuality"] = _route_task_contract_quality(
                 route_tasks,

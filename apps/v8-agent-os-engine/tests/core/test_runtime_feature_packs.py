@@ -382,7 +382,6 @@ def test_creative_media_image_analysis_pack_has_pinned_verified_asset():
             "target": "isnet-general-use.onnx",
             "url": "https://huggingface.co/tomjackson2023/rembg/resolve/cd3a3d6767a7859efea31ef0f2f373582cf06d82/isnet-general-use.onnx",
             "mirrors": [
-                "https://ghproxy.net/https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
                 "https://hf-mirror.com/tomjackson2023/rembg/resolve/cd3a3d6767a7859efea31ef0f2f373582cf06d82/isnet-general-use.onnx",
                 "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
             ],

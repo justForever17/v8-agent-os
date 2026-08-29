@@ -42,7 +42,7 @@ from core.provider_continuation import (
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.model_thinking_control import normalize_reasoning_effort, resolve_session_reasoning_effort_override
-from core.models.provider_compatibility import normalize_provider_error
+from core.provider_compatibility import normalize_provider_error
 from core.database import db
 from core.engine_config_resolver import (
     require_engine_config,
@@ -11159,9 +11159,9 @@ class ChatRuntime:
     @staticmethod
     def _abort_engineering_workspaces(chat_run: ChatRunContext, *, error_code: str) -> None:
         try:
-            from core.engineering_sandbox.service import get_engineering_sandbox_service
+            from core.engineering_sandbox.service import abort_engineering_run_workspaces
 
-            result = get_engineering_sandbox_service().abort_run_workspaces(
+            result = abort_engineering_run_workspaces(
                 run_id=chat_run.active_run_id,
                 error_code=error_code,
             )

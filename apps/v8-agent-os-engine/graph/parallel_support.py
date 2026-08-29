@@ -735,6 +735,12 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
                 )
                 for line in section_body.splitlines()
                 if line.strip()
+                and not re.search(
+                    r"(?:无需|不(?:存在|需要|触发)|未(?:发现|发生|出现)|没有)"
+                    r".{0,16}(?:缺失|阻塞|失败|错误)",
+                    re.sub(r"^[\s>*_`~-]+", "", line).strip(),
+                    re.IGNORECASE,
+                )
                 and not re.match(
                     r"^[\s>*_`~-]*(?:none\b|n/?a\b|no\s+|无(?:阻塞|风险|错误)?\b|暂无\b|没有\b|未发现\b)",
                     line.strip(),
@@ -909,7 +915,7 @@ def _required_verification_tools(branch: dict[str, Any]) -> set[str]:
             capsule.get("verificationContract"),
         )
     ).lower()
-    if any(
+    if not any(str(item or "").strip() for item in must_read) and any(
         marker in contract_blob
         for marker in (
             "实际执行",

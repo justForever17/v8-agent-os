@@ -808,6 +808,60 @@ def test_runtime_route_uses_current_session_workspace_instead_of_model_guess(mon
     assert inputs["routeBriefQuality"]["status"] == "ready"
 
 
+def test_read_only_engineering_route_projects_explicit_file_target_into_read_set(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "get_runtime_context",
+        lambda: {"workspace_path": r"E:\Projects\test6"},
+    )
+
+    enriched = native_runtime._enrich_route_need_for_episode(
+        {
+            "kind": "engineering",
+            "reason": "read one bounded file",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "read-readme-first-line",
+                        "goal": "读取 README.md 第一行，不要修改文件。",
+                        "context": {
+                            "verificationCommand": "file-read README.md first line only",
+                        },
+                        "readOnly": True,
+                        "writeSet": [],
+                        "expectedOutputs": ["README.md 第一行和当前操作结果。"],
+                        "acceptanceContract": ["必须使用文件读取工具，不得使用 shell 命令。"],
+                    }
+                ]
+            },
+        },
+        kind="engineering",
+        state={"current_route_context": {}},
+    )
+
+    inputs = enriched["inputs"]
+    assert inputs["routeBriefQuality"]["status"] == "ready"
+    assert inputs["workerBriefs"][0]["readSet"] == ["README.md"]
+    assert "verificationCommand" not in inputs["workerBriefs"][0]["context"]
+    assert inputs["tasks"][0]["readSet"] == ["README.md"]
+    assert inputs["taskBriefs"][0]["readSet"] == ["README.md"]
+
+
+def test_read_only_route_does_not_treat_generic_command_text_as_no_shell_policy() -> None:
+    brief = native_runtime._enrich_read_only_route_task_read_set(
+        {
+            "taskBriefId": "read-and-run-explicit-check",
+            "goal": "Read README.md, then run the exact declared check.",
+            "context": {"verificationCommand": "python -m pytest tests/test_readme.py"},
+            "readOnly": True,
+            "readSet": ["README.md"],
+        },
+        request_text="Run the declared check and do not modify command output.",
+    )
+
+    assert brief["context"]["verificationCommand"] == "python -m pytest tests/test_readme.py"
+
+
 def test_downstream_route_inherits_ready_research_refs_and_explicit_evidence_gaps(monkeypatch):
     monkeypatch.setattr(
         native_runtime,
@@ -4140,7 +4194,8 @@ def test_grandchild_identity_contract_is_structural_and_tool_choice_is_task_driv
             "toolPolicy": {"mode": "default"},
         }
     )
-    assert "use the command/file ToolMessage already returned in memory" in task_contract
+    assert "use the smallest granted read-only tool required by the contract" in task_contract
+    assert "return a blocker instead of inventing a shell workaround" in task_contract
     assert "Do not redirect output or create temporary evidence" in task_contract
 
 

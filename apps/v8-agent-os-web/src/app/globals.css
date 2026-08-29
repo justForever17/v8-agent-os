@@ -365,6 +365,7 @@ html.dark[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
 
 html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper-video {
     opacity: 1;
+    transition: none;
 }
 
 html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper {
@@ -453,6 +454,38 @@ html.dark[data-v8-wallpaper="active"] .v8-product-topbar {
     border-bottom-color: rgb(255 255 255 / 0.12);
     -webkit-backdrop-filter: blur(18px) saturate(1.08);
     backdrop-filter: blur(18px) saturate(1.08);
+}
+
+/* Video decoding already consumes a compositor surface. Avoid sampling that
+   moving surface through several large blur layers on legacy Windows GPUs. */
+html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] :where(
+    .bg-popover,
+    [class*="bg-popover/"],
+    .glass-panel,
+    .glass-card,
+    .v8-personalization-dialog,
+    .v8-product-topbar
+) {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+}
+
+html.light[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] :where(
+    .glass-panel,
+    .glass-card,
+    .v8-personalization-dialog,
+    .v8-product-topbar
+) {
+    background-color: rgb(248 250 252 / 0.9) !important;
+}
+
+html.dark[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] :where(
+    .glass-panel,
+    .glass-card,
+    .v8-personalization-dialog,
+    .v8-product-topbar
+) {
+    background-color: rgb(9 9 11 / 0.88) !important;
 }
 
 html[data-v8-wallpaper="active"] .v8-chat-viewport-surface {

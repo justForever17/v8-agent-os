@@ -43,6 +43,7 @@ _SUPERVISOR_RUNTIME_MODE_KINDS = frozenset({
     "computer_use",
     "rpa",
 })
+_RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS = 1_024
 
 _ORDERED_RESEARCH_ACTION_RE = re.compile(
     r"(?:调研|查清楚|查证|核实|搜索|检索|查找|搜集|research|verify|search|find)",
@@ -1454,6 +1455,71 @@ def _runtime_route_compiler_contract_error(response, required_kind: str) -> str 
     if observed_kind != expected_kind:
         return f"route_kind_mismatch:{observed_kind or 'missing'}:{expected_kind or 'missing'}"
     return None
+
+
+def _retry_runtime_route_compiler_once(
+    response,
+    *,
+    required_kind: str,
+    pending_required_runtime_kinds: list[str],
+    authoritative_runtime_kinds: list[str],
+    state,
+    read_only_engineering_route: bool,
+    prepared_messages: list,
+    invoke_llm,
+    filtered_supervisor_tools: list,
+    robust_invoke,
+    preferred_model_id: str,
+    build_model,
+    sanitize_response_tool_calls,
+):
+    """Give a route compiler one compact repair turn before failing closed."""
+
+    contract_error = _runtime_route_compiler_contract_error(response, required_kind)
+    if not contract_error:
+        return response
+    correction_messages = [
+        *prepared_messages,
+        _runtime_route_correction_message(
+            pending_required_runtime_kinds,
+            authoritative=bool(authoritative_runtime_kinds),
+            state=state,
+            read_only=read_only_engineering_route,
+        ),
+    ]
+    corrected = robust_invoke(
+        invoke_llm,
+        correction_messages,
+        filtered_supervisor_tools,
+        role="supervisor",
+        preferred_model_id=preferred_model_id,
+        build_model=build_model,
+        tool_choice="runtime_broker",
+        invocation_config={
+            "metadata": {
+                "v8_internal_model_surface": "runtime_route_compiler_correction",
+            }
+        },
+        result_validator=None,
+    )
+    corrected = _normalize_runtime_broker_response_arguments(
+        sanitize_response_tool_calls(corrected)
+    )
+    corrected.content = ""
+    corrected.additional_kwargs = {
+        **dict(getattr(corrected, "additional_kwargs", None) or {}),
+        "v8_runtime_route_compiler_correction": {
+            "attempted": True,
+            "initialError": contract_error,
+        },
+    }
+    corrected_error = _runtime_route_compiler_contract_error(corrected, required_kind)
+    if corrected_error:
+        raise SupervisorRuntimeRouteContractError(
+            "runtime_route_compiler_contract_invalid_after_correction:"
+            f"{corrected_error}"
+        )
+    return corrected
 
 
 def _delegation_dispatch_contract_error(response) -> str | None:
@@ -3662,7 +3728,30 @@ def execute_supervisor_turn(
         debug_supervisor_messages(prepared_messages)
         invoke_llm = supervisor_base_llm
         invoke_caller_kwargs = caller_kwargs
-        if supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
+        if use_runtime_route_compiler:
+            configured_output_limit = 0
+            resolve_output_limit = getattr(llm_factory, "get_model_max_output_tokens", None)
+            if callable(resolve_output_limit):
+                try:
+                    configured_output_limit = int(resolve_output_limit(sup_model_name) or 0)
+                except (TypeError, ValueError):
+                    configured_output_limit = 0
+            compiler_output_limit = min(
+                configured_output_limit or _RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS,
+                _RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS,
+            )
+            invoke_caller_kwargs = {
+                **caller_kwargs,
+                "max_tokens": compiler_output_limit,
+                "_reasoning_effort": "minimal",
+            }
+            invoke_llm = llm_factory.create_chat_model(
+                sup_model_name,
+                streaming=True,
+                _role="supervisor",
+                **invoke_caller_kwargs,
+            )
+        elif supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
             invoke_caller_kwargs = {**invoke_caller_kwargs, "_reasoning_effort": supervisor_reasoning_effort}
 
         def _required_route_result_validator(candidate_response) -> str | None:
@@ -3733,6 +3822,26 @@ def execute_supervisor_turn(
             # is suppressed by metadata; clear the aggregate as a second guard
             # before the AIMessage reaches history or Human Surface projection.
             response.content = ""
+            response = _retry_runtime_route_compiler_once(
+                response,
+                required_kind=required_orchestration_kind,
+                pending_required_runtime_kinds=pending_required_runtime_kinds,
+                authoritative_runtime_kinds=authoritative_runtime_kinds,
+                state=state,
+                read_only_engineering_route=read_only_engineering_route,
+                prepared_messages=prepared_messages,
+                invoke_llm=invoke_llm,
+                filtered_supervisor_tools=filtered_supervisor_tools,
+                robust_invoke=robust_invoke,
+                preferred_model_id=sup_model_name,
+                build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                    candidate_model_id,
+                    streaming=True,
+                    _role="supervisor",
+                    **invoke_caller_kwargs,
+                ),
+                sanitize_response_tool_calls=sanitize_response_tool_calls,
+            )
         if not use_runtime_route_compiler:
             response = _retry_missing_research_briefs_once(
                 response,

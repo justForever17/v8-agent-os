@@ -25,6 +25,7 @@ from graph.parallel_support import (
     _fallback_child_delegation_request,
     _subagent_governance_terminal_failure,
     _subagent_reported_terminal_failure,
+    _verification_expectations,
 )
 
 
@@ -625,6 +626,18 @@ def test_empty_blocker_section_does_not_poison_successful_handoff():
 No blockers. The independent verification passed.
 """
     ) is None
+    assert _subagent_reported_terminal_failure(
+        """## 风险/阻塞/Handoff 备注
+
+- 无写入、无文件修改、无副作用。
+- 文件存在并可读，无需报告缺失。
+- 本次只执行只读工具，任务已完成。
+
+## 本地自检状态
+
+- 读取成功，验收项全部满足。
+"""
+    ) is None
 
 
 def test_mixed_risks_blockers_section_preserves_explicit_dynamic_verification_blocker():
@@ -1014,6 +1027,40 @@ def test_delegated_task_contract_preserves_user_visible_language() -> None:
 
     assert "User-visible language: zh-CN" in prompt
     assert "progress text, reasoning summaries, handoff prose" in prompt
+
+
+def test_read_only_file_contract_requires_native_read_without_inventing_shell() -> None:
+    task_brief = {
+        "taskBriefId": "read-readme",
+        "goal": "Read README.md first line.",
+        "readOnly": True,
+        "readSet": ["README.md"],
+        "expectedOutputs": ["Return the file content and current operation exit code/output."],
+    }
+
+    prompt = _format_delegated_task_contract(task_brief)
+    expectations = _verification_expectations({"taskBrief": task_brief})
+
+    assert "call `read_native_file` first" in prompt
+    assert "do not replace a file read with a shell command" in prompt
+    assert expectations["requiredTools"] == ["read_native_file"]
+    assert expectations["requiredReadPaths"] == ["README.md"]
+    assert expectations["requiredCommands"] == []
+
+
+def test_read_only_file_contract_keeps_explicit_structured_command() -> None:
+    task_brief = {
+        "taskBriefId": "read-and-verify",
+        "goal": "Read README.md and run the declared verification.",
+        "readOnly": True,
+        "readSet": ["README.md"],
+        "verificationCommand": "python -m pytest tests/test_readme.py",
+    }
+
+    expectations = _verification_expectations({"taskBrief": task_brief})
+
+    assert expectations["requiredTools"] == ["read_native_file", "run_system_command"]
+    assert expectations["requiredCommands"] == ["python -m pytest tests/test_readme.py"]
 
 
 def test_delegated_task_language_prefers_structured_user_language_over_english_brief() -> None:

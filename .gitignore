@@ -84,6 +84,7 @@ apps/v8-agent-os-phone-tmp/
 **/tmp/
 **/temp/
 apps/v8-agent-os-engine/.plugin-release-assets/
+apps/v8-agent-os-engine/requirements/feature-packs/bundled-assets/
 
 # Keep committed public docs and launchers
 !docs/

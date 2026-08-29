@@ -27,6 +27,8 @@ test("wallpaper uses center cropping with theme-specific light and dark surfaces
   const chatWindow = read("src/components/chat/ChatWindow.tsx");
 
   assert.match(settings, /data-testid="background-preview"/);
+  assert.match(settings, /data-testid="background-video-summary"/);
+  assert.doesNotMatch(settings, /<video/);
   assert.match(settings, /backgroundSize: "cover"/);
   assert.match(provider, /root\.dataset\.v8Wallpaper = "active"/);
   assert.match(provider, /image\.onload/);
@@ -99,4 +101,12 @@ test("wallpaper bootstrap and profile projection share one appearance truth", ()
   assert.match(profile, /normalizeAppearance\(left\?\.appearance\)/);
   assert.match(profile, /sessionFieldsMatch\(next, sessionProfile\)/);
   assert.match(personalization, /PERSONALIZATION_STORAGE_KEY/);
+});
+
+test("chat markdown keeps list markers inside user bubbles", () => {
+  const renderer = read("src/components/chat/MarkdownRenderer.tsx");
+
+  assert.match(renderer, /ol: \(\{ children \}:[\s\S]*?list-decimal/);
+  assert.match(renderer, /ul: \(\{ children \}:[\s\S]*?list-disc/);
+  assert.match(renderer, /marker:text-current/);
 });

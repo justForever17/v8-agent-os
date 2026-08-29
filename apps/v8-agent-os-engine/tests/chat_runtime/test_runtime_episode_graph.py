@@ -282,7 +282,7 @@ def test_explicit_supervisor_runtime_mode_is_authoritative(runtime_mode: str) ->
     assert _authoritative_runtime_route_kinds(state) == [runtime_mode]
 
 
-def test_auto_supervisor_runtime_mode_adds_no_route_and_preserves_existing_engineering_route() -> None:
+def test_auto_supervisor_runtime_mode_keeps_task_shape_advisory() -> None:
     assert _authoritative_runtime_route_kinds({
         "current_route_context": {"supervisorRuntimeMode": "auto"}
     }) == []
@@ -291,10 +291,10 @@ def test_auto_supervisor_runtime_mode_adds_no_route_and_preserves_existing_engin
             "supervisor_runtime_mode": "auto",
             "engineeringRequired": True,
         }
-    }) == ["engineering"]
+    }) == []
 
 
-def test_auto_engineering_routes_explicit_source_research_before_project_delivery() -> None:
+def test_auto_engineering_trigger_does_not_preselect_source_backed_project_delivery() -> None:
     query = (
         "先查清楚权威指南里的建议并给出可追溯来源，然后做成一个 React 项目并验证。"
     )
@@ -311,27 +311,28 @@ def test_auto_engineering_routes_explicit_source_research_before_project_deliver
         },
     }
 
-    required = _authoritative_runtime_route_kinds(state, query)
+    assert _authoritative_runtime_route_kinds(state, query) == []
 
-    assert required == ["research", "engineering"]
-    assert _should_use_runtime_route_compiler(
-        state=state,
-        messages=[HumanMessage(content=query)],
-        pending_required_runtime_kinds=required,
-        required_orchestration_tool="runtime_broker",
-        selected_tools=[SimpleNamespace(name="runtime_broker")],
-        gate_decision=SimpleNamespace(status="clean", diagnostics={}),
-        runtime_handoff_ready=False,
-        session_coordination={},
-        explicit_coordination_send=False,
-        user_query=query,
-    ) is True
 
-    state["current_route_context"]["capabilityEpisodes"] = [
-        {"episodeId": "episode-research", "kind": "research", "state": "completed"}
-    ]
-    observed = _observed_runtime_episode_kinds(state)
-    assert [kind for kind in required if kind not in observed] == ["engineering"]
+def test_auto_engineering_trigger_does_not_override_supervisor_on_numbered_dependency() -> None:
+    query = (
+        "1. 联网调研langchain最新版本技术变更。\n"
+        "2. 根据调研到的结果做一个agent应用，确保代码简约功能全面"
+    )
+    state = {
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "supervisorRuntimeMode": "auto",
+            "engineeringTriggerDecision": {
+                "active": True,
+                "deferred": False,
+                "reason": "project_creation_workspace",
+            },
+            "capabilityEpisodes": [],
+        },
+    }
+
+    assert _authoritative_runtime_route_kinds(state, query) == []
 
 
 def test_auto_engineering_does_not_treat_local_bug_inspection_as_web_research() -> None:
@@ -343,7 +344,7 @@ def test_auto_engineering_does_not_treat_local_bug_inspection_as_web_research() 
         }
     }
 
-    assert _authoritative_runtime_route_kinds(state, query) == ["engineering"]
+    assert _authoritative_runtime_route_kinds(state, query) == []
 
 
 def test_supervisor_route_contract_failure_is_not_reported_as_provider_failure() -> None:
@@ -436,7 +437,7 @@ def test_selected_runtime_mode_requires_a_new_episode_for_each_guidance_message(
     assert _observed_runtime_episode_kinds(state) == {"research"}
 
 
-def test_auto_engineering_ignores_prior_run_episode_but_observes_current_run_episode() -> None:
+def test_auto_engineering_hint_observes_only_current_run_episode_without_preselecting() -> None:
     state = {
         "run_id": "run-current",
         "current_route_context": {
@@ -458,7 +459,7 @@ def test_auto_engineering_ignores_prior_run_episode_but_observes_current_run_epi
         },
     }
 
-    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+    assert _authoritative_runtime_route_kinds(state) == []
     assert _observed_runtime_episode_kinds(state) == set()
 
     state["current_route_context"]["capabilityEpisodes"].append(
@@ -880,12 +881,12 @@ def test_auto_spec_and_handoff_never_use_explicit_route_compiler() -> None:
     assert _authoritative_runtime_route_kinds(
         governed_engineering,
         "修复当前项目里失败的测试并验证结果。",
-    ) == ["engineering"]
+    ) == []
     assert _should_use_runtime_route_compiler(
         state=governed_engineering,
         runtime_handoff_ready=False,
         **kwargs,
-    ) is True
+    ) is False
 
     deferred_engineering = {
         **governed_engineering,
@@ -962,7 +963,7 @@ def test_runtime_route_compiler_prompt_is_bounded_and_omits_discovery_surfaces(t
     )
 
 
-def test_unvalidated_canvas_route_context_does_not_override_engineering_requirement() -> None:
+def test_unvalidated_canvas_and_auto_engineering_hints_do_not_preselect_runtime() -> None:
     state = {
         "current_route_context": {
             "canvasSupervisorDirect": False,
@@ -971,7 +972,7 @@ def test_unvalidated_canvas_route_context_does_not_override_engineering_requirem
         }
     }
 
-    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+    assert _authoritative_runtime_route_kinds(state) == []
 
 
 def test_required_runtime_guidance_stays_in_primary_system_message() -> None:
@@ -1017,7 +1018,7 @@ def test_required_runtime_correction_is_transient_human_turn_after_model_respons
 def test_explicit_engineering_runtime_request_is_authoritative_without_rebinding_work_mode() -> None:
     explicit_state = {
         "current_route_context": {
-            "engineeringRequired": True,
+            "explicitEngineeringRequested": True,
             "engineeringMode": "force",
             "capabilityEpisodes": [],
         }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -73,6 +74,56 @@ function directoryHasFiles(directory) {
     }
   }
   return false;
+}
+
+function sha256File(filePath) {
+  const hash = createHash("sha256");
+  const descriptor = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest("hex");
+}
+
+function verifyBundledFeaturePackAssets(featurePackRequirements, platform) {
+  if (!new Set(["windows-x64", "linux-x64"]).has(platform)) return [];
+  const checks = [{
+    name: "featurePacks.offlineManifest",
+    path: path.join(featurePackRequirements, "bundled-assets", "manifest.json"),
+    ok: fs.existsSync(path.join(featurePackRequirements, "bundled-assets", "manifest.json")),
+  }];
+  for (const manifestName of [
+    "creative-media-image-analysis.manifest.json",
+    "creative-media-motion-capture.manifest.json",
+  ]) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(featurePackRequirements, manifestName), "utf8"));
+    for (const asset of manifest.assets || []) {
+      const target = path.join(
+        featurePackRequirements,
+        "bundled-assets",
+        String(asset.sha256 || "").toLowerCase(),
+        String(asset.target || ""),
+      );
+      const present = fs.existsSync(target) && fs.statSync(target).isFile();
+      const sizeMatches = present && fs.statSync(target).size === asset.size;
+      const digestMatches = sizeMatches && sha256File(target) === String(asset.sha256 || "").toLowerCase();
+      checks.push({
+        name: `featurePacks.offlineAsset.${manifest.id}.${asset.id}`,
+        path: target,
+        ok: Boolean(present && sizeMatches && digestMatches),
+        expectedSize: asset.size,
+        expectedSha256: asset.sha256,
+      });
+    }
+  }
+  return checks;
 }
 
 function verifyNextStandaloneAssets(resourceRoot, app) {
@@ -318,6 +369,7 @@ try {
   checks.push(...verifyNextStandaloneAssets(resourceRoot, "web"));
   checks.push(verifyShellBootstrap(appAsar, expectedPackageVersion));
   checks.push(verifyDesktopPetServerBundle(desktopPetServerBundle));
+  checks.push(...verifyBundledFeaturePackAssets(featurePackRequirements, platform));
   checks.push({ name: "desktopPet.rendererAssets", path: desktopPetAssets, ok: directoryHasFiles(desktopPetAssets) });
   checks.push({ path: python.join(" | "), ok: python.some((filePath) => fs.existsSync(filePath)) });
   const packagedPython = python.find((filePath) => fs.existsSync(filePath));

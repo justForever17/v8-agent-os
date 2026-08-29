@@ -394,6 +394,15 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "", surface = "me
                 ? <p className="whitespace-pre-wrap">{children}</p>
                 : <div className="mb-2 whitespace-pre-wrap last:mb-0">{children}</div>
         ),
+        ol: ({ children }: ComponentPropsWithoutRef<'ol'>) => (
+            <ol className="my-2 list-decimal space-y-1 pl-6 marker:text-current">{children}</ol>
+        ),
+        ul: ({ children }: ComponentPropsWithoutRef<'ul'>) => (
+            <ul className="my-2 list-disc space-y-1 pl-6 marker:text-current">{children}</ul>
+        ),
+        li: ({ children }: ComponentPropsWithoutRef<'li'>) => (
+            <li className="pl-1">{children}</li>
+        ),
         table: ({ children }: ComponentPropsWithoutRef<'table'>) => (
             <div
                 data-markdown-table-viewport

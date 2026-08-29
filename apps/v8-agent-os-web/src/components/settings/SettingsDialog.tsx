@@ -18,7 +18,7 @@ import { normalizeAppearance, resolveLightBackgroundMediaSrc } from "@/lib/perso
 import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
 import { useT } from "@/components/providers/LocaleProvider";
-import { ImageUp } from "lucide-react";
+import { ImageUp, Video } from "lucide-react";
 import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";
 import type { LightBackgroundMediaType } from "@/lib/personalization";
 
@@ -296,16 +296,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                             } : undefined}
                         >
                             {backgroundUrl && backgroundMediaType === "video" ? (
-                                <video
-                                    className="h-full w-full object-cover"
-                                    src={resolveLightBackgroundMediaSrc(backgroundUrl)}
-                                    autoPlay
-                                    muted
-                                    loop
-                                    playsInline
-                                    preload="metadata"
-                                    aria-label={t("web.personalization.background.videoPreview")}
-                                />
+                                <div
+                                    data-testid="background-video-summary"
+                                    className="flex h-full w-full items-center justify-center gap-2 text-sm font-medium text-muted-foreground"
+                                >
+                                    <Video className="h-5 w-5" aria-hidden="true" />
+                                    <span>{t("web.personalization.background.videoPreview")}</span>
+                                </div>
                             ) : null}
                             {!backgroundUrl ? (
                                 <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">

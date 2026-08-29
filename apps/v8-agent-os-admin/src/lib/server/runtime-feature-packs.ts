@@ -1250,6 +1250,29 @@ function sha256File(filePath: string) {
     return hash.digest("hex");
 }
 
+function bundledFeaturePackAssetPath(asset: FeaturePackAsset) {
+    const bundledRoot = path.resolve(
+        resolveEngineRoot(),
+        "requirements",
+        "feature-packs",
+        "bundled-assets",
+        asset.sha256.toLowerCase(),
+    );
+    const candidate = path.resolve(bundledRoot, asset.target);
+    if (candidate !== bundledRoot && !candidate.startsWith(`${bundledRoot}${path.sep}`)) {
+        throw new Error(`feature_pack_bundled_asset_target_invalid:${asset.id}`);
+    }
+    if (!fs.existsSync(candidate)) return null;
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile() || stat.size !== asset.size) {
+        throw new Error(`feature_pack_bundled_asset_size_invalid:${asset.id}`);
+    }
+    if (sha256File(candidate).toLowerCase() !== asset.sha256.toLowerCase()) {
+        throw new Error(`feature_pack_bundled_asset_sha256_invalid:${asset.id}`);
+    }
+    return candidate;
+}
+
 
 function readPipResolutionReport(reportFile: string) {
     const payload = JSON.parse(fs.readFileSync(reportFile, "utf-8")) as {
@@ -1385,8 +1408,6 @@ async function downloadFeaturePackAsset(
     const sources = featurePackAssetSources(asset, locale);
     if (!sources.length) throw new Error(`feature_pack_asset_source_missing:${asset.id}`);
     sources.forEach(assertTrustedFeaturePackAssetUrl);
-    const globalController = new AbortController();
-    const globalTimeout = setTimeout(() => globalController.abort(), FEATURE_PACK_ASSET_TIMEOUT_MS);
     const target = path.resolve(modelRoot, asset.target);
     const root = path.resolve(modelRoot);
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
@@ -1394,6 +1415,27 @@ async function downloadFeaturePackAsset(
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const partial = `${target}.part`;
+    const bundledAsset = bundledFeaturePackAssetPath(asset);
+    if (bundledAsset) {
+        fs.rmSync(partial, { force: true });
+        await fs.promises.copyFile(bundledAsset, partial);
+        const copiedSize = fs.statSync(partial).size;
+        const copiedHash = sha256File(partial);
+        if (copiedSize !== asset.size || copiedHash.toLowerCase() !== asset.sha256.toLowerCase()) {
+            fs.rmSync(partial, { force: true });
+            throw new Error(`feature_pack_bundled_asset_copy_invalid:${asset.id}`);
+        }
+        fs.renameSync(partial, target);
+        output.write(`[Bundled asset verified] ${asset.id} sha256=${copiedHash}\n`);
+        return {
+            ...asset,
+            sourceUrl: `packaged://feature-pack/${asset.id}`,
+            path: target,
+            verifiedSha256: copiedHash,
+        };
+    }
+    const globalController = new AbortController();
+    const globalTimeout = setTimeout(() => globalController.abort(), FEATURE_PACK_ASSET_TIMEOUT_MS);
     let offset = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
     if (offset > asset.size) {
         fs.rmSync(partial, { force: true });

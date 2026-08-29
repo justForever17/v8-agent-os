@@ -184,6 +184,10 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.match(installerSource, /sha256File/);
   assert.match(installerSource, /reuseVerifiedFeaturePackAsset/);
   assert.match(installerSource, /\[Asset reused\]/);
+  assert.match(installerSource, /bundledFeaturePackAssetPath/);
+  assert.match(installerSource, /feature_pack_bundled_asset_sha256_invalid/);
+  assert.match(installerSource, /await fs\.promises\.copyFile\(bundledAsset, partial\)/);
+  assert.match(installerSource, /\[Bundled asset verified\]/);
   assert.match(assetInstallSource, /const lockFile = lockPathFor\(definition, environment\)/);
   assert.match(assetInstallSource, /lockFile \|\| requirementsFile/);
   assert.match(assetInstallSource, /Boolean\(lockFile\)/);

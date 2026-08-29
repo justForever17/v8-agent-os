@@ -495,6 +495,33 @@ test('desktop release bundles only hash-pinned small managed plugin assets', () 
   assert.match(layout, /d69a22ce1e28f69db5f0048f6bbe6a4186f32412a4bdbc00bf0e8f8ab2caf14d\.asset/);
 });
 
+test('x64 desktop releases bundle verified feature-pack models for offline installation', () => {
+  const prepare = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-feature-pack-release-assets.mjs'),
+    'utf8',
+  );
+  const workflow = fs.readFileSync(
+    path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'),
+    'utf8',
+  );
+  const layout = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'verify-desktop-package-layout.mjs'),
+    'utf8',
+  );
+
+  assert.match(prepare, /creative-media-image-analysis\.manifest\.json/);
+  assert.match(prepare, /creative-media-motion-capture\.manifest\.json/);
+  assert.match(prepare, /windows-x64/);
+  assert.match(prepare, /linux-x64/);
+  assert.match(prepare, /Prepared feature-pack asset failed verification/);
+  assert.match(workflow, /Prepare verified offline feature-pack assets/);
+  assert.match(workflow, /matrix\.id == 'windows-x64' \|\| matrix\.id == 'linux-x64'/);
+  assert.match(workflow, /prepare-feature-pack-release-assets\.mjs --target "\$\{\{ matrix\.id \}\}"/);
+  assert.match(layout, /verifyBundledFeaturePackAssets/);
+  assert.match(layout, /featurePacks\.offlineAsset/);
+  assert.match(layout, /sha256File\(target\)/);
+});
+
 test('desktop release notes advertise the multi-platform unsigned preview assets', () => {
   const generator = path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs');
   const commonArgs = ['--product', 'desktop', '--version', '2026.07.22.1'];

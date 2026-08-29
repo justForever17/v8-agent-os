@@ -259,6 +259,11 @@ jobs:
         timeout-minutes: 8
         run: node scripts/desktop/prepare-plugin-release-assets.mjs --target "${{ matrix.id }}"
 
+      - name: Prepare verified offline feature-pack assets
+        if: matrix.id == 'windows-x64' || matrix.id == 'linux-x64'
+        timeout-minutes: 25
+        run: node scripts/desktop/prepare-feature-pack-release-assets.mjs --target "${{ matrix.id }}"
+
       - name: Acquire and verify pinned Electron runtimes
         timeout-minutes: 20
         run: node scripts/desktop/ensure-electron-runtime.mjs

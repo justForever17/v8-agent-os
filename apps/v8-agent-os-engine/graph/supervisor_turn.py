@@ -45,39 +45,6 @@ _SUPERVISOR_RUNTIME_MODE_KINDS = frozenset({
 })
 _RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS = 1_024
 
-_ORDERED_RESEARCH_ACTION_RE = re.compile(
-    r"(?:调研|查清楚|查证|核实|搜索|检索|查找|搜集|research|verify|search|find)",
-    re.IGNORECASE,
-)
-_ORDERED_RESEARCH_EVIDENCE_RE = re.compile(
-    r"(?:来源|出处|权威|可追溯|引用|联网|资料|source|citation|authoritative|evidence)",
-    re.IGNORECASE,
-)
-_ORDERED_ENGINEERING_DELIVERY_RE = re.compile(
-    r"(?:react|vue|前端|项目|应用|网页|源码|实现|开发|搭建|写入|修复|build|implement|develop|create)",
-    re.IGNORECASE,
-)
-_ORDERED_FIRST_RE = re.compile(r"(?:先|首先|第一步|first(?:ly)?)", re.IGNORECASE)
-_ORDERED_THEN_RE = re.compile(r"(?:然后|再|随后|接着|then|after\s+that)", re.IGNORECASE)
-
-
-def _ordered_research_before_engineering_requested(user_query: str) -> bool:
-    query = str(user_query or "").strip()
-    if not query or not _ORDERED_RESEARCH_EVIDENCE_RE.search(query):
-        return False
-    research_match = _ORDERED_RESEARCH_ACTION_RE.search(query)
-    if research_match is None:
-        return False
-    first_window = query[max(0, research_match.start() - 36):research_match.start()]
-    if not _ORDERED_FIRST_RE.search(first_window):
-        return False
-    engineering_match = _ORDERED_ENGINEERING_DELIVERY_RE.search(query, research_match.end())
-    if engineering_match is None:
-        return False
-    between = query[research_match.end():engineering_match.start()]
-    return bool(_ORDERED_THEN_RE.search(between))
-
-
 def _last_memory_session_context_diagnostics() -> dict:
     try:
         from core.memory.store import memory_store
@@ -787,25 +754,14 @@ def _authoritative_runtime_route_kinds(state, user_query: str = "") -> list[str]
         continuation = task_shape.get("engineeringContinuation") if isinstance(task_shape.get("engineeringContinuation"), dict) else {}
     if _has_mixed_direct_and_runtime_execution_boundaries(user_query):
         return []
-    ordered_research_then_engineering = bool(
-        selected_runtime_mode == "auto"
-        and _ordered_research_before_engineering_requested(user_query)
-    )
-    if bool(route_context.get("engineeringRequired")):
-        return ["research", "engineering"] if ordered_research_then_engineering else ["engineering"]
-    if bool(continuation.get("active")) and bool(route_context.get("engineeringRequired", True)):
+    if bool(continuation.get("active")):
         return ["engineering"]
-    engineering_trigger = (
-        dict(route_context.get("engineeringTriggerDecision") or {})
-        if isinstance(route_context.get("engineeringTriggerDecision"), dict)
-        else {}
-    )
-    if (
-        selected_runtime_mode == "auto"
-        and bool(engineering_trigger.get("active"))
-        and not bool(engineering_trigger.get("deferred"))
-    ):
-        return ["research", "engineering"] if ordered_research_then_engineering else ["engineering"]
+    if bool(route_context.get("explicitEngineeringRequested")):
+        return ["engineering"]
+    if _spec_mode_active(state) and _spec_runtime_execution_allowed(state):
+        return ["engineering"]
+    # Auto-mode task shape and Engineering trigger data are advisory context.
+    # They must never preselect an owning runtime ahead of the Supervisor.
     return []
 
 
@@ -1089,22 +1045,11 @@ def _should_use_runtime_route_compiler(
         return False
     required_kind = pending_required_runtime_kinds[0]
     selected_mode_matches = _selected_supervisor_runtime_mode(state) == required_kind
-    engineering_trigger = dict(route_context.get("engineeringTriggerDecision") or {})
-    governed_inferred_match = bool(
+    explicit_engineering_match = bool(
         required_kind == "engineering"
-        and _selected_supervisor_runtime_mode(state) == "auto"
-        and engineering_trigger.get("active")
-        and not engineering_trigger.get("deferred")
+        and route_context.get("explicitEngineeringRequested")
     )
-    ordered_research_predecessor = bool(
-        required_kind == "research"
-        and "engineering" in list(pending_required_runtime_kinds or [])[1:]
-        and _selected_supervisor_runtime_mode(state) == "auto"
-        and engineering_trigger.get("active")
-        and not engineering_trigger.get("deferred")
-        and _ordered_research_before_engineering_requested(user_query)
-    )
-    if not selected_mode_matches and not governed_inferred_match and not ordered_research_predecessor:
+    if not selected_mode_matches and not explicit_engineering_match:
         return False
     gate_status = str(getattr(gate_decision, "status", "clean") or "clean").strip().lower()
     if gate_status == "clean":

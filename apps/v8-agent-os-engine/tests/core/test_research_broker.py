@@ -3796,7 +3796,7 @@ def test_research_architect_quality_target_counts_only_subject_focused_answerabl
                     "relevanceScore": 100,
                 }
             ],
-            "subjectFocused": index != TARGET_RESEARCH_SOURCE_COUNT - 1,
+            "subjectFocused": index < 3,
         }
         for index in range(TARGET_RESEARCH_SOURCE_COUNT)
     ]
@@ -8909,6 +8909,11 @@ def test_recent_research_discovery_reuses_only_verified_urls_for_live_reread(mon
                         "selectedForEvidence": True,
                         "readEvidence": {"verified": False},
                     },
+                    {
+                        "url": "mcp://context7/python/cpython",
+                        "selectedForEvidence": True,
+                        "readEvidence": {"verified": True},
+                    },
                 ],
             },
             {
@@ -8937,6 +8942,7 @@ def test_recent_research_discovery_reuses_only_verified_urls_for_live_reread(mon
     }
     assert {seed["researchFacetId"] for seed in seeds} == {"obligations", "penalties"}
     assert all(seed["kind"] == "seed_url" for seed in seeds)
+    assert all(not seed["seedUrl"].startswith("mcp://") for seed in seeds)
     assert all(seed["discoveryReuse"]["contentReused"] is False for seed in seeds)
     assert all(seed["discoveryReuse"]["requiresLiveRead"] is True for seed in seeds)
     regulation_seeds = [
@@ -16080,6 +16086,10 @@ def test_narrow_technical_shards_use_compact_official_queries() -> None:
     assert requirements["minimumSources"] == 2
     assert requirements["minimumDistinctHosts"] == 1
     assert requirements["minimumAnswerChars"] == research_module.MIN_RESEARCH_ANSWER_CHARS
+    assert requirements["targetSources"] == 4
+    assert requirements["targetDistinctHosts"] == 1
+    assert requirements["targetClaims"] == 6
+    assert requirements["targetAnswerChars"] == 3_000
 
     entity_hints = research_module._catalog_official_entity_hints(question)
     assert [item["label"] for item in entity_hints] == ["LangChain Python"]
@@ -16179,6 +16189,38 @@ def test_research_broker_plan_uses_explicit_user_visible_language(monkeypatch):
     )
 
     assert payload["preferredLanguage"] == "zh-CN"
+
+
+def test_narrow_technical_plan_caps_discovery_to_task_shaped_source_target(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {
+            "research": {
+                "enabled": True,
+                "defaultShardCount": 10,
+                "maxShardCount": 30,
+                "maxRounds": 5,
+            }
+        },
+    )
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="plan",
+            question=(
+                "What are the current best practices for using Python pathlib "
+                "in CLI tools? Cite official sources."
+            ),
+            maxShards=10,
+            state={"run_id": "run-task-shaped-shard-cap"},
+        )
+    )
+
+    assert payload["deliveryRequirements"]["targetSources"] == 4
+    assert payload["limits"]["configuredMaxShards"] == 10
+    assert payload["limits"]["effectiveMaxShards"] == 4
+    assert len(payload["shards"]) <= 4
 
 
 def test_research_broker_plan_splits_structured_bundle_into_atomic_facets(monkeypatch):
@@ -18625,3 +18667,153 @@ def test_research_broker_video_policy_uses_popularity_signals_and_stays_compact(
     assert payload["sourceMatrix"][0]["catalogCategory"] == "video_platform"
     assert payload["sourceMatrix"][0]["popularitySignals"]
     assert payload["omitted"]["shardsOmitted"] >= 0
+
+
+@pytest.mark.parametrize("_iteration", range(10))
+def test_parallel_search_shards_prefer_working_provider_and_bound_failed_route(
+    monkeypatch,
+    _iteration,
+):
+    slow_provider_attempts = 0
+    fast_provider_attempts = 0
+    observed_hints: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    counter_lock = threading.Lock()
+    initial_barrier = threading.Barrier(
+        research_module._RESEARCH_MAX_PARALLEL_SEARCH_SHARDS
+    )
+
+    def fake_source_router_search(**kwargs):
+        nonlocal slow_provider_attempts, fast_provider_attempts
+        preferred = tuple(kwargs.get("preferred_providers") or ())
+        excluded = tuple(kwargs.get("excluded_providers") or ())
+        observed_hints.append((preferred, excluded))
+        if not preferred and not excluded:
+            initial_barrier.wait(timeout=2)
+        attempts = []
+        with counter_lock:
+            if "slow" not in excluded:
+                slow_provider_attempts += 1
+                attempts.append(
+                    {
+                        "provider": "slow",
+                        "status": "error",
+                        "failureClass": "network_timeout",
+                    }
+                )
+            else:
+                attempts.append(
+                    {
+                        "provider": "slow",
+                        "status": "skipped",
+                        "failureClass": "provider_circuit_open",
+                    }
+                )
+            fast_provider_attempts += 1
+        attempts.append({"provider": "fast", "status": "ok", "resultCount": 0})
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fast",
+                "results": [],
+                "providerAttemptMatrix": attempts,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "source_router_search", fake_source_router_search)
+    ledger = research_module._ResearchReadAttemptLedger(question="provider pressure")
+    shards = [
+        {"shardId": f"pressure-{index}", "kind": "baseline", "query": f"query {index}"}
+        for index in range(30)
+    ]
+
+    completed = research_module._run_search_shards(
+        shards,
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=2,
+        use_agent_browser_profile=False,
+        tool_call_id="provider-pressure",
+        read_attempt_ledger=ledger,
+    )
+
+    assert len(completed) == 30
+    assert fast_provider_attempts == 30
+    assert slow_provider_attempts == research_module._RESEARCH_MAX_PARALLEL_SEARCH_SHARDS
+    assert any(hints[0][:1] == ("fast",) for hints in observed_hints[2:])
+    assert any("slow" in hints[1] for hints in observed_hints[2:])
+    snapshot = ledger.snapshot()
+    assert snapshot["searchProviderStates"]["fast"]["successes"] == 30
+    assert snapshot["searchProviderCircuitSkipCount"] >= 1
+
+
+def test_narrow_research_stops_before_architect_repair_when_no_body_qualifies(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {
+            "research": {
+                "enabled": True,
+                "defaultShardCount": 10,
+                "maxShardCount": 30,
+                "maxRounds": 5,
+            }
+        },
+    )
+    monkeypatch.setattr(research_module, "list_evidence_bundles", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        research_module,
+        "_research_should_decompose_root_question",
+        lambda _question: False,
+    )
+    search_calls = 0
+
+    def fake_search(**kwargs):
+        nonlocal search_calls
+        search_calls += 1
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "reachable-search",
+                "results": _unique_search_result_batch(
+                    search_calls,
+                    kwargs.get("query", ""),
+                ),
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(
+        research_module,
+        "web_read",
+        SimpleNamespace(
+            func=lambda **_kwargs: json.dumps(
+                {
+                    "ok": False,
+                    "failureClass": "network_timeout",
+                    "error": "fixture_body_timeout",
+                }
+            )
+        ),
+    )
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="Verify the current Python pathlib API from official docs.",
+            maxShards=10,
+            maxRounds=5,
+            forceRefresh=True,
+            state={"run_id": "run-no-qualified-body"},
+        )
+    )
+
+    assert payload["deliveryReady"] is False
+    assert payload["researchLoopState"]["stopReason"] == (
+        "no_qualified_sources_after_bounded_discovery"
+    )
+    assert len(payload["researchLoopState"]["rounds"]) <= 2
+    assert search_calls <= 8
+    assert payload["researchLoopState"]["performance"]["repairElapsedMs"] < 100

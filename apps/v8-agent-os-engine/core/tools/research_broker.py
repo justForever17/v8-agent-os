@@ -188,6 +188,9 @@ class _ResearchReadAttemptLedger:
         self._cached_projection_count = 0
         self._host_retryable_failures: dict[str, int] = {}
         self._host_circuit_skips = 0
+        self._search_provider_records: dict[str, dict[str, int]] = {}
+        self._search_provider_sequence = 0
+        self._search_provider_circuit_skips = 0
         for identity in set(terminal_identities or set()):
             normalized = _safe_text(identity)
             if normalized:
@@ -373,9 +376,82 @@ class _ResearchReadAttemptLedger:
                 ready.set()
             self._aliases[identity] = root
 
-    def snapshot(self) -> dict[str, int]:
+    def search_route_hints(self) -> dict[str, list[str]]:
+        """Return per-run provider hints without mutating configured order."""
+
+        with self._lock:
+            preferred = [
+                provider
+                for provider, record in sorted(
+                    self._search_provider_records.items(),
+                    key=lambda item: int(item[1].get("lastSuccessSequence") or 0),
+                    reverse=True,
+                )
+                if int(record.get("successes") or 0) > 0
+            ]
+            excluded = [
+                provider
+                for provider, record in self._search_provider_records.items()
+                if int(record.get("successes") or 0) == 0
+                and (
+                    int(record.get("terminalFailures") or 0) > 0
+                    or int(record.get("retryableFailures") or 0) >= 2
+                )
+            ]
+            return {
+                "preferredProviders": preferred,
+                "excludedProviders": excluded,
+            }
+
+    def record_search_payload(self, payload: dict[str, Any]) -> None:
+        attempts = payload.get("providerAttemptMatrix") or payload.get("attemptedProviders") or []
+        attempts = [item for item in list(attempts) if isinstance(item, dict)]
+        selected_provider = _safe_text(payload.get("provider")).lower()
+        if payload.get("ok") is True and selected_provider and not any(
+            _safe_text(item.get("provider")).lower() == selected_provider
+            and _safe_text(item.get("status")).lower() in {"ok", "success"}
+            for item in attempts
+        ):
+            attempts.append({"provider": selected_provider, "status": "ok"})
+        with self._lock:
+            for attempt in attempts:
+                provider = _safe_text(attempt.get("provider")).lower()
+                if not provider:
+                    continue
+                record = self._search_provider_records.setdefault(
+                    provider,
+                    {
+                        "attempts": 0,
+                        "successes": 0,
+                        "terminalFailures": 0,
+                        "retryableFailures": 0,
+                        "lastSuccessSequence": 0,
+                    },
+                )
+                status = _safe_text(attempt.get("status")).lower()
+                failure_class = _safe_text(
+                    attempt.get("failureClass") or attempt.get("reason")
+                ).lower()
+                if failure_class == "provider_circuit_open":
+                    self._search_provider_circuit_skips += 1
+                    continue
+                record["attempts"] += 1
+                if status in {"ok", "success"}:
+                    self._search_provider_sequence += 1
+                    record["successes"] += 1
+                    record["lastSuccessSequence"] = self._search_provider_sequence
+                elif failure_class in _RESEARCH_PROVIDER_TERMINAL_FAILURES:
+                    record["terminalFailures"] += 1
+                elif failure_class in _RESEARCH_PROVIDER_BOUNDED_RETRY_FAILURES:
+                    record["retryableFailures"] += 1
+
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
             records = list(self._records.values())
+            provider_records = {
+                provider: dict(record)
+                for provider, record in self._search_provider_records.items()
+            }
             return {
                 "uniqueIdentityCount": len(records),
                 "networkAttemptCount": sum(int(item.get("attempts") or 0) for item in records),
@@ -392,6 +468,8 @@ class _ResearchReadAttemptLedger:
                     for count in self._host_retryable_failures.values()
                 ),
                 "hostCircuitSkipCount": self._host_circuit_skips,
+                "searchProviderCircuitSkipCount": self._search_provider_circuit_skips,
+                "searchProviderStates": provider_records,
             }
 _AUTHORITATIVE_HOST_HINTS = (
     "learn.microsoft.com",
@@ -3982,9 +4060,13 @@ def _deterministic_web_research_architect_pack(
         critical_missing.append(
             f"Research needs at least {minimum_sources} readable sources before a reviewed answer can be delivered."
         )
-    elif len(source_urls) < TARGET_RESEARCH_SOURCE_COUNT:
+    target_sources = _as_int(
+        requirements.get("targetSources"),
+        TARGET_RESEARCH_SOURCE_COUNT,
+    )
+    if len(source_urls) >= minimum_sources and len(source_urls) < target_sources:
         limitations.append(
-            f"The normal {TARGET_RESEARCH_SOURCE_COUNT}-source quality target was not met; a minimum-qualified answer may still be delivered with this limitation."
+            f"The task-shaped {target_sources}-source quality target was not met; a minimum-qualified answer may still be delivered with this limitation."
         )
     if not findings:
         critical_missing.append("No source-backed claims were extracted from readable page bodies.")
@@ -5813,6 +5895,14 @@ def _research_architect_structural_stats(
         delivery_requirements.get("minimumDistinctHosts"),
         MIN_RESEARCH_DISTINCT_HOST_COUNT,
     )
+    target_sources = _as_int(
+        delivery_requirements.get("targetSources"),
+        TARGET_RESEARCH_SOURCE_COUNT,
+    )
+    target_hosts = _as_int(
+        delivery_requirements.get("targetDistinctHosts"),
+        TARGET_RESEARCH_DISTINCT_HOST_COUNT,
+    )
     selected = [
         source
         for source in sources
@@ -5889,8 +5979,8 @@ def _research_architect_structural_stats(
         and not missing_facet_ids
     )
     target_met = bool(
-        len(identities) >= TARGET_RESEARCH_SOURCE_COUNT
-        and len(hosts) >= TARGET_RESEARCH_DISTINCT_HOST_COUNT
+        len(identities) >= target_sources
+        and len(hosts) >= target_hosts
         and not missing_facet_ids
     )
     return {
@@ -9476,6 +9566,8 @@ def _architect_partial_plan_evidence_ready(
     required_claim_sources: list[str],
     required_facet_ids: list[str],
     prompt_sources: list[dict[str, Any]],
+    required_source_count: int = TARGET_RESEARCH_SOURCE_COUNT,
+    required_claim_count: int = TARGET_RESEARCH_CLAIM_COUNT,
 ) -> bool:
     """Allow useful partial synthesis only after evidence is already broad.
 
@@ -9492,9 +9584,9 @@ def _architect_partial_plan_evidence_ready(
         plan.get("claimTable"),
         limit=_RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
     )
-    if len(raw_claims) < TARGET_RESEARCH_CLAIM_COUNT:
+    if len(raw_claims) < max(MIN_RESEARCH_CLAIM_COUNT, required_claim_count):
         return False
-    if len(set(required_claim_sources)) < TARGET_RESEARCH_SOURCE_COUNT:
+    if len(set(required_claim_sources)) < max(1, required_source_count):
         return False
     available_facet_ids = {
         _safe_text(facet_id)
@@ -15119,16 +15211,16 @@ def _invoke_web_research_architect_staged(
         freshness=freshness,
     )
     normal_target_mode = synthesis_structural_stats.get("structuralTargetMet") is True
-    required_source_count = (
-        TARGET_RESEARCH_SOURCE_COUNT
-        if normal_target_mode
-        else minimum_sources
+    target_sources = _as_int(
+        requirements.get("targetSources"),
+        TARGET_RESEARCH_SOURCE_COUNT,
     )
-    required_claim_count = (
-        TARGET_RESEARCH_CLAIM_COUNT
-        if normal_target_mode
-        else minimum_claims
+    target_claims = _as_int(
+        requirements.get("targetClaims"),
+        TARGET_RESEARCH_CLAIM_COUNT,
     )
+    required_source_count = target_sources if normal_target_mode else minimum_sources
+    required_claim_count = target_claims if normal_target_mode else minimum_claims
     plan_claim_upper = min(
         _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
         max(
@@ -15825,6 +15917,8 @@ def _invoke_web_research_architect_staged(
                         required_claim_sources=required_claim_sources,
                         required_facet_ids=required_plan_facet_ids,
                         prompt_sources=prompt_sources,
+                        required_source_count=required_source_count,
+                        required_claim_count=required_claim_count,
                     )
                 )
                 if (
@@ -17115,7 +17209,10 @@ def _invoke_web_research_architect_staged(
     delivery_target_min_chars = max(
         minimum_answer_chars,
         min(
-            TARGET_RESEARCH_ANSWER_CHARS,
+            _as_int(
+                requirements.get("targetAnswerChars"),
+                TARGET_RESEARCH_ANSWER_CHARS,
+            ),
             600 + len(verified_claims) * 260 + max(1, len(required_plan_facet_ids)) * 180,
         ),
     )
@@ -20006,6 +20103,8 @@ def _source_router_search(**kwargs: Any) -> str:
                 "total_timeout_seconds",
                 "locale_hint",
                 "allow_browser_profile_fallback",
+                "preferred_providers",
+                "excluded_providers",
             }
         }
         return web_search.func(**legacy_kwargs)
@@ -20065,16 +20164,31 @@ def _research_delivery_requirements(question: str) -> dict[str, Any]:
         if narrow_technical and minimum_sources <= 2
         else min(MIN_RESEARCH_DISTINCT_HOST_COUNT, minimum_sources)
     )
+    target_sources = (
+        max(minimum_sources, 4)
+        if narrow_technical
+        else TARGET_RESEARCH_SOURCE_COUNT
+    )
+    target_hosts = (
+        minimum_hosts
+        if narrow_technical
+        else TARGET_RESEARCH_DISTINCT_HOST_COUNT
+    )
+    target_claims = (
+        max(MIN_RESEARCH_CLAIM_COUNT, min(TARGET_RESEARCH_CLAIM_COUNT, target_sources + 2))
+        if narrow_technical
+        else TARGET_RESEARCH_CLAIM_COUNT
+    )
     return {
         "mode": "narrow_authoritative_technical" if narrow_technical else "standard_research",
         "minimumSources": minimum_sources,
         "minimumDistinctHosts": minimum_hosts,
         "minimumClaims": MIN_RESEARCH_CLAIM_COUNT,
         "minimumAnswerChars": MIN_RESEARCH_ANSWER_CHARS,
-        "targetSources": TARGET_RESEARCH_SOURCE_COUNT,
-        "targetDistinctHosts": TARGET_RESEARCH_DISTINCT_HOST_COUNT,
-        "targetClaims": TARGET_RESEARCH_CLAIM_COUNT,
-        "targetAnswerChars": TARGET_RESEARCH_ANSWER_CHARS,
+        "targetSources": target_sources,
+        "targetDistinctHosts": target_hosts,
+        "targetClaims": target_claims,
+        "targetAnswerChars": 3_000 if narrow_technical else TARGET_RESEARCH_ANSWER_CHARS,
     }
 
 
@@ -20600,6 +20714,11 @@ def _run_search_shard(
     source_intent = _safe_text(shard.get("sourceIntent")).lower()
     site_domains = _query_site_domains(query)
     video_research = _is_video_research(query, source_policy, shard.get("kind"))
+    search_route_hints = (
+        read_attempt_ledger.search_route_hints()
+        if read_attempt_ledger is not None
+        else {"preferredProviders": [], "excludedProviders": []}
+    )
     try:
         search_payload = _parse_tool_json(
             _source_router_search(
@@ -20620,6 +20739,8 @@ def _run_search_shard(
                 ) / 1000.0,
                 locale_hint=preferred_language,
                 allow_browser_profile_fallback=use_agent_browser_profile,
+                preferred_providers=search_route_hints.get("preferredProviders") or [],
+                excluded_providers=search_route_hints.get("excludedProviders") or [],
             )
         )
     except Exception as exc:
@@ -20632,6 +20753,8 @@ def _run_search_shard(
             error=str(exc),
             recommended_next_action="换关键词、限定权威域名，或保留该 shard 为 failed_source。",
         )
+    if read_attempt_ledger is not None:
+        read_attempt_ledger.record_search_payload(search_payload)
     if cancel_event is not None and cancel_event.is_set():
         return {
             **shard,
@@ -23812,7 +23935,24 @@ def _architect_delivery_quality_issues(payload: dict[str, Any]) -> list[str]:
     return research_acceptance_issues(payload)
 
 
-def _research_loop_report(question: str, shards: list[dict[str, Any]], *, source_policy: str) -> dict[str, Any]:
+def _research_loop_report(
+    question: str,
+    shards: list[dict[str, Any]],
+    *,
+    source_policy: str,
+    delivery_requirements: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    requirements = dict(
+        delivery_requirements or _research_delivery_requirements(question)
+    )
+    target_sources = _as_int(
+        requirements.get("targetSources"),
+        TARGET_RESEARCH_SOURCE_COUNT,
+    )
+    minimum_sources = _as_int(
+        requirements.get("minimumSources"),
+        MIN_RESEARCH_SOURCE_COUNT,
+    )
     covered_claims: list[str] = []
     rejected_sources: list[dict[str, Any]] = []
     read_sources: list[str] = []
@@ -23840,10 +23980,10 @@ def _research_loop_report(question: str, shards: list[dict[str, Any]], *, source
     uncovered: list[str] = []
     if not read_sources:
         uncovered.append("No source passed quality/readability gates.")
-    elif len(read_sources) < TARGET_RESEARCH_SOURCE_COUNT:
+    elif len(read_sources) < target_sources:
         uncovered.append(
-            f"Need {TARGET_RESEARCH_SOURCE_COUNT - len(read_sources)} more readable source(s) to reach the normal Research target; "
-            f"{MIN_RESEARCH_SOURCE_COUNT} is only the rejection floor."
+            f"Need {target_sources - len(read_sources)} more readable source(s) to reach the task-shaped Research target; "
+            f"{minimum_sources} is only the rejection floor."
         )
     return {
         "outline": [
@@ -23855,9 +23995,9 @@ def _research_loop_report(question: str, shards: list[dict[str, Any]], *, source
         "uncoveredClaims": uncovered,
         "rejectedSources": rejected_sources[:12],
         "researchLoopReport": {
-            "summary": "quality_gated_evidence_ready" if len(read_sources) >= TARGET_RESEARCH_SOURCE_COUNT else "quality_gated_evidence_incomplete",
+            "summary": "quality_gated_evidence_ready" if len(read_sources) >= target_sources else "quality_gated_evidence_incomplete",
             "selectedSourceCount": len(read_sources),
-            "targetSourceCount": TARGET_RESEARCH_SOURCE_COUNT,
+            "targetSourceCount": target_sources,
             "rejectedSourceCount": len(rejected_sources),
             "claimCount": len(covered_claims),
         },
@@ -23924,7 +24064,11 @@ def _recent_research_discovery_seed_shards(
                 else {}
             )
             url = _safe_text(source.get("url") or source.get("sourceUrl"))
-            if not url or read_evidence.get("verified") is not True:
+            if (
+                not url
+                or urlparse(url).scheme.lower() not in {"http", "https"}
+                or read_evidence.get("verified") is not True
+            ):
                 continue
             identity = _research_document_identity(url, question=question)
             if not identity or identity in discovered:
@@ -24160,7 +24304,7 @@ def _recent_research_discovery_seed_shards(
             if facet_source_entity_compatible(omnibus, facet):
                 append_seed(omnibus, facet)
 
-    return seeds[:32]
+    return seeds[:selection_limit]
 
 
 _RESEARCH_PROVIDER_TERMINAL_FAILURES = {
@@ -24180,6 +24324,7 @@ _RESEARCH_PROVIDER_BOUNDED_RETRY_FAILURES = {
     "rate_limited",
     "search_failed",
     "service_unavailable",
+    "web_fetch_failed",
 }
 _RESEARCH_PROVIDER_RELEVANCE_FAILURES = {
     "irrelevant_results",
@@ -24277,7 +24422,20 @@ def _run_research_loop(
     read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
     recent_discovery_seed_shards: list[dict[str, Any]] | None = None,
     preferred_language: str = "",
+    delivery_requirements: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    requirements = dict(
+        delivery_requirements or _research_delivery_requirements(question)
+    )
+    target_sources = _as_int(
+        requirements.get("targetSources"),
+        TARGET_RESEARCH_SOURCE_COUNT,
+    )
+    target_hosts = _as_int(
+        requirements.get("targetDistinctHosts"),
+        TARGET_RESEARCH_DISTINCT_HOST_COUNT,
+    )
+    discovery_started_at = time.perf_counter()
     loop_state: dict[str, Any] = {
         "phase": "research_loop",
         "questions": [question],
@@ -24291,6 +24449,7 @@ def _run_research_loop(
         "rejectedSources": [],
         "nextQueries": [],
         "researchLoopReport": {},
+        "deliveryRequirements": requirements,
         "stopReason": "",
     }
     all_shards: list[dict[str, Any]] = []
@@ -24324,6 +24483,8 @@ def _run_research_loop(
     # ``max_rounds - (max_rounds - 1)`` formula made this cap permanently one.
     architect_repair_reserve = 1 if max_rounds > 1 else 0
     discovery_round_cap = max(1, max_rounds - architect_repair_reserve)
+    if requirements.get("mode") == "narrow_authoritative_technical":
+        discovery_round_cap = min(discovery_round_cap, 2)
     for round_index in range(1, discovery_round_cap + 1):
         if not pending_shards:
             loop_state["stopReason"] = "no_refinement_queries_available"
@@ -24360,8 +24521,8 @@ def _run_research_loop(
         transport_summary = _research_transport_failure_summary(completed)
         if transport_summary:
             loop_state["rounds"][-1]["transportSummary"] = transport_summary
-        source_target_met = final_stats["selectedSourceCount"] >= TARGET_RESEARCH_SOURCE_COUNT
-        host_target_met = final_stats["distinctHostCount"] >= TARGET_RESEARCH_DISTINCT_HOST_COUNT
+        source_target_met = final_stats["selectedSourceCount"] >= target_sources
+        host_target_met = final_stats["distinctHostCount"] >= target_hosts
         facet_target_met = facet_stats.get("complete") is True
         if source_target_met and host_target_met and facet_target_met:
             loop_state["stopReason"] = "high_quality_evidence_target_met"
@@ -24400,7 +24561,7 @@ def _run_research_loop(
             loop_state["transportSummary"] = transport_summary
             loop_state["nextQueries"] = []
             break
-        missing_sources = max(0, TARGET_RESEARCH_SOURCE_COUNT - int(final_stats["selectedSourceCount"]))
+        missing_sources = max(0, target_sources - int(final_stats["selectedSourceCount"]))
         missing_facets = list(facet_stats.get("missingFacetIds") or [])
         refinement_limit = max(
             2,
@@ -24424,13 +24585,13 @@ def _run_research_loop(
         loop_state["nextQueries"] = [shard.get("query") for shard in pending_shards]
 
     loop_state["readSources"] = list(final_stats.get("sourceUrls") or [])
-    if int(final_stats.get("selectedSourceCount") or 0) < TARGET_RESEARCH_SOURCE_COUNT:
+    if int(final_stats.get("selectedSourceCount") or 0) < target_sources:
         loop_state["uncoveredClaims"].append(
-            f"Readable source target not met: {final_stats.get('selectedSourceCount', 0)}/{TARGET_RESEARCH_SOURCE_COUNT}."
+            f"Readable source target not met: {final_stats.get('selectedSourceCount', 0)}/{target_sources}."
         )
-    if int(final_stats.get("distinctHostCount") or 0) < TARGET_RESEARCH_DISTINCT_HOST_COUNT:
+    if int(final_stats.get("distinctHostCount") or 0) < target_hosts:
         loop_state["uncoveredClaims"].append(
-            f"Independent host target not met: {final_stats.get('distinctHostCount', 0)}/{TARGET_RESEARCH_DISTINCT_HOST_COUNT}."
+            f"Independent host target not met: {final_stats.get('distinctHostCount', 0)}/{target_hosts}."
         )
     final_facet_stats = _selected_facet_evidence_stats(
         question,
@@ -24444,11 +24605,21 @@ def _run_research_loop(
             + "."
         )
     loop_state["facetEvidence"] = final_facet_stats
-    report = _research_loop_report(question, all_shards, source_policy=source_policy)
+    report = _research_loop_report(
+        question,
+        all_shards,
+        source_policy=source_policy,
+        delivery_requirements=requirements,
+    )
     if loop_state["uncoveredClaims"]:
         report["uncoveredClaims"] = list(dict.fromkeys([*report.get("uncoveredClaims", []), *loop_state["uncoveredClaims"]]))
     loop_state.update(report)
     loop_state["readAttemptStats"] = attempt_ledger.snapshot()
+    loop_state["performance"] = {
+        "discoveryElapsedMs": int((time.perf_counter() - discovery_started_at) * 1000),
+        "searchShardCount": len(all_shards),
+        "readableSourceCount": _read_source_count(all_shards, question=question),
+    }
     return all_shards, loop_state
 
 
@@ -24717,11 +24888,18 @@ def _synthesize_bundle(
         source["citationKey"] = f"S{index}"
     selected_source_matrix = [item for item in source_matrix if (item.get("sourceQualityGate") or {}).get("selectedForEvidence")]
     evidence_bank = _build_evidence_bank(question=question, source_matrix=source_matrix, shards=shards)
-    authority_scores = [int(item.get("authorityScore") or 0) for item in (selected_source_matrix or source_matrix)[:TARGET_RESEARCH_SOURCE_COUNT]]
+    target_sources = _as_int(
+        delivery_requirements.get("targetSources"),
+        TARGET_RESEARCH_SOURCE_COUNT,
+    )
+    authority_scores = [
+        int(item.get("authorityScore") or 0)
+        for item in (selected_source_matrix or source_matrix)[:target_sources]
+    ]
     average_authority = round(sum(authority_scores) / len(authority_scores), 1) if authority_scores else 0
     confidence = (
         "high"
-        if average_authority >= 75 and len(selected_source_matrix) >= TARGET_RESEARCH_SOURCE_COUNT
+        if average_authority >= 75 and len(selected_source_matrix) >= target_sources
         else (
             "medium"
             if len(selected_source_matrix)
@@ -25177,6 +25355,7 @@ def research_broker(
                 "recommendedNextAction": "provide_question",
             }
         )
+    run_started_at = time.perf_counter()
 
     route_context = (
         (state or {}).get("current_route_context")
@@ -25186,6 +25365,7 @@ def research_broker(
     preferred_language = normalize_preferred_language(
         preferredLanguage or route_context.get("preferredLanguage")
     ) or infer_preferred_language(clean_question)
+    delivery_requirements = _research_delivery_requirements(clean_question)
 
     seed_urls = _as_list(seedUrls)
     # A URL embedded in the user's brief is an explicit read request even
@@ -25213,6 +25393,16 @@ def research_broker(
                 + _research_authority_query_budget(len(structured_facets)),
             ),
         )
+    task_shaped_shard_cap = shard_cap
+    if delivery_requirements.get("mode") == "narrow_authoritative_technical":
+        task_shaped_shard_cap = min(
+            shard_cap,
+            max(
+                1,
+                len(seed_urls),
+                _as_int(delivery_requirements.get("targetSources"), 4),
+            ),
+        )
     round_cap = max(1, min(_as_int(maxRounds, config["maxRounds"]), config["maxRounds"]))
     shards = _build_shards(
         question=clean_question,
@@ -25220,7 +25410,7 @@ def research_broker(
         source_policy=sourcePolicy,
         seed_urls=seed_urls,
         allowed_domains=allowed_domains,
-        max_shards=shard_cap,
+        max_shards=task_shaped_shard_cap,
     )
 
     if normalized_mode == "plan":
@@ -25234,6 +25424,7 @@ def research_broker(
             "freshness": freshness,
             "sourcePolicy": sourcePolicy,
             "preferredLanguage": preferred_language,
+            "deliveryRequirements": delivery_requirements,
             "sourceCatalogRef": "research_source_quality_catalog:v1",
             "experienceFirstPolicy": {
                 "summary": "Before running new research, search reusable experience packs for repeat topics.",
@@ -25252,7 +25443,8 @@ def research_broker(
             "limits": {
                 "defaultShardCount": config["defaultShardCount"],
                 "requestedMaxShards": maxShards,
-                "effectiveMaxShards": shard_cap,
+                "effectiveMaxShards": task_shaped_shard_cap,
+                "configuredMaxShards": shard_cap,
                 "hardMaxShardCount": config["maxShardCount"],
                 "effectiveMaxRounds": round_cap,
                 "toolDeadlineMs": _RESEARCH_TOOL_DEADLINE_MS,
@@ -25310,6 +25502,7 @@ def research_broker(
                 )[:12],
             }
 
+    query_planning_started_at = time.perf_counter()
     query_plan_state: dict[str, Any] = {
         "used": False,
         "reason": "deterministic_query_plan",
@@ -25328,7 +25521,7 @@ def research_broker(
             facets=planning_facets,
             source_policy=sourcePolicy,
             freshness=freshness,
-            max_shards=max(0, shard_cap - len(seed_shards)),
+            max_shards=max(0, task_shaped_shard_cap - len(seed_shards)),
             preferred_language=preferred_language,
         )
         if planned_shards:
@@ -25337,14 +25530,18 @@ def research_broker(
                 planned_shards,
             )
             query_plan_state["catalogOfficialEntitySeeds"] = catalog_seed_audit
-            shards = [*seed_shards, *planned_shards][:shard_cap]
+            shards = [*seed_shards, *planned_shards][:task_shaped_shard_cap]
 
     recent_discovery_seeds = _recent_research_discovery_seed_shards(
         clean_question,
         shards,
         scope=scope,
+        source_limit=task_shaped_shard_cap,
     )
     query_plan_state["recentDiscoverySeedCount"] = len(recent_discovery_seeds)
+    query_plan_state["elapsedMs"] = int(
+        (time.perf_counter() - query_planning_started_at) * 1000
+    )
     read_attempt_ledger = _ResearchReadAttemptLedger(question=clean_question)
     _report_research_progress(
         stage="discovery",
@@ -25366,6 +25563,7 @@ def research_broker(
         read_attempt_ledger=read_attempt_ledger,
         recent_discovery_seed_shards=recent_discovery_seeds,
         preferred_language=preferred_language,
+        delivery_requirements=delivery_requirements,
     )
     research_loop_state["queryPlan"] = query_plan_state
     architect_call_state: dict[str, Any] = {
@@ -25380,6 +25578,7 @@ def research_broker(
         toolName="research_architect",
         nodeId="research-synthesis:start",
     )
+    initial_synthesis_started_at = time.perf_counter()
     bundle = _synthesize_bundle(
         question=clean_question,
         research_intent=researchIntent,
@@ -25392,6 +25591,9 @@ def research_broker(
         architect_call_state=architect_call_state,
         preferred_language=preferred_language,
     )
+    research_loop_state.setdefault("performance", {})[
+        "initialSynthesisElapsedMs"
+    ] = int((time.perf_counter() - initial_synthesis_started_at) * 1000)
     _report_research_progress(
         stage="review",
         status="completed" if bundle.get("deliveryReady") else "active",
@@ -25411,9 +25613,30 @@ def research_broker(
     )
     if initial_model_synthesis.get("sameEvidenceReviewRejected") is True:
         research_loop_state["stopReason"] = "same_evidence_review_rejected_after_revision"
+    final_discovery_round = next(
+        (
+            item
+            for item in reversed(list(research_loop_state.get("rounds") or []))
+            if isinstance(item, dict)
+        ),
+        {},
+    )
+    if (
+        not bundle.get("deliveryReady")
+        and len(list(research_loop_state.get("rounds") or [])) >= 2
+        and int(final_discovery_round.get("selectedSourceCount") or 0) == 0
+    ):
+        research_loop_state["stopReason"] = (
+            "no_qualified_sources_after_bounded_discovery"
+        )
+    repair_started_at = time.perf_counter()
     while (
         not bundle.get("deliveryReady")
-        and research_loop_state.get("stopReason") != "source_transport_exhausted"
+        and research_loop_state.get("stopReason")
+        not in {
+            "source_transport_exhausted",
+            "no_qualified_sources_after_bounded_discovery",
+        }
         and len(list(research_loop_state.get("rounds") or [])) < round_cap
         and int(architect_call_state.get("fullSynthesisAttempts") or 0)
         < _MAX_RESEARCH_ARCHITECT_FULL_SYNTHESIS_ATTEMPTS
@@ -25741,13 +25964,21 @@ def research_broker(
             else "architect_evidence_repair_no_new_evidence"
         )
         refreshed_gaps: list[str] = []
-        if int(repair_stats.get("selectedSourceCount") or 0) < TARGET_RESEARCH_SOURCE_COUNT:
+        target_sources = _as_int(
+            delivery_requirements.get("targetSources"),
+            TARGET_RESEARCH_SOURCE_COUNT,
+        )
+        target_hosts = _as_int(
+            delivery_requirements.get("targetDistinctHosts"),
+            TARGET_RESEARCH_DISTINCT_HOST_COUNT,
+        )
+        if int(repair_stats.get("selectedSourceCount") or 0) < target_sources:
             refreshed_gaps.append(
-                f"Readable source target not met: {repair_stats.get('selectedSourceCount', 0)}/{TARGET_RESEARCH_SOURCE_COUNT}."
+                f"Readable source target not met: {repair_stats.get('selectedSourceCount', 0)}/{target_sources}."
             )
-        if int(repair_stats.get("distinctHostCount") or 0) < TARGET_RESEARCH_DISTINCT_HOST_COUNT:
+        if int(repair_stats.get("distinctHostCount") or 0) < target_hosts:
             refreshed_gaps.append(
-                f"Independent host target not met: {repair_stats.get('distinctHostCount', 0)}/{TARGET_RESEARCH_DISTINCT_HOST_COUNT}."
+                f"Independent host target not met: {repair_stats.get('distinctHostCount', 0)}/{target_hosts}."
             )
         if repair_facet_stats.get("missingFacetIds"):
             refreshed_gaps.append(
@@ -25755,7 +25986,12 @@ def research_broker(
                 + ", ".join(repair_facet_stats.get("missingFacetIds") or [])
                 + "."
             )
-        refreshed_report = _research_loop_report(clean_question, completed_shards, source_policy=sourcePolicy)
+        refreshed_report = _research_loop_report(
+            clean_question,
+            completed_shards,
+            source_policy=sourcePolicy,
+            delivery_requirements=delivery_requirements,
+        )
         research_loop_state.update(refreshed_report)
         research_loop_state["uncoveredClaims"] = list(
             dict.fromkeys([*list(refreshed_report.get("uncoveredClaims") or []), *refreshed_gaps])
@@ -25790,6 +26026,13 @@ def research_broker(
             research_loop_state["rounds"][-1]["architectStructuralStats"] = dict(
                 refreshed_structural_stats
             )
+    performance = research_loop_state.setdefault("performance", {})
+    performance["repairElapsedMs"] = int(
+        (time.perf_counter() - repair_started_at) * 1000
+    )
+    performance["totalElapsedMs"] = int(
+        (time.perf_counter() - run_started_at) * 1000
+    )
     research_loop_state["architectCallState"] = dict(architect_call_state)
     stored = _store_evidence(bundle, state=state)
     return _render_payload(_visible_bundle(stored), max_chars=36000)

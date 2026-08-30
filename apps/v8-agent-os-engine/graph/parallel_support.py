@@ -915,7 +915,7 @@ def _required_verification_tools(branch: dict[str, Any]) -> set[str]:
             capsule.get("verificationContract"),
         )
     ).lower()
-    if not any(str(item or "").strip() for item in must_read) and any(
+    execution_requested = any(
         marker in contract_blob
         for marker in (
             "实际执行",
@@ -926,6 +926,21 @@ def _required_verification_tools(branch: dict[str, Any]) -> set[str]:
             "execute the",
             "exit code",
         )
+    )
+    explicit_execution_with_read = any(
+        marker in contract_blob
+        for marker in (
+            "实际执行",
+            "执行退出码",
+            "stdout",
+            "stderr",
+            "run the command",
+            "execute the",
+        )
+    )
+    if execution_requested and (
+        not any(str(item or "").strip() for item in must_read)
+        or explicit_execution_with_read
     ):
         required.add("run_system_command")
     return required

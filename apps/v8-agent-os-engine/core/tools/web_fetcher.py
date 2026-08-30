@@ -1544,6 +1544,14 @@ _SOURCE_ROUTER_BROWSER_FALLBACK: ContextVar[bool] = ContextVar(
     "source_router_browser_fallback",
     default=True,
 )
+_SOURCE_ROUTER_PREFERRED_PROVIDERS: ContextVar[tuple[str, ...]] = ContextVar(
+    "source_router_preferred_providers",
+    default=(),
+)
+_SOURCE_ROUTER_EXCLUDED_PROVIDERS: ContextVar[tuple[str, ...]] = ContextVar(
+    "source_router_excluded_providers",
+    default=(),
+)
 # Anonymous HTML search is shared by parallel Research shards. Yahoo accepts
 # sequential requests reliably but responds with 429 to short request bursts.
 _YAHOO_SEARCH_SEMAPHORE = BoundedSemaphore(1)
@@ -2314,6 +2322,8 @@ def _source_router_payload_fields(
             "requestedProvider": plan.get("requestedProvider") or "auto",
             "plannedProviders": plan.get("plannedProviders") or [],
             "profilePromotedProviders": plan.get("profilePromotedProviders") or [],
+            "runPreferredProviders": plan.get("runPreferredProviders") or [],
+            "runExcludedProviders": plan.get("runExcludedProviders") or [],
             "executableProviders": plan.get("providers") or [],
             "selectedProvider": provider or None,
             "skippedProviders": plan.get("skippedProviders") or [],
@@ -6002,6 +6012,32 @@ def web_search(
     )
     providers = list(router_plan.get("providers") or [])
     attempted_providers: list[dict[str, Any]] = list(router_plan.get("skippedProviders") or [])
+    if requested_provider == "auto":
+        preferred = _ordered_unique(_SOURCE_ROUTER_PREFERRED_PROVIDERS.get())
+        excluded = set(_ordered_unique(_SOURCE_ROUTER_EXCLUDED_PROVIDERS.get()))
+        circuit_open = [provider for provider in providers if provider in excluded]
+        providers = [provider for provider in providers if provider not in excluded]
+        providers = [
+            *[provider for provider in preferred if provider in providers],
+            *[provider for provider in providers if provider not in preferred],
+        ]
+        attempted_providers.extend(
+            {
+                "provider": provider,
+                "status": "skipped",
+                "failureClass": "provider_circuit_open",
+                "reason": "research_run_provider_circuit_open",
+            }
+            for provider in circuit_open
+        )
+        router_plan = {
+            **router_plan,
+            "providers": providers,
+            "runPreferredProviders": [
+                provider for provider in preferred if provider in providers
+            ],
+            "runExcludedProviders": circuit_open,
+        }
     started_at = time.monotonic()
     last_error = ""
     site_hosts = list(_search_query_relevance_signals(query).get("siteHosts") or [])
@@ -6887,6 +6923,8 @@ def source_router_search(
     total_timeout_seconds: float | None = None,
     locale_hint: str = "",
     allow_browser_profile_fallback: bool = True,
+    preferred_providers: list[str] | tuple[str, ...] | None = None,
+    excluded_providers: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     """Internal Source Router search primitive used by Research/Web runtimes.
 
@@ -6903,6 +6941,12 @@ def source_router_search(
     browser_token = _SOURCE_ROUTER_BROWSER_FALLBACK.set(
         bool(allow_browser_profile_fallback)
     )
+    preferred_token = _SOURCE_ROUTER_PREFERRED_PROVIDERS.set(
+        tuple(_ordered_unique(tuple(preferred_providers or ())))
+    )
+    excluded_token = _SOURCE_ROUTER_EXCLUDED_PROVIDERS.set(
+        tuple(_ordered_unique(tuple(excluded_providers or ())))
+    )
     try:
         return web_search.func(
             query=query,
@@ -6916,6 +6960,8 @@ def source_router_search(
             tool_call_id=tool_call_id,
         )
     finally:
+        _SOURCE_ROUTER_EXCLUDED_PROVIDERS.reset(excluded_token)
+        _SOURCE_ROUTER_PREFERRED_PROVIDERS.reset(preferred_token)
         _SOURCE_ROUTER_BROWSER_FALLBACK.reset(browser_token)
         _SOURCE_ROUTER_LOCALE_HINT.reset(locale_token)
         _SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.reset(timeout_token)

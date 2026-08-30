@@ -1142,28 +1142,52 @@ def research_high_quality_issues(payload: dict[str, Any]) -> list[str]:
 
     issues = research_acceptance_issues(payload)
     metrics = research_acceptance_metrics(payload)
-    if metrics["effectiveAnswerChars"] < TARGET_RESEARCH_ANSWER_CHARS:
-        issues.append(f"target_answer_depth_not_met:{TARGET_RESEARCH_ANSWER_CHARS}")
-    if metrics["selectedSourceCount"] < TARGET_RESEARCH_SOURCE_COUNT:
-        issues.append(f"target_source_count_not_met:{TARGET_RESEARCH_SOURCE_COUNT}")
-    if metrics["distinctHostCount"] < TARGET_RESEARCH_DISTINCT_HOST_COUNT:
-        issues.append(f"target_independent_host_count_not_met:{TARGET_RESEARCH_DISTINCT_HOST_COUNT}")
-    if metrics["retrievedSourceCount"] < TARGET_RESEARCH_SOURCE_COUNT:
-        issues.append(f"target_retrieval_evidence_not_met:{TARGET_RESEARCH_SOURCE_COUNT}")
-    if metrics["readVerifiedSourceCount"] < TARGET_RESEARCH_SOURCE_COUNT:
-        issues.append(f"target_read_evidence_not_met:{TARGET_RESEARCH_SOURCE_COUNT}")
-    if metrics["claimCount"] < TARGET_RESEARCH_CLAIM_COUNT:
-        issues.append(f"target_claim_depth_not_met:{TARGET_RESEARCH_CLAIM_COUNT}")
-    if metrics["uniqueClaimCount"] < TARGET_RESEARCH_CLAIM_COUNT:
-        issues.append(f"target_distinct_claim_depth_not_met:{TARGET_RESEARCH_CLAIM_COUNT}")
-    if metrics["evidenceVerifiedClaimCount"] < TARGET_RESEARCH_CLAIM_COUNT:
-        issues.append(f"target_verified_claim_evidence_not_met:{TARGET_RESEARCH_CLAIM_COUNT}")
-    if metrics["claimSupportedSourceCount"] < TARGET_RESEARCH_SOURCE_COUNT:
-        issues.append(f"target_claim_source_coverage_not_met:{TARGET_RESEARCH_SOURCE_COUNT}")
-    if metrics["answerCitedSourceCount"] < TARGET_RESEARCH_SOURCE_COUNT:
-        issues.append(f"target_answer_citation_count_not_met:{TARGET_RESEARCH_SOURCE_COUNT}")
-    if metrics["answerCitedContentUnitCount"] < TARGET_RESEARCH_SOURCE_COUNT:
-        issues.append(f"target_answer_citation_spread_not_met:{TARGET_RESEARCH_SOURCE_COUNT}")
+    answer_target = max(
+        _delivery_requirement(payload, "minimumAnswerChars", MIN_RESEARCH_ANSWER_CHARS),
+        _delivery_requirement(payload, "targetAnswerChars", TARGET_RESEARCH_ANSWER_CHARS),
+    )
+    source_target = max(
+        _delivery_requirement(payload, "minimumSources", MIN_RESEARCH_SOURCE_COUNT),
+        _delivery_requirement(payload, "targetSources", TARGET_RESEARCH_SOURCE_COUNT),
+    )
+    host_target = max(
+        _delivery_requirement(
+            payload,
+            "minimumDistinctHosts",
+            min(MIN_RESEARCH_DISTINCT_HOST_COUNT, source_target),
+        ),
+        _delivery_requirement(
+            payload,
+            "targetDistinctHosts",
+            TARGET_RESEARCH_DISTINCT_HOST_COUNT,
+        ),
+    )
+    claim_target = max(
+        _delivery_requirement(payload, "minimumClaims", MIN_RESEARCH_CLAIM_COUNT),
+        _delivery_requirement(payload, "targetClaims", TARGET_RESEARCH_CLAIM_COUNT),
+    )
+    if metrics["effectiveAnswerChars"] < answer_target:
+        issues.append(f"target_answer_depth_not_met:{answer_target}")
+    if metrics["selectedSourceCount"] < source_target:
+        issues.append(f"target_source_count_not_met:{source_target}")
+    if metrics["distinctHostCount"] < host_target:
+        issues.append(f"target_independent_host_count_not_met:{host_target}")
+    if metrics["retrievedSourceCount"] < source_target:
+        issues.append(f"target_retrieval_evidence_not_met:{source_target}")
+    if metrics["readVerifiedSourceCount"] < source_target:
+        issues.append(f"target_read_evidence_not_met:{source_target}")
+    if metrics["claimCount"] < claim_target:
+        issues.append(f"target_claim_depth_not_met:{claim_target}")
+    if metrics["uniqueClaimCount"] < claim_target:
+        issues.append(f"target_distinct_claim_depth_not_met:{claim_target}")
+    if metrics["evidenceVerifiedClaimCount"] < claim_target:
+        issues.append(f"target_verified_claim_evidence_not_met:{claim_target}")
+    if metrics["claimSupportedSourceCount"] < source_target:
+        issues.append(f"target_claim_source_coverage_not_met:{source_target}")
+    if metrics["answerCitedSourceCount"] < source_target:
+        issues.append(f"target_answer_citation_count_not_met:{source_target}")
+    if metrics["answerCitedContentUnitCount"] < source_target:
+        issues.append(f"target_answer_citation_spread_not_met:{source_target}")
     return list(dict.fromkeys(issues))
 
 

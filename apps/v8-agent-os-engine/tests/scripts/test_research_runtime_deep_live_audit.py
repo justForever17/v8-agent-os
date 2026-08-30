@@ -357,6 +357,19 @@ def test_technical_runtime_accepts_bound_segmented_fresh_bundle() -> None:
     assert diagnostic["finalPack"]["independentReview"]["bindingVersion"] == 6
 
 
+def test_technical_runtime_accepts_single_writer_and_task_shaped_target() -> None:
+    bundle = _technical_bundle()
+    bundle["deliveryRequirements"] = {
+        "mode": "narrow_authoritative_technical",
+        "targetSources": 4,
+    }
+    synthesis = bundle["finalExperiencePack"]["modelSynthesis"]
+    synthesis["writerMode"] = "single"
+    synthesis["writerSectionCount"] = 0
+
+    assert audit._technical_runtime_failures({}, bundle) == []
+
+
 def test_technical_runtime_rejects_surface_and_review_binding_drift() -> None:
     bundle = _technical_bundle()
     bundle["researchAnswerPack"]["answer"] += " drift"

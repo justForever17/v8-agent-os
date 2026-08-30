@@ -455,11 +455,13 @@ def _technical_runtime_failures(payload: dict[str, Any], bundle: dict[str, Any] 
     if final_pack.get("synthesisMode") != "model_agent" or model_synthesis.get("used") is not True:
         failures.append("architect_agent_not_used:model_synthesis_missing")
     writer_mode = str(model_synthesis.get("writerMode") or "")
-    if not writer_mode.startswith("segmented"):
-        failures.append(f"technical_writer_not_segmented:{writer_mode or 'missing'}")
+    if not writer_mode:
+        failures.append("technical_writer_mode_missing")
     section_count = model_synthesis.get("writerSectionCount")
-    if isinstance(section_count, bool) or not isinstance(section_count, int) or section_count < 2:
+    if isinstance(section_count, bool) or not isinstance(section_count, int) or section_count < 0:
         failures.append("technical_writer_section_count_invalid")
+    elif writer_mode.startswith("segmented") and section_count < 2:
+        failures.append("technical_segmented_writer_section_count_invalid")
     revision_count = model_synthesis.get("writerRevisionCount")
     if isinstance(revision_count, bool) or not isinstance(revision_count, int) or revision_count < 0:
         failures.append("technical_writer_revision_count_invalid")
@@ -554,8 +556,23 @@ def _technical_runtime_failures(payload: dict[str, Any], bundle: dict[str, Any] 
             and str(receipt.get("retrievedAt") or "").strip()
         ):
             read_receipts.append(receipt)
-    if len(read_receipts) < TARGET_RESEARCH_SOURCE_COUNT:
-        failures.append(f"technical_live_read_receipts_below_target:{len(read_receipts)}/{TARGET_RESEARCH_SOURCE_COUNT}")
+    delivery_requirements = (
+        bundle.get("deliveryRequirements")
+        if isinstance(bundle.get("deliveryRequirements"), dict)
+        else {}
+    )
+    try:
+        target_sources = int(
+            delivery_requirements.get("targetSources")
+            or TARGET_RESEARCH_SOURCE_COUNT
+        )
+    except (TypeError, ValueError):
+        target_sources = TARGET_RESEARCH_SOURCE_COUNT
+    target_sources = max(1, target_sources)
+    if len(read_receipts) < target_sources:
+        failures.append(
+            f"technical_live_read_receipts_below_target:{len(read_receipts)}/{target_sources}"
+        )
     return list(dict.fromkeys(failures))
 
 

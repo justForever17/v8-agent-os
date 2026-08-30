@@ -198,6 +198,26 @@ def test_task_shaped_contract_accepts_two_official_documents_without_lowering_an
     assert f"evidence_source_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in research_acceptance_issues(standard)
 
 
+def test_task_shaped_high_quality_targets_do_not_inherit_broad_research_quota() -> None:
+    payload = _accepted_payload(source_count=6)
+    payload["deliveryRequirements"] = {
+        "mode": "narrow_authoritative_technical",
+        "minimumSources": 2,
+        "minimumDistinctHosts": 1,
+        "minimumClaims": MIN_RESEARCH_CLAIM_COUNT,
+        "minimumAnswerChars": MIN_RESEARCH_ANSWER_CHARS,
+        "targetSources": 4,
+        "targetDistinctHosts": 1,
+        "targetClaims": 6,
+        "targetAnswerChars": 3_000,
+    }
+    _rebind_review_consensus(payload)
+
+    assert research_high_quality_issues(payload) == []
+    assert research_bundle_is_high_quality(payload) is True
+    assert research_quality_tier(payload) == "high_quality"
+
+
 def test_research_quality_rejects_incomplete_structured_brief_coverage() -> None:
     payload = _accepted_payload()
     payload["briefCoverageRequired"] = True

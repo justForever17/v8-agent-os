@@ -20,6 +20,8 @@ def test_internal_source_router_options_are_scoped_and_reset(monkeypatch) -> Non
         observed["timeout"] = web_fetcher._SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.get()
         observed["locale"] = web_fetcher._SOURCE_ROUTER_LOCALE_HINT.get()
         observed["browserFallback"] = web_fetcher._SOURCE_ROUTER_BROWSER_FALLBACK.get()
+        observed["preferredProviders"] = web_fetcher._SOURCE_ROUTER_PREFERRED_PROVIDERS.get()
+        observed["excludedProviders"] = web_fetcher._SOURCE_ROUTER_EXCLUDED_PROVIDERS.get()
         return json.dumps({"ok": True, "results": []})
 
     monkeypatch.setattr(web_fetcher, "web_search", SimpleNamespace(func=fake_search))
@@ -29,16 +31,84 @@ def test_internal_source_router_options_are_scoped_and_reset(monkeypatch) -> Non
         total_timeout_seconds=14,
         locale_hint="zh-CN",
         allow_browser_profile_fallback=False,
+        preferred_providers=["bing_cn"],
+        excluded_providers=["google"],
     )
 
     assert observed == {
         "timeout": 14.0,
         "locale": "zh-CN",
         "browserFallback": False,
+        "preferredProviders": ("bing_cn",),
+        "excludedProviders": ("google",),
     }
     assert web_fetcher._SOURCE_ROUTER_SEARCH_TIMEOUT_SECONDS.get() == 0.0
     assert web_fetcher._SOURCE_ROUTER_LOCALE_HINT.get() == ""
     assert web_fetcher._SOURCE_ROUTER_BROWSER_FALLBACK.get() is True
+    assert web_fetcher._SOURCE_ROUTER_PREFERRED_PROVIDERS.get() == ()
+    assert web_fetcher._SOURCE_ROUTER_EXCLUDED_PROVIDERS.get() == ()
+
+
+def test_internal_source_router_hints_reorder_and_skip_only_auto_provider(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {"globalPreferred": ["bing", "yahoo"]},
+            "providers": {
+                "bing": {"enabled": True},
+                "yahoo": {"enabled": True},
+            },
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+    calls: list[str] = []
+
+    def fake_html_search(_url, *, provider, **_kwargs):
+        calls.append(provider)
+        return {
+            "ok": True,
+            "statusCode": 200,
+            "finalUrl": f"https://{provider}.example/search",
+            "results": [
+                {
+                    "title": "Pathlib CLI guidance",
+                    "url": "https://docs.python.org/3/library/pathlib.html",
+                    "snippet": "Pathlib command line path guidance.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(web_fetcher, "_html_search_public", fake_html_search)
+
+    payload = json.loads(
+        web_fetcher.source_router_search(
+            query="pathlib command line guidance",
+            search_engine="auto",
+            preferred_providers=["yahoo"],
+            excluded_providers=["bing"],
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "yahoo"
+    assert calls == ["yahoo"]
+    assert payload["sourceRouter"]["runPreferredProviders"] == ["yahoo"]
+    assert payload["sourceRouter"]["runExcludedProviders"] == ["bing"]
+    assert payload["providerAttemptMatrix"][0]["failureClass"] == "provider_circuit_open"
+
+    explicit_payload = json.loads(
+        web_fetcher.source_router_search(
+            query="pathlib command line guidance",
+            search_engine="bing",
+            preferred_providers=["yahoo"],
+            excluded_providers=["bing"],
+        )
+    )
+    assert explicit_payload["ok"] is True
+    assert explicit_payload["provider"] == "bing"
+    assert calls == ["yahoo", "bing"]
 
 
 def _soup(html: str) -> BeautifulSoup:

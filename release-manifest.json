@@ -1,10 +1,10 @@
 {
   "schema": 2,
   "release": {
-    "version": "2026.08.30.1",
+    "version": "2026.09.01.1",
     "channel": "preview",
-    "tag": "v8-os-v2026.08.30.1",
-    "updatedAt": "2026-08-30T02:13:46.464Z"
+    "tag": "v8-os-v2026.09.01.1",
+    "updatedAt": "2026-09-01T08:00:26.117Z"
   },
   "products": {
     "desktop": {

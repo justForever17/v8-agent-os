@@ -1154,6 +1154,71 @@ def _engineering_verification_evidence_task(brief: dict[str, Any]) -> bool:
     return bool(re.search(r"\b(?:verify|verification|test|build|install|lint|audit)\b|验证|测试|构建|安装|验收|审计", probe))
 
 
+def _task_dependency_cycles(tasks: list[dict[str, Any]]) -> list[list[str]]:
+    """Return stable local dependency cycles without treating external refs as edges."""
+
+    task_ids = [
+        str(task.get("taskBriefId") or task.get("task_brief_id") or task.get("taskId") or "").strip()
+        for task in tasks
+        if isinstance(task, dict)
+    ]
+    local_ids = {task_id for task_id in task_ids if task_id}
+    graph: dict[str, list[str]] = {}
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        task_id = str(
+            task.get("taskBriefId")
+            or task.get("task_brief_id")
+            or task.get("taskId")
+            or ""
+        ).strip()
+        if not task_id:
+            continue
+        raw_dependencies = task.get("dependencies") or task.get("dependency") or []
+        dependencies = raw_dependencies if isinstance(raw_dependencies, list) else [raw_dependencies]
+        graph[task_id] = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in dependencies
+                if str(item or "").strip() in local_ids
+            )
+        )
+
+    color: dict[str, int] = {}
+    stack: list[str] = []
+    cycles: list[list[str]] = []
+    cycle_keys: set[tuple[str, ...]] = set()
+
+    def _visit(task_id: str) -> None:
+        color[task_id] = 1
+        stack.append(task_id)
+        for dependency in graph.get(task_id, []):
+            if color.get(dependency, 0) == 0:
+                _visit(dependency)
+                continue
+            if color.get(dependency) != 1:
+                continue
+            start = stack.index(dependency)
+            cycle = [*stack[start:], dependency]
+            members = cycle[:-1]
+            if not members:
+                continue
+            rotations = [tuple(members[index:] + members[:index]) for index in range(len(members))]
+            canonical = min(rotations)
+            if canonical in cycle_keys:
+                continue
+            cycle_keys.add(canonical)
+            cycles.append([*canonical, canonical[0]])
+        stack.pop()
+        color[task_id] = 2
+
+    for task_id in task_ids:
+        if task_id and color.get(task_id, 0) == 0:
+            _visit(task_id)
+    return sorted(cycles, key=lambda item: tuple(item))
+
+
 def _engineering_managed_shell_expectations(brief: dict[str, Any]) -> list[str]:
     acceptance = brief.get("acceptanceContract") or brief.get("acceptance")
     values = acceptance if isinstance(acceptance, list) else [acceptance]
@@ -1275,6 +1340,31 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
             "blocking": True,
             "message": "runtime_broker(route) requires an explicit Supervisor-owned task contract.",
             "requiredFields": ["taskBriefId", "goal", "context"],
+        }
+
+    dependency_cycles = _task_dependency_cycles(tasks)
+    if dependency_cycles:
+        return {
+            "status": "blocked",
+            "reason": "task_dependency_cycle",
+            "blocking": True,
+            "message": (
+                "Runtime task dependencies must form an acyclic graph. Repair only the listed dependency edges "
+                "before queueing the same route."
+            ),
+            "dependencyCycles": dependency_cycles,
+            "tasks": [
+                {
+                    "taskBriefId": task_id,
+                    "missingFields": ["dependencies(acyclic)"],
+                }
+                for task_id in dict.fromkeys(
+                    member
+                    for cycle in dependency_cycles
+                    for member in cycle[:-1]
+                )
+            ],
+            "requiredFields": ["dependencies(acyclic)"],
         }
 
     failures: list[dict[str, Any]] = []
@@ -1572,6 +1662,114 @@ def _engineering_route_retry_state(
     if completed_episode_ids:
         result["completedEpisodeIds"] = sorted(set(completed_episode_ids))
     return result
+
+
+def _engineering_repair_lineage(
+    *,
+    need: dict[str, Any],
+    route_context: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Bind a post-handoff repair to the exact degraded Engineering attempt.
+
+    The graph-owned degraded handoff is the authority. Natural-language words
+    such as ``repair`` or renamed task IDs never create replacement lineage.
+    """
+
+    state_payload = dict(state or {})
+    dispatch_status = dict(state_payload.get("runtime_dispatch_status") or {})
+    if (
+        str(dispatch_status.get("state") or "").strip().lower() != "degraded_handoff_ready"
+        or _has_user_instruction_after_runtime_handoff(state_payload)
+    ):
+        return {}
+
+    inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+    replacement_tasks = _explicit_task_briefs_from_inputs(inputs)
+    replacement_write_set = set(_normalized_engineering_write_scope(replacement_tasks))
+    if not replacement_write_set:
+        return {}
+
+    context = dict(route_context or {})
+    runtime_context = get_runtime_context()
+    current_run_id = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or state_payload.get("run_id")
+        or state_payload.get("runId")
+        or context.get("run_id")
+        or context.get("runId")
+        or ""
+    ).strip()
+    episodes_by_id: dict[str, dict[str, Any]] = {}
+    for raw_episode in list(context.get("capabilityEpisodes") or []):
+        if not isinstance(raw_episode, dict):
+            continue
+        episode_id = str(
+            raw_episode.get("episodeId") or raw_episode.get("id") or raw_episode.get("needId") or ""
+        ).strip()
+        if episode_id:
+            episodes_by_id[episode_id] = dict(raw_episode)
+
+    raw_handoffs = list(context.get("effectiveHandoffRefs") or context.get("handoffRefs") or [])
+    for raw_handoff in reversed(raw_handoffs):
+        if not isinstance(raw_handoff, dict):
+            continue
+        handoff = dict(raw_handoff)
+        kind = str(handoff.get("kind") or "").strip().lower()
+        status = str(handoff.get("status") or "").strip().lower()
+        if "engineering" not in kind or status != "degraded" or not bool(handoff.get("recoverable")):
+            continue
+        episode_id = str(handoff.get("producerEpisodeId") or "").strip()
+        handoff_ref_id = str(handoff.get("handoffRefId") or handoff.get("handoffId") or "").strip()
+        if not episode_id or not handoff_ref_id:
+            continue
+        episode = episodes_by_id.get(episode_id)
+        if episode is None:
+            try:
+                episode = db.get_runtime_episode(episode_id)
+            except Exception:
+                episode = None
+        if not isinstance(episode, dict):
+            continue
+        episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+        if current_run_id and episode_run_id and episode_run_id != current_run_id:
+            continue
+        if str(episode.get("kind") or "").strip().lower() != "engineering":
+            continue
+        if str(episode.get("state") or "").strip().lower() not in _ENGINEERING_REPAIR_FAILURE_STATES:
+            continue
+        prior_inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        prior_tasks = _explicit_task_briefs_from_inputs(prior_inputs)
+        prior_write_set = set(_normalized_engineering_write_scope(prior_tasks))
+        overlap = sorted(prior_write_set.intersection(replacement_write_set))
+        if not overlap:
+            continue
+        return {
+            "schemaVersion": "v8.engineering_repair.v1",
+            "source": "graph_owned_degraded_handoff",
+            "repairOfEpisodeIds": [episode_id],
+            "repairOfHandoffRefs": [handoff_ref_id],
+            "failedTaskBriefIds": [
+                str(item or "").strip()
+                for item in list(handoff.get("failedTaskBriefIds") or [])
+                if str(item or "").strip()
+            ][:24],
+            "repairTaskBriefIds": [
+                str(item or "").strip()
+                for item in list(handoff.get("repairTaskBriefIds") or [])
+                if str(item or "").strip()
+            ][:24],
+            "priorWriteSet": sorted(prior_write_set),
+            "replacementWriteSet": sorted(replacement_write_set),
+            "overlappingWriteSet": overlap,
+            "replacementTaskBriefIds": [
+                str(task.get("taskBriefId") or task.get("taskId") or "").strip()
+                for task in replacement_tasks
+                if str(task.get("taskBriefId") or task.get("taskId") or "").strip()
+            ][:24],
+        }
+    return {}
 
 
 def _engineering_route_execution_intent_conflict(
@@ -4632,6 +4830,16 @@ def runtime_broker(
                     },
                 },
             )
+        if route_kind == "engineering":
+            repair_lineage = _engineering_repair_lineage(
+                need=need_payload,
+                route_context=route_context,
+                state=state,
+            )
+            if repair_lineage:
+                route_inputs = dict(need_payload.get("inputs") or {})
+                route_inputs["repairLineage"] = repair_lineage
+                need_payload["inputs"] = route_inputs
         research_repair_state: dict[str, Any] | None = None
         if route_kind == "engineering":
             engineering_tasks = _explicit_task_briefs_from_inputs(route_inputs)

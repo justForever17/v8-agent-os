@@ -70,6 +70,15 @@ def _technical_bundle() -> dict:
         "writerSectionCount": 4,
         "writerRevisionCount": 0,
         "sameEvidenceReviewRejected": False,
+        "claimPlanMode": "runtime_canonical",
+        "claimPlanVersion": "v8.research_claim_plan.v1",
+        "claimPlanDigest": "a" * 64,
+        "claimPlanElapsedMs": 3,
+        "structureStatus": "skipped_not_required",
+        "structureElapsedMs": 0,
+        "writerElapsedMs": 1200,
+        "reviewElapsedMs": 800,
+        "modelPlanCallCount": 0,
     }
     final_pack = {
         "question": "Current pathlib CLI practices",
@@ -111,6 +120,12 @@ def _technical_bundle() -> dict:
         "researchLoopState": {
             "phase": "research_loop",
             "rounds": [{"round": 1, "queries": ["pathlib current practices"], "readSourceCount": 8}],
+            "performance": {
+                "synthesisStages": {
+                    "claimPlanMode": "runtime_canonical",
+                    "modelPlanCallCount": 0,
+                }
+            },
         },
         "shards": [
             {
@@ -352,6 +367,10 @@ def test_technical_runtime_accepts_bound_segmented_fresh_bundle() -> None:
     assert synthesis["writerSectionCount"] == 4
     assert synthesis["writerRevisionCount"] == 0
     assert synthesis["sameEvidenceReviewRejected"] is False
+    assert synthesis["claimPlanMode"] == "runtime_canonical"
+    assert synthesis["modelPlanCallCount"] == 0
+    assert synthesis["writerElapsedMs"] == 1200
+    assert synthesis["reviewElapsedMs"] == 800
     assert diagnostic["searchReceipts"][0]["provider"] == "fixture-search"
     assert len(diagnostic["readReceipts"]) == 8
     assert diagnostic["finalPack"]["independentReview"]["bindingVersion"] == 6
@@ -368,6 +387,18 @@ def test_technical_runtime_accepts_single_writer_and_task_shaped_target() -> Non
     synthesis["writerSectionCount"] = 0
 
     assert audit._technical_runtime_failures({}, bundle) == []
+
+
+def test_technical_runtime_rejects_restored_model_plan_ownership() -> None:
+    bundle = _technical_bundle()
+    synthesis = bundle["finalExperiencePack"]["modelSynthesis"]
+    synthesis["modelPlanCallCount"] = 1
+    synthesis["claimPlanMode"] = "model_generated"
+
+    failures = audit._technical_runtime_failures({}, bundle)
+
+    assert "technical_canonical_claim_plan_missing" in failures
+    assert "technical_model_plan_call_present" in failures
 
 
 def test_technical_runtime_rejects_surface_and_review_binding_drift() -> None:

@@ -797,7 +797,9 @@ def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dic
         for item in payload["evidenceBundles"]:
             if not isinstance(item, dict) or not _scope_matches(item, scope):
                 continue
-            items.append(_visible(item))
+            visible = _visible(item)
+            visible["promotable"] = _has_reusable_answer_pack(item)
+            items.append(visible)
             if len(items) >= safe_limit:
                 break
         return items
@@ -809,7 +811,9 @@ def get_evidence_bundle(evidence_bundle_id: str) -> dict[str, Any] | None:
         target = _safe_text(evidence_bundle_id)
         for item in payload["evidenceBundles"]:
             if _safe_text(item.get("evidenceBundleId")) == target:
-                return _visible(item)
+                visible = _visible(item)
+                visible["promotable"] = _has_reusable_answer_pack(item)
+                return visible
     return None
 
 

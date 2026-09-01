@@ -1147,8 +1147,36 @@ def _handoff_proof_evidence(handoffs: Iterable[Mapping[str, Any]]) -> list[str]:
         "verification_results",
     }
     evidence: list[str] = []
+
+    def _structured_native_write_readback(value: Any) -> Iterable[Mapping[str, Any]]:
+        if isinstance(value, Mapping):
+            status = str(value.get("status") or value.get("workerStatus") or "").strip().lower()
+            tools_used = {
+                str(tool or "").strip()
+                for tool in list(value.get("toolsUsed") or value.get("toolNames") or [])
+                if str(tool or "").strip()
+            }
+            if (
+                status in {"ok", "ready", "success", "completed", "done"}
+                and value.get("writeToolSucceeded") is True
+                and {"write_native_file", "read_native_file"}.issubset(tools_used)
+                and list(value.get("artifactRefs") or [])
+            ):
+                yield value
+            for child in value.values():
+                if isinstance(child, (Mapping, list, tuple)):
+                    yield from _structured_native_write_readback(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                yield from _structured_native_write_readback(child)
+
     for handoff in handoffs:
         payload = _handoff_payload(handoff)
+        for result in _structured_native_write_readback(payload):
+            task_brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
+            evidence.append(
+                f"native_write_readback:{task_brief_id or 'verified'}"
+            )
         for value in _collect_named_values(payload, keys):
             text = _ref_text(value) or str(value or "").strip()
             if text:

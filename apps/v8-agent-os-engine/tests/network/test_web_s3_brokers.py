@@ -216,6 +216,8 @@ class WebAndS3BrokerTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["fetchMode"], "dynamic")
+        # Without an enabled/allowlisted profile, a public page keeps the
+        # normal static-first recovery order before spending browser budget.
         self.assertEqual(payload["attemptedModes"], ["static", "dynamic"])
         self.assertIn("dynamic fallback", payload["text"])
         self.assertTrue(payload["fallbackUsed"])
@@ -285,7 +287,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["fetchMode"], "dynamic")
-        self.assertEqual(payload["attemptedModes"], ["static", "dynamic"])
+        # An enabled and allowlisted profile goes straight to the headless
+        # authenticated lane so the browser session is actually reusable.
+        self.assertEqual(payload["attemptedModes"], ["dynamic"])
         self.assertEqual(captured_browser_kwargs["cdp_url"], "ws://127.0.0.1:9222/devtools/browser/test")
         self.assertNotIn("user_data_dir", captured_browser_kwargs)
         self.assertTrue(payload["agentBrowserProfile"]["used"])

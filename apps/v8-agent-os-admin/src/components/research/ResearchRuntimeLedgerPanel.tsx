@@ -18,6 +18,11 @@ type EvidenceBundle = {
     confidence?: string;
     authorityScore?: number;
     createdAt?: string;
+    promotable?: boolean;
+    deliveryReady?: boolean;
+    reviewDecision?: string;
+    reviewReasons?: string[];
+    qualityTier?: string;
     sourceMatrix?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
 };
 
@@ -99,7 +104,11 @@ function normalizeErrorCode(value?: string) {
     const lowered = normalized.toLowerCase();
     if (!normalized) return "unknown";
     if (lowered.includes("experience pack not found")) return "experience_pack_not_found";
-    if (lowered.includes("evidence bundle not found")) return "evidence_bundle_not_found";
+    if (
+        lowered.includes("evidence bundle not found")
+        || lowered.includes("evidence_bundle_not_found")
+    ) return "evidence_bundle_not_found";
+    if (lowered.includes("evidence_bundle_not_promotable")) return "evidence_bundle_not_promotable";
     if (
         [
             "research_runtime_load_failed",
@@ -514,25 +523,39 @@ export function ResearchRuntimeLedgerPanel() {
                 <section className="space-y-3">
                     <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.evidenceBundles")}</h3>
                     <div className="space-y-3">
-                        {evidence.slice(0, 8).map((item) => (
+                        {evidence.slice(0, 8).map((item) => {
+                            const promotable = item.promotable === true;
+                            const promotionStatus = promotable
+                                ? t("app.admin.dashboard.research.runtime.ledger.promotion.ready")
+                                : t("app.admin.dashboard.research.runtime.ledger.promotion.blocked");
+                            return (
                             <div key={item.evidenceBundleId} className="rounded-2xl border border-border bg-background/55 p-4">
                                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                                     <div>
                                         <div className="font-medium text-foreground">{item.question || item.evidenceBundleId}</div>
                                         <div className="mt-1 text-xs text-muted-foreground">{item.evidenceBundleId}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{promotionStatus}</div>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Badge variant="outline" className={confidenceTone(item.confidence)}>
                                             {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}
                                         </Badge>
-                                        <Button type="button" variant="outline" size="sm" onClick={() => promote(item.evidenceBundleId)} disabled={loading}>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => promote(item.evidenceBundleId)}
+                                            disabled={loading || !promotable}
+                                            title={promotionStatus}
+                                        >
                                             <Archive className="mr-2 h-4 w-4" />
                                             {t("app.admin.dashboard.research.runtime.ledger.promote")}
                                         </Button>
                                     </div>
                                 </div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </section>
 

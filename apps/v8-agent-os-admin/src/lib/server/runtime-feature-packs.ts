@@ -22,6 +22,7 @@ import {
     transitionFeaturePackInstallJournal,
     type FeaturePackInstallJournal,
 } from "@/lib/server/feature-pack-transaction-journal";
+import { parseFeaturePackProbeMarker } from "@/lib/server/feature-pack-probe-output";
 import {
     engineFeaturePackSnapshotIsAuthoritative,
     mergeFeaturePackTruth,
@@ -1864,11 +1865,10 @@ async function runAssetSmokeCheck(
             provider === "GPU" ? 20_000 : 180_000,
         );
         output.write(`\n[${provider} smoke]\n${result.output}`);
-        const marker = result.output.split(/\r?\n/).find((line) => line.startsWith("__V8_SMOKE__"));
         return {
             result,
-            payload: result.code === 0 && marker
-                ? JSON.parse(marker.slice("__V8_SMOKE__".length)) as Record<string, unknown>
+            payload: result.code === 0
+                ? parseFeaturePackProbeMarker(result.output, "__V8_SMOKE__")
                 : null,
         };
     };
@@ -1935,11 +1935,11 @@ async function runPythonImportSmokeCheck(
     );
     output.write(`\n[Python import smoke]\n${result.output}`);
     if (result.error === "feature_pack_worker_termination_unconfirmed") throw new Error(result.error);
-    const marker = result.output.split(/\r?\n/).find((line) => line.startsWith("__V8_SMOKE__"));
-    if (result.code !== 0 || !marker) {
+    const payload = parseFeaturePackProbeMarker(result.output, "__V8_SMOKE__");
+    if (result.code !== 0 || !payload) {
         throw new Error(`Feature pack Python import validation failed (${result.code ?? "timeout"}). See logRef for details.`);
     }
-    return JSON.parse(marker.slice("__V8_SMOKE__".length)) as Record<string, unknown>;
+    return payload;
 }
 
 async function runFeaturePackDependencyCompatibilityCheck(
@@ -1962,11 +1962,10 @@ async function runFeaturePackDependencyCompatibilityCheck(
     );
     output.write(`\n[Python dependency compatibility]\n${result.output}`);
     if (result.error === "feature_pack_worker_termination_unconfirmed") throw new Error(result.error);
-    const marker = result.output.split(/\r?\n/).find((line) => line.startsWith("__V8_DEPENDENCY_CHECK__"));
-    if (result.code !== 0 || !marker) {
+    const payload = parseFeaturePackProbeMarker(result.output, "__V8_DEPENDENCY_CHECK__");
+    if (result.code !== 0 || !payload) {
         throw new Error("Feature pack dependency compatibility validation failed. See logRef for details.");
     }
-    const payload = JSON.parse(marker.slice("__V8_DEPENDENCY_CHECK__".length)) as Record<string, unknown>;
     if (payload.ok !== true) {
         throw new Error("Feature pack dependency compatibility validation failed. See logRef for details.");
     }

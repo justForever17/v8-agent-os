@@ -45,6 +45,13 @@ from core.tools.research_ledger import (
     search_experience_packs_with_options,
     store_evidence_bundle,
 )
+from core.tools.research_claim_plan import (
+    CANONICAL_CLAIM_PLAN_VERSION,
+    CanonicalClaimPlanError,
+    apply_structure_projection,
+    build_canonical_claim_plan,
+    structure_material as canonical_structure_material,
+)
 from core.tools.research_quality import (
     MIN_RESEARCH_ANSWER_CHARS,
     MIN_RESEARCH_CLAIM_COUNT,
@@ -103,7 +110,7 @@ _RESEARCH_SOURCE_READ_CHARS = MAX_RESEARCH_TEXT_CHARS
 _RESEARCH_SOURCE_CAPTURE_CHARS = 32_000
 _RESEARCH_ARCHITECT_SOURCE_TEXT_CHARS = 32_000
 _RESEARCH_ARCHITECT_EVIDENCE_CANDIDATE_COUNT = 6
-_RESEARCH_ARCHITECT_PLAN_MAX_TOKENS = 4_000
+_RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS = 1_400
 _RESEARCH_ARCHITECT_QUERY_PLAN_MAX_TOKENS = 3_200
 
 
@@ -141,9 +148,6 @@ def _report_research_progress(**payload: Any) -> None:
         # Product progress must never alter Research evidence or retry truth.
         return
 _RESEARCH_ARCHITECT_QUERY_PLAN_TIMEOUT_SECONDS = 60
-_RESEARCH_ARCHITECT_DECISION_MAX_TOKENS = 1_600
-_RESEARCH_ARCHITECT_DECISION_TIMEOUT_SECONDS = 28
-_RESEARCH_ARCHITECT_MIN_PLAN_REPAIR_SECONDS = 8.0
 _RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS = 12_000
 _RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS = 1_800
 _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT = 24
@@ -2014,12 +2018,38 @@ def _research_source_matches_root_subject(
     anchors = _research_root_subject_anchors(question)
     if not anchors:
         return True
+    compact_haystack = re.sub(r"\s+", "", haystack)
+    compact_title = re.sub(r"\s+", "", " ".join((title, snippet)).lower())
+    compact_visible_text = re.sub(r"\s+", "", visible_text.lower())
+    chinese_article_count = len(
+        re.findall(r"第[〇零一二三四五六七八九十百千\d]{1,8}条", visible_text)
+    )
     for anchor in anchors:
         if anchor == "gpai":
             if source_says_general_purpose_ai or (
                 re.search(r"\bgpai\b", haystack)
                 and not source_says_global_partnership
             ):
+                return True
+            continue
+        compact_anchor = re.sub(r"\s+", "", anchor)
+        if len(compact_anchor) >= 8 and re.fullmatch(r"[\u3400-\u9fff]+", compact_anchor):
+            if compact_anchor in compact_title:
+                return True
+            # Search providers commonly truncate an explicit Chinese document
+            # title in the persisted public source matrix. Accept only a long
+            # title prefix immediately followed by an actual truncation marker;
+            # ordinary keyword overlap remains insufficient.
+            if len(compact_anchor) >= 12:
+                prefix_length = max(8, (len(compact_anchor) * 3 + 3) // 4)
+                prefix = compact_anchor[:prefix_length]
+                if re.search(rf"{re.escape(prefix)}.{{0,6}}(?:\.{{3}}|…)", compact_title):
+                    return True
+            # A government mirror can have a generic page title. Treat its
+            # body as the named regulation only when it contains the explicit
+            # title and multiple independently numbered provisions. A page
+            # that merely cites the regulation remains contextual evidence.
+            if compact_anchor in compact_visible_text and chinese_article_count >= 3:
                 return True
             continue
         if re.search(rf"(?<![a-z0-9]){re.escape(anchor)}(?![a-z0-9])", haystack):
@@ -2618,6 +2648,23 @@ def _compact_visible_model_synthesis(value: Any) -> dict[str, Any]:
         "writerRevisionCount",
         "writerMode",
         "writerSectionCount",
+        "claimPlanMode",
+        "claimPlanVersion",
+        "claimPlanDigest",
+        "claimPlanElapsedMs",
+        "claimPlanCandidateCount",
+        "claimPlanClaimCount",
+        "claimPlanSourceCount",
+        "claimPlanRequiredSourceCount",
+        "claimPlanRequiredClaimCount",
+        "claimPlanCoveredFacetIds",
+        "claimPlanMissingSourceKeys",
+        "claimPlanMissingFacetIds",
+        "structureStatus",
+        "structureElapsedMs",
+        "writerElapsedMs",
+        "reviewElapsedMs",
+        "modelPlanCallCount",
     )
     return {
         key: value.get(key)
@@ -2791,7 +2838,7 @@ def _deterministic_facet_search_query(value: Any, *, max_chars: int = 180) -> st
         flags=re.IGNORECASE,
     )
     query = re.sub(
-        r"^(?:(?:请)?(?:确认|核实|核查|验证|查证|调查|研究|分析|比较|评估|说明|生成|形成|制定|整理|梳理|给出|输出|提供)[：:,，\s]*)+",
+        r"^(?:(?:请)?(?:确认|核实|核查|验证|查证|调查|研究|分析|比较|评估|说明|生成|形成|制定|整理|梳理|给出|输出|提供)[：:,，\s]+)+",
         "",
         query,
     )
@@ -4679,24 +4726,12 @@ def _normalized_evidence_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
-def _architect_plan_decision(value: Any, *, allow_runtime_validation_candidate: bool = False) -> str:
-    if not isinstance(value, dict):
-        return ""
-    decision = _safe_text(value.get("reviewDecision")).lower()
-    if decision in {"accept", "retry", "reject"}:
-        return decision
-    if (
-        allow_runtime_validation_candidate
-        and isinstance(value.get("claimTable"), list)
-        and bool(value.get("claimTable"))
-    ):
-        # Providers vary on repair-status labels (revise, revised, passed, or
-        # omitted). Treat the payload only as a candidate; deterministic
-        # evidence gates below still decide whether it is accepted.
-        return "accept"
-    if isinstance(value.get("accept"), bool):
-        return "accept" if value.get("accept") is True else "retry"
-    return ""
+def _normalized_exact_excerpt_text(value: Any) -> str:
+    return re.sub(
+        r"[^a-z0-9\u3400-\u9fff]+",
+        "",
+        _normalized_evidence_text(value),
+    )
 
 
 def _architect_complete_query_excerpt_text(value: Any) -> str:
@@ -4796,17 +4831,20 @@ def _architect_evidence_candidates(source: dict[str, Any], question: str, *, lim
     cleaned_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if re.fullmatch(
-            r"\[Facet evidence(?:\s*:\s*[^\]]+)?\]",
+        facet_label = re.match(
+            r"^\[Facet evidence(?:\s*:\s*[^\]]+)?\]\s*",
             stripped,
             re.IGNORECASE,
-        ):
+        )
+        if facet_label:
+            stripped = stripped[facet_label.end() :].lstrip()
+        if not stripped:
             continue
         if stripped.startswith("#") and title_prefix:
             heading = _normalized_evidence_text(stripped.lstrip("# "))
             if heading.startswith(title_prefix) or title_prefix.startswith(heading[:80]):
                 continue
-        cleaned_lines.append(line)
+        cleaned_lines.append(stripped)
     text = "\n".join(cleaned_lines)
     structured_query_anchors = [
         re.sub(r"\s+", " ", match.group(0)).strip()
@@ -4818,6 +4856,14 @@ def _architect_evidence_candidates(source: dict[str, Any], question: str, *, lim
             re.IGNORECASE,
         )
     ]
+    structured_query_anchors.extend(
+        match.group(0)
+        for match in re.finditer(
+            r"第[〇零一二三四五六七八九十百千\d]{1,8}(?:条|章|节)",
+            _safe_text(question),
+        )
+    )
+    structured_query_anchors = list(dict.fromkeys(structured_query_anchors))
     ranked: list[tuple[int, int, int, int, int, str]] = []
     identity_text = " ".join(
         (
@@ -5000,6 +5046,15 @@ def _architect_evidence_candidates(source: dict[str, Any], question: str, *, lim
     for raw_segment in raw_segments:
         normalized_segment = re.sub(r"\s+", " ", raw_segment).strip(" \t\r\n-•。；;")
         if len(normalized_segment) < 20:
+            continue
+        navigation_terms = len(
+            re.findall(
+                r"(?:首页|机构设置|机构职能|机关厅局|直属单位|政务服务|办事指南|"
+                r"表格下载|网站地图|当前位置|打印|字体大小)",
+                normalized_segment,
+            )
+        )
+        if normalized_segment.count(" - ") >= 5 and navigation_terms >= 3:
             continue
         start = 0
         while start < len(normalized_segment):
@@ -5297,7 +5352,15 @@ def _architect_evidence_candidates(source: dict[str, Any], question: str, *, lim
                 ]
                 if replaceable_command_indexes:
                     selected_head[replaceable_command_indexes[-1]] = strongest_windows_command
-    selected_ranked = selected_head
+    source_evidence_text = _normalized_exact_excerpt_text(
+        source.get("text") or source.get("evidenceText")
+    )
+    selected_ranked = [
+        item
+        for item in selected_head
+        if source_evidence_text
+        and _normalized_exact_excerpt_text(item[5]) in source_evidence_text
+    ]
     return [
         {
             "evidenceExcerptKey": f"{citation_key}:E{index}",
@@ -5334,10 +5397,23 @@ def _architect_multi_query_evidence_candidates(
         _RESEARCH_ARCHITECT_EVIDENCE_CANDIDATE_COUNT,
         max(2, ((candidate_budget + len(queries) - 1) // len(queries)) + 1),
     )
-    candidates_by_query = {
-        query: _architect_evidence_candidates(source, query, limit=per_query_limit)
-        for query in queries
-    }
+    candidates_by_query: dict[str, list[dict[str, Any]]] = {}
+    for query in queries:
+        facet_id = (facet_by_query or {}).get(query) or None
+        query_source = {
+            **source,
+            # Each pass owns exactly one facet. Reusing the source's shortest
+            # query or initial facet here contaminates every ranking pass and
+            # lets one generic excerpt consume all finite candidate slots.
+            "evidenceQuery": query,
+            "researchFacetGoal": query,
+            "researchFacetId": facet_id,
+        }
+        candidates_by_query[query] = _architect_evidence_candidates(
+            query_source,
+            query,
+            limit=per_query_limit,
+        )
     selected: list[dict[str, Any]] = []
     seen_text: set[str] = set()
     max_depth = max((len(items) for items in candidates_by_query.values()), default=0)
@@ -8686,13 +8762,19 @@ def _verify_architect_claim_excerpts(
             excerpt = keyed_excerpt
             matched_sources = [keyed_source]
         normalized_excerpt = _normalized_evidence_text(excerpt)
+        exact_excerpt_identity = _normalized_exact_excerpt_text(excerpt)
         excerpt_sources = [
             source
             for source in matched_sources
-            if normalized_excerpt
-            and normalized_excerpt in _normalized_evidence_text(source.get("text") or source.get("evidenceText"))
+            if exact_excerpt_identity
+            and exact_excerpt_identity
+            in _normalized_exact_excerpt_text(source.get("text") or source.get("evidenceText"))
         ]
-        excerpt_matches = bool(20 <= len(excerpt) <= 600 and len(normalized_excerpt) >= 20 and excerpt_sources)
+        excerpt_matches = bool(
+            20 <= len(excerpt) <= 600
+            and len(exact_excerpt_identity) >= 20
+            and excerpt_sources
+        )
         if "query-focused excerpt" in normalized_excerpt:
             excerpt_matches = False
         if not excerpt_matches:
@@ -14982,8 +15064,6 @@ def _invoke_web_research_architect_staged(
     delivery_reserve = min(120.0, max(4.0, total_budget * 0.5))
     review_reserve = min(80.0, max(8.0, total_budget * 0.3))
     candidate_errors: list[str] = []
-    raw_previews: list[str] = []
-    plan_attempts: list[dict[str, Any]] = []
     context_preparations: list[dict[str, Any]] = []
     context_preparations_lock = threading.Lock()
 
@@ -15221,20 +15301,6 @@ def _invoke_web_research_architect_staged(
     )
     required_source_count = target_sources if normal_target_mode else minimum_sources
     required_claim_count = target_claims if normal_target_mode else minimum_claims
-    plan_claim_upper = min(
-        _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
-        max(
-            _RESEARCH_ARCHITECT_PLAN_MAX_CLAIM_COUNT,
-            len(required_plan_facet_ids),
-        ),
-    )
-    plan_claim_lower = min(
-        plan_claim_upper,
-        max(
-            required_claim_count,
-            len(required_plan_facet_ids),
-        ),
-    )
     required_claim_sources = _architect_required_claim_source_keys(
         prompt_sources,
         limit=required_source_count,
@@ -15248,1890 +15314,261 @@ def _invoke_web_research_architect_staged(
                 f"evidence_candidate_source_coverage:{len(required_claim_sources)}/{required_source_count}"
             ],
         }
-    plan_claim_source_floor = minimum_sources
+
     named_decision_audiences = _research_named_decision_audiences(question)
-    runtime_named_decision_fallback_allowed = (
-        _architect_runtime_named_decision_fallback_allowed(question)
-    )
+    required_deliverables = _build_explicit_question_deliverables(question)
     question_requires_synthesis = bool(
         re.search(
             r"\b(?:best practices?|recommend(?:ation|ed|s|ing)?|should|selection|trade-?offs?)\b|"
-            r"(?:最佳实践|建议|应该|应当|选型|取舍)",
+            r"(?:\u6700\u4f73\u5b9e\u8df5|\u5efa\u8bae|\u5e94\u8be5|\u5e94\u5f53|\u9009\u578b|\u53d6\u820d)",
             question,
             re.IGNORECASE,
         )
     )
-    source_material = json.dumps(prompt_sources, ensure_ascii=False)
-    compact_retry_source_material = json.dumps(
-        _architect_facet_focused_prompt_sources(
-            prompt_sources,
-            required_plan_facet_ids,
-            candidates_per_facet=1,
-            extra_source_count=0,
-        ),
-        ensure_ascii=False,
-    )
-    candidates = _create_web_research_architect_llm_candidates()
-    # The explicit Web Research Architect binding is the routing truth. Role
-    # models are ordered fallbacks and must not silently pre-empt it.
-    plan_candidates = list(candidates)
-
-    plan_system_prompt = (
-        "你是 Web Research Architect 的证据架构师。只能使用 SOURCES 中的来源元数据和 evidenceCandidates，"
-        "先把问题拆成可逐项核验的原子事实，再规划答案；不要在本阶段写长答案。"
-        "每个 claim 必须从其 supporting source 选择一个 evidenceExcerptKey，禁止改写或拼接摘录。"
-        "claimType 只能是 source_fact 或 explicit_normative：source_fact 只陈述摘录直接蕴含的事实；"
-        "只有摘录明确出现推荐、要求或首选语义时才可使用 explicit_normative。"
-        "复合建议只能写入 compositeInferences，由多项已验证前提推出，不得冒充任何单一来源或官方机构的直接推荐。"
-        "不得把普通事实升级为最高优先级、基础性设计决策、独立类别、等价接口或无条件保证；这些关系也必须由前提明确支持。"
-        "若 QUESTION 含多个 [facet-id]，claimTable 与 answerOutline 必须让每个 facet 至少有一条可追溯 claim；"
-        "不得用总来源数或总字数掩盖漏答的 facet。"
-        "若 QUESTION 另含 Deliverable requirements/交付要求，它们不是新搜索 facet，但 answerOutline 必须分配明确章节，"
-        "并只用已验证 claims 与 compositeInferences 完成交付目标。"
-        "用户询问 best practices/实践建议并要求引用官方来源，通常是要求以官方事实作为综合前提，不等于要求官方页面逐字写出最终建议；"
-        "只有用户明确询问‘官方文档具体推荐/要求什么’时，才把缺少官方规范性措辞视为必要证据缺口。"
-        "没有单篇资料覆盖完整组合问题本身不是证据缺口；只有必要原子前提缺失才可 retry。"
-        "证据可来自任一已验证 SOURCES，不得因为某个事实来自另一官方页面、host 或同产品的不同文档页，就要求它必须在你臆定的特定页面重复出现；"
-        "若 SOURCES 中已有来源携带所需事实或规范性措辞，该前提就不属于 missingEvidence。"
-    )
-    if named_decision_audiences:
-        plan_system_prompt += (
-            "QUESTION 已明确列出多个决策受众。每个受众都必须在 compositeInferences 中得到一条有实质内容的"
-            "选型/行动结论，并在 answerOutline 中有明确落点；每条结论仍只能由同节的已验证 claims 推出。"
-            "受众标签是交付结构，不是需要官方来源逐字写出的事实，也不得因此虚构产品能力。"
+    claim_plan_started_at = time.perf_counter()
+    try:
+        plan = build_canonical_claim_plan(
+            question=question,
+            sources=compact_sources,
+            required_source_keys=required_claim_sources,
+            required_facet_ids=required_plan_facet_ids,
+            minimum_source_count=minimum_sources,
+            minimum_claim_count=minimum_claims,
+            target_claim_count=min(
+                target_claims,
+                _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
+            ),
         )
-    plan_system_prompt = _research_agent_stage_system_prompt(
-        plan_system_prompt,
-        stage="evidence_plan",
-    )
-    plan_prompts = [
-        (
-            "只输出严格 JSON，不要 Markdown。字段：reviewDecision, reviewReasons, headline, claimTable, "
-            "answerOutline, compositeInferences, conflictMatrix, missingEvidence, criticalMissingEvidence, "
-            "recommendedNextQueries, assumptions, temporalAssessment。reviewDecision 只能是 accept、retry、reject。"
-            f"保持紧凑：reviewReasons 最多2项且每项不超过100字符；accept 时 claimTable 为 "
-            f"{plan_claim_lower}-{plan_claim_upper} 项、"
-            "区间前值是最低目标、后值只是上限；达到最低目标并覆盖问题后就停止，禁止把上限误读成必需数量或为上限凑 claim。"
-            f"覆盖至少 {required_source_count} 个不同 SOURCES；"
-            f"必须为这些来源各写至少一个独立 claim：{', '.join(required_claim_sources)}。"
-            "每项含唯一 claimId、claim、claimType、supportingSources、evidenceExcerptKey、confidence，claim 为20-180个有效字符；"
-            "explicit_normative 还必须包含 normativeCue，且该短语必须逐字出现在所选 evidenceExcerptKey 的摘录中。"
-            "answerOutline 必须是4-6个对象，每项仅含 sectionId、title、objective、claimIds；所有 claimId 必须恰好出现一次，"
-            "并覆盖用户问题的子问题、冲突/限制、时效判断和可执行结论。"
-            "compositeInferences 每项只含 inferenceId、inference、premiseClaimIds；inference 是20-360字符的明确综合结论，"
-            "premiseClaimIds 只能引用 claimTable，且同一 inference 的全部 premise 必须位于同一个 outline section。"
-            "若 QUESTION 明确列出多个决策受众，必须恰好为每个受众保留一条 inference；不要为同一受众输出多条重叠建议。"
-            "建议 inference 的 premiseClaimIds 应彼此尽量不重叠；这些 premise claim 只能分配到该建议 section，"
-            "不得在事实 section 和建议 section 重复出现同一 claimId。"
-            "若少数子问题证据不足，但已有证据仍能实质回答核心问题，不得把整个计划标成 retry；"
-            "删除不受支持的候选 claim，把未决子问题放入 missingEvidence，并在答案中明确限制。"
-            "只有删除或限定不受支持的子结论后仍无法给出有用核心答案时，才使用 criticalMissingEvidence；"
-            "此时 research answer 才不存在，并在最多4项 recommendedNextQueries 中精确说明缺失前提。\n"
-            "recommendedNextQueries 必须直接写搜索关键词或 site: 查询，不得以 Fetch、Retrieve、Read、Open 或同义祈使词开头。\n"
-            f"NAMED_DECISION_AUDIENCES: {json.dumps(named_decision_audiences, ensure_ascii=False)}\n"
-            f"QUESTION: {question}"
-        ),
-        (
-            "只根据 SOURCES 返回一个紧凑、完整、可解析的 JSON 对象。不要输出长答案。"
-            f"accept 必须有 {plan_claim_lower}-{plan_claim_upper} 个紧凑原子 claim、"
-            "区间后值只是上限而非必达数量；不得因无法填满上限而 retry/reject。"
-            f"覆盖 {required_source_count} 个不同来源，"
-            f"且必须逐一覆盖 {', '.join(required_claim_sources)}；每项使用 supporting source 自己的 evidenceExcerptKey。"
-            "answerOutline 使用4-6个 sectionId/title/objective/claimIds 对象并恰好覆盖全部 claimId。"
-            "严格保持首个提示定义的字段名和 JSON schema；如果客户端习惯布尔 accept，可额外输出 accept，但仍应保留 reviewDecision。\n"
-            f"NAMED_DECISION_AUDIENCES: {json.dumps(named_decision_audiences, ensure_ascii=False)}\n"
-            f"QUESTION: {question}"
-        ),
-    ]
-    def near_duplicate_claim(candidate_text: str, existing_text: str) -> bool:
-        candidate_terms = {
-            term
-            for term in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", candidate_text.lower())
-            if term not in _RELEVANCE_STOPWORDS
-        }
-        existing_terms = {
-            term
-            for term in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", existing_text.lower())
-            if term not in _RELEVANCE_STOPWORDS
-        }
-        if not candidate_terms or not existing_terms:
-            return False
-        return len(candidate_terms.intersection(existing_terms)) / len(
-            candidate_terms.union(existing_terms)
-        ) >= 0.55
-
-    def missing_verified_claim_facets(
-        claims: list[dict[str, Any]],
-    ) -> list[str]:
-        covered_facet_ids = {
-            _safe_text(facet_id)
-            for claim in claims
-            for support in list(claim.get("supportingSources") or [])
-            if isinstance(support, dict)
-            for facet_id in [
-                *list(support.get("researchFacetIds") or []),
-                support.get("researchFacetId"),
-            ]
-            if _safe_text(facet_id)
-        }
-        return [
-            facet_id
-            for facet_id in required_plan_facet_ids
-            if facet_id not in covered_facet_ids
-        ]
-
-    def supplement_verified_claims(
-        base_claims: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[str]]:
-        supplemented = list(
-            _architect_balance_base_claims_for_supplement(base_claims)
-        )
-        added_claim_ids: list[str] = []
-        excluded_facts = {
-            _normalized_evidence_text(claim.get("claim"))
-            for claim in supplemented
-            if _normalized_evidence_text(claim.get("claim"))
-        }
-        ordered_sources = _architect_supplement_source_order(
-            compact_sources,
-            required_claim_sources,
-        )
-
-        def practice_specificity(value: Any) -> int:
-            text = _safe_text(value).lower()
-            score = 0
-            for pattern, weight in (
-                (r"should use Path objects anywhere|use Path objects anywhere", 130),
-                (r"\bpath_type\b", 100),
-                (r"\btype\s*=\s*pathlib|passes?\s+pathlib\.path|pathlib\.path\s+as\s+(?:a\s+)?(?:type|converter)", 100),
-                (r"\bfile_okay\b|\bdir_okay\b", 90),
-                (r"\bget_app_dir\b|application directory|configuration directory", 85),
-                (r"\bexists\b|\bresolve_path\b|\breadable\b|\bwritable\b", 65),
-                (r"\bpathlike\b|\b__fspath__\b|\bos\.fspath\b", 60),
-                (r"\bpurepath\b|\bpure paths?\b|\bconcrete paths?\b", 50),
-                (r"\bpathlib\.path\b|\bpath objects?\b", 35),
-            ):
-                if re.search(pattern, text, re.IGNORECASE):
-                    score += weight
-            return score
-
-        # The planner can spend both per-source slots on generic introduction
-        # prose while a more actionable exact contract (for example argparse's
-        # callable ``type`` plus ``pathlib.Path`` example) is already present in
-        # the read evidence.  Replace only a weaker duplicate-source claim; do
-        # not increase the finite claim budget or displace another source.
-        for source in ordered_sources:
-            source_citation = _safe_text(source.get("citationKey")).strip("[]")
-            existing_indexes = [
-                index
-                for index, claim in enumerate(supplemented)
-                if source_citation
-                in {
-                    _safe_text(
-                        support.get("citationKey") or support.get("citation")
-                        if isinstance(support, dict)
-                        else support
-                    ).strip("[]")
-                    for support in list(claim.get("supportingSources") or [])
-                }
-            ]
-            if not existing_indexes:
-                continue
-            preferred_raw = _architect_exact_excerpt_source_fact(
-                source,
-                question,
-                excluded_facts=excluded_facts,
-            )
-            if not preferred_raw:
-                continue
-            preferred_text = _safe_text(preferred_raw.get("claim"))
-            if any(
-                near_duplicate_claim(preferred_text, _safe_text(supplemented[index].get("claim")))
-                for index in existing_indexes
-            ):
-                continue
-            preferred_verified, preferred_issues = _verify_architect_claim_excerpts(
-                [preferred_raw],
-                compact_sources,
-                require_evidence_key=True,
-            )
-            if preferred_issues or len(preferred_verified) != 1:
-                continue
-            weakest_index = min(
-                existing_indexes,
-                key=lambda index: practice_specificity(supplemented[index].get("claim")),
-            )
-            if practice_specificity(preferred_text) <= practice_specificity(
-                supplemented[weakest_index].get("claim")
-            ) + 30:
-                continue
-            supplemented[weakest_index] = preferred_verified[0]
-            excluded_facts.add(_normalized_evidence_text(preferred_text))
-            added_claim_ids.append(_safe_text(preferred_verified[0].get("claimId")))
-
-        def covered_citations() -> set[str]:
-            return {
-                _safe_text(
-                    support.get("citationKey") or support.get("citation")
-                    if isinstance(support, dict)
-                    else support
-                ).strip("[]")
-                for claim in supplemented
-                for support in list(claim.get("supportingSources") or [])
-                if _safe_text(
-                    support.get("citationKey") or support.get("citation")
-                    if isinstance(support, dict)
-                    else support
-                ).strip("[]")
-            }
-
-        def add_exact_claim(
-            source: dict[str, Any],
-            *,
-            required_facet_id: str | None = None,
-            prefer_semantic_unique: bool = True,
-        ) -> bool:
-            source_citation = _safe_text(source.get("citationKey")).strip("[]")
-            rejected_semantic_duplicates: set[str] = set()
-            for _attempt in range(_RESEARCH_ARCHITECT_EVIDENCE_CANDIDATE_COUNT):
-                supplemental_raw = _architect_exact_excerpt_source_fact(
-                    source,
-                    question,
-                    excluded_facts=excluded_facts,
-                    required_facet_id=required_facet_id,
-                )
-                if not supplemental_raw:
-                    break
-                supplemental_text = _safe_text(supplemental_raw.get("claim"))
-                excluded_facts.add(_normalized_evidence_text(supplemental_text))
-                existing_source_claims = [
-                    claim
-                    for claim in supplemented
-                    if source_citation
-                    in {
-                        _safe_text(
-                            support.get("citationKey") or support.get("citation")
-                            if isinstance(support, dict)
-                            else support
-                        ).strip("[]")
-                        for support in list(claim.get("supportingSources") or [])
-                    }
-                ]
-                if any(
-                    near_duplicate_claim(
-                        supplemental_text,
-                        _safe_text(claim.get("claim")),
-                    )
-                    for claim in existing_source_claims
-                ):
-                    continue
-                if prefer_semantic_unique and any(
-                    near_duplicate_claim(
-                        supplemental_text,
-                        _safe_text(claim.get("claim")),
-                    )
-                    for claim in supplemented
-                ):
-                    rejected_semantic_duplicates.add(
-                        _normalized_evidence_text(supplemental_text)
-                    )
-                    continue
-                supplemental_verified, supplemental_issues = (
-                    _verify_architect_claim_excerpts(
-                        [supplemental_raw],
-                        compact_sources,
-                        require_evidence_key=True,
-                    )
-                )
-                if supplemental_issues or len(supplemental_verified) != 1:
-                    continue
-                supplemented.extend(supplemental_verified)
-                added_claim_ids.append(
-                    _safe_text(supplemental_verified[0].get("claimId"))
-                )
-                return True
-            # A source-coverage pass may retry without the uniqueness
-            # preference. Do not permanently hide candidates rejected only
-            # because another document expressed a semantically similar fact.
-            excluded_facts.difference_update(rejected_semantic_duplicates)
-            return False
-
-        def claim_facet_ids(claim: dict[str, Any]) -> set[str]:
-            return {
-                _safe_text(facet_id)
-                for support in list(claim.get("supportingSources") or [])
-                if isinstance(support, dict)
-                for facet_id in [
-                    *list(support.get("researchFacetIds") or []),
-                    support.get("researchFacetId"),
-                ]
-                if _safe_text(facet_id)
-            }
-
-        def claim_citation_keys(claim: dict[str, Any]) -> set[str]:
-            return {
-                _safe_text(
-                    support.get("citationKey")
-                    or support.get("citation")
-                    or support.get("sourceId")
-                    if isinstance(support, dict)
-                    else support
-                ).strip("[]")
-                for support in list(claim.get("supportingSources") or [])
-                if _safe_text(
-                    support.get("citationKey")
-                    or support.get("citation")
-                    or support.get("sourceId")
-                    if isinstance(support, dict)
-                    else support
-                ).strip("[]")
-            }
-
-        def make_room_for_missing_facet() -> tuple[int, dict[str, Any]] | None:
-            if len(supplemented) < _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT:
-                return None
-            facet_counts: dict[str, int] = {}
-            citation_counts: dict[str, int] = {}
-            for claim in supplemented:
-                for facet_id in claim_facet_ids(claim):
-                    facet_counts[facet_id] = facet_counts.get(facet_id, 0) + 1
-                for citation_key in claim_citation_keys(claim):
-                    citation_counts[citation_key] = citation_counts.get(citation_key, 0) + 1
-            required_facets = set(required_plan_facet_ids)
-            required_citations = set(required_claim_sources)
-            replaceable: list[tuple[tuple[int, int, int, int], int]] = []
-            for index, claim in enumerate(supplemented):
-                facets = claim_facet_ids(claim)
-                citations = claim_citation_keys(claim)
-                if any(
-                    facet_id in required_facets
-                    and facet_counts.get(facet_id, 0) <= 1
-                    for facet_id in facets
-                ):
-                    continue
-                if any(
-                    citation_key in required_citations
-                    and citation_counts.get(citation_key, 0) <= 1
-                    for citation_key in citations
-                ):
-                    continue
-                roles = {
-                    _architect_support_role(support)
-                    for support in list(claim.get("supportingSources") or [])
-                    if isinstance(support, dict)
-                }
-                replaceable.append(
-                    (
-                        (
-                            1 if not facets.intersection(required_facets) else 0,
-                            1 if not citations.intersection(required_citations) else 0,
-                            1 if "secondary" in roles else 0,
-                            -index,
-                        ),
-                        index,
-                    )
-                )
-            if not replaceable:
-                return None
-            _rank, index = max(replaceable)
-            return index, supplemented.pop(index)
-
-        # Close every substantive answer facet before spending the finite claim
-        # budget on extra document depth. If the model already filled the array,
-        # replace only a redundant/non-required claim and restore it on failure.
-        for facet_id in missing_verified_claim_facets(supplemented):
-            facet_sources = [
-                source
-                for source in ordered_sources
-                if any(
-                    _safe_text(candidate.get("researchFacetId")) == facet_id
-                    for candidate in list(source.get("evidenceCandidates") or [])
-                    if isinstance(candidate, dict)
-                )
-            ]
-            removed: tuple[int, dict[str, Any]] | None = None
-            if len(supplemented) >= _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT:
-                removed = make_room_for_missing_facet()
-                # The 12-claim ideal is a planning target, not a reason to
-                # discard an explicit user facet. Use bounded repair headroom
-                # up to the 16-claim verification ceiling when every existing
-                # claim protects a required source or facet.
-                if (
-                    removed is None
-                    and len(supplemented) >= _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT
-                ):
-                    continue
-            added = any(
-                add_exact_claim(
-                    source,
-                    required_facet_id=facet_id,
-                    prefer_semantic_unique=False,
-                )
-                for source in facet_sources
-            )
-            if not added and removed is not None:
-                supplemented.insert(removed[0], removed[1])
-
-        # Then close document coverage. Each generated fact is rebound to the
-        # stored excerpt and passes the same strict claim validator.
-        while len(supplemented) < _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT:
-            covered = covered_citations()
-            uncovered_sources = [
-                source
-                for source in ordered_sources
-                if _safe_text(source.get("citationKey")).strip("[]") not in covered
-            ]
-            if not uncovered_sources:
-                break
-            made_progress = False
-            for source in uncovered_sources:
-                if len(supplemented) >= _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT:
-                    break
-                if add_exact_claim(source) or add_exact_claim(
-                    source,
-                    prefer_semantic_unique=False,
-                ):
-                    made_progress = True
-            if not made_progress:
-                break
-
-        # Spend any remaining capacity on distinct verified facts for depth.
-        while len(supplemented) < _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT:
-            made_progress = False
-            for source in ordered_sources:
-                if len(supplemented) >= _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT:
-                    break
-                if add_exact_claim(source):
-                    made_progress = True
-            if not made_progress:
-                break
-        return supplemented, added_claim_ids
-
-    plan: dict[str, Any] | None = None
-    plan_candidate: tuple[Any, str, str] | None = None
-    verified_claims: list[dict[str, Any]] = []
-    best_repair_plan: dict[str, Any] | None = None
-    best_repair_claims: list[dict[str, Any]] = []
-    best_repair_missing_citations: list[str] = []
-    best_repair_missing_facet_ids: list[str] = []
-    best_repair_candidate: tuple[Any, str, str] | None = None
-    best_repair_score = (-1, -1, -1)
-    runtime_missing_facet_ids: list[str] = []
-    audience_repair_prompt_added = False
-    for candidate_index, candidate in enumerate(plan_candidates):
-        model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-        candidate_repair_claims: list[dict[str, Any]] = []
-        candidate_repair_inferences: list[dict[str, Any]] = []
-        candidate_repair_allowed_citations: set[str] = set()
-        candidate_repair_materials: list[dict[str, str]] = []
-        candidate_delta_claim_ids: list[str] = []
-        candidate_supplemental_claim_ids: list[str] = []
-        remaining_candidates = max(1, len(plan_candidates) - candidate_index)
-        candidate_total_budget = min(
-            90.0 if named_decision_audiences else 60.0,
-            max(2.0, (remaining_seconds() - delivery_reserve) / remaining_candidates),
-        )
-        candidate_started_at = time.perf_counter()
-        for prompt_index, prompt in enumerate(plan_prompts):
-            remaining = remaining_seconds()
-            if remaining <= delivery_reserve + 1:
-                candidate_errors.append("architect_delivery_budget_reserved")
-                break
-            candidate_remaining = candidate_total_budget - (time.perf_counter() - candidate_started_at)
-            minimum_repair_seconds = min(
-                (
-                    min(15.0, _RESEARCH_ARCHITECT_MIN_PLAN_REPAIR_SECONDS)
-                    if named_decision_audiences
-                    else _RESEARCH_ARCHITECT_MIN_PLAN_REPAIR_SECONDS
-                ),
-                max(2.0, candidate_total_budget * 0.5),
-            )
-            if (
-                prompt_index > 0
-                and candidate_remaining < minimum_repair_seconds
-            ):
-                plan_attempts.append(
-                    {
-                        "modelId": model_label,
-                        "modelRole": candidate[2],
-                        "selectionOrigin": _architect_candidate_selection_origin(candidate),
-                        "attempt": prompt_index + 1,
-                        "allocatedTimeoutMs": int(max(0.0, candidate_remaining) * 1000),
-                        "remainingMsAtStart": int(max(0.0, remaining) * 1000),
-                        "status": "skipped_insufficient_budget",
-                    }
-                )
-                candidate_errors.append(f"{model_label}: architect_plan_repair_budget_insufficient")
-                break
-            per_call_budget = min(call_timeout_cap_seconds, candidate_remaining)
-            messages = prepared_messages(
-                candidate,
-                system_prompt=plan_system_prompt,
-                instruction=prompt,
-                materials=(
-                    candidate_repair_materials
-                    if prompt_index > 0 and candidate_repair_materials
-                    else [
-                        {
-                            "title": "Research evidence candidates",
-                            "kind": "research_sources",
-                            "content": source_material,
-                        }
-                    ]
-                ),
-                target_role="web-research-architect",
-                node="web_research_architect_plan",
-            )
-            attempt_started_at = time.perf_counter()
-            plan_attempt = {
-                "modelId": model_label,
-                "modelRole": candidate[2],
-                "selectionOrigin": _architect_candidate_selection_origin(candidate),
-                "attempt": prompt_index + 1,
-                "allocatedTimeoutMs": int(max(0.0, per_call_budget) * 1000),
-                "remainingMsAtStart": int(max(0.0, remaining) * 1000),
-            }
-            try:
-                response = _invoke_architect_candidate_with_deadline(
-                    candidate,
-                    messages,
-                    seconds=per_call_budget,
-                    max_tokens=_RESEARCH_ARCHITECT_PLAN_MAX_TOKENS,
-                    disable_thinking=True,
-                )
-            except concurrent.futures.TimeoutError:
-                plan_attempt.update(
-                    {
-                        "status": "deadline_timeout",
-                        "elapsedMs": int((time.perf_counter() - attempt_started_at) * 1000),
-                    }
-                )
-                plan_attempts.append(plan_attempt)
-                candidate_errors.append(f"{model_label}: architect_plan_timeout")
-                if prompt_index == 0 and len(plan_prompts) > 1:
-                    candidate_repair_materials = [
-                        {
-                            "title": "Facet-focused evidence candidates",
-                            "kind": "research_sources",
-                            "content": compact_retry_source_material,
-                        }
-                    ]
-                    continue
-                break
-            except Exception as exc:  # noqa: BLE001 - try the next configured Architect model.
-                plan_attempt.update(
-                    {
-                        "status": "provider_error",
-                        "elapsedMs": int((time.perf_counter() - attempt_started_at) * 1000),
-                        "failureCode": type(exc).__name__,
-                    }
-                )
-                plan_attempts.append(plan_attempt)
-                candidate_errors.append(f"{model_label}: architect_plan_{type(exc).__name__}: {_safe_text(exc)[:220]}")
-                break
-            sanitized_output = sanitize_background_model_output(response)
-            raw_content = sanitized_output.text
-            finish_reason = _architect_response_finish_reason(response)
-            plan_attempt.update(
-                {
-                    "status": "completed",
-                    "elapsedMs": int((time.perf_counter() - attempt_started_at) * 1000),
-                    "responseChars": len(raw_content),
-                    "finishReason": finish_reason,
-                    "requestedMaxTokens": _RESEARCH_ARCHITECT_PLAN_MAX_TOKENS,
-                    "configuredMaxTokens": _architect_segmented_writer_profile(candidate).get(
-                        "configuredMaxTokens"
-                    ),
-                    **_architect_response_safe_diagnostics(response, sanitized_output),
-                }
-            )
-            plan_attempts.append(plan_attempt)
-            if raw_content:
-                raw_previews.append(f"plan:{model_label}: {raw_content[:400]}")
-            if not raw_content and finish_reason in {"length", "max_tokens", "max_output_tokens"}:
-                output_failure = (
-                    "reasoning_budget_exhausted"
-                    if int(plan_attempt.get("reasoningChars") or 0) > 0
-                    or int(plan_attempt.get("reasoningTokens") or 0) > 0
-                    else "empty_visible_output_at_length"
-                )
-                plan_attempt["outputFailureClass"] = output_failure
-                candidate_errors.append(f"{model_label}: architect_plan_{output_failure}")
-                break
-            parsed = _extract_json_object(raw_content)
-            if not isinstance(parsed, dict):
-                if prompt_index == len(plan_prompts) - 1:
-                    candidate_errors.append(f"{model_label}: architect_plan_no_json")
-                continue
-            decision = _architect_plan_decision(
-                parsed,
-                allow_runtime_validation_candidate=prompt_index > 0,
-            )
-            if (
-                not decision
-                and prompt_index > 0
-                and candidate_repair_claims
-                and isinstance(parsed.get("answerOutline"), list)
-            ):
-                # A repair response may intentionally omit the locked claim
-                # table.  Its outline/inference bindings still face all normal
-                # deterministic gates below.
-                decision = "accept"
-            if decision not in {"accept", "retry", "reject"}:
-                candidate_errors.append(
-                    f"{model_label}: architect_plan_invalid_decision:{_safe_text(parsed.get('reviewDecision'))[:40]}"
-                )
-                continue
-            parsed["reviewDecision"] = decision
-            parsed["_modelRole"] = candidate[2]
-            parsed["_modelId"] = model_label
-            parsed["_modelParseMode"] = "staged_json_markdown"
-            parsed["_architectMode"] = "full_synthesis"
-            if decision != "accept":
-                original_decision = decision
-                reclassified_plan = _architect_reclassify_review_evidence_gaps(
-                    parsed,
-                    question=question,
-                )
-                reclassified_issues = _research_text_list(
-                    reclassified_plan.get("reclassifiedSameEvidenceIssues"),
-                    limit=12,
-                )
-                remaining_critical = _research_text_list(
-                    reclassified_plan.get("criticalMissingEvidence"),
-                    limit=12,
-                )
-                remaining_queries = _research_text_list(
-                    reclassified_plan.get("recommendedNextQueries"),
-                    limit=4,
-                )
-                retry_without_evidence_gap = bool(
-                    original_decision == "retry"
-                    and not remaining_critical
-                    and not remaining_queries
-                )
-                partial_plan_evidence_ready = bool(
-                    original_decision == "retry"
-                    and _architect_partial_plan_evidence_ready(
-                        parsed,
-                        required_claim_sources=required_claim_sources,
-                        required_facet_ids=required_plan_facet_ids,
-                        prompt_sources=prompt_sources,
-                        required_source_count=required_source_count,
-                        required_claim_count=required_claim_count,
-                    )
-                )
-                if (
-                    (reclassified_issues or retry_without_evidence_gap)
-                    and not remaining_critical
-                    and not remaining_queries
-                ):
-                    parsed = reclassified_plan
-                    decision = "accept"
-                    parsed["reviewDecision"] = "accept"
-                    parsed["_originalPlanDecision"] = original_decision
-                    parsed["_reclassifiedPlanEvidenceGaps"] = reclassified_issues
-                    if retry_without_evidence_gap and not reclassified_issues:
-                        parsed["_planDecisionRepair"] = "retry_without_evidence_gap"
-                        candidate_errors.append(
-                            f"{model_label}: architect_plan_retry_without_evidence_gap"
-                        )
-                    else:
-                        candidate_errors.append(
-                            f"{model_label}: architect_plan_same_evidence_gap_reclassified:"
-                            f"{len(reclassified_issues)}"
-                        )
-                elif partial_plan_evidence_ready:
-                    non_blocking_gaps = list(
-                        dict.fromkeys(
-                            [
-                                *_research_text_list(
-                                    reclassified_plan.get("missingEvidence"),
-                                    limit=12,
-                                ),
-                                *reclassified_issues,
-                                *remaining_critical,
-                            ]
-                        )
-                    )[:12]
-                    parsed = {
-                        **reclassified_plan,
-                        "reviewDecision": "accept",
-                        "missingEvidence": non_blocking_gaps,
-                        "criticalMissingEvidence": [],
-                        "recommendedNextQueries": [],
-                        "_originalPlanDecision": original_decision,
-                        "_planDecisionRepair": "partial_evidence_answerable",
-                        "_nonBlockingPlanEvidenceGaps": non_blocking_gaps,
-                        "_deferredPlanQueries": remaining_queries,
-                    }
-                    decision = "accept"
-                    candidate_errors.append(
-                        f"{model_label}: architect_plan_partial_evidence_answerable:"
-                        f"{len(non_blocking_gaps)}"
-                    )
-                else:
-                    parsed = reclassified_plan
-                    if prompt_index < len(plan_prompts) - 1:
-                        # A capable model can occasionally misread a bounded
-                        # claim range as an exact quota and refuse before
-                        # emitting any verifiable plan. Use the already-budgeted
-                        # compact retry once; only the final attempt may turn a
-                        # genuine evidence gap into a terminal plan decision.
-                        candidate_errors.append(
-                            f"{model_label}: architect_plan_nonaccept_retry:{original_decision}"
-                        )
-                        candidate_repair_materials = [
-                            {
-                                "title": "Facet-focused evidence candidates",
-                                "kind": "research_sources",
-                                "content": compact_retry_source_material,
-                            }
-                        ]
-                        continue
-                    parsed["researchResult"] = ""
-                    parsed["answer"] = ""
-                    parsed["claimTable"] = []
-                    parsed["criticalMissingEvidence"] = remaining_critical
-                    parsed["recommendedNextQueries"] = remaining_queries
-                    parsed["_modelFallbackAttempts"] = candidate_errors
-                    parsed["_planAttempts"] = plan_attempts[-6:]
-                    return parsed
-            raw_claims = _research_dict_list(
-                parsed.get("claimTable"),
-                limit=plan_claim_upper,
-            )
-            if prompt_index > 0 and candidate_repair_claims:
-                candidate_claims = list(candidate_repair_claims)
-                excerpt_issues: list[str] = []
-                locked_claim_ids = {
-                    _safe_text(claim.get("claimId"))
-                    for claim in candidate_claims
-                    if _safe_text(claim.get("claimId"))
-                }
-                locked_claim_texts = {
-                    _normalized_evidence_text(claim.get("claim"))
-                    for claim in candidate_claims
-                    if _normalized_evidence_text(claim.get("claim"))
-                }
-                raw_delta_claims = _research_dict_list(
-                    parsed.get("claimDelta") or parsed.get("claimTable"),
-                    limit=plan_claim_upper,
-                )
-                raw_delta_claims = [
-                    claim
-                    for claim in raw_delta_claims
-                    if _safe_text(claim.get("claimId")) not in locked_claim_ids
-                ][:3]
-                if raw_delta_claims and candidate_repair_allowed_citations:
-                    verified_delta_claims, delta_issues = (
-                        _verify_architect_claim_excerpts(
-                            raw_delta_claims,
-                            compact_sources,
-                            require_evidence_key=True,
-                        )
-                    )
-                    excerpt_issues.extend(
-                        f"repair_delta_{issue}" for issue in delta_issues
-                    )
-                    for delta_claim in verified_delta_claims:
-                        delta_citations = {
-                            _safe_text(
-                                support.get("citationKey")
-                                if isinstance(support, dict)
-                                else support
-                            ).strip("[]")
-                            for support in list(
-                                delta_claim.get("supportingSources") or []
-                            )
-                            if _safe_text(
-                                support.get("citationKey")
-                                if isinstance(support, dict)
-                                else support
-                            ).strip("[]")
-                        }
-                        normalized_delta_claim = _normalized_evidence_text(
-                            delta_claim.get("claim")
-                        )
-                        if not delta_citations.intersection(
-                            candidate_repair_allowed_citations
-                        ):
-                            excerpt_issues.append(
-                                "repair_delta_source_outside_missing_evidence"
-                            )
-                            continue
-                        if (
-                            _safe_text(delta_claim.get("claimId"))
-                            in locked_claim_ids
-                            or normalized_delta_claim in locked_claim_texts
-                        ):
-                            continue
-                        candidate_claims.append(delta_claim)
-                        delta_claim_id = _safe_text(
-                            delta_claim.get("claimId")
-                        )
-                        locked_claim_ids.add(delta_claim_id)
-                        locked_claim_texts.add(normalized_delta_claim)
-                        candidate_delta_claim_ids.append(delta_claim_id)
-                candidate_claims, delta_supplemental_ids = (
-                    supplement_verified_claims(candidate_claims)
-                )
-                candidate_claims, delta_secondary_claim_ids = (
-                    _architect_govern_claim_source_roles_for_question(
-                        candidate_claims,
-                        question,
-                    )
-                )
-                if delta_secondary_claim_ids:
-                    parsed["_attributedSecondaryClaimIds"] = (
-                        delta_secondary_claim_ids
-                    )
-                candidate_supplemental_claim_ids.extend(
-                    claim_id
-                    for claim_id in delta_supplemental_ids
-                    if claim_id not in candidate_supplemental_claim_ids
-                )
-            else:
-                candidate_claims, excerpt_issues = _verify_architect_claim_excerpts(
-                    raw_claims,
-                    compact_sources,
-                    require_evidence_key=True,
-                )
-                candidate_claims, candidate_supplemental_claim_ids = supplement_verified_claims(
-                    candidate_claims
-                )
-                dropped_unfocused_claim_ids = [
-                    _safe_text(claim.get("claimId")) or "unknown"
-                    for claim in candidate_claims
-                    if list(claim.get("supportingSources") or [])
-                    and all(
-                        isinstance(support, dict)
-                        and support.get("subjectFocused") is False
-                        for support in list(claim.get("supportingSources") or [])
-                    )
-                ]
-                if dropped_unfocused_claim_ids:
-                    candidate_claims = [
-                        claim
-                        for claim in candidate_claims
-                        if (_safe_text(claim.get("claimId")) or "unknown")
-                        not in set(dropped_unfocused_claim_ids)
-                    ]
-                    parsed["_droppedUnfocusedClaimIds"] = dropped_unfocused_claim_ids
-                    candidate_errors.append(
-                        f"{model_label}: unfocused_claims_excluded:"
-                        + ",".join(dropped_unfocused_claim_ids)
-                    )
-                candidate_claims, attributed_secondary_claim_ids = (
-                    _architect_govern_claim_source_roles_for_question(
-                        candidate_claims,
-                        question,
-                    )
-                )
-                if attributed_secondary_claim_ids:
-                    parsed["_attributedSecondaryClaimIds"] = attributed_secondary_claim_ids
-                    # The runtime has already converted these claims into an
-                    # explicitly attributed secondary-source form.  Keep the
-                    # audit trail, but do not reject an otherwise complete
-                    # evidence plan merely because the model omitted the
-                    # sourceRole label on its first pass.
-                    parsed.setdefault("_nonBlockingPlanWarnings", []).append(
-                        "secondary_claims_attributed:"
-                        + ",".join(attributed_secondary_claim_ids)
-                    )
-            # Each repair starts from the newest Runtime-verified claim set.
-            # Otherwise a valid claimDelta disappears when a later inference-
-            # only repair is needed.
-            candidate_repair_claims = list(candidate_claims)
-            parsed["claimTable"] = candidate_claims
-            if (
-                candidate_supplemental_claim_ids
-                or len(candidate_claims) != len(raw_claims)
-                or not _architect_outline_claim_groups(parsed.get("answerOutline"), candidate_claims)
-            ):
-                parsed["answerOutline"] = _architect_normalized_repair_outline(
-                    parsed.get("answerOutline"),
-                    candidate_claims,
-                    parsed.get("compositeInferences"),
-                )
-            plan_metrics = research_acceptance_metrics(
-                {
-                    "question": question,
-                    "freshness": freshness,
-                    "reviewDecision": "accept",
-                    "answer": "",
-                    "sourceUrls": compact_sources,
-                    "claimTable": candidate_claims,
-                    "criticalMissingEvidence": parsed.get("criticalMissingEvidence") or [],
-                    "asOf": _utc_now_iso(),
-                }
-            )
-            plan_issues = list(excerpt_issues)
-            if plan_metrics["claimCount"] < required_claim_count:
-                plan_issues.append(f"claim_target_not_met:{required_claim_count}")
-            if plan_metrics["uniqueClaimCount"] < required_claim_count:
-                plan_issues.append(f"distinct_claim_target_not_met:{required_claim_count}")
-            if plan_metrics["evidenceVerifiedClaimCount"] != plan_metrics["claimCount"]:
-                plan_issues.append("unverified_claim_excerpt_present")
-            missing_citations: list[str] = []
-            if plan_metrics["claimSupportedSourceCount"] < required_source_count:
-                covered_citations = {
-                    _safe_text(support.get("citationKey")).strip("[]")
-                    for claim in candidate_claims
-                    for support in list(claim.get("supportingSources") or [])
-                    if isinstance(support, dict) and _safe_text(support.get("citationKey"))
-                }
-                missing_citations = [
-                    citation
-                    for citation in required_claim_sources
-                    if citation not in covered_citations
-                ]
-                source_coverage_gap = (
-                    "claim_source_coverage_target_not_met:"
-                    f"{plan_metrics['claimSupportedSourceCount']}/{required_source_count}"
-                    + (f":missing={','.join(missing_citations)}" if missing_citations else "")
-                )
-                if plan_metrics["claimSupportedSourceCount"] < plan_claim_source_floor:
-                    plan_issues.append(source_coverage_gap)
-                else:
-                    # The target remains visible without turning one less
-                    # claim-bearing source into an all-answer veto.
-                    parsed["_softClaimSourceCoverageGap"] = source_coverage_gap
-            missing_claim_facet_ids = missing_verified_claim_facets(
-                candidate_claims
-            )
-            if missing_claim_facet_ids:
-                plan_issues.append(
-                    "claim_facet_coverage_target_not_met:missing="
-                    + ",".join(missing_claim_facet_ids)
-                )
-            critical_missing_evidence = _research_text_list(
-                parsed.get("criticalMissingEvidence"),
-                limit=12,
-            )
-            if critical_missing_evidence:
-                plan_issues.append("critical_evidence_gap")
-            proposed_inferences = _research_dict_list(
-                parsed.get("compositeInferences"),
-                limit=12,
-            )
-            if candidate_repair_inferences:
-                locked_audiences = {
-                    audience
-                    for audience in named_decision_audiences
-                    if any(
-                        audience.casefold()
-                        in _safe_text(
-                            inference.get("audience")
-                            or inference.get("inference")
-                            or inference.get("conclusion")
-                            or inference.get("recommendation")
-                        ).casefold()
-                        for inference in candidate_repair_inferences
-                    )
-                }
-                proposed_inferences = [
-                    inference
-                    for inference in proposed_inferences
-                    if not any(
-                        audience.casefold()
-                        in _safe_text(
-                            inference.get("audience")
-                            or inference.get("inference")
-                            or inference.get("conclusion")
-                            or inference.get("recommendation")
-                        ).casefold()
-                        for audience in locked_audiences
-                    )
-                ]
-            normalized_inferences = _research_normalize_named_decision_inferences(
-                [*candidate_repair_inferences, *proposed_inferences],
-                named_decision_audiences,
-            )
-            parsed["compositeInferences"] = normalized_inferences
-            if candidate_repair_inferences:
-                parsed["answerOutline"] = _architect_normalized_repair_outline(
-                    parsed.get("answerOutline"),
-                    candidate_claims,
-                    normalized_inferences,
-                )
-            filtered_inferences, dropped_inferences = _architect_filter_composite_inferences(
-                parsed.get("answerOutline"),
-                candidate_claims,
-                normalized_inferences,
-                validate_semantics=False,
-            )
-            parsed["compositeInferences"] = filtered_inferences
-            if len(filtered_inferences) > len(candidate_repair_inferences):
-                candidate_repair_inferences = list(filtered_inferences)
-            if dropped_inferences:
-                parsed["_droppedCompositeInferenceIssues"] = dropped_inferences
-            has_primary_explicit_normative_claim = any(
-                _safe_text(claim.get("claimType")).lower() == "explicit_normative"
-                and any(
-                    _architect_support_role(support) == "primary"
-                    for support in list(claim.get("supportingSources") or [])
-                    if isinstance(support, dict)
-                )
-                for claim in candidate_claims
-            )
-            required_inference_count = (
-                len(named_decision_audiences)
-                if named_decision_audiences
-                else (
-                    1
-                    if question_requires_synthesis
-                    and not has_primary_explicit_normative_claim
-                    else 0
-                )
-            )
-            if len(filtered_inferences) < required_inference_count:
-                parsed.setdefault("_nonBlockingPlanWarnings", []).append(
-                    "composite_inference_recommended_for_audiences:"
-                    f"{len(filtered_inferences)}/{required_inference_count}"
-                    + (
-                        ":dropped=" + ",".join(dropped_inferences[:3])
-                        if dropped_inferences
-                        else ""
-                    )
-                )
-            plan_issues.extend(
-                _architect_outline_inference_issues(
-                    parsed.get("answerOutline"),
-                    candidate_claims,
-                    filtered_inferences,
-                )
-            )
-            repair_score = (
-                int(plan_metrics.get("claimSupportedSourceCount") or 0),
-                len(required_plan_facet_ids) - len(missing_claim_facet_ids),
-                int(plan_metrics.get("evidenceVerifiedClaimCount") or 0),
-            )
-            repair_gap_count = len(
-                set([*missing_citations, *missing_claim_facet_ids])
-            )
-            repair_candidate_eligible = bool(
-                repair_gap_count <= 3
-                and len(candidate_claims)
-                >= required_claim_count - repair_gap_count
-                and int(plan_metrics.get("uniqueClaimCount") or 0)
-                >= required_claim_count - repair_gap_count
-                and int(plan_metrics.get("evidenceVerifiedClaimCount") or 0)
-                == int(plan_metrics.get("claimCount") or 0)
-                and not critical_missing_evidence
-            )
-            # Rank only candidates that the deterministic repair path can
-            # actually finish. Prefer the newer candidate on an equal score so
-            # a corrected retry is not shadowed by its stale first draft.
-            if repair_candidate_eligible and repair_score >= best_repair_score:
-                best_repair_score = repair_score
-                best_repair_plan = dict(parsed)
-                best_repair_claims = list(candidate_claims)
-                best_repair_missing_citations = list(missing_citations)
-                best_repair_missing_facet_ids = list(
-                    missing_claim_facet_ids
-                )
-                best_repair_candidate = candidate
-            if plan_issues:
-                candidate_errors.append(f"{model_label}: " + ",".join(plan_issues[:8]))
-                if prompt_index == 0:
-                    candidate_repair_allowed_citations = set(
-                        missing_citations
-                    )
-                    for source in compact_sources:
-                        source_facets = {
-                            _safe_text(value)
-                            for value in [
-                                *list(source.get("researchFacetIds") or []),
-                                source.get("researchFacetId"),
-                            ]
-                            if _safe_text(value)
-                        }
-                        if source_facets.intersection(
-                            missing_claim_facet_ids
-                        ):
-                            citation_key = _safe_text(
-                                source.get("citationKey")
-                            ).strip("[]")
-                            if citation_key:
-                                candidate_repair_allowed_citations.add(
-                                    citation_key
-                                )
-                    repair_claim_material = [
-                        {
-                            "claimId": _safe_text(claim.get("claimId")),
-                            "claim": _safe_text(claim.get("claim")),
-                            "claimType": _safe_text(claim.get("claimType")),
-                            "sourceRole": _safe_text(claim.get("sourceRole")),
-                            "primarySupported": any(
-                                _architect_support_role(support) == "primary"
-                                for support in list(claim.get("supportingSources") or [])
-                                if isinstance(support, dict)
-                            ),
-                            "citations": [
-                                _safe_text(
-                                    support.get("citationKey") or support.get("citation")
-                                    if isinstance(support, dict)
-                                    else support
-                                ).strip("[]")
-                                for support in list(claim.get("supportingSources") or [])
-                            ],
-                            "supportingSources": [
-                                {
-                                    "citationKey": _safe_text(
-                                        support.get("citationKey")
-                                        or support.get("citation")
-                                    ).strip("[]"),
-                                    "title": _safe_text(support.get("title")),
-                                    "sourceRole": _architect_support_role(support),
-                                    "updatedAt": _safe_text(
-                                        support.get("updatedAt")
-                                        or support.get("sourceDate")
-                                        or support.get("retrievedAt")
-                                    ),
-                                }
-                                for support in list(claim.get("supportingSources") or [])
-                                if isinstance(support, dict)
-                            ],
-                        }
-                        for claim in candidate_claims
-                    ]
-                    repair_sources = [
-                        source
-                        for source in prompt_sources
-                        if _safe_text(source.get("citationKey")).strip("[]")
-                        in candidate_repair_allowed_citations
-                    ]
-                    candidate_repair_materials = [
-                        {
-                            "title": "Runtime-verified locked claims",
-                            "kind": "research_verified_claims",
-                            "content": json.dumps(
-                                repair_claim_material,
-                                ensure_ascii=False,
-                            ),
-                        }
-                    ]
-                    if repair_sources:
-                        candidate_repair_materials.append(
-                            {
-                                "title": "Missing evidence candidates",
-                                "kind": "research_sources",
-                                "content": json.dumps(
-                                    repair_sources,
-                                    ensure_ascii=False,
-                                ),
-                            }
-                        )
-                    plan_prompts[1] = (
-                        "修正上一份计划，只输出一个短小严格 JSON。RUNTIME_VERIFIED_CLAIMS 已由 Runtime 锁定，"
-                        "不得重写或删减。只返回字段 reviewDecision, reviewReasons, headline, claimDelta, "
-                        "answerOutline, compositeInferences, conflictMatrix, missingEvidence, "
-                        "criticalMissingEvidence, recommendedNextQueries, assumptions, temporalAssessment。"
-                        f"上一份计划未通过 Runtime 门禁：{', '.join(plan_issues[:8])}。"
-                        "claimDelta 只能为缺失证据新增0-3条 claim，禁止重复或替换锁定 claim；每条仍须包含唯一 "
-                        "claimId、claim、claimType、supportingSources、evidenceExcerptKey、confidence，并且只能引用 "
-                        f"MISSING_EVIDENCE_CITATIONS 中的来源：{', '.join(sorted(candidate_repair_allowed_citations)) or 'none'}。"
-                        "本轮若已完成修正，reviewDecision 必须精确写 accept，不得写 revise 或 revised。"
-                        "answerOutline 必须是4-6个 sectionId/title/objective/claimIds 对象，全部锁定 claimId 与新增 "
-                        "claimDelta 的 claimId 都恰好出现一次；"
-                        "每个 compositeInference 只含 inferenceId、inference、premiseClaimIds，premiseClaimIds 必须全部"
-                        "落在同一 section；综合结论只可由列出的 claim 直接推出，禁止新增 API、版本、数量、性能、"
-                        "跨平台、替代、优先级、最高杠杆、基础性决策、独立类别、等价接口或无条件保证。"
-                        "若 QUESTION 明确列出多个决策受众，修复稿必须恰好保留每个受众一条 inference；不要复制 claimId 到多个 section，"
-                        "把每条 inference 的 premise claim 只放进承载该 inference 的建议 section。"
-                        "若问题询问建议，且没有 primarySupported=true 的 explicit_normative claim（包括只有二手"
-                        " explicit_normative 的情况），必须提供1-3个有实质内容的 compositeInference；其 premises "
-                        "优先使用 primarySupported=true 的 source_fact。二手经验继续保留为已归属的教程/作者建议，"
-                        "但不得成为通用 API 保证或官方结论的唯一前提。accept 时 conflictMatrix、missingEvidence、criticalMissingEvidence、"
-                        "recommendedNextQueries、assumptions 均返回空数组。不要输出 researchResult，不要改字段名，"
-                        "整个响应尽量控制在1200 tokens 内。\n"
-                        + (
-                            f"必须为这些明确受众各保留一条 compositeInference（共 {len(named_decision_audiences)} 条）："
-                            + json.dumps(named_decision_audiences, ensure_ascii=False)
-                            + "。受众建议是跨来源综合结论，不得伪装为官方逐字建议。\n"
-                            if named_decision_audiences
-                            else ""
-                        )
-                        + f"QUESTION: {question}\nMISSING_EVIDENCE_CITATIONS: "
-                        + json.dumps(
-                            sorted(candidate_repair_allowed_citations),
-                            ensure_ascii=False,
-                        )
-                        + "\nRUNTIME_VERIFIED_CLAIMS: "
-                        + json.dumps(repair_claim_material, ensure_ascii=False)
-                    )
-                if (
-                    named_decision_audiences
-                    and prompt_index == len(plan_prompts) - 1
-                    and not audience_repair_prompt_added
-                ):
-                    locked_inference_material = [
-                        {
-                            "inferenceId": _safe_text(inference.get("inferenceId")),
-                            "inference": _safe_text(inference.get("inference")),
-                            "premiseClaimIds": list(
-                                inference.get("premiseClaimIds") or []
-                            ),
-                        }
-                        for inference in candidate_repair_inferences
-                    ]
-                    candidate_repair_materials = [
-                        material
-                        for material in candidate_repair_materials
-                        if material.get("kind") != "research_verified_inferences"
-                    ]
-                    if locked_inference_material:
-                        candidate_repair_materials.append(
-                            {
-                                "title": "Runtime-verified locked inferences",
-                                "kind": "research_verified_inferences",
-                                "content": json.dumps(
-                                    locked_inference_material,
-                                    ensure_ascii=False,
-                                ),
-                            }
-                        )
-                    locked_inference_text = " ".join(
-                        _safe_text(inference.get("inference"))
-                        for inference in candidate_repair_inferences
-                    ).casefold()
-                    missing_decision_audiences = [
-                        audience
-                        for audience in named_decision_audiences
-                        if audience.casefold() not in locked_inference_text
-                    ]
-                    plan_prompts.append(
-                        plan_prompts[1]
-                        + "\n这是受众结构的最后一次短修复。RUNTIME_VERIFIED_INFERENCES 已由 Runtime 锁定，"
-                        "不得改写；compositeInferences 只返回 MISSING_DECISION_AUDIENCES 对应的新 inference，"
-                        "Runtime 会与锁定项合并。不要复制 claimId，不要添加任何未在 evidenceExcerpt 中出现的"
-                        "产品名、API、版本或数字。\nMISSING_DECISION_AUDIENCES: "
-                        + json.dumps(
-                            missing_decision_audiences,
-                            ensure_ascii=False,
-                        )
-                        + "\nRUNTIME_VERIFIED_INFERENCES: "
-                        + json.dumps(
-                            locked_inference_material,
-                            ensure_ascii=False,
-                        )
-                    )
-                    audience_repair_prompt_added = True
-                continue
-            if candidate_supplemental_claim_ids:
-                parsed["_runtimeExactExcerptClaimSupplements"] = candidate_supplemental_claim_ids
-                candidate_errors.append(
-                    f"{model_label}: runtime_exact_excerpt_claim_supplements:"
-                    f"{len(candidate_supplemental_claim_ids)}"
-                )
-            if candidate_delta_claim_ids:
-                parsed["_runtimeVerifiedClaimDeltaIds"] = list(
-                    dict.fromkeys(candidate_delta_claim_ids)
-                )
-            plan = parsed
-            plan["_planAttempts"] = plan_attempts[-6:]
-            plan_candidate = candidate
-            verified_claims = candidate_claims
-            break
-        if (
-            plan is None
-            and best_repair_candidate is candidate
-            and best_repair_plan is not None
-            and len(
-                set(
-                    [
-                        *best_repair_missing_citations,
-                        *best_repair_missing_facet_ids,
-                    ]
-                )
-            )
-            <= 3
-            and len(best_repair_claims)
-            >= required_claim_count
-            - len(
-                set(
-                    [
-                        *best_repair_missing_citations,
-                        *best_repair_missing_facet_ids,
-                    ]
-                )
-            )
-            and not _research_text_list(best_repair_plan.get("criticalMissingEvidence"), limit=12)
-        ):
-            repaired_claims: list[dict[str, Any]] = []
-            repair_failed = False
-            for citation_key in best_repair_missing_citations:
-                source = next(
-                    (
-                        item
-                        for item in compact_sources
-                        if _safe_text(item.get("citationKey")).strip("[]") == citation_key
-                    ),
-                    None,
-                )
-                raw_claim = (
-                    _architect_exact_excerpt_source_fact(source, question)
-                    if isinstance(source, dict)
-                    else None
-                )
-                if not raw_claim:
-                    repair_failed = True
-                    break
-                verified_repair, repair_issues = _verify_architect_claim_excerpts(
-                    [raw_claim],
-                    compact_sources,
-                    require_evidence_key=True,
-                )
-                if repair_issues or len(verified_repair) != 1:
-                    repair_failed = True
-                    break
-                repaired_claims.extend(verified_repair)
-            combined_claims, supplemental_claim_ids = supplement_verified_claims(
-                [*best_repair_claims, *repaired_claims]
-            )
-            repair_metrics = research_acceptance_metrics(
-                {
-                    "question": question,
-                    "freshness": freshness,
-                    "reviewDecision": "accept",
-                    "answer": "",
-                    "sourceUrls": compact_sources,
-                    "claimTable": combined_claims,
-                    "criticalMissingEvidence": [],
-                    "asOf": _utc_now_iso(),
-                }
-            )
-            repaired_outline = _architect_normalized_repair_outline(
-                best_repair_plan.get("answerOutline"),
-                combined_claims,
-                best_repair_plan.get("compositeInferences"),
-            )
-            repaired_inferences, _repaired_inference_drops = (
-                _architect_filter_composite_inferences(
-                    repaired_outline,
-                    combined_claims,
-                    best_repair_plan.get("compositeInferences"),
-                    validate_semantics=False,
-                )
-            )
-            if (
-                named_decision_audiences
-                and runtime_named_decision_fallback_allowed
-                and len(repaired_inferences) < len(named_decision_audiences)
-            ):
-                runtime_inferences = _architect_runtime_named_decision_inferences(
-                    combined_claims,
-                    named_decision_audiences,
-                    question=question,
-                )
-                runtime_outline = _architect_normalized_repair_outline(
-                    best_repair_plan.get("answerOutline"),
-                    combined_claims,
-                    runtime_inferences,
-                )
-                runtime_inferences, _runtime_inference_drops = (
-                    _architect_filter_composite_inferences(
-                        runtime_outline,
-                        combined_claims,
-                        runtime_inferences,
-                        validate_semantics=False,
-                    )
-                )
-                if len(runtime_inferences) == len(named_decision_audiences):
-                    repaired_outline = runtime_outline
-                    repaired_inferences = runtime_inferences
-            repair_failed = bool(
-                repair_failed
-                or repair_metrics["claimCount"] < required_claim_count
-                or repair_metrics["uniqueClaimCount"] < required_claim_count
-                or repair_metrics["evidenceVerifiedClaimCount"] != repair_metrics["claimCount"]
-                or repair_metrics["claimSupportedSourceCount"] < plan_claim_source_floor
-                or missing_verified_claim_facets(combined_claims)
-                or _architect_outline_inference_issues(
-                    repaired_outline,
-                    combined_claims,
-                    repaired_inferences,
-                )
-            )
-            if not repair_failed:
-                plan = {
-                    **best_repair_plan,
-                    "reviewDecision": "accept",
-                    "claimTable": combined_claims,
-                    "answerOutline": repaired_outline,
-                    "compositeInferences": repaired_inferences,
-                    "conflictMatrix": [],
-                    "missingEvidence": [],
-                    "assumptions": [],
-                    "temporalAssessment": {},
-                    "criticalMissingEvidence": [],
-                    "_runtimeExactExcerptClaimRepairs": list(best_repair_missing_citations),
-                    "_runtimeClaimFacetRepairs": list(
-                        best_repair_missing_facet_ids
-                    ),
-                    "_runtimeExactExcerptClaimSupplements": supplemental_claim_ids,
-                }
-                plan_candidate = best_repair_candidate
-                verified_claims = combined_claims
-                candidate_errors.append(
-                    (
-                        f"{model_label}: runtime_exact_excerpt_claim_repair:"
-                        + ",".join(best_repair_missing_citations)
-                    )
-                    if best_repair_missing_citations
-                    else f"{model_label}: runtime_verified_claim_outline_repair"
-                )
-        if plan is not None:
-            break
-
-    if plan is None and candidates:
-        # A dedicated Architect can return malformed or provider-specific JSON
-        # or an internally contradictory ``accept`` plus critical-gap payload
-        # even though the already-read evidence is structurally sufficient.
-        # Do not hand planning to an unrelated generic Summary model. Build a
-        # strict claim plan from exact stored excerpts, then require the normal
-        # independent Supervisor + adversarial review chain before delivery.
-        # A genuine ``retry``/``reject`` decision returns earlier; this path only
-        # recovers an accepted plan that failed Runtime validation.
-        runtime_claims, runtime_supplement_ids = supplement_verified_claims(
-            list(best_repair_claims)
-        )
-        runtime_claims, runtime_secondary_ids = (
-            _architect_govern_claim_source_roles_for_question(
-                runtime_claims,
-                question,
-            )
-        )
-        runtime_metrics = research_acceptance_metrics(
-            {
-                "question": question,
-                "freshness": freshness,
-                "reviewDecision": "accept",
-                "answer": "",
-                "sourceUrls": compact_sources,
-                "claimTable": runtime_claims,
-                "criticalMissingEvidence": [],
-                "asOf": _utc_now_iso(),
-            }
-        )
-        runtime_inferences = (
-            _architect_runtime_named_decision_inferences(
-                runtime_claims,
-                named_decision_audiences,
-                question=question,
-            )
-            if runtime_named_decision_fallback_allowed
-            else []
-        )
-        runtime_outline = _architect_normalized_repair_outline(
-            [],
-            runtime_claims,
-            runtime_inferences,
-        )
-        runtime_inferences, runtime_inference_issues = (
-            _architect_filter_composite_inferences(
-                runtime_outline,
-                runtime_claims,
-                runtime_inferences,
-                validate_semantics=False,
-            )
-        )
-        runtime_missing_facet_ids = missing_verified_claim_facets(runtime_claims)
-        runtime_outline_issues = _architect_outline_inference_issues(
-            runtime_outline,
-            runtime_claims,
-            runtime_inferences,
-        )
-        runtime_plan_ready = bool(
-            runtime_metrics["claimCount"] >= required_claim_count
-            and runtime_metrics["uniqueClaimCount"] >= required_claim_count
-            and runtime_metrics["evidenceVerifiedClaimCount"]
-            == runtime_metrics["claimCount"]
-            and runtime_metrics["claimSupportedSourceCount"]
-            >= plan_claim_source_floor
-            and not runtime_missing_facet_ids
-            and not runtime_outline_issues
-            and not runtime_inference_issues
-        )
-        if runtime_plan_ready:
-            plan_candidate = candidates[0]
-            verified_claims = runtime_claims
-            plan = {
-                "reviewDecision": "accept",
-                "reviewReasons": [],
-                "headline": "Runtime-verified evidence plan",
-                "claimTable": runtime_claims,
-                "answerOutline": runtime_outline,
-                "compositeInferences": runtime_inferences,
-                "conflictMatrix": [],
-                "missingEvidence": [],
-                "criticalMissingEvidence": [],
-                "recommendedNextQueries": [],
-                "assumptions": [],
-                "temporalAssessment": _architect_runtime_temporal_assessment(
-                    compact_sources
-                ),
-                "_runtimeDeterministicEvidencePlan": True,
-                "_runtimeExactExcerptClaimSupplements": runtime_supplement_ids,
-                "_attributedSecondaryClaimIds": runtime_secondary_ids,
-                "_nonBlockingPlanWarnings": (
-                    [
-                        "composite_inference_recommended_for_audiences:"
-                        f"{len(runtime_inferences)}/{len(named_decision_audiences)}"
-                    ]
-                    if len(runtime_inferences) < len(named_decision_audiences)
-                    else []
-                ),
-            }
-            candidate_errors.append(
-                "runtime_deterministic_evidence_plan_after_architect_protocol_failure"
-            )
-        else:
-            candidate_errors.append(
-                "runtime_deterministic_evidence_plan_not_ready:"
-                f"claims={runtime_metrics['claimCount']},"
-                f"unique={runtime_metrics['uniqueClaimCount']},"
-                f"verified={runtime_metrics['evidenceVerifiedClaimCount']},"
-                f"sources={runtime_metrics['claimSupportedSourceCount']},"
-                "missingFacets=" + ",".join(runtime_missing_facet_ids[:8]) + ","
-                "outline=" + ",".join(runtime_outline_issues[:4]) + ","
-                "inferences=" + ",".join(runtime_inference_issues[:4]) + ","
-                f"audiences={len(runtime_inferences)}/{len(named_decision_audiences)}"
-            )
-
-    if plan is None or plan_candidate is None:
+    except CanonicalClaimPlanError as exc:
         _report_research_progress(
             stage="evidence_plan",
             status="failed",
-            summary="证据计划未能通过结构校验",
+            summary="Canonical evidence plan did not satisfy the Runtime contract",
             toolName="research_architect",
             nodeId="research-evidence-plan",
         )
         return {
-            "_agentError": "architect_evidence_plan_unavailable",
+            "_agentError": exc.code,
             "_architectMode": "full_synthesis",
-            "_missingFacetIds": runtime_missing_facet_ids[:8],
-            "_rawPreview": "\n--- retry ---\n".join(raw_previews)[:800],
-            "_modelFallbackAttempts": candidate_errors[:16],
-            "_planAttempts": plan_attempts[-6:],
-            "_contextPreparations": context_preparations[-24:],
+            "_canonicalClaimPlan": exc.diagnostics,
+            "_modelFallbackAttempts": [exc.code],
         }
-
-    _report_research_progress(
-        stage="evidence_plan",
-        status="completed",
-        summary=f"证据计划已锁定 {len(verified_claims)} 条结论",
-        toolName="research_architect",
-        nodeId="research-evidence-plan",
+    claim_plan_elapsed_ms = int(
+        (time.perf_counter() - claim_plan_started_at) * 1000
     )
+    claim_plan_diagnostics = dict(plan.get("canonicalClaimPlan") or {})
+    claim_plan_diagnostics["elapsedMs"] = claim_plan_elapsed_ms
 
-    plan["_planAttempts"] = plan_attempts[-6:]
-
-    # A product comparison with explicitly named decision audiences needs a
-    # compact synthesis pass after claims are locked.  The normal planning
-    # prompt carries full evidence candidates and can spend its budget on
-    # search-plan repair; asking that same prompt to also invent three
-    # audience conclusions is what previously left a valid 20-claim plan with
-    # no usable decision layer.  This pass sees only Runtime-verified claims,
-    # and its output still goes through the existing outline/inference gates,
-    # segmented writer, and two independent reviews.
-    if (
-        named_decision_audiences
-        and not runtime_named_decision_fallback_allowed
-        and plan_candidate is not None
-    ):
-        existing_inferences = _research_dict_list(
-            plan.get("compositeInferences"),
-            limit=12,
+    verified_claims, claim_issues = _verify_architect_claim_excerpts(
+        plan.get("claimTable"),
+        compact_sources,
+        require_evidence_key=True,
+    )
+    if claim_issues or len(verified_claims) != len(list(plan.get("claimTable") or [])):
+        _report_research_progress(
+            stage="evidence_plan",
+            status="failed",
+            summary="Canonical evidence claims did not pass exact-excerpt validation",
+            toolName="research_architect",
+            nodeId="research-evidence-plan",
         )
-        existing_inference_text = " ".join(
-            _safe_text(
-                inference.get("audience")
-                or inference.get("inference")
-                or inference.get("conclusion")
-                or inference.get("recommendation")
-            )
-            for inference in existing_inferences
-        ).casefold()
-        missing_audiences = [
-            audience
-            for audience in named_decision_audiences
-            if _safe_text(audience).casefold() not in existing_inference_text
-        ]
-        decision_audit: dict[str, Any] = {
-            "status": "not_needed" if not missing_audiences else "pending",
-            "requestedAudiences": list(missing_audiences),
-            "acceptedCount": 0,
+        return {
+            "_agentError": "canonical_claim_plan_validation_failed",
+            "_architectMode": "full_synthesis",
+            "_canonicalClaimPlan": claim_plan_diagnostics,
+            "_modelFallbackAttempts": list(claim_issues)[:16],
         }
-        if missing_audiences and remaining_seconds() > delivery_reserve + 10:
-            decision_claim_material = [
-                {
-                    "claimId": _safe_text(claim.get("claimId")),
-                    "claim": _safe_text(claim.get("claim")),
-                    "sourceClaim": _safe_text(claim.get("sourceClaim")),
-                    "claimType": _safe_text(claim.get("claimType")),
-                    "citationKeys": [
-                        _safe_text(
-                            support.get("citationKey") or support.get("citation")
-                            if isinstance(support, dict)
-                            else support
-                        ).strip("[]")
-                        for support in list(claim.get("supportingSources") or [])
-                        if _safe_text(
-                            support.get("citationKey") or support.get("citation")
-                            if isinstance(support, dict)
-                            else support
-                        )
-                    ],
-                    "sourceTitles": [
-                        _compact_research_text(support.get("title"), limit=100)
-                        for support in list(claim.get("supportingSources") or [])
-                        if isinstance(support, dict) and _safe_text(support.get("title"))
-                    ],
-                    "evidenceExcerpt": _compact_research_text(
-                        claim.get("evidenceExcerpt"),
-                        limit=320,
-                    ),
-                }
-                for claim in verified_claims
-                if _safe_text(claim.get("claimId"))
-            ]
-            allowed_decision_claim_ids = [
-                _safe_text(claim.get("claimId"))
-                for claim in verified_claims
-                if _safe_text(claim.get("claimId"))
-            ]
-            decision_system_prompt = _research_agent_stage_system_prompt(
-                "你是 Research Runtime 的受众决策综合节点。只使用 RUNTIME_VERIFIED_CLAIMS 中的事实，"
-                "不要搜索、不要新增产品能力、版本、命令、价格或数字。对 QUESTION 明确列出的每个受众各返回一条"
-                "条件性综合判断；结论必须标明受众、只引用已列出的 premiseClaimIds，并把不确定性保留为条件，"
-                "不能冒充任何官方来源的原话。输出严格 JSON。",
-                stage="evidence_plan",
-            )
-            decision_instruction = (
-                "只输出 {\"compositeInferences\":[...]}。每项只含 inferenceId、audience、inference、"
-                "premiseClaimIds；每个受众一项，inference 40-260 个字符，至少引用一个最相关的已验证 claim，"
-                "优先使用不同且直接相关的前提，禁止复用同一 claim；不要填入不存在的 claimId。"
-                "推荐必须是条件性的‘当这些已验证条件符合时优先考虑……；否则保留比较分支’，"
-                "不要把 source_fact 写成官方推荐。\nQUESTION: "
-                + question
-                + "\nMISSING_AUDIENCES: "
-                + json.dumps(missing_audiences, ensure_ascii=False)
-                + "\nALLOWED_PREMISE_CLAIM_IDS: "
-                + json.dumps(allowed_decision_claim_ids, ensure_ascii=False)
-                + "\nEXISTING_OUTLINE: "
-                + json.dumps(
-                    [
-                        {
-                            "sectionId": _safe_text(item.get("sectionId")),
-                            "claimIds": list(item.get("claimIds") or []),
-                        }
-                        for item in _research_dict_list(plan.get("answerOutline"), limit=6)
-                    ],
-                    ensure_ascii=False,
-                )
-            )
-            decision_messages = prepared_messages(
+    verified_claims, attributed_secondary_claim_ids = (
+        _architect_govern_claim_source_roles_for_question(
+            verified_claims,
+            question,
+        )
+    )
+    if attributed_secondary_claim_ids:
+        claim_plan_diagnostics["attributedSecondaryClaimIds"] = (
+            attributed_secondary_claim_ids
+        )
+    plan["claimTable"] = verified_claims
+    plan["canonicalClaimPlan"] = claim_plan_diagnostics
+
+    candidates = _create_web_research_architect_llm_candidates()
+    if not candidates:
+        return {
+            "_agentError": "architect_writer_model_unavailable",
+            "_architectMode": "full_synthesis",
+            "_canonicalClaimPlan": claim_plan_diagnostics,
+        }
+    plan_candidate = candidates[0]
+    structure_system_prompt = _research_agent_stage_system_prompt(
+        (
+            "You are the structure projection stage for Research Runtime. "
+            "The supplied canonical claim ledger is immutable and already exact-excerpt verified. "
+            "You may only group existing claimIds into an outline and add bounded cross-source "
+            "inferences whose premiseClaimIds are in one outline section. Never emit, rewrite, "
+            "delete, merge, or replace claims."
+        ),
+        stage="structure_projection",
+    )
+    structure_prompt = (
+        "Return one strict JSON object with exactly answerOutline and compositeInferences. "
+        "answerOutline must contain 2-6 section objects with sectionId, title, objective, "
+        "and claimIds; every supplied claimId must occur exactly once. compositeInferences "
+        "may be empty and otherwise contain only inferenceId, inference, premiseClaimIds. "
+        "Use the QUESTION language for title, objective, and inference text. Do not return "
+        "claimTable or repeat claim text. Generate an inference only when the question asks "
+        "for a recommendation, comparison, decision, or explicit deliverable, and label it "
+        "as a synthesis rather than an official source statement.\n"
+        f"QUESTION: {question}\n"
+        f"NAMED_DECISION_AUDIENCES: {json.dumps(named_decision_audiences, ensure_ascii=False)}\n"
+        f"REQUIRED_DELIVERABLES: {json.dumps(required_deliverables, ensure_ascii=False)}"
+    )
+    structure_attempt: dict[str, Any] = {
+        "status": "skipped_not_required",
+        "modelId": _architect_candidate_identity(plan_candidate),
+        "modelRole": plan_candidate[2],
+        "selectionOrigin": _architect_candidate_selection_origin(plan_candidate),
+        "elapsedMs": 0,
+    }
+    structure_required = bool(
+        question_requires_synthesis
+        or named_decision_audiences
+        or required_deliverables
+    )
+    if structure_required:
+        structure_budget = min(
+            call_timeout_cap_seconds,
+            24.0,
+            max(0.0, remaining_seconds() - review_reserve - 12.0),
+        )
+        if structure_budget < 3.0:
+            structure_attempt["status"] = "skipped_delivery_budget_reserved"
+            candidate_errors.append("canonical_structure_delivery_budget_reserved")
+        else:
+            structure_messages = prepared_messages(
                 plan_candidate,
-                system_prompt=decision_system_prompt,
-                instruction=decision_instruction,
+                system_prompt=structure_system_prompt,
+                instruction=structure_prompt,
                 materials=[
                     {
-                        "title": "Runtime-verified decision claims",
-                        "kind": "research_verified_claims",
+                        "title": "Immutable canonical claim plan",
+                        "kind": "research_canonical_claim_plan",
                         "content": json.dumps(
-                            decision_claim_material,
+                            canonical_structure_material(plan),
                             ensure_ascii=False,
                         ),
                     }
                 ],
-                target_role="web-research-architect",
-                node="web_research_architect_decision_completion",
+                target_role="web-research-structure-projector",
+                node="web_research_structure_projection",
             )
-            decision_seconds = min(
-                float(_RESEARCH_ARCHITECT_DECISION_TIMEOUT_SECONDS),
-                max(8.0, remaining_seconds() - delivery_reserve - 3.0),
-            )
-            decision_audit.update(
-                {
-                    "status": "started",
-                    "modelId": _architect_candidate_identity(plan_candidate),
-                    "timeoutSeconds": decision_seconds,
-                    "requestChars": len(decision_instruction),
-                }
-            )
-            decision_started_at = time.perf_counter()
+            structure_started_at = time.perf_counter()
             try:
-                decision_response = _invoke_architect_candidate_with_deadline(
+                structure_response = _invoke_architect_candidate_with_deadline(
                     plan_candidate,
-                    decision_messages,
-                    seconds=decision_seconds,
-                    max_tokens=_RESEARCH_ARCHITECT_DECISION_MAX_TOKENS,
+                    structure_messages,
+                    seconds=structure_budget,
+                    max_tokens=_RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS,
                     disable_thinking=True,
                 )
             except concurrent.futures.TimeoutError:
-                decision_audit.update(
+                structure_attempt.update(
                     {
                         "status": "deadline_timeout",
-                        "elapsedMs": int((time.perf_counter() - decision_started_at) * 1000),
+                        "elapsedMs": int(
+                            (time.perf_counter() - structure_started_at) * 1000
+                        ),
                     }
                 )
-                candidate_errors.append(
-                    f"{_architect_candidate_identity(plan_candidate)}: audience_decision_timeout"
-                )
-            except Exception as exc:  # noqa: BLE001 - decision completion is non-blocking.
-                decision_audit.update(
+                candidate_errors.append("canonical_structure_timeout")
+            except Exception as exc:  # noqa: BLE001 - deterministic outline remains authoritative.
+                structure_attempt.update(
                     {
                         "status": "provider_error",
+                        "elapsedMs": int(
+                            (time.perf_counter() - structure_started_at) * 1000
+                        ),
                         "failureCode": type(exc).__name__,
-                        "elapsedMs": int((time.perf_counter() - decision_started_at) * 1000),
                     }
                 )
                 candidate_errors.append(
-                    f"{_architect_candidate_identity(plan_candidate)}: audience_decision_"
-                    f"{type(exc).__name__}"
+                    f"canonical_structure_{type(exc).__name__}: {_safe_text(exc)[:180]}"
                 )
             else:
-                decision_text = sanitize_background_model_output(decision_response).text
-                decision_payload = _extract_json_object(decision_text)
-                raw_rows = (
-                    _research_dict_list(decision_payload.get("compositeInferences"), limit=12)
-                    if isinstance(decision_payload, dict)
-                    else []
+                sanitized_structure = sanitize_background_model_output(
+                    structure_response
                 )
-                new_rows: list[dict[str, Any]] = []
-                allowed_decision_claim_id_set = set(allowed_decision_claim_ids)
-                normalized_premise_id_count = 0
-                for row_index, row in enumerate(raw_rows, start=1):
-                    row_text = _safe_text(
-                        row.get("audience")
-                        or row.get("inference")
-                        or row.get("conclusion")
-                        or row.get("recommendation")
-                    )
-                    if not any(
-                        _safe_text(audience).casefold() in row_text.casefold()
-                        for audience in missing_audiences
-                    ):
-                        continue
-                    raw_premise_ids = [
-                        _safe_text(value)
-                        for value in list(row.get("premiseClaimIds") or [])
-                        if _safe_text(value)
-                    ]
-                    premise_ids = list(
-                        dict.fromkeys(
-                            claim_id
-                            for claim_id in raw_premise_ids
-                            if claim_id in allowed_decision_claim_id_set
-                        )
-                    )
-                    if not premise_ids:
-                        continue
-                    normalized_premise_id_count += max(
-                        0,
-                        len(raw_premise_ids) - len(premise_ids),
-                    )
-                    new_rows.append(
-                        {
-                            **row,
-                            "inferenceId": _safe_text(row.get("inferenceId"))
-                            or f"inference_runtime_audience_completion_{row_index}",
-                            "premiseClaimIds": premise_ids,
-                        }
-                    )
-                combined_inferences = _research_normalize_named_decision_inferences(
-                    [*existing_inferences, *new_rows],
+                parsed_structure = _extract_json_object(
+                    sanitized_structure.text
+                )
+                projected_plan, projection_issues = apply_structure_projection(
+                    plan,
+                    parsed_structure,
+                )
+                normalized_inferences = _research_normalize_named_decision_inferences(
+                    projected_plan.get("compositeInferences"),
                     named_decision_audiences,
                 )
-                completion_outline = _architect_normalized_repair_outline(
-                    plan.get("answerOutline"),
-                    verified_claims,
-                    combined_inferences,
-                )
-                filtered_inferences, dropped_inferences = (
+                accepted_inferences, inference_issues = (
                     _architect_filter_composite_inferences(
-                        completion_outline,
+                        projected_plan.get("answerOutline"),
                         verified_claims,
-                        combined_inferences,
-                        validate_semantics=False,
+                        normalized_inferences,
                     )
                 )
-                existing_ids = {
-                    _safe_text(row.get("inferenceId"))
-                    for row in existing_inferences
-                    if _safe_text(row.get("inferenceId"))
-                }
-                filtered_ids = {
-                    _safe_text(row.get("inferenceId"))
-                    for row in filtered_inferences
-                    if _safe_text(row.get("inferenceId"))
-                }
-                accepted_audiences = {
-                    audience.casefold()
-                    for audience in named_decision_audiences
-                    if any(
-                        audience.casefold()
-                        in _safe_text(
-                            row.get("audience")
-                            or row.get("inference")
-                            or row.get("conclusion")
-                            or row.get("recommendation")
-                        ).casefold()
-                        for row in filtered_inferences
+                projected_plan["compositeInferences"] = accepted_inferences
+                structure_issues = list(
+                    dict.fromkeys([*projection_issues, *inference_issues])
+                )
+                if (
+                    named_decision_audiences
+                    and len(accepted_inferences) < len(named_decision_audiences)
+                ):
+                    structure_issues.append(
+                        "named_audience_inference_coverage_incomplete:"
+                        f"{len(accepted_inferences)}/{len(named_decision_audiences)}"
                     )
-                }
-                if existing_ids.issubset(filtered_ids) and filtered_inferences:
-                    plan["answerOutline"] = completion_outline
-                    plan["compositeInferences"] = filtered_inferences
-                    warnings = _research_text_list(
-                        plan.get("_nonBlockingPlanWarnings"),
-                        limit=12,
-                    )
-                    if len(accepted_audiences) == len(named_decision_audiences):
-                        warnings = [
-                            warning
-                            for warning in warnings
-                            if not warning.startswith(
-                                "composite_inference_recommended_for_audiences:"
-                            )
-                        ]
-                    plan["_nonBlockingPlanWarnings"] = warnings
-                    decision_audit.update(
-                        {
-                            "status": "accepted" if accepted_audiences else "no_valid_inferences",
-                            "elapsedMs": int((time.perf_counter() - decision_started_at) * 1000),
-                            "acceptedCount": len(accepted_audiences),
-                            "normalizedPremiseIdCount": normalized_premise_id_count,
-                            "dropped": dropped_inferences[:4],
-                            "missingAudiencesAfter": [
-                                audience
-                                for audience in named_decision_audiences
-                                if audience.casefold() not in accepted_audiences
-                            ],
-                        }
-                    )
-                else:
-                    decision_audit.update(
-                        {
-                            "status": "invalid_or_unbound",
-                            "elapsedMs": int((time.perf_counter() - decision_started_at) * 1000),
-                            "acceptedCount": 0,
-                            "dropped": dropped_inferences[:4],
-                        }
-                    )
-                    candidate_errors.append(
-                        f"{_architect_candidate_identity(plan_candidate)}: audience_decision_unbound"
-                    )
-        elif missing_audiences:
-            decision_audit["status"] = "skipped_delivery_budget_reserved"
-        plan["_audienceDecisionCompletion"] = decision_audit
+                plan = projected_plan
+                structure_attempt.update(
+                    {
+                        "status": (
+                            "accepted_with_drops"
+                            if structure_issues
+                            else "accepted"
+                        ),
+                        "elapsedMs": int(
+                            (time.perf_counter() - structure_started_at) * 1000
+                        ),
+                        "responseChars": len(sanitized_structure.text),
+                        "requestedMaxTokens": _RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS,
+                        "claimMutationIgnored": bool(
+                            isinstance(parsed_structure, dict)
+                            and parsed_structure.get("claimTable") is not None
+                        ),
+                        "issues": structure_issues[:12],
+                        **_architect_response_safe_diagnostics(
+                            structure_response,
+                            sanitized_structure,
+                        ),
+                    }
+                )
+                candidate_errors.extend(
+                    f"canonical_structure:{issue}" for issue in structure_issues
+                )
+
+    plan["canonicalClaimPlan"] = claim_plan_diagnostics
+    plan["_canonicalClaimPlan"] = claim_plan_diagnostics
+    plan["_structureAttempt"] = structure_attempt
+    _report_research_progress(
+        stage="evidence_plan",
+        status="completed",
+        summary=f"Canonical evidence plan locked {len(verified_claims)} claims",
+        toolName="research_architect",
+        nodeId="research-evidence-plan",
+    )
 
     ordered_writer_candidates = list(candidates)
-    # The candidate that produced a Runtime-verified plan has already proved it can
-    # serve this request. Start writing with it instead of spending the delivery
-    # budget retrying a candidate that just failed planning.
+    # Start with the configured writer. The Runtime, not this model, owns and
+    # validates the immutable canonical claim plan.
     writer_candidates = [plan_candidate] + [
         candidate
         for candidate in ordered_writer_candidates
@@ -17172,10 +15609,15 @@ def _invoke_web_research_architect_staged(
         stage="answer_writer",
     )
     prompt_contracts = {
-        "evidencePlan": {
-            "stage": "evidence_plan",
+        "claimPlan": {
+            "stage": "canonical_claim_plan",
+            "version": CANONICAL_CLAIM_PLAN_VERSION,
+            "digest": claim_plan_diagnostics.get("claimDigest"),
+        },
+        "structureProjection": {
+            "stage": "structure_projection",
             "version": RESEARCH_PROMPT_CONTRACT_VERSION,
-            "digest": research_runtime_prompt_digest(plan_system_prompt),
+            "digest": research_runtime_prompt_digest(structure_system_prompt),
         },
         "answerWriter": {
             "stage": "answer_writer",
@@ -17260,6 +15702,7 @@ def _invoke_web_research_architect_staged(
     writer_revision_count = 0
     writer_section_diagnostics: list[dict[str, Any]] = []
     writer_section_diagnostics_lock = threading.Lock()
+    review_attempts: list[dict[str, Any]] = []
 
     def answer_structural_issues(candidate_answer: str) -> list[str]:
         candidate_payload = {
@@ -17996,7 +16439,12 @@ def _invoke_web_research_architect_staged(
                     )[-8:],
                 }
             )
-            candidate_errors.extend(segmented_errors)
+            candidate_errors.extend(
+                error
+                if error.startswith(f"{model_label}:")
+                else f"{model_label}: {error}"
+                for error in segmented_errors
+            )
             if segmented_answer:
                 answer = segmented_answer
                 writer_candidate = candidate
@@ -18053,7 +16501,12 @@ def _invoke_web_research_architect_staged(
                         candidate,
                         fallback_profile,
                     )
-                    candidate_errors.extend(segmented_errors)
+                    candidate_errors.extend(
+                        error
+                        if error.startswith(f"{model_label}:")
+                        else f"{model_label}: {error}"
+                        for error in segmented_errors
+                    )
                     if segmented_answer:
                         answer = segmented_answer
                         writer_candidate = candidate
@@ -18069,7 +16522,12 @@ def _invoke_web_research_architect_staged(
                         candidate,
                         fallback_profile,
                     )
-                    candidate_errors.extend(segmented_errors)
+                    candidate_errors.extend(
+                        error
+                        if error.startswith(f"{model_label}:")
+                        else f"{model_label}: {error}"
+                        for error in segmented_errors
+                    )
                     if segmented_answer:
                         answer = segmented_answer
                         writer_candidate = candidate
@@ -18106,7 +16564,12 @@ def _invoke_web_research_architect_staged(
                     candidate,
                     fallback_profile,
                 )
-                candidate_errors.extend(segmented_errors)
+                candidate_errors.extend(
+                    error
+                    if error.startswith(f"{model_label}:")
+                    else f"{model_label}: {error}"
+                    for error in segmented_errors
+                )
                 if segmented_answer:
                     answer = segmented_answer
                     writer_candidate = candidate
@@ -18193,7 +16656,12 @@ def _invoke_web_research_architect_staged(
                     )[-8:],
                 }
             )
-            candidate_errors.extend(tail_errors)
+            candidate_errors.extend(
+                error
+                if error.startswith(f"{tail_label}:")
+                else f"{tail_label}: {error}"
+                for error in tail_errors
+            )
             if tail_answer:
                 answer = tail_answer
                 writer_candidate = tail_candidate
@@ -18246,14 +16714,12 @@ def _invoke_web_research_architect_staged(
         return {
             "_agentError": "architect_answer_unavailable",
             "_architectMode": "full_synthesis",
-            "_rawPreview": "\n--- retry ---\n".join(raw_previews)[:800],
+            "_canonicalClaimPlan": claim_plan_diagnostics,
+            "_structureAttempt": structure_attempt,
             "_writerAttempts": writer_attempts,
-            "_planAttempts": plan_attempts[-6:],
+            "_reviewAttempts": review_attempts,
             "_contextPreparations": context_preparations[-24:],
             "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
-            # Writer-stage failures are appended after plan repair diagnostics;
-            # retain the tail so the actual section/assembly blocker is not
-            # hidden by earlier recoverable plan attempts.
             "_modelFallbackAttempts": candidate_errors[-16:],
         }
 
@@ -18347,6 +16813,14 @@ def _invoke_web_research_architect_staged(
         retry_reason: str = "",
     ) -> tuple[dict[str, Any], str]:
         model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
+        review_started_at = time.perf_counter()
+        review_attempt_base = {
+            "modelId": model_label,
+            "modelRole": candidate[2],
+            "selectionOrigin": _architect_candidate_selection_origin(candidate),
+            "reviewMode": review_mode,
+            "requestedMaxTokens": _RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
+        }
         review_candidate_payload = {
             "answer": candidate_answer,
             "asOf": verified_plan["asOf"],
@@ -18394,12 +16868,37 @@ def _invoke_web_research_architect_staged(
                 disable_thinking=True,
             )
         except concurrent.futures.TimeoutError:
+            review_attempts.append(
+                {
+                    **review_attempt_base,
+                    "status": "deadline_timeout",
+                    "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
+                }
+            )
             return {}, f"{model_label}: independent_review_timeout"
         except Exception as exc:  # noqa: BLE001 - caller may try another independent reviewer.
+            review_attempts.append(
+                {
+                    **review_attempt_base,
+                    "status": "provider_error",
+                    "failureCode": type(exc).__name__,
+                    "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
+                }
+            )
             return {}, f"{model_label}: independent_review_{type(exc).__name__}: {_safe_text(exc)[:220]}"
-        sanitized_review_text = sanitize_background_model_output(response).text
+        sanitized_review = sanitize_background_model_output(response)
+        sanitized_review_text = sanitized_review.text
         parsed_review = _extract_json_object(sanitized_review_text)
         if not _independent_architect_review_schema_valid(parsed_review):
+            review_attempts.append(
+                {
+                    **review_attempt_base,
+                    "status": "invalid_schema",
+                    "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
+                    "responseChars": len(sanitized_review_text),
+                    **_architect_response_safe_diagnostics(response, sanitized_review),
+                }
+            )
             compact_preview = re.sub(r"\s+", " ", sanitized_review_text).strip()[:180]
             return {}, (
                 f"{model_label}: independent_review_invalid_schema"
@@ -18413,12 +16912,23 @@ def _invoke_web_research_architect_staged(
             normalized_review,
             question=question,
         )
-        return _architect_reconcile_review_with_answer_surface(
+        reconciled_review = _architect_reconcile_review_with_answer_surface(
             reclassified_review,
             question=question,
             candidate_answer=candidate_answer,
             claim_table=verified_claims,
-        ), ""
+        )
+        review_attempts.append(
+            {
+                **review_attempt_base,
+                "status": "completed",
+                "accepted": _independent_architect_review_accepts(reconciled_review),
+                "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
+                "responseChars": len(sanitized_review_text),
+                **_architect_response_safe_diagnostics(response, sanitized_review),
+            }
+        )
+        return reconciled_review, ""
 
     def run_review_consensus(
         candidate_answer: str,
@@ -18784,7 +17294,12 @@ def _invoke_web_research_architect_staged(
                             )[-8:],
                         }
                     )
-                    candidate_errors.extend(segmented_errors)
+                    candidate_errors.extend(
+                        error
+                        if error.startswith(f"{revision_label}:")
+                        else f"{revision_label}: {error}"
+                        for error in segmented_errors
+                    )
                     if candidate_revised_answer:
                         revised_answer = candidate_revised_answer
                         writer_candidate = revision_candidate
@@ -19022,8 +17537,8 @@ def _invoke_web_research_architect_staged(
             "recommendedNextQueries": recommended_queries,
             "asOf": verified_plan["asOf"],
             "_independentReview": best_failed_review,
-            "_modelRole": plan_candidate[2],
-            "_modelId": _architect_candidate_identity(plan_candidate),
+            "_modelRole": writer_candidate[2],
+            "_modelId": _architect_candidate_identity(writer_candidate),
             "_writerModelRole": writer_candidate[2],
             "_writerModelId": _architect_candidate_identity(writer_candidate),
             "_reviewerModelRole": failed_reviewer_candidate[2] if failed_reviewer_candidate else "",
@@ -19039,7 +17554,10 @@ def _invoke_web_research_architect_staged(
             "_writerRuntimeFallback": writer_runtime_fallback,
             "_writerSectionCount": writer_section_count,
             "_modelFallbackAttempts": candidate_errors[:16],
+            "_canonicalClaimPlan": claim_plan_diagnostics,
+            "_structureAttempt": structure_attempt,
             "_writerAttempts": writer_attempts,
+            "_reviewAttempts": review_attempts,
             "_contextPreparations": context_preparations[-24:],
             "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
             "_rejectedAnswerDiagnostics": rejected_diagnostics,
@@ -19126,8 +17644,10 @@ def _invoke_web_research_architect_staged(
             "_agentError": "architect_post_review_quality_gate_failed",
             "_architectMode": "full_synthesis",
             "_modelFallbackAttempts": [*candidate_errors, *quality_issues][:8],
+            "_canonicalClaimPlan": claim_plan_diagnostics,
+            "_structureAttempt": structure_attempt,
             "_writerAttempts": writer_attempts,
-            "_planAttempts": plan_attempts[-6:],
+            "_reviewAttempts": review_attempts,
             "_contextPreparations": context_preparations[-24:],
             "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
             "_researchPromptContracts": prompt_contracts,
@@ -19143,8 +17663,8 @@ def _invoke_web_research_architect_staged(
         "criticalMissingEvidence": [],
         "asOf": verified_plan["asOf"],
         "_independentReview": independent_review,
-        "_modelRole": plan_candidate[2],
-        "_modelId": _architect_candidate_identity(plan_candidate),
+        "_modelRole": writer_candidate[2],
+        "_modelId": _architect_candidate_identity(writer_candidate),
         "_writerModelRole": writer_candidate[2],
         "_writerModelId": _architect_candidate_identity(writer_candidate),
         "_reviewerModelRole": reviewer_candidate[2],
@@ -19161,7 +17681,10 @@ def _invoke_web_research_architect_staged(
         "_writerRuntimeFallback": writer_runtime_fallback,
         "_writerSectionCount": writer_section_count,
         "_modelFallbackAttempts": candidate_errors,
+        "_canonicalClaimPlan": claim_plan_diagnostics,
+        "_structureAttempt": structure_attempt,
         "_writerAttempts": writer_attempts,
+        "_reviewAttempts": review_attempts,
         "_contextPreparations": context_preparations[-24:],
         "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
         "_researchPromptContracts": prompt_contracts,
@@ -19363,6 +17886,64 @@ def _invoke_web_research_architect_agent(
     except Exception as exc:  # noqa: BLE001 - deterministic fallback must keep Research Runtime alive.
         return {"_agentError": f"{type(exc).__name__}: {exc}", "_architectMode": mode}
 
+
+def _research_synthesis_stage_metrics(agent_pack: Any) -> dict[str, Any]:
+    if not isinstance(agent_pack, dict):
+        return {}
+    claim_plan = (
+        agent_pack.get("_canonicalClaimPlan")
+        if isinstance(agent_pack.get("_canonicalClaimPlan"), dict)
+        else {}
+    )
+    if not claim_plan:
+        return {}
+    structure = (
+        agent_pack.get("_structureAttempt")
+        if isinstance(agent_pack.get("_structureAttempt"), dict)
+        else {}
+    )
+    writer_attempts = [
+        item
+        for item in list(agent_pack.get("_writerAttempts") or [])
+        if isinstance(item, dict)
+    ]
+    review_attempts = [
+        item
+        for item in list(agent_pack.get("_reviewAttempts") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "claimPlanMode": _safe_text(claim_plan.get("mode")) or "runtime_canonical",
+        "claimPlanVersion": _safe_text(claim_plan.get("version"))
+        or CANONICAL_CLAIM_PLAN_VERSION,
+        "claimPlanDigest": _safe_text(claim_plan.get("claimDigest")),
+        "claimPlanElapsedMs": max(0, _as_int(claim_plan.get("elapsedMs"), 0)),
+        "claimPlanCandidateCount": max(0, _as_int(claim_plan.get("candidateCount"), 0)),
+        "claimPlanClaimCount": max(0, _as_int(claim_plan.get("claimCount"), 0)),
+        "claimPlanSourceCount": max(0, _as_int(claim_plan.get("sourceCount"), 0)),
+        "claimPlanRequiredSourceCount": max(
+            0, _as_int(claim_plan.get("requiredSourceCount"), 0)
+        ),
+        "claimPlanRequiredClaimCount": max(
+            0, _as_int(claim_plan.get("requiredClaimCount"), 0)
+        ),
+        "claimPlanCoveredFacetIds": list(claim_plan.get("coveredFacetIds") or []),
+        "claimPlanMissingSourceKeys": list(claim_plan.get("missingSourceKeys") or []),
+        "claimPlanMissingFacetIds": list(claim_plan.get("missingFacetIds") or []),
+        "structureStatus": _safe_text(structure.get("status")) or "not_attempted",
+        "structureElapsedMs": max(0, _as_int(structure.get("elapsedMs"), 0)),
+        "writerElapsedMs": sum(
+            max(0, _as_int(item.get("elapsedMs"), 0)) for item in writer_attempts
+        ),
+        "reviewElapsedMs": sum(
+            max(0, _as_int(item.get("elapsedMs"), 0)) for item in review_attempts
+        ),
+        # Canonical claims are built and exact-excerpt verified by Runtime.
+        # The optional model call can only project structure.
+        "modelPlanCallCount": 0,
+    }
+
+
 def _merge_web_research_architect_agent_pack(
     base_pack: dict[str, Any],
     agent_pack: dict[str, Any] | None,
@@ -19373,6 +17954,7 @@ def _merge_web_research_architect_agent_pack(
     source_texts = dict(base_pack.get("_sourceTexts") or {}) if isinstance(base_pack.get("_sourceTexts"), dict) else {}
     public_base_pack = {key: value for key, value in base_pack.items() if key != "_sourceTexts"}
     architect_mode = _safe_text((agent_pack or {}).get("_architectMode")) if isinstance(agent_pack, dict) else ""
+    stage_metrics = _research_synthesis_stage_metrics(agent_pack)
     if not isinstance(agent_pack, dict) or agent_pack.get("_agentError"):
         fallback_reason = "architect_agent_no_result"
         raw_preview = ""
@@ -19387,6 +17969,7 @@ def _merge_web_research_architect_agent_pack(
                 "agentId": "web-research-architect",
                 "mode": architect_mode or "unknown",
                 "fallbackReason": fallback_reason,
+                **stage_metrics,
                 **(
                     {"missingFacetIds": _as_list(agent_pack.get("_missingFacetIds"))[:8]}
                     if isinstance(agent_pack, dict) and agent_pack.get("_missingFacetIds")
@@ -19394,8 +17977,8 @@ def _merge_web_research_architect_agent_pack(
                 ),
                 **({"rawPreview": raw_preview} if raw_preview else {}),
                 **({"fallbackAttempts": list(agent_pack.get("_modelFallbackAttempts") or [])[-10:]} if isinstance(agent_pack, dict) and agent_pack.get("_modelFallbackAttempts") else {}),
-                **({"planAttempts": list(agent_pack.get("_planAttempts") or [])[-6:]} if isinstance(agent_pack, dict) and agent_pack.get("_planAttempts") else {}),
                 **({"writerAttempts": list(agent_pack.get("_writerAttempts") or [])[-4:]} if isinstance(agent_pack, dict) and agent_pack.get("_writerAttempts") else {}),
+                **({"reviewAttempts": list(agent_pack.get("_reviewAttempts") or [])[-6:]} if isinstance(agent_pack, dict) and agent_pack.get("_reviewAttempts") else {}),
                 **({"contextPreparations": list(agent_pack.get("_contextPreparations") or [])[-24:]} if isinstance(agent_pack, dict) and agent_pack.get("_contextPreparations") else {}),
                 **({"writerSectionDiagnostics": list(agent_pack.get("_writerSectionDiagnostics") or [])[-32:]} if isinstance(agent_pack, dict) and agent_pack.get("_writerSectionDiagnostics") else {}),
                 **({"researchPromptContracts": dict(agent_pack.get("_researchPromptContracts") or {})} if isinstance(agent_pack, dict) and agent_pack.get("_researchPromptContracts") else {}),
@@ -19412,6 +17995,7 @@ def _merge_web_research_architect_agent_pack(
                 "agentId": "web-research-architect",
                 "mode": architect_mode or "unknown",
                 "fallbackReason": "architect_agent_invalid_review_decision",
+                **stage_metrics,
             },
         }
     independent_review = _normalize_independent_architect_review(
@@ -19439,6 +18023,7 @@ def _merge_web_research_architect_agent_pack(
                 "agentId": "web-research-architect",
                 "mode": architect_mode or "full_synthesis",
                 "fallbackReason": "independent_semantic_review_not_accepted",
+                **stage_metrics,
             },
         }
     research_result = _safe_text(agent_pack.get("researchResult") or agent_pack.get("answer"))
@@ -19451,6 +18036,7 @@ def _merge_web_research_architect_agent_pack(
                 "agentId": "web-research-architect",
                 "mode": architect_mode or "full_synthesis",
                 "fallbackReason": "architect_agent_missing_research_result",
+                **stage_metrics,
             },
         }
     reviewed_sources = [
@@ -19491,6 +18077,7 @@ def _merge_web_research_architect_agent_pack(
                 "agentId": "web-research-architect",
                 "mode": architect_mode or "full_synthesis",
                 "fallbackReason": "claim_evidence_excerpt_verification_failed",
+                **stage_metrics,
             },
         }
     known_urls = {item.get("url") for item in known_sources if item.get("url")}
@@ -19733,17 +18320,12 @@ def _merge_web_research_architect_agent_pack(
             "writerRevisionCount": int(agent_pack.get("_writerRevisionCount") or 0),
             "writerMode": _safe_text(agent_pack.get("_writerMode")) or "unknown",
             "writerSectionCount": int(agent_pack.get("_writerSectionCount") or 0),
+            **stage_metrics,
             **({"fallbackAttempts": list(agent_pack.get("_modelFallbackAttempts") or [])[-10:]} if agent_pack.get("_modelFallbackAttempts") else {}),
-            **({"planAttempts": list(agent_pack.get("_planAttempts") or [])[-6:]} if agent_pack.get("_planAttempts") else {}),
             **({"writerAttempts": list(agent_pack.get("_writerAttempts") or [])[-4:]} if agent_pack.get("_writerAttempts") else {}),
+            **({"reviewAttempts": list(agent_pack.get("_reviewAttempts") or [])[-6:]} if agent_pack.get("_reviewAttempts") else {}),
             **({"contextPreparations": list(agent_pack.get("_contextPreparations") or [])[-24:]} if agent_pack.get("_contextPreparations") else {}),
             **({"writerSectionDiagnostics": list(agent_pack.get("_writerSectionDiagnostics") or [])[-32:]} if agent_pack.get("_writerSectionDiagnostics") else {}),
-            **(
-                {"audienceDecisionCompletion": dict(agent_pack.get("_audienceDecisionCompletion") or {})}
-                if isinstance(agent_pack.get("_audienceDecisionCompletion"), dict)
-                and agent_pack.get("_audienceDecisionCompletion")
-                else {}
-            ),
             **({"researchPromptContracts": dict(agent_pack.get("_researchPromptContracts") or {})} if agent_pack.get("_researchPromptContracts") else {}),
             **({"researchPromptContractVersion": agent_pack.get("_researchPromptContractVersion")} if agent_pack.get("_researchPromptContractVersion") else {}),
             **({"researchPromptContractDigest": agent_pack.get("_researchPromptContractDigest")} if agent_pack.get("_researchPromptContractDigest") else {}),
@@ -20136,14 +18718,31 @@ def _is_technical_research_question(question: str) -> bool:
 def _research_delivery_requirements(question: str) -> dict[str, Any]:
     text = _safe_text(question)
     explicit_facets = _build_explicit_question_facets(text)
-    broad_or_comparative = bool(
-        explicit_facets
-        or re.search(
+    comparative = bool(
+        re.search(
             r"\b(?:compare|comparison|versus|vs\.?|comprehensive|deep research|landscape|market)\b|"
             r"(?:比较|对比|竞品|全面|深入调研|行业格局|市场格局|多方|多个产品)",
             text,
             re.IGNORECASE,
         )
+    )
+    named_authority_subjects = [
+        re.sub(r"\s+", "", value)
+        for value in re.findall(r"《([^》]{4,120})》", text)
+        if len(re.sub(r"\s+", "", value)) >= 6
+    ]
+    single_authoritative_subject = bool(
+        len(named_authority_subjects) == 1
+        and not comparative
+        and re.search(
+            r"(?:办法|条例|规定|法律|法案|规章|标准|规范|政策|指南|白皮书|报告)|"
+            r"\b(?:act|law|regulation|standard|specification|policy|guideline|white paper|report)\b",
+            named_authority_subjects[0],
+            re.IGNORECASE,
+        )
+    )
+    broad_or_comparative = bool(
+        comparative or (explicit_facets and not single_authoritative_subject)
     )
     narrow_technical = _is_technical_research_question(text) and not broad_or_comparative
     explicit_source_floor = 0
@@ -20155,32 +18754,44 @@ def _research_delivery_requirements(question: str) -> dict[str, Any]:
     )
     if match:
         explicit_source_floor = _as_int(match.group(1) or match.group(2), 0)
+    narrow_authoritative = bool(narrow_technical or single_authoritative_subject)
     minimum_sources = max(
         explicit_source_floor,
-        2 if narrow_technical else MIN_RESEARCH_SOURCE_COUNT,
+        2 if narrow_authoritative else MIN_RESEARCH_SOURCE_COUNT,
     )
     minimum_hosts = (
         1
-        if narrow_technical and minimum_sources <= 2
+        if narrow_authoritative and minimum_sources <= 2
         else min(MIN_RESEARCH_DISTINCT_HOST_COUNT, minimum_sources)
     )
     target_sources = (
-        max(minimum_sources, 4)
-        if narrow_technical
+        max(minimum_sources, 4 if narrow_technical else 3)
+        if narrow_authoritative
         else TARGET_RESEARCH_SOURCE_COUNT
     )
     target_hosts = (
-        minimum_hosts
-        if narrow_technical
+        minimum_hosts if narrow_authoritative
         else TARGET_RESEARCH_DISTINCT_HOST_COUNT
     )
     target_claims = (
-        max(MIN_RESEARCH_CLAIM_COUNT, min(TARGET_RESEARCH_CLAIM_COUNT, target_sources + 2))
-        if narrow_technical
+        max(
+            MIN_RESEARCH_CLAIM_COUNT,
+            min(
+                TARGET_RESEARCH_CLAIM_COUNT,
+                target_sources + (2 if narrow_technical else 3),
+            ),
+        )
+        if narrow_authoritative
         else TARGET_RESEARCH_CLAIM_COUNT
     )
     return {
-        "mode": "narrow_authoritative_technical" if narrow_technical else "standard_research",
+        "mode": (
+            "narrow_authoritative_technical"
+            if narrow_technical
+            else "single_authoritative_subject"
+            if single_authoritative_subject
+            else "standard_research"
+        ),
         "minimumSources": minimum_sources,
         "minimumDistinctHosts": minimum_hosts,
         "minimumClaims": MIN_RESEARCH_CLAIM_COUNT,
@@ -20188,7 +18799,7 @@ def _research_delivery_requirements(question: str) -> dict[str, Any]:
         "targetSources": target_sources,
         "targetDistinctHosts": target_hosts,
         "targetClaims": target_claims,
-        "targetAnswerChars": 3_000 if narrow_technical else TARGET_RESEARCH_ANSWER_CHARS,
+        "targetAnswerChars": 3_000 if narrow_authoritative else TARGET_RESEARCH_ANSWER_CHARS,
     }
 
 
@@ -26030,6 +24641,40 @@ def research_broker(
     performance["repairElapsedMs"] = int(
         (time.perf_counter() - repair_started_at) * 1000
     )
+    final_architect_pack = (
+        bundle.get("finalExperiencePack")
+        if isinstance(bundle.get("finalExperiencePack"), dict)
+        else {}
+    )
+    final_model_synthesis = (
+        final_architect_pack.get("modelSynthesis")
+        if isinstance(final_architect_pack.get("modelSynthesis"), dict)
+        else {}
+    )
+    if final_model_synthesis.get("claimPlanMode"):
+        performance["synthesisStages"] = {
+            key: final_model_synthesis.get(key)
+            for key in (
+                "claimPlanMode",
+                "claimPlanVersion",
+                "claimPlanDigest",
+                "claimPlanElapsedMs",
+                "claimPlanCandidateCount",
+                "claimPlanClaimCount",
+                "claimPlanSourceCount",
+                "claimPlanRequiredSourceCount",
+                "claimPlanRequiredClaimCount",
+                "claimPlanCoveredFacetIds",
+                "claimPlanMissingSourceKeys",
+                "claimPlanMissingFacetIds",
+                "structureStatus",
+                "structureElapsedMs",
+                "writerElapsedMs",
+                "reviewElapsedMs",
+                "modelPlanCallCount",
+            )
+            if final_model_synthesis.get(key) not in (None, "")
+        }
     performance["totalElapsedMs"] = int(
         (time.perf_counter() - run_started_at) * 1000
     )

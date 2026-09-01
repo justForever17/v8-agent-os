@@ -544,8 +544,36 @@ class V8ChatModelAdapter(BaseChatModel):
             config=self._meta.get("provider_hosted_tools") or self._meta.get("providerHostedTools"),
         )
 
+    @staticmethod
+    def _tool_ref_name(tool: Any) -> str:
+        if isinstance(tool, Mapping):
+            function = tool.get("function") if isinstance(tool.get("function"), Mapping) else {}
+            return str(tool.get("name") or function.get("name") or "").strip()
+        direct = str(getattr(tool, "name", "") or "").strip()
+        if direct:
+            return direct
+        try:
+            schema = convert_to_openai_tool(tool)
+        except Exception:
+            return ""
+        function = schema.get("function") if isinstance(schema.get("function"), Mapping) else {}
+        return str(schema.get("name") or function.get("name") or "").strip()
+
     def _runtime_bound_tools(self) -> list[Any]:
-        return [*(self._bound_tools or []), *self._provider_hosted_tools()]
+        bound_tools = list(self._bound_tools or [])
+        required_tool_name = self._required_bound_tool_name()
+        if required_tool_name:
+            # A specific required tool is an execution phase, not a global
+            # capability reduction.  Restrict only the provider request for
+            # this phase so models cannot satisfy the requirement with a
+            # read/command call or textual pseudo-call first.
+            bound_tools = [
+                tool
+                for tool in bound_tools
+                if self._tool_ref_name(tool) == required_tool_name
+            ]
+            return bound_tools
+        return [*bound_tools, *self._provider_hosted_tools()]
 
     def _get_runtime_model(self) -> Any:
         model = self._get_base_model()
@@ -829,7 +857,7 @@ class V8ChatModelAdapter(BaseChatModel):
 
     def _tool_prompt_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         tool_specs = []
-        for tool in self._bound_tools or []:
+        for tool in self._runtime_bound_tools():
             try:
                 tool_specs.append(convert_to_openai_tool(tool))
             except Exception:

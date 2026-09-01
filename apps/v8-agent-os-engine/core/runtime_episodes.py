@@ -484,8 +484,31 @@ def superseded_runtime_episode_ids(
                 successful_ids.add(task_brief_id)
         return bool(required_task_brief_ids) and required_task_brief_ids.issubset(successful_ids)
 
+    def _repair_lineage(item: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = item.get("inputs") if isinstance(item.get("inputs"), Mapping) else {}
+        lineage = inputs.get("repairLineage") if isinstance(inputs.get("repairLineage"), Mapping) else {}
+        if str(lineage.get("schemaVersion") or "").strip() != "v8.engineering_repair.v1":
+            return {}
+        return dict(lineage)
+
+    def _verified_native_write(handoff: Mapping[str, Any] | None) -> bool:
+        if not isinstance(handoff, Mapping):
+            return False
+        for node in _walk_runtime_handoff(handoff):
+            tools_used = {
+                str(tool or "").strip()
+                for tool in list(node.get("toolsUsed") or node.get("toolNames") or [])
+                if str(tool or "").strip()
+            }
+            artifact_refs = list(node.get("artifactRefs") or [])
+            if node.get("writeToolSucceeded") is True:
+                return True
+            if "write_native_file" in tools_used and artifact_refs:
+                return True
+        return False
+
     proven: list[
-        tuple[dict[str, Any], set[str], set[str], tuple[str, int], bool]
+        tuple[dict[str, Any], set[str], set[str], tuple[str, int], bool, dict[str, Any], bool]
     ] = []
     for index, episode in enumerate(rows):
         episode_id = _episode_id(episode)
@@ -522,6 +545,8 @@ def superseded_runtime_episode_ids(
                     task_brief_ids,
                     _time_key(episode, index),
                     verified_read_delivery,
+                    _repair_lineage(episode),
+                    _verified_native_write(current_handoff),
                 )
             )
 
@@ -548,6 +573,8 @@ def superseded_runtime_episode_ids(
             candidate_task_brief_ids,
             candidate_time,
             candidate_verified_read,
+            candidate_repair_lineage,
+            candidate_verified_native_write,
         ) in proven:
             candidate_id = _episode_id(candidate)
             candidate_workspace = _runtime_episode_workspace_identity(candidate)
@@ -564,6 +591,25 @@ def superseded_runtime_episode_ids(
                 continue
             if workspace and candidate_workspace and workspace != candidate_workspace:
                 continue
+            explicit_repair_ids = {
+                str(value or "").strip()
+                for value in list(candidate_repair_lineage.get("repairOfEpisodeIds") or [])
+                if str(value or "").strip()
+            }
+            explicit_repair_overlap = {
+                str(value or "").strip().replace("\\", "/").casefold()
+                for value in list(candidate_repair_lineage.get("overlappingWriteSet") or [])
+                if str(value or "").strip()
+            }
+            if (
+                episode_id in explicit_repair_ids
+                and candidate_verified_native_write
+                and write_set.intersection(candidate_write_set)
+                and explicit_repair_overlap.issubset(write_set.intersection(candidate_write_set))
+                and explicit_repair_overlap
+            ):
+                superseded.add(episode_id)
+                break
             if read_only_repair_candidate:
                 if (
                     candidate_kind == "engineering"

@@ -14,12 +14,13 @@ from core.tools.research_quality import (
 )
 
 
-RESEARCH_PROMPT_CONTRACT_VERSION = "2026-08-01.10"
+RESEARCH_PROMPT_CONTRACT_VERSION = "2026-08-31.1"
 RESEARCH_INTERNAL_STAGES = frozenset(
     {
         "query_plan",
         "evidence_gap",
         "evidence_plan",
+        "structure_projection",
         "answer_writer",
     }
 )

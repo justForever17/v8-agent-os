@@ -354,6 +354,23 @@ function resolveAttachmentUrl(value: unknown) {
     return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
 }
 
+export function normalizeHumanAuthoredListMarkers(content: string): string {
+    const lines = content.split("\n");
+    const candidates = lines.map((line) => line.match(/^(\s{0,3})(\d{1,2})\.([^\s\d].*)$/));
+    return lines.map((line, index) => {
+        const match = candidates[index];
+        if (!match) return line;
+        const ordinal = Number(match[2]);
+        const previous = candidates[index - 1];
+        const next = candidates[index + 1];
+        const belongsToSequence = Boolean(
+            (previous && Number(previous[2]) + 1 === ordinal)
+            || (next && ordinal + 1 === Number(next[2]))
+        );
+        return belongsToSequence ? `${match[1]}${match[2]}. ${match[3]}` : line;
+    }).join("\n");
+}
+
 function attachmentNameFromUrl(value: string) {
     try {
         const parsed = new URL(value, "http://v8os.local");
@@ -485,7 +502,12 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         || specModeEnabled
         || (!composerPresentation && (commandPresetName || skillReferences.length > 0 || mentionReferences.length > 0)),
     );
-    const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
+    const normalizedContent = useMemo(() => {
+        const content = message.role === "user"
+            ? normalizeHumanAuthoredListMarkers(message.content || "")
+            : message.content || "";
+        return normalizeWorkspaceLinks(content);
+    }, [message.content, message.role]);
     const copyLabel = t("web.generated.8095bb5671");
     const deleteLabel = t("web.generated.2f98d36496");
     const userDisplayName = String(userName || "").trim() || t("web.generated.d2ccadbbf7");

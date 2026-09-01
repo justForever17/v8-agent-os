@@ -2883,6 +2883,22 @@ def _fetch_with_scrapling_internal(
         plans = [(label, runner) for label, runner in plans if label in {"dynamic", "stealth"}]
         if not plans:
             raise RuntimeError("agent_browser_profile_requires_browser_mode: use dynamic/stealth/auto when useAgentBrowserProfile=true.")
+    elif effective_agent_browser_profile and mode == "auto":
+        # An allowlisted authenticated host must not spend its bounded budget
+        # on a public static request that cannot carry the user's session.  Try
+        # the headless CDP-backed lanes first, then retain static/Reader as a
+        # bounded recovery path when the browser lane itself is unavailable.
+        preferred_profile_plans = [
+            (label, runner)
+            for label, runner in plans
+            if label in {"dynamic", "stealth"}
+        ]
+        public_recovery_plans = [
+            (label, runner)
+            for label, runner in plans
+            if label not in {"dynamic", "stealth"}
+        ]
+        plans = [*preferred_profile_plans, *public_recovery_plans]
     agent_browser_profile_dir = ""
     agent_browser_profile_host = ""
     agent_browser_kind = ""
@@ -6505,7 +6521,17 @@ def web_search(
                                 indent=2,
                             )
                         if rejection:
-                            return rejection
+                            # A configured/allowlisted profile is the governed
+                            # recovery path for an empty or unusable
+                            # structured response.  Do not return the
+                            # rejection before the browser can reuse the
+                            # user's authenticated session; the generic
+                            # browser branch below records the final outcome.
+                            last_error = _safe_text(
+                                metaso_structured.get("reason")
+                                or metaso_structured.get("failureClass")
+                                or "metaso_structured_results_rejected"
+                            )
                     else:
                         attempted_providers.append(
                             {

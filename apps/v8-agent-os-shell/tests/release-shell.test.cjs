@@ -410,6 +410,7 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /target: deb/);
   assert.match(config, /appArmorProfile: electron\/apparmor-profile/);
   for (const dependency of [
+    'git',
     'libatspi2\\.0-0',
     'libuuid1',
     'libsecret-1-0',
@@ -441,6 +442,21 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(installerInclude, /\$\{IfNot\} \$\{IsNativeARM64\}/);
   assert.match(installerInclude, /RMDir "\$INSTDIR"/);
   assert.match(installerInclude, /SetErrorLevel 1633/);
+  assert.match(installerInclude, /!macro customInstall/);
+  assert.match(installerInclude, /!ifndef BUILD_UNINSTALLER[\s\S]*?Function V8OSGitIsInstalled[\s\S]*?!macro customInstall[\s\S]*?!endif/);
+  assert.match(installerInclude, /Function V8OSGitIsInstalled/);
+  assert.match(installerInclude, /ExecToStack \/TIMEOUT=10000 '"\$SYSDIR\\where\.exe" git\.exe'/);
+  assert.match(installerInclude, /StrCmp \$0 "1" v8os_git_already_installed/);
+  assert.match(installerInclude, /ExecToStack \/TIMEOUT=120000 '"\$1" install --id Git\.Git --exact --source winget --scope user --silent/);
+  assert.match(installerInclude, /--accept-package-agreements --accept-source-agreements --disable-interactivity --no-upgrade/);
+  assert.match(installerInclude, /Call V8OSGitIsInstalled[\s\S]*?StrCmp \$0 "1" v8os_git_install_complete/);
+  assert.match(installerInclude, /continue without optional Git parallel isolation/);
+  assert.doesNotMatch(installerInclude, /git init/);
+  const gitFailureBranch = installerInclude.slice(
+    installerInclude.indexOf('v8os_git_install_failed:'),
+    installerInclude.indexOf('v8os_git_install_done:'),
+  );
+  assert.doesNotMatch(gitFailureBranch, /\b(?:Quit|Abort|SetErrorLevel)\b/);
   assert.match(config, /at-spi2-core/);
   assert.match(config, /xdotool/);
   assert.match(config, /wmctrl/);

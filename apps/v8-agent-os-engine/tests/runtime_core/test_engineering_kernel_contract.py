@@ -412,6 +412,28 @@ def test_direct_write_capsule_shell_is_limited_to_read_and_validation_commands()
         operation="inspection",
         command="Get-ChildItem -LiteralPath . | Select-Object FullName, PSIsContainer",
     ) is None
+    assert _engineering_command_scope_block(
+        runtime_context,
+        operation="inspection",
+        command=(
+            "Get-ChildItem -Path 'C:\\workspace' -Force "
+            "| Select-Object Name, Mode, Length | Format-Table -AutoSize"
+        ),
+    ) is None
+    assert _engineering_command_scope_block(
+        runtime_context,
+        operation="inspection",
+        command=(
+            'Get-ChildItem -Path "C:\\workspace" -Recurse -File -Force '
+            '| Where-Object { $_.FullName -notmatch "node_modules|__pycache__|\\.git" } '
+            '| Select-Object FullName, Length'
+        ),
+    ) is None
+    assert _engineering_command_scope_block(
+        runtime_context,
+        operation="inspection",
+        command="python --version; pip --version",
+    ) is None
 
     arbitrary_script = _engineering_command_scope_block(
         runtime_context,

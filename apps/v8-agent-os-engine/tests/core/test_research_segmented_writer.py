@@ -229,7 +229,7 @@ class _StagedInvocation:
         self.section_source_payloads: list[list[dict]] = []
         self.review_payloads: list[dict] = []
         self.review_prompts: list[str] = []
-        self.plan_disable_thinking: list[bool] = []
+        self.structure_disable_thinking: list[bool] = []
         self.stage_disable_thinking: list[tuple[str, bool]] = []
         self.reviewer_previous_section_flags: list[bool] = []
         self.completion_order: list[str] = []
@@ -325,10 +325,22 @@ class _StagedInvocation:
                 )
             )
 
-        if "answerOutline" in prompt and "evidenceExcerptKey" in prompt:
-            self.plan_disable_thinking.append(disable_thinking)
-            self.stage_disable_thinking.append(("plan", disable_thinking))
-            return AIMessage(content=json.dumps(self.plan))
+        structure_material = _background_material(
+            messages,
+            "Immutable canonical claim plan",
+        )
+        if structure_material:
+            self.structure_disable_thinking.append(disable_thinking)
+            self.stage_disable_thinking.append(("structure", disable_thinking))
+            canonical = json.loads(structure_material)
+            return AIMessage(
+                content=json.dumps(
+                    {
+                        "answerOutline": canonical["deterministicOutline"],
+                        "compositeInferences": [],
+                    }
+                )
+            )
         raise AssertionError("The 4096-token candidate must use section calls instead of a monolithic writer call.")
 
     def _section_response(
@@ -895,9 +907,8 @@ def test_staged_segmented_writer_is_parallel_locally_retried_ordered_and_whole_r
     assert result["_writerMode"] == "segmented"
     assert result["_writerSectionCount"] == 4
     assert result["_writerRevisionCount"] == 1
-    assert invocation.plan_disable_thinking == [True]
+    assert invocation.structure_disable_thinking == []
     assert {stage for stage, _disabled in invocation.stage_disable_thinking} == {
-        "plan",
         "section",
         "review",
     }
@@ -1006,12 +1017,12 @@ def test_segmented_writer_resigns_truncated_prompt_bodies_and_keeps_plan_payload
     class CapturingInvocation(_StagedInvocation):
         def __init__(self, plan: dict) -> None:
             super().__init__(plan)
-            self.plan_source_material = ""
+            self.canonical_structure_material = ""
 
         def __call__(self, candidate, messages, **kwargs):  # noqa: ANN001
-            material = _background_material(messages, "Research evidence candidates")
+            material = _background_material(messages, "Immutable canonical claim plan")
             if material:
-                self.plan_source_material = material
+                self.canonical_structure_material = material
             return super().__call__(candidate, messages, **kwargs)
 
     invocation = CapturingInvocation(_accepted_plan(sources))
@@ -1043,7 +1054,7 @@ def test_segmented_writer_resigns_truncated_prompt_bodies_and_keeps_plan_payload
     )
 
     result = research_module._invoke_web_research_architect_staged(
-        question=_QUESTION,
+        question=_QUESTION + " What implementation do you recommend?",
         sources=sources,
         freshness="current",
         timeout_seconds=90,
@@ -1054,20 +1065,17 @@ def test_segmented_writer_resigns_truncated_prompt_bodies_and_keeps_plan_payload
         ensure_ascii=False,
         indent=2,
     )
-    prompt_sources = json.loads(invocation.plan_source_material)
-    assert {source["citationKey"] for source in prompt_sources} == {
-        f"S{index}" for index in range(1, 9)
-    }
-    assert all("readEvidence" not in source for source in prompt_sources)
-    assert all("evidenceQueries" not in source for source in prompt_sources)
-    assert len(invocation.plan_source_material) < 60_000
-    plan_preparation = next(
+    structure_material = json.loads(invocation.canonical_structure_material)
+    assert len(structure_material["claims"]) == 8
+    assert all("evidenceExcerpt" not in claim for claim in structure_material["claims"])
+    assert len(invocation.canonical_structure_material) < 20_000
+    structure_preparation = next(
         item
         for item in result["_contextPreparations"]
-        if item["node"] == "web_research_architect_plan"
+        if item["node"] == "web_research_structure_projection"
     )
-    assert plan_preparation["effectiveContextWindowTokens"] == 1_000_000
-    assert plan_preparation["compactionApplied"] is False
+    assert structure_preparation["effectiveContextWindowTokens"] == 1_000_000
+    assert structure_preparation["compactionApplied"] is False
 
 
 def test_segmented_writer_preserves_accepted_sections_when_whole_answer_gate_rejects(
@@ -1151,20 +1159,23 @@ def test_segmented_writer_retries_a_malformed_review_without_discarding_the_answ
     )
 
 
-def test_empty_length_plan_falls_back_without_a_starved_same_model_repair(monkeypatch) -> None:
+def test_empty_structure_projection_keeps_canonical_plan_and_writer_budget(monkeypatch) -> None:
     sources = _sources()
 
-    class EmptyLengthPlanInvocation(_StagedInvocation):
+    class EmptyStructureInvocation(_StagedInvocation):
         def __init__(self, plan: dict) -> None:
             super().__init__(plan)
-            self.primary_plan_calls = 0
+            self.primary_structure_calls = 0
             self.primary_disable_thinking: list[bool] = []
 
         def __call__(self, candidate, messages, *, seconds, max_tokens, disable_thinking=False):  # noqa: ANN001
-            plan_material = _background_material(messages, "Research evidence candidates")
+            structure_material = _background_material(
+                messages,
+                "Immutable canonical claim plan",
+            )
             model_ref = str((candidate[0]._meta or {}).get("model_ref") or "")
-            if plan_material and model_ref == "fixture::bound-minimax":
-                self.primary_plan_calls += 1
+            if structure_material and model_ref == "fixture::bound-minimax":
+                self.primary_structure_calls += 1
                 self.primary_disable_thinking.append(disable_thinking)
                 return AIMessage(
                     content="",
@@ -1185,7 +1196,7 @@ def test_empty_length_plan_falls_back_without_a_starved_same_model_repair(monkey
                 disable_thinking=disable_thinking,
             )
 
-    invocation = EmptyLengthPlanInvocation(_accepted_plan(sources))
+    invocation = EmptyStructureInvocation(_accepted_plan(sources))
     primary = _Candidate(
         max_tokens=4096,
         model_ref="fixture::bound-minimax",
@@ -1209,22 +1220,21 @@ def test_empty_length_plan_falls_back_without_a_starved_same_model_repair(monkey
     )
 
     result = research_module._invoke_web_research_architect_staged(
-        question=_QUESTION,
+        question=_QUESTION + " What implementation do you recommend?",
         sources=sources,
         freshness="current",
         timeout_seconds=90,
     )
 
     assert result["reviewDecision"] == "accept", result
-    assert invocation.primary_plan_calls == 1
+    assert invocation.primary_structure_calls == 1
     assert invocation.primary_disable_thinking == [True]
-    primary_attempts = [
-        item for item in result["_planAttempts"] if item["modelId"] == "fixture::bound-minimax"
-    ]
-    assert len(primary_attempts) == 1
-    assert primary_attempts[0]["outputFailureClass"] == "reasoning_budget_exhausted"
-    assert primary_attempts[0]["reasoningTokens"] == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS
-    assert result["_modelId"] == "fixture::summary-fallback"
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "accepted_with_drops"
+    assert result["_structureAttempt"]["requestedMaxTokens"] == (
+        research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS
+    )
+    assert result["_modelId"] == "fixture::bound-minimax"
 
 
 def test_staged_segmented_writer_does_not_review_or_deliver_partial_answer_when_a_section_fails_twice(
@@ -1540,6 +1550,8 @@ def test_segmented_writer_splits_one_failed_multi_claim_section_within_six_secti
 ) -> None:
     monkeypatch.setattr(research_module, "_assemble_architect_claim_report", lambda **_kwargs: "")
     sources = _sources()
+    for source in sources:
+        source["tier"] = "primary"
     invocation = _StagedInvocation(
         _accepted_plan(sources),
         split_after_retries_section="section_3",
@@ -1712,7 +1724,7 @@ def test_segmented_revision_precedes_deterministic_same_evidence_fallback(monkey
     assert invocation.review_payloads[3]["answer"] == result["researchResult"]
 
 
-def test_plan_normative_wording_retry_is_reclassified_before_writer(monkeypatch) -> None:
+def test_structure_projection_cannot_create_a_normative_evidence_gap(monkeypatch) -> None:
     sources = _sources()
     retry_plan = {
         "reviewDecision": "retry",
@@ -1730,7 +1742,13 @@ def test_plan_normative_wording_retry_is_reclassified_before_writer(monkeypatch)
         "assumptions": [],
         "temporalAssessment": {"asOf": _AS_OF, "status": "current"},
     }
-    invocation = _StagedInvocation(retry_plan)
+    class UnsafeStructureInvocation(_StagedInvocation):
+        def __call__(self, candidate, messages, **kwargs):  # noqa: ANN001
+            if _background_material(messages, "Immutable canonical claim plan"):
+                return AIMessage(content=json.dumps(retry_plan))
+            return super().__call__(candidate, messages, **kwargs)
+
+    invocation = UnsafeStructureInvocation(retry_plan)
     candidate = _Candidate(max_tokens=4096, model_ref="fixture::plan-reclassification")
     monkeypatch.setattr(
         research_module,
@@ -1744,7 +1762,7 @@ def test_plan_normative_wording_retry_is_reclassified_before_writer(monkeypatch)
     )
 
     result = research_module._invoke_web_research_architect_staged(
-        question=_QUESTION,
+        question=_QUESTION + " What implementation do you recommend?",
         sources=sources,
         freshness="current",
         timeout_seconds=90,
@@ -1757,13 +1775,12 @@ def test_plan_normative_wording_retry_is_reclassified_before_writer(monkeypatch)
     }
     assert invocation.section_attempts
     assert result["_writerAttempts"][0]["mode"] == "segmented"
-    assert any(
-        "architect_plan_same_evidence_gap_reclassified:1" in issue
-        for issue in result["_modelFallbackAttempts"]
-    )
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["claimMutationIgnored"] is True
+    assert "structure_outline_invalid" in result["_structureAttempt"]["issues"]
 
 
-def test_plan_retry_without_evidence_gap_is_runtime_validated_instead_of_returned(monkeypatch) -> None:
+def test_invalid_structure_projection_falls_back_without_model_plan_retry(monkeypatch) -> None:
     sources = _sources()
     retry_plan = {
         "reviewDecision": "retry",
@@ -1782,7 +1799,13 @@ def test_plan_retry_without_evidence_gap_is_runtime_validated_instead_of_returne
         "assumptions": [],
         "temporalAssessment": {"asOf": _AS_OF, "status": "current"},
     }
-    invocation = _StagedInvocation(retry_plan)
+    class InvalidStructureInvocation(_StagedInvocation):
+        def __call__(self, candidate, messages, **kwargs):  # noqa: ANN001
+            if _background_material(messages, "Immutable canonical claim plan"):
+                return AIMessage(content=json.dumps(retry_plan))
+            return super().__call__(candidate, messages, **kwargs)
+
+    invocation = InvalidStructureInvocation(retry_plan)
     candidate = _Candidate(max_tokens=4096, model_ref="fixture::empty-gap-retry")
     monkeypatch.setattr(
         research_module,
@@ -1796,7 +1819,7 @@ def test_plan_retry_without_evidence_gap_is_runtime_validated_instead_of_returne
     )
 
     result = research_module._invoke_web_research_architect_staged(
-        question=_QUESTION,
+        question=_QUESTION + " What implementation do you recommend?",
         sources=sources,
         freshness="current",
         timeout_seconds=90,
@@ -1808,11 +1831,6 @@ def test_plan_retry_without_evidence_gap_is_runtime_validated_instead_of_returne
         "fallbackAttempts": result.get("_modelFallbackAttempts"),
     }
     assert invocation.section_attempts
-    assert any(
-        "architect_plan_" in issue
-        and (
-            issue.endswith("retry_without_evidence_gap")
-            or "same_evidence_gap_reclassified:" in issue
-        )
-        for issue in result["_modelFallbackAttempts"]
-    )
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "accepted_with_drops"
+    assert "structure_outline_invalid" in result["_structureAttempt"]["issues"]

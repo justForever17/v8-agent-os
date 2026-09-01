@@ -38,6 +38,7 @@ from core.tools.research_ledger import (
     archive_experience_pack,
     bulk_update_experience_packs,
     delete_experience_pack,
+    get_evidence_bundle,
     list_evidence_bundles,
     promote_experience_pack,
     research_ledger_summary,
@@ -2329,13 +2330,17 @@ async def delete_research_runtime_experience(experience_pack_id: str, confirm: b
 @router.post("/research-runtime/experience/promote")
 async def promote_research_runtime_experience(data: dict = Body(...)):
     try:
+        evidence_bundle_id = str(data.get("evidenceBundleId") or "").strip()
+        bundle = get_evidence_bundle(evidence_bundle_id)
+        if not bundle:
+            raise HTTPException(status_code=404, detail="evidence_bundle_not_found")
         pack = promote_experience_pack(
-            str(data.get("evidenceBundleId") or "").strip(),
+            evidence_bundle_id,
             title=str(data.get("title") or "").strip(),
             tags=data.get("tags") if isinstance(data.get("tags"), list) else None,
         )
         if not pack:
-            raise HTTPException(status_code=404, detail="evidence bundle not found")
+            raise HTTPException(status_code=409, detail="evidence_bundle_not_promotable")
         return {"ok": True, "item": pack}
     except HTTPException:
         raise

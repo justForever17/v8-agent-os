@@ -1541,6 +1541,92 @@ def test_runtime_broker_requires_ordered_safe_verification_contract_in_non_git_w
     assert failure["unsupportedDirectCommands"] == ["npm install", "npm run build", "node tests/calc.test.mjs"]
 
 
+def test_runtime_broker_rejects_circular_engineering_dependencies_before_queueing():
+    implementation = _bounded_engineering_route_task(
+        task_id="engineering-implementation",
+        write_set=["hello.txt"],
+    )
+    verification = _bounded_engineering_route_task(
+        task_id="engineering-verification",
+        write_set=["verification/hello.json"],
+    )
+    implementation["dependencies"] = ["engineering-verification"]
+    verification["dependencies"] = ["engineering-implementation"]
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "circular dependency regression",
+            "inputs": {"taskBriefs": [implementation, verification]},
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-circular-dependency",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "task_dependency_cycle"
+    assert payload["routeBriefQuality"]["dependencyCycles"] == [[
+        "engineering-implementation",
+        "engineering-verification",
+        "engineering-implementation",
+    ]]
+    assert not command.update["current_route_context"].get("capabilityEpisodes")
+
+
+def test_engineering_repair_lineage_binds_graph_owned_degraded_handoff_only():
+    prior = {
+        "episodeId": "episode-failed",
+        "runId": "run-repair",
+        "kind": "engineering",
+        "state": "degraded",
+        "inputs": {
+            "taskBriefs": [
+                _bounded_engineering_route_task(
+                    task_id="engineering-implementation",
+                    write_set=["hello.txt"],
+                ),
+                _bounded_engineering_route_task(
+                    task_id="engineering-verification",
+                    write_set=["verification/hello.json"],
+                ),
+            ]
+        },
+    }
+    degraded_handoff = {
+        "producerEpisodeId": "episode-failed",
+        "handoffRefId": "handoff-failed",
+        "kind": "engineering_patch_bundle",
+        "status": "degraded",
+        "recoverable": True,
+        "failedTaskBriefIds": ["engineering-implementation", "engineering-verification"],
+        "repairTaskBriefIds": ["engineering-implementation", "engineering-verification"],
+    }
+    replacement = _bounded_engineering_route_task(
+        task_id="engineering-hello",
+        write_set=["hello.txt"],
+    )
+
+    with bind_runtime_context(run_id="run-repair"):
+        lineage = native_runtime._engineering_repair_lineage(
+            need={"kind": "engineering", "inputs": {"taskBriefs": [replacement]}},
+            route_context={
+                "capabilityEpisodes": [prior],
+                "handoffRefs": [degraded_handoff],
+            },
+            state={
+                "runtime_dispatch_status": {"state": "degraded_handoff_ready"},
+                "messages": [],
+            },
+        )
+
+    assert lineage["repairOfEpisodeIds"] == ["episode-failed"]
+    assert lineage["repairOfHandoffRefs"] == ["handoff-failed"]
+    assert lineage["overlappingWriteSet"] == ["hello.txt"]
+    assert lineage["replacementTaskBriefIds"] == ["engineering-hello"]
+
+
 def test_runtime_broker_does_not_guess_write_paths_from_acceptance_prose():
     command = runtime_broker.func(
         mode="route",

@@ -55,7 +55,7 @@ package_name="$(dpkg-deb -f "$deb_path" Package)"
 test -n "$package_name"
 
 depends="$(dpkg-deb -f "$deb_path" Depends)"
-for dependency in libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
+for dependency in git libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
   libatspi2.0-0 libuuid1 libsecret-1-0 at-spi2-core gir1.2-atspi-2.0 \
   libgirepository-1.0-1 libcairo2 xdotool wmctrl xclip xsel gnome-keyring \
   libpam-gnome-keyring; do

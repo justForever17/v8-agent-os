@@ -1739,13 +1739,8 @@ class ChatRuntime:
         if not text:
             return False
         patterns = (
-            r"\buse\s+engineering\s+runtime\b",
-            r"\bengineering\s+runtime\b",
-            r"使用\s*engineering\s*runtime",
-            r"用\s*engineering\s*runtime",
-            r"使用\s*工程运行时",
-            r"用\s*工程运行时",
-            r"进入\s*工程运行时",
+            r"(?:^|[.!?;]\s+)(?:(?:please|now|next|must)\s+)*(?:use|enter|switch\s+to)\s+(?:the\s+)?engineering\s+runtime\b",
+            r"(?:^|[，。；！？!?\s])(?:请|现在|这次|接下来|立即)?\s*(?:必须\s*)?(?:使用|用|进入)\s*(?:engineering\s*runtime|工程运行时)",
         )
         for pattern in patterns:
             for match in re.finditer(pattern, text, flags=re.IGNORECASE):
@@ -1759,20 +1754,47 @@ class ChatRuntime:
         if not text:
             return False
         lower = text.lower()
-        strong_markers = (
+        diagnostic_markers = (
             "traceback",
             "exception",
             "error:",
-            "failed",
-            "build failed",
             "typeerror",
             "referenceerror",
             "syntaxerror",
+            "segmentation fault",
+        )
+        if any(marker in lower for marker in diagnostic_markers):
+            return True
+        if re.search(r"\b(line|at)\s+\d+\b|^\s*(GET|POST|PUT|DELETE)\s+/.+\s+5\d\d\b", text, flags=re.IGNORECASE | re.MULTILINE):
+            return True
+
+        # A short deictic reply can safely refer to the immediately preceding
+        # Engineering result. Longer messages must name an engineering object;
+        # generic words such as "failed", "log", or "screenshot" also occur in
+        # Research and other runtime requests and must not seize route ownership.
+        compact = re.sub(r"\s+", "", text)
+        if len(compact) <= 80 and any(
+            marker in lower
+            for marker in (
+                "还是不行",
+                "仍然不行",
+                "依旧不行",
+                "刚才的修复",
+                "刚才的代码",
+                "上一步修复",
+                "previous patch",
+                "last code change",
+            )
+        ):
+            return True
+
+        failure_markers = (
+            "failed",
+            "build failed",
             "报错",
             "错误",
             "异常",
             "没反应",
-            "还是不行",
             "运行不了",
             "启动不了",
             "失败",
@@ -1781,9 +1803,39 @@ class ChatRuntime:
             "崩溃",
             "卡住",
         )
-        if any(marker in lower for marker in strong_markers):
-            return True
-        return bool(re.search(r"\b(line|at)\s+\d+\b|^\s*(GET|POST|PUT|DELETE)\s+/.+\s+5\d\d\b", text, flags=re.IGNORECASE | re.MULTILINE))
+        engineering_subject_markers = (
+            "代码",
+            "源码",
+            "文件",
+            "组件",
+            "按钮",
+            "构建",
+            "编译",
+            "依赖",
+            "安装",
+            "脚本",
+            "命令",
+            "补丁",
+            "修复",
+            "code",
+            "file",
+            "component",
+            "build",
+            "compile",
+            "dependency",
+            "install",
+            "script",
+            "patch",
+            "npm",
+            "pytest",
+            "typescript",
+            "react",
+            "vue",
+        )
+        file_reference = bool(re.search(r"(?i)(?:^|[\\/\s])[^\s\\/]+\.(?:py|ts|tsx|js|jsx|html|css|json|ya?ml|md)(?:\b|$)", text))
+        return any(marker in lower for marker in failure_markers) and (
+            file_reference or any(marker in lower for marker in engineering_subject_markers)
+        )
 
     @staticmethod
     def _recent_engineering_continuation_context(

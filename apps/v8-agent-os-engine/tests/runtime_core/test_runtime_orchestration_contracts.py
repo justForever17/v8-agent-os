@@ -911,6 +911,87 @@ def test_non_spec_completed_repair_supersedes_degraded_same_task_contract(tmp_pa
     assert decision.action == "complete"
 
 
+def test_explicit_graph_repair_with_native_write_proof_supersedes_failed_contract(tmp_path) -> None:
+    (tmp_path / "hello.txt").write_text("Hello from V8OS", encoding="utf-8")
+    failed = _required_write_episode(str(tmp_path), state="degraded")
+    failed["episodeId"] = "episode-circular"
+    failed["updated_at"] = "2026-08-31T15:11:21.000Z"
+    failed["inputs"]["taskBriefs"][0]["writeSet"] = ["hello.txt"]
+    failed["inputs"]["taskBriefs"].append(
+        {
+            "taskBriefId": "TASK-VERIFICATION",
+            "goal": "Persist a verification report.",
+            "writeRequired": True,
+            "writeSet": ["verification/hello.json"],
+            "expectedOutputs": ["verification report"],
+            "acceptanceContract": ["proof is recorded"],
+        }
+    )
+
+    repaired = _required_write_episode(str(tmp_path), state="completed")
+    repaired["episodeId"] = "episode-repaired"
+    repaired["updated_at"] = "2026-08-31T15:12:15.000Z"
+    repaired["inputs"]["taskBriefs"][0]["taskBriefId"] = "TASK-REPAIRED"
+    repaired["inputs"]["taskBriefs"][0]["writeSet"] = ["hello.txt"]
+    repaired["inputs"]["repairLineage"] = {
+        "schemaVersion": "v8.engineering_repair.v1",
+        "source": "graph_owned_degraded_handoff",
+        "repairOfEpisodeIds": ["episode-circular"],
+        "repairOfHandoffRefs": ["handoff-circular"],
+        "overlappingWriteSet": ["hello.txt"],
+    }
+
+    decision = evaluate_supervisor_completion(
+        episodes=[failed, repaired],
+        handoffs_by_episode={
+            "episode-circular": [
+                {
+                    "handoffRefId": "handoff-circular",
+                    "status": "degraded",
+                    "kind": "engineering_patch_bundle",
+                    "delegationHandoff": {
+                        "results": [
+                            {
+                                "taskBriefId": "TASK-WRITE",
+                                "status": "blocked",
+                                "error": "dependency_not_satisfied",
+                            },
+                            {
+                                "taskBriefId": "TASK-VERIFICATION",
+                                "status": "blocked",
+                                "error": "dependency_not_satisfied",
+                            },
+                        ]
+                    },
+                }
+            ],
+            "episode-repaired": [
+                {
+                    "status": "ready",
+                    "kind": "engineering_patch_bundle",
+                    "acceptanceCheck": {"must": {"passed": True, "items": ["hello.txt verified"]}},
+                    "delegationHandoff": {
+                        "results": [
+                            {
+                                "taskBriefId": "TASK-REPAIRED",
+                                "status": "ok",
+                                "toolsUsed": ["write_native_file", "read_native_file"],
+                                "writeToolSucceeded": True,
+                                "artifactRefs": [{"path": "hello.txt", "kind": "workspace_artifact"}],
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        final_text="验收决定：ACCEPT\nhello.txt 已真实写入并回读校验。",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
+
+
 def test_completed_read_only_repair_supersedes_degraded_same_task_with_tool_evidence(tmp_path) -> None:
     def episode(episode_id: str, state: str, updated_at: str) -> dict:
         return {
@@ -1504,6 +1585,35 @@ def test_non_spec_required_write_without_proof_cannot_complete(tmp_path) -> None
 
     assert decision.action == "fail"
     assert decision.reason == "required_write_proof_missing"
+
+
+def test_direct_delegation_native_write_and_readback_is_structured_proof(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    episode = _required_write_episode(str(tmp_path))
+    episode["kind"] = "delegation"
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "kind": "subagent_result",
+                    "taskBriefId": "TASK-WRITE",
+                    "workerStatus": "ok",
+                    "toolsUsed": ["write_native_file", "read_native_file"],
+                    "writeToolSucceeded": True,
+                    "artifactRefs": [{"path": "result.md", "kind": "workspace_artifact"}],
+                }
+            ]
+        },
+        final_text="验收决定：ACCEPT\n原生写入与回读证据完整。",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
 
 
 def test_non_spec_required_write_with_file_and_proof_can_complete(tmp_path) -> None:

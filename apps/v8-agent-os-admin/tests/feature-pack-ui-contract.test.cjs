@@ -127,6 +127,7 @@ test("feature pack installation detects hardware but trusts only a format-specif
   assert.match(installerSource, /selectedExecutionProvider/);
   assert.match(installerSource, /environment,/);
   assert.match(installerSource, /smokeCheck: smokeResult/);
+  assert.match(installerSource, /parseFeaturePackProbeMarker/);
   assert.match(routeSource, /LOCALE_COOKIE_NAME/);
 });
 

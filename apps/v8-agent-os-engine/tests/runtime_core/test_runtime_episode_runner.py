@@ -7878,6 +7878,34 @@ def test_engineering_worker_briefs_for_artifact_include_write_discipline(tmp_pat
     assert "shell commands are only for directories" in normalized[0]["context"]["artifactWriteDiscipline"]
 
 
+def test_engineering_verification_brief_binds_exact_verifier_even_when_report_is_written(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    worker_briefs = [
+        {
+            "taskBriefId": "engineering-verification",
+            "title": "Final verification",
+            "goal": "Run the final checks and persist machine-readable proof.",
+            "familyHint": "engineering",
+            "writeRequired": True,
+            "writeSet": ["reports/verification.json"],
+            "expectedOutputs": ["reports/verification.json"],
+            "dependencies": ["engineering-implementation"],
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"workspacePath": str(tmp_path)},
+        inputs={"workspacePath": str(tmp_path)},
+    )
+
+    assert normalized[0]["targetAgentName"] == "Verification Engineer"
+    assert normalized[0]["preferredAgentId"] == "verification-engineer"
+    assert normalized[0]["targetDefaultReason"] == "engineering_verification_brief"
+    assert normalized[0]["writeRequired"] is True
+
+
 def test_engineering_plan_only_handoff_synthesis_receives_no_lookup_tools(tmp_path):
     worker_briefs = [
         {

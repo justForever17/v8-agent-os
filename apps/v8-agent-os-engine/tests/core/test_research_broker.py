@@ -1260,6 +1260,33 @@ def test_chinese_document_title_is_a_root_subject_anchor_across_quality_layers()
     ) is False
     assert research_module._architect_source_subject_focused(relevant, question) is True
     assert research_module._architect_source_subject_focused(unrelated, question) is False
+    assert research_module._research_source_matches_root_subject(
+        question,
+        title="国家网信办等七部门联合公布《 生成式人工智能服务管理暂行 ...",
+        url="https://www.cac.gov.cn/2023-07/13/example.htm",
+    ) is True
+    assert research_module._research_source_matches_root_subject(
+        question,
+        title="国家网信办发布生成式人工智能产业发展与安全治理专题 ...",
+        url="https://www.cac.gov.cn/topic/example.htm",
+    ) is False
+    assert research_module._research_source_matches_root_subject(
+        question,
+        title="中华人民共和国司法部",
+        url="https://www.moj.gov.cn/policy/example.htm",
+        text=(
+            "《生成式人工智能服务管理暂行办法》\n"
+            "第一条 为了促进生成式人工智能健康发展，制定本办法。\n"
+            "第二条 向境内公众提供相关服务适用本办法。\n"
+            "第三条 国家坚持发展和安全并重。"
+        ),
+    ) is True
+    assert research_module._research_source_matches_root_subject(
+        question,
+        title="政务领域人工智能大模型部署应用指引",
+        url="https://www.cac.gov.cn/guidance/example.htm",
+        text="政务部门应当遵守《生成式人工智能服务管理暂行办法》等相关规定。",
+    ) is False
 
 
 def test_authority_cannot_replace_body_relevance_for_chinese_research():
@@ -3535,12 +3562,30 @@ def test_web_research_architect_prompt_allows_source_backed_composition(monkeypa
         }
         for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)
     ]
-    body = "Pathlib and command-line evidence describing a directly verifiable atomic premise. " * 20
+    evidence_topics = (
+        "path conversion",
+        "argument validation",
+        "error reporting",
+        "filesystem boundaries",
+        "platform portability",
+        "security controls",
+        "testing strategy",
+        "migration behavior",
+    )
     shards = [
         {
             "fetchedTopSources": [
-                {"url": source["url"], "ok": True, "title": source["title"], "text": body}
-                for source in source_matrix
+                {
+                    "url": source["url"],
+                    "ok": True,
+                    "title": source["title"],
+                    "text": (
+                        f"The {topic} source records a distinct directly verifiable pathlib and "
+                        "argparse command-line premise, its applicability boundary, and its audit receipt. "
+                    )
+                    * 20,
+                }
+                for source, topic in zip(source_matrix, evidence_topics, strict=True)
             ]
         }
     ]
@@ -3573,20 +3618,37 @@ def test_web_research_architect_prompt_allows_source_backed_composition(monkeypa
         calls = 0
 
         def __init__(self):
-            self._meta = {"model_ref": "minimax-cn::MiniMax-M3"}
+            self._meta = {
+                "model_ref": "minimax-cn::MiniMax-M3",
+                "global_max_tokens": 32_768,
+                "thinking_control": {"supportsNoThink": True},
+            }
 
         def invoke(self, messages, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
             self.calls += 1
             captured.append("\n".join(str(getattr(message, "content", "")) for message in messages))
-            if self.calls == 1:
-                return AIMessage(content="not json; retry with the strict response contract")
+            max_tokens = int(kwargs.get("max_tokens") or 0)
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
+                return AIMessage(content="not valid structure JSON")
+            if max_tokens == research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS:
+                return AIMessage(
+                    content=(
+                        _high_quality_answer(len(source_matrix))
+                        + "\n\n"
+                        + research_module._RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER
+                    )
+                )
             return AIMessage(
                 content=json.dumps(
                     {
-                        "reviewDecision": "retry",
-                        "reviewReasons": ["fixture"],
-                        "criticalMissingEvidence": ["fixture"],
-                        "recommendedNextQueries": ["fixture"],
+                        "reviewDecision": "accept",
+                        "reviewReasons": [],
+                        "questionCoverage": True,
+                        "claimEntailment": True,
+                        "freshnessAdequacy": True,
+                        "unsupportedClaims": [],
+                        "criticalMissingEvidence": [],
+                        "recommendedNextQueries": [],
                     }
                 )
             )
@@ -3603,31 +3665,30 @@ def test_web_research_architect_prompt_allows_source_backed_composition(monkeypa
         ],
     )
 
-    result = research_module._invoke_web_research_architect_agent(
+    prompt_sources = research_module._research_architect_sources_for_prompt(
+        source_matrix,
+        shards,
         question="How should pathlib and argparse be combined in a CLI?",
-        source_matrix=source_matrix,
-        shards=shards,
-        confidence="high",
-        average_authority=80,
         freshness="current",
-        timeout_seconds=10,
-        architect_mode="full_synthesis",
+    )
+    result = research_module._invoke_web_research_architect_staged(
+        question="How should pathlib and argparse be combined in a CLI?",
+        sources=prompt_sources,
+        freshness="current",
+        timeout_seconds=60,
     )
 
     assert result is not None
-    assert len(captured) == 2, result
-    assert resolved_model_refs == ["minimax-cn::MiniMax-M3"] * 2
+    assert len(captured) == 4, result
+    assert resolved_model_refs == ["minimax-cn::MiniMax-M3"] * 4
     for prompt in captured:
         assert "MALICIOUS_MANAGED_PROMPT_SENTINEL" not in prompt
-        assert "[RESEARCH-RUNTIME-CONTRACT " in prompt
-        assert "stage=evidence_plan" in prompt
-        assert "没有单篇资料覆盖完整组合问题本身不是证据缺口" in prompt
-        assert "每个 claim 必须从其 supporting source 选择一个 evidenceExcerptKey" in prompt
-        assert "不得冒充任何单一来源或官方机构的直接推荐" in prompt
-        assert "evidenceExcerptKey" in prompt
-        assert '"readEvidence"' not in prompt
-        assert '"evidenceQueries"' not in prompt
-        assert prompt.count("How should pathlib and argparse be combined in a CLI?") == 1
+    assert "stage=structure_projection" in captured[0]
+    assert "Immutable canonical claim plan" in captured[0]
+    assert "stage=answer_writer" in captured[1]
+    assert "VERIFIED PLAN" in captured[1]
+    assert all('"readEvidence"' not in prompt for prompt in captured[:2])
+    assert all('"evidenceQueries"' not in prompt for prompt in captured[:2])
 
 
 def test_research_architect_synthesizes_at_minimum_floor_without_claiming_target_quality():
@@ -5427,22 +5488,19 @@ def test_compact_research_text_uses_complete_sentence_or_word_boundary():
     assert len(compact) <= 80
 
 
-def test_nonstandard_plan_label_is_only_a_repair_candidate_for_runtime_validation():
-    payload = {"reviewDecision": "revise", "claimTable": [{"claimId": "C1"}]}
+def test_deterministic_query_keeps_cjk_subject_that_starts_with_an_imperative_word():
+    assert research_module._deterministic_facet_search_query(
+        "生成式人工智能服务管理暂行办法 第七条 训练数据合法性"
+    ).startswith("生成式人工智能")
+    assert research_module._deterministic_facet_search_query(
+        "研究方法的可重复性与证据边界"
+    ).startswith("研究方法")
 
-    assert research_module._architect_plan_decision(payload) == ""
-    assert research_module._architect_plan_decision(
-        payload,
-        allow_runtime_validation_candidate=True,
-    ) == "accept"
-    assert research_module._architect_plan_decision(
-        {"reviewDecision": "passed", "claimTable": [{"claimId": "C1"}]},
-        allow_runtime_validation_candidate=True,
-    ) == "accept"
-    assert research_module._architect_plan_decision(
-        {"reviewDecision": "revise", "claimTable": []},
-        allow_runtime_validation_candidate=True,
-    ) == ""
+
+def test_deterministic_query_removes_explicit_cjk_imperative_prefix():
+    assert research_module._deterministic_facet_search_query(
+        "请研究：生成式人工智能服务管理暂行办法"
+    ) == "生成式人工智能服务管理暂行办法"
 
 
 def test_cross_section_composite_inferences_are_dropped_without_dropping_verified_claims():
@@ -8313,6 +8371,83 @@ def test_multi_query_evidence_candidates_reserve_each_long_document_facet():
     assert any("Article 99" in item["text"] for item in candidates)
 
 
+def test_multi_query_evidence_candidates_reserve_chinese_article_facets():
+    queries = [
+        "第七条 训练数据 合法来源 个人信息",
+        "第十一条 生成内容 标识",
+        "第十五条 投诉 举报 用户权利",
+        "第十七条 安全评估 算法备案",
+    ]
+    source = {
+        "citationKey": "S11",
+        "title": "生成式人工智能服务管理暂行办法",
+        "url": "https://www.cac.gov.cn/2023-07/13/c_1690898327029107.htm",
+        "text": "\n\n".join(
+            [
+                "首页 - 机构设置 - 机构职能 - 机关厅局 - 直属单位 - 政务服务 - 办事指南 - 表格下载 - 网站地图。",
+                "第一条 为了促进生成式人工智能健康发展和规范应用，制定本办法。",
+                "第二条 利用生成式人工智能技术向境内公众提供服务，适用本办法。",
+                "第七条 生成式人工智能服务提供者应当依法开展预训练、优化训练等训练数据处理活动，涉及个人信息的，应当取得个人同意或者符合法律规定的其他情形。",
+                "第十一条 提供者应当按照网络信息内容生态治理有关规定，依法承担网络信息内容生产者责任，并对生成内容进行标识。",
+                "第十五条 提供者应当建立健全投诉、举报机制，设置便捷的投诉、举报入口，公布处理流程和反馈时限，及时处理公众投诉举报。",
+                "第十七条 提供具有舆论属性或者社会动员能力的生成式人工智能服务，应当按照国家有关规定开展安全评估，并履行算法备案手续。",
+            ]
+        ),
+    }
+    facet_by_query = {
+        query: f"facet-cn-{index}" for index, query in enumerate(queries, start=1)
+    }
+
+    candidates = research_module._architect_multi_query_evidence_candidates(
+        source,
+        queries,
+        facet_by_query=facet_by_query,
+    )
+
+    assert {item["researchFacetGoal"] for item in candidates} == set(queries)
+    assert {item["researchFacetId"] for item in candidates} == set(facet_by_query.values())
+    assert any("第十五条" in item["text"] and "投诉" in item["text"] for item in candidates)
+    assert any("第十七条" in item["text"] and "安全评估" in item["text"] for item in candidates)
+    assert all("机构设置" not in item["text"] for item in candidates)
+
+
+def test_multi_query_candidates_do_not_inherit_another_facet_or_projection_label():
+    user_query = "用户权益 投诉举报 处理流程"
+    security_query = "安全评估 算法备案 手续"
+    source = {
+        "citationKey": "S12",
+        "title": "生成式人工智能服务管理暂行办法",
+        "url": "https://example.gov.cn/generative-ai-rules",
+        "evidenceQuery": "适用范围 境内公众",
+        "researchFacetGoal": "训练数据 个人信息",
+        "researchFacetId": "training-data",
+        "text": "\n\n".join(
+            [
+                "[Facet evidence: scope] 首页 机构设置 政务服务 政策法规 互动交流 网站地图。",
+                "[Facet evidence: training-data] 第七条 提供者应当依法开展训练数据处理活动。",
+                "[Facet evidence: user-rights] 第十五条 提供者应当建立健全投诉举报机制，公布处理流程和反馈时限。",
+                "[Facet evidence: security] 第十七条 提供相关服务应当开展安全评估，并履行算法备案手续。",
+            ]
+        ),
+    }
+    facets = {
+        user_query: "user-rights",
+        security_query: "security",
+    }
+
+    candidates = research_module._architect_multi_query_evidence_candidates(
+        source,
+        [user_query, security_query],
+        facet_by_query=facets,
+    )
+
+    user_rows = [item for item in candidates if item["researchFacetId"] == "user-rights"]
+    security_rows = [item for item in candidates if item["researchFacetId"] == "security"]
+    assert any("第十五条" in item["text"] for item in user_rows)
+    assert any("第十七条" in item["text"] for item in security_rows)
+    assert all("[Facet evidence:" not in item["text"] for item in candidates)
+
+
 def test_long_document_candidates_ignore_projection_labels_and_rank_operative_clause():
     title = "Regulation (EU) 2024/1689 of the European Parliament and of the Council"
     operative = (
@@ -11026,25 +11161,14 @@ def test_staged_architect_compacts_and_accepts_twenty_facets_after_plan_timeout(
 
         def __init__(self):
             self.plan_calls = 0
-            self.decision_calls = 0
             self.writer_calls = 0
             self.review_calls = 0
 
         def invoke(self, _messages, *args, **kwargs):  # noqa: ANN002, ANN003
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 return AIMessage(content=json.dumps(plan, ensure_ascii=False))
-            if max_tokens == research_module._RESEARCH_ARCHITECT_DECISION_MAX_TOKENS:
-                self.decision_calls += 1
-                return AIMessage(
-                    content=json.dumps(
-                        {
-                            "compositeInferences": complete_audience_inferences[1:],
-                        },
-                        ensure_ascii=False,
-                    )
-                )
             if max_tokens == research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS:
                 self.writer_calls += 1
                 return AIMessage(
@@ -11091,7 +11215,7 @@ def test_staged_architect_compacts_and_accepts_twenty_facets_after_plan_timeout(
         disable_thinking=False,
     ):
         nonlocal timed_out_once
-        if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+        if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
             plan_message_texts.append(
                 "\n".join(
                     str(getattr(message, "content", "")) for message in messages
@@ -11121,18 +11245,16 @@ def test_staged_architect_compacts_and_accepts_twenty_facets_after_plan_timeout(
         "missingFacetIds": result.get("_missingFacetIds"),
         "fallbackAttempts": result.get("_modelFallbackAttempts"),
     }
-    assert llm.plan_calls == 1
-    assert llm.decision_calls == 1, result.get("_audienceDecisionCompletion")
+    # Structure projection is optional and has no retry. A timeout must leave
+    # the Runtime-owned claims intact and preserve the delivery budget.
+    assert llm.plan_calls == 0
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert len(result["compositeInferences"]) == 3
-    assert result["_audienceDecisionCompletion"]["status"] == "accepted"
-    assert result["_audienceDecisionCompletion"]["acceptedCount"] == 3
+    assert result["compositeInferences"] == []
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "deadline_timeout"
     assert len(result["claimTable"]) == 20
-    assert [claim["claimId"] for claim in result["claimTable"]] == [
-        f"C{index}" for index in range(1, 21)
-    ]
-    assert result.get("_runtimeExactExcerptClaimSupplements") in (None, [])
+    assert len({claim["claimId"] for claim in result["claimTable"]}) == 20
     covered_facets = {
         facet_id
         for claim in result["claimTable"]
@@ -11140,36 +11262,16 @@ def test_staged_architect_compacts_and_accepts_twenty_facets_after_plan_timeout(
         for facet_id in support.get("researchFacetIds") or []
     }
     assert covered_facets == set(facets)
-    assert [attempt["status"] for attempt in result["_planAttempts"]] == [
-        "deadline_timeout",
-        "completed",
-    ]
-    plan_preparations = [
+    structure_preparations = [
         preparation
         for preparation in result["_contextPreparations"]
-        if preparation.get("node") == "web_research_architect_plan"
+        if preparation.get("node") == "web_research_structure_projection"
     ]
-    assert [
-        preparation["materials"][0]["title"] for preparation in plan_preparations
-    ] == [
-        "Research evidence candidates",
-        "Facet-focused evidence candidates",
-    ]
-    assert (
-        plan_preparations[1]["materials"][0]["chars"]
-        < plan_preparations[0]["materials"][0]["chars"]
+    assert len(structure_preparations) == 1
+    assert structure_preparations[0]["materials"][0]["title"] == (
+        "Immutable canonical claim plan"
     )
-    assert len(plan_message_texts) == 2
-    assert "20-20" in plan_message_texts[0]
-    decision_preparations = [
-        preparation
-        for preparation in result["_contextPreparations"]
-        if preparation.get("node") == "web_research_architect_decision_completion"
-    ]
-    assert len(decision_preparations) == 1
-    assert [
-        material["title"] for material in decision_preparations[0]["materials"]
-    ] == ["Runtime-verified decision claims"]
+    assert len(plan_message_texts) == 1
 
 
 def test_exact_excerpt_fallback_accepts_atomic_markdown_list_facts_for_comparison_facets():
@@ -11488,7 +11590,7 @@ def test_staged_architect_repairs_zero_missing_invalid_outline_without_plan_retr
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 if self.plan_calls > 1:
                     raise AssertionError("a deterministic outline repair must not make another planning call")
@@ -11541,7 +11643,7 @@ def test_staged_architect_repairs_zero_missing_invalid_outline_without_plan_retr
         "missingFacetIds": result.get("_missingFacetIds"),
         "fallbackAttempts": result.get("_modelFallbackAttempts"),
     }
-    assert llm.plan_calls == 1
+    assert llm.plan_calls == 0
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
     repaired_claim_ids = [
@@ -11549,7 +11651,12 @@ def test_staged_architect_repairs_zero_missing_invalid_outline_without_plan_retr
         for section in result["answerOutline"]
         for claim_id in section["claimIds"]
     ]
-    assert repaired_claim_ids == [f"C{index}" for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)]
+    assert len(repaired_claim_ids) == len(set(repaired_claim_ids))
+    assert set(repaired_claim_ids) == {
+        claim["claimId"] for claim in result["claimTable"]
+    }
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "skipped_not_required"
     assert len(result["answerOutline"]) == 4
 
 
@@ -11576,7 +11683,7 @@ def test_staged_architect_supplements_locked_claims_without_plan_retry(monkeypat
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 if self.plan_calls > 1:
                     raise AssertionError("runtime claim supplementation must not retry planning")
@@ -11631,18 +11738,19 @@ def test_staged_architect_supplements_locked_claims_without_plan_retry(monkeypat
     assert llm.plan_calls == 1
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert [attempt["status"] for attempt in result["_planAttempts"]] == ["completed"]
-    assert all(attempt["allocatedTimeoutMs"] > 0 for attempt in result["_planAttempts"])
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["claimMutationIgnored"] is True
+    assert result["_structureAttempt"]["status"] == "accepted_with_drops"
     assert len(result["claimTable"]) == research_module.TARGET_RESEARCH_CLAIM_COUNT
     assert {
         support["citationKey"]
         for claim in result["claimTable"]
         for support in claim["supportingSources"]
     } == {f"S{index}" for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)}
-    assert len(result["_runtimeExactExcerptClaimSupplements"]) == 3
+    assert "structure_outline_invalid" in result["_structureAttempt"]["issues"]
 
 
-def test_staged_architect_treats_audience_inference_shortfall_as_nonblocking(
+def test_staged_architect_drops_unbound_audience_inferences_without_blocking(
     monkeypatch,
 ):
     sources, complete_plan = _staged_outline_repair_fixture()
@@ -11697,7 +11805,7 @@ def test_staged_architect_treats_audience_inference_shortfall_as_nonblocking(
 
         def invoke(self, _messages, *args, **kwargs):  # noqa: ANN002, ANN003
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 if self.plan_calls == 1:
                     return AIMessage(content=json.dumps(first_plan, ensure_ascii=False))
@@ -11790,22 +11898,21 @@ def test_staged_architect_treats_audience_inference_shortfall_as_nonblocking(
     assert llm.plan_calls == 1
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert len(result["compositeInferences"]) == 1
-    assert "composite_inference_recommended_for_audiences:1/3" in result[
-        "_nonBlockingPlanWarnings"
-    ]
-    plan_preparations = [
+    assert result["compositeInferences"] == []
+    assert result["_structureAttempt"]["claimMutationIgnored"] is True
+    assert result["_structureAttempt"]["status"] == "accepted_with_drops"
+    structure_preparations = [
         preparation
         for preparation in result["_contextPreparations"]
-        if preparation.get("node") == "web_research_architect_plan"
+        if preparation.get("node") == "web_research_structure_projection"
     ]
-    assert len(plan_preparations) == 1
+    assert len(structure_preparations) == 1
     assert [
-        material["title"] for material in plan_preparations[0]["materials"]
-    ] == ["Research evidence candidates"]
+        material["title"] for material in structure_preparations[0]["materials"]
+    ] == ["Immutable canonical claim plan"]
 
 
-def test_staged_architect_merges_verified_claim_delta_without_rewriting_locked_claims(
+def test_staged_architect_builds_normative_claim_without_model_claim_delta(
     monkeypatch,
 ):
     sources, complete_plan = _staged_outline_repair_fixture()
@@ -11858,7 +11965,7 @@ def test_staged_architect_merges_verified_claim_delta_without_rewriting_locked_c
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 if self.plan_calls == 1:
                     return AIMessage(
@@ -11948,38 +12055,24 @@ def test_staged_architect_merges_verified_claim_delta_without_rewriting_locked_c
         "writerAttempts": result.get("_writerAttempts"),
         "writerSectionDiagnostics": result.get("_writerSectionDiagnostics"),
     }
-    assert llm.plan_calls == 2
+    assert llm.plan_calls == 0
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert result["_runtimeVerifiedClaimDeltaIds"] == ["C8_delta"]
     assert result["_writerRuntimeFallback"] is False
-    assert [attempt["status"] for attempt in result["_planAttempts"]] == [
-        "completed",
-        "completed",
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "skipped_not_required"
+    s8_claims = [
+        claim
+        for claim in result["claimTable"]
+        if claim["supportingSources"][0]["citationKey"] == "S8"
     ]
-    result_claims = {
-        claim["claimId"]: claim for claim in result["claimTable"]
-    }
-    assert set(result_claims) == set(all_claim_ids)
-    for locked_claim in initial_plan["claimTable"]:
-        result_claim = result_claims[locked_claim["claimId"]]
-        assert result_claim["claim"] == locked_claim["claim"]
-        assert result_claim["claimType"] == locked_claim["claimType"]
-        assert result_claim["evidenceExcerptKey"] == locked_claim["evidenceExcerptKey"]
-        assert result_claim["supportingSources"][0]["citationKey"] == (
-            locked_claim["supportingSources"][0]
-        )
-    assert result_claims["C8_delta"]["claim"] == normative_fact
-    assert result_claims["C8_delta"]["claimType"] == "explicit_normative"
-    assert result_claims["C8_delta"]["supportingSources"][0]["citationKey"] == "S8"
-    assert [
-        claim_id
-        for section in result["answerOutline"]
-        for claim_id in section["claimIds"]
-    ] == all_claim_ids
+    assert len(s8_claims) == 1
+    assert s8_claims[0]["claim"] == normative_fact
+    assert s8_claims[0]["claimType"] == "explicit_normative"
+    assert s8_claims[0]["normativeCue"] == "requires"
 
 
-def test_staged_architect_recovers_contradictory_accept_with_runtime_verified_plan(monkeypatch):
+def test_staged_architect_ignores_model_plan_gap_when_canonical_evidence_is_complete(monkeypatch):
     sources, plan = _staged_outline_repair_fixture(
         critical_missing=["A required operational premise is still missing."]
     )
@@ -11994,7 +12087,7 @@ def test_staged_architect_recovers_contradictory_accept_with_runtime_verified_pl
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 if self.plan_calls > 2:
                     raise AssertionError("contradictory accept should stop after one repair attempt")
@@ -12045,26 +12138,35 @@ def test_staged_architect_recovers_contradictory_accept_with_runtime_verified_pl
     )
 
     assert result.get("reviewDecision") == "accept", result
-    assert result["_runtimeDeterministicEvidencePlan"] is True
-    assert llm.plan_calls == 2
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "skipped_not_required"
+    assert llm.plan_calls == 0
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert any("critical_evidence_gap" in item for item in result["_modelFallbackAttempts"])
-    assert any(
-        "runtime_deterministic_evidence_plan_after_architect_protocol_failure" in item
-        for item in result["_modelFallbackAttempts"]
-    )
 
 
-def test_staged_architect_uses_deterministic_evidence_plan_after_protocol_failure(monkeypatch):
+def test_staged_architect_uses_runtime_canonical_plan_without_model_planning(monkeypatch):
     sources, _plan = _staged_outline_repair_fixture()
-    for index, source in enumerate(sources, start=1):
+    evidence_topics = (
+        "component boundary",
+        "query routing",
+        "document identity",
+        "temporal evidence",
+        "conflict handling",
+        "checkpoint recovery",
+        "independent review",
+        "delivery governance",
+    )
+    for index, (source, topic) in enumerate(
+        zip(sources, evidence_topics, strict=True),
+        start=1,
+    ):
         body = " ".join(
             (
                 source["text"].split(". ", 1)[0] + ".",
-                f"Research runtime evidence source {index} records an operational condition that limits where its contract applies.",
-                f"Research runtime evidence source {index} describes how an implementation can expose that condition during review.",
-                f"Research runtime evidence source {index} preserves the supporting document identity in the delivered contract.",
+                f"The {topic} record establishes an operational condition that limits where its contract applies.",
+                f"The {topic} record describes how an implementation exposes that condition during review.",
+                f"The {topic} record preserves its supporting document identity in the delivered contract.",
             )
         )
         source.update(
@@ -12100,7 +12202,7 @@ def test_staged_architect_uses_deterministic_evidence_plan_after_protocol_failur
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 return AIMessage(content="This provider did not return JSON.")
             if max_tokens == research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS:
@@ -12149,18 +12251,14 @@ def test_staged_architect_uses_deterministic_evidence_plan_after_protocol_failur
         "missingFacetIds": result.get("_missingFacetIds"),
         "fallbackAttempts": result.get("_modelFallbackAttempts"),
     }
-    assert result["_runtimeDeterministicEvidencePlan"] is True
-    assert llm.plan_calls == 2
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "skipped_not_required"
+    assert llm.plan_calls == 0
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert any(
-        "runtime_deterministic_evidence_plan_after_architect_protocol_failure"
-        in item
-        for item in result["_modelFallbackAttempts"]
-    )
 
 
-def test_staged_architect_uses_verified_audience_plan_after_protocol_failure(monkeypatch):
+def test_staged_architect_keeps_canonical_claims_after_invalid_audience_structure(monkeypatch):
     sources, _plan = _staged_outline_repair_fixture()
 
     class InvalidAudiencePlanLLM:
@@ -12176,7 +12274,7 @@ def test_staged_architect_uses_verified_audience_plan_after_protocol_failure(mon
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 return AIMessage(content="This provider did not return JSON.")
             if max_tokens == research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS:
@@ -12226,24 +12324,16 @@ def test_staged_architect_uses_verified_audience_plan_after_protocol_failure(mon
     assert result.get("reviewDecision") == "accept", result.get(
         "_modelFallbackAttempts"
     )
-    assert result["_runtimeDeterministicEvidencePlan"] is True
-    assert len(result["compositeInferences"]) == 3
-    assert len(
-        {
-            claim_id
-            for inference in result["compositeInferences"]
-            for claim_id in inference["premiseClaimIds"]
-        }
-    ) == sum(
-        len(inference["premiseClaimIds"])
-        for inference in result["compositeInferences"]
-    )
-    assert llm.plan_calls == 2
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["compositeInferences"] == []
+    assert result["_structureAttempt"]["status"] == "accepted_with_drops"
+    assert "structure_projection_not_object" in result["_structureAttempt"]["issues"]
+    assert llm.plan_calls == 1
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
 
 
-def test_staged_architect_replaces_redundant_claim_when_full_plan_misses_a_facet(
+def test_staged_architect_canonical_plan_covers_each_required_facet(
     monkeypatch,
 ):
     question = "How does the current research runtime evidence contract operate?"
@@ -12440,7 +12530,7 @@ def test_staged_architect_replaces_redundant_claim_when_full_plan_misses_a_facet
 
         def invoke(self, *_args, **kwargs):
             max_tokens = int(kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 self.plan_calls += 1
                 if self.plan_calls == 1:
                     return AIMessage(content=json.dumps(plan, ensure_ascii=False))
@@ -12494,17 +12584,12 @@ def test_staged_architect_replaces_redundant_claim_when_full_plan_misses_a_facet
         "missingFacetIds": result.get("_missingFacetIds"),
         "fallbackAttempts": result.get("_modelFallbackAttempts"),
     }
-    assert result.get("_runtimeDeterministicEvidencePlan") is not True
-    assert llm.plan_calls == 1
+    assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
+    assert result["_structureAttempt"]["status"] == "skipped_not_required"
+    assert llm.plan_calls == 0
     assert llm.writer_calls == 1
     assert llm.review_calls == 2
-    assert len(result["claimTable"]) == research_module._RESEARCH_ARCHITECT_PLAN_MAX_CLAIM_COUNT
-    original_claim_ids = {claim["claimId"] for claim in claims}
-    final_claim_ids = {claim["claimId"] for claim in result["claimTable"]}
-    supplemental_claim_ids = set(result["_runtimeExactExcerptClaimSupplements"])
-    assert len(original_claim_ids - final_claim_ids) == 1
-    assert len(supplemental_claim_ids) == 1
-    assert supplemental_claim_ids.issubset(final_claim_ids)
+    assert len(result["claimTable"]) == research_module.TARGET_RESEARCH_CLAIM_COUNT + 1
     covered_facets = {
         facet_id
         for claim in result["claimTable"]
@@ -12513,10 +12598,6 @@ def test_staged_architect_replaces_redundant_claim_when_full_plan_misses_a_facet
         for facet_id in support.get("researchFacetIds") or []
     }
     assert "octave-governance" in covered_facets
-    assert any(
-        "runtime_exact_excerpt_claim_supplements:1" in item
-        for item in result["_modelFallbackAttempts"]
-    )
 
 
 def test_claim_verifier_allows_qualified_api_from_source_identity_and_exact_symbol():
@@ -13010,8 +13091,6 @@ def test_architect_json_parser_rejects_truncated_outer_object_and_accepts_wrappe
         "claimTable": [],
         "answerOutline": [],
     }
-    assert research_module._architect_plan_decision({"accept": True}) == "accept"
-    assert research_module._architect_plan_decision({"accept": False}) == "retry"
 
 
 def test_claim_excerpt_verifier_rejects_unattributed_normative_overclaim():
@@ -15315,6 +15394,7 @@ def test_segmented_source_appendix_is_runtime_owned_and_stably_ordered():
 
 def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_reviews_whole_answer():
     question = "截至目前，如何根据八项证据作出完整采用判断？"
+    claim_topics = ("范围", "机制", "接口", "数据", "时效", "差异", "风险", "行动")
     source_matrix = [
         {
             "sourceId": f"src-{index}",
@@ -15329,7 +15409,7 @@ def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_re
             "retrievedAt": "2026-07-29T01:00:00Z",
             "publishedAt": f"2026-07-{10 + index:02d}T00:00:00Z",
             "text": (
-                "截至目前，八项证据支持完整采用判断，并记录当前调研问题的可核验边界。"
+                f"截至目前，{claim_topics[index - 1]}证据记录了该主题独有的可核验事实和适用边界。"
                 f"Verified source {index} provides a distinct atomic fact, its operating condition, version boundary, "
                 "counterexample boundary, implementation consequence, and a directly inspectable evidence record "
                 "for the current research question without asserting any unsupported recommendation "
@@ -15352,7 +15432,6 @@ def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_re
         research_module._architect_evidence_candidates(source, question, limit=2)[0]
         for source in source_matrix
     ]
-    claim_topics = ("范围", "机制", "接口", "数据", "时效", "差异", "风险", "行动")
     plan = {
         "reviewDecision": "accept",
         "reviewReasons": [],
@@ -16147,6 +16226,25 @@ def test_comparative_or_explicit_multifacet_research_keeps_standard_floor() -> N
     assert research_module._research_facet_requires_atomic_claim("architect-gap-1a0fc13d") is False
 
 
+def test_single_named_authoritative_subject_uses_task_shaped_source_floor() -> None:
+    requirements = research_module._research_delivery_requirements(
+        "依据官方资料，说明《生成式人工智能服务管理暂行办法》的适用范围、"
+        "训练数据、内容标识、安全评估和投诉要求。"
+    )
+
+    assert requirements == {
+        "mode": "single_authoritative_subject",
+        "minimumSources": 2,
+        "minimumDistinctHosts": 1,
+        "minimumClaims": research_module.MIN_RESEARCH_CLAIM_COUNT,
+        "minimumAnswerChars": research_module.MIN_RESEARCH_ANSWER_CHARS,
+        "targetSources": 3,
+        "targetDistinctHosts": 1,
+        "targetClaims": 6,
+        "targetAnswerChars": 3_000,
+    }
+
+
 def test_research_broker_plan_clamps_shards_to_config(monkeypatch):
     monkeypatch.setattr(
         research_module.storage,
@@ -16782,6 +16880,15 @@ def test_research_delivery_budget_preserves_answer_index_and_runtime_proof_ref()
             "writerSectionCount": 4,
             "writerRevisionCount": 0,
             "sameEvidenceReviewRejected": False,
+            "claimPlanMode": "runtime_canonical",
+            "claimPlanVersion": "v8.research_claim_plan.v1",
+            "claimPlanDigest": "a" * 64,
+            "claimPlanElapsedMs": 2,
+            "structureStatus": "accepted",
+            "structureElapsedMs": 140,
+            "writerElapsedMs": 1200,
+            "reviewElapsedMs": 750,
+            "modelPlanCallCount": 0,
             "planAttempts": [{"largeRuntimeTrace": "x" * 20_000}],
         },
     }
@@ -16816,6 +16923,10 @@ def test_research_delivery_budget_preserves_answer_index_and_runtime_proof_ref()
         "proofLocation": "evidenceBundleId",
     }
     assert "planAttempts" not in rendered["finalExperiencePack"]["modelSynthesis"]
+    assert rendered["finalExperiencePack"]["modelSynthesis"]["claimPlanMode"] == (
+        "runtime_canonical"
+    )
+    assert rendered["finalExperiencePack"]["modelSynthesis"]["modelPlanCallCount"] == 0
     assert rendered["researchAnswerPack"]["score"]["acceptanceMetrics"] == canonical_metrics
     assert rendered["researchAnswerPack"]["detailRef"]["evidenceBundleId"] == (
         "research-budget-projection"
@@ -17032,6 +17143,10 @@ def test_research_jina_reader_fallback_when_builtin_read_is_noisy(monkeypatch):
 
 
 def test_web_research_architect_agent_falls_back_across_model_candidates(monkeypatch):
+    question = (
+        "How do scope, architecture, authority, dataset, timeline, conflict, risk, "
+        "and decision evidence support the research runtime?"
+    )
     source_matrix = [
         {
             "sourceId": f"src_{index}",
@@ -17047,6 +17162,16 @@ def test_web_research_architect_agent_falls_back_across_model_candidates(monkeyp
         }
         for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)
     ]
+    evidence_statements = (
+        "The Research Runtime scope ledger binds conclusions to explicit request boundaries.",
+        "The Research Runtime architecture graph assigns component ownership before synthesis.",
+        "The Research Runtime authority policy separates primary rules from commentary.",
+        "The Research Runtime dataset receipt preserves source bytes and document identity.",
+        "The Research Runtime timeline separates retrieval time from publication time.",
+        "The Research Runtime conflict matrix retains contradictory statements for review.",
+        "The Research Runtime risk register records failure conditions and recovery evidence.",
+        "The Research Runtime decision contract links recommendations to verified premises.",
+    )
     shards = [
         {
             "fetchedTopSources": [
@@ -17054,11 +17179,20 @@ def test_web_research_architect_agent_falls_back_across_model_candidates(monkeyp
                     "url": source["url"],
                     "ok": True,
                     "title": source["title"],
-                    "text": "fallback test source evidence limitations implementation detail " * 60,
+                    "text": (
+                        statement
+                        + " Its operating condition, applicability boundary, and audit receipt "
+                        "are independently inspectable in the research runtime. "
+                    )
+                    * 60,
                     "retrievedAt": source["retrievedAt"],
                     "publishedAt": source["publishedAt"],
                 }
-                for source in source_matrix
+                for source, statement in zip(
+                    source_matrix,
+                    evidence_statements,
+                    strict=True,
+                )
             ]
         }
     ]
@@ -17079,20 +17213,13 @@ def test_web_research_architect_agent_falls_back_across_model_candidates(monkeyp
             self.timeouts_seen.append(float(kwargs.get("timeout") or 0))
             if self.calls == 1:
                 return AIMessage(
-                    content=json.dumps(
-                        _high_quality_architect_pack(question="fallback test", source_matrix=source_matrix, shards=shards),
-                        ensure_ascii=False,
-                    )
-                )
-            if self.calls == 2:
-                return AIMessage(
                     content=(
                         _high_quality_answer(len(source_matrix))
                         + "\n\n"
                         + research_module._RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER
                     )
                 )
-            if self.calls in {3, 4}:
+            if self.calls in {2, 3}:
                 return AIMessage(
                     content=json.dumps(
                         {
@@ -17117,7 +17244,7 @@ def test_web_research_architect_agent_falls_back_across_model_candidates(monkeyp
     )
 
     result = research_module._invoke_web_research_architect_agent(
-        question="fallback test",
+        question=question,
         source_matrix=source_matrix,
         shards=shards,
         confidence="medium",
@@ -17135,7 +17262,6 @@ def test_web_research_architect_agent_falls_back_across_model_candidates(monkeyp
     assert result["_modelFallbackAttempts"]
     assert "bad-model" in result["_modelFallbackAttempts"][0]
     assert GoodLLM.max_tokens_seen == [
-        research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS,
         research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS,
         research_module._RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
         research_module._RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
@@ -17188,6 +17314,16 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
         }
         for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)
     ]
+    evidence_statements = (
+        "The Research Runtime scope ledger binds conclusions to explicit request boundaries.",
+        "The Research Runtime architecture graph assigns component ownership before synthesis.",
+        "The Research Runtime authority policy separates primary rules from commentary.",
+        "The Research Runtime dataset receipt preserves source bytes and document identity.",
+        "The Research Runtime timeline separates retrieval time from publication time.",
+        "The Research Runtime conflict matrix retains contradictory statements for review.",
+        "The Research Runtime risk register records failure conditions and recovery evidence.",
+        "The Research Runtime decision contract links recommendations to verified premises.",
+    )
     shards = [
         {
             "fetchedTopSources": [
@@ -17196,15 +17332,19 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
                     "ok": True,
                     "title": source["title"],
                     "text": (
-                        "This source records a distinct verified fact, its operating condition, "
-                        "applicability boundary, implementation consequence, audit method, and "
-                        "counterexample boundary for the research runtime. "
+                        statement
+                        + " The research runtime records its operating condition, applicability boundary, "
+                        "implementation consequence, audit method, and counterexample. "
                     )
                     * 30,
                     "retrievedAt": source["retrievedAt"],
                     "publishedAt": source["publishedAt"],
                 }
-                for source in source_matrix
+                for source, statement in zip(
+                    source_matrix,
+                    evidence_statements,
+                    strict=True,
+                )
             ]
         }
     ]
@@ -17230,7 +17370,7 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
             type(self).calls += 1
             type(self).timeouts_seen.append(float(_kwargs.get("timeout") or 0))
             max_tokens = int(_kwargs.get("max_tokens") or 0)
-            if max_tokens == research_module._RESEARCH_ARCHITECT_PLAN_MAX_TOKENS:
+            if max_tokens == research_module._RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS:
                 type(self).plan_calls += 1
                 return AIMessage(content=json.dumps(plan, ensure_ascii=False))
             if max_tokens == research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS:
@@ -17305,9 +17445,10 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
     assert fallback_calls == ([] if writer_succeeds else ["called"]), (
         result.get("_modelFallbackAttempts"),
         result.get("_writerAttempts"),
+        result.get("_canonicalClaimPlan"),
     )
-    assert ModelWriterFirstLLM.plan_calls == 1
-    assert ModelWriterFirstLLM.writer_calls == 1
+    assert ModelWriterFirstLLM.plan_calls == 0
+    assert ModelWriterFirstLLM.writer_calls == 1, result
     assert IndependentReviewerLLM.review_calls == 2
     assert result["reviewDecision"] == "accept"
     if writer_succeeds:
@@ -17326,6 +17467,10 @@ def test_model_writer_precedes_deterministic_claim_report_fallback(monkeypatch, 
 
 
 def test_rejected_independent_review_returns_searchable_repair_queries_without_reviewer_shopping(monkeypatch):
+    question = (
+        "How are parser conversion, path validation, error reporting, input normalization, "
+        "platform handling, security boundaries, test coverage, and migration risk combined?"
+    )
     source_matrix = [
         {
             "sourceId": f"repair_{index}",
@@ -17341,6 +17486,37 @@ def test_rejected_independent_review_returns_searchable_repair_queries_without_r
         }
         for index in range(1, TARGET_RESEARCH_SOURCE_COUNT + 1)
     ]
+    evidence_topics = (
+        "parser conversion",
+        "path validation",
+        "error reporting",
+        "input normalization",
+        "platform handling",
+        "security boundary",
+        "test coverage",
+        "migration risk",
+    )
+    for index, (source, topic) in enumerate(
+        zip(source_matrix, evidence_topics, strict=True),
+        start=1,
+    ):
+        body = (
+            f"The {topic} source provides direct evidence for a distinct atomic claim, "
+            "its operating condition, and its operational boundary. "
+        ) * 50
+        source.update(
+            {
+                "citationKey": f"S{index}",
+                "text": body,
+                "contentChars": len(body),
+                "readEvidence": {
+                    "verified": True,
+                    "contentChars": len(body),
+                    "contentSha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                    "retrievedAt": source["retrievedAt"],
+                },
+            }
+        )
     shards = [
         {
             "fetchedTopSources": [
@@ -17348,7 +17524,7 @@ def test_rejected_independent_review_returns_searchable_repair_queries_without_r
                     "url": source["url"],
                     "ok": True,
                     "title": source["title"],
-                        "text": "Repair query direct source evidence for a distinct atomic claim and its operational boundary. " * 50,
+                    "text": source["text"],
                     "retrievedAt": source["retrievedAt"],
                     "publishedAt": source["publishedAt"],
                 }
@@ -17364,13 +17540,6 @@ def test_rejected_independent_review_returns_searchable_repair_queries_without_r
         def invoke(self, *_args, **_kwargs):
             type(self).calls += 1
             if type(self).calls == 1:
-                return AIMessage(
-                    content=json.dumps(
-                        _high_quality_architect_pack(question="repair query", source_matrix=source_matrix, shards=shards),
-                        ensure_ascii=False,
-                    )
-                )
-            if type(self).calls == 2:
                 return AIMessage(
                     content=(
                         _high_quality_answer(len(source_matrix))
@@ -17409,12 +17578,9 @@ def test_rejected_independent_review_returns_searchable_repair_queries_without_r
         ],
     )
 
-    result = research_module._invoke_web_research_architect_agent(
-        question="repair query",
-        source_matrix=source_matrix,
-        shards=shards,
-        confidence="high",
-        average_authority=85,
+    result = research_module._invoke_web_research_architect_staged(
+        question=question,
+        sources=source_matrix,
         freshness="current",
         timeout_seconds=30,
     )
@@ -17424,7 +17590,7 @@ def test_rejected_independent_review_returns_searchable_repair_queries_without_r
     assert result["researchResult"] == ""
     assert result["criticalMissingEvidence"] == ["Official parser-to-Path conversion behavior."]
     assert result["recommendedNextQueries"] == ["site:docs.python.org argparse type pathlib Path"]
-    assert PlanningWriterLLM.calls == 2
+    assert PlanningWriterLLM.calls == 1
     assert RejectingReviewerLLM.calls == 1
 
 

@@ -139,10 +139,7 @@ def dedupe_same_batch_tool_calls(response):
     additional_kwargs["v8_deduplicated_tool_calls"] = dropped
     response.additional_kwargs = additional_kwargs
 
-    for attribute in ("content", "content_blocks"):
-        blocks = getattr(response, attribute, None)
-        if not isinstance(blocks, list):
-            continue
+    def _drop_duplicate_blocks(blocks):
         block_seen = set()
         filtered_blocks = []
         for block in blocks:
@@ -153,7 +150,9 @@ def dedupe_same_batch_tool_calls(response):
             if signature is not None:
                 block_seen.add(signature)
             filtered_blocks.append(block)
-        setattr(response, attribute, filtered_blocks)
+        return filtered_blocks
+
+    _rewrite_content_blocks(response, _drop_duplicate_blocks)
     return response
 
 
@@ -167,6 +166,43 @@ def _content_block_tool_call(block):
         if isinstance(nested, Mapping) and _tool_call_name(nested):
             return nested
     return None
+
+
+def _rewrite_content_blocks(response, transform) -> None:
+    """Rewrite the canonical message content without assuming derived fields are mutable.
+
+    LangChain's ``AIMessage.content_blocks`` is a read-only projection in
+    current releases.  The wire-canonical field is ``content``; when it is a
+    list, changing that field also changes the derived projection.  A few
+    provider adapter objects expose only a separately writable
+    ``content_blocks`` field, so retain a guarded fallback for those objects.
+    """
+
+    content = getattr(response, "content", None)
+    if isinstance(content, list):
+        filtered = transform(content)
+        if filtered != content:
+            try:
+                response.content = filtered
+            except (AttributeError, TypeError):
+                # A custom adapter may expose an immutable content field.  The
+                # tool_calls/additional_kwargs edits remain authoritative.
+                pass
+        return
+
+    blocks = getattr(response, "content_blocks", None)
+    if not isinstance(blocks, list):
+        return
+    filtered = transform(blocks)
+    if filtered == blocks:
+        return
+    try:
+        response.content_blocks = filtered
+    except (AttributeError, TypeError):
+        # ``AIMessage.content_blocks`` is derived and intentionally read-only.
+        # Do not turn a harmless projection mismatch into a delegated-run
+        # failure.
+        pass
 
 
 def defer_same_batch_file_consumers(response):
@@ -204,17 +240,16 @@ def defer_same_batch_file_consumers(response):
     ]
     response.additional_kwargs = additional_kwargs
 
-    for attribute in ("content", "content_blocks"):
-        blocks = getattr(response, attribute, None)
-        if not isinstance(blocks, list):
-            continue
+    def _drop_deferred(blocks):
         filtered = []
         for block in blocks:
             tool_call = _content_block_tool_call(block)
             if tool_call is not None and _tool_call_name(tool_call) in _SAME_BATCH_FILE_CONSUMERS:
                 continue
             filtered.append(block)
-        setattr(response, attribute, filtered)
+        return filtered
+
+    _rewrite_content_blocks(response, _drop_deferred)
     return response
 
 

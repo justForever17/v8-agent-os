@@ -93,10 +93,10 @@ test("composite model inputs keep the focus ring inside their owning field", () 
     const provider = read("src/app/admin/(dashboard)/models/providers/[id]/page.tsx");
     const plugins = read("src/components/plugins/PluginManagerWorkbench.tsx");
 
-    assert.match(hub, /border border-input bg-background focus-within:ring-2 focus-within:ring-ring/);
-    assert.match(hub, /border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0/);
-    assert.match(provider, /border border-input bg-background focus-within:ring-2 focus-within:ring-ring/);
-    assert.match(provider, /border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0/);
+    assert.match(hub, /overflow-hidden rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-0/);
+    assert.match(hub, /rounded-none border-0 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0/);
+    assert.match(provider, /overflow-hidden rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-0/);
+    assert.match(provider, /rounded-none border-0 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0/);
     assert.match(plugins, /focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/);
 });
 

@@ -209,6 +209,15 @@ def _persisted_research_diagnostic(
         "fallbackReason",
         "fallbackAttempts",
         "attemptBudgetExhausted",
+        "claimPlanMode",
+        "claimPlanVersion",
+        "claimPlanDigest",
+        "claimPlanElapsedMs",
+        "structureStatus",
+        "structureElapsedMs",
+        "writerElapsedMs",
+        "reviewElapsedMs",
+        "modelPlanCallCount",
     )
     compact_synthesis = {
         key: model_synthesis.get(key)
@@ -454,6 +463,28 @@ def _technical_runtime_failures(payload: dict[str, Any], bundle: dict[str, Any] 
     model_synthesis = final_pack.get("modelSynthesis") if isinstance(final_pack.get("modelSynthesis"), dict) else {}
     if final_pack.get("synthesisMode") != "model_agent" or model_synthesis.get("used") is not True:
         failures.append("architect_agent_not_used:model_synthesis_missing")
+    if model_synthesis.get("claimPlanMode") != "runtime_canonical":
+        failures.append("technical_canonical_claim_plan_missing")
+    if not str(model_synthesis.get("claimPlanVersion") or "").startswith(
+        "v8.research_claim_plan."
+    ):
+        failures.append("technical_canonical_claim_plan_version_missing")
+    if not re.fullmatch(
+        r"[0-9a-f]{64}",
+        str(model_synthesis.get("claimPlanDigest") or "").lower(),
+    ):
+        failures.append("technical_canonical_claim_plan_digest_invalid")
+    if model_synthesis.get("modelPlanCallCount") != 0:
+        failures.append("technical_model_plan_call_present")
+    for field in (
+        "claimPlanElapsedMs",
+        "structureElapsedMs",
+        "writerElapsedMs",
+        "reviewElapsedMs",
+    ):
+        value = model_synthesis.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            failures.append(f"technical_{field}_invalid")
     writer_mode = str(model_synthesis.get("writerMode") or "")
     if not writer_mode:
         failures.append("technical_writer_mode_missing")
@@ -775,6 +806,7 @@ def _run_domestic_delivery_case() -> AuditCaseResult:
                     title=str(item.get("title") or ""),
                     url=str(item.get("url") or ""),
                     snippet=str(item.get("snippet") or ""),
+                    text=str(item.get("text") or ""),
                 )
             }
         )

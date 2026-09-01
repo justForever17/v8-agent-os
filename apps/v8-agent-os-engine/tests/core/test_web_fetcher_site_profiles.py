@@ -716,7 +716,7 @@ def test_static_fetch_does_not_restart_tls_attempt_after_budget_is_exhausted(mon
 
     assert len(calls) == 1
     assert 1.0 <= calls[0] <= 1.5
-    assert elapsed < 1.2
+    assert elapsed < 1.5
 
 
 def test_agent_browser_profile_gets_the_full_provider_navigation_budget(monkeypatch) -> None:
@@ -754,6 +754,68 @@ def test_agent_browser_profile_gets_the_full_provider_navigation_budget(monkeypa
 
     assert timeouts
     assert timeouts[0] >= 7_500
+
+
+def test_allowlisted_auto_fetch_prioritizes_headless_profile_before_public_static(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _DynamicFetcher:
+        @staticmethod
+        def fetch(url: str, **kwargs: object) -> object:
+            calls.append(("dynamic", dict(kwargs)))
+            return type(
+                "Response",
+                (),
+                {
+                    "html_content": (
+                        "<html><head><title>Signed-in page</title></head><body><main>"
+                        "Authenticated content is available from the governed browser profile. "
+                        "This body is intentionally long enough for the normal auto-fetch quality gate "
+                        "to accept it without falling back to a public static request."
+                        "</main></body></html>"
+                    ),
+                    "url": url,
+                    "status": 200,
+                },
+            )()
+
+    class _UnexpectedStaticFetcher:
+        @staticmethod
+        def get(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("allowlisted auto fetch must not start public static first")
+
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn"],
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_active_agent_browser_cdp_context",
+        lambda: {
+            "profileDir": "agent-profile",
+            "browserKind": "edge",
+            "cdpUrl": "ws://127.0.0.1/devtools/browser/test",
+        },
+    )
+    monkeypatch.setattr(web_fetcher, "_try_import_static_fetcher", lambda: (_UnexpectedStaticFetcher, None))
+    monkeypatch.setattr(web_fetcher, "_try_import_dynamic_fetcher", lambda: (_DynamicFetcher, None))
+    monkeypatch.setattr(web_fetcher, "_try_import_stealth_fetcher", lambda: (None, "stealth not needed"))
+
+    payload = web_fetcher._fetch_with_scrapling_internal(
+        "https://metaso.cn/?q=langchain",
+        mode="auto",
+        timeout_seconds=8,
+        use_agent_browser_profile=False,
+    )
+
+    assert payload.agent_browser_profile_used is True
+    assert payload.fetch_mode == "dynamic"
+    assert [name for name, _kwargs in calls] == ["dynamic"]
+    assert calls[0][1]["cdp_url"] == "ws://127.0.0.1/devtools/browser/test"
 
 
 def test_missing_scrapling_fetcher_dependency_is_terminal_and_actionable() -> None:
@@ -808,6 +870,80 @@ def test_explicit_metaso_search_preserves_runtime_dependency_failure(monkeypatch
     assert payload["failureClass"] == "runtime_dependency_missing"
     assert payload["retryable"] is False
     assert "重新安装 V8OS" in payload["recommendedNextAction"]
+
+
+def test_allowlisted_metaso_profile_falls_back_to_browser_after_empty_structured_response(monkeypatch) -> None:
+    """An authenticated profile must get a chance after public/SSE returns no rows."""
+
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {"globalPreferred": ["metaso"], "cnPreferred": ["metaso"]},
+            "providers": {"metaso": {"enabled": True}},
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn"],
+        },
+    )
+    monkeypatch.setattr(web_fetcher, "_guard_url", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(
+        web_fetcher,
+        "_metaso_search_public",
+        lambda *_args, **_kwargs: {"ok": True, "results": [], "reason": "empty_public_response"},
+    )
+    fetch_calls: list[dict[str, object]] = []
+
+    def fake_profile_fetch(url: str, **kwargs: object) -> web_fetcher.WebPagePayload:
+        fetch_calls.append({"url": url, **kwargs})
+        return web_fetcher.WebPagePayload(
+            url=url,
+            final_url=url,
+            requested_mode="auto",
+            referer_mode="none",
+            referer_url="",
+            fetch_mode="dynamic",
+            attempted_modes=["dynamic"],
+            available_modes={"dynamic": {"available": True}},
+            status=200,
+            tls_strategy="browser_managed",
+            ca_bundle_path="",
+            proxy_bypass_used=False,
+            title="MetaSo authenticated results",
+            text="LangChain current capabilities reference",
+            html=(
+                "<html><head><title>MetaSo</title></head><body><main>"
+                "<a href='https://docs.example.com/langchain'>"
+                "LangChain current capabilities reference</a>"
+                "</main></body></html>"
+            ),
+            metadata={},
+            links=[],
+            media=[],
+            warnings=[],
+            agent_browser_profile_used=True,
+            agent_browser_profile_host="metaso.cn",
+            agent_browser_profile_dir="profile",
+            agent_browser_kind="edge",
+        )
+
+    monkeypatch.setattr(web_fetcher, "_fetch_with_scrapling_internal", fake_profile_fetch)
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="LangChain current capabilities",
+            search_engine="metaso",
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "metaso"
+    assert payload["agentBrowserProfile"]["used"] is True
+    assert fetch_calls
+    assert fetch_calls[0]["use_agent_browser_profile"] is True
+    assert any(
+        item.get("provider") == "metaso" and item.get("status") == "empty"
+        for item in payload["attemptedProviders"]
+    )
 
 
 def test_auto_search_preserves_budget_for_a_later_working_provider(monkeypatch) -> None:

@@ -4714,6 +4714,33 @@ class RuntimeEpisodeRunner:
             else:
                 if not str(item.get("familyHint") or "").strip():
                     item["familyHint"] = "engineering"
+                explicit_target = bool(
+                    str(item.get("targetAgentName") or "").strip()
+                    or str(item.get("preferredAgentId") or "").strip()
+                )
+                verification_identity = " ".join(
+                    str(value or "").strip().lower()
+                    for value in (
+                        item.get("taskBriefId"),
+                        item.get("taskId"),
+                        item.get("title"),
+                    )
+                    if str(value or "").strip()
+                )
+                verification_capabilities = {
+                    str(value or "").strip().lower().replace("-", "_")
+                    for value in list(item.get("requiredCapabilities") or [])
+                    if str(value or "").strip()
+                }
+                verification_task = bool(
+                    re.search(r"(?:^|[\s:_-])(?:verification|verifier|validate|validation|qa)(?:$|[\s:_-])", verification_identity)
+                    or any(marker in verification_identity for marker in ("验收", "验证", "复核", "质量检查"))
+                    or verification_capabilities.intersection({"verification", "validation", "quality_assurance", "qa"})
+                )
+                if verification_task and not explicit_target:
+                    item["targetAgentName"] = "Verification Engineer"
+                    item["preferredAgentId"] = "verification-engineer"
+                    item["targetDefaultReason"] = "engineering_verification_brief"
                 required_capabilities = [
                     str(value).strip()
                     for value in list(item.get("requiredCapabilities") or [])

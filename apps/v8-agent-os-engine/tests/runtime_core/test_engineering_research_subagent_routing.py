@@ -16,6 +16,9 @@ def test_explicit_engineering_request_is_detected() -> None:
     assert not runtime._detect_explicit_engineering_runtime_request("用工程模式做前端实现")
     assert not runtime._detect_explicit_engineering_runtime_request("做一个小的文字说明")
     assert not runtime._detect_explicit_engineering_runtime_request("只写正文，不调用工程运行时")
+    assert not runtime._detect_explicit_engineering_runtime_request(
+        "上轮调用工程运行时失败。现在分别用 web_broker 和 research_broker 测试搜索稳定性"
+    )
 
 
 def test_engineering_work_mode_is_session_posture_not_runtime_route() -> None:
@@ -54,6 +57,17 @@ def test_engineering_continuation_detects_same_session_debug_signal(monkeypatch,
     assert context["previousEpisodeId"] == "episode-eng-1"
     assert context["previousRunId"] == "run-1"
     assert context["proofRefs"] == ["proof-1"]
+
+
+def test_engineering_continuation_does_not_capture_explicit_research_retry() -> None:
+    message = (
+        "上轮调用工程运行时和调研结果都声称失败。现在分别用 web_broker 和 research_broker，"
+        "在 MetaSo 和百度测试可用性并核对实际证据。"
+    )
+
+    assert ChatRuntime._looks_like_engineering_continuation_message(message) is False
+    assert ChatRuntime._looks_like_engineering_continuation_message("刚才的代码修复后测试仍然失败") is True
+    assert ChatRuntime._looks_like_engineering_continuation_message("还是不行") is True
 
 
 def test_engineering_continuation_rejects_other_workspace(monkeypatch, tmp_path) -> None:

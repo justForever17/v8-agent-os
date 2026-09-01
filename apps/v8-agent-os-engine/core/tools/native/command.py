@@ -168,21 +168,48 @@ _DIRECT_ENGINEERING_READ_ONLY_RE = re.compile(
     r"cat\b.*|head\b.*|tail\b.*|wc\b.*|ls\b.*|dir\b.*|"
     r"git\s+(?:status|diff|show|log|rev-parse|ls-files)\b.*|"
     r"(?:npm|pnpm|yarn|bun)\s+(?:list|why)\b.*|"
-    r"(?:python(?:\.exe)?|node(?:\.exe)?)\s+--version\b.*|"
+    r"(?:python(?:\.exe)?|node(?:\.exe)?|pip(?:\d|\.exe)?|git)\s+--version\b.*|"
     r"(?:where(?:\.exe)?|which|get-command)\b.*|echo\b.*"
     r")\s*$"
 )
 _DIRECT_ENGINEERING_REDIRECTION_RE = re.compile(
     r"(?i)(?:>>?|\b(?:out-file|set-content|add-content|export-clixml)\b)"
 )
-_DIRECT_ENGINEERING_COMPOUND_RE = re.compile(r"[;&]")
 _DIRECT_ENGINEERING_SAFE_PIPE_STAGE_RE = re.compile(
     r"(?is)^\s*(?:"
     r"select-object\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+|"
     r"sort-object\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+|"
-    r"measure-object(?:\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+)?"
+    r"measure-object(?:\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+)?|"
+    r"format-(?:table|list)(?:\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+)?|"
+    r"where-object\s+\{\s*\$_\.[A-Za-z0-9_.]+\s+"
+    r"(?:-notmatch|-match|-eq|-ne|-like|-notlike)\s+['\"][^;{}]*['\"]\s*\}"
     r")\s*$"
 )
+
+
+def _split_unquoted_shell_operator(text: str, operator: str) -> list[str]:
+    """Split a shell pipeline/operator without treating quoted data as syntax."""
+
+    parts: list[str] = []
+    start = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(str(text or "")):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == operator:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
 
 
 def _direct_engineering_command_is_read_or_validation(command: str) -> bool:
@@ -197,10 +224,16 @@ def _direct_engineering_command_is_read_or_validation(command: str) -> bool:
     text = str(command or "").strip()
     if not text or command_may_change_workspace(text) or _DIRECT_ENGINEERING_REDIRECTION_RE.search(text):
         return False
-    if _DIRECT_ENGINEERING_COMPOUND_RE.search(text):
+    if "&" in text:
         return False
+    if ";" in text:
+        commands = [item.strip() for item in text.split(";")]
+        return bool(commands and all(commands)) and all(
+            _direct_engineering_command_is_read_or_validation(item)
+            for item in commands
+        )
     if "|" in text:
-        stages = [stage.strip() for stage in text.split("|")]
+        stages = [stage.strip() for stage in _split_unquoted_shell_operator(text, "|")]
         if len(stages) < 2 or any(not stage for stage in stages):
             return False
         return bool(

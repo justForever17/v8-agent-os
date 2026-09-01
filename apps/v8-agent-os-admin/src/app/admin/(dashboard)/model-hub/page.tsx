@@ -2829,7 +2829,7 @@ export default function ModelHubPage() {
                                     <span className="truncate">{selectedCatalogProvider.auth.path || selectedCatalogProvider.name}</span>
                                 </div>
                             ) : (
-                                <div className="flex min-w-0 items-center rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring">
+                                <div className="flex min-w-0 items-center overflow-hidden rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-0">
                                     {selectedCredentialHelpUrl ? (
                                         <Button
                                             type="button"
@@ -2842,7 +2842,7 @@ export default function ModelHubPage() {
                                             <ExternalLink className="h-4 w-4"/>
                                         </Button>
                                     ) : null}
-                                    <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
+                                    <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 rounded-none border-0 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
                                 </div>
                             )}
                             <Button disabled={isCatalogBusy} onClick={() => void handleProbeCatalogProvider()}>{t("app.admin.dashboard.model.hub.catalog.probe")}</Button>

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from langchain_core.messages import AIMessage
 
 from core.response_normalizer import extract_text_and_reasoning, sanitize_model_tool_calls
 from graph.compat import sanitize_response_tool_calls
@@ -231,6 +232,51 @@ class ResponseNormalizerToolCallIdTests(unittest.TestCase):
         self.assertEqual(normalized.tool_calls[0]["providerToolCallId"], "write-1")
         self.assertEqual(normalized.additional_kwargs["v8_deduplicated_tool_calls"][0]["name"], "write_native_file")
         self.assertEqual(len(normalized.content), 1)
+
+    def test_langchain_ai_message_read_only_content_blocks_does_not_crash(self):
+        """The current LangChain projection must not abort a delegated run."""
+
+        message = AIMessage(
+            content=[
+                {"type": "text", "text": "write then verify"},
+                {
+                    "type": "tool_use",
+                    "id": "provider-write-1",
+                    "name": "write_native_file",
+                    "input": {"path": "app.py", "content": "print('ok')"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "provider-run-1",
+                    "name": "run_system_command",
+                    "input": {"command": "python app.py"},
+                },
+            ],
+            tool_calls=[
+                {
+                    "id": "provider-write-1",
+                    "name": "write_native_file",
+                    "args": {"path": "app.py", "content": "print('ok')"},
+                },
+                {
+                    "id": "provider-run-1",
+                    "name": "run_system_command",
+                    "args": {"command": "python app.py"},
+                },
+            ],
+        )
+
+        normalized = sanitize_response_tool_calls(message)
+
+        self.assertEqual([call["name"] for call in normalized.tool_calls], ["write_native_file"])
+        self.assertNotIn("run_system_command", str(normalized.content))
+        self.assertFalse(
+            any(
+                block.get("name") == "run_system_command"
+                for block in normalized.content_blocks
+                if isinstance(block, dict)
+            )
+        )
 
     def test_duplicate_unknown_tool_is_not_silently_deduplicated(self):
         message = SimpleNamespace(

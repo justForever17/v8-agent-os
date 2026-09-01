@@ -199,7 +199,7 @@ export function RuntimeActivityRenderer({
                                     </span>
                                     <div className="min-w-0 flex-1 pt-0.5">
                                         <div className="flex min-w-0 items-start gap-2">
-                                            <p className="min-w-0 flex-1 break-words text-[12px] font-medium leading-5 text-foreground/90">{activity.summary}</p>
+                                            <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[12px] font-medium leading-5 text-foreground/90">{activity.summary}</p>
                                             <time className="shrink-0 pt-0.5 text-[9px] tabular-nums text-muted-foreground">{formatRelativeRuntimeTime(activity.timestamp, locale)}</time>
                                         </div>
                                         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -207,7 +207,7 @@ export function RuntimeActivityRenderer({
                                             {label ? <span aria-hidden="true">·</span> : null}
                                             <span>{statusLabel(details.status, t)}</span>
                                         </div>
-                                        {details.content && details.content !== activity.summary ? <p className="mt-1 break-words text-[11px] leading-5 text-muted-foreground">{details.content}</p> : null}
+                                        {details.content && details.content !== activity.summary ? <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{details.content}</p> : null}
                                     </div>
                                 </li>
                             );

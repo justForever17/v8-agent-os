@@ -711,9 +711,12 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
                 "",
             )
             normalized_first_line = re.sub(r"^[\s>*_`~-]+", "", first_line).strip().lower()
+            normalized_first_line = normalized_first_line.replace("**", "").replace("__", "")
             explicitly_empty = bool(
                 re.match(
-                    r"^(?:none\b|n/?a\b|not\s+applicable\b|"
+                    r"^(?:(?:blockers?|risks?|errors?|阻塞|风险|错误)\s*[:：]\s*"
+                    r"(?:none\b|no\b|n/?a\b|无(?:\s|$)|没有(?:\s|$)|暂无(?:\s|$))|"
+                    r"none\b|n/?a\b|not\s+applicable\b|"
                     r"no\s+(?:known\s+)?(?:blockers?|risks?|errors?)\b|"
                     r"无(?:阻塞|风险|错误)?\b|暂无\b|没有\b|未发现\b)",
                     normalized_first_line,
@@ -722,6 +725,14 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
             heading_explicitly_empty = bool(
                 re.search(r"\bno\s+(?:known\s+)?(?:blockers?|failures?|errors?)\b", heading)
                 or re.search(r"无(?:阻塞|失败|错误)", heading)
+            )
+            mixed_risk_heading = bool(
+                re.search(r"\brisks?\b|notes?|handoff|风险|备注|说明", heading, re.IGNORECASE)
+            )
+            candidate_lines = (
+                [first_line]
+                if mixed_risk_heading
+                else [line for line in section_body.splitlines() if line.strip()]
             )
             body_reports_terminal_failure = any(
                 re.search(
@@ -733,7 +744,7 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
                     re.sub(r"^[\s>*_`~-]+", "", line).strip(),
                     re.IGNORECASE,
                 )
-                for line in section_body.splitlines()
+                for line in candidate_lines
                 if line.strip()
                 and not re.search(
                     r"(?:无需|不(?:存在|需要|触发)|未(?:发现|发生|出现)|没有)"
@@ -979,6 +990,7 @@ def _tool_message_evidence_succeeded(message: Any, *, tool_name: str) -> bool:
             "error:",
             "[command_session_required]",
             "[completed with no output]",
+            "[git_parallel_isolation_required]",
             "not a valid tool",
         )
     ):

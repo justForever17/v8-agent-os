@@ -653,6 +653,32 @@ def test_mixed_risks_blockers_section_preserves_explicit_dynamic_verification_bl
     ) == ("blocked", "subagent_reported_terminal_failure")
 
 
+def test_mixed_risks_section_does_not_promote_optional_or_superseded_tool_blocks():
+    assert _subagent_reported_terminal_failure(
+        """## Risks, Blockers, Handoff Notes
+
+- **Verification belongs to the sibling verifier.** All declared implementation files were written successfully.
+- An earlier read-only listing returned `git_parallel_isolation_required`; file writes then completed through `write_native_file`.
+- Optional web dependencies degrade gracefully when missing.
+
+## Local Self-Check Status
+
+- Implementation complete; ready for independent verification.
+"""
+    ) is None
+    assert _subagent_reported_terminal_failure(
+        """## 风险、阻塞与交接备注
+
+- **阻塞**: 无
+- 可选的 shell 字节检查被 `git_parallel_isolation_required` 拒绝，但 `write_native_file` 与 `read_native_file` 已完成合同要求。
+
+## 本地自检状态
+
+- 必需验收项全部通过。
+"""
+    ) is None
+
+
 def test_typed_delegation_blocker_metadata_is_authoritative_over_wrapper_prose():
     from langchain_core.messages import HumanMessage
 

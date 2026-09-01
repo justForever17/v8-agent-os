@@ -294,7 +294,26 @@ def _delegated_tool_call_dicts(message: Any) -> list[dict[str, Any]]:
                 "args": getattr(call, "args", None),
             }
         )
-    return calls
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for call in calls:
+        call_id = str(call.get("id") or "").strip()
+        name = str(call.get("name") or "").strip()
+        try:
+            encoded_args = json.dumps(
+                call.get("args"),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception:
+            encoded_args = str(call.get("args") or "")
+        key = ("id", call_id) if call_id else ("signature", name, encoded_args)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(call)
+    return deduped
 
 
 def _delegated_write_tool_observation(messages: list[Any], *, agent_id: str) -> dict[str, Any]:
@@ -303,7 +322,8 @@ def _delegated_write_tool_observation(messages: list[Any], *, agent_id: str) -> 
     attempted_names: set[str] = set()
     owned_tool_call_count = 0
     for message in list(messages or []):
-        if _delegated_message_owner_id(message) != agent_id or not isinstance(message, AIMessage):
+        owner_id = _delegated_message_owner_id(message)
+        if (owner_id and owner_id != agent_id) or not isinstance(message, AIMessage):
             continue
         for call in _delegated_tool_call_dicts(message):
             owned_tool_call_count += 1
@@ -414,7 +434,8 @@ def _delegated_tool_loop_observation(
 
     signatures: list[str] = []
     for message in list(messages or []):
-        if not isinstance(message, AIMessage) or _delegated_message_owner_id(message) != agent_id:
+        owner_id = _delegated_message_owner_id(message)
+        if not isinstance(message, AIMessage) or (owner_id and owner_id != agent_id):
             continue
         for call in _delegated_tool_call_dicts(message):
             name = str(call.get("name") or "").strip()
@@ -645,6 +666,40 @@ def _preserve_direct_worker_extension_candidates(
             continue
         restored.append(tool_ref)
     return _dedupe_tools(restored)
+
+
+def _restore_required_artifact_tools(
+    tools: list[Any],
+    available_tools: list[Any],
+    task_brief: dict[str, Any] | None,
+) -> list[Any]:
+    """Keep a declared artifact writer out of contextual prefilter scope.
+
+    Extension relevance is advisory. A write-required Capsule is an execution
+    contract, so contextual routing must not hide its native writer merely
+    because the brief emphasizes verification or inspection. Forbidden and
+    allowlist policy still apply to the restored candidate.
+    """
+
+    if not _task_brief_requires_artifact_write(task_brief):
+        return _dedupe_tools(list(tools or []))
+    current = _dedupe_tools(list(tools or []))
+    visible_names = {
+        variant
+        for tool_ref in current
+        for variant in _tool_name_variants(tool_ref)
+    }
+    for candidate in list(available_tools or []):
+        if not _tool_name_is(candidate, "write_native_file"):
+            continue
+        if any(variant in visible_names for variant in _tool_name_variants(candidate)):
+            continue
+        allowed_candidate = _apply_task_tool_policy([candidate], task_brief)
+        if not allowed_candidate:
+            continue
+        current.extend(allowed_candidate)
+        visible_names.update(_tool_name_variants(candidate))
+    return _dedupe_tools(current)
 
 
 def _build_atomic_worker_extension_route(tools: list[Any]) -> ExtensionRouteBundle:
@@ -1199,6 +1254,56 @@ def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
     if custom:
         lines.append(f"- Task-specific note: {custom}")
     return lines
+
+
+def _required_write_tool_choice(
+    *,
+    task_brief: dict | None,
+    messages: list[Any],
+    agent_id: str,
+    write_observation: dict[str, Any],
+    write_tool_visible: bool,
+) -> Any | None:
+    """Choose a bounded write phase without removing first-turn inspection.
+
+    The first turn may use any visible tool so a worker can inspect its input.
+    Once that turn has produced a child-owned response, or when a verification
+    correction is already in progress, expose only the required write tool to
+    the provider adapter.  This prevents a model from satisfying the gate
+    with another read/command or a textual DSML pseudo-call.
+    """
+
+    if not (
+        _task_brief_requires_artifact_write(task_brief)
+        and write_tool_visible
+        and not bool(write_observation.get("successful"))
+    ):
+        return None
+
+    has_prior_owned_turn = any(
+        isinstance(message, AIMessage)
+        and _delegated_message_owner_id(message) == agent_id
+        for message in list(messages or [])
+    )
+    correction_markers = {
+        "required_artifact_tool_correction",
+        "required_verification_evidence_correction",
+        "delegated_execution_correction",
+    }
+    has_correction = any(
+        str(
+            dict(getattr(message, "additional_kwargs", {}) or {}).get("v8_governance_type")
+            or ""
+        ).strip()
+        in correction_markers
+        for message in list(messages or [])
+    )
+    task_id = str((task_brief or {}).get("taskBriefId") or "").strip().lower()
+    if has_prior_owned_turn or has_correction or any(
+        marker in task_id for marker in ("verification", "repair")
+    ):
+        return {"type": "function", "function": {"name": "write_native_file"}}
+    return "required"
 
 
 def _format_collaboration_identity_contract(
@@ -2126,6 +2231,11 @@ def build_agent_node(
                         available_tools,
                         delegated_task_brief,
                     )
+                    combined_tools = _restore_required_artifact_tools(
+                        combined_tools,
+                        available_tools,
+                        delegated_task_brief,
+                    )
                     route_bundle = _build_atomic_worker_extension_route(combined_tools)
                 else:
                     route_bundle = extensions_runtime_service.build_contextual_route(
@@ -2138,6 +2248,11 @@ def build_agent_node(
                     )
                     combined_tools = _apply_task_tool_policy(
                         route_bundle.filtered_tools,
+                        delegated_task_brief,
+                    )
+                    combined_tools = _restore_required_artifact_tools(
+                        combined_tools,
+                        available_tools,
                         delegated_task_brief,
                     )
                     combined_tools = _preserve_direct_worker_extension_candidates(
@@ -2162,13 +2277,15 @@ def build_agent_node(
                     for variant in _tool_name_variants(tool_name)
                 }
                 write_observation = _delegated_write_tool_observation(
-                    messages,
+                    task_messages,
                     agent_id=agent_id,
                 )
-                required_tool_choice = (
-                    "required"
-                    if write_required and write_tool_visible and not write_observation["successful"]
-                    else None
+                required_tool_choice = _required_write_tool_choice(
+                    task_brief=delegated_task_brief,
+                    messages=messages,
+                    agent_id=agent_id,
+                    write_observation=write_observation,
+                    write_tool_visible=write_tool_visible,
                 )
                 missing_required_tool = (
                     "write_native_file"
@@ -2377,7 +2494,7 @@ def build_agent_node(
             )
 
             response_observation = _delegated_write_tool_observation(
-                [*messages, response],
+                [*task_messages, response],
                 agent_id=agent_id,
             )
             write_tool_missing = write_required and not response_observation["successful"]
@@ -2394,7 +2511,7 @@ def build_agent_node(
             )
 
             tool_loop = _delegated_tool_loop_observation(
-                [*messages, response],
+                [*task_messages, response],
                 agent_id=agent_id,
                 current_message=response,
             )

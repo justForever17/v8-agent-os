@@ -8,7 +8,11 @@ from api.models import EngineConfig
 from core.llm_factory import LLMFactory
 from graph.agent_factories import (
     _bounded_delegated_task_messages,
+    _delegated_tool_call_dicts,
     _delegated_tool_loop_observation,
+    _delegated_write_tool_observation,
+    _required_write_tool_choice,
+    _restore_required_artifact_tools,
     build_agent_node,
     build_reviewer_node,
     create_subagent_chat_model,
@@ -81,6 +85,117 @@ def test_delegated_tool_loop_blocks_current_repeat_but_allows_a_new_recovery_cal
     assert blocked["exactRepeatCount"] == 3
     assert blocked["blocked"] is True
     assert blocked["reason"] == "delegated_exact_tool_loop"
+
+
+def test_provider_duplicate_tool_projection_counts_as_one_call():
+    call = {"id": "write-1", "name": "write_native_file", "args": {"path": "result.txt", "content": "done"}}
+    message = AIMessage(
+        content="",
+        tool_calls=[call],
+        additional_kwargs={
+            "v8_owner_agent_id": "worker",
+            "tool_calls": [
+                {
+                    "id": "write-1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_native_file",
+                        "arguments": '{"content":"done","path":"result.txt"}',
+                    },
+                }
+            ],
+        },
+    )
+
+    assert len(_delegated_tool_call_dicts(message)) == 1
+    observation = _delegated_tool_loop_observation(
+        [message],
+        agent_id="worker",
+        current_message=message,
+    )
+    assert observation["toolCallCount"] == 1
+    assert observation["exactRepeatCount"] == 1
+    assert observation["blocked"] is False
+
+
+def test_ownerless_branch_write_receipt_still_stops_required_tool_choice():
+    instruction = HumanMessage(
+        content="delegated",
+        additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
+    )
+    call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "write-ownerless",
+                "name": "write_native_file",
+                "args": {"path": "result.txt", "content": "done"},
+            }
+        ],
+    )
+    result = ToolMessage(
+        content="Successfully Created/Overwritten file: result.txt (4 chars written)",
+        name="write_native_file",
+        tool_call_id="write-ownerless",
+    )
+
+    observation = _delegated_write_tool_observation(
+        [instruction, call, result],
+        agent_id="worker",
+    )
+
+    assert observation["successful"] is True
+    assert _required_write_tool_choice(
+        task_brief={"taskBriefId": "repair-result", "writeRequired": True},
+        messages=[instruction, call, result],
+        agent_id="worker",
+        write_observation=observation,
+        write_tool_visible=True,
+    ) is None
+
+
+def test_required_write_choice_tightens_after_inspection_or_correction():
+    task = {"taskBriefId": "engineering-implementation", "writeRequired": True}
+    observation = {"successful": False, "toolCallCount": 0}
+    assert _required_write_tool_choice(
+        task_brief=task,
+        messages=[],
+        agent_id="worker",
+        write_observation=observation,
+        write_tool_visible=True,
+    ) == "required"
+
+    inspected = _owned_tool_call("read_native_file", "read-1", {"path": "input.txt"})
+    assert _required_write_tool_choice(
+        task_brief=task,
+        messages=[inspected],
+        agent_id="worker",
+        write_observation={"successful": False, "toolCallCount": 1},
+        write_tool_visible=True,
+    ) == {"type": "function", "function": {"name": "write_native_file"}}
+
+    correction = HumanMessage(
+        content="write now",
+        additional_kwargs={"v8_governance_type": "required_artifact_tool_correction"},
+    )
+    assert _required_write_tool_choice(
+        task_brief=task,
+        messages=[correction],
+        agent_id="worker",
+        write_observation=observation,
+        write_tool_visible=True,
+    ) == {"type": "function", "function": {"name": "write_native_file"}}
+
+
+def test_contextual_prefilter_cannot_hide_required_writer(monkeypatch):
+    read_tool = SimpleNamespace(name="read_native_file")
+    write_tool = SimpleNamespace(name="write_native_file")
+    task = {"taskBriefId": "engineering-verification", "writeRequired": True}
+    monkeypatch.setattr("graph.agent_factories.engineering_tool_allowed", lambda *_args: True)
+
+    restored = _restore_required_artifact_tools([read_tool], [read_tool, write_tool], task)
+
+    assert [item.name for item in restored] == ["read_native_file", "write_native_file"]
 
 
 def test_request_model_override_compares_provider_qualified_identity(monkeypatch):

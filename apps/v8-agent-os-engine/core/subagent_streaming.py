@@ -4,8 +4,24 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from langchain_core.messages import BaseMessage, BaseMessageChunk
+
 from core.observability_db import redact_observability_text
 from core.response_normalizer import extract_text_and_reasoning
+
+
+MAX_PROJECTED_CHARS = 6000
+
+
+def project_subagent_stream_text(value: str) -> tuple[str, int]:
+    """Share a bounded, redacted head/tail view across live and final nodes."""
+    redacted = redact_observability_text(value)
+    if len(redacted) <= MAX_PROJECTED_CHARS:
+        return redacted, 0
+    marker = "\n...\n"
+    head_chars = MAX_PROJECTED_CHARS // 4
+    tail_chars = MAX_PROJECTED_CHARS - head_chars - len(marker)
+    return redacted[:head_chars] + marker + redacted[-tail_chars:], len(redacted) - head_chars - tail_chars
 
 
 @dataclass(slots=True)
@@ -22,7 +38,7 @@ class SubagentStreamProgressAggregator:
 
     FLUSH_INTERVAL_SECONDS = 0.5
     FLUSH_CHAR_THRESHOLD = 320
-    MAX_PROJECTED_CHARS = 6000
+    MAX_PROJECTED_CHARS = MAX_PROJECTED_CHARS
     ACTIVITY_HEARTBEAT_SECONDS = 8.0
 
     def __init__(
@@ -54,21 +70,16 @@ class SubagentStreamProgressAggregator:
 
     @staticmethod
     def _merge_final_content(current: str, final_value: str) -> str:
-        if not final_value:
-            return current
-        if not current or final_value.startswith(current):
-            return final_value
-        if current.startswith(final_value):
-            return current
-        return final_value
+        return final_value or current
 
     def observe(self, chunk: Any) -> None:
         text, reasoning = extract_text_and_reasoning(chunk)
         now = time.monotonic()
         self._raw_chunk_count += 1
         previous_sequences = tuple(channel.sequence for channel in self._channels.values())
-        self._append("analysis", self._delta_for("analysis", reasoning), now=now)
-        self._append("text", self._delta_for("text", text), now=now)
+        snapshot = isinstance(chunk, BaseMessage) and not isinstance(chunk, BaseMessageChunk)
+        self._append("analysis", reasoning, now=now, snapshot=snapshot)
+        self._append("text", text, now=now, snapshot=snapshot)
         current_sequences = tuple(channel.sequence for channel in self._channels.values())
         if current_sequences != previous_sequences:
             self._last_projected_at = now
@@ -100,25 +111,19 @@ class SubagentStreamProgressAggregator:
             }
         )
 
-    def _delta_for(self, kind: str, value: str) -> str:
-        """Normalize providers that send cumulative snapshots instead of deltas."""
-        delta = str(value or "")
-        if not delta:
-            return ""
-        current = self._channels[kind].content
-        if not current:
-            return delta
-        if delta.startswith(current):
-            return delta[len(current):]
-        if delta == current or current.endswith(delta):
-            return ""
-        return delta
-
-    def _append(self, kind: str, delta: str, *, now: float) -> None:
+    def _append(self, kind: str, delta: str, *, now: float, snapshot: bool = False) -> None:
         if not delta:
             return
         channel = self._channels[kind]
-        channel.content += str(delta)
+        if snapshot:
+            if channel.content == delta:
+                return
+            channel.content = str(delta)
+            channel.emitted_chars = 0
+        else:
+            # Native message chunks are deltas. Equal suffixes are legitimate
+            # repeated words, whitespace and punctuation, not duplicate events.
+            channel.content += str(delta)
         channel.chunk_count += 1
         pending_chars = len(channel.content) - channel.emitted_chars
         if (
@@ -138,12 +143,7 @@ class SubagentStreamProgressAggregator:
         channel.emitted_chars = len(channel.content)
         channel.last_emitted_at = float(now if now is not None else time.monotonic())
         self._last_projected_at = channel.last_emitted_at
-        redacted = redact_observability_text(channel.content)
-        bounded = (
-            redacted
-            if len(redacted) <= self.MAX_PROJECTED_CHARS
-            else redacted[: self.MAX_PROJECTED_CHARS - 1].rstrip() + "..."
-        )
+        bounded, omitted_chars = project_subagent_stream_text(channel.content)
         is_analysis = kind == "analysis"
         topic = "subagent.reasoning.delta" if is_analysis else "subagent.text.delta"
         timeline_node = {
@@ -160,6 +160,7 @@ class SubagentStreamProgressAggregator:
             "data": {
                 "rawChunkCount": channel.chunk_count,
                 "projectedChars": len(bounded),
+                "omittedChars": omitted_chars,
                 "modelTurn": self._model_turn,
             },
         }

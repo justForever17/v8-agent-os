@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from core.subagent_streaming import SubagentStreamProgressAggregator
@@ -70,8 +71,8 @@ def test_subagent_stream_deduplicates_cumulative_provider_snapshots() -> None:
         delegation_id="delegation-one",
         model_turn=1,
     )
-    aggregator.observe(AIMessageChunk(content="a"))
-    aggregator.observe(AIMessageChunk(content="ab"))
+    aggregator.observe(AIMessage(content="a"))
+    aggregator.observe(AIMessage(content="ab"))
     aggregator.finish(AIMessage(content="ab"))
 
     text_updates = [
@@ -80,6 +81,58 @@ def test_subagent_stream_deduplicates_cumulative_provider_snapshots() -> None:
         if item["timelineNode"]["topic"] == "subagent.text.delta"
     ]
     assert text_updates[-1]["content"] == "ab"
+
+
+@pytest.mark.parametrize("parts", [["a", "a", "ab", ".", "."], ["哈", "哈", "。", "。"], ["word", " ", "word"]])
+def test_subagent_preserves_repeated_native_delta_text_and_reasoning(parts):
+    emitted = []
+    aggregator = SubagentStreamProgressAggregator(
+        progress_callback=emitted.append, agent_id="worker", agent_name="Worker",
+        delegation_id="delegation", model_turn=1,
+    )
+    for part in parts:
+        aggregator.observe(AIMessageChunk(content=part, additional_kwargs={"reasoning_content": part}))
+    # Failure can end before a final snapshot repairs the accumulated content.
+    aggregator.flush()
+    for topic in ("subagent.text.delta", "subagent.reasoning.delta"):
+        latest = [item["timelineNode"] for item in emitted if item["timelineNode"]["topic"] == topic][-1]
+        assert latest["content"] == "".join(parts)
+
+
+def test_long_subagent_progress_keeps_updating_and_final_projection_does_not_shrink():
+    emitted = []
+    aggregator = SubagentStreamProgressAggregator(
+        progress_callback=emitted.append, agent_id="worker", agent_name="Worker",
+        delegation_id="delegation", model_turn=1,
+    )
+    original = "Opening facts.\n" + "verified evidence with conditions\n" * 220
+    tail = "Latest observation: conflicting source identity remains unverified."
+    aggregator.observe(AIMessageChunk(content=original))
+    aggregator.observe(AIMessageChunk(content=tail))
+    aggregator.flush()
+    last = emitted[-1]["timelineNode"]
+    assert last["content"].startswith("Opening facts.")
+    assert last["content"].endswith(tail)
+    assert len(last["content"]) <= aggregator.MAX_PROJECTED_CHARS
+    assert last["data"]["omittedChars"] > 0
+    response = AIMessage(content=original + tail)
+    ids = aggregator.finish(response)
+    response.additional_kwargs["v8_subagent_stream_node_ids"] = ids
+    final = _subagent_timeline_nodes_from_message(response)[0]
+    assert final["content"] == emitted[-1]["timelineNode"]["content"]
+    assert final["content"].endswith(tail)
+
+
+def test_full_snapshot_revision_is_authoritative_even_when_shorter():
+    emitted = []
+    aggregator = SubagentStreamProgressAggregator(
+        progress_callback=emitted.append, agent_id="worker", agent_name="Worker",
+        delegation_id="delegation", model_turn=1,
+    )
+    aggregator.observe(AIMessage(content="Provisional conclusion needs correction."))
+    aggregator.observe(AIMessage(content="Corrected conclusion."))
+    aggregator.finish(AIMessage(content="Corrected."))
+    assert emitted[-1]["timelineNode"]["content"] == "Corrected."
 
 
 def test_subagent_stream_projects_bounded_activity_when_chunks_have_no_visible_text(monkeypatch) -> None:

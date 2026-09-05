@@ -18,6 +18,7 @@ from core.delegation_broker import task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
 from core.observability_db import redact_observability_text
 from core.response_normalizer import extract_text_and_reasoning
+from core.subagent_streaming import project_subagent_stream_text
 from core.runtime_continuation import (
     RuntimeContinuationContractError,
     normalize_runtime_continuation_request,
@@ -530,7 +531,7 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     if role in {"ai", "assistant"}:
         visible_text, reasoning = extract_text_and_reasoning(message)
-        safe_reasoning = str(_sanitize_subagent_timeline_value(reasoning) or "").strip()
+        safe_reasoning, reasoning_omitted = project_subagent_stream_text(reasoning)
         if safe_reasoning:
             nodes.append(
                 {
@@ -539,11 +540,12 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
                     "executionType": "reasoning",
                     "topic": "subagent.reasoning.delta",
                     "content": safe_reasoning,
+                    "data": {"projectedChars": len(safe_reasoning), "omittedChars": reasoning_omitted},
                     "finalized": True,
                     "partial": False,
                 }
             )
-        safe_text = str(_sanitize_subagent_timeline_value(visible_text) or "").strip()
+        safe_text, text_omitted = project_subagent_stream_text(visible_text)
         if safe_text:
             nodes.append(
                 {
@@ -552,6 +554,7 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
                     "role": "assistant",
                     "topic": "subagent.text.delta",
                     "content": safe_text,
+                    "data": {"projectedChars": len(safe_text), "omittedChars": text_omitted},
                     "finalized": True,
                     "partial": False,
                 }

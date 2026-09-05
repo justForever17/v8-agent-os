@@ -18,6 +18,9 @@
 !macroend
 
 !ifndef BUILD_UNINSTALLER
+!define V8OS_GIT_X64_INSTALLER "${__FILEDIR__}\..\.release-prerequisites\Git-2.55.0.5-64-bit.exe"
+!define V8OS_GIT_ARM64_INSTALLER "${__FILEDIR__}\..\.release-prerequisites\Git-2.55.0.5-arm64.exe"
+
 Function V8OSGitIsInstalled
   nsExec::ExecToStack /TIMEOUT=10000 '"$SYSDIR\where.exe" git.exe'
   Pop $0
@@ -53,6 +56,26 @@ FunctionEnd
   Pop $0
   StrCmp $0 "1" v8os_git_already_installed
 
+  SetOutPath "$PLUGINSDIR"
+  !ifdef APP_ARM64
+    File /nonfatal /oname=v8os-git-prerequisite.exe "${V8OS_GIT_ARM64_INSTALLER}"
+  !else
+    File /nonfatal /oname=v8os-git-prerequisite.exe "${V8OS_GIT_X64_INSTALLER}"
+  !endif
+  IfFileExists "$PLUGINSDIR\v8os-git-prerequisite.exe" 0 v8os_git_try_winget
+  DetailPrint "Git was not found. Installing the verified offline Git for Windows prerequisite..."
+  nsExec::ExecToStack /TIMEOUT=120000 '"$PLUGINSDIR\v8os-git-prerequisite.exe" /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER'
+  Pop $2
+  Pop $3
+  StrCmp $2 "0" 0 v8os_git_bundled_install_failed
+  Call V8OSGitIsInstalled
+  Pop $0
+  StrCmp $0 "1" v8os_git_install_complete v8os_git_bundled_install_failed
+
+v8os_git_bundled_install_failed:
+  DetailPrint "The bundled Git prerequisite did not complete (exit code: $2). Trying Windows Package Manager..."
+
+v8os_git_try_winget:
   Call V8OSResolveWinGet
   Pop $1
   StrCmp $1 "" v8os_git_install_unavailable

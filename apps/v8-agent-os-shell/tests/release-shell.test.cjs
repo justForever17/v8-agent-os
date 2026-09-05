@@ -447,6 +447,11 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(installerInclude, /Function V8OSGitIsInstalled/);
   assert.match(installerInclude, /ExecToStack \/TIMEOUT=10000 '"\$SYSDIR\\where\.exe" git\.exe'/);
   assert.match(installerInclude, /StrCmp \$0 "1" v8os_git_already_installed/);
+  assert.match(installerInclude, /Git-2\.55\.0\.5-64-bit\.exe/);
+  assert.match(installerInclude, /Git-2\.55\.0\.5-arm64\.exe/);
+  assert.match(installerInclude, /File \/nonfatal \/oname=v8os-git-prerequisite\.exe/);
+  assert.match(installerInclude, /v8os-git-prerequisite\.exe" \/SP- \/VERYSILENT \/SUPPRESSMSGBOXES \/NORESTART \/CURRENTUSER/);
+  assert.match(installerInclude, /v8os_git_bundled_install_failed:[\s\S]*?v8os_git_try_winget:/);
   assert.match(installerInclude, /ExecToStack \/TIMEOUT=120000 '"\$1" install --id Git\.Git --exact --source winget --scope user --silent/);
   assert.match(installerInclude, /--accept-package-agreements --accept-source-agreements --disable-interactivity --no-upgrade/);
   assert.match(installerInclude, /Call V8OSGitIsInstalled[\s\S]*?StrCmp \$0 "1" v8os_git_install_complete/);
@@ -457,6 +462,12 @@ test('desktop release scripts build native installers for every supported deskto
     installerInclude.indexOf('v8os_git_install_done:'),
   );
   assert.doesNotMatch(gitFailureBranch, /\b(?:Quit|Abort|SetErrorLevel)\b/);
+  const desktopWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+  assert.match(desktopWorkflow, /Prepare verified offline Git prerequisite[\s\S]*?prepare-windows-git-prerequisite\.mjs --target/);
+  const gitPrerequisiteScript = fs.readFileSync(path.join(repoRoot, 'scripts', 'desktop', 'prepare-windows-git-prerequisite.mjs'), 'utf8');
+  assert.match(gitPrerequisiteScript, /version: "2\.55\.0\.5"/);
+  assert.match(gitPrerequisiteScript, /d065a4e23c3d9a6b5073d609b5be0830227ec3ca053c083ba385061ddfaf94c6/);
+  assert.match(gitPrerequisiteScript, /c955de342b1465bc637f0e71fddf4e28e8d0b829668ec1866ab32a839303e8e3/);
   assert.match(config, /at-spi2-core/);
   assert.match(config, /xdotool/);
   assert.match(config, /wmctrl/);
@@ -796,8 +807,9 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /prerelease: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
   assert.match(workflow, /fail_on_unmatched_files: true/);
   assert.equal((workflow.match(/contents: write/g) || []).length, 1);
+  assert.equal((workflow.match(/softprops\/action-gh-release@/g) || []).length, 1);
   assert.equal(
-    (workflow.match(/softprops\/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228/g) || []).length,
+    (workflow.match(/softprops\/action-gh-release@[0-9a-f]{40}(?=\s|$)/g) || []).length,
     1,
   );
   assert.equal((workflow.match(/environment: release/g) || []).length, 2);
@@ -1258,6 +1270,16 @@ test('Engine release process forces UTF-8 output on Windows runners', () => {
   assert.match(components, /PYTHONIOENCODING:\s*"utf-8"/);
   assert.match(components, /PYTHONUTF8:\s*"1"/);
   assert.match(components, /\.python", "bin", "python3"/);
+  assert.ok(
+    components.indexOf('.venv", "Scripts", "pythonw.exe"')
+      < components.indexOf('.python", "pythonw.exe"'),
+    'source preview must prefer the maintained venv over a stale portable runtime',
+  );
+  assert.ok(
+    components.indexOf('.venv", "bin", "python3"')
+      < components.indexOf('.python", "bin", "python3"'),
+    'source preview must prefer the maintained POSIX venv over a stale portable runtime',
+  );
 });
 
 test('unified release keeps desktop runtime probes in CI evidence', () => {

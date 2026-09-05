@@ -16,6 +16,7 @@ Desktop.ini
 
 # Root live-test output
 /.v8/
+/.v8-agent-os/
 /creative_media/
 
 # Logs and coverage
@@ -85,6 +86,7 @@ apps/v8-agent-os-phone-tmp/
 **/temp/
 apps/v8-agent-os-engine/.plugin-release-assets/
 apps/v8-agent-os-engine/requirements/feature-packs/bundled-assets/
+apps/v8-agent-os-shell/.release-prerequisites/
 
 # Keep committed public docs and launchers
 !docs/

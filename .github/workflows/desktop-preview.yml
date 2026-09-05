@@ -264,6 +264,11 @@ jobs:
         timeout-minutes: 25
         run: node scripts/desktop/prepare-feature-pack-release-assets.mjs --target "${{ matrix.id }}"
 
+      - name: Prepare verified offline Git prerequisite
+        if: matrix.os == 'windows'
+        timeout-minutes: 15
+        run: node scripts/desktop/prepare-windows-git-prerequisite.mjs --target "${{ matrix.id }}"
+
       - name: Acquire and verify pinned Electron runtimes
         timeout-minutes: 20
         run: node scripts/desktop/ensure-electron-runtime.mjs

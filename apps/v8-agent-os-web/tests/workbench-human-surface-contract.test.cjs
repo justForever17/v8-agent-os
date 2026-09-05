@@ -71,6 +71,11 @@ test("runtime activity is a persistent Workbench timeline with bounded micro mot
   assert.match(workbench, /runtime-activity:\$\{input\.sessionId\}:\$\{input\.runtimeId\}/);
   assert.match(overview, /web\.workbench\.section\.runtimeActivity/);
   assert.match(overview, /data-runtime-activity-runtime/);
+  assert.match(overview, /data-runtime-activity-status/);
+  assert.match(overview, /data-runtime-activity-count/);
+  assert.match(overview, /data-subagent-return-id/);
+  assert.match(overview, /data-subagent-delegation-id/);
+  assert.match(overview, /data-subagent-status/);
   assert.match(shell, /<RuntimeActivityRenderer document=\{document\} runtimeModel=\{props\.runtimeModel\}/);
   assert.match(renderer, /runtimeModel\.messageActivities/);
   assert.match(renderer, /left\.eventSeq - right\.eventSeq/);
@@ -78,6 +83,8 @@ test("runtime activity is a persistent Workbench timeline with bounded micro mot
   assert.match(renderer, /animate-\[spin_1\.6s_linear_infinite\]/);
   assert.match(renderer, /data-runtime-activity-detail=\{runtimeId\}/);
   assert.match(renderer, /data-runtime-activity-motion=/);
+  assert.match(shell, /data-workbench-document-id/);
+  assert.match(shell, /data-workbench-document-kind/);
   assert.match(renderer, /latestActivityStatus/);
   assert.match(renderer, /MousePointerClick/);
   assert.match(runtimeStage, /export function selectRuntimeActivityWindow/);

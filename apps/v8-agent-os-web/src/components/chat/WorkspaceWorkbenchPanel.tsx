@@ -123,6 +123,9 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
         <div className={`${nested ? "ml-5 border-l border-border/45" : ""} border-b border-border/30 last:border-b-0`}>
             <button
                 data-v8-context-open-workbench
+                data-subagent-return-id={item.id}
+                data-subagent-delegation-id={item.delegationId || undefined}
+                data-subagent-status={item.status}
                 type="button"
                 onClick={() => onOpen(item)}
                 className="group flex min-h-11 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
@@ -168,6 +171,8 @@ function RuntimeActivityRow({ item, onOpen }: { item: RuntimeStageCard & { id: S
         <button
             data-v8-context-open-workbench
             data-runtime-activity-runtime={item.id}
+            data-runtime-activity-status={item.status}
+            data-runtime-activity-count={item.eventCount}
             type="button"
             onClick={() => onOpen(item)}
             className="group flex min-h-11 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"

@@ -190,6 +190,8 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
                                 <button
                                     type="button"
                                     role="tab"
+                                    data-workbench-document-id={tab.document.documentId}
+                                    data-workbench-document-kind={tab.document.kind}
                                     aria-selected={active}
                                     onClick={() => activateDocument(tab.document.documentId)}
                                     className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-xl px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"

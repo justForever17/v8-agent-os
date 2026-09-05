@@ -63,6 +63,17 @@ function buildTimelineDedupeKey(input: {
   if (explicit) {
     return explicit;
   }
+  if (topic === "runtime.episode.progress") {
+    const nodeId = readNestedString(metadata, "progress.timelineNode.id", "progress.timeline_node.id");
+    if (!nodeId) {
+      return "";
+    }
+    const episodeId = readNestedString(metadata, "episode.episodeId", "episode.episode_id", "episode.id", "episodeId", "episode_id") || "episode";
+    // Match Engine's operation identity, not the episode's shared status.
+    return runtimeId === "subagent_swarm"
+      ? `subagent-timeline:${episodeId}:${nodeId}`
+      : `runtime-timeline:${runtimeId}:${episodeId}:${nodeId}`;
+  }
   if (topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.")) {
     const episodeId = readNestedString(
       metadata,
@@ -166,7 +177,10 @@ export function normalizeAuthoritativeRuntimeTimeline(input: unknown[]): Authori
   for (const entry of entries) {
     const key = entry.dedupeKey || `${entry.id}:${entry.seq}`;
     const existing = merged.get(key);
-    if (!existing || entry.seq >= existing.seq || entry.timestamp >= existing.timestamp) {
+    const newer = existing && entry.seq > 0 && existing.seq > 0
+      ? entry.seq >= existing.seq
+      : !existing || entry.timestamp >= existing.timestamp;
+    if (newer) {
       merged.set(key, entry);
     }
   }
@@ -206,6 +220,13 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
   const runtimeId = normalized.runtimeId || normalizeRuntimeId(topic) || "chat";
   if (!isRealtimeSurfaceRuntimeId(runtimeId)) {
     return null;
+  }
+  if (topic === "runtime.episode.progress") {
+    const nodeTopic = readNestedString(asRecord(normalized.data), "progress.timelineNode.topic", "progress.timeline_node.topic");
+    // Like snapshots, expose only an owning runtime's explicit detail node.
+    if (!nodeTopic || runtimeId === "chat" || normalizeRuntimeId(nodeTopic.split(".", 1)[0]) !== runtimeId) {
+      return null;
+    }
   }
   const summary = String(
     normalized.type === "reasoning_chunk"

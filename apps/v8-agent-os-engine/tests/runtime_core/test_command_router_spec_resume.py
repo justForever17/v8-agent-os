@@ -477,6 +477,75 @@ def test_supervisor_native_tool_correction_is_system_resume_and_single_use(monke
     assert request.resume_value["supervisorNativeToolCorrection"]["attempt"] == 1
 
 
+def test_supervisor_completion_correction_is_truth_only_and_single_use(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    run_record = {
+        "id": "run_completion_correction",
+        "session_id": "session_completion_correction",
+        "conversation_id": "session_completion_correction",
+        "user_id": "user_demo",
+        "run_type": "chat",
+        "status": "running",
+        "metadata": {"provider": "minimax", "model": "MiniMax-M3"},
+    }
+
+    def schedule(request, *, transport, run_id):
+        scheduled.append({"request": request, "transport": transport, "run_id": run_id})
+        return run_id
+
+    def claim(run_id, *, key, expected_state, next_value, expected_status):
+        marker = run_record["metadata"].get(key)
+        current_state = str(marker.get("state") or "") if isinstance(marker, dict) else ""
+        if current_state != expected_state:
+            return {"updated": False, "reason": f"metadata_state_mismatch:{current_state or 'missing'}"}
+        run_record["metadata"][key] = dict(next_value)
+        return {"updated": True, "run_record": dict(run_record)}
+
+    router.configure(schedule_chat_run=schedule)
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: dict(run_record))
+    monkeypatch.setattr("erc.command_router.run_service.update_metadata_key_if_state", claim)
+    monkeypatch.setattr(router, "_emit_resume_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        router,
+        "_scope_payload_for_session",
+        lambda _session_id: {
+            "workspace_path": "E:/Projects/test3",
+            "scope_hint": "workspace",
+            "scope_mode": "explicit",
+        },
+    )
+
+    first = router.schedule_supervisor_completion_correction(
+        "run_completion_correction",
+        reason="research_brief_evidence_incomplete",
+        missing_task_brief_ids=["brief-a", "brief-b"],
+    )
+    second = router.schedule_supervisor_completion_correction(
+        "run_completion_correction",
+        reason="research_brief_evidence_incomplete",
+        missing_task_brief_ids=["brief-a"],
+    )
+
+    assert first["resume_scheduled"] is True
+    assert second["resume_scheduled"] is False
+    assert second["resume_error"] == "supervisor_completion_correction_already_used"
+    assert len(scheduled) == 1
+    request = scheduled[0]["request"]
+    assert scheduled[0]["transport"] == "system_resume"
+    assert request.resume_run_id == "run_completion_correction"
+    assert request.messages[0].role == "system"
+    assert "Do not start another runtime" in request.messages[0].content
+    assert "brief-a, brief-b" in request.messages[0].content
+    assert request.resume_value["supervisorCompletionCorrection"] == {
+        "kind": "completion_truth_correction",
+        "attempt": 1,
+        "maxAttempts": 1,
+        "reason": "research_brief_evidence_incomplete",
+        "missingTaskBriefIds": ["brief-a", "brief-b"],
+    }
+
+
 def test_runtime_episode_handoff_resume_waits_for_other_top_level_episode(monkeypatch):
     router = RuntimeCommandRouter()
     scheduled = []

@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 from core.tools.research_source_identity import canonical_source_url, research_document_identity
 
 
-# The minimum tier is a reviewed, reusable answer rather than a long-form
-# report. High-quality targets below remain unchanged for broad/deep research.
+# Retain the existing configuration names, but answer length is advisory only.
+# Evidence/coverage determine eligibility; length never causes rewrite/rejection.
 MIN_RESEARCH_ANSWER_CHARS = 1200
 MIN_RESEARCH_SOURCE_COUNT = 4
 MIN_RESEARCH_DISTINCT_HOST_COUNT = 3
@@ -26,6 +26,11 @@ TARGET_RESEARCH_DATED_SOURCE_COUNT = 5
 MIN_RESEARCH_SOURCE_BODY_CHARS = 400
 MAX_RESEARCH_CLOCK_SKEW_DAYS = 1
 MAX_CURRENT_RESEARCH_AGE_DAYS = 7
+
+RESEARCH_ANSWER_LENGTH_GUIDANCE = (
+    "字数仅为推荐指标，不是交付、复核或写入门槛；未达推荐值只降低长度指标分。"
+    "答案按问题与证据自然长短，充分回答即可停止；不得为达字数重复、扩抄来源或添加无证据事实。"
+)
 
 _OBSERVATION_DATE_KINDS = {
     "accessed",
@@ -847,6 +852,14 @@ def _answer_cited_source_count(answer: str, sources: list[dict[str, Any]]) -> in
 
 def _answer_cited_content_unit_count(answer: str, sources: list[dict[str, Any]]) -> int:
     answer = _answer_body_without_source_appendix(answer)
+    # Both "fact [S1]." and "fact. [S1]" cite the preceding sentence. Keep
+    # same-line trailing citations attached when splitting content units.
+    answer = re.sub(
+        rf"([。！？.!?；;])([ \t]*)((?:{_CITATION_RE.pattern}[ \t]*)+)",
+        r"\2\3\1",
+        answer,
+        flags=re.IGNORECASE,
+    )
     markers = [
         marker
         for source in sources
@@ -859,7 +872,7 @@ def _answer_cited_content_unit_count(answer: str, sources: list[dict[str, Any]])
     ]
     cited_units = 0
     for unit in _CONTENT_UNIT_RE.split(answer):
-        if len(_content_unit_signature(unit)) < 20:
+        if not re.sub(r"\W", "", _CITATION_RE.sub("", _URL_RE.sub("", unit))):
             continue
         if any(
             marker in unit
@@ -917,10 +930,17 @@ def research_acceptance_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     answer = research_answer_text(payload)
     raw_answer_chars = research_raw_answer_chars(payload)
     effective_answer_chars = research_effective_answer_chars(payload)
+    recommended_chars = max(
+        _delivery_requirement(payload, "minimumAnswerChars", MIN_RESEARCH_ANSWER_CHARS),
+        _delivery_requirement(payload, "targetAnswerChars", TARGET_RESEARCH_ANSWER_CHARS),
+    )
     return {
         "reviewDecision": research_review_decision(payload),
         "rawAnswerChars": raw_answer_chars,
         "effectiveAnswerChars": effective_answer_chars,
+        "recommendedAnswerChars": recommended_chars,
+        "answerLengthScore": round(min(1.0, effective_answer_chars / recommended_chars) * 100, 1),
+        "answerLengthRecommended": effective_answer_chars >= recommended_chars,
         "uniqueContentRatio": round(effective_answer_chars / raw_answer_chars, 4) if raw_answer_chars else 0.0,
         "selectedSourceCount": len(sources),
         "distinctHostCount": len(hosts),
@@ -1022,18 +1042,6 @@ def research_acceptance_issues(
             )
         ),
     )
-    answer_floor = max(
-        1,
-        int(
-            min_answer_chars
-            if min_answer_chars is not None
-            else _delivery_requirement(
-                payload,
-                "minimumAnswerChars",
-                MIN_RESEARCH_ANSWER_CHARS,
-            )
-        ),
-    )
     host_floor = max(
         1,
         int(
@@ -1066,11 +1074,13 @@ def research_acceptance_issues(
         issues.append("research_brief_coverage_incomplete")
 
     answer = research_answer_text(payload)
-    if metrics["effectiveAnswerChars"] < answer_floor:
-        issues.append(f"detailed_answer_floor_not_met:{answer_floor}")
+    # min_answer_chars remains a supported call argument for existing callers;
+    # it no longer controls acceptance, including for explicitly large values.
+    if not answer.strip():
+        issues.append("research_answer_missing")
     if (
-        metrics["rawAnswerChars"] >= answer_floor
-        and metrics["effectiveAnswerChars"] < answer_floor
+        metrics["rawAnswerChars"] >= MIN_RESEARCH_ANSWER_CHARS
+        and metrics["effectiveAnswerChars"] < MIN_RESEARCH_ANSWER_CHARS
         and metrics["uniqueContentRatio"] < 0.7
     ):
         issues.append("answer_repetition_excessive")
@@ -1103,11 +1113,8 @@ def research_acceptance_issues(
         issues.append("unsupported_claim_present")
     if metrics["evidenceVerifiedClaimCount"] != metrics["claimCount"]:
         issues.append("unverified_claim_excerpt_present")
-    if (
-        metrics["temporallyContextualizedTimeSensitiveClaimCount"]
-        != metrics["timeSensitiveClaimCount"]
-    ):
-        issues.append("time_sensitive_claim_without_temporal_context")
+    # Time-context counts are diagnostics, not a date-presence quota. Claim
+    # applicability belongs to semantic review, including undated documents.
     if metrics["claimSupportedSourceCount"] < source_floor:
         issues.append(f"claim_source_coverage_floor_not_met:{source_floor}")
     if metrics["answerCitedSourceCount"] < source_floor:
@@ -1142,10 +1149,6 @@ def research_high_quality_issues(payload: dict[str, Any]) -> list[str]:
 
     issues = research_acceptance_issues(payload)
     metrics = research_acceptance_metrics(payload)
-    answer_target = max(
-        _delivery_requirement(payload, "minimumAnswerChars", MIN_RESEARCH_ANSWER_CHARS),
-        _delivery_requirement(payload, "targetAnswerChars", TARGET_RESEARCH_ANSWER_CHARS),
-    )
     source_target = max(
         _delivery_requirement(payload, "minimumSources", MIN_RESEARCH_SOURCE_COUNT),
         _delivery_requirement(payload, "targetSources", TARGET_RESEARCH_SOURCE_COUNT),
@@ -1166,8 +1169,6 @@ def research_high_quality_issues(payload: dict[str, Any]) -> list[str]:
         _delivery_requirement(payload, "minimumClaims", MIN_RESEARCH_CLAIM_COUNT),
         _delivery_requirement(payload, "targetClaims", TARGET_RESEARCH_CLAIM_COUNT),
     )
-    if metrics["effectiveAnswerChars"] < answer_target:
-        issues.append(f"target_answer_depth_not_met:{answer_target}")
     if metrics["selectedSourceCount"] < source_target:
         issues.append(f"target_source_count_not_met:{source_target}")
     if metrics["distinctHostCount"] < host_target:

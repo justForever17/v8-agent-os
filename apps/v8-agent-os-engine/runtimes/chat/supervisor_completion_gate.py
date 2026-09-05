@@ -1602,10 +1602,7 @@ def evaluate_supervisor_completion(
         episode_kind = str(episode.get("kind") or "").strip().lower()
         state = str(episode.get("state") or "").strip().lower()
         handoffs = current_handoffs.get(episode_id, [])
-        if state in {"failed", "cancelled"} and not any(
-            str(_handoff_payload(item).get("status") or "").strip().lower() in {"ready", "degraded"}
-            for item in handoffs
-        ):
+        if state in {"failed", "cancelled"} and not handoffs:
             return SupervisorCompletionDecision(
                 action="fail",
                 reason="required_runtime_episode_failed_without_handoff",
@@ -1630,6 +1627,7 @@ def evaluate_supervisor_completion(
                         "episodeId": episode_id,
                         "handoffRefId": handoff.get("handoffRefId"),
                         "status": status,
+                        "errorCode": handoff.get("errorCode") or handoff.get("error") or "",
                     },
                 )
             nested_failures = _required_nested_delegation_failures(

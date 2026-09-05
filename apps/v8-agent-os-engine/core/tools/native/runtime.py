@@ -47,6 +47,7 @@ from core.runtime_continuation import (
 )
 from core.spec_service import spec_service
 from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAMES
+from core.user_language import infer_preferred_language, normalize_preferred_language
 from erc.runtime_context import get_runtime_context
 
 
@@ -1002,6 +1003,37 @@ def _has_user_instruction_after_runtime_handoff(state: dict[str, Any]) -> bool:
         if not governance_type and str(getattr(message, "content", "") or "").strip():
             return True
     return False
+
+
+def _latest_user_content_from_route_state(state: dict[str, Any] | None) -> str:
+    """Recover the user's language source before model-authored briefs reshape it."""
+
+    state = dict(state or {})
+    route_context = (
+        dict(state.get("current_route_context") or {})
+        if isinstance(state.get("current_route_context"), dict)
+        else {}
+    )
+    for key in ("latestUserContent", "latest_user_content", "userRequest", "user_request"):
+        value = str(route_context.get(key) or "").strip()
+        if value:
+            return value
+    for message in reversed(list(state.get("messages") or [])):
+        if isinstance(message, HumanMessage):
+            metadata = dict(getattr(message, "additional_kwargs", None) or {})
+            if str(metadata.get("v8_governance_type") or "").strip():
+                continue
+            value = str(getattr(message, "content", "") or "").strip()
+            if value:
+                return value
+        elif isinstance(message, dict) and str(message.get("role") or "").lower() in {
+            "human",
+            "user",
+        }:
+            value = str(message.get("content") or "").strip()
+            if value:
+                return value
+    return ""
 
 
 def _current_governed_handoff_reuse(
@@ -3634,6 +3666,24 @@ def _enrich_route_need_for_episode(
     enriched.setdefault("source", "supervisor")
     enriched.setdefault("reason", str(enriched.get("reason") or "capability_route").strip() or "capability_route")
     inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
+    route_context = (
+        dict((state or {}).get("current_route_context") or {})
+        if isinstance(state, dict)
+        and isinstance((state or {}).get("current_route_context"), dict)
+        else {}
+    )
+    preferred_language = normalize_preferred_language(
+        inputs.get("preferredLanguage")
+        or enriched.get("preferredLanguage")
+        or route_context.get("preferredLanguage")
+    ) or infer_preferred_language(
+        _latest_user_content_from_route_state(state),
+        inputs.get("query"),
+        inputs.get("question"),
+        enriched.get("reason"),
+        default="zh-CN",
+    )
+    inputs.setdefault("preferredLanguage", preferred_language)
     spec_bundle = _approved_spec_execution_bundle(enriched, inputs, state=state)
     requested_spec_task_refs = _requested_spec_task_refs(enriched, inputs)
     spec_workspace_applied = False

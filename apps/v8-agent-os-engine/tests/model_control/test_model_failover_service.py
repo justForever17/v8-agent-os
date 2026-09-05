@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from threading import Event
 from typing import Any
 
 import pytest
@@ -54,6 +56,29 @@ class FakeStreamingLLM(FakeLLM):
         self.calls += 1
         self.invocation_configs.append(config)
         yield from self.chunks
+
+
+class PartialThenBlockingStreamingLLM(FakeLLM):
+    def __init__(self, *, release_after_seconds: float = 1.0):
+        super().__init__()
+        self.release_after_seconds = release_after_seconds
+        self.stream_entered = Event()
+
+    def stream(self, _messages, config=None):
+        self.calls += 1
+        self.invocation_configs.append(config)
+        yield AIMessageChunk(content="partial reasoning")
+        self.stream_entered.set()
+        time.sleep(self.release_after_seconds)
+        yield AIMessageChunk(content="late completion")
+
+
+class BlockingStreamingLLM(FakeLLM):
+    def stream(self, _messages, config=None):
+        self.calls += 1
+        self.invocation_configs.append(config)
+        time.sleep(1.0)
+        yield AIMessageChunk(content="late completion")
 
 
 def _config(**governance_overrides: Any) -> dict[str, Any]:
@@ -272,6 +297,57 @@ def test_stream_observer_receives_chunks_and_failover_returns_aggregated_message
     assert primary.calls == 1
 
 
+def test_partial_stream_wall_clock_timeout_fails_closed_without_replay(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = PartialThenBlockingStreamingLLM()
+    built: list[str] = []
+    observed: list[str] = []
+    started_at = time.monotonic()
+
+    with pytest.raises(V8LLMError) as exc_info:
+        service.invoke_with_failover(
+            config=_config(maxLocalRetries=1, maxTotalAttempts=3, maxFailoverSeconds=30),
+            base_llm_instance=primary,
+            messages=[],
+            tools=None,
+            role="agent:worker-one",
+            preferred_model_id=make_model_ref("p-openai-a", "primary"),
+            build_model=lambda model_id: built.append(model_id) or FakeLLM("should-not-run"),
+            stream_observer=lambda chunk: observed.append(str(chunk.content)),
+            stream_attempt_timeout_seconds=0.05,
+        )
+
+    assert time.monotonic() - started_at < 0.5
+    assert exc_info.value.code == "timeout"
+    assert exc_info.value.details["capsExhaustedReason"] == "partial_stream_failed"
+    assert exc_info.value.details["attempts"][0]["partialStream"] is True
+    assert exc_info.value.details["attempts"][0]["streamChunkCount"] == 1
+    assert exc_info.value.details["attempts"][0]["streamTimeoutStage"] == "waiting_after_partial_stream"
+    assert exc_info.value.details["attempts"][0]["streamFirstChunkMs"] is not None
+    assert observed == ["partial reasoning"]
+    assert primary.calls == 1
+    assert built == []
+
+
+def test_stream_timeout_before_first_byte_exposes_exact_stage(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = BlockingStreamingLLM()
+    with pytest.raises(V8LLMError) as exc_info:
+        service.invoke_with_failover(
+            config=_config(maxTotalAttempts=1, maxFailoverSeconds=30),
+            base_llm_instance=primary, messages=[], tools=None, role="agent:verification-engineer",
+            preferred_model_id=make_model_ref("p-openai-a", "primary"),
+            build_model=lambda _model_id: FakeLLM("unused"),
+            stream_observer=lambda _chunk: None, stream_attempt_timeout_seconds=0.05,
+        )
+    attempt = exc_info.value.details["attempts"][0]
+    assert attempt["streamChunkCount"] == 0
+    assert attempt["streamTimeoutStage"] == "waiting_first_chunk"
+    assert attempt["streamFirstChunkMs"] is None
+
+
 def test_required_tool_choice_is_forwarded_to_every_failover_candidate(monkeypatch: pytest.MonkeyPatch):
     service = ModelFailoverService()
     _patch_runtime_gates(monkeypatch, service)
@@ -294,10 +370,11 @@ def test_required_tool_choice_is_forwarded_to_every_failover_candidate(monkeypat
     assert backup.tool_bindings == [{"tool_choice": "required"}]
 
 
-def test_response_contract_violation_retries_with_next_candidate(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("local_retries", [0, 1, 3])
+def test_response_contract_violation_retries_with_next_candidate(monkeypatch: pytest.MonkeyPatch, local_retries: int):
     service = ModelFailoverService()
     _patch_runtime_gates(monkeypatch, service)
-    primary = FakeLLM({"tool_calls": []})
+    primary = FakeLLM(*[{"tool_calls": []} for _ in range(local_retries + 1)])
     backup = FakeLLM(
         {
             "tool_calls": [
@@ -310,7 +387,7 @@ def test_response_contract_violation_retries_with_next_candidate(monkeypatch: py
     )
 
     result = service.invoke_with_failover(
-        config=_config(maxLocalRetries=0, maxTotalAttempts=2, maxFailoverSeconds=30),
+        config=_config(maxLocalRetries=local_retries, maxTotalAttempts=2, maxFailoverSeconds=30),
         base_llm_instance=primary,
         messages=[],
         tools=[object()],

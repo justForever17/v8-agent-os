@@ -41,10 +41,15 @@ def _isolate_runtime_mode_tests_from_model_hub_and_run_storage(monkeypatch) -> N
     )
 
 
-def _request(*, data: dict | None = None, attachments: list[dict] | None = None) -> ChatRequest:
+def _request(
+    *,
+    data: dict | None = None,
+    attachments: list[dict] | None = None,
+    content: str = "Complete the current task.",
+) -> ChatRequest:
     return ChatRequest.model_validate({
         "session_id": "session-runtime-mode-test",
-        "messages": [{"role": "user", "content": "Complete the current task."}],
+        "messages": [{"role": "user", "content": content}],
         "data": data,
         "attachments": attachments or [],
     })
@@ -145,12 +150,18 @@ def test_omitted_runtime_mode_keeps_legacy_work_posture_and_uses_session_mode(mo
 
 
 @pytest.mark.parametrize(
-    ("runtime_mode", "expects_engineering_lane"),
-    [("research", False), ("engineering", False), ("auto", True)],
+    ("runtime_mode", "content", "expects_engineering_lane"),
+    [
+        ("research", "Complete the current task.", False),
+        ("engineering", "Complete the current task.", False),
+        ("auto", "Build a React application.", False),
+        ("auto", "请使用工程运行时完成这个项目。", True),
+    ],
 )
-def test_selected_runtime_mode_bypasses_legacy_engineering_lane(
+def test_engineering_context_requires_authoritative_or_explicit_activation(
     monkeypatch,
     runtime_mode: str,
+    content: str,
     expects_engineering_lane: bool,
 ) -> None:
     runtime = ChatRuntime()
@@ -187,13 +198,25 @@ def test_selected_runtime_mode_bypasses_legacy_engineering_lane(
     monkeypatch.setattr(runtime, "begin_run", lambda **_kwargs: run_handle)
 
     chat_run = runtime.prepare_run_context(
-        _request(data={"supervisorRuntimeMode": runtime_mode}),
+        _request(data={"supervisorRuntimeMode": runtime_mode}, content=content),
         transport="web",
     )
 
     assert build_context_pack.called is expects_engineering_lane
     if expects_engineering_lane:
         assert chat_run.prepared.engineering_mode == "force"
+    elif runtime_mode == "auto":
+        assert chat_run.prepared.engineering_mode == "auto"
+        assert chat_run.prepared.engineering_context_pack is None
+        assert chat_run.prepared.engineering_trigger_decision["deferred"] is True
+        assert chat_run.prepared.engineering_trigger_decision["reason"] == (
+            "awaiting_supervisor_runtime_decision"
+        )
+        assert any(
+            item.get("engineeringRequired") is False
+            and item.get("engineeringCandidateDetected") is True
+            for item in metadata_updates
+        )
     else:
         assert chat_run.prepared.engineering_mode == "off"
         assert chat_run.prepared.engineering_trigger_decision["reason"] == (
@@ -204,6 +227,49 @@ def test_selected_runtime_mode_bypasses_legacy_engineering_lane(
             and item.get("explicitEngineeringRequested") is False
             for item in metadata_updates
         )
+
+
+def test_task_context_failure_does_not_activate_or_crash_engineering_lane(monkeypatch) -> None:
+    runtime = ChatRuntime()
+    binding = SimpleNamespace(
+        workspace_path="E:/workspace",
+        workspace_id="workspace-1",
+        project_id="project-1",
+        resolved_scope="workspace",
+    )
+    scope_result = SimpleNamespace(binding=binding)
+    run_handle = SimpleNamespace(run_id="run-task-context-failure")
+    metadata_updates: list[dict] = []
+    build_context_pack = mock.Mock()
+
+    monkeypatch.setattr(chat_runtime_module.db, "create_or_update_session", lambda **_kwargs: None)
+    monkeypatch.setattr(chat_runtime_module.session_scope_binding_service, "get_binding", lambda _session_id: None)
+    monkeypatch.setattr(chat_runtime_module.scope_resolution_service, "resolve", lambda **_kwargs: scope_result)
+    monkeypatch.setattr(
+        chat_runtime_module.run_service,
+        "update_metadata",
+        lambda _run_id, payload: metadata_updates.append(dict(payload)),
+    )
+    monkeypatch.setattr(
+        chat_runtime_module,
+        "build_supervisor_task_context",
+        lambda _query: (_ for _ in ()).throw(RuntimeError("task context unavailable")),
+    )
+    monkeypatch.setattr(chat_runtime_module.engineering_lane_service, "build_context_pack", build_context_pack)
+    monkeypatch.setattr(chat_runtime_module.safety_guardian, "preflight_runtime", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(runtime, "_attach_scope_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "begin_run", lambda **_kwargs: run_handle)
+
+    chat_run = runtime.prepare_run_context(
+        _request(data={"supervisorRuntimeMode": "auto"}, content="Build a React application."),
+        transport="web",
+    )
+
+    assert not build_context_pack.called
+    assert chat_run.prepared.engineering_context_pack is None
+    assert chat_run.prepared.engineering_trigger_decision["reason"] == "awaiting_supervisor_runtime_decision"
+    assert chat_run.prepared.task_shape_hint["reason"] == "task_context_preparation_failed"
+    assert any(item.get("engineeringRequired") is False for item in metadata_updates)
 
 
 def test_delayed_queued_request_mode_does_not_rewrite_later_session_presentation(

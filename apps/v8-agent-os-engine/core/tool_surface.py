@@ -320,6 +320,13 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
     kind = _tool_output_kind(tool_name)
     base_target_chars = TOOL_OUTPUT_TARGET_CHARS.get(kind, TOOL_OUTPUT_TARGET_CHARS["default"])
     target_chars = _scaled_tool_target_chars(kind, base_target_chars, context_window_tokens)
+    if tool_name == TOOL_OBSERVATION_DETAIL_NAME:
+        call = getattr(request, "tool_call", None)
+        args = call.get("args") if isinstance(call, dict) else None
+        requested_chars = _safe_int(args.get("max_chars"), base_target_chars) if isinstance(args, dict) else base_target_chars
+        # Explicit recovery reads can consume more than a summary. The model
+        # context reserve, configured hard ceiling and redaction still apply.
+        target_chars = max(target_chars, min(requested_chars, DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS))
     agent_visible_budget = max(MIN_TOOL_OUTPUT_BUDGET_CHARS, min(dynamic_budget_chars, target_chars, hard_max_chars))
     payload = {
         "budgetSource": "dynamic_context_budget",
@@ -1192,7 +1199,7 @@ def _research_surface_issue_text(issue: Any) -> str:
     messages = {
         "architect_review_not_accepted": "Independent Research review did not accept the answer.",
         "independent_semantic_review_not_accepted": "A separate semantic and freshness review did not accept the answer.",
-        "detailed_answer_floor_not_met": f"The answer is below the {threshold_text}-effective-character rejection floor.",
+        "detailed_answer_floor_not_met": f"Historical length warning: below {threshold_text} effective characters. Length is now advisory; do not pad the answer. The recorded result is unchanged.",
         "evidence_source_floor_not_met": f"Fewer than {threshold_text} selected, readable sources support the answer.",
         "independent_host_floor_not_met": f"Fewer than {threshold_text} independent source hosts are represented.",
         "retrieval_evidence_floor_not_met": f"Fewer than {threshold_text} selected sources have retrieval evidence.",
@@ -1212,7 +1219,7 @@ def _research_surface_issue_text(issue: Any) -> str:
         "process_or_failure_text_used_as_answer": "The submitted answer contains process or failure text instead of a usable result.",
         "answer_repetition_excessive": "Repeated wording makes the nominal answer length larger than its effective content.",
         "critical_evidence_gap": "A critical evidence gap remains unresolved.",
-        "target_answer_depth_not_met": f"The answer has not reached the {threshold_text}-effective-character normal Research depth target.",
+        "target_answer_depth_not_met": f"Below the advisory target of {threshold_text} effective characters; this alone is not a delivery failure. Do not pad the answer.",
         "target_source_count_not_met": f"Fewer than {threshold_text} selected sources support a normal Research delivery.",
         "target_independent_host_count_not_met": f"Fewer than {threshold_text} independent hosts are represented for a normal Research delivery.",
         "target_retrieval_evidence_not_met": f"Fewer than {threshold_text} selected sources retain retrieval evidence.",
@@ -3045,7 +3052,9 @@ def apply_tool_surface_budget(
     if tool_name == TOOL_OBSERVATION_DETAIL_NAME:
         was_truncated = len(content_str) > budget
         if was_truncated:
-            content_str = _head_tail_truncate_text(
+            from core.tool_observation_detail import budget_plain_observation_page
+
+            content_str = budget_plain_observation_page(content_str, budget) or _head_tail_truncate_text(
                 content_str,
                 budget,
                 f"tool observation detail truncated; original length {len(original_content_str)} chars",

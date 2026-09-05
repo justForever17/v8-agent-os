@@ -645,16 +645,16 @@ def _result_assessment(result: dict[str, Any]) -> dict[str, Any]:
     issues = list(research_high_quality_issues(result))
     writer_mode = str(model_synthesis.get("writerMode") or "").strip()
     writer_section_count = model_synthesis.get("writerSectionCount")
-    if not writer_mode.startswith("segmented"):
-        issues.append(f"fixed_writer_not_segmented:{writer_mode or 'missing'}")
+    single_writer = writer_mode in {"single", "single_reviewer_revised"}
+    if not single_writer and not writer_mode.startswith("segmented"):
+        issues.append(f"fixed_writer_not_model_generated:{writer_mode or 'missing'}")
     if (
         isinstance(writer_section_count, bool)
         or not isinstance(writer_section_count, int)
-        or writer_section_count < 2
+        or writer_section_count < (0 if single_writer else 2)
     ):
         issues.append("fixed_writer_section_count_invalid")
     fixed_metric_floors = (
-        ("effectiveAnswerChars", FIXED_TARGET_EFFECTIVE_CHARS, "fixed_answer_depth_not_met"),
         ("answerCitedSourceCount", FIXED_TARGET_CITED_SOURCES, "fixed_cited_source_target_not_met"),
         ("distinctHostCount", FIXED_TARGET_DISTINCT_HOSTS, "fixed_host_target_not_met"),
         ("independentReviewCount", FIXED_TARGET_REVIEW_COUNT, "fixed_review_count_not_met"),

@@ -527,6 +527,7 @@ def _research_handoff_source(source: dict[str, Any]) -> dict[str, Any]:
         # also treats researchEvidenceBank.selectedSources as a trusted list.
         "selectedForEvidence": True,
         "tier": source.get("tier") or source.get("authorityTier"),
+        "sourceRole": source.get("sourceRole"),
         "authorityScore": source.get("authorityScore"),
         "publishedAt": source.get("publishedAt") or temporal.get("publishedAt"),
         "updatedAt": source.get("updatedAt") or temporal.get("updatedAt"),
@@ -846,7 +847,13 @@ def _research_evidence_status(
         if "runtime_dependency_missing" in list(source_acquisition.get("failureClasses") or []):
             reasons.append("research_source_runtime_dependency_missing")
     research_quality = _research_quality_module()
-    quality_accepted = research_quality.research_bundle_is_high_quality(run_payload)
+    # The broker already distinguishes the hard acceptance contract from the
+    # normal quality target. A fully reviewed ``minimum_qualified`` answer is a
+    # truthful delivery with explicit target gaps, not a failed Research run.
+    # Reapplying ``research_bundle_is_high_quality`` here turned the advisory
+    # target (for example 5,000 effective characters) back into a hidden hard
+    # gate and discarded otherwise accepted evidence.
+    quality_accepted = research_quality.research_bundle_is_accepted(run_payload)
     if not quality_accepted:
         reasons.extend(research_quality.research_high_quality_issues(run_payload))
     if not bool(run_payload.get("ok")):
@@ -2858,6 +2865,27 @@ class RuntimeEpisodeRunner:
             handoff_sources = [item for item in handoff_sources if item.get("url") or item.get("sourceId")]
             handoff_claims = [dict(item) for item in claim_items]
             answer_sha256 = hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else ""
+            observed_evidence = {
+                key: value
+                for key, value in {
+                    "evidenceBundleId": evidence_id or None,
+                    "researchRef": research_ref,
+                    "detailTool": (
+                        f"research_broker(mode='get_evidence', evidenceBundleId='{evidence_id}')"
+                        if evidence_id
+                        else None
+                    ),
+                    "sourceCount": int(
+                        quality_metrics.get("selectedSourceCount") or len(source_items)
+                    ),
+                    "claimCount": int(quality_metrics.get("claimCount") or len(claim_items)),
+                    "sourceUrls": source_urls[:8],
+                    "candidateAnswerSha256": answer_sha256 or None,
+                    "candidateAnswerChars": len(answer) if answer else 0,
+                    "accepted": ready,
+                }.items()
+                if value not in (None, "", [], {})
+            }
             unit_results.append(
                 {
                     "taskBriefId": task_brief_id,
@@ -2889,6 +2917,7 @@ class RuntimeEpisodeRunner:
                     "temporalAssessment": temporal_assessment,
                     "qualityTier": quality_tier,
                     "qualityMetrics": quality_metrics,
+                    "deliveryRequirements": run_payload.get("deliveryRequirements") or {},
                     "asOf": as_of,
                     "answerSha256": answer_sha256 if ready else "",
                     "sourceCount": int(quality_metrics.get("selectedSourceCount") or len(source_items)),
@@ -2903,6 +2932,7 @@ class RuntimeEpisodeRunner:
                     "briefCoverage": brief_coverage,
                     "briefCoverageComplete": run_payload.get("briefCoverageComplete") is True,
                     "sourceAcquisition": source_acquisition,
+                    "observedEvidence": observed_evidence,
                 }
             )
 
@@ -2944,11 +2974,21 @@ class RuntimeEpisodeRunner:
         ))
         source_count = sum(int(item.get("sourceCount") or 0) for item in ready_units)
         claim_count = sum(int(item.get("claimCount") or 0) for item in ready_units)
+        observed_source_count = sum(
+            int(item.get("sourceCount") or 0) for item in unit_results
+        )
+        observed_claim_count = sum(
+            int(item.get("claimCount") or 0) for item in unit_results
+        )
         compact_answers = [
             (
                 f"[{item['taskBriefId']}] {_preview(item.get('answer'), limit=240)}"
                 if item.get("answer")
-                else f"[{item['taskBriefId']}] Research evidence did not pass acceptance."
+                else (
+                    f"[{item['taskBriefId']}] Research read {int(item.get('sourceCount') or 0)} "
+                    f"candidate source(s) and formed {int(item.get('claimCount') or 0)} candidate "
+                    "claim(s), but the answer did not pass independent review."
+                )
             )
             for item in unit_results
         ]
@@ -3000,13 +3040,19 @@ class RuntimeEpisodeRunner:
                 if "reject" in unit_review_decisions or final_repair_attempt
                 else "retry"
             )
-        elif ready_units and all(item.get("qualityTier") == "high_quality" for item in ready_units):
-            aggregate_quality_tier = "high_quality"
+        elif ready_units and all(
+            item.get("qualityTier") in {"minimum_qualified", "high_quality"}
+            for item in ready_units
+        ):
+            aggregate_quality_tier = (
+                "high_quality"
+                if all(item.get("qualityTier") == "high_quality" for item in ready_units)
+                else "minimum_qualified"
+            )
             aggregate_review_decision = "accept"
         else:
-            # `ready_units` is currently high-quality-only. Keep the aggregate
-            # fail-closed if that invariant ever drifts instead of promoting a
-            # minimum-qualified unit to an accepted handoff.
+            # Keep the aggregate fail-closed if a future quality tier reaches
+            # this branch without satisfying the accepted-answer contract.
             aggregate_quality_tier = "insufficient"
             aggregate_review_decision = "retry"
         coverage_extra = {
@@ -3051,6 +3097,7 @@ class RuntimeEpisodeRunner:
                         "briefCoverage",
                         "briefCoverageComplete",
                         "sourceAcquisition",
+                        "observedEvidence",
                     )
                 }
                 for item in unit_results
@@ -3061,6 +3108,17 @@ class RuntimeEpisodeRunner:
             "researchRefs": research_refs,
             "sourceCount": source_count,
             "claimCount": claim_count,
+            "observedSourceCount": observed_source_count,
+            "observedClaimCount": observed_claim_count,
+            "observedEvidenceByBrief": [
+                {
+                    "taskBriefId": str(item.get("taskBriefId") or "").strip(),
+                    **dict(item.get("observedEvidence") or {}),
+                }
+                for item in unit_results
+                if isinstance(item.get("observedEvidence"), dict)
+                and item.get("observedEvidence")
+            ][:16],
             "answer": ready_units[0].get("answer") if len(ready_units) == 1 and not missing_task_brief_ids else "",
             "answerSha256": ready_units[0].get("answerSha256") if len(ready_units) == 1 and not missing_task_brief_ids else "",
             "claimTable": ready_units[0].get("claimTable") if len(ready_units) == 1 and not missing_task_brief_ids else [],
@@ -3106,6 +3164,7 @@ class RuntimeEpisodeRunner:
             ]
             retry_exhausted = final_repair_attempt
             has_downstream_evidence = bool(ready_units)
+            has_observed_evidence = bool(observed_source_count or observed_claim_count)
             source_transport_exhausted = bool(exhausted_source_acquisition)
             source_dependency_missing = any(
                 "runtime_dependency_missing" in list(item.get("failureClasses") or [])
@@ -3138,6 +3197,13 @@ class RuntimeEpisodeRunner:
                     if has_downstream_evidence
                     else "report_blocker"
                 )
+            elif has_observed_evidence and not ready_units:
+                consumer_hint = (
+                    "Research acquired candidate evidence, but the answer did not pass independent review. "
+                    "Do not promote the rejected draft or its claims. Use observedEvidenceByBrief only to diagnose "
+                    "the bounded same-evidence revision or the exact remaining evidence gaps, then resume Research."
+                )
+                recommended_next_action = "repair_rejected_research_answer"
             else:
                 consumer_hint = (
                     "Retry only the missing Research briefs once inside a managed Research episode. "
@@ -3160,6 +3226,8 @@ class RuntimeEpisodeRunner:
                         if source_transport_exhausted
                         else "partial_evidence"
                         if ready_units
+                        else "evidence_observed_review_rejected"
+                        if has_observed_evidence
                         else "evidence_missing"
                     ),
                     "degradedReason": (
@@ -3167,6 +3235,8 @@ class RuntimeEpisodeRunner:
                         if source_dependency_missing
                         else "research_source_transport_exhausted"
                         if source_transport_exhausted
+                        else "research_review_not_accepted"
+                        if has_observed_evidence
                         else "research_run_missing_evidence"
                     ),
                     "recommendedNextAction": recommended_next_action,
@@ -3194,7 +3264,7 @@ class RuntimeEpisodeRunner:
         consumer_hint = _research_handoff_consumer_hint(
             unit_results[0].get("experienceReuse") if len(unit_results) == 1 else {}
         )
-        return build_handoff_ref(
+        handoff = build_handoff_ref(
             producer_episode_id=episode_id,
             kind="research",
             compact_summary=_preview("\n".join(compact_answers)),
@@ -3233,6 +3303,31 @@ class RuntimeEpisodeRunner:
                 ),
             },
         )
+        # Workers may consume accepted evidence without Research execution
+        # authority. Persist a lossless read-only projection, not the clipped
+        # compactSummary or the pre-execution queue receipt.
+        from core.research_handoff_surface import render_research_handoff_evidence
+        from core.tool_surface import record_raw_observation
+
+        raw_ref = record_raw_observation(
+            tool_name="research_evidence_delivery",
+            tool_call_id=None,
+            runtime_kind="research",
+            surface="agent",
+            raw_content=render_research_handoff_evidence(handoff),
+            metadata={
+                "sessionId": episode.get("sessionId") or episode.get("session_id"),
+                "runId": episode.get("runId") or episode.get("run_id"),
+                "episodeId": episode_id,
+                "handoffRefId": handoff.get("handoffRefId"),
+            },
+        )
+        if raw_ref:
+            handoff["rawRef"] = raw_ref
+            handoff["detailTool"] = (
+                f"tool_observation_detail(raw_ref='{raw_ref}', max_chars=60000)"
+            )
+        return handoff
 
     async def _execute_engineering(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "engineering: workspace digest")
@@ -8474,6 +8569,12 @@ class RuntimeEpisodeRunner:
                     branch,
                     str(getattr(exc, "code", None) or exc or exc.__class__.__name__),
                 )
+                provider_error_code = str(getattr(exc, "code", "") or "").strip()
+                delegation_error_code = (
+                    "delegation_model_timeout"
+                    if provider_error_code == "timeout"
+                    else provider_error_code or "delegation_worker_failed"
+                )
                 summary = {
                     "invocationId": branch.get("invocationId"),
                     "taskBriefId": task_id or branch.get("taskBriefId"),
@@ -8488,6 +8589,12 @@ class RuntimeEpisodeRunner:
                     "branchIndex": branch.get("branchIndex"),
                     "status": "error",
                     "error": str(exc).strip() or exc.__class__.__name__,
+                    "errorCode": delegation_error_code,
+                    **(
+                        {"providerErrorCode": provider_error_code}
+                        if provider_error_code
+                        else {}
+                    ),
                     "compactExecutionTrace": str(getattr(exc, "compact_trace", "") or "")[:2400],
                     "toolsUsed": list(getattr(exc, "tools_used", []) or [])[:12],
                     **sandbox_failure,

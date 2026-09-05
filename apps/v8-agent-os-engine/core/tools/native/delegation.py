@@ -94,6 +94,8 @@ _PREFERRED_WORKER_AGENT_ALIASES = {
 
 _DEPRECATED_DELEGATION_TARGET_IDS = {"project-planner"}
 
+_RESEARCH_READY_STATUSES = {"ready", "completed", "success", "succeeded", "ok"}
+
 
 def _engineering_workspace_preparation_failure(exc: Exception) -> dict[str, str]:
     code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
@@ -292,6 +294,156 @@ def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[
     return normalized
 
 
+def _managed_research_gap_from_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Project only the Research gap needed to prevent an alternate retry owner.
+
+    The full answer/fact acceptance policy remains in ``supervisor_turn``.  The
+    delegation boundary needs a smaller invariant: once a managed Research
+    handoff reports missing stable brief IDs, a Research-shaped subagent may
+    not replace the one bounded ``runtime_broker`` retry.
+    """
+
+    handoffs = [
+        dict(item)
+        for item in list(
+            context.get("effectiveHandoffRefs") or context.get("handoffRefs") or []
+        )
+        if isinstance(item, dict)
+        and "research" in str(item.get("kind") or "").strip().lower()
+    ]
+    latest_status: dict[str, str] = {}
+    attempts: dict[str, int] = {}
+    for handoff in handoffs:
+        result_ids: set[str] = set()
+        for result in list(handoff.get("taskBriefResults") or []):
+            if not isinstance(result, dict):
+                continue
+            primary_id = str(
+                result.get("taskBriefId") or result.get("taskId") or ""
+            ).strip()
+            brief_ids = list(
+                dict.fromkeys(
+                    str(value or "").strip()
+                    for value in [primary_id, *list(result.get("taskBriefIds") or [])]
+                    if str(value or "").strip()
+                )
+            )
+            status = str(result.get("status") or "degraded").strip().lower()
+            for brief_id in brief_ids:
+                result_ids.add(brief_id)
+                latest_status[brief_id] = status
+                if status not in _RESEARCH_READY_STATUSES:
+                    attempts[brief_id] = attempts.get(brief_id, 0) + 1
+        for brief_id in list(handoff.get("coveredTaskBriefIds") or []):
+            normalized_id = str(brief_id or "").strip()
+            if normalized_id:
+                latest_status[normalized_id] = "ready"
+        for brief_id in list(handoff.get("missingTaskBriefIds") or []):
+            normalized_id = str(brief_id or "").strip()
+            if not normalized_id:
+                continue
+            latest_status[normalized_id] = "degraded"
+            if normalized_id not in result_ids:
+                attempts[normalized_id] = attempts.get(normalized_id, 0) + 1
+
+    missing_ids = [
+        brief_id
+        for brief_id, status in latest_status.items()
+        if status not in _RESEARCH_READY_STATUSES
+    ]
+    return {
+        "missingTaskBriefIds": missing_ids,
+        "attempts": {
+            brief_id: max(1, int(attempts.get(brief_id) or 0))
+            for brief_id in missing_ids
+        },
+        "retryAvailable": bool(missing_ids)
+        and all(int(attempts.get(brief_id) or 1) < 2 for brief_id in missing_ids),
+    }
+
+
+def _delegation_task_replaces_managed_research(task: dict[str, Any]) -> bool:
+    identifiers = " ".join(
+        str(task.get(key) or "").strip().lower()
+        for key in (
+            "preferredAgentId",
+            "targetAgentName",
+            "agentId",
+            "familyHint",
+            "preferredWorkerType",
+        )
+    )
+    if any(
+        signal in identifiers
+        for signal in (
+            "web-research-architect",
+            "web research architect",
+            "research-synthesizer",
+            "research synthesizer",
+            "research-agent",
+            "research_agent",
+        )
+    ) or str(task.get("familyHint") or "").strip().lower() == "research":
+        return True
+    runtime_access = {
+        str(value or "").strip().lower()
+        for value in list(task.get("runtimeAccess") or task.get("runtime_access") or [])
+        if str(value or "").strip()
+    }
+    if any(value == "research" or value.startswith("research.") for value in runtime_access):
+        return True
+    tool_policy = task.get("toolPolicy") if isinstance(task.get("toolPolicy"), dict) else {}
+    allowed_tools = {
+        str(value or "").strip().lower()
+        for value in list(tool_policy.get("allowedTools") or task.get("allowedTools") or [])
+        if str(value or "").strip()
+    }
+    return bool(allowed_tools.intersection({"research_broker", "web_broker"}))
+
+
+def _managed_research_delegation_block_command(
+    *,
+    gap: dict[str, Any],
+    blocked_task_brief_ids: list[str],
+    tool_call_id: str,
+    retry_node: str,
+) -> Command:
+    retry_available = bool(gap.get("retryAvailable"))
+    return Command(
+        goto=retry_node or "supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode="dispatch",
+                        ok=False,
+                        summary=(
+                            "Research handoff 仍有明确证据缺口；子代理不能替代受管 Research 的唯一重试。"
+                            if retry_available
+                            else "Research 的受管重试已耗尽；不能再用子代理或直接网页工具创建第三条隐式调研路线。"
+                        ),
+                        recommended_next_action=(
+                            "route_one_managed_research_retry_with_runtime_broker"
+                            if retry_available
+                            else "report_unresolved_research_gap"
+                        ),
+                        error=(
+                            "managed_research_retry_requires_runtime_broker"
+                            if retry_available
+                            else "managed_research_gap_exhausted"
+                        ),
+                        requiredTool="runtime_broker" if retry_available else None,
+                        blockedTaskBriefIds=blocked_task_brief_ids,
+                        missingTaskBriefIds=list(gap.get("missingTaskBriefIds") or [])[:24],
+                        researchAttempts=dict(gap.get("attempts") or {}),
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        },
+    )
+
+
 def _handoff_recovery_requirements(context: dict[str, Any]) -> dict[str, Any]:
     refs: list[str] = []
     tool_names: list[str] = []
@@ -395,6 +547,27 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
         read_only = bool(context.get("readOnly") or context.get("noSideEffect") or item.get("readOnly"))
         required_native_tools = _delegation_task_required_native_tools(item)
         recovery_requirements = _handoff_recovery_requirements(context)
+        no_tools = tool_mode == "none" or bool(tool_policy.get("noTools") or item.get("noTools"))
+        if handoff_evidence:
+            context["handoffRecoveryRequirements"] = recovery_requirements
+            if no_tools:
+                context["handoffConsumptionDiscipline"] = (
+                    "The explicit no-tools policy does not authorize reading recovery refs. "
+                    "Review only supplied material. If omitted evidence matters, return the exact ref and missing fields "
+                    "to the parent for re-delivery or an explicitly authorized read-only task; do not infer it."
+                )
+            elif recovery_requirements["recoveryAvailable"]:
+                context["handoffConsumptionDiscipline"] = (
+                    "Review injected evidence first. If omitted material affects acceptance, use the exact listed toolobs:// ref "
+                    "with tool_observation_detail, or the listed detail ref/tool pair, only when that tool is on the resolved "
+                    "worker surface. If unavailable, report the missing evidence to the parent; do not search the workspace or infer it."
+                )
+            else:
+                context["handoffConsumptionDiscipline"] = (
+                    "Review the injected upstreamHandoffs/dependencyResults directly. No readable recovery ref/tool pair "
+                    "is present; report missing evidence instead of searching or inferring it."
+                )
+            item["context"] = context
         if (
             handoff_evidence
             and read_only
@@ -402,7 +575,8 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
             and not write_set
             and not allowed_tools
             and not required_native_tools
-            and tool_mode in {"", "default", "none"}
+            and tool_mode in {"", "default"}
+            and not no_tools
         ):
             forbidden_tools = _unique_handoff_values(
                 tool_policy.get("forbiddenTools"),
@@ -413,7 +587,6 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
                 for name in recovery_requirements["toolNames"]
                 if name == "tool_observation_detail" and name not in forbidden_tools
             ]
-            context["handoffRecoveryRequirements"] = recovery_requirements
             if recoverable_tools:
                 item["toolPolicy"] = {
                     **tool_policy,
@@ -422,16 +595,7 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
                     "forbiddenTools": forbidden_tools,
                 }
                 item["allowedTools"] = recoverable_tools
-                context.setdefault(
-                    "handoffConsumptionDiscipline",
-                    "Review injected evidence first. If omitted material affects acceptance, use only the exact listed toolobs:// ref with tool_observation_detail; do not search the workspace.",
-                )
-            elif recovery_requirements["recoveryAvailable"]:
-                context.setdefault(
-                    "handoffConsumptionDiscipline",
-                    "Review injected evidence first. A detail ref/tool pair is available; use it only if that named tool is present on the resolved worker surface. Do not search the workspace or infer omitted content.",
-                )
-            else:
+            elif not recovery_requirements["recoveryAvailable"]:
                 item["toolPolicy"] = {
                     **tool_policy,
                     "mode": "none",
@@ -439,10 +603,6 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
                     "forbiddenTools": forbidden_tools,
                 }
                 item["allowedTools"] = []
-                context.setdefault(
-                    "handoffConsumptionDiscipline",
-                    "Review the injected upstreamHandoffs/dependencyResults directly. No readable recovery ref/tool pair or readSet is present; report missing evidence instead of searching or inferring it.",
-                )
             item["context"] = context
         normalized.append(item)
     return normalized
@@ -634,6 +794,9 @@ def _compact_upstream_handoff_for_agent(handoff: dict[str, Any]) -> dict[str, An
         ("limitations", max(0, len(limitations) - 6), "items"),
         ("detailRefs", max(0, len(detail_refs) - 8), "items"),
         ("childResults", max(0, len(unique_child_handoffs) - 6), "items"),
+        ("claimTable", len(payload.get("claimTable") or []), "items"),
+        ("sources", len(payload.get("sources") or []), "items"),
+        ("answer", len(str(payload.get("answer") or "")), "characters"),
     ):
         if omitted_count:
             omitted_by_field[field] = {"omittedCount": omitted_count, "unit": unit}
@@ -703,6 +866,8 @@ def _handoff_identifiers(handoff: dict[str, Any]) -> set[str]:
         "handoffId",
         "handoffRefId",
         "identityAliases",
+        "evidenceBundleId",
+        "evidenceBundleIds",
         "detailRef",
         "refs",
         "researchRefs",
@@ -863,7 +1028,14 @@ def _inject_inherited_handoffs_into_tasks(
         if matched:
             context["upstreamHandoffs"] = matched[-6:]
             context["handoffUsage"] = (
-                "These handoffs are injected evidence, not filesystem paths. Read their summary/childResults directly; "
+                "These handoffs are injected evidence, not filesystem paths. Summaries are navigation aids, not full evidence. "
+                "For independent verification read the exact rawRef with tool_observation_detail(max_chars=60000); "
+                "if paginated, continue with start_char until the end before deciding. "
+                "The original claim IDs, citation keys and URLs in that evidence are authoritative; task prose is an assignment, "
+                "not a replacement claim index. Report conflicting proposed IDs/URLs and use the original bindings in your result. "
+                "An unproven source identity may remain unknown with a stated limitation; do not infer its publisher from the domain "
+                "or resolve it using outside knowledge when the task is closed-world. "
+                "Read summary/childResults directly for status; "
                 "do not search the workspace for research://, engineering://, episode IDs, or invented bundle filenames. "
                 + (
                     "They were selected by explicit task references."
@@ -909,6 +1081,8 @@ class DelegationTaskInput(TypedDict, total=False):
     forbiddenTools: list[str] | str
     noTools: bool
     requiredCapabilities: list[str] | str
+    readOnly: bool
+    writeRequired: bool
     runtimeAccess: list[str] | str
     readSet: list[str] | str
     writeSet: list[str] | str
@@ -2127,7 +2301,7 @@ def delegation_broker(
     """Dispatch or control real collaboration work, including a typed direct-subagent input pause.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
-    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"default"}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. `toolPolicy: {mode: 'default'}` keeps the role's public toolbox so the Agent can choose the smallest relevant subset. Use `mode: 'none'` only for injected-evidence reasoning with no tool work, and use an allowlist only when the task is intentionally closed-world or explicitly restricted; an acceptance contract is not itself a reason to narrow tools.
+    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"default"}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. `toolPolicy: {mode: 'default'}` keeps the role's public toolbox so the Agent can choose the smallest relevant subset. Use `mode: 'none'` only when all necessary evidence is actually supplied and no tool work is needed. Research handoffs inject compact navigation summaries, not full claims/excerpts/answers: independent verification normally needs their exact evidenceRefs and `toolPolicy: {mode: 'allowlist', allowedTools: ['tool_observation_detail']}` to read the registered rawRef. Read-only is not no-tools; set `readOnly=true, writeRequired=false, writeSet=[], allowChildDelegation=false` as typed fields when requested, not only prose constraints. An acceptance contract is not itself a reason to narrow tools.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set task `requireChildDelegation=true` when the must-level acceptance contract itself requires that verifier; set `allow_child_delegation=false` to forbid the path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
     A direct subagent that discovers a genuinely missing irreversible choice must call `mode='request_input'` with typed `required_inputs`; never encode a pause marker in prose. The same runtime episode will resume after strict answer validation.
@@ -2368,6 +2542,22 @@ def delegation_broker(
         if any(expanded_contract_diagnostics.values()):
             return _delegation_task_contract_diagnostic_command(
                 diagnostics=expanded_contract_diagnostics,
+                tool_call_id=tool_call_id,
+                retry_node=retry_node,
+            )
+        managed_research_gap = _managed_research_gap_from_context(inherited_context)
+        research_replacement_task_ids = [
+            str(task.get("taskBriefId") or f"task-{index + 1}").strip()
+            for index, task in enumerate(normalized_tasks)
+            if _delegation_task_replaces_managed_research(task)
+        ]
+        if (
+            managed_research_gap.get("missingTaskBriefIds")
+            and research_replacement_task_ids
+        ):
+            return _managed_research_delegation_block_command(
+                gap=managed_research_gap,
+                blocked_task_brief_ids=research_replacement_task_ids,
                 tool_call_id=tool_call_id,
                 retry_node=retry_node,
             )

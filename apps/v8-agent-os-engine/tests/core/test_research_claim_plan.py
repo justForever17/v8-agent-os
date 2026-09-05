@@ -9,6 +9,8 @@ from core.tools.research_claim_plan import (
     CanonicalClaimPlanError,
     apply_structure_projection,
     build_canonical_claim_plan,
+    question_requires_structure,
+    supported_scope_limitation_markdown,
 )
 
 
@@ -68,6 +70,68 @@ def _plan() -> dict:
     )
 
 
+@pytest.mark.parametrize("question,expected", [
+    ("核对适用关系、关键日期、提供者义务和上线检查清单。", True),
+    ("Compare the requirements and their relationship; provide a launch checklist.", True),
+    ("What is the publication date of this document?", False),
+    ("核实文档的发布日期与第十一条原文。", False),
+])
+def test_structure_recognizes_analytical_deliverables(question, expected):
+    assert question_requires_structure(question) is expected
+
+
+@pytest.mark.parametrize("disqualified", ["source", "candidates"])
+def test_canonical_plan_does_not_promote_offtopic_routing_metadata(disqualified):
+    sources = _sources()
+    if disqualified == "source":
+        sources[-1]["subjectFocused"] = False
+    else:
+        for candidate in sources[-1]["evidenceCandidates"]:
+            candidate["relevanceScore"] = 0
+    plan = build_canonical_claim_plan(
+        question="Compare requirements", sources=sources,
+        required_source_keys=["S1", "S2", "S3", "S4"],
+        required_facet_ids=["facet-1", "facet-2", "facet-3", "facet-4"],
+        minimum_source_count=3, minimum_claim_count=4, target_claim_count=8,
+        allow_supported_scope=True,
+    )
+    assert plan["canonicalClaimPlan"]["missingSourceKeys"] == ["S4"]
+    assert plan["canonicalClaimPlan"]["missingFacetIds"] == ["facet-4"]
+    assert all("facet-4" not in row["researchFacetIds"] for row in plan["claimTable"])
+
+
+def test_reader_order_survives_coarse_public_relevance_reranking():
+    sources = _sources()[:1]
+    candidates = sources[0]["evidenceCandidates"]
+    candidates[0]["relevanceScore"] = 50
+    candidates[1]["relevanceScore"] = 100
+    plan = build_canonical_claim_plan(
+        question="Verify the actual requirement", sources=sources,
+        required_source_keys=["S1"], required_facet_ids=["facet-1"],
+        minimum_source_count=1, minimum_claim_count=1, target_claim_count=1,
+    )
+    assert plan["claimTable"][0]["evidenceExcerptKey"] == "S1:E1"
+
+
+def test_news_navigation_cannot_fill_a_missing_claim_source():
+    sources = _sources()
+    navigation = "关于标识办法的通知 2025-03-14 - 答记者问 2025-03-14 - 新闻头条丨春耕 - 科技快讯丨新材料 - 记者观察丨何以火出圈？它有这些不同 - 健康新闻丨零近视 - 国际观察丨贷款制度"
+    sources[-1]["text"] = navigation
+    sources[-1]["evidenceCandidates"] = [{
+        "text": navigation, "evidenceExcerptKey": "S4:E1", "relevanceScore": 100,
+        "researchFacetId": "facet-4",
+    }]
+    plan = build_canonical_claim_plan(
+        question="Verify actual requirements", sources=sources,
+        required_source_keys=["S1", "S2", "S3", "S4"],
+        required_facet_ids=["facet-1", "facet-2", "facet-3", "facet-4"],
+        minimum_source_count=3, minimum_claim_count=4, target_claim_count=8,
+        allow_supported_scope=True,
+    )
+    assert plan["canonicalClaimPlan"]["missingSourceKeys"] == ["S4"]
+    assert not any(navigation in row["evidenceExcerpt"] for row in plan["claimTable"])
+
+
 def test_canonical_claim_plan_is_stable_complete_and_exact_excerpt_bound() -> None:
     first = _plan()
     second = _plan()
@@ -122,6 +186,59 @@ def test_canonical_claim_plan_binds_cjk_normative_cue_without_model_rewrite() ->
     claim = plan["claimTable"][0]
     assert claim["claimType"] == "explicit_normative"
     assert claim["normativeCue"] in claim["evidenceExcerpt"]
+
+
+@pytest.mark.parametrize("text", [
+    "提供具有舆论属性或者社会动员能力的服务的，提供者应当按照国家有关规定开展安全评估，并履行备案和变更、注销备案手续。",
+    "Only when operating a public service, the provider must retain the complete evidence receipt, unless the user has withdrawn consent.",
+])
+def test_normative_claim_keeps_subject_conditions_and_exceptions(text):
+    source = _sources()[0]
+    source["text"] = text
+    source["evidenceCandidates"] = [{"text": text, "evidenceExcerptKey": "S1:E1"}]
+    plan = build_canonical_claim_plan(
+        question="What is required and when?", sources=[source],
+        required_source_keys=["S1"], required_facet_ids=[],
+        minimum_source_count=1, minimum_claim_count=1, target_claim_count=1,
+    )
+    assert plan["claimTable"][0]["claim"] == text
+
+
+def test_canonical_dedup_preserves_conflicting_dates_and_thresholds():
+    source = _sources()[0]
+    texts = [
+        "The published service limit is 100 requests per minute, effective from 2025-09-01.",
+        "The published service limit is 200 requests per minute, effective from 2026-09-01.",
+    ]
+    source["text"] = "\n".join(texts)
+    source["evidenceCandidates"] = [
+        {"text": text, "evidenceExcerptKey": f"S1:E{index}"}
+        for index, text in enumerate([*texts, texts[0]], 1)
+    ]
+    plan = build_canonical_claim_plan(
+        question="Verify limits and dates", sources=[source],
+        required_source_keys=["S1"], required_facet_ids=[],
+        minimum_source_count=1, minimum_claim_count=2, target_claim_count=3,
+    )
+    assert [row["claim"] for row in plan["claimTable"]] == texts
+
+
+@pytest.mark.parametrize("path,is_navigation", [
+    ("/news/columns/policy/index.html", True),
+    ("/column/security/index.htm", True),
+    ("/docs/architecture/index.html", False),
+    ("/news/columns/policy/article123.html", False),
+])
+def test_cms_navigation_teasers_do_not_count_as_read_articles(path, is_navigation):
+    sources = _sources()
+    sources[-1]["url"] = "https://example.gov" + path
+    plan = build_canonical_claim_plan(
+        question="Compare requirements", sources=sources,
+        required_source_keys=["S1", "S2", "S3", "S4"], required_facet_ids=[],
+        minimum_source_count=3, minimum_claim_count=4, target_claim_count=8,
+        allow_supported_scope=True,
+    )
+    assert ("S4" in plan["canonicalClaimPlan"]["missingSourceKeys"]) is is_navigation
 
 
 def test_canonical_claim_plan_does_not_treat_descriptive_not_as_normative() -> None:
@@ -286,6 +403,45 @@ def test_canonical_claim_plan_fails_closed_when_required_source_has_no_candidate
     assert captured.value.code == "canonical_claim_plan_incomplete"
     assert captured.value.diagnostics["missingSourceKeys"] == ["S4"]
     assert captured.value.diagnostics["missingFacetIds"] == ["facet-4"]
+
+
+def test_canonical_claim_plan_keeps_verified_minimum_when_one_target_facet_is_missing() -> None:
+    sources = _sources()
+    sources[-1]["evidenceCandidates"] = []
+
+    plan = build_canonical_claim_plan(
+        question="Compare all available requirements and identify any unresolved scope.",
+        sources=sources,
+        required_source_keys=["S1", "S2", "S3", "S4"],
+        required_facet_ids=["facet-1", "facet-2", "facet-3", "facet-4"],
+        minimum_source_count=3,
+        minimum_claim_count=4,
+        target_claim_count=8,
+        allow_supported_scope=True,
+    )
+
+    diagnostics = plan["canonicalClaimPlan"]
+    assert diagnostics["minimumFloorMet"] is True
+    assert diagnostics["coverageComplete"] is False
+    assert diagnostics["supportedScopeLimited"] is True
+    assert diagnostics["missingSourceKeys"] == ["S4"]
+    assert diagnostics["missingFacetIds"] == ["facet-4"]
+    assert plan["blockedFacets"] == [
+        {"facetId": "facet-4", "goal": "Verify requirement 4"}
+    ]
+    assert len(plan["claimTable"]) >= 4
+    assert {
+        source["citationKey"]
+        for claim in plan["claimTable"]
+        for source in claim["supportingSources"]
+    } == {"S1", "S2", "S3"}
+    limitation = supported_scope_limitation_markdown(
+        plan,
+        preferred_language="zh-CN",
+    )
+    assert "本轮证据限制" in limitation
+    assert "Verify requirement 4" in limitation
+    assert "S4" not in limitation
 
 
 def test_canonical_claim_plan_rejects_candidate_not_contiguous_in_source_text() -> None:

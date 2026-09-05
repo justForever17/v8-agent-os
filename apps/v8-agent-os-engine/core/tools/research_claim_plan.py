@@ -5,6 +5,9 @@ import json
 import re
 from typing import Any
 
+from core.tools.research_readability import has_readable_table, is_site_chrome_excerpt
+from core.tools.research_source_identity import research_source_is_navigation, source_attribution_role
+
 
 CANONICAL_CLAIM_PLAN_VERSION = "v8.research_claim_plan.v1"
 
@@ -21,12 +24,6 @@ _NEGATIVE_NORMATIVE_CUE_RE = re.compile(
     r"(?:\u4e0d(?:\u5e94|\u5f97|\u8be5|\u5efa\u8bae|\u63a8\u8350)|\u7981\u6b62|\u907f\u514d)",
     re.IGNORECASE,
 )
-_WEAK_SENTENCE_START_RE = re.compile(
-    r"^(?:and|or|but|also|it|this|that|these|those|otherwise|therefore|"
-    r"此外|同时|因此|这|该|其)\b",
-    re.IGNORECASE,
-)
-_WORD_RE = re.compile(r"[a-z0-9_.-]{2,}|[\u4e00-\u9fff]")
 
 
 class CanonicalClaimPlanError(ValueError):
@@ -66,8 +63,7 @@ def _normalized_text(value: Any) -> str:
 
 
 def _material_signature(value: Any) -> str:
-    normalized = re.sub(r"\d+", "", _safe_text(value).casefold())
-    return re.sub(r"[^a-z\u4e00-\u9fff]+", "", normalized)
+    return _normalized_text(value)
 
 
 def _signature_ngrams(value: str, *, size: int = 4) -> set[str]:
@@ -84,6 +80,10 @@ def _materially_duplicates(value: str, accepted: list[tuple[str, set[str]]]) -> 
     for existing, existing_grams in accepted:
         if signature == existing:
             return True
+        if re.findall(r"\d+", signature) != re.findall(r"\d+", existing):
+            # Dates, versions, thresholds and conflicting numeric values are
+            # material evidence, not interchangeable formatting noise.
+            continue
         union = grams | existing_grams
         similarity = len(grams & existing_grams) / len(union) if union else 0.0
         if min(len(signature), len(existing)) >= 20 and similarity >= 0.9:
@@ -92,49 +92,46 @@ def _materially_duplicates(value: str, accepted: list[tuple[str, set[str]]]) -> 
     return False
 
 
-def _focus_terms(value: Any) -> set[str]:
-    return {match.group(0).casefold() for match in _WORD_RE.finditer(_safe_text(value))}
+def question_requires_structure(question: str) -> bool:
+    """Detect an explicit analytical deliverable, not just recommendations."""
+    return bool(re.search(
+        r"\b(?:best practices?|recommend(?:ation|ed|s|ing)?|should|selection|trade-?offs?|"
+        r"compar(?:e|ison|ative)|relationships?|checklists?|interactions?)\b|"
+        r"(?:最佳实践|建议|应该|应当|选型|取舍|对比|比较|适用关系|相互关系|之间的关系|检查清单)",
+        question,
+        re.IGNORECASE,
+    ))
 
 
-def _claim_text(excerpt: str, *, focus: str) -> str:
-    text = re.sub(r"```[^\n]*\n?", "", _safe_text(excerpt)).replace("```", "")
-    text = re.sub(r"\s+", " ", text).strip(" `\t\r\n-*")
-    sentences = (
-        [text]
-        if len(text) <= 320
-        else [
-            item.strip(" `\t\r\n-*")
-            for item in re.split(r"(?<=[.!?。！？；;])\s*", text)
-            if 20 <= len(item.strip()) <= 320
-        ]
+def question_requests_primary_sources(question: str) -> bool:
+    return bool(re.search(
+        r"\b(?:official|primary|first[- ]party|authoritative)\s+(?:sources?|documentation|docs|evidence)\b|"
+        r"(?:官方|一手|权威)(?:来源|资料|文档|证据|文本|原文)",
+        question,
+        re.IGNORECASE,
+    ))
+
+
+def _navigation_excerpt(text: str) -> bool:
+    # Flattened news/related-link lists can repeat the query many times but
+    # contain no complete assertion. Do not spend a mandatory source slot on
+    # such a list merely because its operative paragraphs duplicate a source
+    # already selected. Preserve normal prose and ordinary single link titles.
+    without_ellipsis = re.sub(r"\.{2,}|…+", "", text)
+    return bool(
+        len(re.findall(r"\s(?:-|\|)\s", text)) >= 4
+        and not re.search(r"。|(?<!\d)\.(?:\s|$)", without_ellipsis)
+        and not has_readable_table(text)
     )
-    if not sentences:
-        return _compact_text(text, limit=320)
 
-    focus_terms = _focus_terms(focus)
 
-    def score(item: str) -> tuple[int, int, int]:
-        item_terms = _focus_terms(item)
-        overlap = len(focus_terms.intersection(item_terms))
-        return (
-            overlap,
-            0 if _WEAK_SENTENCE_START_RE.match(item) else 1,
-            min(len(item), 220),
-        )
-
-    selected = max(enumerate(sentences), key=lambda pair: (*score(pair[1]), -pair[0]))[1]
-    if _NORMATIVE_CUE_RE.search(selected):
-        clauses = [
-            item.strip(" `\t\r\n-*")
-            for item in re.split(r"(?<=[,;:\u3001\u3002\uff0c\uff1b\uff1a])\s*", selected)
-            if 20 <= len(item.strip()) <= 320 and _NORMATIVE_CUE_RE.search(item)
-        ]
-        if clauses:
-            selected = max(
-                enumerate(clauses),
-                key=lambda pair: (*score(pair[1]), -pair[0]),
-            )[1]
-    return selected
+def _claim_text(excerpt: str) -> str:
+    # The reader already bounds each exact excerpt to 600 characters. A second
+    # keyword-based sentence selector discarded conditions and exceptions,
+    # often retaining an introduction instead of the operative clause. Keep
+    # that evidence unit intact; prose synthesis belongs to the writer.
+    text = re.sub(r"```[^\n]*\n?", "", _safe_text(excerpt)).replace("```", "")
+    return re.sub(r"\s+", " ", text).strip(" `\t\r\n-*")
 
 
 def _normative_cue(claim: str) -> str:
@@ -155,8 +152,7 @@ def _normative_cue(claim: str) -> str:
 
 
 def _source_role(source: dict[str, Any]) -> str:
-    explicit = _safe_text(source.get("sourceRole") or source.get("tier")).lower()
-    return "primary" if explicit in {"primary", "official", "authoritative"} else "secondary"
+    return source_attribution_role(source)
 
 
 def _support_projection(source: dict[str, Any], facets: list[str], goal: str) -> dict[str, Any]:
@@ -197,7 +193,9 @@ def _claim_row(source: dict[str, Any], candidate: dict[str, Any], source_index: 
     citation_key = _safe_text(source.get("citationKey")).strip("[]")
     excerpt_key = _safe_text(candidate.get("evidenceExcerptKey"))
     excerpt = _safe_text(candidate.get("text"))
-    if not citation_key or not excerpt_key or len(_normalized_text(excerpt)) < 20:
+    if not citation_key or not excerpt_key or len(excerpt) > 600 or len(_normalized_text(excerpt)) < 20:
+        return None
+    if _navigation_excerpt(excerpt):
         return None
     source_text = _safe_text(source.get("text") or source.get("evidenceText"))
     if not source_text or _normalized_text(excerpt) not in _normalized_text(source_text):
@@ -223,7 +221,7 @@ def _claim_row(source: dict[str, Any], candidate: dict[str, Any], source_index: 
         )
     )
     goal = _safe_text(candidate.get("researchFacetGoal") or source.get("researchFacetGoal") or source.get("evidenceQuery"))
-    claim = _claim_text(excerpt, focus=goal)
+    claim = _claim_text(excerpt)
     if len(_normalized_text(claim)) < 20:
         return None
     normative_cue = _normative_cue(claim)
@@ -294,6 +292,7 @@ def build_canonical_claim_plan(
     minimum_source_count: int,
     minimum_claim_count: int,
     target_claim_count: int,
+    allow_supported_scope: bool = False,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     seen_excerpt_keys: set[str] = set()
@@ -301,8 +300,19 @@ def build_canonical_claim_plan(
     for source_index, source in enumerate(sources):
         if not isinstance(source, dict):
             continue
+        # Acquisition facet labels are routing provenance, not semantic proof.
+        # The reader's explicit off-topic decision must survive canonicalization
+        # even when this source would fill an otherwise missing facet.
+        if source.get("subjectFocused") is False or research_source_is_navigation(
+            source.get("url"), title=source.get("title")
+        ):
+            continue
         for candidate_index, candidate in enumerate(list(source.get("evidenceCandidates") or [])):
             if not isinstance(candidate, dict):
+                continue
+            if is_site_chrome_excerpt(_safe_text(candidate.get("text")), question=question):
+                continue
+            if "relevanceScore" in candidate and int(candidate.get("relevanceScore") or 0) <= 0:
                 continue
             row = _claim_row(source, candidate, source_index, candidate_index)
             if row is None:
@@ -320,6 +330,20 @@ def build_canonical_claim_plan(
         dict.fromkeys(_safe_text(value).strip("[]") for value in required_source_keys if _safe_text(value))
     )
     required_facets = list(dict.fromkeys(_safe_text(value) for value in required_facet_ids if _safe_text(value)))
+    facet_goals: dict[str, str] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_goal = _safe_text(
+            source.get("researchFacetGoal") or source.get("evidenceQuery")
+        )
+        for facet_id in [
+            *list(source.get("researchFacetIds") or []),
+            source.get("researchFacetId"),
+        ]:
+            normalized_facet_id = _safe_text(facet_id)
+            if normalized_facet_id and source_goal:
+                facet_goals.setdefault(normalized_facet_id, source_goal)
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
 
@@ -331,10 +355,16 @@ def build_canonical_claim_plan(
         chosen = max(
             available,
             key=lambda item: (
+                # A facet reservation must not consume a separate commentary
+                # slot when a required source already covers that same facet.
+                1 if item["_citationKey"] in required_sources else 0,
                 1 if item["_citationKey"] not in covered_sources else 0,
+                # The reader already ranked exact operative excerpts (with
+                # navigation penalties and clause anchors). Public relevance
+                # is only a coarse 0-100 display metric, not that ordering.
+                -int(item["_candidateIndex"]),
                 int(item["_relevanceScore"]),
                 -int(item["_sourceIndex"]),
-                -int(item["_candidateIndex"]),
             ),
         )
         selected.append(chosen)
@@ -351,15 +381,40 @@ def build_canonical_claim_plan(
         add_best([item for item in rows if item["_citationKey"] == citation_key])
 
     desired_claim_count = max(int(minimum_claim_count or 0), int(target_claim_count or 0))
-    ordered_sources = list(dict.fromkeys([*required_sources, *[str(item["_citationKey"]) for item in rows]]))
-    while len(selected) < desired_claim_count:
-        added = False
-        for citation_key in ordered_sources:
-            if len(selected) >= desired_claim_count:
-                break
-            added = add_best([item for item in rows if item["_citationKey"] == citation_key]) or added
-        if not added:
+    # Deepen the selected evidence before adding new documents merely to fill
+    # a claim budget. Facet reservations already retain necessary extra sources.
+    ordered_sources = list(dict.fromkeys([
+        *required_sources,
+        *[str(item["_citationKey"]) for item in selected],
+    ]))
+    for row in rows:
+        if len(ordered_sources) >= max(1, int(minimum_source_count or 0)):
             break
+        key = str(row["_citationKey"])
+        if key not in ordered_sources:
+            ordered_sources.append(key)
+    named_titles = [
+        _normalized_text(title)
+        for title in re.findall(r"《([^《》\n]{4,120})》", question)
+    ]
+    named_sources = [
+        _safe_text(source.get("citationKey")).strip("[]")
+        for source in sources
+        if any(title in _normalized_text(source.get("title")) for title in named_titles)
+        and _safe_text(source.get("citationKey")).strip("[]") in ordered_sources
+    ]
+    # Source/facet reservations above remain mandatory. Spend the remaining
+    # depth on explicitly requested documents before general background; this
+    # is relevance, not an upgrade of the document's provenance or authority.
+    for source_group in ([named_sources, ordered_sources] if named_sources else [ordered_sources]):
+        while len(selected) < desired_claim_count:
+            added = False
+            for citation_key in source_group:
+                if len(selected) >= desired_claim_count:
+                    break
+                added = add_best([item for item in rows if item["_citationKey"] == citation_key]) or added
+            if not added:
+                break
 
     public_claims = [_public_claim(item) for item in selected]
     covered_sources = list(dict.fromkeys(str(item["_citationKey"]) for item in selected))
@@ -373,6 +428,13 @@ def build_canonical_claim_plan(
     )
     missing_sources = [item for item in required_sources if item not in covered_sources]
     missing_facets = [item for item in required_facets if item not in covered_facets]
+    blocked_facets = [
+        {
+            "facetId": facet_id,
+            **({"goal": facet_goals[facet_id]} if facet_goals.get(facet_id) else {}),
+        }
+        for facet_id in missing_facets
+    ]
     diagnostics = {
         "version": CANONICAL_CLAIM_PLAN_VERSION,
         "mode": "runtime_canonical",
@@ -386,13 +448,19 @@ def build_canonical_claim_plan(
         "coveredFacetIds": covered_facets,
         "missingSourceKeys": missing_sources,
         "missingFacetIds": missing_facets,
+        "blockedFacets": blocked_facets,
     }
-    if (
-        len(covered_sources) < int(minimum_source_count or 0)
-        or len(public_claims) < int(minimum_claim_count or 0)
-        or missing_sources
-        or missing_facets
-    ):
+    minimum_floor_met = bool(
+        len(covered_sources) >= int(minimum_source_count or 0)
+        and len(public_claims) >= int(minimum_claim_count or 0)
+    )
+    coverage_complete = not missing_sources and not missing_facets
+    diagnostics["minimumFloorMet"] = minimum_floor_met
+    diagnostics["coverageComplete"] = coverage_complete
+    diagnostics["supportedScopeLimited"] = bool(
+        allow_supported_scope and minimum_floor_met and not coverage_complete
+    )
+    if not minimum_floor_met or (not allow_supported_scope and not coverage_complete):
         raise CanonicalClaimPlanError("canonical_claim_plan_incomplete", diagnostics)
 
     outline = _deterministic_outline(public_claims)
@@ -400,15 +468,28 @@ def build_canonical_claim_plan(
         json.dumps(public_claims, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
     ).hexdigest()
     diagnostics["claimDigest"] = digest
+    missing_evidence = [
+        "No exact verified claim was retained for planned research facet: "
+        f"{item.get('goal') or item['facetId']}."
+        for item in blocked_facets
+    ]
+    missing_evidence.extend(
+        f"No exact verified claim was retained from target source: [{source_key}]."
+        for source_key in missing_sources
+    )
     return {
         "reviewDecision": "accept",
         "reviewReasons": [],
-        "headline": "Runtime-verified canonical evidence plan",
+        # This internal plan is not a user-facing verdict. The answer assembler
+        # supplies a localized neutral heading if the writer has not provided one.
+        "headline": "",
         "claimTable": public_claims,
         "answerOutline": outline,
         "compositeInferences": [],
         "conflictMatrix": [],
-        "missingEvidence": [],
+        "missingEvidence": missing_evidence,
+        "blockedFacets": blocked_facets,
+        "blockedSourceKeys": missing_sources,
         "criticalMissingEvidence": [],
         "recommendedNextQueries": [],
         "assumptions": [],
@@ -418,8 +499,30 @@ def build_canonical_claim_plan(
 
 def structure_material(plan: dict[str, Any]) -> dict[str, Any]:
     claims = [item for item in list(plan.get("claimTable") or []) if isinstance(item, dict)]
+    # The projector groups facts and proposes inferences. Removing the page
+    # identity here made draft clauses and authored recommendations look like
+    # enacted obligations even though the canonical supports retained it.
+    citation_index: dict[str, dict[str, Any]] = {}
+    for claim in claims:
+        for source in list(claim.get("supportingSources") or []):
+            if not isinstance(source, dict):
+                continue
+            key = _safe_text(source.get("citationKey") or source.get("citation")).strip("[]")
+            if key and key not in citation_index:
+                citation_index[key] = {
+                    "citationKey": key,
+                    **{
+                        field: source[field]
+                        for field in (
+                            "sourceId", "title", "url", "tier", "sourceRole", "version",
+                            "publishedAt", "updatedAt", "sourceDate", "sourceDateKind",
+                        )
+                        if source.get(field) not in (None, "")
+                    },
+                }
     return {
         "canonicalClaimPlan": plan.get("canonicalClaimPlan") or {},
+        "citationIndex": list(citation_index.values()),
         "claims": [
             {
                 "claimId": item.get("claimId"),
@@ -436,6 +539,42 @@ def structure_material(plan: dict[str, Any]) -> dict[str, Any]:
         ],
         "deterministicOutline": plan.get("answerOutline") or [],
     }
+
+
+def supported_scope_limitation_markdown(
+    plan: dict[str, Any],
+    *,
+    preferred_language: str = "",
+) -> str:
+    """Render the Runtime-owned boundary for facets without verified claims.
+
+    This text never fills an evidence gap.  It makes the omission explicit so
+    a writer/reviewer can deliver the supported scope without silently
+    promoting a planned-but-unverified claim.
+    """
+
+    blocked_facets = [
+        item
+        for item in list(plan.get("blockedFacets") or [])
+        if isinstance(item, dict) and _safe_text(item.get("facetId"))
+    ]
+    if not blocked_facets:
+        return ""
+    chinese = _safe_text(preferred_language).lower().startswith("zh")
+    heading = "## 本轮证据限制" if chinese else "## Evidence limitations"
+    lines = [heading]
+    for item in blocked_facets:
+        label = _safe_text(item.get("goal")) or _safe_text(item.get("facetId")).replace("-", " ")
+        if chinese:
+            lines.append(
+                f"- {label}：本轮没有形成可逐字核验且绑定来源的断言，正文未对此作结论；需要继续补查。"
+            )
+        else:
+            lines.append(
+                f"- {label}: this run did not retain an exact-excerpt-verified, source-bound claim, "
+                "so the answer does not state a conclusion for it; further research is required."
+            )
+    return "\n".join(lines)
 
 
 def apply_structure_projection(

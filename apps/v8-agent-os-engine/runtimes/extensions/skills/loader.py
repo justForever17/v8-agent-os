@@ -1225,6 +1225,7 @@ class SkillLoader:
         keywords: list[str],
         tags: list[str],
         skill_class: str,
+        allow_llm_inference: bool = True,
     ) -> dict[str, Any]:
         base_theme_profile = cls._derive_theme_profile_rules(
             name=name,
@@ -1238,7 +1239,7 @@ class SkillLoader:
             tags=tags,
             skill_class=skill_class,
         )
-        if not cls._should_attempt_llm_theme_inference(
+        if not allow_llm_inference or not cls._should_attempt_llm_theme_inference(
             base_theme_profile=base_theme_profile,
             skill_class=skill_class,
         ):
@@ -1428,6 +1429,7 @@ class SkillLoader:
         has_templates: bool,
         has_examples: bool,
         has_assets: bool,
+        allow_llm_inference: bool = True,
     ) -> dict[str, Any]:
         base_profile = cls._derive_profile_rules(
             name=name,
@@ -1444,7 +1446,7 @@ class SkillLoader:
             has_examples=has_examples,
             has_assets=has_assets,
         )
-        if not cls._should_attempt_llm_profile_inference(base_profile=base_profile):
+        if not allow_llm_inference or not cls._should_attempt_llm_profile_inference(base_profile=base_profile):
             return base_profile
         llm_profile = cls._infer_profile_with_llm(
             name=name,
@@ -2403,6 +2405,77 @@ class SkillLoader:
         return manifest
 
     @classmethod
+    def _root_routing_stamp(cls, descriptor: dict[str, Any]) -> str:
+        """Return a cheap revision for route-facing SKILL.md discovery.
+
+        Full inventory refreshes intentionally hash each Skill directory. A scoped
+        workspace root may first appear while a user turn is already running, where
+        recursively hashing every reference, asset, and script would delay the first
+        response even though routing only consumes SKILL.md metadata. The stamp keeps
+        add/remove/edit detection on the route path without weakening explicit full
+        refreshes.
+        """
+        normalized_descriptor = cls._dedupe_root_descriptors([descriptor])
+        if not normalized_descriptor:
+            return "routing:missing"
+        root = Path(cls._normalize_path(normalized_descriptor[0].get("rootPath")))
+        payload: list[dict[str, Any]] = []
+        if root.exists() and root.is_dir():
+            for skill_file in sorted(root.glob("*/SKILL.md")):
+                try:
+                    stat = skill_file.stat()
+                except OSError:
+                    continue
+                payload.append(
+                    {
+                        "path": cls._normalize_path(skill_file),
+                        "mtimeNs": int(stat.st_mtime_ns),
+                        "size": int(stat.st_size),
+                    }
+                )
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return f"routing:{hashlib.sha1(serialized.encode('utf-8')).hexdigest()}"
+
+    @classmethod
+    def _compute_root_routing_manifest(cls, descriptor: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Build the minimum manifest needed to rank a newly visible scoped root."""
+        manifest: dict[str, dict[str, Any]] = {}
+        normalized_descriptor = cls._dedupe_root_descriptors([descriptor])
+        if not normalized_descriptor:
+            return manifest
+        root_descriptor = normalized_descriptor[0]
+        root_path = cls._normalize_path(root_descriptor.get("rootPath"))
+        root = Path(root_path)
+        if not root.exists() or not root.is_dir():
+            return manifest
+        for skill_file in sorted(root.glob("*/SKILL.md")):
+            try:
+                stat = skill_file.stat()
+            except OSError:
+                continue
+            instruction_path = cls._normalize_path(skill_file)
+            content_hash = cls._file_sha1(skill_file)
+            manifest[instruction_path] = {
+                "key": instruction_path,
+                "manifestKey": instruction_path,
+                "instructionPath": instruction_path,
+                "skillRoot": cls._normalize_path(skill_file.parent),
+                "folder": skill_file.parent.name,
+                "rootPath": root_path,
+                "sourceType": str(root_descriptor.get("sourceType") or "global").strip() or "global",
+                "visibility": str(root_descriptor.get("visibility") or "global").strip() or "global",
+                "workspacePath": cls._normalize_path(root_descriptor.get("workspacePath")),
+                "workspaceId": str(root_descriptor.get("workspaceId") or "").strip() or None,
+                "projectId": str(root_descriptor.get("projectId") or "").strip() or None,
+                "mtimeNs": int(stat.st_mtime_ns),
+                "size": int(stat.st_size),
+                "contentHash": content_hash,
+                "manifestHash": content_hash,
+                "manifestScope": "routing",
+            }
+        return manifest
+
+    @classmethod
     def _refresh_alias_snapshot(cls, entry: dict[str, Any]) -> dict[str, Any]:
         next_entry = dict(entry)
         next_entry["aliasSnapshot"] = cls._build_alias_snapshot(next_entry)
@@ -2414,6 +2487,8 @@ class SkillLoader:
         *,
         descriptor: dict[str, Any],
         manifest_item: dict[str, Any],
+        summarize_structure: bool = True,
+        allow_llm_profile_inference: bool = True,
     ) -> dict[str, Any] | None:
         instruction_path = Path(str(manifest_item.get("instructionPath") or ""))
         if not instruction_path.exists() or not instruction_path.is_file():
@@ -2463,6 +2538,8 @@ class SkillLoader:
             file_path=instruction_path,
             descriptor=descriptor,
             content=content,
+            summarize_structure=summarize_structure,
+            allow_llm_profile_inference=allow_llm_profile_inference,
         )
         if entry is None:
             return None
@@ -2488,6 +2565,8 @@ class SkillLoader:
         descriptor: dict[str, Any],
         *,
         manifest: dict[str, dict[str, Any]] | None = None,
+        summarize_structure: bool = True,
+        allow_llm_profile_inference: bool = True,
     ) -> dict[str, dict]:
         current_manifest = manifest if manifest is not None else cls._compute_root_manifest(descriptor)
         root_path = cls._descriptor_cache_key(descriptor)
@@ -2523,7 +2602,12 @@ class SkillLoader:
                     reused = cls._refresh_alias_snapshot(reused)
                 registry[str(reused.get("skillId"))] = reused
                 continue
-            entry = cls._scan_single_skill_descriptor(descriptor=descriptor, manifest_item=manifest_item)
+            entry = cls._scan_single_skill_descriptor(
+                descriptor=descriptor,
+                manifest_item=manifest_item,
+                summarize_structure=summarize_structure,
+                allow_llm_profile_inference=allow_llm_profile_inference,
+            )
             if entry is not None:
                 registry[str(entry.get("skillId"))] = entry
         return registry
@@ -2750,6 +2834,8 @@ class SkillLoader:
         file_path: Path,
         descriptor: dict[str, Any],
         content: str,
+        summarize_structure: bool = True,
+        allow_llm_profile_inference: bool = True,
     ) -> dict[str, Any] | None:
         if not content.startswith("---"):
             return None
@@ -2769,7 +2855,14 @@ class SkillLoader:
         source_type = str(descriptor.get("sourceType") or "global").strip() or "global"
         normalized_skill_root = cls._normalize_path(skill_root)
         normalized_instruction_path = cls._normalize_path(file_path)
-        available_files = cls._summarize_skill_structure(skill_root)
+        if summarize_structure:
+            available_files = cls._summarize_skill_structure(skill_root)
+        else:
+            available_files = [
+                f"{subdir_name}/"
+                for subdir_name in ("references", "scripts", "assets", "templates", "examples")
+                if (skill_root / subdir_name).exists() and (skill_root / subdir_name).is_dir()
+            ]
         aliases = cls._normalize_hint_items(frontmatter.get("aliases"))
         triggers = cls._normalize_hint_items(frontmatter.get("triggers"))
         keywords = cls._normalize_hint_items(frontmatter.get("keywords"))
@@ -2798,6 +2891,7 @@ class SkillLoader:
             has_templates=bool(templates_dir),
             has_examples=bool(examples_dir),
             has_assets=bool(assets_dir),
+            allow_llm_inference=allow_llm_profile_inference,
         )
         theme_profile = cls._derive_theme_profile(
             name=name,
@@ -2810,6 +2904,7 @@ class SkillLoader:
             keywords=keywords,
             tags=tags,
             skill_class=str(capability_profile.get("skillClass") or "general").strip() or "general",
+            allow_llm_inference=allow_llm_profile_inference,
         )
         capability_tags = cls._derive_capability_tags(
             capability_profile=capability_profile,
@@ -3171,6 +3266,20 @@ class SkillLoader:
                 dirty_root_paths.discard(root_path)
             changed_root_paths.update(removed_root_paths)
 
+        # A global watcher can spend seconds hashing its roots while a chat
+        # turn discovers and caches a workspace-scoped overlay.  Do not let
+        # the watcher's older snapshot erase that newer overlay at commit.
+        # The watcher remains authoritative for the global roots it inspected;
+        # only concurrently-added scoped overlays outside that write set are
+        # merged forward.
+        for root_path, state in cls._root_inventory_states.items():
+            if (
+                root_path not in current_root_paths
+                and root_path not in removed_root_paths
+                and bool((state or {}).get("scopedOverlay"))
+            ):
+                next_states[root_path] = state
+
         aggregate_descriptors = (
             normalized_descriptors
             if compare_existing
@@ -3294,6 +3403,41 @@ class SkillLoader:
                 snapshot.get("rootDescriptors") or []
             )
             return snapshot
+        changed_scoped_root_paths: set[str] = set()
+        for descriptor in normalized_visible_descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            state = cls._root_inventory_states.get(root_path) or {}
+            if not root_path or not state.get("scopedOverlay"):
+                continue
+            routing_stamp = cls._root_routing_stamp(descriptor)
+            descriptor_signature = cls._root_descriptors_signature([descriptor])
+            if (
+                str(state.get("routingStamp") or "") == routing_stamp
+                and str(state.get("descriptorSignature") or "") == descriptor_signature
+            ):
+                continue
+            manifest = cls._compute_root_routing_manifest(descriptor)
+            registry = cls._scan_single_root_descriptor(
+                descriptor,
+                manifest=manifest,
+                summarize_structure=False,
+                allow_llm_profile_inference=False,
+            )
+            cls._root_inventory_states[root_path] = {
+                "descriptor": dict(descriptor),
+                "descriptorSignature": descriptor_signature,
+                "manifest": manifest,
+                "registry": registry,
+                "rootRevision": cls._root_manifest_fingerprint(descriptor, manifest),
+                "routingStamp": routing_stamp,
+                "lastScanAt": cls._now_iso(),
+                "dirty": False,
+                "scopedOverlay": True,
+            }
+            changed_scoped_root_paths.add(root_path)
+        if changed_scoped_root_paths:
+            cls._invalidate_visible_inventory_cache(changed_scoped_root_paths)
+
         tracked_root_paths = set(cls._root_inventory_states)
         missing_descriptors = [
             descriptor
@@ -3352,14 +3496,31 @@ class SkillLoader:
             root_path = cls._descriptor_cache_key(descriptor)
             if not root_path or root_path in excluded_root_paths:
                 continue
-            descriptor_manifest = cls._compute_root_manifest(descriptor)
-            live_registry = cls._scan_single_root_descriptor(descriptor)
+            descriptor_manifest = cls._compute_root_routing_manifest(descriptor)
+            live_registry = cls._scan_single_root_descriptor(
+                descriptor,
+                manifest=descriptor_manifest,
+                summarize_structure=False,
+                allow_llm_profile_inference=False,
+            )
+            root_revision = cls._root_manifest_fingerprint(descriptor, descriptor_manifest)
+            cls._root_inventory_states[root_path] = {
+                "descriptor": dict(descriptor),
+                "descriptorSignature": cls._root_descriptors_signature([descriptor]),
+                "manifest": descriptor_manifest,
+                "registry": live_registry,
+                "rootRevision": root_revision,
+                "routingStamp": cls._root_routing_stamp(descriptor),
+                "lastScanAt": cls._now_iso(),
+                "dirty": False,
+                "scopedOverlay": True,
+            }
             merged_registry.update(live_registry)
             missing_root_paths.append(root_path)
             fingerprint_payload.append(
                 {
                     "rootPath": root_path,
-                    "rootRevision": cls._root_manifest_fingerprint(descriptor, descriptor_manifest),
+                    "rootRevision": root_revision,
                 }
             )
         snapshot = cls._inventory_snapshot(
@@ -3374,6 +3535,9 @@ class SkillLoader:
             visible_registry_cache_hit=False,
         )
         snapshot["dirtyVisibleRoots"] = cls._dirty_root_paths_for_descriptors(snapshot.get("rootDescriptors") or [])
+        if not excluded_root_paths:
+            visible_cache_key = cls._visible_inventory_cache_key(normalized_visible_descriptors)
+            cls._visible_inventory_cache[visible_cache_key] = dict(snapshot)
         return snapshot
 
     @classmethod

@@ -1,6 +1,8 @@
 import json
 from copy import deepcopy
 
+import pytest
+
 from langchain_core.messages import HumanMessage
 
 from core.delegation_broker import (
@@ -14,8 +16,11 @@ from core.engineering_capsule import effective_engineering_capsule
 from core.tools.native.delegation import (
     _apply_legacy_dispatch_target_count,
     _compact_upstream_handoff_for_agent,
+    _inject_inherited_handoffs_into_tasks,
+    _apply_delegation_tool_defaults,
     _delegation_task_has_parallel_peer,
     _terminalize_grandchild_task_brief,
+    delegation_broker,
 )
 from graph.agent_factories import (
     _delegated_preferred_language,
@@ -412,6 +417,83 @@ def test_compact_upstream_handoff_distinguishes_parent_redelivery_from_child_rea
     assert "recoveryRefs" not in truncation
 
 
+def test_accepted_research_reaches_readonly_verifier_with_readable_detail():
+    source = {
+        "kind": "research_evidence_bundle", "status": "ready",
+        "producerEpisodeId": "episode_research", "handoffRefId": "handoff_research",
+        "evidenceBundleId": "research_exact", "summary": "S" * 8000,
+        "rawRef": "toolobs://accepted-evidence",
+        "detailTool": "tool_observation_detail(raw_ref='toolobs://accepted-evidence', max_chars=60000)",
+    }
+    tasks = _inject_inherited_handoffs_into_tasks([
+        {"goal": "只读验证证据", "readOnly": True, "evidenceRefs": ["research_exact"], "expectedOutputs": ["来源矩阵"]},
+        {"goal": "No unrelated evidence", "readOnly": True, "evidenceRefs": ["research_other"]},
+    ], {"handoffRefs": [source]})
+    task, unmatched = _apply_delegation_tool_defaults(tasks)
+    assert "upstreamHandoffs" not in unmatched["context"]
+    assert task["toolPolicy"]["allowedTools"] == ["tool_observation_detail"]
+    assert not task["context"]["evidenceResolutionDiagnostics"]["unresolvedRefs"]
+    prompt = _format_delegated_task_contract(task)
+    assert "toolobs://accepted-evidence" in prompt
+    assert "max_chars=60000" in prompt
+    assert "start_char" in prompt
+    assert "Artifact Write Discipline:" not in prompt
+
+
+def test_delegation_model_schema_preserves_typed_readonly_boundary():
+    schema = delegation_broker.args_schema.model_json_schema()
+    task_fields = schema["$defs"]["DelegationTaskInput"]["properties"]
+    assert task_fields["readOnly"]["type"] == "boolean"
+    assert task_fields["writeRequired"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize("policy_mode", ["default", "none"])
+@pytest.mark.parametrize("typed_readonly", [False, True])
+def test_research_verification_schema_to_prompt_preserves_recovery_and_denials(policy_mode, typed_readonly):
+    raw = {
+        "taskBriefId": "review-evidence",
+        "goal": "核对逐条证据和结论",
+        "behaviorScope": ["只读验证，不得写入，不得继续委派"],
+        "expectedOutputs": ["claim ID、引用键、实际 URL 和核验结论"],
+        "acceptanceContract": ["不得臆造未读到的证据"],
+        "evidenceRefs": ["research_exact"],
+        "toolPolicy": {"mode": policy_mode, "allowedTools": []},
+    }
+    if typed_readonly:
+        raw.update(readOnly=True, writeRequired=False, allowChildDelegation=False)
+    source = {
+        "kind": "research_evidence_bundle", "status": "ready",
+        "evidenceBundleId": "research_exact", "summary": "摘要，不含逐条证据",
+        "rawRef": "toolobs://accepted-evidence",
+        "detailTool": "tool_observation_detail(raw_ref='toolobs://accepted-evidence')",
+        "claimTable": [{"claimId": "claim-1", "evidenceExcerpt": "完整证据"}],
+        "sources": [{"citationKey": "S1", "url": "https://example.org/source"}],
+        "answer": "已验收但仍须独立复核的回答",
+    }
+    original = deepcopy(raw)
+    tasks = _inject_inherited_handoffs_into_tasks(
+        [normalize_task_brief(raw)], {"handoffRefs": [source]},
+    )
+    task = _apply_delegation_tool_defaults(tasks)[0]
+    compact = task["context"]["upstreamHandoffs"][0]
+    assert compact["truncation"]["omittedByField"]["claimTable"]["omittedCount"] == 1
+    prompt = _format_delegated_task_contract(task)
+    assert "Handoff Recovery Requirements:" in prompt
+    assert "Handoff Consumption Discipline:" in prompt
+    assert "toolobs://accepted-evidence" in prompt
+    if policy_mode == "none":
+        assert task["toolPolicy"]["mode"] == "none"
+        assert task["allowedTools"] == []
+        assert "does not authorize" in prompt
+    elif typed_readonly:
+        assert task["toolPolicy"]["allowedTools"] == ["tool_observation_detail"]
+    else:
+        # Prose is not a typed permission grant.
+        assert task["toolPolicy"]["mode"] == "default"
+        assert task.get("readOnly") is not True
+    assert raw == original
+
+
 def test_compact_upstream_handoff_accepts_non_toolobs_raw_ref_with_explicit_detail_tool():
     compact = _compact_upstream_handoff_for_agent(
         {
@@ -716,6 +798,18 @@ def test_latest_typed_delegation_status_supersedes_corrected_blocker():
     )
 
     assert _subagent_governance_terminal_failure([blocked, completed]) is None
+
+
+@pytest.mark.parametrize("code, expected", [("timeout", "delegation_model_timeout"), ("", "delegation_worker_failed")])
+def test_agent_exception_command_preserves_typed_failure_for_branch_summary(code, expected):
+    from graph.supervisor_support import build_agent_runtime_failure_command
+
+    error = RuntimeError("provider request did not complete")
+    error.code = code
+    command = build_agent_runtime_failure_command(agent_name="Verification Engineer", exc=error)
+
+    assert command.goto == "supervisor"
+    assert _subagent_governance_terminal_failure(command.update["messages"]) == ("failed", expected)
 
 
 def test_in_graph_incomplete_child_dispatch_repairs_to_read_only_parent_mirror():

@@ -13,12 +13,38 @@ from graph.agent_factories import (
     _delegated_write_tool_observation,
     _required_write_tool_choice,
     _restore_required_artifact_tools,
+    _task_brief_requires_artifact_write,
     build_agent_node,
     build_reviewer_node,
     create_subagent_chat_model,
     subagent_model_kwargs,
 )
 from graph.supervisor_builder import _is_request_model_override, build_supervisor_runtime_bundle
+
+
+@pytest.mark.parametrize("task", [
+    {"goal": "只读验证来源", "expectedOutputs": ["来源—结论绑定矩阵", "仍不确定项清单"]},
+    {"goal": "Review SKILL.md; 不要写入文件", "context": {"notes": "旧任务生成文件 verification-report.md"}},
+    {"context": {"readOnly": True, "artifactWriteDiscipline": "Do not write"}, "expectedOutputs": ["review.md"]},
+    {"readOnly": True, "writeRequired": True},
+])
+def test_readonly_evidence_does_not_create_artifact_obligation(task):
+    assert not _task_brief_requires_artifact_write(task)
+    assert _required_write_tool_choice(
+        task_brief=task, messages=[], agent_id="worker",
+        write_observation={}, write_tool_visible=True,
+    ) is None
+
+
+@pytest.mark.parametrize("task", [
+    {"writeRequired": True},
+    {"writeSet": ["result.md"], "expectedOutputs": ["result.md"], "acceptanceContract": "exists"},
+    {"engineeringTaskCapsule": {"writeRequired": True, "writeSet": ["result.md"]}},
+    {"context": {"engineeringExecutionContract": {"writeRequired": True}}},
+    {"deliverableKind": "artifact"},
+])
+def test_explicit_artifact_obligation_remains_enforced(task):
+    assert _task_brief_requires_artifact_write(task)
 
 
 def test_subagent_model_budget_uses_configured_model_limit(monkeypatch):
@@ -116,6 +142,47 @@ def test_provider_duplicate_tool_projection_counts_as_one_call():
     assert observation["toolCallCount"] == 1
     assert observation["exactRepeatCount"] == 1
     assert observation["blocked"] is False
+
+
+def test_delegated_tool_budget_counts_full_history_not_bounded_prompt_window():
+    instruction = HumanMessage(
+        content="delegated",
+        additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
+    )
+    messages = [instruction]
+    for index in range(48):
+        messages.extend(
+            [
+                _owned_tool_call(
+                    "web_broker",
+                    f"web-{index}",
+                    {"target": f"official evidence query {index}"},
+                ),
+                ToolMessage(
+                    content=f"search result {index}",
+                    name="web_broker",
+                    tool_call_id=f"web-{index}",
+                ),
+            ]
+        )
+
+    bounded = _bounded_delegated_task_messages(messages, {"goal": "Inspect evidence"})
+    full_observation = _delegated_tool_loop_observation(
+        messages,
+        agent_id="worker",
+        current_message=messages[-2],
+    )
+    bounded_observation = _delegated_tool_loop_observation(
+        bounded,
+        agent_id="worker",
+        current_message=messages[-2],
+    )
+
+    assert len(bounded) <= 28
+    assert full_observation["toolCallCount"] == 48
+    assert full_observation["blocked"] is True
+    assert full_observation["reason"] == "delegated_tool_call_budget_exhausted"
+    assert bounded_observation["toolCallCount"] < 48
 
 
 def test_ownerless_branch_write_receipt_still_stops_required_tool_choice():

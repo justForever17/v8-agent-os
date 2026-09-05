@@ -2469,6 +2469,17 @@ def _provider_prefers_agent_browser_profile(provider: str) -> bool:
     return str(provider or "").strip().lower() in {"metaso", "baidu"}
 
 
+def _provider_browser_search_wait_ms(provider: str, timeout_seconds: float) -> int:
+    preferred = {"metaso": 4_500, "baidu": 2_500}.get(
+        str(provider or "").strip().lower(),
+        0,
+    )
+    if preferred <= 0:
+        return 0
+    usable_budget_ms = max(0, int(max(0.0, timeout_seconds) * 1000) - 500)
+    return min(preferred, usable_budget_ms)
+
+
 def _agent_browser_profile_search_skip(provider: str, search_url: str) -> dict[str, Any] | None:
     if not _provider_prefers_agent_browser_profile(provider):
         return None
@@ -6445,6 +6456,7 @@ def web_search(
                 }
                 return json.dumps(response, ensure_ascii=False, indent=2)
             if provider == "metaso":
+                profile_route_ready = bool(_agent_browser_profile_allowed(search_url)[0])
                 use_browser_for_provider = bool(
                     _SOURCE_ROUTER_BROWSER_FALLBACK.get()
                     and (
@@ -6454,21 +6466,34 @@ def web_search(
                 )
                 if use_browser_for_provider:
                     structured_route = "api" if _provider_api_key("metaso") else "public_sse"
-                    metaso_structured = (
-                        _metaso_api_search(
-                            query,
-                            limit=limit,
-                            vertical=requested_vertical,
-                            timeout_seconds=provider_timeout,
+                    profile_first = structured_route == "public_sse" and profile_route_ready
+                    if profile_first:
+                        attempted_providers.append(
+                            {
+                                "provider": provider,
+                                "route": structured_route,
+                                "status": "skipped",
+                                "failureClass": "authenticated_profile_preferred",
+                                "reason": "avoid_public_sse_budget_before_authenticated_browser",
+                            }
                         )
-                        if structured_route == "api"
-                        else _metaso_search_public(
-                            query,
-                            limit=limit,
-                            vertical=requested_vertical,
-                            timeout_seconds=provider_timeout,
+                        metaso_structured = {"ok": False, "profileFirst": True}
+                    else:
+                        metaso_structured = (
+                            _metaso_api_search(
+                                query,
+                                limit=limit,
+                                vertical=requested_vertical,
+                                timeout_seconds=provider_timeout,
+                            )
+                            if structured_route == "api"
+                            else _metaso_search_public(
+                                query,
+                                limit=limit,
+                                vertical=requested_vertical,
+                                timeout_seconds=provider_timeout,
+                            )
                         )
-                    )
                     if bool(metaso_structured.get("ok")):
                         structured_results = (
                             metaso_structured.get("results")
@@ -6532,7 +6557,7 @@ def web_search(
                                 or metaso_structured.get("failureClass")
                                 or "metaso_structured_results_rejected"
                             )
-                    else:
+                    elif not metaso_structured.get("profileFirst"):
                         attempted_providers.append(
                             {
                                 "provider": provider,
@@ -6748,15 +6773,29 @@ def web_search(
                     ensure_ascii=False,
                     indent=2,
                 )
+            browser_remaining = total_timeout_seconds - (time.monotonic() - started_at)
+            if browser_remaining <= 0:
+                attempted_providers.append(
+                    {
+                        "provider": provider,
+                        "status": "deadline_exhausted_before_profile_browser",
+                    }
+                )
+                continue
+            browser_timeout = min(provider_timeout, browser_remaining)
             payload = _fetch_with_scrapling_internal(
                 search_url,
                 mode=mode,
                 headless=True,
                 referer_mode=referer_mode,
                 referer_url=referer_url,
-                timeout_seconds=provider_timeout,
+                timeout_seconds=browser_timeout,
                 use_agent_browser_profile=effective_use_agent_browser_profile,
-                browser_wait_ms=1_500 if provider == "metaso" else 0,
+                browser_wait_ms=(
+                    _provider_browser_search_wait_ms(provider, browser_timeout)
+                    if effective_use_agent_browser_profile
+                    else 0
+                ),
             )
             soup = BeautifulSoup(payload.html, "html.parser")
             results = _extract_search_results(soup, provider=provider, limit=limit)

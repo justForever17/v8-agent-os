@@ -1,6 +1,44 @@
 from __future__ import annotations
 
 import json
+import pytest
+
+
+@pytest.mark.parametrize("surface_budget", [None, 750])
+def test_plain_evidence_pagination_is_lossless_and_redacts_before_boundaries(tmp_path, monkeypatch, surface_budget):
+    import re
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+    from core.tool_observation_detail import render_tool_observation_detail, _redact_tool_observation_preview
+    from core.tool_surface import record_raw_observation, apply_tool_surface_budget
+    from langchain_core.messages import ToolMessage
+
+    monkeypatch.setattr(observability_module, "observability_db", ObservabilityDatabaseManager(tmp_path / "observations.db"))
+    body = "A" * 495 + "\nAuthorization: Bearer sk-secret-value\n" + "证据\n" * 900 + "TAIL"
+    ref = record_raw_observation(
+        tool_name="research_evidence_delivery", tool_call_id=None,
+        runtime_kind="research", surface="agent", raw_content=body,
+    )
+    offset = 0
+    pieces = []
+    for _ in range(20):
+        page = render_tool_observation_detail(ref, max_chars=60000 if surface_budget else 500, start_char=offset)
+        if surface_budget:
+            result = apply_tool_surface_budget(
+                ToolMessage(content=page, name="tool_observation_detail", tool_call_id="page"),
+                {"agentVisibleBudget": surface_budget},
+            )
+            page = str(result.content)
+            assert len(page) <= surface_budget
+        assert "sk-secret-value" not in page
+        pieces.append(page.split("<preview>\n", 1)[1].split("\n</preview>", 1)[0])
+        next_page = re.search(r"next_start_char=(\d+)", page)
+        if not next_page:
+            assert "[end of observation]" in page
+            break
+        assert int(next_page[1]) > offset
+        offset = int(next_page[1])
+    assert "".join(pieces) == _redact_tool_observation_preview(body)
 
 
 def test_renderer_rejects_invalid_raw_ref() -> None:

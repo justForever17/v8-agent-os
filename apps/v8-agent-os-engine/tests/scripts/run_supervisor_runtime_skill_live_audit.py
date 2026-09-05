@@ -12,11 +12,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
-REPO_ROOT = ENGINE_ROOT.parents[2]
+REPO_ROOT = ENGINE_ROOT.parents[1]
 DEFAULT_ENGINE_URL = "http://127.0.0.1:9530"
 DEFAULT_REPORT_ROOT = Path(os.environ.get("V8_AGENT_OS_REPORTS_ROOT") or (Path.home() / ".v8-agent-os" / "reports"))
 HUASHU_NUWA_SKILL_ROOT = Path.home() / ".agents" / "skills" / "huashu-nuwa"
@@ -24,6 +24,7 @@ TOKEN_RE = re.compile(
     r"(?i)(bearer\s+)[a-z0-9._\-]+|((?:api[_-]?key|token|cookie|authorization)[\"'\s:=]+)[^\"'\s,;]+"
 )
 PURE_RESEARCH_CASE_ID = "pure_research_delivery"
+RESEARCH_DELEGATED_VERIFICATION_CASE_ID = "research_delegated_verification"
 PURE_RESEARCH_MIN_EFFECTIVE_CHARS = 3_000
 PURE_RESEARCH_MIN_SOURCE_COUNT = 5
 PURE_RESEARCH_TARGET_EFFECTIVE_CHARS = 5_000
@@ -73,6 +74,7 @@ class LiveCaseResult:
     run_id: str | None = None
     status: str = "pending"
     latency_ms: int | None = None
+    poll_elapsed_ms: int | None = None
     failure_reason: str | None = None
     actual_tools: list[str] = field(default_factory=list)
     observed_topics: list[str] = field(default_factory=list)
@@ -83,6 +85,7 @@ class LiveCaseResult:
     handoffs: list[dict[str, Any]] = field(default_factory=list)
     tool_invocations: list[dict[str, Any]] = field(default_factory=list)
     research_completed_seq: int | None = None
+    web_activity_audit: dict[str, Any] | None = None
 
 
 def _redact(value: Any) -> str:
@@ -312,15 +315,40 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
                     "透明度/版权/模型文档义务、既有模型过渡规则、GPAI Code of Practice 的法律作用及执法罚则"
                     "分别是什么？请严格区分法规原文、欧盟委员会或 AI Office 后续指南、行业实践和仍待明确事项，"
                     "并给出面向 2026 年下半年准备上线或继续运营模型团队的可执行清单。最终回答必须真正回答问题，"
-                    "提供明确的截至日期和时效证据；至少保留 5 个可访问来源、3000 个有效字符，这是拒绝线，不是"
-                    "质量目标。正常目标是至少 8 个独立可读来源、5000 个有效字符、8 条来源支撑的关键结论；信息"
-                    "不够就继续获取来源和细节，不得凑字、重复或捏造。Supervisor 应直接消费深度调研回流的完整"
+                    "提供明确的截至日期和时效证据；至少保留 5 个可访问来源。正常目标是 8 个独立可读来源、"
+                    "8 条来源支撑的关键结论；字数仅为推荐指标，按证据自然长短，不能因偏短而拒收或要求凑字。"
+                    "关键证据不够才继续获取，不得重复或捏造。Supervisor 应直接消费深度调研回流的完整"
                     "证据答案，不要再自行调用 web_search/web_broker/web_read 做二次搜索。本次是实际 live 验收，"
                     "不得复用既有经验包；深度调研运行必须在 inputs 或 taskBrief context 中设置 "
                     "forceRefresh=true。"
                 ),
                 expected_any_tools=["research_broker", "runtime_broker"],
                 expected_episode_kinds=["research"],
+                source_required=True,
+            )
+        ]
+    if selected_case == RESEARCH_DELEGATED_VERIFICATION_CASE_ID:
+        return [
+            LiveCaseSpec(
+                case_id=RESEARCH_DELEGATED_VERIFICATION_CASE_ID,
+                title="深度调研证据应经独立子代理复核后由 Supervisor 交付",
+                prompt=(
+                    "这是一次真实深度调研与独立复核验收，不写文件、不执行工程修改。请先交给深度调研，"
+                    "核查截至 2026 年 9 月 3 日，中国面向公众提供生成式人工智能服务时，"
+                    "《生成式人工智能服务管理暂行办法》《互联网信息服务深度合成管理规定》"
+                    "《人工智能生成合成内容标识办法》及配套强制性国家标准之间的适用关系、关键日期、"
+                    "提供者义务和上线检查清单。至少保留 5 个实际读取并可追溯的官方来源，逐项绑定结论，"
+                    "不得把搜索摘要当作网页证据。深度调研证据回流后，必须由 Supervisor 再调用"
+                    " delegation_broker，委派 Verification Engineer 做一个独立、只读验证子任务："
+                    "核对法规层级、关键日期、关键义务以及每个来源是否真的支持对应结论；验证者不得写文件、"
+                    "不得继续委派。复核至少3条关键结论，每条用一行列出原始 claimId、[S#]、实际读取的完整 URL、"
+                    "原文/转载/解读/草案身份与核验结论；不得按序重新编号，不得把镜像URL替换成原发布站点。"
+                    "Supervisor 收到验证 handoff 后再面向用户交付完整研究答案、复核结论和"
+                    "仍不确定项，不得把 raw handoff 或内部 JSON 当作最终回答，也不要调用工程运行时。"
+                ),
+                expected_any_tools=["research_broker", "runtime_broker"],
+                expected_all_tools=["delegation_broker"],
+                expected_episode_kinds=["research", "delegation"],
                 source_required=True,
             )
         ]
@@ -371,7 +399,7 @@ def _submit_case(
             "contextMentions": case.context_mentions or None,
         },
     }
-    if case.case_id == PURE_RESEARCH_CASE_ID:
+    if case.case_id in {PURE_RESEARCH_CASE_ID, RESEARCH_DELEGATED_VERIFICATION_CASE_ID}:
         payload["data"].update(
             {
                 "supervisorWorkMode": "daily",
@@ -613,7 +641,14 @@ def _load_run_terminal(result: LiveCaseResult) -> tuple[bool, dict[str, Any]]:
     episodes, _handoffs, error = _load_durable_episode_facts(result)
     if error:
         facts["episodeError"] = error
-    terminal_episode_states = {"completed", "failed", "cancelled", "canceled", "merged"}
+    terminal_episode_states = {
+        "completed",
+        "failed",
+        "cancelled",
+        "canceled",
+        "interrupted",
+        "merged",
+    }
     active_episodes = [
         item
         for item in episodes
@@ -631,7 +666,15 @@ def _load_run_terminal(result: LiveCaseResult) -> tuple[bool, dict[str, Any]]:
     if result.run_id and facts.get("runRecordFound") is not True:
         facts["runRecordMissing"] = True
         return False, facts
-    if result.run_id and run_status and run_status not in {"completed", "failed", "cancelled", "canceled", "succeeded", "success"}:
+    if result.run_id and run_status and run_status not in {
+        "completed",
+        "failed",
+        "cancelled",
+        "canceled",
+        "interrupted",
+        "succeeded",
+        "success",
+    }:
         return False, facts
     if result.run_id and run_status in {"completed", "succeeded", "success"}:
         return True, facts
@@ -648,7 +691,15 @@ def _api_run_terminal_facts(
     """Read the matching run's terminal state from remotely polled events."""
 
     target_run_id = str(run_id or "").strip()
-    terminal_statuses = {"completed", "failed", "cancelled", "canceled", "succeeded", "success"}
+    terminal_statuses = {
+        "completed",
+        "failed",
+        "cancelled",
+        "canceled",
+        "interrupted",
+        "succeeded",
+        "success",
+    }
     latest: dict[str, Any] = {}
     for event in events:
         payload = _event_payload(event)
@@ -681,6 +732,8 @@ def _api_run_terminal_facts(
             status = "failed"
         elif topic in {"run.cancelled", "run.canceled"}:
             status = "cancelled"
+        elif topic == "run.interrupted":
+            status = "interrupted"
         else:
             continue
         try:
@@ -699,22 +752,58 @@ def _api_run_terminal_facts(
                 payload.get("error")
                 or payload.get("error_message")
                 or payload.get("errorMessage")
-                or (payload.get("reason") if status in {"failed", "cancelled", "canceled"} else "")
+                or (
+                    payload.get("reason")
+                    if status in {"failed", "cancelled", "canceled", "interrupted"}
+                    else ""
+                )
                 or ""
             ).strip(),
         }
     return bool(latest), latest
 
 
-def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> LiveCaseResult:
+def _cancel_timed_out_case(engine_url: str, result: LiveCaseResult) -> None:
+    """Stop only this harness-owned run, without turning cleanup into a pass."""
+    if result.status != "timeout" or not result.run_id:
+        return
+    try:
+        response = _json_request(
+            f"{_engine_api_base(engine_url)}/runs/{result.run_id}/commands/cancel",
+            method="POST",
+            payload={"reason": "live_harness_deadline_exceeded"},
+            timeout=10,
+        )
+        result.key_events.append(_redact({"deadlineCleanup": {
+            "runId": result.run_id,
+            "commandAccepted": True,
+            "transitionTopic": (response.get("transition_event") or {}).get("topic"),
+        }}))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        result.key_events.append(_redact({
+            "deadlineCleanupError": f"{type(exc).__name__}: {exc}",
+            "runId": result.run_id,
+        }))
+
+
+def _poll_case(
+    engine_url: str,
+    result: LiveCaseResult,
+    *,
+    max_wait: float,
+    sample_web_activity: Callable[[], None] | None = None,
+) -> LiveCaseResult:
     if not result.session_id or result.status == "failed":
         return result
     after_seq = 0
     start = time.time()
+    poll_started = time.perf_counter()
     last_event_at = start
     terminal_seen_at: float | None = None
     api_terminal_facts: dict[str, Any] = {}
     while time.time() - start < max_wait:
+        if sample_web_activity is not None:
+            sample_web_activity()
         query = f"?after_seq={after_seq}" if after_seq else ""
         try:
             response = _json_request(
@@ -766,7 +855,18 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
         if terminal and terminal_seen_at is None:
             terminal_seen_at = time.time()
         if terminal and (time.time() - last_event_at > 2 or (terminal_seen_at is not None and time.time() - terminal_seen_at > 5)):
-            result.status = "completed"
+            terminal_status = str(
+                facts.get("runStatus")
+                or facts.get("apiTerminalStatus")
+                or "completed"
+            ).strip().lower()
+            result.status = (
+                "completed"
+                if terminal_status in {"completed", "succeeded", "success"}
+                else "failed"
+            )
+            if result.status == "failed":
+                result.failure_reason = f"run_status_{terminal_status or 'failed'}"
             result.key_events.append(_redact({"terminalFacts": facts})[:1600])
             break
         time.sleep(1.0)
@@ -779,6 +879,7 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
         result.failure_reason = "run_or_episode_not_terminal_within_max_wait"
         result.key_events.append(_redact({"timeoutFacts": facts, "terminal": terminal})[:1600])
 
+    result.poll_elapsed_ms = int((time.perf_counter() - poll_started) * 1000)
     durable_events, event_error = _load_durable_runtime_events(result)
     if event_error:
         result.key_events.append(_redact({"durableRuntimeEventsError": event_error}))
@@ -810,11 +911,6 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
     result.final_text = _extract_final_text(
         messages,
         preferred_run_id=result.run_id,
-        min_effective_chars=(
-            PURE_RESEARCH_MIN_EFFECTIVE_CHARS
-            if result.spec.case_id == PURE_RESEARCH_CASE_ID
-            else 0
-        ),
     )
     _terminal, terminal_facts = _load_run_terminal(result)
     run_status = str(terminal_facts.get("runStatus") or "").lower()
@@ -874,18 +970,8 @@ def _collect_handoff_tool_names(handoffs: list[dict[str, Any]]) -> list[str]:
 
     for handoff in list(handoffs or []):
         _walk(handoff)
-        try:
-            text = json.dumps(handoff, ensure_ascii=False)
-        except TypeError:
-            text = str(handoff)
-        for match in re.finditer(r"使用工具\s*[:：]\s*([A-Za-z0-9_.,，、/\\ -]+)", text):
-            raw = match.group(1).replace("\\n", " ").replace("\\r", " ")
-            for part in re.split(r"[,，、\s]+", raw):
-                name = part.strip().strip("'\"`\\")
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\\-]*", name):
-                    names.add(name)
-        for match in re.finditer(r'"(?:tool|toolName|tool_name)"\s*:\s*"([A-Za-z_][A-Za-z0-9_\\-]*)"', text):
-            names.add(match.group(1))
+        # Transcript prose is not an execution receipt. Parsing it counted
+        # headings such as "Tool observation detail" as three invoked tools.
     return sorted(names)
 
 
@@ -912,7 +998,6 @@ def _extract_final_text(
     messages: list[dict[str, Any]],
     *,
     preferred_run_id: str | None = None,
-    min_effective_chars: int = 0,
 ) -> str:
     candidates: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
@@ -935,36 +1020,23 @@ def _extract_final_text(
                 )
     if not candidates:
         return ""
+    normalized_run_id = str(preferred_run_id or "").strip()
+    if normalized_run_id:
+        candidates = [item for item in candidates if item["runId"] == normalized_run_id]
     completed = [
         item
         for item in candidates
-        if item["state"] in {"completed", "complete", "final", "finalized"} or item["finalized"]
+        if item["state"] in {"completed", "complete", "final", "finalized"}
+        or (not item["state"] and item["finalized"])
     ]
     if completed:
         candidates = completed
-    normalized_run_id = str(preferred_run_id or "").strip()
-    run_matched = [item for item in candidates if normalized_run_id and item["runId"] == normalized_run_id]
-    if run_matched:
-        candidates = run_matched
+    elif normalized_run_id or any(item["state"] for item in candidates):
+        # Preserve running/failed messages in the trace, not as final delivery.
+        return ""
+    if not candidates:
+        return ""
     selected = max(candidates, key=lambda item: int(item["ordinal"]))
-    selected_text = str(selected["text"])
-    progress_only = bool(
-        _effective_answer_chars(selected_text) < min_effective_chars
-        and not _explicit_degradation(selected_text)
-        and re.search(
-            r"handoff|回流|等待|处理中|继续执行|继续处理|已路由|runtime\s+episode|episode\s+(?:ready|completed)",
-            selected_text,
-            re.I,
-        )
-    )
-    if min_effective_chars > 0 and progress_only:
-        delivery_candidates = [
-            item
-            for item in candidates
-            if _effective_answer_chars(str(item["text"])) >= min_effective_chars
-        ]
-        if delivery_candidates:
-            selected = max(delivery_candidates, key=lambda item: int(item["ordinal"]))
     return str(selected["text"])
 
 
@@ -1155,6 +1227,7 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         or ""
     ).strip()
     verification_payload = {
+        "deliveryRequirements": payload.get("deliveryRequirements") or primary_result.get("deliveryRequirements") or {},
         "question": str(primary_result.get("query") or payload.get("query") or question).strip(),
         "freshness": primary_result.get("freshness") or payload.get("freshness") or "current",
         "asOf": as_of,
@@ -1243,8 +1316,6 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         == "high_quality",
         "recomputed_high_quality": not recomputed_issues,
         "advertised_metrics_match_recomputed": not metric_mismatches,
-        "answer_at_target": int(recomputed_metrics.get("effectiveAnswerChars") or 0)
-        >= PURE_RESEARCH_TARGET_EFFECTIVE_CHARS,
         "sources_at_target": int(recomputed_metrics.get("selectedSourceCount") or 0)
         >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
         "distinct_hosts_at_target": int(recomputed_metrics.get("distinctHostCount") or 0)
@@ -1261,11 +1332,7 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
         "answer_body_citation_spread_at_target": int(recomputed_metrics.get("answerCitedContentUnitCount") or 0)
         >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "dated_sources_at_target": int(recomputed_metrics.get("datedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_DATED_SOURCE_COUNT,
         "retrieved_sources_at_target": int(recomputed_metrics.get("retrievedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "fresh_retrieved_sources_at_target": int(recomputed_metrics.get("freshRetrievedSourceCount") or 0)
         >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
         "read_verified_sources_at_target": int(recomputed_metrics.get("readVerifiedSourceCount") or 0)
         >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
@@ -1276,7 +1343,7 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         "fresh_live_proven": fresh_live_proven,
         "experience_reuse_proven": reuse_proven,
         "answer_digest_matches": answer_digest_matches,
-        "as_of_current": recomputed_metrics.get("asOfCurrent") is True,
+        "as_of_valid": recomputed_metrics.get("asOfValid") is True,
         "no_critical_missing_evidence": not critical_missing,
         "no_recommended_queries": not recommended_queries,
     }
@@ -1593,20 +1660,6 @@ def _pure_research_findings(result: LiveCaseResult) -> list[AuditFinding]:
             regression_test="tests/runtime_core/test_runtime_episode_runner.py",
         )
 
-    effective_chars = int(diagnostic.get("finalEffectiveAnswerChars") or 0)
-    if effective_chars < PURE_RESEARCH_MIN_EFFECTIVE_CHARS:
-        _add(
-            "P0",
-            f"Supervisor 最终答案低于 {PURE_RESEARCH_MIN_EFFECTIVE_CHARS} 有效字符硬门槛：{effective_chars}。",
-            "消费并保留完整 Research answer，不得把高质量 handoff 压缩成短摘要。",
-        )
-    elif effective_chars < PURE_RESEARCH_TARGET_EFFECTIVE_CHARS:
-        _add(
-            "P1",
-            f"Supervisor 最终答案仅越过最低线，未达到 {PURE_RESEARCH_TARGET_EFFECTIVE_CHARS} 字符目标：{effective_chars}。",
-            "保留时间线、义务、例外、争议、执行清单和来源细节；不得靠重复凑字。",
-        )
-
     visible_sources = int(diagnostic.get("finalVisibleSourceCount") or 0)
     if visible_sources < PURE_RESEARCH_MIN_SOURCE_COUNT:
         _add(
@@ -1716,6 +1769,254 @@ def _pure_research_findings(result: LiveCaseResult) -> list[AuditFinding]:
             evidence={"issues": diagnostic.get("readabilityIssues"), "finalText": result.final_text[:1200]},
         )
     return findings
+
+
+def _verification_binding_audit(text: str, payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check the case's requested proof rows, not a verifier's self-reported success."""
+    expected: dict[tuple[str, str], set[str]] = {}
+    for payload in payloads:
+        for claim in payload.get("claimTable") or []:
+            claim_id = str(claim.get("claimId") or "").strip()
+            for source in claim.get("supportingSources") or []:
+                if not isinstance(source, dict):
+                    continue
+                key = str(source.get("citationKey") or "").strip("[]")
+                url = str(source.get("url") or source.get("sourceUrl") or "").strip()
+                if claim_id and key and url:
+                    expected.setdefault((claim_id, key), set()).add(url)
+    matched: set[str] = set()
+    mismatches: list[str] = []
+    for row in text.splitlines():
+        urls = set(_visible_source_urls(row))
+        if not urls:
+            continue
+        for (claim_id, key), allowed_urls in expected.items():
+            if not all(re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", row) for value in (claim_id, key)):
+                continue
+            if urls == allowed_urls:
+                matched.add(claim_id)
+            else:
+                mismatches.append(f"{claim_id}/{key}:source_url_mismatch")
+    required = min(3, len({claim_id for claim_id, _key in expected}))
+    return {"verifiedClaimIds": sorted(matched), "mismatches": sorted(set(mismatches)),
+            "passed": required > 0 and len(matched) >= required and not mismatches}
+
+
+def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[str, Any]:
+    research_payloads = _research_handoff_payloads(result)
+    research_answers = [_research_handoff_answer(payload) for payload in research_payloads]
+    research_answers = [answer for answer in research_answers if answer]
+    research_source_urls = sorted(
+        {
+            url
+            for payload in research_payloads
+            for url in _research_handoff_assessment(payload, question=result.spec.prompt).get("sourceUrls", [])
+            if str(url).strip()
+        }
+    )
+    delegation_episodes = [
+        item
+        for item in result.episodes
+        if str(item.get("kind") or item.get("runtimeKind") or item.get("episodeKind") or "").strip().lower()
+        == "delegation"
+    ]
+    delegation_episode_ids = {
+        str(item.get("episodeId") or item.get("id") or "").strip()
+        for item in delegation_episodes
+        if str(item.get("episodeId") or item.get("id") or "").strip()
+    }
+    delegation_handoffs: list[dict[str, Any]] = []
+    for handoff in result.handoffs:
+        episode_id = str(handoff.get("episode_id") or handoff.get("episodeId") or "").strip()
+        if episode_id in delegation_episode_ids:
+            delegation_handoffs.append(_handoff_payload(handoff) or handoff)
+    delegation_text = json.dumps(
+        {"episodes": delegation_episodes, "handoffs": delegation_handoffs},
+        ensure_ascii=False,
+        default=str,
+    )
+    delegation_states = [
+        str(item.get("state") or item.get("status") or "").strip().lower()
+        for item in delegation_episodes
+    ]
+    terminal_ok = bool(delegation_states) and all(
+        state in {"completed", "succeeded", "success", "terminated"}
+        for state in delegation_states
+    )
+    delegation_invocations = [
+        item
+        for item in result.tool_invocations
+        if str(item.get("toolName") or "").strip().lower() == "delegation_broker"
+        and _is_supervisor_owned_invocation(item)
+    ]
+    delegation_after_research = bool(
+        result.research_completed_seq is not None
+        and delegation_invocations
+        and min(int(item.get("seq") or 0) for item in delegation_invocations) > result.research_completed_seq
+    )
+    final_urls = _visible_source_urls(result.final_text)
+    final_mentions_review = bool(re.search(r"复核|验证|核验|审查", result.final_text, re.I))
+    verification_identity_present = bool(
+        re.search(r"verification[ _-]?engineer|验证工程师|复核工程师", delegation_text, re.I)
+    )
+    verification_result_present = bool(
+        terminal_ok
+        and any(
+            str(item.get("kind") or "") != "subagent_acceptance"
+            and str(item.get("status") or "").lower() in {"ok", "ready", "completed", "success"}
+            and not item.get("error")
+            and not item.get("errorCode")
+            and not re.search(
+                r"V8LLM\w*Error|\[.*?执行异常\]",
+                str(item.get("compactTranscript") or item.get("summary") or ""),
+            )
+            and re.search(
+                r"复核|验证|核验|审查|verify|verification|validated",
+                str(item.get("resultText") or item.get("summary") or item.get("compactTranscript") or ""),
+                re.I,
+            )
+            for item in delegation_handoffs
+        )
+    )
+    binding_audit = _verification_binding_audit("\n".join(
+        str(item.get("resultText") or item.get("summary") or item.get("compactTranscript") or "")
+        for item in delegation_handoffs
+        if str(item.get("kind") or "") != "subagent_acceptance"
+    ), research_payloads)
+    final_preserves_research = bool(
+        research_answers
+        and all(re.sub(r"\s+", "", answer) in re.sub(r"\s+", "", result.final_text) for answer in research_answers)
+    )
+    engineering_episodes = [
+        item
+        for item in result.episodes
+        if str(item.get("kind") or item.get("runtimeKind") or item.get("episodeKind") or "").strip().lower()
+        == "engineering"
+    ]
+    web_audit = result.web_activity_audit or {}
+    terminal_live = web_audit.get("terminalLive") if isinstance(web_audit.get("terminalLive"), dict) else {}
+    terminal_reload = web_audit.get("terminalReload") if isinstance(web_audit.get("terminalReload"), dict) else {}
+    parity = web_audit.get("parity") if isinstance(web_audit.get("parity"), dict) else {}
+    live_research_event_seqs = {
+        int(item.get("eventSeq") or 0)
+        for item in list(terminal_live.get("researchEvents") or [])
+        if isinstance(item, dict) and int(item.get("eventSeq") or 0) > 0
+    }
+    reload_research_event_seqs = {
+        int(item.get("eventSeq") or 0)
+        for item in list(terminal_reload.get("researchEvents") or [])
+        if isinstance(item, dict) and int(item.get("eventSeq") or 0) > 0
+    }
+    return {
+        "researchEvidenceBundleCount": len(research_payloads),
+        "researchSourceCount": len(research_source_urls),
+        "researchSourceUrls": research_source_urls,
+        "researchCompletedSeq": result.research_completed_seq,
+        "delegationEpisodeCount": len(delegation_episodes),
+        "delegationEpisodeStates": delegation_states,
+        "delegationHandoffCount": len(delegation_handoffs),
+        "delegationBrokerInvocations": delegation_invocations,
+        "delegationAfterResearch": delegation_after_research,
+        "verificationIdentityPresent": verification_identity_present,
+        "verificationResultPresent": verification_result_present,
+        "verificationBindings": binding_audit,
+        "delegationTerminal": terminal_ok,
+        "engineeringEpisodeCount": len(engineering_episodes),
+        "finalEffectiveAnswerChars": _effective_answer_chars(result.final_text),
+        "finalVisibleSourceCount": len(final_urls),
+        "finalMentionsReview": final_mentions_review,
+        "providerToolMarkupVisible": bool(re.search(
+            r"<tool_call\b|<invoke\s+name\s*=", result.final_text, re.I,
+        )),
+        "finalPreservesResearch": final_preserves_research,
+        "webAuditPerformed": bool(web_audit.get("performed")),
+        "webAuditErrors": list(web_audit.get("errors") or []),
+        "webLiveSampleCount": int(web_audit.get("liveSampleCount") or 0),
+        "webLiveRuntimeIds": list(web_audit.get("liveRuntimeIds") or []),
+        "webLiveSubagentIds": list(web_audit.get("liveSubagentIds") or []),
+        "webTerminalLiveRuntimeIds": sorted(
+            str(item.get("runtimeId") or "")
+            for item in list(terminal_live.get("runtimeCards") or [])
+            if isinstance(item, dict) and str(item.get("runtimeId") or "")
+        ),
+        "webTerminalReloadRuntimeIds": sorted(
+            str(item.get("runtimeId") or "")
+            for item in list(terminal_reload.get("runtimeCards") or [])
+            if isinstance(item, dict) and str(item.get("runtimeId") or "")
+        ),
+        "webTerminalLiveSubagentCount": len(list(terminal_live.get("subagentCards") or [])),
+        "webTerminalReloadSubagentCount": len(list(terminal_reload.get("subagentCards") or [])),
+        "webParity": parity,
+        "webResearchCompletionVisibleLive": bool(
+            result.research_completed_seq is not None
+            and result.research_completed_seq in live_research_event_seqs
+        ),
+        "webResearchCompletionVisibleReload": bool(
+            result.research_completed_seq is not None
+            and result.research_completed_seq in reload_research_event_seqs
+        ),
+    }
+
+
+def _delegated_research_verification_findings(result: LiveCaseResult) -> list[AuditFinding]:
+    diagnostic = _delegated_research_verification_diagnostic(result)
+    regression = (
+        "tests/scripts/run_supervisor_runtime_skill_live_audit.py --live "
+        f"--case {RESEARCH_DELEGATED_VERIFICATION_CASE_ID} --strict"
+    )
+    checks = [
+        (diagnostic["researchEvidenceBundleCount"] > 0, "Research 未产出可审计 evidence bundle。"),
+        (diagnostic["researchSourceCount"] >= 5, "Research evidence bundle 缺少至少 5 个实际来源。"),
+        (diagnostic["delegationEpisodeCount"] > 0, "Research 回流后没有创建独立验证委派。"),
+        (diagnostic["delegationHandoffCount"] > 0, "验证委派没有可消费的 durable handoff。"),
+        (diagnostic["delegationAfterResearch"], "验证委派没有发生在 Research 完成之后。"),
+        (diagnostic["verificationIdentityPresent"], "无法证明委派目标是 Verification Engineer。"),
+        (diagnostic["verificationResultPresent"], "委派 handoff 缺少真实复核结果。"),
+        (diagnostic["verificationBindings"]["passed"], "独立复核缺少精确 claim/引用/URL 证明或发生来源错配。"),
+        (diagnostic["delegationTerminal"], "验证委派未以成功终态结束。"),
+        (diagnostic["engineeringEpisodeCount"] == 0, "只读调研任务错误激活了 Engineering。"),
+        (diagnostic["finalEffectiveAnswerChars"] > 0, "Supervisor 最终交付缺失。"),
+        (diagnostic["finalVisibleSourceCount"] >= 3, "Supervisor 最终交付没有保留足够的可见来源。"),
+        (diagnostic["finalMentionsReview"], "Supervisor 最终交付没有说明独立复核结论。"),
+        (not diagnostic["providerToolMarkupVisible"], "Supervisor 用户交付泄露工具协议文本，不能作为合格答案。"),
+        (diagnostic["finalPreservesResearch"], "Supervisor 最终交付未保留 Research 的主要证据。"),
+    ]
+    if result.web_activity_audit is not None:
+        checks.extend(
+            [
+                (diagnostic["webAuditPerformed"], "没有完成真实 Web 活动卡验收。"),
+                (not diagnostic["webAuditErrors"], "真实 Web 活动卡验收发生浏览器错误。"),
+                (diagnostic["webLiveSampleCount"] > 0, "运行期间没有取得 Web live 活动卡样本。"),
+                ("research" in diagnostic["webLiveRuntimeIds"], "Web live 期间未显示 Research 活动卡。"),
+                (bool(diagnostic["webLiveSubagentIds"]), "Web live 期间未显示验证子代理活动卡。"),
+                ("research" in diagnostic["webTerminalLiveRuntimeIds"], "Web 终态未保留 Research 活动卡。"),
+                ("research" in diagnostic["webTerminalReloadRuntimeIds"], "Web 刷新后未恢复 Research 活动卡。"),
+                (diagnostic["webTerminalLiveSubagentCount"] > 0, "Web 终态未保留验证子代理卡。"),
+                (diagnostic["webTerminalReloadSubagentCount"] > 0, "Web 刷新后未恢复验证子代理卡。"),
+                (all(bool(value) for value in diagnostic["webParity"].values()), "Web live 终态与刷新后的活动卡真相不一致。"),
+                (diagnostic["webResearchCompletionVisibleLive"], "Engine Research 完成事件未投影到 Web live 详情。"),
+                (diagnostic["webResearchCompletionVisibleReload"], "Engine Research 完成事件未在 Web 刷新后恢复。"),
+            ]
+        )
+    return [
+        AuditFinding(
+            severity="P0",
+            case_id=result.spec.case_id,
+            title=result.spec.title,
+            summary=summary,
+            evidence=_redact(diagnostic),
+            modules=[
+                "runtimes/chat/runtime.py",
+                "core/runtime_episode_runner.py",
+                "core/tools/research_broker.py",
+                "core/tools/native/delegation.py",
+            ],
+            recommended_fix="保持 Research evidence、独立验证 handoff 与 Supervisor 用户交付为同一 run 的顺序化真相链，失败时 fail closed。",
+            regression_test=regression,
+        )
+        for passed, summary in checks
+        if not passed
+    ]
 
 
 def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
@@ -1865,6 +2166,8 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
         )
     if spec.case_id == PURE_RESEARCH_CASE_ID:
         findings.extend(_pure_research_findings(result))
+    if spec.case_id == RESEARCH_DELEGATED_VERIFICATION_CASE_ID:
+        findings.extend(_delegated_research_verification_findings(result))
     if result.final_text and _looks_like_handoff_leak(result.final_text):
         findings.append(
             AuditFinding(
@@ -1981,8 +2284,8 @@ def _write_report(
         "",
         "## Case 结果",
         "",
-        _table_row(["Case", "状态", "Session", "Run", "延迟", "工具", "Runtime topics"]),
-        _table_row(["---", "---", "---", "---", "---", "---", "---"]),
+        _table_row(["Case", "状态", "Session", "Run", "提交耗时", "执行观察耗时", "工具", "Runtime topics"]),
+        _table_row(["---", "---", "---", "---", "---", "---", "---", "---"]),
     ]
     for result in results:
         lines.append(
@@ -1993,6 +2296,7 @@ def _write_report(
                     result.session_id or "",
                     result.run_id or "",
                     f"{result.latency_ms or 0} ms",
+                    f"{result.poll_elapsed_ms} ms" if result.poll_elapsed_ms is not None else "NOT-RUN",
                     ", ".join(result.actual_tools[:12]),
                     ", ".join(result.observed_topics[:12]),
                 ]
@@ -2071,6 +2375,7 @@ def _write_report(
                         "sessionId": result.session_id,
                         "runId": result.run_id,
                         "latencyMs": result.latency_ms,
+                        "pollElapsedMs": result.poll_elapsed_ms,
                         "tools": result.actual_tools,
                         "topics": result.observed_topics,
                         "finalText": _redact(result.final_text),
@@ -2078,6 +2383,7 @@ def _write_report(
                         "handoffs": result.handoffs,
                         "toolInvocations": result.tool_invocations,
                         "researchCompletedSeq": result.research_completed_seq,
+                        "webActivityAudit": result.web_activity_audit,
                         "pureResearchDiagnostic": (
                             _pure_research_diagnostic(result)
                             if result.spec.case_id == PURE_RESEARCH_CASE_ID
@@ -2114,12 +2420,16 @@ def main(argv: list[str] | None = None) -> int:
             "huashu_video_gap",
             "source_write",
             PURE_RESEARCH_CASE_ID,
+            RESEARCH_DELEGATED_VERIFICATION_CASE_ID,
             "joint_research_delivery",
             "all",
         ],
         help="Select one case. 'all' excludes the expensive pure research and side-effect joint cases.",
     )
     parser.add_argument("--engine-url", default=DEFAULT_ENGINE_URL)
+    parser.add_argument("--web-url", default=None, help="Observe real Web activity cards during the run and compare terminal live/reload truth.")
+    parser.add_argument("--browser-executable", default=None, help="Optional system Chromium/Edge executable for --web-url.")
+    parser.add_argument("--show-browser", action="store_true", help="Show the audit browser instead of running it headless.")
     parser.add_argument("--workspace", default=str(REPO_ROOT))
     parser.add_argument(
         "--max-wait",
@@ -2140,6 +2450,22 @@ def main(argv: list[str] | None = None) -> int:
     if not args.live:
         print("Refusing to call live Engine/model without --live.", file=sys.stderr)
         return 2
+    if args.case == RESEARCH_DELEGATED_VERIFICATION_CASE_ID and not args.web_url:
+        print(
+            f"{RESEARCH_DELEGATED_VERIFICATION_CASE_ID} requires --web-url so live/reload activity parity cannot be skipped.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.web_url:
+        # Fail before a billable run if the requested UI observer cannot attach.
+        # Reachability is only a precondition, never UI acceptance evidence.
+        try:
+            with urllib.request.urlopen(f"{args.web_url.rstrip('/')}/chat", timeout=8) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Web preflight HTTP {response.status}")
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+            print(f"Web unavailable before live submit: {type(exc).__name__}", file=sys.stderr)
+            return 2
     if args.case == "joint_research_delivery" and not args.allow_side_effects:
         print("joint_research_delivery writes a disposable workspace; pass --allow-side-effects.", file=sys.stderr)
         return 2
@@ -2193,10 +2519,45 @@ def main(argv: list[str] | None = None) -> int:
             timestamp=timestamp,
             workspace=args.workspace,
         )
+        web_observer = None
+        if args.web_url and result.session_id and result.status != "failed":
+            try:
+                from tests.scripts.live_web_activity_audit import WebActivityAuditObserver
+
+                web_observer = WebActivityAuditObserver(
+                    web_url=args.web_url,
+                    session_id=result.session_id,
+                    browser_executable=args.browser_executable,
+                    headless=not args.show_browser,
+                )
+                web_observer.start()
+            except Exception as exc:  # noqa: BLE001 - report browser harness failure as evidence.
+                result.web_activity_audit = {
+                    "performed": False,
+                    "errors": [f"{type(exc).__name__}: {exc}"],
+                }
         max_wait = args.max_wait
         if max_wait is None:
-            max_wait = 1200.0 if case.case_id == PURE_RESEARCH_CASE_ID else 420.0
-        result = _poll_case(args.engine_url, result, max_wait=max_wait)
+            max_wait = 1200.0 if case.case_id in {
+                PURE_RESEARCH_CASE_ID,
+                RESEARCH_DELEGATED_VERIFICATION_CASE_ID,
+            } else 420.0
+        result = _poll_case(
+            args.engine_url,
+            result,
+            max_wait=max_wait,
+            sample_web_activity=web_observer.sample_live if web_observer is not None else None,
+        )
+        try:
+            if web_observer is not None:
+                try:
+                    result.web_activity_audit = web_observer.finish()
+                finally:
+                    web_observer.close()
+        finally:
+            # Capture live/reload parity before cancellation changes the UI.
+            # A timed-out test must not leave a billable run unattended.
+            _cancel_timed_out_case(args.engine_url, result)
         results.append(result)
         print(
             f"[live-audit] {case.case_id}: status={result.status} run={result.run_id or '-'} "
@@ -2223,7 +2584,10 @@ def main(argv: list[str] | None = None) -> int:
     if p0_count:
         print(f"Live audit found {p0_count} P0 issue(s).", file=sys.stderr)
         return 1
-    strict_findings = args.strict or any(result.spec.case_id == PURE_RESEARCH_CASE_ID for result in results)
+    strict_findings = args.strict or any(
+        result.spec.case_id in {PURE_RESEARCH_CASE_ID, RESEARCH_DELEGATED_VERIFICATION_CASE_ID}
+        for result in results
+    )
     if strict_findings and findings:
         print(f"Live audit found {len(findings)} issue(s).", file=sys.stderr)
         return 1

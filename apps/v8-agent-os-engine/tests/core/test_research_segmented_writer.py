@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from langchain_core.messages import AIMessage
 
 import core.tools.research_broker as research_module
@@ -205,6 +207,7 @@ class _StagedInvocation:
         reviewer_revision_failed_section_by_model: dict[str, str] | None = None,
         split_after_retries_section: str = "",
         reject_first_review_without_evidence_gap: bool = False,
+        reject_first_review_with_mixed_evidence_gap: bool = False,
         same_evidence_rejected_review_numbers: set[int] | None = None,
         invalid_schema_review_numbers: set[int] | None = None,
     ) -> None:
@@ -218,6 +221,9 @@ class _StagedInvocation:
         )
         self.split_after_retries_section = split_after_retries_section
         self.reject_first_review_without_evidence_gap = reject_first_review_without_evidence_gap
+        self.reject_first_review_with_mixed_evidence_gap = (
+            reject_first_review_with_mixed_evidence_gap
+        )
         self.same_evidence_rejected_review_numbers = set(
             same_evidence_rejected_review_numbers or set()
         )
@@ -228,6 +234,7 @@ class _StagedInvocation:
         self.section_max_tokens: list[int] = []
         self.section_source_payloads: list[list[dict]] = []
         self.review_payloads: list[dict] = []
+        self.review_ledgers: list[dict] = []
         self.review_prompts: list[str] = []
         self.structure_disable_thinking: list[bool] = []
         self.stage_disable_thinking: list[tuple[str, bool]] = []
@@ -252,6 +259,15 @@ class _StagedInvocation:
         prompt = "\n".join(str(getattr(message, "content", "")) for message in messages)
         section_contract = _background_material(messages, "Section contract")
         if section_contract:
+            assert "assignedClaims 是分工子集，不是整轮证据清单" in prompt
+            if json.loads(section_contract).get("facetGoals"):
+                assert "不是要求本节独自覆盖全主题" in prompt
+            assert "必须逐项实质回答，不能只写共同背景" not in prompt
+            assert "上述要求覆盖的绑定断言除外" in prompt
+            assert "资料时效由写作 Agent 按问题" in prompt
+            assert "旧的、未定年的或 secondary 来源只承担历史示例" not in prompt
+            assert "不是逐条摘录配额" in prompt
+            assert "至少一次保持原意逐字写入正文" not in prompt
             self.stage_disable_thinking.append(("section", disable_thinking))
             task = json.loads(section_contract)
             model_ref = str((_candidate[0]._meta or {}).get("model_ref") or "")
@@ -276,6 +292,7 @@ class _StagedInvocation:
             payload = json.loads(review_candidate)
             with self.lock:
                 self.review_payloads.append(payload)
+                self.review_ledgers.append(json.loads(_background_material(messages, "Canonical verified claim ledger")))
                 self.review_prompts.append(prompt)
                 review_number = len(self.review_payloads)
             if review_number in self.invalid_schema_review_numbers:
@@ -310,6 +327,29 @@ class _StagedInvocation:
                         }
                     )
                 )
+            if self.reject_first_review_with_mixed_evidence_gap and review_number == 1:
+                return AIMessage(
+                    content=json.dumps(
+                        {
+                            "reviewDecision": "retry",
+                            "reviewReasons": [
+                                "Remove an unsupported relationship and keep the unresolved date explicit."
+                            ],
+                            "questionCoverage": False,
+                            "claimEntailment": False,
+                            "freshnessAdequacy": False,
+                            "unsupportedClaims": [
+                                "One draft sentence invents a relationship not present in the claim ledger."
+                            ],
+                            "criticalMissingEvidence": [
+                                "The exact effective date still needs an authoritative source."
+                            ],
+                            "recommendedNextQueries": [
+                                "site:official.example exact effective date"
+                            ],
+                        }
+                    )
+                )
             return AIMessage(
                 content=json.dumps(
                     {
@@ -341,7 +381,7 @@ class _StagedInvocation:
                     }
                 )
             )
-        raise AssertionError("The 4096-token candidate must use section calls instead of a monolithic writer call.")
+        raise AssertionError("The low-budget section fixture received an unexpected whole-answer call.")
 
     def _section_response(
         self,
@@ -407,7 +447,7 @@ class _StagedInvocation:
                 self.active_sections -= 1
 
 
-def test_segmented_writer_profile_uses_4096_but_not_a_high_output_limit() -> None:
+def test_segmented_writer_profile_prefers_one_answer_with_a_normal_output_budget() -> None:
     low = research_module._architect_segmented_writer_profile(
         (_Candidate(max_tokens=4096, model_ref="fixture::low"), "fixture::low", "summary")
     )
@@ -427,7 +467,7 @@ def test_segmented_writer_profile_uses_4096_but_not_a_high_output_limit() -> Non
     )
 
     assert low == {
-        "enabled": True,
+        "enabled": False,
         "configuredMaxTokens": 4096,
         "sectionCount": 4,
         "sectionMaxTokens": research_module._RESEARCH_ARCHITECT_SECTION_MAX_TOKENS,
@@ -526,7 +566,7 @@ def test_segment_tasks_are_stable_disjoint_and_enforce_their_citation_scope() ->
         {"claimId": "claim-1", "citationKeys": ["S1"]},
         {"claimId": "claim-2", "citationKeys": ["S2"]},
     ]
-    assert all(task["minimumAcceptableChars"] < task["targetMinChars"] for task in first)
+    assert all("minimumAcceptableChars" not in task for task in first)
     assert first[1]["compositeInferences"] == [plan["compositeInferences"][0]]
     assert all(
         inference.get("inferenceId") != "cross-section"
@@ -558,7 +598,7 @@ def test_segment_tasks_are_stable_disjoint_and_enforce_their_citation_scope() ->
     assert "section_citation_missing:S2" in issues
     assert "section_citation_out_of_scope:S3" in issues
 
-    uneven_but_substantive = "A" * first[0]["minimumAcceptableChars"] + " [S1] [S2]"
+    uneven_but_substantive = "A concise conclusion [S1] and its limitation [S2]."
     assert research_module._architect_section_issues(
         uneven_but_substantive,
         first[0],
@@ -622,6 +662,30 @@ def test_segment_tasks_carry_required_facet_goals_from_verified_claim_lineage() 
     assert tasks[1]["facetIds"] == ["penalties"]
 
 
+def test_sparse_outline_keeps_topic_claim_ownership_instead_of_balancing_by_count() -> None:
+    claims = [
+        {"claimId": f"claim-{index}", "claim": f"Topic-specific fact {index}",
+         "supportingSources": [{"citationKey": f"S{index}"}]}
+        for index in range(1, 7)
+    ]
+    outline = [
+        {"sectionId": "first", "title": "First document", "claimIds": ["claim-1"]},
+        {"sectionId": "second", "title": "Second document", "claimIds": ["claim-2", "claim-3", "claim-4"]},
+        {"sectionId": "third", "title": "Third document", "claimIds": ["claim-5", "claim-6"]},
+    ]
+    tasks = research_module._architect_segment_tasks(
+        {"claimTable": claims, "answerOutline": outline}, section_count=3,
+        target_min_chars=1000, target_max_chars=1800,
+    )
+    assert [[claim["claimId"] for claim in task["assignedClaims"]] for task in tasks] == [
+        section["claimIds"] for section in outline
+    ]
+    assert [[key for key in task["requiredCitationKeys"]] for task in tasks] == [
+        ["S1"], ["S2", "S3", "S4"], ["S5", "S6"],
+    ]
+    assert [section["claimId"] for section in claims] == [f"claim-{i}" for i in range(1, 7)]
+
+
 def test_segment_tasks_allocate_depth_by_claim_weight_without_lowering_total_target() -> None:
     claims = [
         {
@@ -654,8 +718,7 @@ def test_segment_tasks_allocate_depth_by_claim_weight_without_lowering_total_tar
     )
 
     assert [task["targetMinChars"] for task in tasks] == [1300, 2600, 1300, 1300]
-    assert tasks[0]["minimumAcceptableChars"] == 650
-    assert tasks[1]["minimumAcceptableChars"] > tasks[0]["minimumAcceptableChars"]
+    assert all("minimumAcceptableChars" not in task for task in tasks)
     assert sum(task["targetMinChars"] for task in tasks) == 6500
 
     five_section_plan = {
@@ -679,7 +742,7 @@ def test_segment_tasks_allocate_depth_by_claim_weight_without_lowering_total_tar
     assert 6500 <= sum(task["targetMinChars"] for task in five_section_tasks) < 7000
 
 
-def test_single_claim_section_depth_is_bounded_by_its_verified_evidence_density() -> None:
+def test_single_claim_section_accepts_evidence_without_a_length_quota() -> None:
     claim = {
         "claimId": "claim-one",
         "claim": "Path methods return Path objects and permit method chaining.",
@@ -699,8 +762,10 @@ def test_single_claim_section_depth_is_bounded_by_its_verified_evidence_density(
     )
 
     assert len(tasks) == 1
-    assert 80 <= tasks[0]["minimumAcceptableChars"] <= 260
-    assert tasks[0]["minimumAcceptableChars"] < tasks[0]["targetMinChars"]
+    assert "minimumAcceptableChars" not in tasks[0]
+    assert research_module._architect_section_issues(
+        claim["claim"] + " [S1]", tasks[0], complete=True,
+    ) == []
 
 
 def test_segment_tasks_do_not_promote_incidental_excerpt_anchors_to_writer_permissions() -> None:
@@ -761,6 +826,7 @@ def test_runtime_source_appendix_is_deterministic_and_numeric() -> None:
             "title": "Undated Experience",
             "url": "https://example.com/undated",
             "tier": "secondary",
+            "sourceRole": "secondary",
         },
         {
             "citationKey": "S5",
@@ -801,9 +867,11 @@ def test_runtime_source_appendix_is_deterministic_and_numeric() -> None:
     ) in first
     assert "[S2] Second Source: updated 2026-07-20; evidence status source-reported document dates are shown explicitly" in first
     assert "[S3] Older Foundation: published 2018-07-20; evidence status source-reported document dates are shown explicitly" in first
-    assert "[S4] Undated Experience (secondary/experience source): evidence status undated" in first
+    assert "[S4] Undated Experience (secondary/experience source): evidence status Secondary material must remain attributed" in first
+    assert "no page publication date or version was resolved" in first
+    assert "non-temporal API" not in first
     assert "[S5] Epoch Metadata: updated 2023-09-30" in first
-    assert "[S6] Retrieval Alias: retrieved 2026-07-29T12:00:00Z; evidence status undated; used only for non-temporal facts" in first
+    assert "[S6] Retrieval Alias: retrieved 2026-07-29T12:00:00Z; evidence status no page publication date or version was resolved" in first
     assert "Retrieval Alias - https://example.com/retrieval-alias (2026-07-29)" not in first
     assert "[S10] Tenth Source: published 2026-07-10; evidence status source-reported document dates are shown explicitly" in first
     assert "Unreferenced Source" not in first
@@ -878,13 +946,59 @@ def test_section_assembly_restores_only_missing_verified_audience_inferences() -
     assert "## 按使用者类型的可执行选型建议" not in deduplicated
 
 
+def test_normal_budget_writer_and_revision_receive_complete_contract_and_same_review_ledger(monkeypatch):
+    sources = _sources()
+
+    class WholeAnswerInvocation(_StagedInvocation):
+        def __init__(self):
+            super().__init__(_accepted_plan(sources), reject_first_review_without_evidence_gap=True)
+            self.writer_ledgers = []
+
+        def __call__(self, candidate, messages, **kwargs):
+            plan_text = _background_material(messages, "Verified evidence plan")
+            if not plan_text:
+                return super().__call__(candidate, messages, **kwargs)
+            instruction = "\n".join(str(message.content) for message in messages
+                                    if not str(message.content).startswith("[BACKGROUND MATERIAL:"))
+            assert research_module._RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER in instruction.split("PREVIOUS_DRAFT:", 1)[0]
+            assert "个有效 Unicode 字符" not in instruction
+            plan = json.loads(plan_text)
+            ledger = json.loads(_background_material(messages, "Research evidence candidates"))
+            assert "claimTable" not in plan and "temporalAssessment" not in plan
+            assert plan["claimIds"] == [row["claimId"] for row in ledger["claims"]]
+            self.writer_ledgers.append(ledger)
+            assert "evidenceCandidates" not in json.dumps(ledger)
+            assert all("tier" not in source for source in ledger["citationIndex"])
+            paragraphs = [f"# Research findings\n\nAs of {plan['asOf']}."]
+            for claim in ledger["claims"]:
+                paragraphs.append(f"{claim['claim']} [{claim['citationKeys'][0]}]")
+            paragraphs.append(research_module._RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER)
+            return AIMessage(content="\n\n".join(paragraphs), response_metadata={"finish_reason": "stop"})
+
+    invocation = WholeAnswerInvocation()
+    candidate = _Candidate(max_tokens=4096, model_ref="fixture::whole-answer")
+    candidate._meta["research_candidate_origin"] = "agent_binding"
+    monkeypatch.setattr(research_module, "_create_web_research_architect_llm_candidates",
+                        lambda: [(candidate, "fixture::whole-answer", "summary")])
+    monkeypatch.setattr(research_module, "_invoke_architect_candidate_with_deadline", invocation)
+    result = research_module._invoke_web_research_architect_staged(
+        question=_QUESTION, sources=sources, freshness="current", timeout_seconds=90,
+    )
+    assert result.get("reviewDecision") == "accept", result.get("_modelFallbackAttempts")
+    assert len(invocation.writer_ledgers) == 2
+    assert all(ledger == invocation.writer_ledgers[0] for ledger in invocation.review_ledgers)
+    assert result["_writerMode"] == "single_reviewer_revised"
+    assert [attempt["mode"] for attempt in result["_writerAttempts"]] == ["single", "single_reviewer_revision"]
+    assert all(attempt["elapsedMs"] >= 0 and attempt["accepted"] for attempt in result["_writerAttempts"])
+
+
 def test_staged_segmented_writer_is_parallel_locally_retried_ordered_and_whole_reviewed(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(research_module, "_assemble_architect_claim_report", lambda **_kwargs: "")
     sources = _sources()
     invocation = _StagedInvocation(_accepted_plan(sources))
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::segmented")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::segmented")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -907,6 +1021,16 @@ def test_staged_segmented_writer_is_parallel_locally_retried_ordered_and_whole_r
     assert result["_writerMode"] == "segmented"
     assert result["_writerSectionCount"] == 4
     assert result["_writerRevisionCount"] == 1
+    assert "Source-backed details" not in result["answer"]
+    assert "来源支撑的细节" not in result["answer"]
+    # The candidate is not a second source registry. All source/date metadata
+    # must stay in the same citation index as the exact bound claim excerpts.
+    assert invocation.review_payloads
+    assert all("temporalAssessment" not in payload for payload in invocation.review_payloads)
+    for ledger in invocation.review_ledgers:
+        keys = {key for claim in ledger["claims"] for key in claim["citationKeys"]}
+        assert {source["citationKey"] for source in ledger["citationIndex"]} == keys
+        assert all(source["publishedAt"] for source in ledger["citationIndex"])
     assert invocation.structure_disable_thinking == []
     assert {stage for stage, _disabled in invocation.stage_disable_thinking} == {
         "section",
@@ -955,7 +1079,7 @@ def test_staged_segmented_writer_is_parallel_locally_retried_ordered_and_whole_r
     assert len(section_two_digests) == 1
     assert all(
         item["rawResponseChars"] >= item["parsedSectionChars"]
-        and item["postRestoreChars"] >= item["postUnsupportedDropChars"]
+        and item["validatedSectionChars"] <= item["postUnsupportedDropChars"]
         for item in section_diagnostics
         if item["status"] in {"accepted", "rejected"}
     )
@@ -1026,7 +1150,7 @@ def test_segmented_writer_resigns_truncated_prompt_bodies_and_keeps_plan_payload
             return super().__call__(candidate, messages, **kwargs)
 
     invocation = CapturingInvocation(_accepted_plan(sources))
-    candidate = _Candidate(max_tokens=4096, model_ref="minimax-cn::MiniMax-M3")
+    candidate = _Candidate(max_tokens=3200, model_ref="minimax-cn::MiniMax-M3")
     monkeypatch.setattr(
         "core.context_window_guard.llm_factory.get_model_metadata",
         lambda model_ref: {
@@ -1066,7 +1190,10 @@ def test_segmented_writer_resigns_truncated_prompt_bodies_and_keeps_plan_payload
         indent=2,
     )
     structure_material = json.loads(invocation.canonical_structure_material)
-    assert len(structure_material["claims"]) == 8
+    # Analytical delivery allows a second operative excerpt per source;
+    # this is an evidence budget, not an increased acceptance floor.
+    assert 8 <= len(structure_material["claims"]) <= 16
+    assert len({claim["claimId"] for claim in structure_material["claims"]}) == len(structure_material["claims"])
     assert all("evidenceExcerpt" not in claim for claim in structure_material["claims"])
     assert len(invocation.canonical_structure_material) < 20_000
     structure_preparation = next(
@@ -1083,7 +1210,7 @@ def test_segmented_writer_preserves_accepted_sections_when_whole_answer_gate_rej
 ) -> None:
     sources = _sources()
     invocation = _StagedInvocation(_accepted_plan(sources))
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::whole-gate-reject")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::whole-gate-reject")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1127,7 +1254,7 @@ def test_segmented_writer_retries_a_malformed_review_without_discarding_the_answ
         _accepted_plan(sources),
         invalid_schema_review_numbers={1},
     )
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::review-schema-retry")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::review-schema-retry")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1198,11 +1325,11 @@ def test_empty_structure_projection_keeps_canonical_plan_and_writer_budget(monke
 
     invocation = EmptyStructureInvocation(_accepted_plan(sources))
     primary = _Candidate(
-        max_tokens=4096,
+        max_tokens=3200,
         model_ref="fixture::bound-minimax",
         supports_no_think=True,
     )
-    fallback = _Candidate(max_tokens=4096, model_ref="fixture::summary-fallback")
+    fallback = _Candidate(max_tokens=3200, model_ref="fixture::summary-fallback")
     primary._meta["research_candidate_origin"] = "agent_binding"
     fallback._meta["research_candidate_origin"] = "role_fallback:summary"
     monkeypatch.setattr(
@@ -1246,7 +1373,7 @@ def test_staged_segmented_writer_does_not_review_or_deliver_partial_answer_when_
         _accepted_plan(sources),
         permanently_failed_section="section_3",
     )
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::partial-failure")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::partial-failure")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1286,8 +1413,8 @@ def test_segmented_writer_hands_only_failed_sections_to_the_next_candidate(
 ) -> None:
     monkeypatch.setattr(research_module, "_assemble_architect_claim_report", lambda **_kwargs: "")
     sources = _sources()
-    primary = _Candidate(max_tokens=4096, model_ref="fixture::handoff-primary")
-    fallback = _Candidate(max_tokens=4096, model_ref="fixture::handoff-fallback")
+    primary = _Candidate(max_tokens=3200, model_ref="fixture::handoff-primary")
+    fallback = _Candidate(max_tokens=3200, model_ref="fixture::handoff-fallback")
     invocation = _StagedInvocation(
         _accepted_plan(sources),
         permanently_failed_section_by_model={
@@ -1343,8 +1470,8 @@ def test_reviewer_guided_revision_also_hands_only_failed_sections_to_next_candid
         lambda **_kwargs: "",
     )
     sources = _sources()
-    primary = _Candidate(max_tokens=4096, model_ref="fixture::revision-primary")
-    fallback = _Candidate(max_tokens=4096, model_ref="fixture::revision-fallback")
+    primary = _Candidate(max_tokens=3200, model_ref="fixture::revision-primary")
+    fallback = _Candidate(max_tokens=3200, model_ref="fixture::revision-fallback")
     invocation = _StagedInvocation(
         _accepted_plan(sources),
         reviewer_revision_failed_section_by_model={
@@ -1427,8 +1554,8 @@ def test_tail_recovery_retries_only_the_last_missing_section(monkeypatch) -> Non
             )
 
     invocation = TailRecoveryInvocation(_accepted_plan(sources))
-    primary = _Candidate(max_tokens=4096, model_ref="fixture::tail-primary")
-    fallback = _Candidate(max_tokens=4096, model_ref="fixture::tail-fallback")
+    primary = _Candidate(max_tokens=3200, model_ref="fixture::tail-primary")
+    fallback = _Candidate(max_tokens=3200, model_ref="fixture::tail-fallback")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1495,6 +1622,7 @@ def test_high_output_candidate_revises_assembled_answer_before_segment_regenerat
             )
             if instruction and not _background_material(messages, "Section contract"):
                 self.full_revision_calls += 1
+                assert research_module._RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER in instruction.split("PREVIOUS_DRAFT:", 1)[0]
                 previous = instruction.split("PREVIOUS_DRAFT:\n", 1)[-1]
                 previous = previous.split("\n[BACKGROUND MATERIAL:", 1)[0].strip()
                 return AIMessage(
@@ -1513,7 +1641,12 @@ def test_high_output_candidate_revises_assembled_answer_before_segment_regenerat
             )
 
     invocation = FullRevisionInvocation(_accepted_plan(sources))
-    segmented_candidate = _Candidate(max_tokens=4096, model_ref="fixture::segmented")
+    reviewer = _Candidate(max_tokens=4096, model_ref="fixture::independent-reviewer")
+    monkeypatch.setattr(
+        research_module, "_create_web_research_reviewer_llm_candidates",
+        lambda _writers: [(reviewer, "fixture::independent-reviewer", "verification-engineer")],
+    )
+    segmented_candidate = _Candidate(max_tokens=3200, model_ref="fixture::segmented")
     full_revision_candidate = _Candidate(max_tokens=8192, model_ref="fixture::full-revision")
     monkeypatch.setattr(
         research_module,
@@ -1539,6 +1672,7 @@ def test_high_output_candidate_revises_assembled_answer_before_segment_regenerat
     assert result["reviewDecision"] == "accept", result
     assert invocation.full_revision_calls == 1, result
     assert result["_writerMode"] == "single_reviewer_revised"
+    assert {row["modelId"] for row in result["_reviewAttempts"]} == {"fixture::independent-reviewer"}
     assert any(
         attempt["mode"] == "single_reviewer_revision" and attempt["accepted"] is True
         for attempt in result["_writerAttempts"]
@@ -1556,7 +1690,7 @@ def test_segmented_writer_splits_one_failed_multi_claim_section_within_six_secti
         _accepted_plan(sources),
         split_after_retries_section="section_3",
     )
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::adaptive-split")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::adaptive-split")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1586,7 +1720,7 @@ def test_segmented_writer_splits_one_failed_multi_claim_section_within_six_secti
             f"{diagnostic.get('sectionId')}#{diagnostic.get('attempt')}:"
             f"{diagnostic.get('status')}:claims={diagnostic.get('assignedClaimIds')}:"
             f"chars={diagnostic.get('effectiveChars')}/"
-            f"{diagnostic.get('minimumAcceptableChars')}:"
+            f"{diagnostic.get('recommendedChars')}:"
             f"issues={diagnostic.get('issues')}"
             for diagnostic in result.get("_writerSectionDiagnostics") or []
         ),
@@ -1608,7 +1742,12 @@ def test_segmented_same_evidence_revision_stays_segmented_and_uses_the_same_revi
         _accepted_plan(sources),
         reject_first_review_without_evidence_gap=True,
     )
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::segmented-revision")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::segmented-revision")
+    reviewer = _Candidate(max_tokens=4096, model_ref="fixture::independent-reviewer")
+    monkeypatch.setattr(
+        research_module, "_create_web_research_reviewer_llm_candidates",
+        lambda _writers: [(reviewer, "fixture::independent-reviewer", "verification-engineer")],
+    )
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1629,7 +1768,7 @@ def test_segmented_same_evidence_revision_stays_segmented_and_uses_the_same_revi
 
     assert result["reviewDecision"] == "accept"
     assert result["_writerMode"] == "segmented_reviewer_revised"
-    assert result["_reviewerModelId"] == "fixture::segmented-revision"
+    assert result["_reviewerModelId"] == "fixture::independent-reviewer"
     assert result["_writerRevisionCount"] == 2
     assert len(invocation.review_payloads) == 3
     assert invocation.section_attempts == {
@@ -1644,6 +1783,17 @@ def test_segmented_same_evidence_revision_stays_segmented_and_uses_the_same_revi
     assert invocation.review_payloads[0]["answer"] != invocation.review_payloads[1]["answer"]
     assert invocation.review_payloads[1]["answer"] == result["researchResult"]
     assert invocation.review_payloads[2]["answer"] == result["researchResult"]
+    completed_reviews = [row for row in result["_reviewAttempts"] if row["status"] == "completed"]
+    assert {row["modelId"] for row in completed_reviews} == {"fixture::independent-reviewer"}
+    assert [row["accepted"] for row in completed_reviews] == [False, True, True]
+    assert completed_reviews[0]["reviewReasons"]
+    for row, payload in zip(completed_reviews, invocation.review_payloads, strict=True):
+        assert row["candidateAnswerSha256"] == hashlib.sha256(payload["answer"].encode("utf-8")).hexdigest()
+        assert isinstance(row["unsupportedClaims"], list)
+    assert "核心事实正确不代表来源身份正确" in invocation.review_prompts[0]
+    assert "引用答案原句与相反的摘录短句" in invocation.review_prompts[0]
+    assert all("尚未执行不是当前答案缺证" in prompt for prompt in invocation.review_prompts)
+    assert all("必须拒绝该无证据声明" in prompt for prompt in invocation.review_prompts)
     assert result["_independentReview"]["consensusReviewCount"] == 2
     assert invocation.reviewer_previous_section_flags
     assert all(invocation.reviewer_previous_section_flags)
@@ -1651,6 +1801,42 @@ def test_segmented_same_evidence_revision_stays_segmented_and_uses_the_same_revi
         attempt["mode"].startswith("deterministic_claim_report")
         for attempt in result["_writerAttempts"]
     )
+
+
+def test_segmented_writer_repairs_unsupported_claim_before_searching_true_evidence_gap(
+    monkeypatch,
+) -> None:
+    sources = _sources()
+    invocation = _StagedInvocation(
+        _accepted_plan(sources),
+        reject_first_review_with_mixed_evidence_gap=True,
+    )
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::mixed-review-revision")
+    monkeypatch.setattr(
+        research_module,
+        "_create_web_research_architect_llm_candidates",
+        lambda: [(candidate, "fixture::mixed-review-revision", "summary")],
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_invoke_architect_candidate_with_deadline",
+        invocation,
+    )
+
+    result = research_module._invoke_web_research_architect_staged(
+        question=_QUESTION,
+        sources=sources,
+        freshness="current",
+        timeout_seconds=90,
+    )
+
+    assert result["reviewDecision"] == "accept", result
+    assert result["_writerMode"] == "segmented_reviewer_revised"
+    assert result["_writerRevisionCount"] == 2
+    assert len(invocation.review_payloads) == 3
+    assert invocation.review_payloads[0]["answer"] != invocation.review_payloads[1]["answer"]
+    assert invocation.reviewer_previous_section_flags
+    assert all(invocation.reviewer_previous_section_flags)
 
 
 def test_split_section_requires_synthesis_only_where_an_inference_survives() -> None:
@@ -1692,7 +1878,7 @@ def test_segmented_revision_precedes_deterministic_same_evidence_fallback(monkey
         _accepted_plan(sources),
         same_evidence_rejected_review_numbers={1, 2},
     )
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::revision-then-fallback")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::revision-then-fallback")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1724,6 +1910,45 @@ def test_segmented_revision_precedes_deterministic_same_evidence_fallback(monkey
     assert invocation.review_payloads[3]["answer"] == result["researchResult"]
 
 
+def test_staged_claim_plan_requalifies_old_community_source_without_mutating_bundle(monkeypatch):
+    sources = _sources()
+    sources[0].update({
+        "url": "https://cloud.tencent.com/developer/article/2528305",
+        "tier": "primary", "authorityTier": "primary",
+        "catalogCategory": "official_docs", "catalogSourceId": "official_vendor_docs",
+    })
+    original = copy.deepcopy(sources)
+    prompt_sources = research_module._research_architect_sources_for_prompt(
+        sources, [{"question": _QUESTION, "fetchedTopSources": sources}],
+        question=_QUESTION, freshness="current",
+    )
+    projected = next(item for item in prompt_sources if item["citationKey"] == "S1")
+    assert projected["tier"] == projected["authorityTier"] == "secondary"
+    assert projected["catalogCategory"] == "developer_education"
+
+    class Captured(BaseException):
+        pass
+
+    def capture(**kwargs):
+        source = next(item for item in kwargs["sources"] if item["citationKey"] == "S1")
+        assert source["tier"] == source["authorityTier"] == "secondary"
+        assert source["catalogCategory"] == "developer_education"
+        assert source["text"] == sources[0]["text"]
+        assert source["evidenceCandidates"]
+        raise Captured()
+
+    def deny_model(*args, **kwargs):
+        raise AssertionError("No provider calls are needed to classify a source")
+
+    monkeypatch.setattr(research_module, "build_canonical_claim_plan", capture)
+    monkeypatch.setattr(research_module, "_invoke_architect_candidate_with_deadline", deny_model)
+    with pytest.raises(Captured):
+        research_module._invoke_web_research_architect_staged(
+            question=_QUESTION, sources=sources, freshness="current", timeout_seconds=90,
+        )
+    assert sources == original
+
+
 def test_structure_projection_cannot_create_a_normative_evidence_gap(monkeypatch) -> None:
     sources = _sources()
     retry_plan = {
@@ -1749,7 +1974,7 @@ def test_structure_projection_cannot_create_a_normative_evidence_gap(monkeypatch
             return super().__call__(candidate, messages, **kwargs)
 
     invocation = UnsafeStructureInvocation(retry_plan)
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::plan-reclassification")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::plan-reclassification")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",
@@ -1806,7 +2031,7 @@ def test_invalid_structure_projection_falls_back_without_model_plan_retry(monkey
             return super().__call__(candidate, messages, **kwargs)
 
     invocation = InvalidStructureInvocation(retry_plan)
-    candidate = _Candidate(max_tokens=4096, model_ref="fixture::empty-gap-retry")
+    candidate = _Candidate(max_tokens=3200, model_ref="fixture::empty-gap-retry")
     monkeypatch.setattr(
         research_module,
         "_create_web_research_architect_llm_candidates",

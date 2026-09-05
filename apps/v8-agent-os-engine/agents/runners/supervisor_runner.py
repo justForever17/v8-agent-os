@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Any
 
 from api.models import EngineConfig
+from core.runtime.extensions_runtime import extensions_runtime_service
 from graph.supervisor import AgentState, create_supervisor_graph
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -37,6 +38,14 @@ class SupervisorAgentRunner:
 
     def _graph_signature(self, config: EngineConfig) -> str:
         payload = config.model_dump(mode="json", by_alias=True)
+        mcp_status = dict(extensions_runtime_service.get_mcp_startup_status() or {})
+        payload["_runtimeInventory"] = {
+            "mcpRevision": str(
+                mcp_status.get("inventoryRevision")
+                or mcp_status.get("revision")
+                or "cold"
+            ),
+        }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
     async def build_graph(self, config: EngineConfig):
@@ -54,7 +63,11 @@ class SupervisorAgentRunner:
             if cached is not None:
                 return cached, {"graphCacheHit": True, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
             checkpointer = await checkpoint_store.get_async_sqlite_saver()
-            graph = create_supervisor_graph(config, checkpointer=checkpointer)
+            graph = await asyncio.to_thread(
+                create_supervisor_graph,
+                config,
+                checkpointer=checkpointer,
+            )
             self._graph_cache[cache_key] = graph
             return graph, {"graphCacheHit": False, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
 

@@ -16,6 +16,7 @@ from core.database import DatabaseManager, db
 from core.agents import default_subagent_configs
 from core.delegation_broker import build_workset_dispatch_decisions, choose_best_local_agent_with_diagnostics
 from core.engineering_capsule import engineering_capsule_mode
+from core.llm_exceptions import V8LLMTimeoutError
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
@@ -24,6 +25,7 @@ from core.tools.research_quality import (
     MIN_RESEARCH_ANSWER_CHARS,
     MIN_RESEARCH_SOURCE_COUNT,
     build_research_review_binding,
+    research_acceptance_metrics,
 )
 
 
@@ -946,6 +948,115 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
     assert topics.index("handoff.ref.created") < topics.index("runtime.episode.completed")
     assert topics[-1] == "runtime.episode.completed"
     assert atomic_stages == ["after_handoff", "after_episode_transition", "before_commit"]
+
+
+def test_runtime_runner_finalizes_direct_delegation_model_timeout(monkeypatch, tmp_path) -> None:
+    manager = DatabaseManager(tmp_path / "direct-delegation-timeout.db")
+    manager.create_or_update_session("session-timeout", "Direct Delegation Timeout")
+    manager.create_run_record(
+        run_id="run-timeout",
+        session_id="session-timeout",
+        run_type="chat",
+        status="running",
+    )
+    parent = build_runtime_episode(
+        need={"kind": "delegation", "reason": "verify research"},
+        kind="delegation",
+        state="active",
+        continuation_target="runtime_episode_runner",
+        extra={"sessionId": "session-timeout", "runId": "run-timeout"},
+    )
+    manager.upsert_runtime_episode_record(
+        parent,
+        session_id="session-timeout",
+        run_id="run-timeout",
+        enqueue=False,
+    )
+    delegation_id = "subagent::delegation_timeout::0::VERIFY-1::verification-engineer"
+    direct = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "needId": delegation_id,
+            "reason": "verify research evidence",
+            "parentEpisodeId": parent["episodeId"],
+            "inputs": {"workerBriefs": [{"taskBriefId": "VERIFY-1", "goal": "Verify evidence."}]},
+        },
+        kind="delegation",
+        state="waiting",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="parallel_delegate_join",
+        extra={"sessionId": "session-timeout", "runId": "run-timeout"},
+    )
+    manager.upsert_runtime_episode_record(
+        direct,
+        session_id="session-timeout",
+        run_id="run-timeout",
+        enqueue=False,
+    )
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    monkeypatch.setattr(
+        RuntimeEpisodeRunner,
+        "_build_agent_nodes_map",
+        lambda _self: {"verification-engineer": {"id": "verification-engineer"}},
+    )
+
+    async def _timed_out_branch(_arg, _agent_data, progress_callback=None):
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "reasoning",
+                    "status": "running",
+                    "summary": "Verifying sources.",
+                }
+            )
+        raise V8LLMTimeoutError(
+            code="timeout",
+            message="Provider model stream exceeded the governed wall-clock deadline.",
+            provider="test-provider",
+            model="test-provider::test-model",
+            retryable=True,
+            user_action="Retry the delegated verification.",
+        )
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _timed_out_branch)
+    from langgraph.types import Command, Send
+
+    command = Command(
+        goto=[
+            Send(
+                "parallel_delegate_task",
+                {
+                    "parallel_branch": {
+                        "agentId": "verification-engineer",
+                        "agentName": "Verification Engineer",
+                        "delegationId": delegation_id,
+                        "invocationId": "delegation_timeout",
+                        "taskBriefId": "VERIFY-1",
+                        "taskBrief": {"taskBriefId": "VERIFY-1", "goal": "Verify evidence."},
+                        "reason": "Verify evidence.",
+                    },
+                    "messages": [],
+                    "todos": [],
+                },
+            )
+        ],
+        update={},
+    )
+
+    results, child_ids = asyncio.run(
+        RuntimeEpisodeRunner()._execute_local_delegation_sends(command, parent)
+    )
+
+    stored = manager.get_runtime_episode(delegation_id)
+    handoff = manager.list_runtime_episode_handoffs(delegation_id)[-1]["payload"]
+    assert child_ids == []
+    assert results[0]["status"] == "error"
+    assert results[0]["errorCode"] == "delegation_model_timeout"
+    assert results[0]["providerErrorCode"] == "timeout"
+    assert stored["state"] == "failed"
+    assert stored["errorCode"] == "delegation_model_timeout"
+    assert handoff["status"] == "failed"
+    assert handoff["results"][0]["errorCode"] == "delegation_model_timeout"
 
 
 def test_local_delegation_blocks_task_when_dependency_failed(monkeypatch):
@@ -2729,6 +2840,14 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     assert len(handoff["sources"]) == 8
     assert all(source["readEvidence"]["verified"] is True for source in handoff["sources"])
     assert all(source["selectedForEvidence"] is True for source in handoff["sources"])
+    assert handoff["rawRef"].startswith("toolobs://")
+    assert handoff["detailTool"].startswith("tool_observation_detail(")
+    from core.tool_observation_detail import render_tool_observation_detail
+    readable = render_tool_observation_detail(handoff["rawRef"], max_chars=60000)
+    assert handoff["answer"] in readable
+    assert handoff["claimTable"][-1]["claim"] in readable
+    assert handoff["sources"][-1]["url"] in readable
+    assert "End of Research evidence delivery." in readable
     result = handoff["taskBriefResults"][0]
     assert result["answer"] == expected_payload["researchAnswerPack"]["answer"]
     assert result["answerSha256"] == handoff["answerSha256"]
@@ -2744,7 +2863,7 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     )
     assert "detailRef" not in handoff
     assert handoff["detailTool"] == (
-        "research_broker(mode='get_evidence', evidenceBundleId='research_march7')"
+        f"tool_observation_detail(raw_ref='{handoff['rawRef']}', max_chars=60000)"
     )
     from tests.scripts.run_supervisor_runtime_skill_live_audit import _research_handoff_assessment
 
@@ -2825,6 +2944,15 @@ def test_research_episode_hydrates_compact_nonready_payload_for_internal_truth(
     assert result["sources"] == []
     assert result["claimTable"] == []
     assert result["evidenceBundleId"] is None
+    assert result["observedEvidence"]["sourceCount"] == 8
+    assert result["observedEvidence"]["claimCount"] == 8
+    assert result["observedEvidence"]["evidenceBundleId"] == "research_compact_internal"
+    assert handoff["sourceCount"] == 0
+    assert handoff["claimCount"] == 0
+    assert handoff["observedSourceCount"] == 8
+    assert handoff["observedClaimCount"] == 8
+    assert handoff["researchState"] == "evidence_observed_review_rejected"
+    assert handoff["degradedReason"] == "research_review_not_accepted"
     assert "research_delivery_gate_not_ready" in result["evidenceStatusReasons"]
 
 
@@ -2977,6 +3105,60 @@ def test_research_episode_preserves_selected_source_id_only_evidence(monkeypatch
     ]
 
 
+def test_research_episode_delivers_independently_reviewed_minimum_qualified_answer(
+    monkeypatch,
+):
+    question = "核查当前政策的适用关系、关键日期、义务和上线清单。"
+    payload = _accepted_research_payload("research-minimum-qualified", question)
+    # Keep eight distinct, cited evidence units from the normal high-quality
+    # fixture. This models a genuine minimum-qualified answer instead of
+    # manufacturing raw length with repeated filler.
+    answer = "\n\n".join(
+        payload["researchAnswerPack"]["answer"].split("\n\n")[:8]
+    )
+    payload["researchAnswerPack"]["answer"] = answer
+    _rebind_accepted_research_review(payload)
+    metrics = research_acceptance_metrics(payload)
+    assert MIN_RESEARCH_ANSWER_CHARS < metrics["effectiveAnswerChars"] < 5_000
+    assert metrics["uniqueContentRatio"] >= 0.7
+
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") == "run":
+            return json.dumps(payload)
+        return json.dumps({"ok": True, "items": []})
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(
+        native_tools,
+        "research_broker",
+        SimpleNamespace(func=_fake_research_broker),
+    )
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": question},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {"taskBriefId": "minimum-qualified", "goal": question}
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["reviewDecision"] == "accept"
+    assert handoff["qualityTier"] == "minimum_qualified"
+    assert handoff["answer"] == answer
+    assert handoff["sourceCount"] == 8
+    assert handoff["claimCount"] == 8
+
+
 def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
     def _fake_research_broker(**kwargs):
         if kwargs.get("mode") == "run":
@@ -3067,6 +3249,10 @@ def test_research_episode_rejected_review_never_promotes_draft_or_summary(
     assert handoff["answer"] == ""
     assert handoff["sourceCount"] == 0
     assert handoff["claimCount"] == 0
+    assert handoff["observedSourceCount"] == 8
+    assert handoff["observedClaimCount"] == 8
+    assert handoff["researchState"] == "evidence_observed_review_rejected"
+    assert handoff["degradedReason"] == "research_review_not_accepted"
     assert handoff["asOf"] == ""
     assert handoff["asOfByBrief"] == {}
     assert handoff["reviewDecision"] == review_decision
@@ -3079,6 +3265,8 @@ def test_research_episode_rejected_review_never_promotes_draft_or_summary(
     assert result["detailTool"] is None
     assert result["sources"] == []
     assert result["sourceUrls"] == []
+    assert result["observedEvidence"]["sourceCount"] == 8
+    assert result["observedEvidence"]["claimCount"] == 8
     assert result["reviewDecision"] == review_decision
     assert result["qualityTier"] == "insufficient"
     assert "architect_review_not_accepted" in result["evidenceStatusReasons"]
@@ -3855,7 +4043,7 @@ def test_research_episode_enforces_explicit_source_count_contract(monkeypatch):
     result = handoff["taskBriefResults"][0]
     assert "source_floor_not_met:2" in result["evidenceStatusReasons"]
     assert f"evidence_source_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in result["evidenceStatusReasons"]
-    assert f"detailed_answer_floor_not_met:{MIN_RESEARCH_ANSWER_CHARS}" in result["evidenceStatusReasons"]
+    assert not any("answer_floor" in issue for issue in result["evidenceStatusReasons"])
 
 
 def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+
 import hashlib
+
+import pytest
 
 from core.tools.research_quality import (
     MIN_RESEARCH_ANSWER_CHARS,
@@ -19,6 +22,16 @@ from core.tools.research_quality import (
     research_selected_sources,
     research_source_has_dated_evidence,
 )
+
+
+def test_historical_length_issue_does_not_reinstate_a_current_rejection_gate():
+    from core.tool_surface import _research_surface_issue_text
+
+    historical = _research_surface_issue_text("detailed_answer_floor_not_met:3000")
+    assert "advisory" in historical
+    assert "recorded result is unchanged" in historical
+    assert "rejection floor" not in historical
+    assert "not a delivery failure" in _research_surface_issue_text("target_answer_depth_not_met:5000")
 
 
 def _detailed_answer(citations: str) -> str:
@@ -290,13 +303,13 @@ def test_research_quality_uses_reviewed_final_sources_without_unioning_diagnosti
     assert [source["url"] for source in selected] == [source["url"] for source in canonical_sources]
 
 
-def test_research_quality_rejects_short_or_uncited_answer() -> None:
+def test_research_quality_rejects_uncited_answer_not_its_length() -> None:
     payload = _accepted_payload()
     payload["researchAnswerPack"]["answer"] = "这是一个很短、没有来源编号的答案。"
 
     issues = research_acceptance_issues(payload)
 
-    assert f"detailed_answer_floor_not_met:{MIN_RESEARCH_ANSWER_CHARS}" in issues
+    assert not any("answer_floor" in issue for issue in issues)
     assert f"answer_citation_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in issues
 
 
@@ -312,7 +325,67 @@ def test_research_quality_does_not_count_page_body_as_final_answer() -> None:
     issues = research_acceptance_issues(payload)
 
     assert metrics["effectiveAnswerChars"] < MIN_RESEARCH_ANSWER_CHARS
-    assert f"detailed_answer_floor_not_met:{MIN_RESEARCH_ANSWER_CHARS}" in issues
+    assert metrics["answerLengthScore"] < 100
+    assert f"answer_citation_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in issues
+
+
+def test_short_reviewed_answer_is_deliverable_with_lower_length_score() -> None:
+    payload = _accepted_payload(source_count=TARGET_RESEARCH_SOURCE_COUNT)
+    payload["researchAnswerPack"]["answer"] = "\n\n".join(
+        f"{claim['claim'].rstrip('。')} [{claim['supportingSources'][0]['citationKey']}]。"
+        for claim in payload["researchAnswerPack"]["claimTable"]
+    )
+    payload["deliveryRequirements"] = {"minimumAnswerChars": 100_000, "targetAnswerChars": 100_000}
+    _rebind_review_consensus(payload)
+    metrics = research_acceptance_metrics(payload)
+    assert 0 < metrics["answerLengthScore"] < 100
+    assert metrics["answerLengthRecommended"] is False
+    assert research_acceptance_issues(payload, min_answer_chars=100_000) == []
+    assert research_bundle_is_high_quality(payload)
+    from core.tools.research_broker import _research_answer_pack
+    payload["finalExperiencePack"] = dict(payload["researchAnswerPack"])
+    pack = _research_answer_pack(payload)
+    assert pack["score"]["deliveryReady"] is True
+    assert pack["answer"] == payload["researchAnswerPack"]["answer"]
+
+
+def test_empty_answer_still_fails_even_when_length_is_advisory() -> None:
+    payload = _accepted_payload()
+    payload["researchAnswerPack"]["answer"] = "   "
+    _rebind_review_consensus(payload)
+    assert "research_answer_missing" in research_acceptance_issues(payload)
+
+
+def test_length_score_does_not_reward_repeated_padding() -> None:
+    payload = _accepted_payload()
+    payload["researchAnswerPack"]["answer"] = "A bounded conclusion with its precise source [S1]."
+    score = research_acceptance_metrics(payload)["answerLengthScore"]
+    payload["researchAnswerPack"]["answer"] *= 100
+    assert research_acceptance_metrics(payload)["answerLengthScore"] == score
+    assert "answer_repetition_excessive" in research_acceptance_issues(payload)
+
+
+def test_handoff_preserves_explicit_secondary_role_despite_trusted_host_tier() -> None:
+    from core.runtime_episode_runner import _research_handoff_source
+    from core.research_handoff_surface import render_research_handoff_evidence
+    from core.tools.research_broker import _research_source_pack, _architect_support_role
+    source = {"sourceId": "mirror", "citationKey": "S3", "title": "转载的草案说明",
+              "url": "https://mirror.example.org/draft", "tier": "primary", "sourceRole": "secondary", "version": "draft-v2"}
+    compact = _research_handoff_source(_research_source_pack(source))
+    assert compact["sourceRole"] == "secondary"
+    assert _architect_support_role(compact) == "secondary"
+    surface = render_research_handoff_evidence({"sources": [compact], "answer": "有明确边界的答案。"})
+    assert "Source role: secondary; retrieval tier: primary; version: draft-v2" in surface
+    assert source["url"] in surface
+
+
+@pytest.mark.parametrize("complete,expected", [(True, []), (False, ["section_incomplete"])])
+def test_short_section_does_not_request_length_correction(complete, expected) -> None:
+    from core.tools.research_broker import _architect_section_issues
+    task = {"targetMinChars": 5000, "minimumAcceptableChars": 4000, "targetMaxChars": 6000,
+            "requiredCitationKeys": ["S1"]}
+    assert _architect_section_issues("A bounded finding supported by evidence [S1].", task, complete=complete) == expected
+    assert "section_citation_missing:S1" in _architect_section_issues("No citation here.", task, complete=True)
 
 
 def test_research_quality_rejects_citation_list_without_inline_evidence_spread() -> None:
@@ -449,6 +522,25 @@ def test_research_quality_lets_reviewer_judge_undated_sources_with_clear_retriev
     _rebind_review_consensus(current)
     assert research_acceptance_metrics(current)["datedSourceCount"] == 0
     assert research_bundle_is_accepted(current)
+
+
+@pytest.mark.parametrize("published_at", [None, "2010-01-01", "2099-01-01", "not-parsed"])
+def test_document_date_metadata_does_not_override_bound_semantic_review(published_at):
+    payload = _accepted_payload(current=True)
+    for source in payload["researchAnswerPack"]["sources"]:
+        source["publishedAt"] = published_at
+    _rebind_review_consensus(payload)
+    assert research_bundle_is_accepted(payload)
+
+    # Runtime receipts still prove a real past read; document dates are a
+    # separate meaning. An Agent's adverse applicability judgment still wins.
+    for review in payload["independentReview"]["consensusReviews"]:
+        review["freshnessAdequacy"] = False
+        review["reviewDecision"] = "retry"
+        review["reviewReasons"] = ["The answer applies a superseded contract to an incompatible version."]
+    _rebind_review_consensus(payload)
+    assert not research_bundle_is_accepted(payload)
+    assert "independent_semantic_review_not_accepted" in research_acceptance_issues(payload)
 
 
 def test_research_quality_exposes_time_context_and_leaves_currency_to_reviewer() -> None:

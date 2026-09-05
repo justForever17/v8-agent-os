@@ -500,7 +500,7 @@ def _disable_prompt_cache_side_effects(monkeypatch):
     monkeypatch.setattr(prompt_cache_gateway, "store_response", lambda *_args: None)
 
 
-def test_required_native_tool_call_retries_once_after_sync_stream_ends_without_tool(monkeypatch):
+def test_required_native_sync_stream_leaves_correction_to_caller(monkeypatch):
     _disable_prompt_cache_side_effects(monkeypatch)
     native = _StreamingPromptFallbackNativeModel()
     adapter = _required_streaming_tool_adapter(native)
@@ -511,17 +511,16 @@ def test_required_native_tool_call_retries_once_after_sync_stream_ends_without_t
         combined = combined + chunk.message
 
     assert native.stream_calls == 1
-    assert native.invoke_calls == 1
+    assert native.invoke_calls == 0
     assert native.bind_kwargs == [{"tool_choice": "runtime_broker"}]
-    assert combined.tool_calls[0]["name"] == "runtime_broker"
-    assert combined.tool_calls[0]["args"] == {
-        "mode": "route",
-        "need": {"kind": "engineering"},
-    }
-    assert "本次必须调用工具 runtime_broker" in native.messages[1][0].content
+    assert combined.tool_calls == []
+    assert combined.additional_kwargs["reasoning_content"] == "internal-only"
+    assert combined.response_metadata["finish_reason"] == "length"
+    assert adapter._missing_required_tool_call(combined) is True
+    assert len(native.messages) == 1
 
 
-def test_required_native_tool_call_retries_once_after_async_stream_ends_without_tool(monkeypatch):
+def test_required_native_async_stream_leaves_correction_to_caller(monkeypatch):
     _disable_prompt_cache_side_effects(monkeypatch)
     native = _StreamingPromptFallbackNativeModel()
     adapter = _required_streaming_tool_adapter(native)
@@ -538,14 +537,13 @@ def test_required_native_tool_call_retries_once_after_async_stream_ends_without_
         combined = combined + chunk.message
 
     assert native.astream_calls == 1
-    assert native.ainvoke_calls == 1
+    assert native.ainvoke_calls == 0
     assert native.bind_kwargs == [{"tool_choice": "runtime_broker"}]
-    assert combined.tool_calls[0]["name"] == "runtime_broker"
-    assert combined.tool_calls[0]["args"] == {
-        "mode": "route",
-        "need": {"kind": "engineering"},
-    }
-    assert "本次必须调用工具 runtime_broker" in native.messages[1][0].content
+    assert combined.tool_calls == []
+    assert combined.additional_kwargs["reasoning_content"] == "internal-only"
+    assert combined.response_metadata["finish_reason"] == "length"
+    assert adapter._missing_required_tool_call(combined) is True
+    assert len(native.messages) == 1
 
 
 def test_checkpoint_store_isolates_savers_by_event_loop(tmp_path):

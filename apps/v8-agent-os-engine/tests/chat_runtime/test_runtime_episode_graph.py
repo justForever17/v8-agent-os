@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -474,6 +475,81 @@ def test_auto_engineering_hint_observes_only_current_run_episode_without_presele
     assert _observed_runtime_episode_kinds(state) == {"engineering"}
 
 
+def test_selected_research_observes_durable_current_run_after_delegation_projection_lags(
+    monkeypatch,
+) -> None:
+    run_id = f"run-durable-research-{uuid4().hex}"
+    research_episode_id = f"episode-research-{uuid4().hex}"
+    delegation_episode_id = f"episode-delegation-{uuid4().hex}"
+    state = {
+        "run_id": run_id,
+        "current_route_context": {
+            "runId": run_id,
+            "supervisorRuntimeMode": "research",
+            # Reproduce the real rejoin window: the direct delegation branch
+            # is visible in the compatibility projection, while the earlier
+            # Research episode is temporarily absent from that projection.
+            "capabilityEpisodes": [
+                {
+                    "episodeId": delegation_episode_id,
+                    "kind": "delegation",
+                    "state": "completed",
+                    "runId": run_id,
+                }
+            ],
+        },
+    }
+
+    def list_runtime_episodes(*, run_id: str | None = None, limit: int = 100, **_kwargs):
+        assert run_id == state["run_id"]
+        assert limit == 100
+        return [
+            {
+                "episodeId": research_episode_id,
+                "kind": "research",
+                "state": "degraded",
+                "run_id": state["run_id"],
+            },
+            {
+                "episodeId": delegation_episode_id,
+                "kind": "delegation",
+                "state": "completed",
+                "run_id": state["run_id"],
+            },
+        ]
+
+    monkeypatch.setattr(db, "list_runtime_episodes", list_runtime_episodes)
+
+    required = _authoritative_runtime_route_kinds(state)
+    observed = _observed_runtime_episode_kinds(state)
+
+    assert required == ["research"]
+    assert observed == {"research", "delegation"}
+    assert [kind for kind in required if kind not in observed] == []
+
+
+def test_durable_runtime_observation_does_not_cross_user_run_boundary(monkeypatch) -> None:
+    current_run_id = f"run-current-{uuid4().hex}"
+    prior_run_id = f"run-prior-{uuid4().hex}"
+    calls: list[str] = []
+
+    def list_runtime_episodes(*, run_id: str | None = None, **_kwargs):
+        calls.append(str(run_id or ""))
+        return (
+            [{"episodeId": "episode-prior", "kind": "research", "run_id": prior_run_id}]
+            if run_id == prior_run_id
+            else []
+        )
+
+    monkeypatch.setattr(db, "list_runtime_episodes", list_runtime_episodes)
+
+    assert _observed_runtime_episode_kinds({
+        "run_id": current_run_id,
+        "current_route_context": {"supervisorRuntimeMode": "research"},
+    }) == set()
+    assert calls == [current_run_id]
+
+
 @pytest.mark.parametrize(
     ("route_context", "expected_after_approval"),
     [
@@ -632,6 +708,94 @@ def test_validated_canvas_route_can_emit_exact_native_broker_call_without_model(
     assert response.tool_calls[0]["args"] == canvas_route
     assert response.tool_calls[0]["args"] is not canvas_route
     assert response.additional_kwargs["v8_authoritative_runtime_direct_route"]["source"] == "validated_canvas_contract"
+
+
+def test_selected_research_routes_complete_user_request_without_model_compiler() -> None:
+    request = (
+        "截至 2026 年 9 月 3 日，核查三项生成式人工智能法规的适用关系、关键日期、"
+        "提供者义务和上线清单；至少给出 5 个可追溯官方来源。"
+    )
+    state = {
+        "run_id": "run-research-1",
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "sessionId": "session-research-1",
+            "supervisorRuntimeMode": "research",
+            "userRequest": request,
+        },
+    }
+    response = _deterministic_authoritative_runtime_route_response(
+        state=state,
+        messages=[HumanMessage(content=request)],
+        user_query=request,
+        pending_required_runtime_kinds=["research"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=[SimpleNamespace(name="runtime_broker")],
+        gate_decision=SimpleNamespace(status="clean", diagnostics={}),
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    )
+
+    assert response is not None
+    assert response.content == ""
+    assert len(response.tool_calls) == 1
+    call = response.tool_calls[0]
+    assert call["name"] == "runtime_broker"
+    assert call["args"]["routeKind"] == "research"
+    assert call["args"]["researchBriefIds"] == ["current-user-request"]
+    assert call["args"]["researchBriefGoals"] == [request]
+    assert response.additional_kwargs["v8_authoritative_runtime_direct_route"] == {
+        "runtimeKind": "research",
+        "source": "selected_research_user_request",
+    }
+
+
+@pytest.mark.parametrize("downstream", ["delegation", "engineering", "creative_media"])
+def test_selected_research_does_not_copy_downstream_work_into_research_scope(downstream) -> None:
+    request = "先调研政策；回流后再委派独立验证，收到验证结果后最终交付。"
+    response = _deterministic_authoritative_runtime_route_response(
+        state={"task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+               "current_route_context": {"supervisorRuntimeMode": "research"}},
+        messages=[HumanMessage(content=request)], user_query=request,
+        pending_required_runtime_kinds=["research", downstream],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=[SimpleNamespace(name="runtime_broker")],
+        gate_decision=SimpleNamespace(status="clean", diagnostics={}),
+        runtime_handoff_ready=False, session_coordination={}, explicit_coordination_send=False,
+    )
+    assert response is None  # Existing Supervisor turn owns decomposition; no second planner.
+    assert not _should_use_runtime_route_compiler(
+        state={"task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+               "current_route_context": {"supervisorRuntimeMode": "research"}},
+        messages=[HumanMessage(content=request)], user_query=request,
+        pending_required_runtime_kinds=["research", downstream],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=[SimpleNamespace(name="runtime_broker")],
+        gate_decision=SimpleNamespace(status="clean", diagnostics={}),
+        runtime_handoff_ready=False, session_coordination={}, explicit_coordination_send=False,
+    )
+
+
+def test_selected_research_direct_route_preserves_runtime_gate() -> None:
+    request = "调研当前政策。"
+    response = _deterministic_authoritative_runtime_route_response(
+        state={
+            "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+            "current_route_context": {"supervisorRuntimeMode": "research"},
+        },
+        messages=[HumanMessage(content=request)],
+        user_query=request,
+        pending_required_runtime_kinds=["research"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=[SimpleNamespace(name="runtime_broker")],
+        gate_decision=SimpleNamespace(status="blocked", diagnostics={}),
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    )
+
+    assert response is None
 
 
 def test_selected_read_only_engineering_uses_compiler_instead_of_guessing_execution_contract() -> None:
@@ -1321,6 +1485,32 @@ def test_explicit_orchestration_forces_the_only_valid_broker_for_the_next_step()
     assert _required_orchestration_tool_name("delegation") == "delegation_broker"
 
 
+@pytest.mark.parametrize("builder", [
+    _explicit_runtime_orchestration_guidance,
+    _authoritative_runtime_route_guidance,
+])
+@pytest.mark.parametrize("correction", [False, True])
+def test_delegation_guidance_example_matches_the_exposed_dispatch_contract(builder, correction):
+    from pydantic import TypeAdapter
+    from core.tools.native.delegation import DelegationTaskInput
+
+    guidance = builder(["delegation"], correction=correction).content
+    example = json.loads(guidance[guidance.index("{\n"):])
+    assert example["mode"] == "dispatch"
+    assert "routeKind" not in example
+    assert "taskBriefs" not in example
+    assert "delegation_broker(mode='dispatch')" in guidance
+    assert "first durable action MUST be one runtime_broker" not in guidance
+    for task in example["tasks"]:
+        assert TypeAdapter(DelegationTaskInput).validate_python(task) == task
+        assert task["expectedOutputs"] and task["acceptanceContract"]
+        assert task["targetAgentName"]
+        assert not task.get("writeSet")
+    response = SimpleNamespace(tool_calls=[{"name": "delegation_broker", "args": example}])
+    assert _delegation_dispatch_contract_error(response) is None
+    assert ("single correction attempt" in guidance) is correction
+
+
 def test_required_broker_attempt_leaves_argument_validation_to_typed_tool_boundary() -> None:
     runtime_response = SimpleNamespace(
         tool_calls=[{"name": "runtime_broker", "args": {"mode": "route", "need": None}}]
@@ -1631,7 +1821,8 @@ def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry
     assert "never pass research:// to tool_observation_detail" in str(message.content)
 
 
-def test_runtime_episode_wait_node_preserves_full_high_quality_research_delivery() -> None:
+@pytest.mark.parametrize("quality_tier", ["high_quality", "minimum_qualified"])
+def test_runtime_episode_wait_node_preserves_full_high_quality_research_delivery(quality_tier) -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_research_delivery_{uuid4().hex}"
     episode = build_runtime_episode(
@@ -1669,7 +1860,8 @@ def test_runtime_episode_wait_node_preserves_full_high_quality_research_delivery
                     "answer": answer,
                     "acceptancePassed": True,
                     "reviewDecision": "accept",
-                    "qualityTier": "high_quality",
+                    "qualityTier": quality_tier,
+                    "limitations": ["target_answer_depth_not_met:5000"] if quality_tier == "minimum_qualified" else [],
                     "qualityMetrics": {"effectiveAnswerChars": len(answer), "selectedSourceCount": 8},
                     "asOf": "2026-07-28T12:00:00Z",
                     "researchRef": "research://bundle/research-high-quality",
@@ -1697,7 +1889,9 @@ def test_runtime_episode_wait_node_preserves_full_high_quality_research_delivery
     assert projected_result["evidenceComplete"] is True
     assert projected_result["deliveryVisible"] is True
     assert projected_result["answerProjection"] == "full"
-    assert projected_result["qualityTier"] == "high_quality"
+    assert projected_result["qualityTier"] == quality_tier
+    if quality_tier == "minimum_qualified":
+        assert projected_result["limitations"] == ["target_answer_depth_not_met:5000"]
     assert len(projected_result["sourceUrls"]) == 8
     assert len(projected_result["sources"]) == 8
     assert projected_handoff["projectionLimited"] is False

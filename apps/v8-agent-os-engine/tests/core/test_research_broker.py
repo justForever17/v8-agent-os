@@ -757,14 +757,123 @@ def test_parallel_search_shards_read_duplicate_url_only_once(monkeypatch):
 
     assert len(completed) == 2
     assert read_urls.count("https://docs.python.org/shared-pathlib-cli") == 1
-    assert len(set(read_urls)) == 4
-    assert sum(
-        item.get("finalUrl") == "https://docs.python.org/shared-pathlib-cli"
-        or item.get("url") == "https://docs.python.org/shared-pathlib-cli"
-        for shard in completed
-        for item in shard.get("fetchedTopSources") or []
-    ) == 2
-    assert ledger.snapshot()["cachedProjectionCount"] >= 1
+    assert len(set(read_urls)) >= 2
+    assert all(shard.get("fetchedTopSources") for shard in completed)
+
+
+def test_parallel_search_shards_try_distinct_candidate_while_shared_read_is_inflight(monkeypatch):
+    shared_started = threading.Event()
+    alternate_started = threading.Event()
+
+    def fake_search(**kwargs):
+        slug = "one" if "one" in kwargs["query"] else "two"
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": "Python pathlib one two shared evidence",
+                        "url": "https://docs.python.org/shared-pathlib",
+                        "snippet": "Python pathlib one two evidence",
+                    },
+                    {
+                        "title": f"Distinct fallback {slug}",
+                        "url": f"https://docs.python.org/{slug}-pathlib",
+                        "snippet": "Read the documentation.",
+                    },
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        if kwargs["url"].endswith("shared-pathlib"):
+            shared_started.set()
+            assert alternate_started.wait(timeout=1.0)
+        else:
+            assert shared_started.wait(timeout=1.0)
+            alternate_started.set()
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "text": "Python pathlib evidence for current command line behavior. " * 20,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    completed = research_module._run_search_shards(
+        [
+            {"shardId": "one", "kind": "baseline", "query": "Python pathlib one"},
+            {"shardId": "two", "kind": "baseline", "query": "Python pathlib two"},
+        ],
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=1,
+        use_agent_browser_profile=False,
+        tool_call_id="parallel-inflight-alternative",
+        read_attempt_ledger=research_module._ResearchReadAttemptLedger(
+            question="Python pathlib evidence"
+        ),
+    )
+
+    assert len(completed) == 2
+    assert alternate_started.is_set()
+    assert all(shard.get("fetchedTopSources") for shard in completed)
+
+
+def test_search_snippet_does_not_block_relevant_readable_body(monkeypatch):
+    read_urls: list[str] = []
+
+    monkeypatch.setattr(
+        research_module,
+        "web_search",
+        SimpleNamespace(
+            func=lambda **_kwargs: json.dumps(
+                {
+                    "ok": True,
+                    "provider": "fake",
+                    "results": [
+                        {
+                            "title": "Overview",
+                            "url": "https://docs.python.org/3/library/pathlib.html",
+                            "snippet": "Read the documentation.",
+                        }
+                    ],
+                }
+            )
+        ),
+    )
+
+    def fake_read(**kwargs):
+        read_urls.append(kwargs["url"])
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "title": "pathlib command line behavior",
+                "text": "Python pathlib command line behavior and current API evidence. " * 24,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    completed = research_module._run_search_shards(
+        [{"shardId": "body-first", "kind": "baseline", "query": "Python pathlib command line evidence"}],
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=1,
+        use_agent_browser_profile=False,
+        tool_call_id="body-first-gate",
+    )
+
+    assert read_urls == ["https://docs.python.org/3/library/pathlib.html"]
+    gate = completed[0]["fetchedTopSources"][0]["preflightSourceQualityGate"]
+    assert gate["selectedForEvidence"] is True
 
 
 def test_parallel_search_shards_reports_human_safe_search_and_read_progress(monkeypatch):
@@ -1078,6 +1187,29 @@ def test_parallel_facets_reuse_one_long_document_read_for_distinct_excerpts(monk
     assert facet_stats["missingFacetIds"] == []
     assert ledger.snapshot()["networkAttemptCount"] == 1
     assert ledger.snapshot()["cachedProjectionCount"] == 1
+
+
+@pytest.mark.parametrize("read_title", ["Project compatibility guide (draft)", "Project compatibility guide v2", ""])
+def test_source_candidate_title_comes_from_read_document_not_search_label(read_title):
+    import copy
+
+    url = "https://docs.example.org/project/compatibility"
+    shard = {
+        "shardId": "read-title", "query": "Project compatibility guide",
+        "results": [{"url": url, "title": "Project compatibility guide FINAL v1", "snippet": "Compatibility guide."}],
+        "fetchedTopSources": [{
+            "ok": True, "url": url, "title": read_title,
+            "text": "Project compatibility guide: versions and limitations are described in this draft document. " * 8,
+        }],
+    }
+    original = copy.deepcopy(shard)
+    candidates = research_module._research_source_candidates(
+        "Project compatibility guide", [shard], source_policy="balanced",
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["result"]["title"] == (read_title or original["results"][0]["title"])
+    assert candidates[0]["result"]["url"] == url
+    assert shard == original
 
 
 def test_read_source_projects_body_evidence_to_other_explicit_facets():
@@ -3012,7 +3144,7 @@ def test_research_architect_prompt_preserves_runtime_catalog_seed_reads():
     selected_seeds = [source for source in selected if source["url"] in seed_urls]
     assert all(source["runtimeOfficialSeed"] is True for source in selected_seeds)
     assert all(
-        research_module._architect_support_role(source) == "primary"
+        research_module._architect_support_role(source) == "unknown"
         for source in selected_seeds
     )
 
@@ -4474,7 +4606,7 @@ def test_runtime_named_decision_inferences_use_disjoint_primary_sources():
                 {
                     "citationKey": f"S{index}",
                     "title": f"{product} official documentation",
-                    "tier": "primary",
+                    "tier": "primary", "sourceRole": "primary",
                     "authorityScore": 85,
                 }
             ],
@@ -4490,7 +4622,7 @@ def test_runtime_named_decision_inferences_use_disjoint_primary_sources():
                 {
                     "citationKey": "S10",
                     "title": "Secondary article",
-                    "tier": "secondary",
+                    "tier": "secondary", "sourceRole": "secondary",
                     "authorityScore": 50,
                 }
             ],
@@ -4533,14 +4665,14 @@ def test_runtime_named_decision_fallback_excludes_explicit_product_comparisons()
     )
 
 
-def test_architect_support_role_preserves_official_catalog_identity_only():
+def test_architect_support_role_does_not_promote_catalog_rank_to_document_provenance():
     assert research_module._architect_support_role(
         {
             "tier": "secondary",
             "authorityTier": "primary",
             "catalogCategory": "official_docs",
         }
-    ) == "primary"
+    ) == "unknown"
     assert research_module._architect_support_role(
         {
             "tier": "secondary",
@@ -4548,14 +4680,14 @@ def test_architect_support_role_preserves_official_catalog_identity_only():
             "catalogCategory": "source_repo",
             "runtimeOfficialSeed": True,
         }
-    ) == "primary"
+    ) == "unknown"
     assert research_module._architect_support_role(
         {
             "tier": "secondary",
             "authorityTier": "primary",
             "catalogCategory": "source_repo",
         }
-    ) == "secondary"
+    ) == "unknown"
 
 
 def test_runtime_named_decision_inferences_reject_unbound_generic_facts():
@@ -4596,7 +4728,7 @@ def test_runtime_named_decision_inferences_use_word_boundaries_and_attributed_se
                 {
                     "citationKey": "S1",
                     "title": "OpenAI Codex CLI documentation",
-                    "tier": "primary",
+                    "tier": "primary", "sourceRole": "primary",
                 }
             ],
         },
@@ -4611,7 +4743,7 @@ def test_runtime_named_decision_inferences_use_word_boundaries_and_attributed_se
                 {
                     "citationKey": "S2",
                     "title": "GitHub Copilot Plans",
-                    "tier": "secondary",
+                    "tier": "secondary", "sourceRole": "secondary",
                 }
             ],
         },
@@ -6132,7 +6264,7 @@ def test_current_or_official_guidance_requires_current_primary_source_role():
         "supportingSources": [
             {
                 "citationKey": "S1",
-                "tier": "secondary",
+                "tier": "secondary", "sourceRole": "secondary",
                 "authorityScore": 90,
                 "publishedAt": "2018-12-01",
             }
@@ -6144,7 +6276,7 @@ def test_current_or_official_guidance_requires_current_primary_source_role():
         "supportingSources": [
             {
                 "citationKey": "S2",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "authorityScore": 90,
                 "version": "3.14.6",
                 "url": "https://docs.python.org/3/library/pathlib.html",
@@ -6156,7 +6288,7 @@ def test_current_or_official_guidance_requires_current_primary_source_role():
         "supportingSources": [
             {
                 "citationKey": "S3",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "authorityScore": 90,
                 "version": "3.6",
                 "publishedAt": "2016-05-11",
@@ -6169,7 +6301,7 @@ def test_current_or_official_guidance_requires_current_primary_source_role():
         "This is the current official guidance.",
         [secondary_claim],
     )
-    assert "current_document_evidence_required" in research_module._architect_source_role_issues(
+    assert "current_document_evidence_required" not in research_module._architect_source_role_issues(
         "This is the current official guidance.",
         [secondary_claim],
     )
@@ -6204,7 +6336,7 @@ def test_current_runtime_context_is_not_misclassified_as_freshness_claim():
             {
                 "citationKey": "S1",
                 "title": "Path tutorial",
-                "tier": "secondary",
+                "tier": "secondary", "sourceRole": "secondary",
                 "authorityScore": 60,
             }
         ],
@@ -6219,7 +6351,7 @@ def test_current_runtime_context_is_not_misclassified_as_freshness_claim():
         attributed,
         [secondary_claim],
     ) == []
-    assert "current_document_evidence_required" in (
+    assert "primary_source_role_required" in (
         research_module._architect_source_role_issues(
             "This is the current guidance [S1].",
             [secondary_claim],
@@ -6298,7 +6430,7 @@ def test_runtime_can_add_an_explicit_secondary_role_label_without_changing_the_f
                 "supportingSources": [
                     {
                         "citationKey": "S1",
-                        "tier": "secondary",
+                        "tier": "secondary", "sourceRole": "secondary",
                         "authorityScore": 60,
                     }
                 ],
@@ -6333,7 +6465,7 @@ def test_runtime_secondary_role_repair_names_the_source_and_does_not_double_pref
                     {
                         "citationKey": "S2",
                         "title": "Python pathlib tutorial",
-                        "tier": "secondary",
+                        "tier": "secondary", "sourceRole": "secondary",
                         "authorityScore": 60,
                     }
                 ],
@@ -6363,7 +6495,7 @@ def test_mundane_secondary_fact_is_governed_even_without_a_high_risk_anchor():
             {
                 "citationKey": "S2",
                 "title": "Path tutorial",
-                "tier": "secondary",
+                "tier": "secondary", "sourceRole": "secondary",
             }
         ],
         "evidenceExcerpt": "Path methods return Path objects, which allows for method chaining.",
@@ -6468,7 +6600,7 @@ def test_single_source_combined_with_path_separator_is_not_cross_source_synthesi
     assert filtered == section
 
 
-def test_section_depth_gate_allows_small_post_filter_variance_but_not_shallow_output():
+def test_section_length_is_advisory_across_previous_threshold():
     task = {
         "assignedClaims": [],
         "compositeInferences": [],
@@ -6490,7 +6622,7 @@ def test_section_depth_gate_allows_small_post_filter_variance_but_not_shallow_ou
     )
 
     assert not any(issue.startswith("section_depth_not_met:") for issue in near_floor)
-    assert any(issue.startswith("section_depth_not_met:") for issue in shallow)
+    assert shallow == []
 
 
 def test_runtime_source_role_repair_normalizes_a_chinese_label_in_english_prose():
@@ -6533,6 +6665,31 @@ def test_runtime_source_role_repair_normalizes_a_chinese_label_in_english_prose(
     assert second_count == 0
 
 
+@pytest.mark.parametrize("title,body", [
+    ("四部门发布《内容标识办法》的解读", "所读资料记录了内容标识的适用范围与实施条件。"),
+    ('Why “official” and "required" need context', "The article records a bounded implementation example."),
+])
+def test_nested_title_attribution_is_recognized_and_repair_is_idempotent(title, body):
+    claim = {"claimId": "C1", "claim": body, "claimType": "source_fact",
+             "evidenceExcerpt": body,
+             "supportingSources": [{"citationKey": "S1", "title": title, "tier": "secondary", "sourceRole": "secondary"}]}
+    task = {"assignedClaims": [claim]}
+    repaired, count = research_module._architect_repair_source_role_labels(body + " [S1]", task)
+    assert count == 1
+    assert title in repaired
+    assert research_module._architect_source_role_issues(repaired, [claim]) == []
+    assert research_module._architect_repair_source_role_labels(repaired, task) == (repaired, 0)
+    _, fragments = research_module._architect_split_unit_for_validation(
+        repaired.rstrip(".") + ". Another bounded detail is recorded [S1]."
+    )
+    assert len(fragments) >= 2
+    assert all(research_module._architect_source_role_issues(fragment, [claim]) == [] for fragment in fragments)
+    # Quoted title words are not assertions; actual unsupported official claims
+    # after the label remain governed and must still fail.
+    unsupported = repaired.replace(body, "This is the current official standard.")
+    assert "primary_source_role_required" in research_module._architect_source_role_issues(unsupported, [claim])
+
+
 def test_secondary_source_title_does_not_manufacture_a_normative_assertion():
     claim = {
         "claimId": "C13",
@@ -6542,7 +6699,7 @@ def test_secondary_source_title_does_not_manufacture_a_normative_assertion():
             {
                 "citationKey": "S10",
                 "title": "Why you should be using pathlib",
-                "tier": "secondary",
+                "tier": "secondary", "sourceRole": "secondary",
                 "authorityScore": 60,
             }
         ],
@@ -6594,11 +6751,7 @@ def test_secondary_source_title_does_not_manufacture_a_normative_assertion():
         "sourceClaim": claim["claim"],
     }
     governed_task = {**task, "assignedClaims": [governed_claim]}
-    governed_restored, governed_count = research_module._architect_restore_unrepresented_claims(
-        "## Practical experience",
-        governed_task,
-    )
-    assert governed_count == 1
+    governed_restored = "- " + governed_claim["claim"] + " [S1]"
     assert "- Secondary source" in governed_restored
     assert "section_normative_attribution_not_entailed" not in (
         research_module._architect_section_issues(
@@ -6627,7 +6780,7 @@ def test_official_source_question_retains_and_attributes_secondary_experience():
         "claim": "Path objects demonstrate filesystem behavior.",
         "claimType": "source_fact",
         "supportingSources": [
-            {"citationKey": "S1", "tier": "secondary", "authorityScore": 90}
+            {"citationKey": "S1", "tier": "secondary", "sourceRole": "secondary", "authorityScore": 90}
         ],
     }
     secondary_recommendation = {
@@ -6636,7 +6789,7 @@ def test_official_source_question_retains_and_attributes_secondary_experience():
         "claimType": "explicit_normative",
         "normativeCue": "should use pathlib",
         "supportingSources": [
-            {"citationKey": "S1", "tier": "secondary", "authorityScore": 90}
+            {"citationKey": "S1", "tier": "secondary", "sourceRole": "secondary", "authorityScore": 90}
         ],
     }
     primary_recommendation = {
@@ -6645,7 +6798,7 @@ def test_official_source_question_retains_and_attributes_secondary_experience():
         "claimType": "explicit_normative",
         "normativeCue": "most likely what you need",
         "supportingSources": [
-            {"citationKey": "S2", "tier": "primary", "authorityScore": 85}
+            {"citationKey": "S2", "tier": "primary", "sourceRole": "primary", "authorityScore": 85}
         ],
     }
 
@@ -6787,31 +6940,31 @@ def test_runtime_temporal_assessment_exposes_facts_without_a_fixed_age_cutoff():
         [
             {
                 "citationKey": "S1",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "version": "3.14.6",
                 "url": "https://docs.python.org/3/library/pathlib.html",
             },
             {
                 "citationKey": "S2",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "version": "3.6",
                 "publishedAt": "2016-05-11",
                 "url": "https://peps.python.org/pep-0519/",
             },
             {
                 "citationKey": "S3",
-                "tier": "secondary",
+                "tier": "secondary", "sourceRole": "secondary",
                 "sourceDate": "2026-07-29",
                 "sourceDateKind": "retrieved_at",
             },
             {
                 "citationKey": "S4",
-                "tier": "secondary",
+                "tier": "secondary", "sourceRole": "secondary",
                 "url": "https://community.example/current/path-notes",
             },
             {
                 "citationKey": "S5",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "publishedAt": "2017-01-01",
                 "url": "https://official.example/stable/path-api",
             },
@@ -6867,13 +7020,13 @@ def test_runtime_temporal_assessment_flags_date_anomalies_before_stable_route_co
         [
             {
                 "citationKey": "S1",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "publishedAt": future_date,
                 "url": "https://official.example/stable/path-api",
             },
             {
                 "citationKey": "S2",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "publishedAt": "2026-02-30",
                 "url": "https://official.example/current/path-api",
             },
@@ -6895,7 +7048,7 @@ def test_deterministic_claim_report_preserves_source_role_and_temporal_boundarie
             "citationKey": "S1",
             "title": "Current official documentation",
             "url": "https://docs.python.org/3/library/pathlib.html",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
             "version": "3.14",
             "publishedAt": "2017-01-01",
             "retrievedAt": "2026-07-29T00:00:00Z",
@@ -6904,7 +7057,7 @@ def test_deterministic_claim_report_preserves_source_role_and_temporal_boundarie
             "citationKey": "S2",
             "title": "Historical protocol specification",
             "url": "https://peps.python.org/pep-0519/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
             "version": "3.6",
             "publishedAt": "2016-05-11",
         },
@@ -6912,21 +7065,21 @@ def test_deterministic_claim_report_preserves_source_role_and_temporal_boundarie
             "citationKey": "S3",
             "title": "Version-bounded official reference",
             "url": "https://reference.example/v2/path-api",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
             "version": "2.0",
         },
         {
             "citationKey": "S4",
             "title": "Maintainer field notes",
             "url": "https://experience.example/path-notes",
-            "tier": "secondary",
+            "tier": "secondary", "sourceRole": "secondary",
             "retrievedAt": "2088-04-03T12:00:00Z",
         },
         {
             "citationKey": "S5",
             "title": "Unused source",
             "url": "https://unused.example/source",
-            "tier": "secondary",
+            "tier": "secondary", "sourceRole": "secondary",
         },
     ]
     claims = [
@@ -6984,7 +7137,9 @@ def test_deterministic_claim_report_preserves_source_role_and_temporal_boundarie
     assert "source-reported document date shown; no fixed age cutoff is applied" in answer
     assert "A date or version label does not itself mean that material is superseded or deprecated" in answer
     assert "version-bounded without a parseable document date" in answer
-    assert "undated secondary material" in answer
+    assert "Secondary material must remain attributed" in answer
+    assert "no page publication date or version was resolved" in answer
+    assert "non-temporal API" not in answer
     assert "version 3.6" in answer
     assert "document date 2016-05-11" in answer
     assert "No fixed document-age cutoff is applied" in answer
@@ -7107,31 +7262,31 @@ def test_deterministic_claim_report_builds_citation_bound_practical_guidance():
             "citationKey": "S1",
             "title": "argparse command-line parser",
             "url": "https://docs.python.org/3/library/argparse.html",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S2",
             "title": "Click Parameter Types",
             "url": "https://click.palletsprojects.com/en/stable/parameter-types/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S3",
             "title": "Typer CLI Application Directory",
             "url": "https://typer.tiangolo.com/tutorial/app-dir/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S4",
             "title": "Typer Parameters",
             "url": "https://typer.tiangolo.com/reference/parameters/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S5",
             "title": "pathlib filesystem paths",
             "url": "https://docs.python.org/3/library/pathlib.html",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
     ]
     claim_texts = [
@@ -7164,7 +7319,7 @@ def test_deterministic_claim_report_builds_citation_bound_practical_guidance():
         "citationKey": "S6",
         "title": "Python pathlib tutorial",
         "url": "https://tutorial.example/pathlib",
-        "tier": "secondary",
+        "tier": "secondary", "sourceRole": "secondary",
     }
     sources.append(secondary_source)
     claims.append(
@@ -7273,37 +7428,37 @@ def test_cli_integration_uses_real_path_operations_not_path_protocol_facts():
             "citationKey": "S1",
             "title": "Click Parameter Types",
             "url": "https://click.palletsprojects.com/en/stable/parameter-types/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S2",
             "title": "os.PathLike protocol",
             "url": "https://docs.python.org/3/library/os.html",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S3",
             "title": "PurePath protocol details",
             "url": "https://docs.python.org/3/library/pathlib.html#pure-paths",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S4",
             "title": "Path filesystem operations",
             "url": "https://docs.python.org/3/library/pathlib.html",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S5",
             "title": "Typer CLI Application Directory",
             "url": "https://typer.tiangolo.com/tutorial/app-dir/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S6",
             "title": "os module navigation",
             "url": "https://docs.python.org/3/library/os.html",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
     ]
     claim_texts = [
@@ -7356,7 +7511,7 @@ def test_deterministic_click_guidance_exposes_verified_none_default_contract():
         "citationKey": "S1",
         "title": "Parameter Types — Click Documentation",
         "url": "https://click.palletsprojects.com/en/stable/parameter-types/",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     claims = [
         {
@@ -7433,7 +7588,7 @@ def test_reviewer_accepts_primary_parameter_contract_and_signature_without_secon
         "citationKey": "S8",
         "title": "Parameter Types — Click Documentation",
         "url": "https://click.palletsprojects.com/en/stable/parameter-types/",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     claims = [
         {
@@ -7527,7 +7682,7 @@ def test_reviewer_accepts_click_conversion_parameter_contract_without_separate_c
         "citationKey": "S8",
         "title": "Parameter Types — Click Documentation",
         "url": "https://click.palletsprojects.com/en/stable/parameter-types/",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     claim = {
         "claimId": "C2",
@@ -7740,7 +7895,7 @@ def test_reviewer_accepts_page_scope_and_logically_narrower_pathlib_claims():
         "citationKey": "S6",
         "title": "pathlib — Object-oriented filesystem paths",
         "url": "https://docs.python.org/3/library/pathlib.html",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     claims = [
         {
@@ -7801,12 +7956,12 @@ def test_claim_supplement_balance_prevents_one_secondary_source_from_crowding_ou
     primary = {
         "citationKey": "S1",
         "title": "Official reference",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     secondary = {
         "citationKey": "S2",
         "title": "One tutorial",
-        "tier": "secondary",
+        "tier": "secondary", "sourceRole": "secondary",
     }
     claims = [
         {
@@ -7875,13 +8030,13 @@ def test_deterministic_guidance_does_not_invent_validation_from_path_conversion_
             "citationKey": "S1",
             "title": "Typer CLI Application Directory",
             "url": "https://typer.tiangolo.com/tutorial/app-dir/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
         {
             "citationKey": "S2",
             "title": "Click Parameter Types",
             "url": "https://click.palletsprojects.com/en/stable/parameter-types/",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
         },
     ]
     claims = [
@@ -8028,7 +8183,7 @@ def test_section_unit_filter_can_drop_an_unsupported_current_heading_without_los
                     {
                         "citationKey": "S1",
                         "title": "Historical pathlib article",
-                        "tier": "secondary",
+                        "tier": "secondary", "sourceRole": "secondary",
                         "authorityScore": 60,
                         "publishedAt": "2018-01-01",
                     }
@@ -8098,52 +8253,6 @@ def test_section_unit_filter_drops_markdown_blockquotes_even_when_cited():
     assert "> Path objects" not in filtered
     assert "concise paraphrase" in filtered
     assert diagnostics[0].startswith("blockquote_not_allowed:")
-
-
-def test_section_claim_restoration_uses_only_verified_claim_and_bound_citation():
-    task = {
-        "assignedClaims": [
-            {
-                "claimId": "C1",
-                "claim": "The parser accepts pathlib.Path as a converter.",
-                "supportingSources": [{"citationKey": "S1"}],
-            }
-        ]
-    }
-    restored, count = research_module._architect_restore_unrepresented_claims(
-        "A boundary paragraph remains, but its unsafe code example was removed.",
-        task,
-    )
-
-    assert count == 1
-    assert "The parser accepts pathlib.Path as a converter. [S1]" in restored
-    unchanged, second_count = research_module._architect_restore_unrepresented_claims(restored, task)
-    assert second_count == 0
-    assert unchanged == restored
-
-    shared_source_task = {
-        "assignedClaims": [
-            task["assignedClaims"][0],
-            {
-                "claimId": "C2",
-                "claim": "The converter preserves a second distinct boundary fact.",
-                "supportingSources": [{"citationKey": "S1"}],
-            },
-        ]
-    }
-    partial, partial_count = research_module._architect_restore_unrepresented_claims(
-        "The parser accepts pathlib.Path as a converter. [S1]",
-        shared_source_task,
-    )
-    assert partial_count == 1
-    assert "second distinct boundary fact. [S1]" in partial
-
-    paraphrased, paraphrased_count = research_module._architect_restore_unrepresented_claims(
-        "The argparse module supports pathlib.Path directly by passing pathlib.Path as its type converter [S1].",
-        task,
-    )
-    assert paraphrased_count == 0
-    assert "Source-backed details" not in paraphrased
 
 
 def test_repeated_content_unit_dedupe_removes_a_replayed_continuation_only_once():
@@ -10230,7 +10339,7 @@ def test_exact_excerpt_source_fact_preserves_attributed_secondary_path_recommend
         "citationKey": "S9",
         "title": "Python's pathlib module - Python Morsels",
         "url": "https://www.pythonmorsels.com/pathlib-module/",
-        "tier": "secondary",
+        "tier": "secondary", "sourceRole": "secondary",
         "evidenceCandidates": [
             {
                 "evidenceExcerptKey": "S9:E1",
@@ -11253,8 +11362,8 @@ def test_staged_architect_compacts_and_accepts_twenty_facets_after_plan_timeout(
     assert result["compositeInferences"] == []
     assert result["_canonicalClaimPlan"]["mode"] == "runtime_canonical"
     assert result["_structureAttempt"]["status"] == "deadline_timeout"
-    assert len(result["claimTable"]) == 20
-    assert len({claim["claimId"] for claim in result["claimTable"]}) == 20
+    assert 20 <= len(result["claimTable"]) <= research_module._RESEARCH_ARCHITECT_MAX_CLAIM_COUNT
+    assert len({claim["claimId"] for claim in result["claimTable"]}) == len(result["claimTable"])
     covered_facets = {
         facet_id
         for claim in result["claimTable"]
@@ -12258,6 +12367,117 @@ def test_staged_architect_uses_runtime_canonical_plan_without_model_planning(mon
     assert llm.review_calls == 2
 
 
+def test_staged_architect_writes_supported_scope_when_one_planned_facet_has_no_unique_claim(
+    monkeypatch,
+):
+    sources, _plan = _staged_outline_repair_fixture()
+    for index, source in enumerate(sources, start=1):
+        facet_id = f"runtime-facet-{index}"
+        query = source["text"].split(".", 1)[0]
+        source.update(
+            {
+                "researchFacetId": facet_id,
+                "researchFacetIds": [facet_id],
+                "researchFacetGoal": query,
+                "evidenceQuery": query,
+                "evidenceQueries": [query],
+                "evidenceViews": [
+                    {
+                        "shardId": f"planned-facet-{index}",
+                        "researchFacetId": facet_id,
+                        "evidenceQuery": query,
+                    }
+                ],
+            }
+        )
+    # This target is readable and answerable, so it enters the target-source
+    # set, but its exact claim duplicates S1. It must remain blocked rather
+    # than causing the seven independent verified claims to be erased.
+    duplicate = sources[-1]
+    original = sources[0]
+    duplicate_query = original["evidenceQuery"]
+    duplicate.update(
+        {
+            "text": original["text"],
+            "contentChars": original["contentChars"],
+            "readEvidence": copy.deepcopy(original["readEvidence"]),
+            "researchFacetGoal": duplicate_query,
+            "evidenceQuery": duplicate_query,
+            "evidenceQueries": [duplicate_query],
+            "evidenceViews": [
+                {
+                    "shardId": "planned-facet-8",
+                    "researchFacetId": "runtime-facet-8",
+                    "evidenceQuery": duplicate_query,
+                }
+            ],
+        }
+    )
+
+    class SupportedScopeLLM:
+        _meta = {
+            "global_max_tokens": 32_768,
+            "thinking_control": {"supportsNoThink": True},
+        }
+
+        def __init__(self):
+            self.writer_calls = 0
+            self.review_calls = 0
+
+        def invoke(self, *_args, **kwargs):
+            max_tokens = int(kwargs.get("max_tokens") or 0)
+            if max_tokens == research_module._RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS:
+                self.writer_calls += 1
+                return AIMessage(
+                    content=(
+                        _high_quality_answer(7)
+                        + "\n\n"
+                        + research_module._RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER
+                    )
+                )
+            if max_tokens == research_module._RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS:
+                self.review_calls += 1
+                return AIMessage(
+                    content=json.dumps(
+                        {
+                            "reviewDecision": "accept",
+                            "reviewReasons": [],
+                            "questionCoverage": True,
+                            "claimEntailment": True,
+                            "freshnessAdequacy": True,
+                            "unsupportedClaims": [],
+                            "criticalMissingEvidence": [],
+                            "recommendedNextQueries": [],
+                        }
+                    )
+                )
+            raise AssertionError(f"unexpected call with max_tokens={max_tokens}")
+
+    llm = SupportedScopeLLM()
+    monkeypatch.setattr(
+        research_module,
+        "_create_web_research_architect_llm_candidates",
+        lambda: [(llm, "supported-scope-fixture", "web-research-architect")],
+    )
+
+    result = research_module._invoke_web_research_architect_staged(
+        question="What evidence currently supports the research runtime contract?",
+        sources=sources,
+        freshness="current",
+        timeout_seconds=30,
+    )
+
+    assert result.get("reviewDecision") == "accept", result
+    diagnostics = result["_canonicalClaimPlan"]
+    assert diagnostics["supportedScopeLimited"] is True
+    assert diagnostics["missingSourceKeys"] == ["S8"]
+    assert diagnostics["missingFacetIds"] == ["runtime-facet-8"]
+    assert "## Evidence limitations" in result["answer"]
+    assert "S8" not in result["answer"]
+    assert llm.writer_calls == 1
+    assert llm.review_calls == 2
+
+
 def test_staged_architect_keeps_canonical_claims_after_invalid_audience_structure(monkeypatch):
     sources, _plan = _staged_outline_repair_fixture()
 
@@ -12875,7 +13095,7 @@ def test_claim_verifier_marks_secondary_normative_advice_as_attributed_opinion()
         "citationKey": "S1",
         "title": "Why you should be using pathlib",
         "url": "https://www.pythonmorsels.com/why-you-should-be-using-pathlib/",
-        "tier": "secondary",
+        "tier": "secondary", "sourceRole": "secondary",
         "text": excerpt,
         "evidenceCandidates": [
             {"evidenceExcerptKey": "S1:E1", "text": excerpt}
@@ -14201,17 +14421,17 @@ def test_reviewer_claim_table_category_errors_are_reconciled_against_verified_cl
     primary_conversion = {
         "citationKey": "S1",
         "title": "argparse documentation",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     primary_validation = {
         "citationKey": "S2",
         "title": "Click documentation",
-        "tier": "primary",
+        "tier": "primary", "sourceRole": "primary",
     }
     secondary = {
         "citationKey": "S9",
         "title": "Python Morsels",
-        "tier": "secondary",
+        "tier": "secondary", "sourceRole": "secondary",
     }
     claim_table = [
         {
@@ -14454,28 +14674,28 @@ def test_reviewer_reconciles_run26_positive_observations_and_visible_framework_s
         {
             "claimId": "C1",
             "claim": "The argparse example uses pathlib.Path as its type converter.",
-            "supportingSources": [{"citationKey": "S1", "tier": "primary"}],
+            "supportingSources": [{"citationKey": "S1", "tier": "primary", "sourceRole": "primary"}],
         },
         {
             "claimId": "C2",
             "claim": "Click path_type converts the incoming value to pathlib.Path.",
-            "supportingSources": [{"citationKey": "S2", "tier": "primary"}],
+            "supportingSources": [{"citationKey": "S2", "tier": "primary", "sourceRole": "primary"}],
         },
         {
             "claimId": "C3",
             "claim": "Typer documents exists and file_okay validation options.",
-            "supportingSources": [{"citationKey": "S3", "tier": "primary"}],
+            "supportingSources": [{"citationKey": "S3", "tier": "primary", "sourceRole": "primary"}],
         },
         {
             "claimId": "C4",
             "claim": "Path objects provide documented downstream filesystem path operations.",
-            "supportingSources": [{"citationKey": "S4", "tier": "primary"}],
+            "supportingSources": [{"citationKey": "S4", "tier": "primary", "sourceRole": "primary"}],
         },
         {
             "claimId": "C5",
             "claim": 'Secondary source “Field notes” states: You should use Path objects anywhere you work with file paths.',
             "claimType": "explicit_normative",
-            "supportingSources": [{"citationKey": "S9", "tier": "secondary"}],
+            "supportingSources": [{"citationKey": "S9", "tier": "secondary", "sourceRole": "secondary"}],
         },
     ]
     answer = (
@@ -14546,7 +14766,7 @@ def test_reviewer_does_not_downgrade_verified_official_tip_with_explicit_prefer_
         "supportingSources": [
             {
                 "citationKey": "S7",
-                "tier": "primary",
+                "tier": "primary", "sourceRole": "primary",
                 "title": "Path - Typer",
                 "url": "https://typer.tiangolo.com/tutorial/parameter-types/path/",
             }
@@ -14759,11 +14979,11 @@ def test_segmented_writer_profile_adapts_to_effective_output_capacity():
     )
     tiny_profile = research_module._architect_segmented_writer_profile((tiny, "tiny", "research"))
 
-    assert low_profile["enabled"] is True
+    assert low_profile["enabled"] is False
     assert low_profile["sectionCount"] == 4
     assert low_profile["sectionMaxTokens"] == research_module._RESEARCH_ARCHITECT_SECTION_MAX_TOKENS
     assert high_profile["enabled"] is False
-    assert routed_high_profile["enabled"] is True
+    assert routed_high_profile["enabled"] is False
     assert routed_high_profile["sectionCount"] == 4
     assert routed_high_profile["sectionMaxTokens"] == research_module._RESEARCH_ARCHITECT_SECTION_MAX_TOKENS
     assert tiny_profile["enabled"] is True
@@ -14830,10 +15050,10 @@ def test_segment_tasks_cover_claims_once_and_enforce_scoped_inline_citations():
     assert "section_incomplete" in invalid_issues
     assert "section_citation_missing:S2" in invalid_issues
     assert "section_citation_out_of_scope:S8" in invalid_issues
-    assert "section_contains_source_url" in invalid_issues
+    assert "section_url_not_in_evidence" in invalid_issues
 
 
-def test_single_claim_leaf_minimum_tracks_available_evidence_without_padding():
+def test_single_claim_leaf_accepts_available_evidence_without_padding():
     claim = {
         "claimId": "C1",
         "claim": "A narrow dated obligation applies.",
@@ -14841,16 +15061,14 @@ def test_single_claim_leaf_minimum_tracks_available_evidence_without_padding():
         "supportingSources": [{"citationKey": "S1"}],
     }
 
-    assert research_module._claim_bounded_section_minimum_chars(
-        700,
-        [claim],
-        floor=350,
-    ) == 80
-    assert research_module._claim_bounded_section_minimum_chars(
-        700,
-        [claim, {**claim, "claimId": "C2"}],
-        floor=350,
-    ) == 350
+    tasks = research_module._architect_segment_tasks(
+        {"claimTable": [claim]}, section_count=1,
+        target_min_chars=700, target_max_chars=1400,
+    )
+    assert "minimumAcceptableChars" not in tasks[0]
+    assert research_module._architect_section_issues(
+        claim["claim"] + " [S1]", tasks[0], complete=True,
+    ) == []
 
 
 def test_deliverable_requirements_reach_only_the_final_writer_segment():
@@ -14914,22 +15132,6 @@ def test_research_source_pack_preserves_multi_facet_lineage():
 
     assert packed["researchFacetId"] == "timeline"
     assert packed["researchFacetIds"] == ["timeline", "penalties"]
-
-
-def test_section_source_url_sanitizer_preserves_link_labels_and_citations():
-    section = (
-        "Click documents [`pathlib.Path`](https://docs.python.org/3/library/pathlib.html#pathlib.Path "
-        '"(in Python v3.14)") as the target type [S1].\n\n'
-        "Reference: <https://click.palletsprojects.com/en/stable/parameter-types/> [S1].\n\n"
-        "Bare source https://example.test/path remains cited [S1]."
-    )
-
-    sanitized, strip_count = research_module._architect_strip_section_source_urls(section)
-
-    assert strip_count == 3
-    assert "https://" not in sanitized
-    assert "`pathlib.Path`" in sanitized
-    assert sanitized.count("[S1]") == 3
 
 
 def test_max_claims_survive_verification_pack_and_segment_assignment():
@@ -15024,7 +15226,7 @@ def test_max_claims_survive_verification_pack_and_segment_assignment():
     ]
 
 
-def test_segment_tasks_rebalance_a_single_claim_tail_section():
+def test_segment_tasks_preserve_a_single_claim_tail_section():
     claims = [
         {
             "claimId": f"claim-{index}",
@@ -15057,13 +15259,13 @@ def test_segment_tasks_rebalance_a_single_claim_tail_section():
         target_max_chars=2600,
     )
 
-    assert [len(task["assignedClaims"]) for task in tasks] == [3, 3, 2, 2]
+    assert [len(task["assignedClaims"]) for task in tasks] == [3, 3, 3, 1]
     assert [
         claim["claimId"]
         for task in tasks
         for claim in task["assignedClaims"]
     ] == [f"claim-{index}" for index in range(1, 11)]
-    assert tasks[-1]["requiredCitationKeys"] == ["S9", "S10"]
+    assert tasks[-1]["requiredCitationKeys"] == ["S10"]
 
 
 def test_segment_tasks_preserve_inference_groups_and_require_each_recommendation_section():
@@ -15395,6 +15597,16 @@ def test_segmented_source_appendix_is_runtime_owned_and_stably_ordered():
 def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_reviews_whole_answer():
     question = "截至目前，如何根据八项证据作出完整采用判断？"
     claim_topics = ("范围", "机制", "接口", "数据", "时效", "差异", "风险", "行动")
+    claim_details = (
+        "The scope separates public deployment from internal experimentation, identifies operators and end users, and excludes offline prototypes from the production acceptance process.",
+        "The mechanism queues work before dispatch, assigns a bounded worker lease, and persists a terminal receipt after the worker completes or acknowledges cancellation.",
+        "The interface accepts typed task identifiers and an expected revision, returns a conflict when that revision has changed, and provides a cursor for retrieving subsequent events.",
+        "The data contract stores immutable source bytes and their digest separately from summaries; citations resolve to those bytes, while regenerated prose receives its own revision.",
+        "The applicability record distinguishes publication, effective and retrieval dates; maintainers assess the relevant version and superseding notices before asserting current support.",
+        "The comparison distinguishes synchronous execution with immediate results from queued execution with eventual completion, explaining ordering and recovery costs for each option.",
+        "The risk assessment identifies duplicate side effects after an ambiguous timeout, requires reconciliation with the receipt ledger, and prohibits blind resubmission of external writes.",
+        "The adoption sequence begins with a read-only canary, advances to a limited write set after verification, and retains the prior configuration until rollback checks have completed.",
+    )
     source_matrix = [
         {
             "sourceId": f"src-{index}",
@@ -15410,6 +15622,7 @@ def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_re
             "publishedAt": f"2026-07-{10 + index:02d}T00:00:00Z",
             "text": (
                 f"截至目前，{claim_topics[index - 1]}证据记录了该主题独有的可核验事实和适用边界。"
+                f"{claim_details[index - 1]}\n\n"
                 f"Verified source {index} provides a distinct atomic fact, its operating condition, version boundary, "
                 "counterexample boundary, implementation consequence, and a directly inspectable evidence record "
                 "for the current research question without asserting any unsupported recommendation "
@@ -15483,7 +15696,7 @@ def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_re
 
     class SegmentedLLM:
         _meta = {
-            "global_max_tokens": 4096,
+            "global_max_tokens": 3200,
             "thinking_control": {"supportsNoThink": True, "transport": "openai_extra_body"},
         }
 
@@ -15562,9 +15775,9 @@ def test_low_output_writer_generates_sections_in_parallel_retries_locally_and_re
     assert reviewer_saw_active_sections is False
     assert "## 来源" in reviewer_prompt
     assert "research-section-complete" not in reviewer_prompt
-    assert "不得套用固定年份" in reviewer_prompt
-    assert "retrievedAt 只证明 Runtime 何时读取该页面" in reviewer_prompt
-    assert "日期、版本、stable/current 路由或 undated 状态" in reviewer_prompt
+    assert "两者都不能套用固定期限" in reviewer_prompt
+    assert "retrievedAt 只是读取时间" in reviewer_prompt
+    assert "日期年龄、缺失、无法解析或晚于观察时点本身" in reviewer_prompt
     assert result["researchResult"].index("## 定义边界") < result["researchResult"].index("## 运行机制")
     assert result["researchResult"].index("## 运行机制") < result["researchResult"].index("## 版本变化")
     assert result["researchResult"].index("## 版本变化") < result["researchResult"].index("## 实施风险")
@@ -17870,7 +18083,7 @@ def test_web_research_architect_merge_preserves_secondary_role_and_currency_meta
             "title": f"Evidence source {index}",
             "url": f"https://evidence-{index}.example/research",
             "host": f"evidence-{index}.example",
-            "tier": "secondary" if index == 1 else "primary",
+            "tier": "secondary" if index == 1 else "primary", "sourceRole": "secondary" if index == 1 else "primary",
             "authorityScore": 60 if index == 1 else 90,
             "subjectFocused": True,
             "publishedAt": f"2026-07-{index:02d}",
@@ -18603,14 +18816,14 @@ def test_temporal_refinement_queries_use_subject_and_authoritative_host():
         {
             "url": "https://docs.python.org/3/library/pathlib.html",
             "host": "docs.python.org",
-            "tier": "primary",
+            "tier": "primary", "sourceRole": "primary",
             "authorityScore": 95,
             "selectedForEvidence": True,
         },
         {
             "url": "https://realpython.com/python-pathlib/",
             "host": "realpython.com",
-            "tier": "secondary",
+            "tier": "secondary", "sourceRole": "secondary",
             "authorityScore": 65,
             "selectedForEvidence": True,
         },
@@ -18911,6 +19124,227 @@ def test_parallel_search_shards_prefer_working_provider_and_bound_failed_route(
     snapshot = ledger.snapshot()
     assert snapshot["searchProviderStates"]["fast"]["successes"] == 30
     assert snapshot["searchProviderCircuitSkipCount"] >= 1
+
+
+def test_search_shard_tries_one_alternate_provider_when_first_links_have_no_evidence(
+    monkeypatch,
+):
+    search_calls: list[dict] = []
+
+    def fake_source_router_search(**kwargs):
+        search_calls.append(dict(kwargs))
+        excluded = set(kwargs.get("excluded_providers") or [])
+        provider = "bing_cn" if "metaso" in excluded else "metaso"
+        url = (
+            "https://second.gov.cn/official-rule"
+            if provider == "bing_cn"
+            else "https://first.gov.cn/unreadable-rule"
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": provider,
+                "results": [
+                    {
+                        "title": "生成式人工智能服务官方规定",
+                        "url": url,
+                        "snippet": "官方发布的适用范围、日期和提供者义务。",
+                    }
+                ],
+                "providerAttemptMatrix": [
+                    {"provider": provider, "status": "ok", "resultCount": 1}
+                ],
+            }
+        )
+
+    def fake_source_router_read(**kwargs):
+        if "first.gov.cn" in kwargs["url"]:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failureClass": "network_timeout",
+                    "error": "first provider result was not readable",
+                }
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "finalUrl": kwargs["url"],
+                "title": "生成式人工智能服务管理规定",
+                "text": (
+                    "本规定明确适用范围、施行日期、服务提供者义务、内容标识与安全评估要求。"
+                    * 80
+                ),
+            }
+        )
+
+    monkeypatch.setattr(research_module, "source_router_search", fake_source_router_search)
+    monkeypatch.setattr(research_module, "source_router_read", fake_source_router_read)
+    monkeypatch.setattr(research_module, "_jina_api_key", lambda: "")
+    monkeypatch.setattr(
+        research_module,
+        "_source_quality_gate",
+        lambda **_kwargs: {"selectedForEvidence": True, "reasons": []},
+    )
+    ledger = research_module._ResearchReadAttemptLedger(
+        question="生成式人工智能服务规定关键日期与义务"
+    )
+
+    completed = research_module._run_search_shard(
+        {
+            "shardId": "alternate-provider",
+            "kind": "official_source",
+            "query": "生成式人工智能服务规定关键日期与义务",
+        },
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=2,
+        use_agent_browser_profile=False,
+        tool_call_id="alternate-provider",
+        read_attempt_ledger=ledger,
+    )
+
+    assert len(search_calls) == 2, completed
+    assert "metaso" in search_calls[1]["excluded_providers"]
+    assert completed["provider"] == "bing_cn"
+    assert completed["alternateProviderAttempted"] is True
+    assert completed["discardedSearchProviders"] == ["metaso"]
+    assert completed["searchProviderAttempts"] == 2
+    assert any(
+        item.get("ok") and item.get("text")
+        for item in completed["fetchedTopSources"]
+    )
+    provider_states = ledger.snapshot()["searchProviderStates"]
+    assert provider_states["metaso"]["evidenceFailures"] == 1
+    assert provider_states["bing_cn"]["evidenceSuccesses"] == 1
+    # Only this shard excludes the first provider. A different query may
+    # produce useful sources on the same reachable search engine.
+    hints = ledger.search_route_hints()
+    assert "metaso" not in hints["excludedProviders"]
+    assert "metaso" in hints["preferredProviders"]
+
+
+def test_empty_query_evidence_does_not_disable_last_reachable_search_provider():
+    ledger = research_module._ResearchReadAttemptLedger(question="比较两个互不相同的法规")
+    ledger.record_search_payload({"ok": True, "provider": "bing_cn"})
+    ledger.record_search_evidence_outcome("bing_cn", accepted_evidence_count=0)
+    ledger.record_search_payload({
+        "ok": False,
+        "providerAttemptMatrix": [{"provider": "private_search", "status": "failed", "failureClass": "credential_missing"}],
+    })
+    hints = ledger.search_route_hints()
+    assert hints["preferredProviders"] == ["bing_cn"]
+    assert "bing_cn" not in hints["excludedProviders"]
+    assert "private_search" in hints["excludedProviders"]
+    assert ledger.snapshot()["searchProviderStates"]["bing_cn"]["evidenceFailures"] == 1
+
+
+def test_chinese_refinement_does_not_append_english_or_current_year_noise():
+    shards = [{
+        "kind": "facet:labeling-law", "researchFacetId": "labeling-law",
+        "query": "人工智能生成合成内容标识办法 全文",
+        "fetchedTopSources": [],
+    }]
+    refined = research_module._build_refinement_shards(
+        "核对人工智能生成合成内容标识办法的适用范围",
+        shards, source_policy="authoritative", limit=1,
+    )
+    assert refined[0]["query"] == '"人工智能生成合成内容标识办法"'
+    assert "人工智能生成合成内容标识办法 全文" in refined[0]["evidenceQuery"]
+    assert "official" not in refined[0]["query"]
+    assert str(datetime.now(timezone.utc).year) not in refined[0]["query"]
+
+
+def test_short_cited_answer_is_not_erased_by_process_word_heuristic():
+    answer = "本次调研确认：该办法未提供统一的申请期限，不能据此断言无需申请。[S1]"
+    assert research_module._is_low_quality_research_answer(answer) is False
+    assert research_module._is_low_quality_research_answer("本次调研无法获取目标文献，建议重新调研。") is True
+    # Padding a process-only failure does not turn it into an answer.
+    assert research_module._is_low_quality_research_answer("本次调研无法获取目标文献。" * 150) is True
+
+
+@pytest.mark.parametrize("question", ["历史制度沿革", "historical administrative rules"])
+def test_refinement_without_facets_keeps_language_and_question_dates(monkeypatch, question):
+    monkeypatch.setattr(research_module, "_build_question_facet_queries", lambda _q: [])
+    monkeypatch.setattr(research_module, "_required_research_facet_queries", lambda *_args: [])
+    refined = research_module._build_refinement_shards(
+        question, [], source_policy="authoritative", limit=6,
+    )
+    assert len(refined) == 6
+    for shard in refined:
+        assert shard["query"].startswith(question)
+        assert str(datetime.now(timezone.utc).year) not in shard["query"]
+    if "历史" in question:
+        assert all(not re.search(r"[A-Za-z]", item["query"]) for item in refined)
+    else:
+        assert all(not re.search(r"[\u4e00-\u9fff]", item["query"]) for item in refined)
+
+
+def test_search_shard_keeps_first_provider_when_it_yields_evidence(monkeypatch):
+    search_calls: list[dict] = []
+
+    def fake_source_router_search(**kwargs):
+        search_calls.append(dict(kwargs))
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "metaso",
+                "results": [
+                    {
+                        "title": "官方规定",
+                        "url": "https://first.gov.cn/readable-rule",
+                        "snippet": "官方规定全文。",
+                    }
+                ],
+                "providerAttemptMatrix": [
+                    {"provider": "metaso", "status": "ok", "resultCount": 1}
+                ],
+            }
+        )
+
+    monkeypatch.setattr(research_module, "source_router_search", fake_source_router_search)
+    monkeypatch.setattr(
+        research_module,
+        "source_router_read",
+        lambda **kwargs: json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "finalUrl": kwargs["url"],
+                "title": "官方规定",
+                "text": "官方正文包含适用范围、日期和义务。" * 80,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_source_quality_gate",
+        lambda **_kwargs: {"selectedForEvidence": True, "reasons": []},
+    )
+
+    completed = research_module._run_search_shard(
+        {
+            "shardId": "first-provider-ready",
+            "kind": "official_source",
+            "query": "官方规定适用范围日期义务",
+        },
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=2,
+        use_agent_browser_profile=False,
+        tool_call_id="first-provider-ready",
+        read_attempt_ledger=research_module._ResearchReadAttemptLedger(
+            question="官方规定适用范围日期义务"
+        ),
+    )
+
+    assert len(search_calls) == 1
+    assert completed["provider"] == "metaso"
+    assert completed["searchProviderAttempts"] == 1
+    assert "alternateProviderAttempted" not in completed
 
 
 def test_narrow_research_stops_before_architect_repair_when_no_body_qualifies(

@@ -24,6 +24,14 @@ def build_agent_runtime_failure_command(*, agent_name: str, exc: Exception, goto
             "select another tool/agent, or ask the user for clarification."
         ),
         id=str(uuid.uuid4()),
+        additional_kwargs={
+            "v8_delegation_status": "failed",
+            "v8_delegation_error": (
+                "delegation_model_timeout"
+                if str(getattr(exc, "code", "") or "") == "timeout"
+                else str(getattr(exc, "code", "") or "delegation_worker_failed")
+            ),
+        },
     )
     return Command(goto=goto, update={"messages": [feedback_msg]})
 

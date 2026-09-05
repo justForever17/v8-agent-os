@@ -142,6 +142,8 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "lane": item.get("lane"),
         "status": status,
         "error": item.get("error"),
+        "errorCode": item.get("errorCode"),
+        "providerErrorCode": item.get("providerErrorCode"),
         "errorMessage": _compact(item.get("errorMessage"), limit=600),
         "dispatchStatus": item.get("dispatchStatus"),
         "requiredInputs": to_jsonable(item.get("requiredInputs"))

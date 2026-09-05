@@ -573,6 +573,147 @@ def test_config_broker_recovery_degraded_result_does_not_fail_startup(
     assert "private-id" not in str(metrics)
 
 
+def test_supervisor_graph_prewarm_waits_for_provider_patch_and_uses_role_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main
+
+    async def exercise() -> None:
+        events: list[str] = []
+        configured = object()
+
+        async def provider_prewarm() -> None:
+            events.append("provider:start")
+            await asyncio.sleep(0)
+            events.append("provider:done")
+
+        async def extension_prewarm() -> None:
+            events.append("extensions:start")
+            await asyncio.sleep(0)
+            events.append("extensions:done")
+
+        class Resolver:
+            @staticmethod
+            def resolve_engine_config_for_role(role: str):
+                events.append(f"resolve:{role}")
+                return {"resolution": {}}
+
+            @staticmethod
+            def require_engine_config(_resolved, *, role: str):
+                events.append(f"require:{role}")
+                return configured
+
+        class Runner:
+            async def build_graph(self, config):
+                assert config is configured
+                events.append("graph:build")
+                return object(), {"graphCacheHit": False, "graphBuildMs": 12.5}
+
+        class Scheduler:
+            async def run(self, coroutine, *, task_name: str):
+                assert task_name == "supervisor-graph-prewarm"
+                events.append("scheduler:run")
+                return await coroutine
+
+        def fake_import(name: str):
+            if name == "core.engine_config_resolver":
+                return Resolver
+            if name == "agents.runners.supervisor_runner":
+                return SimpleNamespace(supervisor_runner=Runner())
+            raise AssertionError(name)
+
+        monkeypatch.setattr(main, "_import_module", fake_import)
+        monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: Scheduler())
+        provider_task = asyncio.create_task(provider_prewarm())
+        extension_task = asyncio.create_task(extension_prewarm())
+        result = await main._prewarm_supervisor_graph(provider_task, (extension_task,))
+
+        assert result == {"ok": True, "graphCacheHit": False, "graphBuildMs": 12.5}
+        assert events.index("provider:done") < events.index("resolve:supervisor")
+        assert events.index("extensions:done") < events.index("resolve:supervisor")
+        assert events[-4:] == ["resolve:supervisor", "require:supervisor", "scheduler:run", "graph:build"]
+
+    asyncio.run(exercise())
+
+
+def test_supervisor_graph_prewarm_failure_is_non_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    import main
+
+    monkeypatch.setattr(
+        main,
+        "_import_module",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("model configuration unavailable")),
+    )
+
+    result = asyncio.run(main._prewarm_supervisor_graph())
+
+    assert result == {"ok": False, "errorType": "RuntimeError"}
+
+
+def test_supervisor_graph_prewarm_rebuilds_after_late_extension_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main
+
+    async def exercise() -> None:
+        build_count = 0
+        task_names: list[str] = []
+        configured = object()
+
+        async def late_inventory() -> None:
+            await asyncio.sleep(0.02)
+
+        class Resolver:
+            @staticmethod
+            def resolve_engine_config_for_role(_role: str):
+                return {"resolution": {}}
+
+            @staticmethod
+            def require_engine_config(_resolved, *, role: str):
+                assert role == "supervisor"
+                return configured
+
+        class Runner:
+            async def build_graph(self, config):
+                nonlocal build_count
+                assert config is configured
+                build_count += 1
+                return object(), {"graphCacheHit": False, "graphBuildMs": float(build_count)}
+
+        class Scheduler:
+            async def run(self, coroutine, *, task_name: str):
+                task_names.append(task_name)
+                return await coroutine
+
+        def fake_import(name: str):
+            if name == "core.engine_config_resolver":
+                return Resolver
+            if name == "agents.runners.supervisor_runner":
+                return SimpleNamespace(supervisor_runner=Runner())
+            raise AssertionError(name)
+
+        monkeypatch.setattr(main, "_import_module", fake_import)
+        monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: Scheduler())
+        monkeypatch.setattr(main, "_SUPERVISOR_GRAPH_PREWARM_PREREQUISITE_TIMEOUT_SECONDS", 0.001)
+        monkeypatch.setattr(main, "_SUPERVISOR_GRAPH_PREWARM_FOLLOWUP_TIMEOUT_SECONDS", 0.2)
+        inventory_task = asyncio.create_task(late_inventory())
+
+        result = await main._prewarm_supervisor_graph(None, (inventory_task,))
+
+        assert build_count == 2
+        assert task_names == ["supervisor-graph-prewarm", "supervisor-graph-inventory-prewarm"]
+        assert result == {
+            "ok": True,
+            "graphCacheHit": False,
+            "graphBuildMs": 1.0,
+            "inventoryFollowupAttempted": True,
+            "inventoryFollowupCacheHit": False,
+            "inventoryFollowupBuildMs": 2.0,
+        }
+
+    asyncio.run(exercise())
+
+
 def test_config_broker_recovery_exception_remains_startup_fatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

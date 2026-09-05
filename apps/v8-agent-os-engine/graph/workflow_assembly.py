@@ -386,7 +386,9 @@ def build_runtime_episode_wait_node():
             return bool(
                 _is_research_result(item)
                 and item.get("acceptancePassed") is True
-                and str(item.get("qualityTier") or "").strip() == "high_quality"
+                # The producer owns evidence acceptance. Target-depth gaps are
+                # disclosed limitations, not a second rejection gate here.
+                and str(item.get("qualityTier") or "").strip() in {"high_quality", "minimum_qualified"}
                 and _string_value(item.get("answer"))
             )
 
@@ -1231,7 +1233,7 @@ def build_runtime_episode_wait_node():
                     result_status = _string_value(result.get("status"), "unknown")
                     accepted_research_result = bool(
                         result.get("acceptancePassed") is True
-                        and _string_value(result.get("qualityTier")) == "high_quality"
+                        and result.get("answerProjection") in {"full", "omitted_bounded_multi_brief"}
                     )
                     result_text = _string_value(result.get("result"))
                     if not accepted_research_result:

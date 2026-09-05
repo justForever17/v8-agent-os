@@ -25,6 +25,7 @@ RUNTIME_EPISODE_RESUME_METADATA_KEY = "runtimeEpisodeResume"
 RUNTIME_EPISODE_RESUME_TERMINAL_STATES = TERMINAL_EPISODE_STATES
 RUNTIME_EPISODE_RESUME_MAX_WORKER_RETRIES = 2
 SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY = "supervisorNativeToolCorrection"
+SUPERVISOR_COMPLETION_CORRECTION_METADATA_KEY = "supervisorCompletionCorrection"
 
 
 def _get_automation_runtime():
@@ -631,6 +632,57 @@ class RuntimeCommandRouter:
             resume_value={"supervisorNativeToolCorrection": correction},
         )
 
+    def _build_supervisor_completion_correction_request(
+        self,
+        run_record: Dict[str, Any],
+        *,
+        reason: str,
+        missing_task_brief_ids: list[str],
+    ) -> ChatRequest:
+        """Build one non-user continuation that can only repair delivery truth."""
+
+        scope_payload = self._scope_payload_for_session(run_record["session_id"])
+        compact_ids = [
+            str(item or "").strip()
+            for item in missing_task_brief_ids
+            if str(item or "").strip()
+        ][:12]
+        correction = {
+            "kind": "completion_truth_correction",
+            "attempt": 1,
+            "maxAttempts": 1,
+            "reason": str(reason or "research_brief_evidence_incomplete").strip(),
+            "missingTaskBriefIds": compact_ids,
+        }
+        return ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "[V8OS Completion Truth Correction]\n"
+                        "The previous final response could not pass delivery because required Research briefs still have no "
+                        "readable evidence. This is the only completion correction for this run. Do not start another runtime, "
+                        "call tools, or claim that Research succeeded. Replace the final response with a concise truthful result: "
+                        "state which evidence is missing, distinguish any work that actually completed, label prior-knowledge-only "
+                        "content as unverified, and give the user a concrete recovery choice. If the user previously authorized work "
+                        "without sources, preserve that work but do not relabel it as source-backed research.\n"
+                        f"Missing Research task brief IDs: {', '.join(compact_ids) or '(unknown)'}"
+                    ),
+                )
+            ],
+            config=self._engine_config_from_run(run_record),
+            session_id=run_record["session_id"],
+            conversation_id=run_record.get("conversation_id") or run_record["session_id"],
+            user_id=run_record.get("user_id") or "anonymous",
+            project_id=scope_payload.get("project_id"),
+            workspace_id=scope_payload.get("workspace_id"),
+            workspace_path=scope_payload.get("workspace_path"),
+            scope_hint=scope_payload.get("scope_hint"),
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
+            resume_run_id=run_record["id"],
+            resume_value={"supervisorCompletionCorrection": correction},
+        )
+
     def _build_spec_continuation_payload(
         self,
         *,
@@ -1005,13 +1057,20 @@ class RuntimeCommandRouter:
                 **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
             }
 
-    def schedule_supervisor_native_tool_correction(
+    def _schedule_supervisor_correction(
         self,
         run_id: str,
         *,
-        tool_names: list[str] | None = None,
+        metadata_key: str,
+        marker: Dict[str, Any],
+        request_builder: Callable[[Dict[str, Any]], ChatRequest],
+        already_used_error: str,
+        claim_error: str,
+        event_stem: str,
+        resume_reason: str,
+        event_payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Schedule exactly one durable Supervisor protocol correction."""
+        """Claim and schedule one durable Supervisor correction."""
 
         normalized_run_id = str(run_id or "").strip()
         if not normalized_run_id:
@@ -1035,8 +1094,8 @@ class RuntimeCommandRouter:
                 }
             metadata = dict(run_record.get("metadata") or {})
             current_marker = (
-                dict(metadata.get(SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY) or {})
-                if isinstance(metadata.get(SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY), dict)
+                dict(metadata.get(metadata_key) or {})
+                if isinstance(metadata.get(metadata_key), dict)
                 else {}
             )
             current_state = str(current_marker.get("state") or "").strip().lower()
@@ -1044,7 +1103,7 @@ class RuntimeCommandRouter:
                 return {
                     "resume_mode": "chat",
                     "resume_scheduled": False,
-                    "resume_error": "supervisor_native_tool_correction_already_used",
+                    "resume_error": already_used_error,
                     "current_state": current_state,
                 }
             if self._schedule_chat_run is None:
@@ -1054,16 +1113,9 @@ class RuntimeCommandRouter:
                     "resume_error": "chat_scheduler_unavailable",
                 }
 
-            compact_tool_names = [str(item or "").strip() for item in list(tool_names or []) if str(item or "").strip()][:8]
-            marker = {
-                "state": "scheduled",
-                "attempt": 1,
-                "maxAttempts": 1,
-                "toolNames": compact_tool_names,
-            }
             claim = run_service.update_metadata_key_if_state(
                 normalized_run_id,
-                key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+                key=metadata_key,
                 expected_state="",
                 next_value=marker,
                 expected_status="running",
@@ -1072,13 +1124,10 @@ class RuntimeCommandRouter:
                 return {
                     "resume_mode": "chat",
                     "resume_scheduled": False,
-                    "resume_error": str(claim.get("reason") or "supervisor_native_tool_correction_claim_failed"),
+                    "resume_error": str(claim.get("reason") or claim_error),
                 }
             run_record = dict(claim.get("run_record") or run_record)
-            correction_request = self._build_supervisor_native_tool_correction_request(
-                run_record,
-                tool_names=compact_tool_names,
-            )
+            correction_request = request_builder(run_record)
             try:
                 scheduled_run_id = self._schedule_chat_run(
                     correction_request,
@@ -1088,7 +1137,7 @@ class RuntimeCommandRouter:
             except Exception as exc:
                 run_service.update_metadata_key_if_state(
                     normalized_run_id,
-                    key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+                    key=metadata_key,
                     expected_state="scheduled",
                     next_value={**marker, "state": "failed", "lastError": "chat_scheduler_raised"},
                     expected_status="running",
@@ -1102,22 +1151,22 @@ class RuntimeCommandRouter:
             if not scheduled:
                 run_service.update_metadata_key_if_state(
                     normalized_run_id,
-                    key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+                    key=metadata_key,
                     expected_state="scheduled",
                     next_value={**marker, "state": "failed", "lastError": "chat_scheduler_returned_empty_run_id"},
                     expected_status="running",
                 )
             self._emit_resume_event(
                 run_record,
-                "run.supervisor.native_tool_correction.scheduled"
+                f"{event_stem}.scheduled"
                 if scheduled
-                else "run.supervisor.native_tool_correction.not_scheduled",
+                else f"{event_stem}.not_scheduled",
                 {
                     "resumeMode": "chat",
                     "transport": "system_resume",
-                    "resumeReason": "native_tool_protocol_correction",
+                    "resumeReason": resume_reason,
                     "scheduledRunId": scheduled_run_id or normalized_run_id,
-                    "toolNames": compact_tool_names,
+                    **event_payload,
                     **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
                 },
             )
@@ -1127,6 +1176,77 @@ class RuntimeCommandRouter:
                 "resumed_run_id": scheduled_run_id or normalized_run_id,
                 **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
             }
+
+    def schedule_supervisor_native_tool_correction(
+        self,
+        run_id: str,
+        *,
+        tool_names: list[str] | None = None,
+    ) -> Dict[str, Any]:
+        """Schedule exactly one durable Supervisor protocol correction."""
+
+        compact_tool_names = [
+            str(item or "").strip()
+            for item in list(tool_names or [])
+            if str(item or "").strip()
+        ][:8]
+        marker = {
+            "state": "scheduled",
+            "attempt": 1,
+            "maxAttempts": 1,
+            "toolNames": compact_tool_names,
+        }
+        return self._schedule_supervisor_correction(
+            run_id,
+            metadata_key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+            marker=marker,
+            request_builder=lambda run_record: self._build_supervisor_native_tool_correction_request(
+                run_record,
+                tool_names=compact_tool_names,
+            ),
+            already_used_error="supervisor_native_tool_correction_already_used",
+            claim_error="supervisor_native_tool_correction_claim_failed",
+            event_stem="run.supervisor.native_tool_correction",
+            resume_reason="native_tool_protocol_correction",
+            event_payload={"toolNames": compact_tool_names},
+        )
+
+    def schedule_supervisor_completion_correction(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        missing_task_brief_ids: list[str] | None = None,
+    ) -> Dict[str, Any]:
+        """Schedule one final-answer correction without reopening execution."""
+
+        compact_ids = [
+            str(item or "").strip()
+            for item in list(missing_task_brief_ids or [])
+            if str(item or "").strip()
+        ][:12]
+        marker = {
+            "state": "scheduled",
+            "attempt": 1,
+            "maxAttempts": 1,
+            "reason": str(reason or "").strip(),
+            "missingTaskBriefIds": compact_ids,
+        }
+        return self._schedule_supervisor_correction(
+            run_id,
+            metadata_key=SUPERVISOR_COMPLETION_CORRECTION_METADATA_KEY,
+            marker=marker,
+            request_builder=lambda run_record: self._build_supervisor_completion_correction_request(
+                run_record,
+                reason=reason,
+                missing_task_brief_ids=compact_ids,
+            ),
+            already_used_error="supervisor_completion_correction_already_used",
+            claim_error="supervisor_completion_correction_claim_failed",
+            event_stem="run.supervisor.completion_correction",
+            resume_reason="completion_truth_correction",
+            event_payload={"reason": str(reason or "").strip(), "missingTaskBriefIds": compact_ids},
+        )
 
     def recover_runtime_episode_resume_worker_failure(
         self,

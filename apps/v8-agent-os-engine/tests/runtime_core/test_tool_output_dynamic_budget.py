@@ -32,6 +32,21 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         self.assertEqual(budget["hardMaxChars"], DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS)
         self.assertEqual(budget["budgetSource"], "dynamic_context_budget")
 
+    def test_explicit_detail_read_honors_requested_size_within_context_and_hard_limit(self):
+        request = self._request("tool_observation_detail")
+        request.tool_call["args"] = {"raw_ref": "toolobs://evidence", "max_chars": 60000}
+        budget = _tool_output_budget_for_request(request, "tool_observation_detail")
+        self.assertEqual(budget["agentVisibleBudget"], 60000)
+        request.config = {"configurable": {"toolOutputHardMaxChars": 12000}}
+        self.assertEqual(_tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 12000)
+        request.config = {"configurable": {"contextWindowTokens": 32000, "reservedOutputTokens": 2048}}
+        request.state["messages"] = [HumanMessage(content="x" * 110000)]
+        self.assertLessEqual(_tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 2000)
+        request.state["messages"] = []
+        request.config = {}
+        request.tool_call["args"]["max_chars"] = 600000
+        self.assertEqual(_tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 60000)
+
     def test_budget_inherits_session_run_and_workspace_from_tool_node_state(self):
         budget = _tool_output_budget_for_request(
             self._request(

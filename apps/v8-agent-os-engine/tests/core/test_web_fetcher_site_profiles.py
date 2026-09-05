@@ -310,7 +310,7 @@ def test_auto_router_keeps_public_cn_direct_ahead_of_login_profile_routes(monkey
     assert plan["networkRoute"] == "cn_direct"
 
 
-def test_metaso_profile_configuration_still_tries_structured_search_first(monkeypatch) -> None:
+def test_metaso_api_key_still_takes_precedence_over_profile_browser(monkeypatch) -> None:
     monkeypatch.setattr(
         web_fetcher,
         "get_web_fetch_config",
@@ -323,7 +323,12 @@ def test_metaso_profile_configuration_still_tries_structured_search_first(monkey
     )
     monkeypatch.setattr(
         web_fetcher,
-        "_metaso_search_public",
+        "_provider_api_key",
+        lambda provider: "configured-key" if provider == "metaso" else "",
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_metaso_api_search",
         lambda *_args, **_kwargs: {
             "ok": True,
             "results": [
@@ -352,8 +357,8 @@ def test_metaso_profile_configuration_still_tries_structured_search_first(monkey
 
     assert payload["ok"] is True
     assert payload["provider"] == "metaso"
-    assert payload["attemptedProviders"][-1]["route"] == "public_sse"
-    assert payload["metaso"]["route"] == "public_sse"
+    assert payload["attemptedProviders"][-1]["route"] == "api"
+    assert payload["metaso"]["route"] == "api"
 
 
 def test_auto_search_continues_when_provider_ignores_site_constraint(monkeypatch) -> None:
@@ -872,8 +877,8 @@ def test_explicit_metaso_search_preserves_runtime_dependency_failure(monkeypatch
     assert "重新安装 V8OS" in payload["recommendedNextAction"]
 
 
-def test_allowlisted_metaso_profile_falls_back_to_browser_after_empty_structured_response(monkeypatch) -> None:
-    """An authenticated profile must get a chance after public/SSE returns no rows."""
+def test_allowlisted_metaso_profile_uses_browser_before_public_sse(monkeypatch) -> None:
+    """An authenticated profile must not lose its budget to public/SSE first."""
 
     monkeypatch.setattr(
         web_fetcher,
@@ -889,7 +894,7 @@ def test_allowlisted_metaso_profile_falls_back_to_browser_after_empty_structured
     monkeypatch.setattr(
         web_fetcher,
         "_metaso_search_public",
-        lambda *_args, **_kwargs: {"ok": True, "results": [], "reason": "empty_public_response"},
+        lambda *_args, **_kwargs: pytest.fail("allowlisted profile must bypass public SSE"),
     )
     fetch_calls: list[dict[str, object]] = []
 
@@ -940,10 +945,19 @@ def test_allowlisted_metaso_profile_falls_back_to_browser_after_empty_structured
     assert payload["agentBrowserProfile"]["used"] is True
     assert fetch_calls
     assert fetch_calls[0]["use_agent_browser_profile"] is True
+    assert int(fetch_calls[0]["browser_wait_ms"]) >= 2_000
     assert any(
-        item.get("provider") == "metaso" and item.get("status") == "empty"
+        item.get("provider") == "metaso"
+        and item.get("failureClass") == "authenticated_profile_preferred"
         for item in payload["attemptedProviders"]
     )
+
+
+def test_profile_search_wait_budget_is_provider_specific() -> None:
+    assert web_fetcher._provider_browser_search_wait_ms("metaso", 10.0) == 4_500
+    assert web_fetcher._provider_browser_search_wait_ms("baidu", 10.0) == 2_500
+    assert web_fetcher._provider_browser_search_wait_ms("bing_cn", 10.0) == 0
+    assert web_fetcher._provider_browser_search_wait_ms("metaso", 1.0) == 500
 
 
 def test_auto_search_preserves_budget_for_a_later_working_provider(monkeypatch) -> None:

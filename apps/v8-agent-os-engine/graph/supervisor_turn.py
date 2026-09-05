@@ -334,6 +334,29 @@ def _compat_suppress_passive_rag(state) -> tuple[bool, str]:
     return False, ""
 
 
+def _completion_truth_correction_from_state(state) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    route_context = (
+        dict(state.get("current_route_context") or {})
+        if isinstance(state.get("current_route_context"), dict)
+        else {}
+    )
+    value = (
+        route_context.get("supervisorCompletionCorrection")
+        or route_context.get("supervisor_completion_correction")
+    )
+    if not isinstance(value, dict) or int(value.get("attempt") or 0) != 1:
+        return {}
+    return dict(value)
+
+
+def _filter_completion_truth_correction_tools(tools, state):
+    if _completion_truth_correction_from_state(state):
+        return []
+    return list(tools or [])
+
+
 _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
     "memory_broker",
     "research_broker",
@@ -682,6 +705,43 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
     return []
 
 
+def _delegation_orchestration_guidance(*, correction: bool = False) -> SystemMessage:
+    # Delegation has its own dispatch schema, not runtime_broker's route envelope.
+    example = {
+        "mode": "dispatch",
+        "tasks": [{
+            "taskBriefId": "<stable task id>",
+            "targetAgentName": "<exact registered Agent name>",
+            "goal": "<current requested work unit>",
+            "context": {"evidence": "<relevant current-run evidence and handoff refs>"},
+            "expectedOutputs": ["<concrete result with traceable evidence>"],
+            "acceptanceContract": ["<observable acceptance criterion>"],
+            "constraints": ["<user's permission and side-effect boundaries>"],
+            "toolPolicy": {"mode": "default"},
+        }],
+    }
+    return SystemMessage(content=(
+        "[Required Delegation Dispatch]\n"
+        + ("This is the single correction attempt. " if correction else "")
+        + "The next user-requested action is delegation_broker(mode='dispatch'), not a runtime_broker route. "
+        "Use the exact Agent identity from the visible registry, never guess a family name. "
+        "Copy the flat tasks array below, replace placeholders with the current request and received evidence, "
+        "and retain expectedOutputs and acceptanceContract for read-only tasks as well as writes. "
+        "Do not wrap tasks in taskBrief, use taskBriefs, or claim the worker has already completed. "
+        "Carry original claim IDs, citation keys, actual URLs and detail refs without renumbering. "
+        "Preserve requested read-only/no-further-delegation boundaries as typed fields: readOnly=true, "
+        "writeRequired=false, writeSet=[], allowChildDelegation=false, not only prose in behaviorScope. "
+        "Only declare a bounded writeSet when writing was authorized. "
+        "For verification of an upstream Research handoff, compact summaries do not contain the complete claim table, "
+        "excerpts and answer: pass its exact evidenceRefs and allow the read-only recovery tool with "
+        "toolPolicy={\"mode\":\"allowlist\",\"allowedTools\":[\"tool_observation_detail\"]}. "
+        "Do not choose mode=none merely because verification is read-only; it forbids even this evidence read. "
+        "If tools are explicitly forbidden by the user, supply complete evidence in the task context instead. "
+        "Review the returned handoff before final delivery.\n"
+        + json.dumps(example, ensure_ascii=False, indent=2)
+    ))
+
+
 def _explicit_runtime_orchestration_guidance(
     kinds: list[str],
     *,
@@ -690,6 +750,8 @@ def _explicit_runtime_orchestration_guidance(
 ) -> SystemMessage:
     prefix = "[Explicit Runtime Orchestration Correction]" if correction else "[Explicit Runtime Orchestration]"
     first_kind = kinds[0] if kinds else "engineering"
+    if first_kind == "delegation":
+        return _delegation_orchestration_guidance(correction=correction)
     contract_example = render_runtime_route_contract(
         first_kind,
         read_only=bool(read_only and first_kind == "engineering"),
@@ -773,6 +835,8 @@ def _authoritative_runtime_route_guidance(
     read_only: bool = False,
 ) -> SystemMessage:
     required_kind = kinds[0] if kinds else "engineering"
+    if required_kind == "delegation":
+        return _delegation_orchestration_guidance(correction=correction)
     route_context = (
         dict(state.get("current_route_context") or {})
         if isinstance(state, dict)
@@ -836,6 +900,15 @@ def _authoritative_runtime_route_guidance(
             "Carry the current request and workspace binding into bounded task briefs. When engineeringContinuation is active, "
             "also carry its prior episode/proof refs. Include a bounded write set when known and explicit verification expectations. "
             "After the typed handoff returns, review its proof and deliver or repair it once."
+        )
+    elif required_kind == "research":
+        handoff_discipline = (
+            "Research briefs describe only the knowledge/evidence deliverable, not subsequent delegation, "
+            "implementation or final acceptance that you own after its handoff. Preserve the user's language "
+            "and exact document/product names, identifiers and versions in those briefs; translations may "
+            "supplement, never replace, the original search anchors. Keep goals concise and do not enlarge "
+            "a requested comparison into exhaustive compliance due diligence. After its handoff, perform "
+            "the remaining user-requested actions yourself through their governed tools."
         )
     else:
         handoff_discipline = (
@@ -972,6 +1045,7 @@ def _deterministic_authoritative_runtime_route_response(
         runtime_handoff_ready=runtime_handoff_ready,
         session_coordination=session_coordination,
         explicit_coordination_send=explicit_coordination_send,
+        allow_ordered_chain=True,
     ):
         return None
     required_kind = pending_required_runtime_kinds[0]
@@ -1012,6 +1086,60 @@ def _deterministic_authoritative_runtime_route_response(
             },
         }
         return response
+    selected_mode = _selected_supervisor_runtime_mode(state)
+    research_request = str(
+        user_query
+        or route_context.get("userRequest")
+        or route_context.get("latestUserContent")
+        or ""
+    ).strip()
+    if (
+        selected_mode == "research"
+        and required_kind == "research"
+        and len(pending_required_runtime_kinds) == 1
+        and research_request
+        and gate_status == "clean"
+    ):
+        # The selected mode has already fixed the owning runtime. Keep claim
+        # decomposition inside Research, where the canonical claim plan and
+        # evidence floor live, instead of paying a second LLM to restate the
+        # same user request as route arguments. The complete request remains
+        # the brief goal so no user constraint is summarized away here. Ordered
+        # cross-runtime work is not eligible: Supervisor must scope Research
+        # separately from verification/implementation that happens after it.
+        route_args = {
+            "mode": "route",
+            "routeKind": "research",
+            "routeReason": "Produce a governed, source-backed answer for the current user research request.",
+            "researchBriefIds": ["current-user-request"],
+            "researchBriefGoals": [research_request],
+            "proofExpectations": [
+                "A delivery-ready answer with traceable sources, supported claims, and explicit limitations."
+            ],
+        }
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": _runtime_route_call_id(
+                        state,
+                        runtime_kind=required_kind,
+                        user_query=research_request,
+                    ),
+                    "name": "runtime_broker",
+                    "args": route_args,
+                    "type": "tool_call",
+                }
+            ],
+        )
+        response.additional_kwargs = {
+            **dict(getattr(response, "additional_kwargs", None) or {}),
+            "v8_authoritative_runtime_direct_route": {
+                "runtimeKind": required_kind,
+                "source": "selected_research_user_request",
+            },
+        }
+        return response
     return None
 
 
@@ -1037,7 +1165,7 @@ def _should_use_runtime_route_compiler(
         runtime_handoff_ready=runtime_handoff_ready,
         session_coordination=session_coordination,
         explicit_coordination_send=explicit_coordination_send,
-        allow_ordered_chain=True,
+        allow_ordered_chain=False,
     ):
         return False
     route_context = dict((state or {}).get("current_route_context") or {})
@@ -2115,10 +2243,53 @@ def _observed_runtime_episode_kinds(state) -> set[str]:
         for value in list(request_scope.get("priorEpisodeIds") or [])
         if str(value or "").strip()
     }
+    episodes = [
+        dict(episode)
+        for episode in list(route_context.get("capabilityEpisodes") or [])
+        if isinstance(episode, dict)
+    ]
+    # RuntimeEpisode rows are the execution truth; route_context is only a
+    # compatibility projection and can temporarily lag behind after a direct
+    # delegation branch rejoins the Supervisor.  In that window, relying only
+    # on capabilityEpisodes can make an already-completed selected runtime
+    # look unobserved and dispatch it a second time in the same run.  Merge the
+    # durable current-run rows by episode id before deciding what is pending.
+    # Never fall back to a session-wide query here: a later user turn in the
+    # same session must still be able to start a fresh selected runtime.
+    if current_run_id:
+        try:
+            from core.database import db
+
+            durable_episodes = db.list_runtime_episodes(run_id=current_run_id, limit=100)
+        except Exception:
+            durable_episodes = []
+        by_id = {
+            str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip(): episode
+            for episode in episodes
+            if str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+        }
+        anonymous_episodes = [
+            episode
+            for episode in episodes
+            if not str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+        ]
+        for durable_episode in list(durable_episodes or []):
+            if not isinstance(durable_episode, dict):
+                continue
+            episode_id = str(
+                durable_episode.get("episodeId")
+                or durable_episode.get("id")
+                or durable_episode.get("needId")
+                or ""
+            ).strip()
+            if episode_id:
+                by_id[episode_id] = {**dict(by_id.get(episode_id) or {}), **dict(durable_episode)}
+            else:
+                anonymous_episodes.append(dict(durable_episode))
+        episodes = [*by_id.values(), *anonymous_episodes]
+
     observed: set[str] = set()
-    for episode in list(route_context.get("capabilityEpisodes") or []):
-        if not isinstance(episode, dict):
-            continue
+    for episode in episodes:
         episode_id = str(
             episode.get("episodeId") or episode.get("id") or episode.get("needId") or ""
         ).strip()
@@ -3057,13 +3228,17 @@ def _retry_missing_research_briefs_once(
     retry_need = _managed_research_retry_need(gap)
     retry_need_json = json.dumps(retry_need, ensure_ascii=False, separators=(",", ":"))
 
+    # This candidate has not reached ToolNode. Appending its native tool calls
+    # would create an open tool turn immediately followed by human correction,
+    # violating provider protocols. Keep executed history intact and replace
+    # the rejected proposal, just as the route compiler correction does.
     correction_messages = [
         *prepared_messages,
-        response,
         HumanMessage(
             content=(
                 "[Research Handoff Discipline Correction]\n"
-                "Your prior response did not follow the typed terminal handoff: it promised a retry but emitted no governed tool call. "
+                "Your prior candidate did not route the unresolved briefs from the typed terminal handoff. "
+                "That candidate was discarded before tool execution; none of its proposed calls ran. "
                 "Replace the prior response with exactly one runtime_broker call using these exact typed route arguments. "
                 "Copy the object without changing its keys or array types; do not emit prose before the call:\n"
                 "```json\n"
@@ -3198,14 +3373,36 @@ def execute_supervisor_turn(
             )
         return response
 
-    explicit_runtime_kinds = _explicit_runtime_orchestration_kinds(state, user_query)
-    authoritative_runtime_kinds = _authoritative_runtime_route_kinds(state, user_query)
+    completion_truth_correction = _completion_truth_correction_from_state(state)
+    if completion_truth_correction:
+        session_coordination = {}
+        coordination_requires_reply = False
+        coordination_message_id = ""
+        coordination_reply_already_called = False
+    explicit_runtime_kinds = (
+        []
+        if completion_truth_correction
+        else _explicit_runtime_orchestration_kinds(state, user_query)
+    )
+    authoritative_runtime_kinds = (
+        []
+        if completion_truth_correction
+        else _authoritative_runtime_route_kinds(state, user_query)
+    )
     observed_runtime_kinds = _observed_runtime_episode_kinds(state)
     pending_required_runtime_kinds = [
         kind
         for kind in dict.fromkeys([*authoritative_runtime_kinds, *explicit_runtime_kinds])
         if kind not in observed_runtime_kinds
     ]
+    research_gap = _runtime_research_gap_state(state)
+    if not completion_truth_correction and research_gap.get("retryAvailable"):
+        # A terminal episode proves an attempt, not delivery. Align the tool
+        # contract with the existing bounded handoff correction; otherwise it
+        # asks for Research repair while validating only downstream delegation.
+        pending_required_runtime_kinds = [
+            "research", *[kind for kind in pending_required_runtime_kinds if kind != "research"]
+        ]
     required_orchestration_kind = (
         pending_required_runtime_kinds[0] if pending_required_runtime_kinds else ""
     )
@@ -3214,7 +3411,11 @@ def execute_supervisor_turn(
         if required_orchestration_kind
         else ""
     )
-    explicit_coordination_send = _looks_like_session_coordination_request(user_query, session_id)
+    explicit_coordination_send = (
+        False
+        if completion_truth_correction
+        else _looks_like_session_coordination_request(user_query, session_id)
+    )
     current_route_context = dict(state.get("current_route_context") or {})
     engineering_trigger = dict(current_route_context.get("engineeringTriggerDecision") or {})
     selected_runtime_mode = _selected_supervisor_runtime_mode(state)
@@ -3266,7 +3467,11 @@ def execute_supervisor_turn(
             route_context=dict(state.get("current_route_context") or {}),
         )
         visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
-        session_context_response = _session_context_broker_first_response(state, visible_supervisor_tools)
+        session_context_response = (
+            None
+            if completion_truth_correction
+            else _session_context_broker_first_response(state, visible_supervisor_tools)
+        )
         if session_context_response is not None:
             _attach_early_state_compaction(session_context_response)
             extensions_runtime_service.emit_response_tool_calls(session_context_response)
@@ -3277,7 +3482,11 @@ def execute_supervisor_turn(
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()
         spec_narrow_route = _should_use_spec_narrow_route(state)
-        if spec_narrow_route:
+        if completion_truth_correction:
+            route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
+            route_bundle.candidate_summary["reason"] = "completion_truth_correction_uses_no_tools"
+            route_duration_ms = 0.0
+        elif spec_narrow_route:
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
             route_bundle.candidate_summary["reason"] = "spec_mode_stage_uses_narrow_tool_surface"
             route_duration_ms = 0.0
@@ -3295,16 +3504,24 @@ def execute_supervisor_turn(
                 loaded_agents=loaded_agents,
             )
             route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
-        include_extensions_prefilter_prompt = False if pending_required_runtime_kinds else _should_include_extensions_prefilter_prompt(
-            state=state,
-            messages=messages,
-            user_query=user_query,
-            route_bundle=route_bundle,
+        include_extensions_prefilter_prompt = (
+            False
+            if completion_truth_correction or pending_required_runtime_kinds
+            else _should_include_extensions_prefilter_prompt(
+                state=state,
+                messages=messages,
+                user_query=user_query,
+                route_bundle=route_bundle,
+            )
         )
         if not include_extensions_prefilter_prompt:
             route_bundle = _suppress_extensions_prefilter_prompt(route_bundle)
         filtered_supervisor_tools = route_bundle.filtered_tools
         filtered_supervisor_tools = _filter_spec_tools_for_mode(filtered_supervisor_tools, state)
+        filtered_supervisor_tools = _filter_completion_truth_correction_tools(
+            filtered_supervisor_tools,
+            state,
+        )
         if explicit_coordination_send:
             filtered_supervisor_tools = _ensure_named_tools(
                 filtered_supervisor_tools,
@@ -3735,6 +3952,14 @@ def execute_supervisor_turn(
                 f"observed runtime kinds={','.join(routed_kinds) or 'none'}."
             )
 
+        filtered_supervisor_tools = _filter_completion_truth_correction_tools(
+            filtered_supervisor_tools,
+            state,
+        )
+        try:
+            route_bundle.filtered_tools = list(filtered_supervisor_tools)
+        except Exception:
+            pass
         response = robust_invoke(
             invoke_llm,
             prepared_messages,
@@ -3855,7 +4080,6 @@ def execute_supervisor_turn(
             ):
                 correction_messages = [
                     *prepared_messages,
-                    response,
                     _runtime_route_correction_message(
                         pending_required_runtime_kinds,
                         authoritative=bool(authoritative_runtime_kinds),

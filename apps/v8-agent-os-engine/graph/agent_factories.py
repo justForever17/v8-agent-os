@@ -16,7 +16,7 @@ from core.delegation_broker import (
     task_brief_requires_child_delegation,
     task_brief_route_query_text,
 )
-from core.engineering_capsule import engineering_tool_allowed
+from core.engineering_capsule import effective_engineering_capsule, engineering_tool_allowed
 from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
@@ -1116,6 +1116,8 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("User-Visible Language", "preferredLanguage", 120),
     ("Upstream Handoffs", "upstreamHandoffs", 7200),
     ("Handoff Usage", "handoffUsage", 900),
+    ("Handoff Recovery Requirements", "handoffRecoveryRequirements", 1800),
+    ("Handoff Consumption Discipline", "handoffConsumptionDiscipline", 1200),
     ("Requested Evidence Refs", "requestedEvidenceRefs", 1200),
     ("Unresolved Evidence Refs", "unresolvedEvidenceRefs", 1200),
     ("Evidence Resolution", "evidenceResolutionDiagnostics", 1800),
@@ -1205,34 +1207,27 @@ def _truthy_task_value(value) -> bool:
 def _task_brief_requires_artifact_write(task_brief: dict | None) -> bool:
     if not isinstance(task_brief, dict):
         return False
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    # expectedOutputs describes every delegation's result, including a read-only
+    # verdict. Neither that key nor filenames/negated writes in evidence grant
+    # a mutation obligation. Use the same explicit contract as tool authority.
+    if any(
+        _truthy_task_value(scope.get(key))
+        for scope in (task_brief, context)
+        for key in ("readOnly", "read_only", "noSideEffect")
+    ):
+        return False
     if _truthy_task_value(task_brief.get("writeRequired") or task_brief.get("write_required")):
         return True
-    if _truthy_task_value(task_brief.get("readOnly") or task_brief.get("read_only")):
-        return False
+    capsule = effective_engineering_capsule(task_brief)
+    if capsule.get("writeRequired"):
+        return True
     deliverable_kind = str(task_brief.get("deliverableKind") or task_brief.get("deliverable_kind") or "").strip().lower()
     if deliverable_kind in {"artifact", "patch", "implementation", "skill_artifact", "project_artifact"}:
         return True
-    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
     if _truthy_task_value(context.get("writeRequired") or context.get("write_required")):
         return True
-    if str(context.get("artifactWriteDiscipline") or "").strip():
-        return True
-    blob = json.dumps(task_brief, ensure_ascii=False).lower()
-    return any(
-        marker in blob
-        for marker in (
-            "skill.md",
-            ".agents/skills",
-            "verification-report",
-            "delivery-summary",
-            "expectedoutputs",
-            "expected_outputs",
-            "预期输出",
-            "写入",
-            "创建文件",
-            "生成文件",
-        )
-    )
+    return False
 
 
 def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
@@ -2494,7 +2489,7 @@ def build_agent_node(
             )
 
             response_observation = _delegated_write_tool_observation(
-                [*task_messages, response],
+                [*messages, response],
                 agent_id=agent_id,
             )
             write_tool_missing = write_required and not response_observation["successful"]
@@ -2511,7 +2506,7 @@ def build_agent_node(
             )
 
             tool_loop = _delegated_tool_loop_observation(
-                [*task_messages, response],
+                [*messages, response],
                 agent_id=agent_id,
                 current_message=response,
             )

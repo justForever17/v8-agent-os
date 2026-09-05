@@ -5,6 +5,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+def source_attribution_role(source: dict[str, Any]) -> str:
+    """Document provenance is not inferred from host rank or retrieval trust."""
+    role = str(source.get("sourceRole") or "").strip().lower()
+    return role if role in {"primary", "secondary", "mixed"} else "unknown"
+
+
 _PYTHON_DOC_VERSION_RE = re.compile(r"(?:3(?:\.\d+)?|dev)", re.IGNORECASE)
 _LOCALE_RE = re.compile(r"[a-z]{2,3}(?:-[a-z]{2})?", re.IGNORECASE)
 _QUESTION_VERSION_RE = re.compile(r"(?<!\d)(?:python\s*)?(3\.\d+)(?!\d)", re.IGNORECASE)
@@ -207,6 +213,11 @@ def research_source_is_navigation(value: Any, *, title: Any = "") -> bool:
         host = ""
         path = ""
     normalized_title = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+    # CMS column indexes are collections of article teasers, not the linked
+    # articles themselves. Do not generalize this to arbitrary index.html
+    # documents (many documentation pages are substantive evidence).
+    if re.search(r"/columns?/[^/]+/index\.html?$", path):
+        return True
     if host == "peps.python.org" and (path in {"", "/"} or re.fullmatch(r"/pep-0*0", path)):
         return True
     return bool(

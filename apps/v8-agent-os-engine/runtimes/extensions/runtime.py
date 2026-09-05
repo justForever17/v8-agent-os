@@ -2407,6 +2407,22 @@ class ExtensionsRuntimeService:
     def get_mcp_tools(self) -> list[Any]:
         return list(mcp_manager.get_tools())
 
+    def prime_mcp_family_profiles(self) -> dict[str, int]:
+        """Precompute deterministic MCP family profiles off the user-turn path."""
+        server_map: dict[str, list[Any]] = {}
+        for tool in self.get_mcp_tools():
+            server_map.setdefault(_mcp_tool_server_name(tool), []).append(tool)
+        for server_name, items in server_map.items():
+            self._get_mcp_server_profile(
+                server_name=server_name,
+                items=items,
+                allow_llm=False,
+            )
+        return {
+            "serverCount": len(server_map),
+            "toolCount": sum(len(items) for items in server_map.values()),
+        }
+
     def get_mcp_status(self) -> dict[str, Any]:
         return dict(mcp_manager.get_status())
 
@@ -2942,6 +2958,7 @@ class ExtensionsRuntimeService:
             if clear_route_cache:
                 self._route_cache.clear()
             self._clear_dynamic_family_profile_caches()
+            await asyncio.to_thread(self.prime_mcp_family_profiles)
             cache_payload = self._cache_payload_snapshot()
             if cache_payload is not None:
                 await asyncio.to_thread(self._persist_cache_payload, cache_payload)
@@ -3032,7 +3049,9 @@ class ExtensionsRuntimeService:
         }
         if refresh_snapshot:
             await self._refresh_runtime_snapshot(clear_route_cache=False)
-        self._clear_dynamic_family_profile_caches()
+        else:
+            self._clear_dynamic_family_profile_caches()
+            await asyncio.to_thread(self.prime_mcp_family_profiles)
         print(
             "[ExtensionsRuntime] MCP inventory changed: "
             f"reason={reason}, "
@@ -3067,7 +3086,6 @@ class ExtensionsRuntimeService:
             "reason": reason,
         }
         await self._refresh_runtime_snapshot(clear_route_cache=False)
-        self._clear_dynamic_family_profile_caches()
         return {
             "changed": True,
             "mcp": self._last_mcp_inventory_change,
@@ -3456,8 +3474,19 @@ class ExtensionsRuntimeService:
         _pre_resolved_skill_inventory: dict[str, Any] | None = None,
         _pre_resolved_inventory_freshness: dict[str, Any] | None = None,
     ) -> ExtensionRouteBundle:
+        route_started_at = time.perf_counter()
+        phase_started_at = route_started_at
+        route_timing_ms: dict[str, float] = {}
+
+        def _record_route_phase(name: str) -> None:
+            nonlocal phase_started_at
+            now = time.perf_counter()
+            route_timing_ms[name] = round((now - phase_started_at) * 1000, 2)
+            phase_started_at = now
+
         query_text = str(user_query or "").strip()
         query_tokens, query_profile, query_analysis_cache_hit, lexicon_state, market_enrichment = _analyze_extensions_query(query_text)
+        _record_route_phase("queryAnalysis")
         context_payload = self._resolve_event_context()
         plugin_projection: dict[str, Any] = {"grants": [], "skills": [], "mcpTools": [], "cliProfiles": [], "uiAdapters": []}
         plugin_channel: dict[str, Any] = {
@@ -3540,6 +3569,7 @@ class ExtensionsRuntimeService:
                     ],
                     "projection": plugin_projection,
                 }
+        _record_route_phase("pluginProjection")
         privileged_plugin_channel_active = bool(plugin_channel.get("active"))
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
         prefilter_policy = self._resolve_prefilter_policy()
@@ -3563,6 +3593,7 @@ class ExtensionsRuntimeService:
         stage2_runtime_available = bool(
             prefilter_policy.get("enabled") and prefilter_policy.get("available") and prefilter_model_id
         )
+        _record_route_phase("prefilterPolicy")
 
         skill_status = self._skill_inventory_status()
         mcp_status = self._mcp_inventory_status()
@@ -3586,6 +3617,7 @@ class ExtensionsRuntimeService:
             runtime_kind=str((inventory_freshness.get("skillContext") or {}).get("runtime_kind") or "").strip() or None,
             exclude_root_paths=set(inventory_freshness.get("excludeRootPaths") or set()),
         )
+        _record_route_phase("skillInventory")
         raw_skill_entries = list(skill_inventory.get("items") or [])
         skill_entries = [
             item
@@ -3709,6 +3741,7 @@ class ExtensionsRuntimeService:
         skill_stage2_candidate_entries = list(skill_stage1_shortlist) if skill_stage1_enabled else list(skill_entries)
         selected_skills = list(skill_stage1_shortlist) if skill_stage1_enabled else list(skill_entries)
         skill_routing_mode = "stage1_only" if skill_stage1_enabled else "unfiltered"
+        _record_route_phase("skillStage1")
 
         mcp_tools = [
             tool
@@ -3742,7 +3775,11 @@ class ExtensionsRuntimeService:
             profile = self._get_mcp_server_profile(
                 server_name=server_name,
                 items=items,
-                allow_llm=stage2_runtime_available,
+                # Family classification is deterministic routing metadata, not
+                # a per-turn reasoning task.  A low-confidence rule profile
+                # must not introduce a hidden provider invocation before the
+                # Supervisor can produce its first token.
+                allow_llm=False,
             )
             mcp_server_profiles[server_name] = profile
             server_score = _score_mcp_server_entry(
@@ -3819,6 +3856,7 @@ class ExtensionsRuntimeService:
         mcp_stage2_candidate_keys = list(mcp_stage1_shortlist_keys) if mcp_stage1_enabled else list(mcp_server_map.keys())
         selected_mcp_server_keys = list(mcp_stage1_shortlist_keys) if mcp_stage1_enabled else list(mcp_server_map.keys())
         mcp_routing_mode = "stage1_only" if mcp_stage1_enabled else "unfiltered"
+        _record_route_phase("mcpStage1")
 
         def _expand_mcp_server_keys(server_keys: list[str]) -> list[Any]:
             expanded: list[Any] = []
@@ -3991,6 +4029,7 @@ class ExtensionsRuntimeService:
                 selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
         selected_mcp_server_keys = _unique_preserve_order(selected_mcp_server_keys)
         selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
+        _record_route_phase("stage2")
 
         inherited_skill_ids_ordered = [
             str(item or "").strip()
@@ -4248,6 +4287,8 @@ class ExtensionsRuntimeService:
             if plugin_projection.get("cliProfiles"):
                 lines.append("- Authorized CLI actions use plugin_cli actionId plus typed parameters; arbitrary argv and shell concatenation are forbidden.")
         lines.append("[/Plugin Package]" if privileged_plugin_channel_active else "[/Extensions Runtime]")
+        _record_route_phase("projection")
+        route_timing_ms["total"] = round((time.perf_counter() - route_started_at) * 1000, 2)
 
         return ExtensionRouteBundle(
             prompt_addition="\n".join(lines),
@@ -4293,6 +4334,7 @@ class ExtensionsRuntimeService:
                     "skills": skill_last_reload.get("durationMs"),
                     "mcp": mcp_last_reload.get("durationMs"),
                 },
+                "routeTimingMs": route_timing_ms,
                 "skillsRoutingMode": skill_routing_mode,
                 "mcpRoutingMode": mcp_routing_mode,
                 "pluginGrantIds": [str(item.get("grantId") or "") for item in list(plugin_projection.get("grants") or []) if str(item.get("grantId") or "")],
@@ -4464,8 +4506,11 @@ class ExtensionsRuntimeService:
         skill_limit: int = 5,
         mcp_limit: int = 2,
     ) -> ExtensionRouteBundle:
+        route_started_at = time.perf_counter()
         context_payload = self._resolve_event_context()
         session_id = str(context_payload.get("session_id") or "").strip() or "global"
+        context_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
+        phase_started_at = time.perf_counter()
         inventory_freshness = self._apply_inventory_freshness_mode(
             freshness_mode=_INVENTORY_FRESHNESS_GUARDED,
             reason="supervisor_route",
@@ -4476,6 +4521,8 @@ class ExtensionsRuntimeService:
             explicit_project_id=str(context_payload.get("project_id") or "").strip() or None,
             runtime_kind=str(context_payload.get("runtime_kind") or "chat").strip() or "chat",
         )
+        inventory_freshness_ms = round((time.perf_counter() - phase_started_at) * 1000, 2)
+        phase_started_at = time.perf_counter()
         skill_inventory = self._resolve_skill_inventory(
             force_refresh=False,
             include_scoped=True,
@@ -4486,6 +4533,8 @@ class ExtensionsRuntimeService:
             runtime_kind=str((inventory_freshness.get("skillContext") or {}).get("runtime_kind") or "chat").strip() or "chat",
             exclude_root_paths=set(inventory_freshness.get("excludeRootPaths") or set()),
         )
+        skill_inventory_ms = round((time.perf_counter() - phase_started_at) * 1000, 2)
+        phase_started_at = time.perf_counter()
         lexicon_signature = str(_ensure_extension_lexicon_state().get("signature") or _EXTENSION_LEXICON_SIGNATURE)
         normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
         tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
@@ -4535,6 +4584,7 @@ class ExtensionsRuntimeService:
                 ) if str(context_payload.get("session_id") or "").strip() else "",
             ]
         )
+        cache_key_ms = round((time.perf_counter() - phase_started_at) * 1000, 2)
         now = time.monotonic()
         cache_allowed = not bool(inventory_freshness.get("inventoryBarrierTimedOut"))
         cached = self._route_cache.get(cache_key) if cache_allowed else None
@@ -4551,6 +4601,16 @@ class ExtensionsRuntimeService:
             _pre_resolved_skill_inventory=skill_inventory,
             _pre_resolved_inventory_freshness=inventory_freshness,
         )
+        summary = dict(bundle.candidate_summary or {})
+        summary["supervisorRouteTimingMs"] = {
+            "context": context_ms,
+            "inventoryFreshness": inventory_freshness_ms,
+            "skillInventory": skill_inventory_ms,
+            "cacheKey": cache_key_ms,
+            "contextualRoute": round((time.perf_counter() - phase_started_at) * 1000, 2),
+            "total": round((time.perf_counter() - route_started_at) * 1000, 2),
+        }
+        bundle.candidate_summary = summary
         if cache_allowed:
             self._route_cache[cache_key] = (now, bundle)
             if len(self._route_cache) > 128:
@@ -4658,6 +4718,8 @@ class ExtensionsRuntimeService:
                     "recentSkillKeepaliveCount": candidate_summary.get("recentSkillKeepaliveCount"),
                     "mcpChangedServerCount": len(list(candidate_summary.get("mcpChangedServers") or [])),
                     "inventoryRefreshDurationMs": candidate_summary.get("inventoryRefreshDurationMs"),
+                    "routeTimingMs": candidate_summary.get("routeTimingMs"),
+                    "supervisorRouteTimingMs": candidate_summary.get("supervisorRouteTimingMs"),
                     "lexiconSignature": candidate_summary.get("lexiconSignature"),
                     "lexiconCoreSignature": candidate_summary.get("lexiconCoreSignature"),
                     "lexiconLocaleCount": len(list(candidate_summary.get("lexiconLocales") or [])),

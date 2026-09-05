@@ -3461,6 +3461,7 @@ class ChatRuntime:
                 "supervisorRuntimeMode": prepared.supervisor_runtime_mode,
             },
         )
+        continuation_context: dict[str, Any] = {}
         try:
             prepared.task_shape_hint = build_supervisor_task_context(prepared.latest_user_content)
             if prepared.spec_mode:
@@ -3630,7 +3631,6 @@ class ChatRuntime:
                         }
                     )
                     prepared.task_shape_hint = hint
-            continuation_context = {}
             if self._looks_like_engineering_continuation_message(prepared.latest_user_content):
                 continuation_context = self._recent_engineering_continuation_context(
                     session_id=prepared.session_id,
@@ -3815,6 +3815,39 @@ class ChatRuntime:
                 {
                     "engineeringMode": prepared.engineering_mode,
                     "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                },
+            )
+        elif not (
+            prepared.explicit_engineering_requested
+            or bool(continuation_context.get("active"))
+            or (
+                prepared.spec_mode
+                and self._runtime_execution_allowed_by_spec(prepared.spec_brief)
+            )
+        ):
+            boundary = (
+                prepared.task_shape_hint.get("boundaryDecision")
+                if isinstance(prepared.task_shape_hint.get("boundaryDecision"), dict)
+                else {}
+            )
+            candidate_runtime = str(boundary.get("primaryRuntime") or "").strip()
+            prepared.engineering_mode = "auto"
+            prepared.engineering_context_pack = None
+            prepared.engineering_trigger_decision = {
+                "mode": "auto",
+                "active": False,
+                "matched": candidate_runtime == "engineering",
+                "deferred": True,
+                "candidateRuntime": candidate_runtime or None,
+                "reason": "awaiting_supervisor_runtime_decision",
+            }
+            run_service.update_metadata(
+                run_handle.run_id,
+                {
+                    "engineeringMode": "auto",
+                    "engineeringRequired": False,
+                    "engineeringCandidateDetected": candidate_runtime == "engineering",
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision),
                 },
             )
         else:
@@ -4898,6 +4931,11 @@ class ChatRuntime:
             if isinstance(resume_value.get("supervisorNativeToolCorrection"), dict)
             else {}
         )
+        completion_correction_resume = (
+            dict(resume_value.get("supervisorCompletionCorrection") or {})
+            if isinstance(resume_value.get("supervisorCompletionCorrection"), dict)
+            else {}
+        )
         # A true new submit owns a new run. Explicitly replace any terminal
         # dispatch status retained by the session checkpoint; handoff resumes
         # below install their own current-run status.
@@ -4944,6 +4982,12 @@ class ChatRuntime:
                 **current_route_context,
                 "supervisorNativeToolCorrection": native_tool_correction_resume,
                 "supervisor_native_tool_correction": native_tool_correction_resume,
+            }
+        if completion_correction_resume:
+            current_route_context = {
+                **current_route_context,
+                "supervisorCompletionCorrection": completion_correction_resume,
+                "supervisor_completion_correction": completion_correction_resume,
             }
         if compat_diagnostics:
             current_route_context = {
@@ -5163,6 +5207,14 @@ class ChatRuntime:
             return False
         resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
         correction = resume_value.get("supervisorNativeToolCorrection")
+        return isinstance(correction, dict) and int(correction.get("attempt") or 0) == 1
+
+    @staticmethod
+    def _is_supervisor_completion_correction_resume(chat_run: ChatRunContext) -> bool:
+        if not chat_run.is_resume_request:
+            return False
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        correction = resume_value.get("supervisorCompletionCorrection")
         return isinstance(correction, dict) and int(correction.get("attempt") or 0) == 1
 
     @staticmethod
@@ -5424,6 +5476,7 @@ class ChatRuntime:
                 or self._is_spec_revision_resume(chat_run)
                 or self._is_runtime_handoff_resume(chat_run)
                 or self._is_supervisor_native_tool_correction_resume(chat_run)
+                or self._is_supervisor_completion_correction_resume(chat_run)
             ):
                 return await self.create_execution_bundle(chat_run=chat_run)
             return await self.create_resume_bundle(chat_run=chat_run)
@@ -10877,6 +10930,42 @@ class ChatRuntime:
                     "reason": "supervisor_native_tool_correction_scheduled",
                     "run_id": chat_run.active_run_id,
                 }
+        if decision.action == "fail" and decision.reason == "research_brief_evidence_incomplete":
+            from erc.command_router import runtime_command_router
+
+            missing_task_brief_ids = [
+                str(item or "").strip()
+                for item in list(decision.details.get("missingTaskBriefIds") or [])
+                if str(item or "").strip()
+            ][:12]
+            correction = runtime_command_router.schedule_supervisor_completion_correction(
+                chat_run.active_run_id,
+                reason=decision.reason,
+                missing_task_brief_ids=missing_task_brief_ids,
+            )
+            if bool(correction.get("resume_scheduled")):
+                chat_run.emit_runtime_event(
+                    "run.completion.truth_correction_scheduled",
+                    {
+                        "reason": decision.reason,
+                        "attempt": 1,
+                        "maxAttempts": 1,
+                        "missingTaskBriefIds": missing_task_brief_ids,
+                    },
+                    agent_id=None,
+                    node="completion_gate",
+                )
+                chat_run.run_handle.transition(
+                    "running",
+                    reason="supervisor_completion_correction_scheduled",
+                    node="completion_gate",
+                )
+                return {
+                    "type": "done",
+                    "status": "running",
+                    "reason": "supervisor_completion_correction_scheduled",
+                    "run_id": chat_run.active_run_id,
+                }
         if decision.action == "fail":
             chat_run.emit_runtime_event(
                 "run.completion.blocked",
@@ -11192,6 +11281,22 @@ class ChatRuntime:
                 "run_id": run_id,
             }
         ]
+
+    @staticmethod
+    def _log_stream_execution_exception(
+        chat_run: ChatRunContext | None,
+        exc: BaseException,
+    ) -> None:
+        logger = logging.getLogger("v8chat.chat_runtime")
+        run_id = chat_run.active_run_id if chat_run else "<unknown>"
+        if isinstance(exc, ModelGovernanceInterventionRequired):
+            logger.info(
+                "Chat run '%s' paused for governed interaction (%s)",
+                run_id,
+                str(exc.approval_kind or "interaction"),
+            )
+            return
+        logger.exception("Chat run '%s' failed during stream execution", run_id)
 
     def consume_control_signal(self, run_id: str):
         return erc_kernel.consume_control_signal(run_id)
@@ -11945,10 +12050,7 @@ class ChatRuntime:
                     last_event=(stream_state.watchdog.last_observed_event if stream_state is not None else None),
                     cause=exc,
                 )
-            logging.getLogger("v8chat.chat_runtime").exception(
-                "Chat run '%s' failed during stream execution",
-                chat_run.active_run_id if chat_run else "<unknown>",
-            )
+            self._log_stream_execution_exception(chat_run, normalized_exc)
             self._emit_delegation_claim_diagnostic(chat_run, stream_state)
             for failed_event in self.finalize_failed_run(chat_run, normalized_exc, stream_state):
                 yield failed_event

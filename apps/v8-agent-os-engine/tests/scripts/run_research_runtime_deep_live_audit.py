@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -1089,7 +1090,119 @@ def _run_conflict_case() -> AuditCaseResult:
     return result
 
 
+def _semantic_review_contrast_cases(variant: str = "scope") -> list[tuple[str, str, bool]]:
+    if variant == "metadata":
+        return [
+            ("page_date_and_document_header", "已读发布机关页面：标题下署有第15号令，所载办法于2023年8月15日施行。页面发布日期为2023年7月13日，这是页面日期，不据此推定签发日期 [S7]。", True),
+            ("page_date_promoted_to_effective_date", "第15号令所载办法自2023年7月13日起施行 [S7]。", False),
+            ("invented_document_number", "已读发布机关页面的第18号令所载办法于2023年8月15日施行；页面发布日期为2023年7月13日 [S7]。", False),
+        ]
+    if variant == "version":
+        return [
+            ("short_version_boundary", "2020 年厂商的 4.2 版说明建议 Linux 用户启用缓存，并非强制；Windows 不支持该选项。它不能证明当前版本仍然如此，本次未核实 4.3 [S7]。", True),
+            ("recommendation_and_platform_expanded", "厂商规定 4.2 版 Linux 和 Windows 用户都必须启用缓存 [S7]。", False),
+            ("unverified_version_upgrade", "厂商说明证实当前 4.3 版在 Linux 上仍建议启用缓存、Windows 不支持该选项 [S7]。", False),
+        ]
+    return [
+        ("short_scoped_attributed", "已读取的是转载而非发布机关原文。该转载说明：只有提供公开传播服务的单位须在启用前提交评估，内部测试单位不适用此义务 [S7]。", True),
+        ("condition_removed", "已读取的是转载。所有单位，包括仅做内部测试的单位，都必须在启用前提交评估 [S7]。", False),
+        ("attribution_upgraded", "已读取发布机关的一手原文：只有提供公开传播服务的单位须在启用前提交评估，内部测试单位不适用此义务 [S7]。", False),
+    ]
+
+
+def _run_semantic_review_contrast_case(variant: str = "scope") -> AuditCaseResult:
+    """Real configured reviewers on synthetic paired evidence; not acquisition/E2E."""
+    from core.tools import research_broker as research
+    from core.background_context_guard import prepare_background_model_messages
+    from core.tools.research_review_prompt import (
+        ADVERSARIAL_REVIEW_PROMPT, REVIEW_SYSTEM_PROMPT, build_review_prompt,
+    )
+
+    result = AuditCaseResult("semantic_review_contrast", "真实审查模型的正反例判别（合成证据，非端到端）")
+    started = time.perf_counter()
+    question = (
+        "依据给定材料说明公开传播服务与内部测试的评估义务，并明确资料身份。"
+        "Research 回流后，Supervisor 再委派 Verification Engineer 独立只读复核，收到验证结果后再最终交付。"
+    )
+    excerpt = "本文为第三方转载，非发布机关原文。只有提供公开传播服务的单位才须在启用前提交评估；仅内部测试的单位不适用该义务。"
+    sources = [{"citationKey": "S7", "sourceId": "synthetic-reprint", "title": "服务评估说明（转载）",
+                "sourceRole": "secondary", "tier": "primary", "url": "https://mirror.example.test/reprint"}]
+    claims = [{"claimId": "claim-scope", "claim": excerpt, "evidenceExcerpt": excerpt,
+               "sourceRole": "secondary", "evidenceExcerptKey": "S7:E1",
+               "supportingSources": [{"citationKey": "S7", "url": sources[0]["url"]}]}]
+    if variant == "version":
+        result.case_id = "semantic_review_version_contrast"
+        question = "依据这份旧版厂商说明，说明缓存建议的版本和平台边界；明确它不能证明当前版本状态，不需要联网确认。"
+        excerpt = "厂商运行说明，发布于2020年，仅适用于4.2版。建议Linux用户启用缓存，但不是强制要求；Windows不支持此选项。本文不涉及4.3版。"
+        sources[0].update(title="厂商运行说明（4.2版）", sourceRole="primary", publishedAt="2020-01-01",
+                          url="https://vendor.example.test/runtime/4.2")
+        claims[0].update(claimId="claim-version", claim=excerpt, evidenceExcerpt=excerpt, sourceRole="primary",
+                         supportingSources=[{"citationKey": "S7", "url": sources[0]["url"]}])
+    if variant == "metadata":
+        result.case_id = "semantic_review_metadata_contrast"
+        question = "依据已读发布机关页面，说明办法的文号、施行日期与页面发布日期；不得把页面日期推定为签发日期。"
+        excerpt = "服务管理办法\n令 第15号\n现予公布《服务管理办法》，自2023年8月15日起施行。"
+        sources[0].update(title="服务管理办法", sourceRole="primary", publishedAt="2023-07-13",
+                          url="https://issuer.example.test/rules/15")
+        claims[0].update(claimId="claim-header", claim=excerpt, evidenceExcerpt=excerpt, sourceRole="primary",
+                         supportingSources=[{"citationKey": "S7", "url": sources[0]["url"]}])
+    ledger = research._architect_review_claim_ledger(claims, sources)
+    try:
+        pool = research._create_web_research_reviewer_llm_candidates(
+            research._create_web_research_architect_llm_candidates(),
+        )
+        candidates = []
+        for candidate in pool:
+            identity = research._architect_candidate_identity(candidate)
+            if identity not in result.providers:
+                result.providers.append(identity)
+                candidates.append(candidate)
+            if len(candidates) == 2:
+                break
+        if not candidates:
+            result.failures.append("no_configured_reviewer")
+        for model_index, candidate in enumerate(candidates):
+            mode = "semantic" if model_index == 0 else "adversarial"
+            for name, answer, expected_accept in _semantic_review_contrast_cases(variant):
+                prepared = prepare_background_model_messages(
+                    system_prompt=REVIEW_SYSTEM_PROMPT,
+                    instruction=build_review_prompt(question) + (ADVERSARIAL_REVIEW_PROMPT if mode == "adversarial" else ""),
+                    materials=[
+                        {"title": "Canonical verified claim ledger", "kind": "research_review_claim_ledger", "content": json.dumps(ledger, ensure_ascii=False)},
+                        {"title": "Candidate answer", "kind": "research_review_candidate", "content": json.dumps({"answer": answer}, ensure_ascii=False)},
+                    ],
+                    runtime_kind="research", target_role="web-research-independent-reviewer",
+                    resolved_model_id=research._architect_candidate_context_model_ref(candidate),
+                    component="research", node=f"review_contrast_{name}",
+                )
+                call_started = time.perf_counter()
+                response = research._invoke_architect_candidate_with_deadline(
+                    candidate, prepared.messages, seconds=32,
+                    max_tokens=research._RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS, disable_thinking=True,
+                )
+                parsed = research._extract_json_object(research.sanitize_background_model_output(response).text)
+                schema_valid = research._independent_architect_review_schema_valid(parsed)
+                accepted = schema_valid and research._independent_architect_review_accepts(parsed)
+                if not schema_valid or accepted != expected_accept:
+                    result.failures.append(f"{result.providers[model_index]}:{name}:review_discrimination_failed")
+                result.evidence.append(_redact({
+                    "evidenceMode": "synthetic-evidence-real-provider-contrast", "case": name,
+                    "modelId": result.providers[model_index], "reviewMode": mode,
+                    "expectedAccept": expected_accept, "accepted": accepted, "schemaValid": schema_valid,
+                    "answerChars": len(answer), "elapsedMs": int((time.perf_counter() - call_started) * 1000),
+                    "reviewReasons": parsed.get("reviewReasons") if isinstance(parsed, dict) else None,
+                }))
+    except Exception as exc:
+        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    result.status = "failed" if result.failures else "ok"
+    return result
+
+
 CASES = {
+    "semantic_review_contrast": _run_semantic_review_contrast_case,
+    "semantic_review_version_contrast": lambda: _run_semantic_review_contrast_case("version"),
+    "semantic_review_metadata_contrast": lambda: _run_semantic_review_contrast_case("metadata"),
     "technical": _run_technical_case,
     "cn": _run_cn_case,
     "domestic_delivery": _run_domestic_delivery_case,
@@ -1142,10 +1255,57 @@ def _write_report(results: list[AuditCaseResult], output_root: Path) -> Path:
     return report_path
 
 
+def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> AuditCaseResult:
+    """Provider-live synthesis only; neither fresh acquisition nor end-to-end proof."""
+    from tests.scripts import run_research_runtime_fixed_bundle_acceptance as fixed
+    from core.tools import research_broker as research_module
+
+    case = AuditCaseResult("fixed_bundle", "固定证据的真实模型生成与审核（非端到端）")
+    started = time.perf_counter()
+    try:
+        bundle = fixed.load_fixed_bundle(path, bundle_id=bundle_id)
+        before = fixed.bundle_digest(bundle)
+        with fixed.forbid_evidence_acquisition(research_module) as counters:
+            result = research_module._web_research_architect_pack(
+                question=str(bundle["question"]),
+                source_matrix=copy.deepcopy(bundle["sourceMatrix"]),
+                shards=copy.deepcopy(bundle["shards"]),
+                confidence=str(bundle.get("confidence") or "medium"),
+                average_authority=float(bundle.get("authorityScore") or 0),
+                freshness=str(bundle.get("freshness") or "auto"),
+                architect_call_state={},
+            )
+        assessment = fixed._result_assessment(result)
+        case.failures.extend(assessment["highQualityIssues"])
+        if assessment["reviewDecision"] != "accept":
+            case.failures.append("fixed_review_not_accepted")
+        if any(counters.values()):
+            case.failures.append("fixed_evidence_acquisition_attempted")
+        if before != fixed.bundle_digest(fixed.load_fixed_bundle(path, bundle_id=bundle_id)):
+            case.failures.append("fixed_evidence_drifted")
+        artifact, digest = fixed._write_result_artifact(
+            output_dir, f"synthesis-{time.time_ns()}", result,
+        )
+        case.providers = assessment["providerModels"]
+        case.evidence.append(_redact({
+            "evidenceMode": "fixed-evidence-provider-live", "bundleDigest": before,
+            "acquisitionCalls": counters, "assessment": assessment,
+            "resultRef": str(artifact), "resultSha256": digest,
+        }))
+    except Exception as exc:
+        case.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    case.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    case.status = "failed" if case.failures else "ok"
+    return case
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run live Research Runtime deep audit.")
     parser.add_argument("--live", action="store_true", help="Required to perform network/provider live calls.")
-    parser.add_argument("--case", choices=[*CASES.keys(), "all"], default="all")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--case", choices=[*CASES.keys(), "all"], default="all")
+    selection.add_argument("--fixed-bundle", type=Path, help="Replay stored evidence with live configured models; forbids new acquisition.")
+    parser.add_argument("--bundle-id", default="", help="Select one bundle from --fixed-bundle ledger.")
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_REPORT_ROOT)
     args = parser.parse_args()
@@ -1153,7 +1313,10 @@ def main() -> int:
         print("Refusing to run live audit without --live.")
         return 2
     selected = list(CASES.keys()) if args.case == "all" else [args.case]
-    results = [CASES[case_id]() for case_id in selected]
+    results = (
+        [_run_fixed_bundle_case(args.fixed_bundle, args.bundle_id, args.output_dir)]
+        if args.fixed_bundle else [CASES[case_id]() for case_id in selected]
+    )
     for item in results:
         print(f"[{item.status}] {item.case_id}: {item.summary or '; '.join(item.failures) or item.title}")
     if args.write_report:

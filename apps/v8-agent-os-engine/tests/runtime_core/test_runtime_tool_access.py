@@ -769,6 +769,32 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
 
 
+def test_research_route_language_comes_from_user_message_before_model_briefs():
+    enriched = native_runtime._enrich_route_need_for_episode(
+        {
+            "kind": "research",
+            "reason": "Route the evidence work.",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "law-scope",
+                        "goal": "Map the hierarchy and applicability of the regulations.",
+                        "context": {},
+                        "readOnly": True,
+                    }
+                ]
+            },
+        },
+        kind="research",
+        state={
+            "current_route_context": {},
+            "messages": [HumanMessage(content="请调研这些中国法规并用中文回答。")],
+        },
+    )
+
+    assert enriched["inputs"]["preferredLanguage"] == "zh-CN"
+
+
 def test_runtime_route_uses_current_session_workspace_instead_of_model_guess(monkeypatch):
     monkeypatch.setattr(
         native_runtime,
@@ -3197,6 +3223,113 @@ def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
     assert payload["missingTasks"] is True
     assert payload["diagnosticKey"] == "delegation_missing_tasks"
     assert payload["exampleTasks"]
+
+
+def test_delegation_broker_blocks_subagent_replacement_for_managed_research_retry():
+    state = {
+        "current_route_context": {
+            "handoffRefs": [
+                {
+                    "kind": "research_evidence_bundle",
+                    "producerEpisodeId": "episode-research-1",
+                    "status": "degraded",
+                    "missingTaskBriefIds": ["research-law-dates"],
+                    "taskBriefResults": [
+                        {
+                            "taskBriefId": "research-law-dates",
+                            "status": "degraded",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    with bind_runtime_context(
+        runtime_kind="chat",
+        actor_role="supervisor",
+        agent_id="supervisor",
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "research-retry-001",
+                    "targetAgentName": "Web Research Architect",
+                    "preferredAgentId": "web-research-architect",
+                    "familyHint": "research",
+                    "goal": "补查上一轮缺失的法规日期证据。",
+                    "expectedOutputs": ["可追溯的来源与结论"],
+                    "acceptanceContract": "返回逐项来源证据。",
+                    "constraints": ["只读"],
+                    "toolPolicy": {"mode": "default"},
+                }
+            ],
+            state=state,
+            tool_call_id="call-research-replacement",
+        )
+
+    payload = _tool_message_payload(command)
+    assert command.goto == "supervisor"
+    assert payload["ok"] is False
+    assert payload["error"] == "managed_research_retry_requires_runtime_broker"
+    assert payload["requiredTool"] == "runtime_broker"
+    assert payload["blockedTaskBriefIds"] == ["research-retry-001"]
+    assert payload["missingTaskBriefIds"] == ["research-law-dates"]
+    assert "parallel_invocations" not in command.update
+
+
+def test_research_synthesizer_is_a_managed_research_replacement():
+    assert native_delegation._delegation_task_replaces_managed_research(
+        {
+            "taskBriefId": "research-synthesis-retry",
+            "preferredAgentId": "research-synthesizer",
+            "targetAgentName": "Research Synthesizer",
+        }
+    )
+
+
+def test_managed_research_gap_exhaustion_and_ready_verifier_are_distinct():
+    degraded = {
+        "kind": "research_evidence_bundle",
+        "status": "degraded",
+        "missingTaskBriefIds": ["research-law-dates"],
+        "taskBriefResults": [
+            {"taskBriefId": "research-law-dates", "status": "degraded"}
+        ],
+    }
+    exhausted = native_delegation._managed_research_gap_from_context(
+        {"handoffRefs": [degraded, degraded]}
+    )
+    ready = native_delegation._managed_research_gap_from_context(
+        {
+            "handoffRefs": [
+                degraded,
+                {
+                    "kind": "research_evidence_bundle",
+                    "status": "completed",
+                    "coveredTaskBriefIds": ["research-law-dates"],
+                    "taskBriefResults": [
+                        {"taskBriefId": "research-law-dates", "status": "ready"}
+                    ],
+                },
+            ]
+        }
+    )
+    verifier_task = {
+        "taskBriefId": "verify-research-evidence",
+        "targetAgentName": "Verification Engineer",
+        "preferredAgentId": "verification-engineer",
+        "familyHint": "engineering",
+        "goal": "独立核对 Research evidence bundle 的法规日期与来源支持关系。",
+        "toolPolicy": {"mode": "none"},
+    }
+
+    assert exhausted["missingTaskBriefIds"] == ["research-law-dates"]
+    assert exhausted["retryAvailable"] is False
+    assert ready["missingTaskBriefIds"] == []
+    assert native_delegation._delegation_task_replaces_managed_research(
+        verifier_task
+    ) is False
 
 
 def test_delegation_broker_rejects_duplicate_task_ids_before_dispatch() -> None:

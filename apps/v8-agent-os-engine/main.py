@@ -165,6 +165,65 @@ async def _prewarm_provider_compatibility() -> None:
         print(f"[Engine] Provider compatibility prewarm failed (non-fatal): {type(exc).__name__}")
 
 
+_SUPERVISOR_GRAPH_PREWARM_PREREQUISITE_TIMEOUT_SECONDS = 1.5
+_SUPERVISOR_GRAPH_PREWARM_FOLLOWUP_TIMEOUT_SECONDS = 30.0
+
+
+async def _prewarm_supervisor_graph(
+    provider_prewarm_task: asyncio.Task | None = None,
+    extension_prerequisite_tasks: tuple[asyncio.Task, ...] = (),
+) -> dict[str, object]:
+    """Compile the configured Supervisor graph off the first user request."""
+
+    try:
+        pending_prerequisite_tasks: set[asyncio.Task] = set()
+        if provider_prewarm_task is not None:
+            await provider_prewarm_task
+        if extension_prerequisite_tasks:
+            _completed, pending_prerequisite_tasks = await asyncio.wait(
+                extension_prerequisite_tasks,
+                timeout=_SUPERVISOR_GRAPH_PREWARM_PREREQUISITE_TIMEOUT_SECONDS,
+            )
+
+        async def _build_once(*, task_name: str) -> dict[str, object]:
+            resolver = _import_module("core.engine_config_resolver")
+            resolved = resolver.resolve_engine_config_for_role("supervisor")
+            config = resolver.require_engine_config(resolved, role="supervisor")
+            runner = _import_module("agents.runners.supervisor_runner").supervisor_runner
+            _graph, diagnostics = await _get_chat_run_scheduler().run(
+                runner.build_graph(config),
+                task_name=task_name,
+            )
+            return {
+                "ok": True,
+                "graphCacheHit": bool((diagnostics or {}).get("graphCacheHit")),
+                "graphBuildMs": float((diagnostics or {}).get("graphBuildMs") or 0),
+            }
+
+        safe_diagnostics = await _build_once(task_name="supervisor-graph-prewarm")
+        print("[Engine] Supervisor graph prewarm completed:", safe_diagnostics)
+        if pending_prerequisite_tasks:
+            completed_followup, _still_pending = await asyncio.wait(
+                pending_prerequisite_tasks,
+                timeout=_SUPERVISOR_GRAPH_PREWARM_FOLLOWUP_TIMEOUT_SECONDS,
+            )
+            if completed_followup:
+                followup_diagnostics = await _build_once(task_name="supervisor-graph-inventory-prewarm")
+                safe_diagnostics.update(
+                    {
+                        "inventoryFollowupAttempted": True,
+                        "inventoryFollowupCacheHit": bool(followup_diagnostics.get("graphCacheHit")),
+                        "inventoryFollowupBuildMs": float(followup_diagnostics.get("graphBuildMs") or 0),
+                    }
+                )
+                print("[Engine] Supervisor graph inventory prewarm completed:", followup_diagnostics)
+        return safe_diagnostics
+    except Exception as exc:
+        result = {"ok": False, "errorType": type(exc).__name__}
+        print(f"[Engine] Supervisor graph prewarm failed (non-fatal): {type(exc).__name__}")
+        return result
+
+
 def _ensure_default_workflow_memories() -> None:
     try:
         service = _import_module("runtimes.memory.workflow_service").workflow_memory_service
@@ -681,6 +740,13 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
         print("[Engine] Applied memory runtime defaults:", applied_memory_defaults)
     _ensure_default_workflow_memories()
     startup_metrics["statePreflightMs"] = round((time.perf_counter() - state_preflight_started_at) * 1000, 2)
+    provider_prewarm_task = asyncio.create_task(_prewarm_provider_compatibility())
+    _track_lifespan_task(
+        app,
+        state,
+        "provider_compatibility_prewarm_task",
+        provider_prewarm_task,
+    )
     service_flags = _service_flags()
     state["service_flags"] = service_flags
     runtime_health = inspect_engine_runtime()
@@ -890,6 +956,24 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
             (time.perf_counter() - extensions_start_started_at) * 1000,
             2,
         )
+    _track_lifespan_task(
+        app,
+        state,
+        "supervisor_graph_prewarm_task",
+        asyncio.create_task(
+            _prewarm_supervisor_graph(
+                provider_prewarm_task,
+                tuple(
+                    task
+                    for task in (
+                        getattr(app.state, "skills_refresh_task", None),
+                        getattr(app.state, "mcp_init_task", None),
+                    )
+                    if isinstance(task, asyncio.Task)
+                ),
+            )
+        ),
+    )
     if service_flags["cron"]:
         cron_start_started_at = time.perf_counter()
         _mark_lifespan_service_starting(state, "cron")
@@ -932,12 +1016,6 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
     startup_metrics["readyMs"] = round((time.perf_counter() - _PROCESS_BOOT_STARTED_AT) * 1000, 2)
     app.state.startup_metrics = startup_metrics
     _set_lifespan_phase(state, "ready")
-    _track_lifespan_task(
-        app,
-        state,
-        "provider_compatibility_prewarm_task",
-        asyncio.create_task(_prewarm_provider_compatibility()),
-    )
     app.state.lifespan_diagnostics = _lifespan_status_snapshot(state)
     print("[Engine] Startup ready:", startup_metrics)
 

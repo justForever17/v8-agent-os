@@ -61,6 +61,64 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         llm_tree_prefilter._PREFILTER_CACHE.clear()
 
+    def test_mcp_family_profiles_are_primed_without_route_time_model_inference(self):
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool("query-docs", "Look up library documentation.", "context7"),
+            _FakeTool("resolve-library-id", "Resolve a library identifier.", "context7"),
+            _FakeTool("browser_navigate", "Navigate an interactive browser.", "playwright"),
+        ]
+
+        with patch.object(service, "get_mcp_tools", return_value=tools), patch.object(
+            service,
+            "_infer_dynamic_family_profile_with_llm",
+            side_effect=AssertionError("MCP startup priming must remain deterministic"),
+        ):
+            result = service.prime_mcp_family_profiles()
+
+        self.assertEqual(result, {"serverCount": 2, "toolCount": 3})
+        self.assertEqual(len(service._mcp_family_profile_cache), 2)
+        context_profile = service._get_mcp_server_profile(
+            server_name="context7",
+            items=tools[:2],
+            allow_llm=False,
+        )
+        self.assertIn("search", list(context_profile.get("primaryOperations") or []))
+
+    def test_contextual_route_never_uses_provider_to_classify_mcp_families(self):
+        service = ExtensionsRuntimeService()
+        tools = [_FakeTool("query-docs", "Look up library documentation.", "context7")]
+        policy = {
+            "enabled": True,
+            "available": True,
+            "mode": "two_stage",
+            "modelId": "configured-prefilter-model",
+            "role": "extensions_prefilter",
+            "reason": "",
+            "skills": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5},
+            "mcp": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2},
+        }
+
+        with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": [], "rootDescriptors": []},
+        ), patch.object(
+            service,
+            "_resolve_event_context",
+            return_value={"session_id": "s1", "run_id": "r1", "runtime_kind": "chat", "agent_id": "supervisor"},
+        ), patch.object(
+            service,
+            "_infer_dynamic_family_profile_with_llm",
+            side_effect=AssertionError("route-time MCP classification must not call a provider"),
+        ):
+            bundle = service.build_contextual_route(
+                user_query="查阅 Python 文档",
+                available_tools=tools,
+            )
+
+        self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["context7"])
+
     def test_llm_prefilter_bypasses_when_candidate_count_is_under_limit(self):
         calls: list[str] = []
         original_factory = llm_tree_prefilter.llm_factory
@@ -4139,6 +4197,223 @@ description: 三月七视角 skill。
                 {"wechat-studio", "wechat-account-articles"},
             )
             self.assertEqual(second_inventory.get("dirtyVisibleRoots"), [])
+        finally:
+            SkillLoader._skills_registry = original_registry
+            SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_descriptors = original_root_descriptors
+            SkillLoader._skills_root_signature = original_root_signature
+            SkillLoader._skills_fingerprint = original_fingerprint
+            SkillLoader._skills_revision = original_revision
+            SkillLoader._root_inventory_states = original_root_states
+            SkillLoader._visible_inventory_cache = original_visible_cache
+            SkillLoader._dirty_root_paths = original_dirty_root_paths
+
+    def test_skill_loader_caches_new_scoped_overlay_and_refreshes_on_skill_edit(self):
+        original_registry = SkillLoader._skills_registry
+        original_manifest = SkillLoader._skills_manifest
+        original_root_descriptors = SkillLoader._skills_root_descriptors
+        original_root_signature = SkillLoader._skills_root_signature
+        original_fingerprint = SkillLoader._skills_fingerprint
+        original_revision = SkillLoader._skills_revision
+        original_root_states = SkillLoader._root_inventory_states
+        original_visible_cache = SkillLoader._visible_inventory_cache
+        original_dirty_root_paths = SkillLoader._dirty_root_paths
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                base = Path(temp_dir)
+                global_root = base / "global-skills"
+                scoped_root = base / "workspace" / ".agents" / "skills"
+                global_skill = global_root / "global-skill" / "SKILL.md"
+                scoped_skill = scoped_root / "scoped-skill" / "SKILL.md"
+                global_skill.parent.mkdir(parents=True)
+                scoped_skill.parent.mkdir(parents=True)
+                global_skill.write_text(
+                    "---\nname: global-skill\ndescription: Global helper.\n---\nGlobal instructions.\n",
+                    encoding="utf-8",
+                )
+                scoped_skill.write_text(
+                    "---\nname: scoped-skill\ndescription: First scoped description.\n---\nScoped instructions.\n",
+                    encoding="utf-8",
+                )
+                global_descriptor = {
+                    "rootPath": str(global_root),
+                    "sourceType": "global",
+                    "visibility": "global",
+                }
+                scoped_descriptor = {
+                    "rootPath": str(scoped_root),
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": str(base / "workspace"),
+                    "workspaceId": "workspace-test",
+                    "projectId": "project-test",
+                }
+                global_manifest = SkillLoader._compute_root_routing_manifest(global_descriptor)
+                global_registry = SkillLoader._scan_single_root_descriptor(
+                    global_descriptor,
+                    manifest=global_manifest,
+                )
+                global_root_path = SkillLoader._descriptor_cache_key(global_descriptor)
+                scoped_root_path = SkillLoader._descriptor_cache_key(scoped_descriptor)
+                SkillLoader._skills_registry = dict(global_registry)
+                SkillLoader._skills_manifest = dict(global_manifest)
+                SkillLoader._skills_root_descriptors = [global_descriptor]
+                SkillLoader._skills_root_signature = SkillLoader._root_descriptors_signature([global_descriptor])
+                SkillLoader._skills_fingerprint = "skills:scoped-overlay-test"
+                SkillLoader._skills_revision = "skills:scoped-overlay-test"
+                SkillLoader._root_inventory_states = {
+                    global_root_path: {
+                        "descriptor": dict(global_descriptor),
+                        "descriptorSignature": SkillLoader._root_descriptors_signature([global_descriptor]),
+                        "manifest": dict(global_manifest),
+                        "registry": dict(global_registry),
+                        "rootRevision": SkillLoader._root_manifest_fingerprint(global_descriptor, global_manifest),
+                        "dirty": False,
+                    }
+                }
+                SkillLoader._visible_inventory_cache = {}
+                SkillLoader._dirty_root_paths = set()
+
+                original_routing_manifest = SkillLoader._compute_root_routing_manifest
+                with patch.object(
+                    SkillLoader,
+                    "_resolve_inventory_descriptors",
+                    return_value=[global_descriptor, scoped_descriptor],
+                ), patch.object(
+                    SkillLoader,
+                    "_compute_root_manifest",
+                    side_effect=AssertionError("route path must not recursively hash a scoped Skill directory"),
+                ), patch.object(
+                    SkillLoader,
+                    "_compute_root_routing_manifest",
+                    wraps=original_routing_manifest,
+                ) as routing_manifest_mock, patch.object(
+                    SkillLoader,
+                    "_should_attempt_llm_profile_inference",
+                    return_value=True,
+                ), patch.object(
+                    SkillLoader,
+                    "_should_attempt_llm_theme_inference",
+                    return_value=True,
+                ), patch.object(
+                    SkillLoader,
+                    "_infer_profile_with_llm",
+                    side_effect=AssertionError("user-turn scoped discovery must not invoke a profile model"),
+                ), patch.object(
+                    SkillLoader,
+                    "_infer_theme_with_llm",
+                    side_effect=AssertionError("user-turn scoped discovery must not invoke a theme model"),
+                ):
+                    first_inventory = SkillLoader.get_inventory(force_refresh=False, include_scoped=True)
+                    second_inventory = SkillLoader.get_inventory(force_refresh=False, include_scoped=True)
+                    scoped_skill.write_text(
+                        "---\nname: scoped-skill\ndescription: Updated scoped description with a different size.\n---\nScoped instructions.\n",
+                        encoding="utf-8",
+                    )
+                    third_inventory = SkillLoader.get_inventory(force_refresh=False, include_scoped=True)
+
+                self.assertFalse(first_inventory.get("visibleRegistryCacheHit"))
+                self.assertTrue(second_inventory.get("visibleRegistryCacheHit"))
+                self.assertFalse(third_inventory.get("visibleRegistryCacheHit"))
+                self.assertEqual(routing_manifest_mock.call_count, 2)
+                self.assertTrue((SkillLoader._root_inventory_states.get(scoped_root_path) or {}).get("scopedOverlay"))
+                descriptions = {
+                    item.get("skillName"): item.get("description")
+                    for item in list(third_inventory.get("items") or [])
+                }
+                self.assertEqual(
+                    descriptions.get("scoped-skill"),
+                    "Updated scoped description with a different size.",
+                )
+        finally:
+            SkillLoader._skills_registry = original_registry
+            SkillLoader._skills_manifest = original_manifest
+            SkillLoader._skills_root_descriptors = original_root_descriptors
+            SkillLoader._skills_root_signature = original_root_signature
+            SkillLoader._skills_fingerprint = original_fingerprint
+            SkillLoader._skills_revision = original_revision
+            SkillLoader._root_inventory_states = original_root_states
+            SkillLoader._visible_inventory_cache = original_visible_cache
+            SkillLoader._dirty_root_paths = original_dirty_root_paths
+
+    def test_global_watcher_commit_preserves_scoped_overlay_added_during_scan(self):
+        original_registry = SkillLoader._skills_registry
+        original_manifest = SkillLoader._skills_manifest
+        original_root_descriptors = SkillLoader._skills_root_descriptors
+        original_root_signature = SkillLoader._skills_root_signature
+        original_fingerprint = SkillLoader._skills_fingerprint
+        original_revision = SkillLoader._skills_revision
+        original_root_states = SkillLoader._root_inventory_states
+        original_visible_cache = SkillLoader._visible_inventory_cache
+        original_dirty_root_paths = SkillLoader._dirty_root_paths
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                base = Path(temp_dir)
+                global_root = base / "global-skills"
+                scoped_root = base / "workspace" / ".agents" / "skills"
+                global_root.mkdir(parents=True)
+                scoped_root.mkdir(parents=True)
+                global_descriptor = {
+                    "rootPath": str(global_root),
+                    "sourceType": "global",
+                    "visibility": "global",
+                }
+                scoped_descriptor = {
+                    "rootPath": str(scoped_root),
+                    "sourceType": "scoped_workspace",
+                    "visibility": "scoped",
+                    "workspacePath": str(base / "workspace"),
+                }
+                global_manifest = SkillLoader._compute_root_manifest(global_descriptor)
+                global_root_path = SkillLoader._descriptor_cache_key(global_descriptor)
+                scoped_root_path = SkillLoader._descriptor_cache_key(scoped_descriptor)
+                global_state = {
+                    "descriptor": dict(global_descriptor),
+                    "descriptorSignature": SkillLoader._root_descriptors_signature([global_descriptor]),
+                    "manifest": dict(global_manifest),
+                    "registry": {},
+                    "rootRevision": SkillLoader._root_manifest_fingerprint(global_descriptor, global_manifest),
+                    "dirty": False,
+                }
+                scoped_state = {
+                    "descriptor": dict(scoped_descriptor),
+                    "descriptorSignature": SkillLoader._root_descriptors_signature([scoped_descriptor]),
+                    "manifest": {},
+                    "registry": {},
+                    "rootRevision": "scoped-revision",
+                    "routingStamp": "scoped-stamp",
+                    "dirty": False,
+                    "scopedOverlay": True,
+                }
+                SkillLoader._skills_registry = {}
+                SkillLoader._skills_manifest = dict(global_manifest)
+                SkillLoader._skills_root_descriptors = [global_descriptor]
+                SkillLoader._skills_root_signature = SkillLoader._root_descriptors_signature([global_descriptor])
+                SkillLoader._skills_fingerprint = "skills:watcher-race"
+                SkillLoader._skills_revision = "skills:watcher-race"
+                SkillLoader._root_inventory_states = {global_root_path: global_state}
+                SkillLoader._visible_inventory_cache = {}
+                SkillLoader._dirty_root_paths = set()
+
+                original_compute = SkillLoader._compute_root_manifest
+
+                def compute_while_route_adds_overlay(descriptor):  # noqa: ANN001
+                    manifest = original_compute(descriptor)
+                    SkillLoader._root_inventory_states[scoped_root_path] = scoped_state
+                    return manifest
+
+                with patch.object(
+                    SkillLoader,
+                    "_compute_root_manifest",
+                    side_effect=compute_while_route_adds_overlay,
+                ):
+                    result = SkillLoader.refresh_root_descriptors_if_changed(
+                        [global_descriptor],
+                        compare_existing=True,
+                    )
+
+                self.assertFalse(result.get("changed"))
+                self.assertIs(SkillLoader._root_inventory_states.get(scoped_root_path), scoped_state)
         finally:
             SkillLoader._skills_registry = original_registry
             SkillLoader._skills_manifest = original_manifest

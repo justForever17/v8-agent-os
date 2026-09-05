@@ -9,11 +9,13 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import graph.supervisor_turn as supervisor_turn_module
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
     _ensure_supervisor_narrative_contract,
     _filter_tool_names,
+    _filter_completion_truth_correction_tools,
     _latest_message_is_true_user_input,
     _runtime_episode_handoff_ready,
     _runtime_episode_recoverable_failure,
@@ -45,6 +47,38 @@ from graph.supervisor_turn import (
 )
 from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
 from runtimes.chat.runtime import ChatRuntime, _delegation_acceptance_from_final_text
+
+
+def test_governed_ask_user_pause_is_not_logged_as_stream_failure(caplog) -> None:
+    intervention = ModelGovernanceInterventionRequired(
+        "waiting for user input",
+        approval_kind="ask_user",
+        question="Continue?",
+    )
+
+    with caplog.at_level("INFO", logger="v8chat.chat_runtime"):
+        ChatRuntime._log_stream_execution_exception(
+            SimpleNamespace(active_run_id="run-ask-user"),
+            intervention,
+        )
+
+    assert "paused for governed interaction (ask_user)" in caplog.text
+    assert "failed during stream execution" not in caplog.text
+
+
+def test_completion_truth_correction_has_no_tool_surface() -> None:
+    tools = [SimpleNamespace(name="runtime_broker"), SimpleNamespace(name="write_native_file")]
+    state = {
+        "current_route_context": {
+            "supervisorCompletionCorrection": {
+                "kind": "completion_truth_correction",
+                "attempt": 1,
+            }
+        }
+    }
+
+    assert _filter_completion_truth_correction_tools(tools, state) == []
+    assert _filter_completion_truth_correction_tools(tools, {}) == tools
 
 
 def test_silent_supervisor_response_gets_one_real_action_retry_before_terminal_text():
@@ -915,7 +949,8 @@ def test_bundled_research_gap_preserves_all_briefs_sources_and_targeted_repair_c
     ]
 
 
-def test_research_retry_correction_requires_exact_runtime_tool_call():
+@pytest.mark.parametrize("response_with_tools", [False, True])
+def test_research_retry_correction_requires_exact_runtime_tool_call(response_with_tools):
     state = {
         "current_route_context": {
             "capabilityEpisodes": [
@@ -955,8 +990,24 @@ def test_research_retry_correction_requires_exact_runtime_tool_call():
     }
     calls = []
     bound_tool_names = []
+    prepared_messages = [
+        HumanMessage(content="original"),
+        AIMessage(content="", tool_calls=[{
+            "name": "runtime_broker", "id": "already-executed", "args": {},
+        }]),
+        ToolMessage(content="Research returned a degraded handoff", tool_call_id="already-executed"),
+    ]
+    response = AIMessage(content="我会马上重试。", tool_calls=[{
+        "id": "unexecuted-proposal", "name": "tool_observation_detail",
+        "args": {"detail_ref": "research-evidence"},
+    }] if response_with_tools else [])
 
     def robust_invoke(_llm, messages, _tools, **_kwargs):
+        from core.llm_chat_adapter import V8ChatModelAdapter
+
+        V8ChatModelAdapter._assert_anthropic_tool_result_contract(messages)
+        assert messages[:len(prepared_messages)] == prepared_messages
+        assert response not in messages or not response_with_tools
         calls.append(messages[-1].content)
         bound_tool_names.append([getattr(tool, "name", "") for tool in _tools])
         return AIMessage(
@@ -971,9 +1022,9 @@ def test_research_retry_correction_requires_exact_runtime_tool_call():
         )
 
     corrected = supervisor_turn_module._retry_missing_research_briefs_once(
-        AIMessage(content="我会马上重试。"),
+        response,
         state=state,
-        prepared_messages=[HumanMessage(content="original")],
+        prepared_messages=prepared_messages,
         invoke_llm=object(),
         filtered_tools=[SimpleNamespace(name="runtime_broker")],
         robust_invoke=robust_invoke,
@@ -989,6 +1040,7 @@ def test_research_retry_correction_requires_exact_runtime_tool_call():
     assert '"researchBriefIds":["python-windows"]' in calls[0]
     assert '"researchBriefGoals":["Verify the official Python Windows support contract."]' in calls[0]
     assert '"researchBriefContexts":[' in calls[0]
+    assert len(response.tool_calls) == int(response_with_tools)
 
 
 def test_second_degraded_research_handoff_exhausts_retry_and_blocks_false_completion():
@@ -1436,6 +1488,75 @@ def test_finalize_success_fails_when_native_tool_correction_is_already_used(monk
     assert emitted[0][0] == "run.completion.blocked"
 
 
+def test_finalize_success_schedules_one_truth_correction_for_missing_research(monkeypatch):
+    emitted = []
+    run_handle = SimpleNamespace(complete=Mock(), transition=Mock(), fail=Mock())
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=False, spec_id="", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-research-correction",
+        active_run_id="run-research-correction",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    episode = {
+        "episodeId": "episode-research-correction",
+        "kind": "research",
+        "state": "degraded",
+    }
+    handoff = {
+        "payload": {
+            "kind": "research_evidence_bundle",
+            "status": "degraded",
+            "missingTaskBriefIds": ["brief-a", "brief-b"],
+            "taskBriefResults": [
+                {"taskBriefId": "brief-a", "status": "degraded"},
+                {"taskBriefId": "brief-b", "status": "degraded"},
+            ],
+        }
+    }
+    scheduled = []
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.list_runtime_episodes",
+        lambda **_kwargs: [episode],
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.list_runtime_episode_handoffs",
+        lambda _episode_id: [handoff],
+    )
+    monkeypatch.setattr(
+        ChatRuntime,
+        "_completion_final_text",
+        lambda *_args, **_kwargs: "全部调研已经完成。",
+    )
+    monkeypatch.setattr(
+        "erc.command_router.runtime_command_router.schedule_supervisor_completion_correction",
+        lambda run_id, *, reason, missing_task_brief_ids: scheduled.append(
+            (run_id, reason, missing_task_brief_ids)
+        )
+        or {"resume_scheduled": True, "resumed_run_id": run_id},
+    )
+
+    result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "running"
+    assert result["reason"] == "supervisor_completion_correction_scheduled"
+    assert scheduled == [
+        (
+            "run-research-correction",
+            "research_brief_evidence_incomplete",
+            ["brief-a", "brief-b"],
+        )
+    ]
+    run_handle.transition.assert_called_once_with(
+        "running",
+        reason="supervisor_completion_correction_scheduled",
+        node="completion_gate",
+    )
+    run_handle.fail.assert_not_called()
+    assert emitted[0][0] == "run.completion.truth_correction_scheduled"
+
+
 def test_runtime_recoverable_failure_message_blocks_false_completion():
     state = {
         "runtime_dispatch_status": {
@@ -1485,7 +1606,8 @@ def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_succe
     assert "artifact_acceptance_failed" in coerced.content
 
 
-def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch):
+@pytest.mark.parametrize("research_retry", [False, True])
+def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch, research_retry):
     calls = []
     decision = SimpleNamespace(as_dict=lambda: {})
     route_bundle = SimpleNamespace(
@@ -1555,9 +1677,15 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
     def robust_invoke(*_args, **_kwargs):
         calls.append("invoked")
+        if research_retry:
+            assert _kwargs["tool_choice"] == "runtime_broker"
+            assert "delegation_broker" not in [getattr(t, "name", "") for t in _args[2]]
         return AIMessage(
             content="",
-            tool_calls=[{"id": "call_repair", "name": "runtime_broker", "args": {"mode": "route"}}],
+            tool_calls=[{"id": "call_repair", "name": "runtime_broker", "args": (
+                _managed_research_retry_need(_runtime_research_gap_state(state))
+                if research_retry else {"mode": "route"}
+            )}],
         )
 
     state = {
@@ -1569,12 +1697,31 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
             "reason": "artifact_acceptance_failed",
         },
     }
+    if research_retry:
+        monkeypatch.setattr(
+            supervisor_turn_module, "_explicit_runtime_orchestration_kinds",
+            lambda *_args: ["research", "delegation"],
+        )
+        route_bundle.filtered_tools = [
+            SimpleNamespace(name="runtime_broker"), SimpleNamespace(name="delegation_broker"),
+        ]
+        state["current_route_context"] = {
+            "capabilityEpisodes": [{
+                "episodeId": "research-first", "kind": "research", "runId": "run-repair",
+                "inputs": {"taskBriefs": [{"taskBriefId": "law", "goal": "核对法规原文"}]},
+            }],
+            "handoffRefs": [{
+                "kind": "research_evidence_bundle", "producerEpisodeId": "research-first",
+                "status": "degraded", "missingTaskBriefIds": ["law"],
+                "taskBriefResults": [{"taskBriefId": "law", "status": "degraded"}],
+            }],
+        }
     response = execute_supervisor_turn(
         state=state,
         config={},
         messages=[HumanMessage(content="repair it")],
         loaded_agents=[],
-        supervisor_tools=[],
+        supervisor_tools=route_bundle.filtered_tools,
         memory_runtime=None,
         scope_resolution_service=None,
         ensure_reasoning_content=lambda message: message,
@@ -1827,6 +1974,19 @@ def test_completion_gate_blocks_research_plan_claimed_as_ready_evidence():
 
     assert decision.action == "fail"
     assert decision.reason == "research_plan_only_claimed_evidence_ready"
+
+
+def test_failed_verifier_handoff_preserves_failure_truth_instead_of_claiming_it_is_missing():
+    decision = evaluate_supervisor_completion(
+        episodes=[{"episodeId": "verifier", "state": "failed", "kind": "delegation", "resultRef": "failed-result"}],
+        handoffs_by_episode={"verifier": [{"handoffRefId": "failed-result", "kind": "subagent_result",
+                                          "status": "failed", "error": "delegation_model_timeout"}]},
+        final_text="Verification could not finish because its model stream timed out.",
+    )
+    assert decision.action == "fail"
+    assert decision.reason == "required_runtime_handoff_failed"
+    assert decision.details["handoffRefId"] == "failed-result"
+    assert decision.details["errorCode"] == "delegation_model_timeout"
 
 
 def test_completion_gate_uses_episode_result_ref_instead_of_failed_handoff_history():

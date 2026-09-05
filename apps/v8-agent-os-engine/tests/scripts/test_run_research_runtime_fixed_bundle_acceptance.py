@@ -307,10 +307,11 @@ def test_fixed_assessment_rejects_deterministic_fallback_even_when_quality_metri
         }
     )
 
-    assert "fixed_writer_not_segmented:deterministic_claim_report_after_writer" in assessment["highQualityIssues"]
+    assert "fixed_writer_not_model_generated:deterministic_claim_report_after_writer" in assessment["highQualityIssues"]
 
 
-def test_fixed_assessment_accepts_two_independent_reviews_from_same_configured_model(monkeypatch):
+@pytest.mark.parametrize("mode,sections", [("segmented", 4), ("single", 0), ("single_reviewer_revised", 0)])
+def test_fixed_assessment_accepts_two_independent_reviews_from_same_configured_model(monkeypatch, mode, sections):
     import core.tools.research_quality as quality
 
     metrics = {
@@ -325,7 +326,7 @@ def test_fixed_assessment_accepts_two_independent_reviews_from_same_configured_m
     monkeypatch.setattr(quality, "research_review_decision", lambda _result: "accept")
 
     assessment = audit._result_assessment(
-        {"modelSynthesis": {"writerMode": "segmented", "writerSectionCount": 4}}
+        {"modelSynthesis": {"writerMode": mode, "writerSectionCount": sections}}
     )
 
     assert assessment["highQualityIssues"] == []

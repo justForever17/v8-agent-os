@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextvars
 import logging
+import queue
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Sequence
 
 from langchain_core.messages import BaseMessageChunk, message_chunk_to_message
 
@@ -35,6 +38,97 @@ _LOCAL_RETRY_ERROR_CODES = {
     _RESPONSE_CONTRACT_ERROR_CODE,
 }
 _FAILOVER_ERROR_CODES = _LOCAL_RETRY_ERROR_CODES | {"quota_exceeded"}
+_STREAM_QUEUE_POLL_SECONDS = 0.25
+
+
+class _ModelStreamDeadlineExceeded(TimeoutError):
+    def __init__(self, message: str, *, chunk_count: int, first_chunk_ms: int | None, last_chunk_ms: int | None) -> None:
+        super().__init__(message)
+        self.chunk_count = max(0, int(chunk_count))
+        self.first_chunk_ms = first_chunk_ms
+        self.last_chunk_ms = last_chunk_ms
+
+
+def _iterate_stream_with_deadline(
+    stream: Any,
+    *,
+    deadline_seconds: float,
+) -> Iterator[Any]:
+    """Consume a blocking provider stream behind a real wall-clock deadline.
+
+    Provider SDK timeout arguments are transport-specific and may be reset by
+    SSE heartbeats. The failover budget is a V8OS runtime contract, so one
+    attempt cannot keep a delegated episode alive indefinitely. A daemon
+    producer lets the caller regain control even when a third-party iterator is
+    stuck inside its HTTP client. The provider iterator is closed best-effort;
+    its own transport timeout remains the final cleanup fence.
+    """
+
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+    stop_requested = threading.Event()
+    producer_context = contextvars.copy_context()
+
+    def _produce() -> None:
+        try:
+            for chunk in stream:
+                if stop_requested.is_set():
+                    break
+                result_queue.put(("chunk", chunk))
+        except BaseException as exc:  # forwarded to the invoking thread
+            result_queue.put(("error", exc))
+        finally:
+            result_queue.put(("done", None))
+
+    producer = threading.Thread(
+        target=lambda: producer_context.run(_produce),
+        name="v8-model-stream",
+        daemon=True,
+    )
+    producer.start()
+    started_at = time.monotonic()
+    deadline_at = time.monotonic() + max(float(deadline_seconds), 0.01)
+    chunk_count = 0
+    first_chunk_ms: int | None = None
+    last_chunk_ms: int | None = None
+    try:
+        while True:
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                stage = "waiting_first_chunk" if chunk_count == 0 else "waiting_after_partial_stream"
+                raise _ModelStreamDeadlineExceeded(
+                    f"model stream wall-clock deadline exceeded after {float(deadline_seconds):.2f}s ({stage})",
+                    chunk_count=chunk_count,
+                    first_chunk_ms=first_chunk_ms,
+                    last_chunk_ms=last_chunk_ms,
+                )
+            try:
+                kind, payload = result_queue.get(
+                    timeout=min(_STREAM_QUEUE_POLL_SECONDS, remaining)
+                )
+            except queue.Empty:
+                continue
+            if kind == "chunk":
+                chunk_count += 1
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                first_chunk_ms = elapsed_ms if first_chunk_ms is None else first_chunk_ms
+                last_chunk_ms = elapsed_ms
+                yield payload
+                continue
+            if kind == "error":
+                raise payload
+            return
+    finally:
+        stop_requested.set()
+        if producer.is_alive():
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception:
+                    # Python generators cannot be closed while another thread
+                    # is executing them. The daemon + provider timeout still
+                    # prevents this cleanup path from blocking V8OS shutdown.
+                    pass
 
 
 @dataclass(slots=True)
@@ -309,6 +403,7 @@ class ModelFailoverService:
         tool_choice: Any | None = None,
         result_validator: Callable[[Any], str | None] | None = None,
         stream_observer: Callable[[Any], None] | None = None,
+        stream_attempt_timeout_seconds: float | None = None,
     ) -> Any:
         ctx = get_runtime_context()
         run_id = ctx.get("run_id")
@@ -416,6 +511,17 @@ class ModelFailoverService:
                     caps_exhausted_reason = "max_failover_seconds_exhausted"
                     break
                 total_attempts += 1
+                observed_stream_chunks = 0
+                remaining_failover_seconds = max(
+                    max_failover_seconds - (time.monotonic() - started_at),
+                    0.01,
+                )
+                attempt_timeout_seconds = remaining_failover_seconds
+                if stream_attempt_timeout_seconds is not None:
+                    attempt_timeout_seconds = min(
+                        attempt_timeout_seconds,
+                        max(float(stream_attempt_timeout_seconds), 0.01),
+                    )
                 try:
                     if stream_observer is None:
                         result = (
@@ -430,7 +536,11 @@ class ModelFailoverService:
                             else bound_llm.stream(messages)
                         )
                         aggregate = None
-                        for chunk in stream:
+                        for chunk in _iterate_stream_with_deadline(
+                            stream,
+                            deadline_seconds=attempt_timeout_seconds,
+                        ):
+                            observed_stream_chunks += 1
                             try:
                                 stream_observer(chunk)
                             except Exception:
@@ -477,7 +587,11 @@ class ModelFailoverService:
                             _RESPONSE_CONTRACT_ERROR_CODE,
                             validation_error,
                         )
-                        continue
+                        # The caller owns any contract-correction turn. Repeating
+                        # the same rejected response with unchanged messages is
+                        # not a transient transport retry; consider only the next
+                        # configured, governance-approved candidate.
+                        break
                     self._persist_sticky_choice(
                         config=config,
                         run_id=run_id,
@@ -520,6 +634,22 @@ class ModelFailoverService:
                         "retryable": normalized["retryable"],
                         "userAction": normalized.get("userAction") or "",
                         "diagnostic": dict(normalized.get("diagnostic") or {}),
+                        "partialStream": observed_stream_chunks > 0,
+                        "streamChunkCount": observed_stream_chunks,
+                        "streamAttemptTimeoutSeconds": attempt_timeout_seconds,
+                        **(
+                            {
+                                "streamTimeoutStage": (
+                                    "waiting_first_chunk"
+                                    if exc.chunk_count == 0
+                                    else "waiting_after_partial_stream"
+                                ),
+                                "streamFirstChunkMs": exc.first_chunk_ms,
+                                "streamLastChunkMs": exc.last_chunk_ms,
+                            }
+                            if isinstance(exc, _ModelStreamDeadlineExceeded)
+                            else {}
+                        ),
                     }
                     attempts.append(attempt)
                     logger.warning(
@@ -530,6 +660,12 @@ class ModelFailoverService:
                         normalized["code"],
                         normalized["message"],
                     )
+                    if observed_stream_chunks > 0:
+                        # Replaying a partially emitted tool/reasoning stream can
+                        # duplicate user-visible events and tool intent. Fail
+                        # closed and let the episode create one typed handoff.
+                        caps_exhausted_reason = "partial_stream_failed"
+                        break
                     if not normalized["retryable"] or not self._can_retry_same_model(str(normalized["code"])):
                         break
             if caps_exhausted_reason:

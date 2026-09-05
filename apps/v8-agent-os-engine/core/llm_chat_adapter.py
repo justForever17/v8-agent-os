@@ -1172,7 +1172,9 @@ class V8ChatModelAdapter(BaseChatModel):
                     generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
                 )
             native_message = self._coerce_ai_message(aggregate_chunk) if aggregate_chunk is not None else AIMessage(content="")
-            if self._can_prompt_retry_required_tool(native_message):
+            # A second model response cannot be appended to an already public
+            # stream. The caller owns bounded contract correction/failover.
+            if aggregate_chunk is None and self._can_prompt_retry_required_tool(native_message):
                 fallback_prepared = self._prepare_prompt_cache_request(
                     self._tool_prompt_messages(normalized_messages),
                     stop=stop,
@@ -1199,7 +1201,7 @@ class V8ChatModelAdapter(BaseChatModel):
                     generation_info=dict(getattr(fallback_chunk, "response_metadata", {}) or {}),
                 )
         except Exception as exc:
-            if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
+            if aggregate_chunk is None and self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
                     fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=False, **kwargs)
                     response = self._get_base_model().invoke(
@@ -1290,7 +1292,8 @@ class V8ChatModelAdapter(BaseChatModel):
                     generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
                 )
             native_message = self._coerce_ai_message(aggregate_chunk) if aggregate_chunk is not None else AIMessage(content="")
-            if self._can_prompt_retry_required_tool(native_message):
+            # Keep async and sync streams on the same single-response contract.
+            if aggregate_chunk is None and self._can_prompt_retry_required_tool(native_message):
                 fallback_prepared = self._prepare_prompt_cache_request(
                     self._tool_prompt_messages(normalized_messages),
                     stop=stop,
@@ -1317,7 +1320,7 @@ class V8ChatModelAdapter(BaseChatModel):
                     generation_info=dict(getattr(fallback_chunk, "response_metadata", {}) or {}),
                 )
         except Exception as exc:
-            if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
+            if aggregate_chunk is None and self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
                     fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=False, **kwargs)
                     response = await self._get_base_model().ainvoke(

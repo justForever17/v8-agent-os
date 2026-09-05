@@ -3,9 +3,99 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
+
+import pytest
 
 from core.tools.research_quality import build_research_review_binding
 from tests.scripts import run_research_runtime_deep_live_audit as audit
+
+
+@pytest.mark.parametrize("behavior", ["correct", "always_accept", "always_reject", "invalid_schema"])
+@pytest.mark.parametrize("variant", ["scope", "version", "metadata"])
+def test_semantic_review_contrast_detects_false_success_and_false_veto(monkeypatch, behavior, variant):
+    from core.tools import research_broker as research
+    from langchain_core.messages import AIMessage
+
+    pool = [(object(), "configured-first", "supervisor"), (object(), "configured-second", "verification")]
+    monkeypatch.setattr(research, "_create_web_research_architect_llm_candidates", lambda: pool)
+    monkeypatch.setattr(research, "_create_web_research_reviewer_llm_candidates", lambda _: pool)
+    monkeypatch.setattr(research, "_architect_candidate_identity", lambda c: c[1])
+    monkeypatch.setattr(research, "_architect_candidate_context_model_ref", lambda c: c[1])
+    calls = []
+
+    def invoke(candidate, messages, **kwargs):
+        text = "\n".join(str(message.content) for message in messages)
+        assert "S7:E1" in text
+        if variant == "scope":
+            assert "第三方转载" in text and "Verification Engineer" in text
+        elif variant == "version":
+            assert "2020-01-01" in text and "4.2" in text and "Linux" in text
+        else:
+            assert "2023-07-13" in text and "第15号" in text
+        assert kwargs["seconds"] == 32 and kwargs["disable_thinking"] is True
+        expected = audit._semantic_review_contrast_cases(variant)[len(calls) % 3][2]
+        calls.append(candidate[1])
+        accept = expected if behavior == "correct" else behavior == "always_accept"
+        payload = {"reviewDecision": "accept" if accept else "retry", "questionCoverage": True,
+                   "claimEntailment": accept, "freshnessAdequacy": True,
+                   "reviewReasons": [], "unsupportedClaims": [] if accept else ["counterexample"],
+                   "criticalMissingEvidence": [], "recommendedNextQueries": []}
+        return AIMessage(content=json.dumps({} if behavior == "invalid_schema" else payload))
+
+    monkeypatch.setattr(research, "_invoke_architect_candidate_with_deadline", invoke)
+    result = audit._run_semantic_review_contrast_case(variant)
+    assert len(calls) == 6
+    assert result.status == ("ok" if behavior == "correct" else "failed")
+    assert len(result.evidence) == 6
+    assert all(json.loads(row)["evidenceMode"] == "synthetic-evidence-real-provider-contrast" for row in result.evidence)
+
+
+def test_semantic_review_contrast_requires_live(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["audit", "--case", "semantic_review_contrast"])
+    monkeypatch.setitem(audit.CASES, "semantic_review_contrast", lambda: pytest.fail("unauthorized provider call"))
+    assert audit.main() == 2
+
+
+def test_fixed_bundle_cli_still_requires_explicit_live(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["audit", "--fixed-bundle", str(tmp_path / "ledger.json")])
+    monkeypatch.setattr(audit, "_run_fixed_bundle_case", lambda *_: pytest.fail("live without consent"))
+    assert audit.main() == 2
+
+
+@pytest.mark.parametrize("attempt_fetch", [False, True])
+def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch, tmp_path, attempt_fetch):
+    from core.tools import research_broker as research
+    from tests.scripts import run_research_runtime_fixed_bundle_acceptance as fixed
+
+    bundle = {"evidenceBundleId": "fixture", "question": "Compare facts",
+              "sourceMatrix": [{"url": "https://example.org/fact"}],
+              "shards": [{"fetchedTopSources": [{"text": "Exact source text"}]}]}
+    before = copy.deepcopy(bundle)
+    monkeypatch.setattr(fixed, "load_fixed_bundle", lambda *_args, **_kwargs: bundle)
+    monkeypatch.setattr(fixed, "_result_assessment", lambda _: {
+        "highQualityIssues": [], "reviewDecision": "accept", "providerModels": ["fixture"],
+    })
+    original_read = research.web_read.func
+
+    def synthesize(**kwargs):
+        kwargs["source_matrix"].clear()
+        kwargs["shards"].clear()
+        if attempt_fetch:
+            # Even if runtime catches this exception, the audit must fail.
+            try:
+                research.web_read.func(url="https://example.org/fact")
+            except fixed.EvidenceAcquisitionForbidden:
+                pass
+        return {"answerMarkdown": "fixture answer"}
+
+    monkeypatch.setattr(research, "_web_research_architect_pack", synthesize)
+    case = audit._run_fixed_bundle_case(tmp_path / "ledger.json", "fixture", tmp_path)
+    assert case.status == ("failed" if attempt_fetch else "ok")
+    assert ("fixed_evidence_acquisition_attempted" in case.failures) is attempt_fetch
+    assert bundle == before
+    assert research.web_read.func is original_read
+    assert len(list(tmp_path.glob("*.result.json"))) == 1
 
 
 def _technical_bundle() -> dict:

@@ -307,9 +307,14 @@ def http_request(
         return f"Request failed: {str(e)}"
 
 @tool
-def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
-    """Read a bounded, redacted preview for a previous tool observation rawRef."""
-    return render_tool_observation_detail(raw_ref, max_chars=max_chars)
+def tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_char: int = 0) -> str:
+    """Read evidence at an exact prior toolobs:// raw_ref, without executing its producer.
+
+    max_chars is bounded to 60000. For plain-text evidence, follow the returned
+    next_start_char until the end before claiming complete verification.
+    start_char is only supported for plain-text observations, not JSON previews.
+    """
+    return render_tool_observation_detail(raw_ref, max_chars=max_chars, start_char=start_char)
 
 
 

@@ -143,6 +143,17 @@
   ],
   "entries": [
     {
+      "id": "vendor_developer_community",
+      "category": "developer_education",
+      "displayName": "Vendor-hosted Developer Community",
+      "hosts": ["cloud.tencent.com"],
+      "pathPrefixes": ["/developer"],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["implementation_guidance", "worked_examples", "community_experience"],
+      "notes": "Author-contributed articles and answers remain attributed secondary material; sharing a vendor domain does not make them official documentation or regulatory authority."
+    },
+    {
       "id": "official_vendor_docs",
       "category": "official_docs",
       "displayName": "Official Vendor Documentation",

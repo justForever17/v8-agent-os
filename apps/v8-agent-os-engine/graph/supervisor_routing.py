@@ -31,6 +31,7 @@ def create_robust_invoke(
         tool_choice=None,
         result_validator=None,
         stream_observer=None,
+        stream_attempt_timeout_seconds=180.0,
     ):
         import logging
 
@@ -73,6 +74,7 @@ def create_robust_invoke(
             tool_choice=tool_choice,
             result_validator=result_validator,
             stream_observer=stream_observer,
+            stream_attempt_timeout_seconds=stream_attempt_timeout_seconds,
         )
 
     return _robust_invoke

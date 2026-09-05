@@ -50,3 +50,23 @@ def test_delegation_result_contract_preserves_lineage_acceptance_and_artifact_ev
     assert contract["behaviorScope"] == ["Only update README.md"]
     assert contract["acceptanceContract"] == "README exists and is accurate."
     assert contract["resultText"] == "README written exactly as requested."
+
+
+def test_delegation_result_contract_preserves_typed_provider_failure():
+    contract = build_delegation_result_contract(
+        {
+            "taskBriefId": "VERIFY-1",
+            "delegationId": "delegation-timeout",
+            "targetId": "verification-engineer",
+            "status": "error",
+            "error": "Provider model stream timed out.",
+            "errorCode": "delegation_model_timeout",
+            "providerErrorCode": "timeout",
+            "localSelfCheck": "The provider stream did not reach a terminal chunk.",
+            "acceptanceHint": "Retry the verification without accepting partial output.",
+        }
+    )
+
+    assert contract["status"] == "error"
+    assert contract["errorCode"] == "delegation_model_timeout"
+    assert contract["providerErrorCode"] == "timeout"

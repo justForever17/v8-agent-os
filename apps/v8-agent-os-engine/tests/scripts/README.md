@@ -60,7 +60,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | `run_engineering_sandbox_live_audit.py` | 真实验证工作区 → Git 基线 → Supervisor/子/孙 Agent 独立 worktree → 沙箱租约 → 验收交付闭环。只接受空白专用工作区。 | `--live --allow-side-effects --workspace ...` |
 | `run_huashu_nuwa_skill_live_audit.py` | huashu-nuwa skill 生成、续读、写入和复用 live 验收。 | `--live --allow-side-effects --workspace ...` |
 | `run_spec_mode_project_live_audit.py` | Spec Mode 简易真实闭环验收：requirements → design → tasks 审批 → runtime 执行 → index/README 交付；默认先建空 Spec shell 与 clarification evidence，不预写阶段文档；自动回答 Spec 澄清 `ask_user`，并显式报告 workspace binding/trust/side-effect 阻断。 | `--live --workspace ... --write-report`；默认不传 `modelProfile`，使用 Admin 已配置 supervisor 模型；默认 `--safety-approval-mode reduced`；默认等待窗口 480 秒，`--no-bootstrap-spec-shell` 可复现纯 `/spec new` 路径。 |
-| `run_research_runtime_deep_live_audit.py` | Research Runtime 三层深研 live 审计。 | `--live --write-report` |
+| `run_research_runtime_deep_live_audit.py` | Research 联网审计；`--case semantic_review_contrast` / `semantic_review_version_contrast` / `semantic_review_metadata_contrast` 为真实配置模型对合成证据的正反例审查；`--fixed-bundle` 为禁止重新获取证据的生成回放，接受完整单次或分节写作，仍要求来源、引用与独立复核达标。后二者不是联网端到端证明。 | `--live --write-report` |
 | `run_web_source_router_live_audit.py` | Source Router / web read / extract live smoke。 | `--live` |
 | `run_tool_surface_live_audit.py` | 工具表面和 detail/ref 输出 live 审计。 | `--live` |
 

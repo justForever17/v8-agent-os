@@ -419,7 +419,30 @@ def _render_web_observation_detail(payload: dict[str, Any], *, raw_ref: str, max
     return rendered
 
 
-def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
+def budget_plain_observation_page(content: str, budget: int) -> str | None:
+    """Shorten a plain evidence page without jumping over its omitted middle."""
+    header, separator, remainder = content.partition("\n<preview>\n")
+    body, closing, _footer = remainder.rpartition("\n</preview>")
+    offset_match = re.search(r"^start_char: (\d+)$", header, re.MULTILINE)
+    if not (separator and closing and offset_match and header.startswith("Tool observation detail\n")):
+        return None
+    offset = int(offset_match[1])
+    # Reserve enough for the continuation and redaction notice. Never retain
+    # an end-of-observation marker after applying a smaller caller budget.
+    allowance = max(0, budget - len(header) - 220)
+    page = body[:allowance]
+    footer = (
+        f"\n</preview>\n[next_start_char={offset + len(page)}; use the same raw_ref to continue]"
+        "\n[page shortened by tool output budget]"
+    )
+    if "[secrets redacted]" in _footer:
+        footer += "\n[secrets redacted]"
+    if not page:
+        return "Evidence page cannot fit the current tool output budget; no evidence was consumed."
+    return header + separator + page + footer
+
+
+def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_char: int = 0) -> str:
     normalized_ref = str(raw_ref or "").strip()
     if not normalized_ref.startswith("toolobs://"):
         return "rawRef invalid: pass the exact toolobs://... rawRef from a prior tool output envelope."
@@ -429,6 +452,10 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
     except Exception:
         requested_chars = 6000
     requested_chars = max(500, min(requested_chars, 60000))
+    try:
+        offset = max(0, int(start_char or 0))
+    except (TypeError, ValueError):
+        return "start_char invalid: pass the next_start_char returned by the previous page."
 
     try:
         from core.observability_db import observability_db
@@ -439,6 +466,8 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
 
         raw_body = str(record.get("raw_body_text") or "")
         payload = _parse_tool_observation_json(raw_body)
+        if offset and payload:
+            return "start_char is only supported for plain-text observations, not JSON previews."
         if payload and str(record.get("tool_name") or "") == "runtime_broker":
             rendered = _render_runtime_route_observation_detail(payload, max_chars=requested_chars)
             if rendered:
@@ -465,12 +494,20 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
                 max_chars=requested_chars,
             )
 
-        raw_preview = raw_body[:requested_chars]
-        preview = _redact_tool_observation_preview(raw_preview)
-        omitted_chars = max(0, len(raw_body) - len(raw_preview))
+        # Redact before slicing: a page boundary must not split a secret and
+        # thereby defeat the redactor. Offsets refer to this stable safe text.
+        safe_body = _redact_tool_observation_preview(raw_body)
+        if offset > len(safe_body):
+            return "start_char is beyond the end of this observation."
+        raw_preview = safe_body[offset:offset + requested_chars]
+        preview = raw_preview
+        next_offset = offset + len(raw_preview)
+        omitted_chars = max(0, len(safe_body) - next_offset)
         lines = [
             "Tool observation detail",
             f"tool: {record.get('tool_name') or 'unknown'}",
+            f"raw_ref: {normalized_ref}",
+            f"start_char: {offset}",
             "",
             "<preview>",
             preview,
@@ -478,7 +515,10 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
         ]
         if omitted_chars:
             lines.append(f"[omitted {omitted_chars} chars]")
-        if preview != raw_preview:
+            lines.append(f"[next_start_char={next_offset}; use the same raw_ref to continue]")
+        else:
+            lines.append("[end of observation]")
+        if safe_body != raw_body:
             lines.append("[secrets redacted]")
         return "\n".join(lines)
     except Exception as e:

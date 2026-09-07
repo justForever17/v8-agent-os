@@ -114,6 +114,14 @@ function releaseTitle(product, version, channel) {
 }
 
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "2026.09.07.1": Object.freeze({
+    all: Object.freeze([
+      "修复文档读取能力包在 Windows 桌面安装包冒烟测试中因 typing-extensions 版本滞后导致的依赖冲突。",
+      "模型输出新增自动预算选项；保留人工设置的输出与上下文预算，预置估算值不再覆盖用户选择。",
+      "深度调研改进答案审核、局部修正和已存答案复用；区分有据可用的部分答案与失败草稿，减少重复写作和重复调研。",
+      "统一浏览器登录授权入口及 Web、Phone 运行详情计数。",
+    ]),
+  }),
   "2026.09.06.1": Object.freeze({
     all: Object.freeze([
       "模型输出新增自动预算选项；保留人工设置的输出与上下文预算，预置估算值不再覆盖用户选择。",

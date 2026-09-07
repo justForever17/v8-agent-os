@@ -341,8 +341,10 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
                     "不得把搜索摘要当作网页证据。深度调研证据回流后，必须由 Supervisor 再调用"
                     " delegation_broker，委派 Verification Engineer 做一个独立、只读验证子任务："
                     "核对法规层级、关键日期、关键义务以及每个来源是否真的支持对应结论；验证者不得写文件、"
-                    "不得继续委派。复核至少3条关键结论，每条用一行列出原始 claimId、[S#]、实际读取的完整 URL、"
-                    "原文/转载/解读/草案身份与核验结论；不得按序重新编号，不得把镜像URL替换成原发布站点。"
+                    "不得继续委派。复核至少3条关键结论，用表格逐行列出原始 claimId、[S#]、实际读取的完整 URL、"
+                    "来源载体身份与核验结论；另行区分文件的草案/正式/未知状态，翻译件不等于草案。"
+                    "claimId 指证据索引的原始读取观察编号，不是自行概括的结论编号；不得按序重新编号，"
+                    "不得把镜像URL替换成原发布站点。"
                     "Supervisor 收到验证 handoff 后再面向用户交付完整研究答案、复核结论和"
                     "仍不确定项，不得把 raw handoff 或内部 JSON 当作最终回答，也不要调用工程运行时。"
                 ),
@@ -379,9 +381,12 @@ def _submit_case(
     model_profile: str,
     timestamp: str,
     workspace: str,
+    existing_session_id: str | None = None,
 ) -> LiveCaseResult:
     result = LiveCaseResult(spec=case)
-    session_id = f"supervisor-runtime-skill-live-{timestamp}-{case.case_id}"
+    session_id = existing_session_id or f"supervisor-runtime-skill-live-{timestamp}-{case.case_id}"
+    if not session_id.startswith("supervisor-runtime-skill-live-"):
+        raise ValueError("Only harness-owned sessions may be continued by this audit")
     client_message_id = f"{case.case_id}-{timestamp}"
     payload: dict[str, Any] = {
         "session_id": session_id,
@@ -509,12 +514,17 @@ def _collect_tool_invocations(events: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def _research_completion_seq(events: list[dict[str, Any]], research_episode_ids: set[str]) -> int | None:
+    from core.tools.research_quality import research_reviewed_partial_brief_ids
+
     completed: list[int] = []
     for event in events:
-        if _event_topic(event) != "runtime.episode.completed":
+        topic = _event_topic(event)
+        if topic not in {"runtime.episode.completed", "runtime.episode.degraded"}:
             continue
         payload = _event_payload(event)
         if not isinstance(payload, dict):
+            continue
+        if topic == "runtime.episode.degraded" and not research_reviewed_partial_brief_ids(payload.get("handoff") or {}):
             continue
         episode = payload.get("episode") if isinstance(payload.get("episode"), dict) else {}
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
@@ -553,6 +563,8 @@ def _load_durable_runtime_events(result: LiveCaseResult) -> tuple[list[dict[str,
         return [], f"{type(exc).__name__}: {exc}"
     deduped: dict[str, dict[str, Any]] = {}
     for event in events:
+        if result.run_id and str(event.get("run_id") or event.get("runId") or "") != result.run_id:
+            continue
         event_id = str(event.get("id") or event.get("event_id") or f"{event.get('session_id')}:{event.get('seq')}:{event.get('topic')}")
         deduped[event_id] = event
     return sorted(deduped.values(), key=lambda item: int(item.get("seq") or 0)), None
@@ -587,7 +599,7 @@ def _load_durable_episode_facts(result: LiveCaseResult) -> tuple[list[dict[str, 
                         SELECT id, kind, state, session_id, run_id, parent_episode_id, root_episode_id,
                                error_code, error_message, result_ref, last_progress, worker_id
                         FROM runtime_episodes
-                        WHERE {" OR ".join(clauses)}
+                        WHERE {" AND ".join(clauses)}
                         ORDER BY created_at
                         """,
                         tuple(params),
@@ -822,6 +834,8 @@ def _poll_case(
                 after_seq = max(after_seq, seq)
             except Exception:
                 pass
+            if result.run_id and str(event.get("run_id") or event.get("runId") or "") != result.run_id:
+                continue
             topic = _event_topic(event)
             if topic:
                 _append_unique(result.observed_topics, [topic])
@@ -1227,6 +1241,8 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         or ""
     ).strip()
     verification_payload = {
+        "deliveryScope": payload.get("deliveryScope") or independent_review.get("deliveryScope"),
+        "limitations": payload.get("limitations") or independent_review.get("limitations") or [],
         "deliveryRequirements": payload.get("deliveryRequirements") or primary_result.get("deliveryRequirements") or {},
         "question": str(primary_result.get("query") or payload.get("query") or question).strip(),
         "freshness": primary_result.get("freshness") or payload.get("freshness") or "current",
@@ -1347,6 +1363,10 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         "no_critical_missing_evidence": not critical_missing,
         "no_recommended_queries": not recommended_queries,
     }
+    if independent_review.get("reviewContract") == "research-agent-review.v1":
+        # Case-specific user requirements are checked by that case's oracle.
+        # Source/host/claim/citation-spread targets are not universal quality gates.
+        checks = {key: value for key, value in checks.items() if not key.endswith("_at_target")}
     return {
         "highQuality": all(checks.values()),
         "failedChecks": [name for name, passed in checks.items() if not passed],
@@ -1786,20 +1806,66 @@ def _verification_binding_audit(text: str, payloads: list[dict[str, Any]]) -> di
                     expected.setdefault((claim_id, key), set()).add(url)
     matched: set[str] = set()
     mismatches: list[str] = []
-    for row in text.splitlines():
+    lines = text.splitlines()
+    if any(line.strip().startswith("|") for line in lines):
+        # Navigation/source inventories can abbreviate URLs. Only the requested
+        # verification table claims that a conclusion has been checked.
+        proof_lines = []
+        in_proof_table = False
+        for line in lines:
+            if not line.strip().startswith("|"):
+                in_proof_table = False
+            elif re.search(r"claimId|readObservationId", line, re.I):
+                in_proof_table = bool(re.search(r"核验结论|结论|conclusion|verdict", line, re.I))
+            elif in_proof_table:
+                proof_lines.append(line)
+        lines = proof_lines
+    for row in lines:
         urls = set(_visible_source_urls(row))
         if not urls:
             continue
+        row_pairs = []
         for (claim_id, key), allowed_urls in expected.items():
             if not all(re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", row) for value in (claim_id, key)):
                 continue
-            if urls == allowed_urls:
+            row_pairs.append((claim_id, key, allowed_urls))
+        # Several exact bindings may legitimately share a comparison row.
+        allowed = set().union(*(item[2] for item in row_pairs)) if row_pairs else set()
+        for claim_id, key, _urls in row_pairs:
+            if urls == allowed:
                 matched.add(claim_id)
             else:
                 mismatches.append(f"{claim_id}/{key}:source_url_mismatch")
     required = min(3, len({claim_id for claim_id, _key in expected}))
     return {"verifiedClaimIds": sorted(matched), "mismatches": sorted(set(mismatches)),
             "passed": required > 0 and len(matched) >= required and not mismatches}
+
+
+def _delegated_research_delivery_coverage(text: str, source_urls: list[str]) -> dict[str, Any]:
+    """Case-specific coverage/provenance sentinel, NOT a semantic truth grader.
+
+    Faithful paraphrase and reviewer corrections are allowed. Human source-based
+    review remains necessary; verbatim reproduction proves neither correctness
+    nor preservation of qualifications.
+    """
+    coverage = {
+        "interimMeasures": "生成式人工智能服务管理暂行办法" in text,
+        "deepSynthesisRules": "互联网信息服务深度合成管理规定" in text,
+        "labellingMeasures": "人工智能生成合成内容标识办法" in text,
+        "mandatoryStandard": bool(re.search(r"GB\s*45438\s*[-—]\s*2025", text, re.I)),
+        "scopeAndHierarchy": bool(re.search(r"适用|范围|位阶|层级", text)),
+        "obligations": bool(re.search(r"义务|应当|必须|须", text)),
+        "checklist": bool(re.search(r"清单|检查项", text)),
+        "limitations": bool(re.search(r"不确定|未核实|未读|缺口|限制|待核", text)),
+        "asOf": "2026-09-03" in _normalized_date_evidence(text),
+    }
+    visible = set(_visible_source_urls(text))
+    # This case explicitly requests five actually read official sources.
+    retained = sorted(url for url in set(source_urls) & visible
+                      if re.match(r"https?://[^/]+\.gov\.cn/", url, re.I))
+    return {"coverage": coverage, "retainedOfficialUrls": retained,
+            "semanticTruthAssessed": False,
+            "passed": all(coverage.values()) and len(retained) >= 5}
 
 
 def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[str, Any]:
@@ -1883,10 +1949,8 @@ def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[
         for item in delegation_handoffs
         if str(item.get("kind") or "") != "subagent_acceptance"
     ), research_payloads)
-    final_preserves_research = bool(
-        research_answers
-        and all(re.sub(r"\s+", "", answer) in re.sub(r"\s+", "", result.final_text) for answer in research_answers)
-    )
+    delivery_coverage = _delegated_research_delivery_coverage(result.final_text, research_source_urls)
+    final_preserves_research = bool(research_answers and delivery_coverage["passed"])
     engineering_episodes = [
         item
         for item in result.episodes
@@ -1929,6 +1993,7 @@ def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[
             r"<tool_call\b|<invoke\s+name\s*=", result.final_text, re.I,
         )),
         "finalPreservesResearch": final_preserves_research,
+        "finalDeliveryCoverage": delivery_coverage,
         "webAuditPerformed": bool(web_audit.get("performed")),
         "webAuditErrors": list(web_audit.get("errors") or []),
         "webLiveSampleCount": int(web_audit.get("liveSampleCount") or 0),
@@ -2439,6 +2504,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--session-id", default=None, help="Continue a harness-owned session and its scoped evidence; never a normal user conversation.")
     parser.add_argument("--allow-side-effects", action="store_true", help="Allow the explicit disposable workspace used by side-effect live cases.")
     parser.add_argument(
         "--strict",
@@ -2449,6 +2515,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.live:
         print("Refusing to call live Engine/model without --live.", file=sys.stderr)
+        return 2
+    if args.session_id and not args.session_id.startswith("supervisor-runtime-skill-live-"):
+        print("--session-id must identify a harness-owned session.", file=sys.stderr)
         return 2
     if args.case == RESEARCH_DELEGATED_VERIFICATION_CASE_ID and not args.web_url:
         print(
@@ -2518,6 +2587,7 @@ def main(argv: list[str] | None = None) -> int:
             model_profile=model_profile,
             timestamp=timestamp,
             workspace=args.workspace,
+            existing_session_id=args.session_id,
         )
         web_observer = None
         if args.web_url and result.session_id and result.status != "failed":

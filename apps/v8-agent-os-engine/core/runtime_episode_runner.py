@@ -715,18 +715,33 @@ def _research_handoff_consumer_hint(experience_reuse: dict[str, Any] | None) -> 
 def _research_source_acquisition_diagnostic(run_payload: dict[str, Any]) -> dict[str, Any]:
     """Project the bounded source-transport diagnosis without exposing raw fetch data.
 
-    Research quality floors deliberately remain fail-closed.  The broker also
-    records a typed transport summary when every provider is unavailable or
-    terminal for the current run, but the old episode handoff dropped that
-    field and made a transport failure look like an answer-length failure.
-    Keep this projection small and provider-agnostic so the Supervisor can
-    repair login/configuration and start a new run without receiving URLs,
-    cookies, or raw provider payloads.
+    Acquisition and accepted-answer evidence are different facts. Keep this
+    projection small and provider-agnostic, without cookies or raw payloads.
     """
 
     payload = dict(run_payload or {})
     loop_state = payload.get("researchLoopState")
     loop_state = loop_state if isinstance(loop_state, dict) else {}
+    def _bounded_count(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    if loop_state.get("phase") == "research_agent":
+        readable = _bounded_count(loop_state.get("readableSourceCount"))
+        selected = _bounded_count(loop_state.get("selectedSourceCount"))
+        stop_reason = _preview(loop_state.get("stopReason"), limit=100)
+        return {
+            "state": "readable_sources_available" if readable else "no_readable_sources_observed",
+            "readableSourceCount": readable, "selectedSourceCount": selected,
+            "exhaustedForRun": False, "stopReason": stop_reason,
+            "recommendedNextAction": (
+                "Use the reviewed answer." if stop_reason == "answer_reviewed" else
+                "Existing fetched sources remain in the evidence bundle. Diagnose the generation/review failure; do not assume network failure or restart all searches."
+                if readable else "Inspect acquisition diagnostics and the execution failure before deciding whether to retry."
+            ),
+        }
     rounds = [item for item in list(loop_state.get("rounds") or []) if isinstance(item, dict)]
     transport = loop_state.get("transportSummary")
     if not isinstance(transport, dict):
@@ -737,12 +752,6 @@ def _research_source_acquisition_diagnostic(run_payload: dict[str, Any]) -> dict
                 break
     if not isinstance(transport, dict):
         return {}
-
-    def _bounded_count(value: Any) -> int:
-        try:
-            return max(0, int(value or 0))
-        except (TypeError, ValueError):
-            return 0
 
     providers: list[dict[str, Any]] = []
     for item in list(transport.get("providers") or [])[:16]:
@@ -866,6 +875,13 @@ def _research_evidence_status(
         reasons.append("source_evidence_missing")
     if not claim_items:
         reasons.append("claim_table_missing")
+
+    if research_quality.research_independent_review(run_payload).get("reviewContract") == "research-agent-review.v1":
+        # Content adequacy belongs to the bound research review. Do not rejudge
+        # its dates, source count or wording with a second runtime classifier.
+        if research_ref and not quality_accepted and research_quality.research_answer_is_usable(run_payload):
+            return False, ["research_scope_partial"]
+        return quality_accepted and not reasons, list(dict.fromkeys(reasons))
 
     limitations = [
         str(item or "").strip()
@@ -2846,14 +2862,21 @@ class RuntimeEpisodeRunner:
                 seed_urls=seed_urls,
                 allowed_domains=allowed_domains,
             )
+            usable = bool(ready or (
+                research_ref
+                and independent_review.get("reviewContract") == "research-agent-review.v1"
+                and research_quality.research_answer_is_usable(run_payload)
+            ))
             self._publish_episode_progress(
                 episode,
                 {
                     "stage": "evidence_review",
-                    "status": "completed" if ready else "failed",
+                    "status": "completed" if ready or usable else "failed",
                     "summary": (
                         f"调研问题 {index}/{len(run_units)} 已通过证据复核"
                         if ready
+                        else f"调研问题 {index}/{len(run_units)} 已提供有证据的部分答案"
+                        if usable
                         else f"调研问题 {index}/{len(run_units)} 未通过证据复核"
                     ),
                     "toolName": "research_architect",
@@ -2878,6 +2901,7 @@ class RuntimeEpisodeRunner:
                     "sourceCount": int(
                         quality_metrics.get("selectedSourceCount") or len(source_items)
                     ),
+                    "readableSourceCount": source_acquisition.get("readableSourceCount", 0),
                     "claimCount": int(quality_metrics.get("claimCount") or len(claim_items)),
                     "sourceUrls": source_urls[:8],
                     "candidateAnswerSha256": answer_sha256 or None,
@@ -2891,17 +2915,19 @@ class RuntimeEpisodeRunner:
                     "taskBriefId": task_brief_id,
                     "taskBriefIds": bundled_task_brief_ids,
                     "status": "ready" if ready else "degraded",
+                    "usableAnswer": usable,
+                    "deliveryScope": "complete" if ready else "partial" if usable else "none",
                     "query": unit_query,
                     # The complete accepted answer is the handoff payload. A rejected
                     # model draft, search response, summary, or raw claim never becomes
                     # a substitute answer.
-                    "answer": answer if ready else "",
-                    "evidenceBundleId": (evidence_id or None) if ready else None,
+                    "answer": answer if usable else "",
+                    "evidenceBundleId": (evidence_id or None) if usable else None,
                     "experiencePackId": (experience_pack_id or None) if ready else None,
-                    "researchRef": research_ref if ready else None,
+                    "researchRef": research_ref if usable else None,
                     "detailTool": (
                         f"research_broker(mode='get_evidence', evidenceBundleId='{evidence_id}')"
-                        if ready and evidence_id
+                        if usable and evidence_id
                         else None
                     ),
                     "freshness": evaluated_freshness,
@@ -2919,12 +2945,12 @@ class RuntimeEpisodeRunner:
                     "qualityMetrics": quality_metrics,
                     "deliveryRequirements": run_payload.get("deliveryRequirements") or {},
                     "asOf": as_of,
-                    "answerSha256": answer_sha256 if ready else "",
+                    "answerSha256": answer_sha256 if usable else "",
                     "sourceCount": int(quality_metrics.get("selectedSourceCount") or len(source_items)),
                     "claimCount": int(quality_metrics.get("claimCount") or len(claim_items)),
-                    "claimTable": handoff_claims if ready else [],
-                    "sources": handoff_sources if ready else [],
-                    "sourceUrls": source_urls if ready else [],
+                    "claimTable": handoff_claims if usable else [],
+                    "sources": handoff_sources if usable else [],
+                    "sourceUrls": source_urls if usable else [],
                     "limitations": missing_evidence[:8],
                     "criticalMissingEvidence": critical_missing_evidence[:8],
                     "recommendedNextQueries": recommended_queries,
@@ -2937,6 +2963,8 @@ class RuntimeEpisodeRunner:
             )
 
         ready_units = [item for item in unit_results if item["status"] == "ready"]
+        partial_units = [item for item in unit_results if item.get("usableAnswer") and item["status"] != "ready"]
+        usable_units = [item for item in unit_results if item["status"] == "ready" or item.get("usableAnswer")]
         all_task_brief_ids = list(task_brief_ids) or list(
             dict.fromkeys(
                 str(brief_id or "").strip()
@@ -2958,7 +2986,11 @@ class RuntimeEpisodeRunner:
             for brief_id in all_task_brief_ids
             if brief_id not in covered_task_brief_ids
         ]
-        research_refs = list(dict.fromkeys(str(item["researchRef"]) for item in ready_units if item.get("researchRef")))
+        research_refs = list(dict.fromkeys(str(item["researchRef"]) for item in usable_units if item.get("researchRef")))
+        single_answer = (
+            ready_units[0] if len(ready_units) == 1 and not missing_task_brief_ids
+            else partial_units[0] if len(usable_units) == 1 and len(partial_units) == 1 else {}
+        )
         ready_evidence_ids = list(
             dict.fromkeys(
                 str(item.get("evidenceBundleId") or "").strip()
@@ -2968,12 +3000,12 @@ class RuntimeEpisodeRunner:
         )
         source_urls = list(dict.fromkeys(
             str(url)
-            for item in ready_units
+            for item in usable_units
             for url in list(item.get("sourceUrls") or [])
             if str(url).strip()
         ))
-        source_count = sum(int(item.get("sourceCount") or 0) for item in ready_units)
-        claim_count = sum(int(item.get("claimCount") or 0) for item in ready_units)
+        source_count = sum(int(item.get("sourceCount") or 0) for item in usable_units)
+        claim_count = sum(int(item.get("claimCount") or 0) for item in usable_units)
         observed_source_count = sum(
             int(item.get("sourceCount") or 0) for item in unit_results
         )
@@ -2994,7 +3026,7 @@ class RuntimeEpisodeRunner:
         ]
         as_of_by_brief = {
             str(brief_id or "").strip(): str(item.get("asOf") or "")
-            for item in ready_units
+            for item in usable_units
             for brief_id in list(item.get("taskBriefIds") or [item.get("taskBriefId")])
             if str(brief_id or "").strip() and str(item.get("asOf") or "").strip()
         }
@@ -3029,7 +3061,10 @@ class RuntimeEpisodeRunner:
             if source_acquisition_by_brief
             else {}
         )
-        if missing_task_brief_ids:
+        if partial_units and len(usable_units) == len(unit_results):
+            aggregate_quality_tier = "partial"
+            aggregate_review_decision = "accept"
+        elif missing_task_brief_ids:
             aggregate_quality_tier = "insufficient"
             unit_review_decisions = {
                 str(item.get("reviewDecision") or "").strip().lower()
@@ -3066,6 +3101,8 @@ class RuntimeEpisodeRunner:
                         "taskBriefId",
                         "taskBriefIds",
                         "status",
+                        "usableAnswer",
+                        "deliveryScope",
                         "query",
                         "answer",
                         "answerSha256",
@@ -3105,6 +3142,13 @@ class RuntimeEpisodeRunner:
             "coveredTaskBriefIds": covered_task_brief_ids,
             "missingTaskBriefIds": missing_task_brief_ids,
             "coverageComplete": not missing_task_brief_ids,
+            "deliveryScope": "complete" if not missing_task_brief_ids else "partial" if usable_units else "none",
+            "usableAnswer": bool(usable_units),
+            "partialAnswers": [{
+                key: item.get(key) for key in (
+                    "taskBriefId", "answer", "answerSha256", "limitations", "researchRef", "deliveryScope",
+                )
+            } for item in partial_units],
             "researchRefs": research_refs,
             "sourceCount": source_count,
             "claimCount": claim_count,
@@ -3119,10 +3163,10 @@ class RuntimeEpisodeRunner:
                 if isinstance(item.get("observedEvidence"), dict)
                 and item.get("observedEvidence")
             ][:16],
-            "answer": ready_units[0].get("answer") if len(ready_units) == 1 and not missing_task_brief_ids else "",
-            "answerSha256": ready_units[0].get("answerSha256") if len(ready_units) == 1 and not missing_task_brief_ids else "",
-            "claimTable": ready_units[0].get("claimTable") if len(ready_units) == 1 and not missing_task_brief_ids else [],
-            "sources": ready_units[0].get("sources") if len(ready_units) == 1 and not missing_task_brief_ids else [],
+            "answer": single_answer.get("answer") or "",
+            "answerSha256": single_answer.get("answerSha256") or "",
+            "claimTable": single_answer.get("claimTable") or [],
+            "sources": single_answer.get("sources") or [],
             "sourceUrls": source_urls,
             "asOf": handoff_as_of,
             "asOfByBrief": as_of_by_brief,
@@ -3143,7 +3187,7 @@ class RuntimeEpisodeRunner:
                 {
                     "taskBriefId": str(brief_id or "").strip(),
                     "status": "unverified",
-                    "blocksClaim": True,
+                    "blocksClaim": not bool(item.get("usableAnswer")),
                     # A missing source-backed claim is not automatically a
                     # blocker for a reversible/local-verifiable implementation.
                     # The downstream runtime must carry this record and keep
@@ -3186,6 +3230,14 @@ class RuntimeEpisodeRunner:
                         "as the answer."
                     )
                     recommended_next_action = "repair_research_source_access"
+            elif partial_units:
+                consumer_hint = (
+                    "Research returned supported partial answers with explicit limitations. Use only those "
+                    "supported conclusions and disclose the missing scope. Do not describe them as rejected "
+                    "drafts or claim the whole research requirement is complete. Further research is a "
+                    "Supervisor decision about the remaining user need, not a source-count gate."
+                )
+                recommended_next_action = "use_supported_answer_with_limitations"
             elif retry_exhausted:
                 consumer_hint = (
                     "The bounded Research repair is exhausted. Carry the typed evidenceGaps into a downstream "
@@ -3212,7 +3264,7 @@ class RuntimeEpisodeRunner:
                     "out of the answer. Do not replace the missing branch with an ad-hoc chain of web calls."
                 )
                 recommended_next_action = "retry_missing_research_briefs"
-            return build_handoff_ref(
+            handoff = build_handoff_ref(
                 producer_episode_id=episode_id,
                 kind="research",
                 compact_summary=_preview("\n".join(compact_answers)),
@@ -3221,11 +3273,12 @@ class RuntimeEpisodeRunner:
                 consumer_hint=consumer_hint,
                 extra={
                     **coverage_extra,
+                    "limitations": [str(limit) for item in usable_units for limit in item.get("limitations") or [] if str(limit).strip()],
                     "researchState": (
                         "source_acquisition_failed"
                         if source_transport_exhausted
                         else "partial_evidence"
-                        if ready_units
+                        if ready_units or partial_units
                         else "evidence_observed_review_rejected"
                         if has_observed_evidence
                         else "evidence_missing"
@@ -3235,6 +3288,8 @@ class RuntimeEpisodeRunner:
                         if source_dependency_missing
                         else "research_source_transport_exhausted"
                         if source_transport_exhausted
+                        else "research_scope_partial"
+                        if partial_units
                         else "research_review_not_accepted"
                         if has_observed_evidence
                         else "research_run_missing_evidence"
@@ -3247,7 +3302,8 @@ class RuntimeEpisodeRunner:
                         for item in evidence_gaps
                         if str(item.get("taskBriefId") or "").strip()
                     ],
-                    "downstreamAllowed": bool(ready_units),
+                    "downstreamAllowed": bool(usable_units),
+                    "partialEvidenceAvailable": bool(partial_units),
                     "continuationPolicy": {
                         "retryLimit": 1,
                         "retryExhausted": retry_exhausted,
@@ -3261,6 +3317,7 @@ class RuntimeEpisodeRunner:
                     },
                 },
             )
+            return self._attach_research_evidence_detail(handoff, episode) if usable_units else handoff
         consumer_hint = _research_handoff_consumer_hint(
             unit_results[0].get("experienceReuse") if len(unit_results) == 1 else {}
         )
@@ -3303,12 +3360,17 @@ class RuntimeEpisodeRunner:
                 ),
             },
         )
+        return self._attach_research_evidence_detail(handoff, episode)
+
+    def _attach_research_evidence_detail(self, handoff: dict[str, Any], episode: dict[str, Any]) -> dict[str, Any]:
         # Workers may consume accepted evidence without Research execution
         # authority. Persist a lossless read-only projection, not the clipped
         # compactSummary or the pre-execution queue receipt.
-        from core.research_handoff_surface import render_research_handoff_evidence
+        from core.research_handoff_surface import READ_OBSERVATION_GUIDANCE, render_research_handoff_evidence
         from core.tool_surface import record_raw_observation
 
+        if any(claim.get("verificationKind") == "read_snapshot_ref_only" for claim in handoff.get("claimTable") or []):
+            handoff["consumerHint"] = handoff.get("consumerHint", "") + " " + READ_OBSERVATION_GUIDANCE
         raw_ref = record_raw_observation(
             tool_name="research_evidence_delivery",
             tool_call_id=None,
@@ -3318,7 +3380,7 @@ class RuntimeEpisodeRunner:
             metadata={
                 "sessionId": episode.get("sessionId") or episode.get("session_id"),
                 "runId": episode.get("runId") or episode.get("run_id"),
-                "episodeId": episode_id,
+                "episodeId": episode.get("episodeId") or episode.get("id"),
                 "handoffRefId": handoff.get("handoffRefId"),
             },
         )

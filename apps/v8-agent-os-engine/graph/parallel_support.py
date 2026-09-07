@@ -14,7 +14,7 @@ from langgraph.types import Command, Send
 
 from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
-from core.delegation_broker import task_brief_requires_child_delegation
+from core.delegation_broker import is_non_file_read_reference, task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
 from core.observability_db import redact_observability_text
 from core.response_normalizer import extract_text_and_reasoning
@@ -916,7 +916,8 @@ def _required_verification_tools(branch: dict[str, Any]) -> set[str]:
         return set()
     required: set[str] = set()
     must_read = list(capsule.get("mustRead") or capsule.get("readSet") or task_brief.get("readSet") or [])
-    if any(str(item or "").strip() for item in must_read):
+    file_reads = [path for item in must_read if (path := _verification_declared_path(item))]
+    if file_reads:
         required.add("read_native_file")
     contract_blob = "\n".join(
         _stringify_for_acceptance(value)
@@ -953,7 +954,7 @@ def _required_verification_tools(branch: dict[str, Any]) -> set[str]:
         )
     )
     if execution_requested and (
-        not any(str(item or "").strip() for item in must_read)
+        not file_reads
         or explicit_execution_with_read
     ):
         required.add("run_system_command")
@@ -1399,11 +1400,12 @@ def _verification_declared_path(value: Any) -> str:
     ):
         return ""
     labeled = re.match(
-        r"^(?:target[_ -]?file|source[_ -]?file|file|path|target)\s*[:=]\s*(.+)$",
+        r"^(?:target[_ -]?file|source[_ -]?file|file|path|target)\s*[:=](?!//)\s*(.+)$",
         text,
         re.IGNORECASE,
     )
-    return str(labeled.group(1) if labeled else text).strip().strip("`'\"")
+    path = str(labeled.group(1) if labeled else text).strip().strip("`'\"")
+    return "" if is_non_file_read_reference(path) else path
 
 
 def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
@@ -1629,11 +1631,22 @@ def _verification_evidence_result(
         for record in records
         if record.get("tool") in set(expectations["requiredTools"])
     ]
+    from core.research_verification_bindings import audit_research_verification_bindings
+
+    _task_brief, context, _capsule = _verification_contract_sources(branch)
+    binding_audit = audit_research_verification_bindings(
+        _subagent_result_text(delta_messages),
+        [item for item in context.get("upstreamHandoffs") or [] if isinstance(item, dict)],
+    )
+    mismatches.extend(binding_audit["mismatches"])
     evidence = {
         "passed": not missing_tools and not mismatches,
         "expectations": expectations,
         "observations": compact_records[:12],
+        "researchBindings": binding_audit,
     }
+    if binding_audit["checkedRows"]:
+        evidence["researchBindingScope"] = "identity_only_not_semantic_truth"
     return evidence, missing_tools, mismatches
 
 
@@ -1642,13 +1655,20 @@ def _validate_required_verification_evidence(
     branch: dict[str, Any],
     delta_messages: list[Any],
 ) -> dict[str, Any] | None:
-    required_tools = set(_verification_expectations(branch)["requiredTools"])
-    if not required_tools:
-        return None
     _evidence, missing, mismatches = _verification_evidence_result(
         branch=branch,
         delta_messages=delta_messages,
     )
+    if _evidence["researchBindings"]["mismatches"] and not missing:
+        return {
+            "status": "failed",
+            "error": "research_verification_binding_mismatch",
+            "missingVerificationTools": [],
+            "verificationEvidenceMismatches": mismatches,
+            "localSelfCheck": "The verification table relabelled original evidence IDs or URLs. No semantic conclusion was graded.",
+            "acceptanceHint": "Correct the table from the upstream evidenceBindings index; retain your own conclusions and limitations.",
+            "verificationEvidence": _evidence,
+        }
     if not missing and not mismatches:
         return None
     return {
@@ -3376,23 +3396,33 @@ async def _run_parallel_agent_branch(
                         if verification_correction_count == 2
                         else ""
                     )
+                    binding_correction = verification_failure.get("error") == "research_verification_binding_mismatch"
+                    correction_text = (
+                        "[V8OS delegated verification correction]\n"
+                        "Your verification table changed original evidence IDs or citation/URL bindings. "
+                        "This is a provenance mismatch, not a failed source read or answer-quality assessment. "
+                        f"Mismatches: {', '.join(mismatches)}. "
+                        "Use the injected upstreamHandoffs.evidenceBindings index and original rawRef. "
+                        "Return claimId | [S#] | URL | source identity | conclusion; a task's C1/C2 labels are not original IDs. "
+                        "Keep your substantive review and limitations; do not invent support or repeat successful reads unnecessarily."
+                        if binding_correction else
+                        "[V8OS delegated verification correction]\n"
+                        "Your final answer is missing successful tool evidence required by the acceptance contract. "
+                        + focused_retry
+                        + f"Missing tools: {', '.join(missing_tools)}. "
+                        + f"Evidence mismatches: {', '.join(mismatches) or 'none'}. "
+                        + " ".join(required_steps)
+                        + " Exact verification contract: "
+                        + json.dumps(expectations, ensure_ascii=False, separators=(",", ":"))[:5000]
+                        + " Do not call skill lookup, alternate tools, or describe a tool call in prose. "
+                        "After the successful ToolMessages are present, return the compact verification result."
+                    )
                     local_state = _merge_state_update(
                         local_state,
                         {
                             "messages": [
                                 HumanMessage(
-                                    content=(
-                                        "[V8OS delegated verification correction]\n"
-                                        "Your final answer is missing successful tool evidence required by the acceptance contract. "
-                                        + focused_retry
-                                        + f"Missing tools: {', '.join(missing_tools)}. "
-                                        + f"Evidence mismatches: {', '.join(mismatches) or 'none'}. "
-                                        + " ".join(required_steps)
-                                        + " Exact verification contract: "
-                                        + json.dumps(expectations, ensure_ascii=False, separators=(",", ":"))[:5000]
-                                        + " Do not call skill lookup, alternate tools, or describe a tool call in prose. "
-                                        "After the successful ToolMessages are present, return the compact verification result."
-                                    ),
+                                    content=correction_text,
                                     additional_kwargs={
                                         "v8_governance_type": "required_verification_evidence_correction"
                                     },
@@ -3712,12 +3742,12 @@ async def _run_parallel_agent_branch(
             "compactTranscript": _compact_transcript(delta_messages),
             **verification_failure,
         }, []
-    verification_evidence: dict[str, Any] | None = None
-    if _required_verification_tools(branch):
-        verification_evidence, _missing_verification, _verification_mismatches = _verification_evidence_result(
-            branch=branch,
-            delta_messages=delta_messages,
-        )
+    verification_evidence, _missing_verification, _verification_mismatches = _verification_evidence_result(
+        branch=branch,
+        delta_messages=delta_messages,
+    )
+    if not verification_evidence["expectations"]["requiredTools"] and not verification_evidence["researchBindings"]["checkedRows"]:
+        verification_evidence = None
     final_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
     initial_by_path = {item[0]: item for item in initial_artifact_snapshot}
     final_by_path = {item[0]: item for item in final_artifact_snapshot}

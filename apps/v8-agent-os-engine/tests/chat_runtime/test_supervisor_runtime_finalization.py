@@ -1606,8 +1606,8 @@ def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_succe
     assert "artifact_acceptance_failed" in coerced.content
 
 
-@pytest.mark.parametrize("research_retry", [False, True])
-def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch, research_retry):
+@pytest.mark.parametrize("research_retry,evidence_read", [(False, None), (True, None), (False, "research_broker"), (False, "tool_observation_detail")])
+def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch, research_retry, evidence_read):
     calls = []
     decision = SimpleNamespace(as_dict=lambda: {})
     route_bundle = SimpleNamespace(
@@ -1677,6 +1677,14 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
     def robust_invoke(*_args, **_kwargs):
         calls.append("invoked")
+        if evidence_read:
+            assert _kwargs["tool_choice"] == "required"
+            assert {tool.name for tool in _args[2]} == {"delegation_broker", "research_broker", "tool_observation_detail"}
+            return AIMessage(content="先核对收到的原始证据，再委派复核。", tool_calls=[{
+                "id": "read-evidence", "name": evidence_read,
+                "args": {"mode": "get_evidence", "evidenceBundleId": "original"} if evidence_read == "research_broker"
+                else {"raw_ref": "toolobs://original", "start_char": 0, "max_chars": 6000},
+            }])
         if research_retry:
             assert _kwargs["tool_choice"] == "runtime_broker"
             assert "delegation_broker" not in [getattr(t, "name", "") for t in _args[2]]
@@ -1697,7 +1705,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
             "reason": "artifact_acceptance_failed",
         },
     }
-    if research_retry:
+    if research_retry or evidence_read:
         monkeypatch.setattr(
             supervisor_turn_module, "_explicit_runtime_orchestration_kinds",
             lambda *_args: ["research", "delegation"],
@@ -1716,6 +1724,16 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
                 "taskBriefResults": [{"taskBriefId": "law", "status": "degraded"}],
             }],
         }
+        if evidence_read:
+            route_bundle.filtered_tools.extend([
+                SimpleNamespace(name="research_broker"), SimpleNamespace(name="tool_observation_detail"),
+                SimpleNamespace(name="write_native_file"),
+            ])
+            state["current_route_context"]["handoffRefs"] = [{
+                "kind": "research", "producerEpisodeId": "research-first", "status": "ready",
+                "rawRef": "toolobs://original", "researchRefs": ["research://bundle/original"],
+                "taskBriefResults": [{"taskBriefId": "law", "status": "ready"}],
+            }]
     response = execute_supervisor_turn(
         state=state,
         config={},
@@ -1736,7 +1754,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
     )
 
     assert calls == ["invoked"]
-    assert response.tool_calls[0]["name"] == "runtime_broker"
+    assert response.tool_calls[0]["name"] == (evidence_read or "runtime_broker")
 
 
 def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocation(monkeypatch):

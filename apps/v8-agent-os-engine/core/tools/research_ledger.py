@@ -14,6 +14,8 @@ from typing import Any
 
 from core.tools.research_quality import (
     research_acceptance_metrics,
+    research_answer_integrity_issues,
+    research_answer_is_usable,
     research_as_of,
     research_bundle_is_high_quality,
     research_high_quality_issues,
@@ -21,6 +23,7 @@ from core.tools.research_quality import (
     research_requires_dated_sources,
     research_review_decision,
     research_selected_sources,
+    research_uses_agent_contract,
 )
 from core.v8_agent_os_paths import runtime_private_root
 
@@ -53,7 +56,7 @@ def _ledger_path() -> Path:
 
 
 def _empty_store() -> dict[str, Any]:
-    return {"version": _VERSION, "evidenceBundles": [], "experiencePacks": []}
+    return {"version": _VERSION, "evidenceBundles": [], "experiencePacks": [], "deletedExperiencePacks": {}}
 
 
 def _read_store() -> dict[str, Any]:
@@ -69,6 +72,7 @@ def _read_store() -> dict[str, Any]:
     payload.setdefault("version", _VERSION)
     payload.setdefault("evidenceBundles", [])
     payload.setdefault("experiencePacks", [])
+    payload.setdefault("deletedExperiencePacks", {})
     if not isinstance(payload["evidenceBundles"], list):
         payload["evidenceBundles"] = []
     if not isinstance(payload["experiencePacks"], list):
@@ -171,7 +175,7 @@ def _visible_experience(item: dict[str, Any], *, now: datetime | None = None) ->
     visible["reuseEligible"] = bool(
         accepted
         and stored_status == "active"
-        and visible.get("freshnessState") not in {"stale", "expired"}
+        and (research_uses_agent_contract(item) or visible.get("freshnessState") not in {"stale", "expired"})
     )
     if not accepted:
         effective_status = "archived" if stored_status == "archived" else "draft"
@@ -200,9 +204,15 @@ def _not_expired(item: dict[str, Any], now: float | None = None) -> bool:
 
 def _prune_expired(payload: dict[str, Any]) -> dict[str, Any]:
     now = time.time()
-    payload["evidenceBundles"] = [item for item in _as_list(payload.get("evidenceBundles")) if isinstance(item, dict) and _not_expired(item, now)]
+    retained = _referenced_bundle_ids(payload)
+    payload["evidenceBundles"] = [item for item in _as_list(payload.get("evidenceBundles")) if isinstance(item, dict) and (item.get("evidenceBundleId") in retained or _not_expired(item, now))]
     payload["experiencePacks"] = [item for item in _as_list(payload.get("experiencePacks")) if isinstance(item, dict)]
     return payload
+
+
+def _referenced_bundle_ids(payload: dict[str, Any]) -> set[str]:
+    return {str(item[key]) for item in payload.get("experiencePacks", []) if isinstance(item, dict)
+            for key in ("createdFromBundleId", "previousBundleId") if item.get(key)}
 
 
 def _scope_matches(item: dict[str, Any], scope: str) -> bool:
@@ -211,11 +221,16 @@ def _scope_matches(item: dict[str, Any], scope: str) -> bool:
 
 
 def _question_tokens(value: str) -> set[str]:
-    return {
+    tokens = {
         token
         for token in re.split(r"[\s,.;:!?()\[\]{}<>/\\|\"'`~，。！？；：、（）【】]+", _safe_text(value).lower())
         if len(token) >= 2
     }
+    # Character bigrams retrieve Chinese paraphrase candidates; the Agent,
+    # never this lexical score, decides whether an answer actually applies.
+    for phrase in re.findall(r"[\u4e00-\u9fff]+", _safe_text(value)):
+        tokens.update(phrase[index:index + 2] for index in range(len(phrase) - 1))
+    return tokens
 
 
 def _topic_fingerprint(value: str) -> str:
@@ -354,10 +369,11 @@ def _experience_acceptance_issues(bundle: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     if bundle.get("questionKind") in _TASK_LIKE_KINDS or bundle.get("sourceKind") in _TASK_LIKE_KINDS:
         issues.append("task_kind_not_reusable")
-    issues.extend(research_high_quality_issues(bundle))
+    issues.extend(research_answer_integrity_issues(bundle) if research_uses_agent_contract(bundle) else research_high_quality_issues(bundle))
     complete_sources = sum(1 for source in research_selected_sources(bundle) if _source_has_reuse_metadata(source))
-    if complete_sources < _EXPERIENCE_SOURCE_FLOOR:
-        issues.append(f"experience_source_metadata_floor_not_met:{_EXPERIENCE_SOURCE_FLOOR}")
+    source_floor = 1 if (bundle.get("independentReview") or {}).get("reviewContract") == "research-agent-review.v1" else _EXPERIENCE_SOURCE_FLOOR
+    if complete_sources < source_floor:
+        issues.append(f"experience_source_metadata_floor_not_met:{source_floor}")
     return list(dict.fromkeys(issues))
 
 
@@ -365,9 +381,10 @@ def _has_reusable_answer_pack(bundle: dict[str, Any]) -> bool:
     bundle = _normalize_bundle_kinds(bundle)
     if bundle.get("questionKind") in _TASK_LIKE_KINDS or bundle.get("sourceKind") in _TASK_LIKE_KINDS:
         return False
-    if not research_bundle_is_high_quality(bundle):
+    if not (research_answer_is_usable(bundle) if research_uses_agent_contract(bundle) else research_bundle_is_high_quality(bundle)):
         return False
-    return sum(1 for source in research_selected_sources(bundle) if _source_has_reuse_metadata(source)) >= _EXPERIENCE_SOURCE_FLOOR
+    source_floor = 1 if (bundle.get("independentReview") or {}).get("reviewContract") == "research-agent-review.v1" else _EXPERIENCE_SOURCE_FLOOR
+    return sum(1 for source in research_selected_sources(bundle) if _source_has_reuse_metadata(source)) >= source_floor
 
 
 def _valid_research_text(value: Any, *, min_chars: int = 24) -> str:
@@ -406,7 +423,8 @@ def _full_research_result(bundle: dict[str, Any]) -> str:
     )
     for value in candidates:
         raw = _safe_text(value)
-        if raw and _valid_research_text(raw):
+        agent_reviewed = (bundle.get("independentReview") or final_pack.get("independentReview") or {}).get("reviewContract") == "research-agent-review.v1"
+        if raw and (agent_reviewed or _valid_research_text(raw)):
             return raw
     return ""
 
@@ -543,11 +561,10 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
     source_quality_score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
     if not result_preview and not claim_digest:
         missing_evidence.append("No reliable source-backed research result was synthesized.")
-    quality_status = "high_quality" if accepted else "refresh_required"
+    quality_status = ("partial" if bundle.get("deliveryScope") == "partial" else "high_quality") if accepted else "refresh_required"
     topic_fingerprint = _safe_text(bundle.get("topicFingerprint"))
     if not topic_fingerprint:
-        normalized_topic = re.sub(r"\s+", " ", _safe_text(bundle.get("question") or topic).lower()).strip()
-        topic_fingerprint = uuid.uuid5(uuid.NAMESPACE_URL, normalized_topic).hex[:16]
+        topic_fingerprint = _topic_fingerprint(_safe_text(bundle.get("question") or topic))
     review_decision = research_review_decision(bundle)
     review_reasons = _review_reasons(bundle)
     independent_review = (
@@ -568,6 +585,8 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
     if requested_freshness.lower() in {"", "auto"} and research_requires_dated_sources(bundle):
         effective_freshness = "current"
     return {
+        "researchContract": bundle.get("researchContract"),
+        "deliveryScope": bundle.get("deliveryScope"),
         "experiencePackId": pack_id,
         "status": effective_status,
         "title": topic,
@@ -661,13 +680,36 @@ def store_evidence_bundle(bundle: dict[str, Any], *, ttl_seconds: int, scope: st
         }
         items = [item for item in payload["evidenceBundles"] if _safe_text(item.get("evidenceBundleId")) != bundle_id]
         items.insert(0, stored)
-        payload["evidenceBundles"] = items[:500]
+        retained = _referenced_bundle_ids(payload)
+        payload["evidenceBundles"] = [item for index, item in enumerate(items) if index < 500 or item.get("evidenceBundleId") in retained]
 
         if _has_reusable_answer_pack(stored):
             candidate = _experience_from_bundle(stored, status="active")
-            packs = [item for item in payload["experiencePacks"] if _safe_text(item.get("experiencePackId")) != candidate["experiencePackId"]]
-            packs.insert(0, candidate)
-            payload["experiencePacks"] = packs[:500]
+            revision_id = _safe_text(stored.get("supersedesExperiencePackId"))
+            target_id = revision_id or candidate["experiencePackId"]
+            existing = next((item for item in payload["experiencePacks"] if item.get("experiencePackId") == target_id), None)
+            if target_id in payload.get("deletedExperiencePacks", {}):
+                stored["experienceUpdate"] = {"status": "blocked", "reason": "experience_deleted"}
+            elif existing and existing.get("status") == "archived":
+                stored["experienceUpdate"] = {"status": "blocked", "reason": "experience_archived"}
+            elif revision_id and (not existing or existing.get("createdFromBundleId") != stored.get("supersedesBundleId")):
+                stored["experienceUpdate"] = {"status": "blocked", "reason": "experience_revision_conflict"}
+            elif existing and existing.get("createdFromBundleId") == bundle_id:
+                # Replay must not reset user metadata or usage history.
+                stored["experienceUpdate"] = {"status": "unchanged", "experiencePackId": target_id}
+            else:
+                if existing:
+                    for key in ("title", "tags", "createdAt", "lastUsedAt", "usageCount"):
+                        candidate[key] = existing.get(key)
+                    candidate["revision"] = int(existing.get("revision") or 1) + 1
+                    candidate["previousBundleId"] = existing.get("createdFromBundleId")
+                else:
+                    candidate["revision"] = 1
+                candidate["experiencePackId"] = target_id
+                packs = [item for item in payload["experiencePacks"] if item.get("experiencePackId") != target_id]
+                packs.insert(0, candidate)
+                payload["experiencePacks"] = packs[:500]
+                stored["experienceUpdate"] = {"status": "updated" if existing else "created", "experiencePackId": target_id}
 
         _write_store(payload)
         return _visible(stored)
@@ -883,6 +925,12 @@ def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: l
         if not _has_reusable_answer_pack(bundle):
             return None
         candidate = _experience_from_bundle(bundle, status="active", title=title, tags=tags)
+        if candidate["experiencePackId"] in payload.get("deletedExperiencePacks", {}):
+            return None
+        existing = next((item for item in payload["experiencePacks"] if item.get("experiencePackId") == candidate["experiencePackId"]), None)
+        if existing:
+            # Restore is the explicit operation for archived records.
+            return _visible_experience(existing)
         packs = [item for item in payload["experiencePacks"] if _safe_text(item.get("experiencePackId")) != candidate["experiencePackId"]]
         packs.insert(0, candidate)
         payload["experiencePacks"] = packs[:500]
@@ -945,6 +993,7 @@ def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False) ->
         ]
         changed = len(payload["experiencePacks"]) != before
         if changed:
+            payload.setdefault("deletedExperiencePacks", {})[target] = {"deletedAt": _utc_now_iso()}
             _write_store(payload)
         return changed
 
@@ -1047,7 +1096,7 @@ def maintain_experience_packs(*, now: datetime | None = None) -> dict[str, Any]:
                 if item.get(key) != state.get(key):
                     item[key] = state.get(key)
                     changed = True
-            if state["freshnessState"] == "expired" and _safe_text(item.get("status")).lower() != "archived":
+            if state["freshnessState"] == "expired" and _safe_text(item.get("status")).lower() != "archived" and not research_uses_agent_contract(item):
                 item["status"] = "archived"
                 item["archivedAt"] = checked_at_text
                 item["archivedBy"] = "memory_maintenance"

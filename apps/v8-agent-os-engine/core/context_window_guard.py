@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable
 
-from core.model_eligibility import evaluate_model_eligibility, model_kind
+from core.model_eligibility import MIN_TEXT_CONTEXT_WINDOW_TOKENS, evaluate_model_eligibility, model_kind
 from core.storage import storage
 
 
-MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262_144
 DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS = 32_000
 
 _NON_TEXT_ROLES = {
@@ -84,10 +83,6 @@ def _participant(
         valid = False
         reason = "missing_context_window"
         effective_for_min = int(fallback_context_window_tokens or DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS)
-    elif context_window < minimum_required_tokens:
-        valid = False
-        reason = "below_min_context_window"
-        effective_for_min = context_window
     return {
         "role": role,
         "runtimeKind": runtime_kind,
@@ -155,6 +150,7 @@ class ContextWindowGuard:
         min_candidates = [
             _coerce_int(item.get("effectiveForMinTokens")) or fallback_window
             for item in participants
+            if item.get("runtimeKind") != "context_governance"
         ]
         effective_window = min(min_candidates) if min_candidates else fallback_window
         warnings: list[Dict[str, Any]] = []
@@ -171,7 +167,10 @@ class ContextWindowGuard:
                     }
                 )
         max_summary_input = _coerce_int(compression.get("max_summary_input_tokens")) or 5000
-        summary_budget = max(256, min(max_summary_input, int(effective_window * 0.90)))
+        summary_windows = [int(item["effectiveForMinTokens"]) for item in participants
+                           if item.get("runtimeKind") == "context_governance"]
+        summary_window = min([effective_window, *summary_windows])
+        summary_budget = max(1, min(max_summary_input, int(summary_window * 0.90)))
         return {
             "effectiveContextWindowTokens": int(effective_window),
             "participants": participants,
@@ -203,6 +202,7 @@ def validate_text_role_model_window(role: str, model_ref: str) -> Dict[str, Any]
     meta = _model_meta(model_ref)
     model_record = {
         **dict(meta.get("model_record") or {}),
+        "contextWindow": meta.get("global_context_window"),
         "capabilityClass": meta.get("capability_class") or dict(meta.get("model_record") or {}).get("capabilityClass"),
         "capabilities": meta.get("capabilities") or dict(meta.get("model_record") or {}).get("capabilities") or {},
     }
@@ -222,7 +222,7 @@ def validate_text_role_model_window(role: str, model_ref: str) -> Dict[str, Any]
             else (
                 f"模型 {model_ref} 未配置最大输出 tokens，不能用于当前文本生成角色。"
                 if reason == "missing_max_output_tokens"
-                else f"模型 {model_ref} 上下文窗口低于 {minimum_required} tokens，不能用于当前文本生成角色。"
+                else f"模型 {model_ref} 当前不可用，请检查模型启用状态与服务诊断。"
             )
         ),
     }

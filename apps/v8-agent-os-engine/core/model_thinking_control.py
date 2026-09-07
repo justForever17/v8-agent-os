@@ -547,7 +547,7 @@ def provider_reasoning_transport_patch(metadata: Mapping[str, Any] | None) -> Di
     return {"extra_body": {"reasoning_split": True}}
 
 
-def ensure_anthropic_thinking_budget_headroom(kwargs: Mapping[str, Any] | None) -> Dict[str, Any]:
+def ensure_anthropic_thinking_budget_headroom(kwargs: Mapping[str, Any] | None, *, output_limit: int | None = None) -> Dict[str, Any]:
     """Keep Anthropic output tokens above its explicit thinking budget."""
 
     normalized = _as_dict(kwargs)
@@ -558,6 +558,8 @@ def ensure_anthropic_thinking_budget_headroom(kwargs: Mapping[str, Any] | None) 
         budget_value = 0
     if budget_value <= 0:
         return normalized
+    if output_limit is not None and output_limit <= budget_value:
+        raise ValueError("Configured output budget must exceed the explicit thinking budget; adjust either setting.")
 
     current_max = normalized.get("max_tokens_to_sample") or normalized.get("max_tokens")
     try:

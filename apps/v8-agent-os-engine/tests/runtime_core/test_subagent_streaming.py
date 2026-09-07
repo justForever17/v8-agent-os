@@ -7,6 +7,23 @@ from core.subagent_streaming import SubagentStreamProgressAggregator
 from graph.parallel_support import _subagent_timeline_nodes_from_message
 
 
+@pytest.mark.parametrize("cut", range(1, len("</vendor:think>")))
+def test_split_reasoning_boundary_never_leaks_into_live_or_final_text(cut):
+    emitted = []
+    aggregator = SubagentStreamProgressAggregator(
+        progress_callback=emitted.append, agent_id="worker", agent_name="Worker",
+        delegation_id="delegation", model_turn=1,
+    )
+    aggregator.observe(AIMessageChunk(content="", additional_kwargs={"reasoning_content": "Review"}))
+    boundary = "</vendor:think>"
+    aggregator.observe(AIMessageChunk(content=boundary[:cut]))
+    aggregator.observe(AIMessageChunk(content=boundary[cut:] + "\n答案\n\n限制"))
+    aggregator.finish(AIMessage(content=boundary + "\n答案\n\n限制", additional_kwargs={"reasoning_content": "Review"}))
+    texts = [item["timelineNode"]["content"] for item in emitted
+             if item["timelineNode"]["topic"] == "subagent.text.delta"]
+    assert texts and all(text == "\n答案\n\n限制" for text in texts)
+
+
 def test_subagent_stream_aggregates_reasoning_and_text_with_stable_final_nodes(monkeypatch) -> None:
     ticks = iter([10.0, 10.1, 10.7, 10.8, 10.9, 11.0])
     monkeypatch.setattr("core.subagent_streaming.time.monotonic", lambda: next(ticks))

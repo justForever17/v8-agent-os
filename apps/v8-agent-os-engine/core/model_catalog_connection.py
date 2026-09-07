@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from core.model_provider_channels import resolve_provider_channel
 from core.model_protocol_registry import suggest_model_protocol
+from core.model_token_policy import output_token_mode, positive_token_count
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 
 
@@ -318,9 +319,7 @@ def build_catalog_model_connection_plan(
 
     is_custom_provider = bool(provider_row.get("isCustom"))
     registry_known_chat_model = bool(model_row.get("capabilityRegistryMatched")) and not is_media_provider
-    # Context/output limits are Model Hub facts, not transport request options.
-    # OAuth runtimes may choose not to send a max-output field, but clearing the
-    # facts here makes a connected model ineligible for every governed role.
+    # Catalog values seed new records; reconnecting must not reset user budgets.
     clear_runtime_budget = is_media_provider or (is_custom_provider and not registry_known_chat_model and not is_retrieval_model)
     user_context_window, user_context_provenance = _user_confirmed_model_fact(
         existing_model_row,
@@ -345,6 +344,20 @@ def build_catalog_model_connection_plan(
         else model_row.get("maxTokens")
     )
     managed_fact_provenance = _mapping(model_row.get("factProvenance"))
+    if not is_media_provider and not is_retrieval_model:
+        for field in ("contextWindow", "maxTokens"):
+            persisted_value = positive_token_count(existing_model_row.get(field))
+            if persisted_value is None:
+                continue
+            if field == "contextWindow":
+                managed_context_window = persisted_value
+            else:
+                managed_max_tokens = persisted_value
+            old_fact = _mapping(existing_model_row.get("factProvenance")).get(field)
+            if old_fact:
+                managed_fact_provenance[field] = deepcopy(old_fact)
+            else:
+                managed_fact_provenance.pop(field, None)
     if user_context_provenance:
         managed_fact_provenance["contextWindow"] = user_context_provenance
     if user_max_tokens_provenance:
@@ -375,6 +388,10 @@ def build_catalog_model_connection_plan(
         ),
         "isEnabled": bool(existing_model_row.get("isEnabled", True)),
     }
+    if not is_media_provider and not is_retrieval_model:
+        model_patch["outputTokenMode"] = output_token_mode(
+            existing_model_row if existing_model_row else model_patch,
+        )
     for key in ("operationKinds", "adapter", "rerankApiFlavor", "availability", "sourceRefs"):
         if model_row.get(key) not in (None, "", [], {}):
             model_patch[key] = deepcopy(model_row.get(key))

@@ -12,6 +12,7 @@ from core.context.delegation import build_delegation_context, latest_delegation_
 from core.background_context_guard import prepare_background_model_messages
 from core.delegation_broker import (
     infer_engineering_task_role,
+    is_non_file_read_reference,
     task_brief_query_text,
     task_brief_requires_child_delegation,
     task_brief_route_query_text,
@@ -1455,7 +1456,7 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
                     or task_brief.get("readSet")
                     or []
                 )
-                if str(item or "").strip()
+                if str(item or "").strip() and not is_non_file_read_reference(item)
             ]
             if declared_read_paths:
                 lines.append(
@@ -1466,6 +1467,7 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             else:
                 lines.append(
                     "- Read-only evidence discipline: use the smallest granted read-only tool required by the contract. "
+                    "Read Set resource URIs are not filesystem paths; use the supplied upstream evidence or their granted reader. "
                     "Do not redirect output or create temporary evidence, stdout/stderr capture, log, or report files; "
                     "if the read boundary is missing, return a blocker instead of inventing a shell workaround."
                 )
@@ -2431,6 +2433,8 @@ def build_agent_node(
                             invocation_config=build_runtime_callback_config(),
                             tool_choice=required_tool_choice,
                             stream_observer=(stream_aggregator.observe if stream_aggregator else None),
+                            stream_attempt_timeout_seconds=None,
+                            stream_idle_timeout_seconds=180.0,
                             build_model=lambda candidate_model_id: create_subagent_chat_model(
                                 candidate_model_id,
                                 role=f"agent:{agent_id}",

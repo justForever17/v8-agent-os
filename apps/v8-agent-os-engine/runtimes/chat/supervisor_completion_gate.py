@@ -1273,6 +1273,8 @@ def _unresolved_research_evidence_gaps(
 ) -> list[dict[str, Any]]:
     """Return latest unresolved Research brief truth across bounded retries."""
 
+    from core.tools.research_quality import research_reviewed_partial_brief_ids
+
     latest: dict[str, tuple[str, int, dict[str, Any]]] = {}
     sequence = 0
     for episode in episodes:
@@ -1289,6 +1291,7 @@ def _unresolved_research_evidence_gaps(
             kind = str(handoff.get("kind") or "").strip().lower()
             if "research" not in kind:
                 continue
+            reviewed_partial_ids = research_reviewed_partial_brief_ids(handoff)
             timestamp = str(
                 handoff.get("createdAt")
                 or raw_handoff.get("created_at")
@@ -1329,6 +1332,8 @@ def _unresolved_research_evidence_gaps(
                 _record(brief_id, status="ready")
             for brief_id in missing_ids:
                 _record(brief_id, status="degraded", reasons=["missing_task_brief_evidence"])
+            for brief_id in reviewed_partial_ids:
+                _record(brief_id, status="usable_partial", reasons=["research_scope_partial"])
             if str(handoff.get("status") or "").strip().lower() == "degraded" and not (results or covered_ids or missing_ids):
                 fallback_ids = [
                     str(item).strip()
@@ -1341,7 +1346,7 @@ def _unresolved_research_evidence_gaps(
     return [
         record
         for _timestamp, _sequence, record in latest.values()
-        if str(record.get("status") or "").strip().lower() not in {"ready", "completed", "success", "ok"}
+        if str(record.get("status") or "").strip().lower() not in {"ready", "completed", "success", "ok", "usable_partial"}
     ]
 
 

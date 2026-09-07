@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowLeft, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ModelCardV2 } from "@/components/models/ModelCardV2";
+import { OutputTokenBudgetField } from "@/components/models/OutputTokenBudgetField";
 import type { ControlPlaneModel, ControlPlanePayload, ProviderOverview } from "@/components/models/control-plane-types";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -23,6 +24,7 @@ interface AIModel {
   type: string;
   contextWindow: number | null;
   maxTokens: number | null;
+  outputTokenMode?: "auto" | "fixed";
   isEnabled: boolean;
 }
 interface AIProvider {
@@ -623,13 +625,10 @@ export default function ProviderConfigPage({ params
                         </div>
                         {modelType === "TEXT" || modelType === "MULTIMODAL" ? <div className="grid grid-cols-2 gap-4">
                             <div className="grid gap-2">
-                                <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.k20e21cd2")}</Label>
-                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={tg(t, "9cbd0194")} />
+                                <Label htmlFor="contextWindow">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
+                                <Input id="contextWindow" name="contextWindow" type="number" min={1} step={1} defaultValue={editingModel?.contextWindow ?? ""} placeholder={tg(t, "9cbd0194")} />
                             </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.k317345b1")}</Label>
-                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.maxTokensPlaceholder")} />
-                            </div>
+                            <OutputTokenBudgetField key={editingModel?.id || "new"} id="maxTokens" model={editingModel} />
                         </div> : RETRIEVAL_MODEL_TYPES.has(modelType) ? <div className="grid grid-cols-2 gap-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.retrievalInputWindow")}</Label>

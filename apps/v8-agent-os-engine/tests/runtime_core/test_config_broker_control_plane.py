@@ -33,6 +33,7 @@ def test_model_prepare_blocks_incomplete_facts_and_persists_recovery_record(tmp_
         model_type="TEXT",
         context_window=262_144,
         max_tokens=None,
+        model_config={"outputTokenMode": "fixed"},
         capabilities={"chat": True},
         evidence_refs=["https://docs.example.test/models"],
         credential_required=True,

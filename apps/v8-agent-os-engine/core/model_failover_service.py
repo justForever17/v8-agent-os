@@ -22,6 +22,7 @@ from core.llm_exceptions import (
     build_llm_error_from_normalized,
 )
 from core.provider_runtime_profiles import runtime_readiness_for_provider
+from core.response_normalizer import extract_text_and_reasoning
 from core.model_budget_service import model_budget_service
 from core.provider_compatibility import normalize_provider_error
 from core.provider_health_service import provider_health_service
@@ -53,6 +54,7 @@ def _iterate_stream_with_deadline(
     stream: Any,
     *,
     deadline_seconds: float,
+    idle_timeout_seconds: float | None = None,
 ) -> Iterator[Any]:
     """Consume a blocking provider stream behind a real wall-clock deadline.
 
@@ -77,6 +79,12 @@ def _iterate_stream_with_deadline(
         except BaseException as exc:  # forwarded to the invoking thread
             result_queue.put(("error", exc))
         finally:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception:
+                    logger.debug("Provider stream cleanup failed", exc_info=True)
             result_queue.put(("done", None))
 
     producer = threading.Thread(
@@ -90,9 +98,17 @@ def _iterate_stream_with_deadline(
     chunk_count = 0
     first_chunk_ms: int | None = None
     last_chunk_ms: int | None = None
+    last_progress_at = started_at
     try:
         while True:
             remaining = deadline_at - time.monotonic()
+            idle_remaining = (float(idle_timeout_seconds) - (time.monotonic() - last_progress_at)
+                              if idle_timeout_seconds is not None else remaining)
+            if idle_remaining <= 0 and remaining > 0:
+                raise _ModelStreamDeadlineExceeded(
+                    f"model stream meaningful-output idle timeout after {float(idle_timeout_seconds):.2f}s",
+                    chunk_count=chunk_count, first_chunk_ms=first_chunk_ms, last_chunk_ms=last_chunk_ms,
+                )
             if remaining <= 0:
                 stage = "waiting_first_chunk" if chunk_count == 0 else "waiting_after_partial_stream"
                 raise _ModelStreamDeadlineExceeded(
@@ -103,7 +119,7 @@ def _iterate_stream_with_deadline(
                 )
             try:
                 kind, payload = result_queue.get(
-                    timeout=min(_STREAM_QUEUE_POLL_SECONDS, remaining)
+                    timeout=min(_STREAM_QUEUE_POLL_SECONDS, remaining, idle_remaining)
                 )
             except queue.Empty:
                 continue
@@ -112,6 +128,9 @@ def _iterate_stream_with_deadline(
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 first_chunk_ms = elapsed_ms if first_chunk_ms is None else first_chunk_ms
                 last_chunk_ms = elapsed_ms
+                text, reasoning = extract_text_and_reasoning(payload)
+                if text or reasoning or getattr(payload, "tool_call_chunks", None):
+                    last_progress_at = time.monotonic()
                 yield payload
                 continue
             if kind == "error":
@@ -119,16 +138,9 @@ def _iterate_stream_with_deadline(
             return
     finally:
         stop_requested.set()
-        if producer.is_alive():
-            close_stream = getattr(stream, "close", None)
-            if callable(close_stream):
-                try:
-                    close_stream()
-                except Exception:
-                    # Python generators cannot be closed while another thread
-                    # is executing them. The daemon + provider timeout still
-                    # prevents this cleanup path from blocking V8OS shutdown.
-                    pass
+        # The producer closes in its own copied Context after its current read.
+        # Closing a suspended generator here can reset provider ContextVar tokens
+        # in the wrong Context. Its transport timeout bounds a blocked socket.
 
 
 @dataclass(slots=True)
@@ -404,6 +416,7 @@ class ModelFailoverService:
         result_validator: Callable[[Any], str | None] | None = None,
         stream_observer: Callable[[Any], None] | None = None,
         stream_attempt_timeout_seconds: float | None = None,
+        stream_idle_timeout_seconds: float | None = None,
     ) -> Any:
         ctx = get_runtime_context()
         run_id = ctx.get("run_id")
@@ -539,6 +552,7 @@ class ModelFailoverService:
                         for chunk in _iterate_stream_with_deadline(
                             stream,
                             deadline_seconds=attempt_timeout_seconds,
+                            idle_timeout_seconds=stream_idle_timeout_seconds,
                         ):
                             observed_stream_chunks += 1
                             try:
@@ -637,6 +651,7 @@ class ModelFailoverService:
                         "partialStream": observed_stream_chunks > 0,
                         "streamChunkCount": observed_stream_chunks,
                         "streamAttemptTimeoutSeconds": attempt_timeout_seconds,
+                        "streamIdleTimeoutSeconds": stream_idle_timeout_seconds,
                         **(
                             {
                                 "streamTimeoutStage": (

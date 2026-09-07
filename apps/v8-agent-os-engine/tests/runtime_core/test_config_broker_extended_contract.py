@@ -691,6 +691,38 @@ def test_model_binding_partial_update_preserves_existing_fields_and_is_recoverab
     assert "reasoningSurface" not in config["providers"]["provider"]["models"]["target"]
 
 
+@pytest.mark.parametrize("window", [500_000, 128_000, 32_000])
+def test_user_budget_save_readback_role_binding_and_rollback(monkeypatch, window):
+    import core.config_broker_service as module
+    from core.model_eligibility import evaluate_model_eligibility
+
+    initial = _model_config()
+    initial["roles"]["supervisor"] = "provider::target"
+    target = initial["providers"]["provider"]["models"]["target"]
+    target.update(contextWindow=1_000_000, factProvenance={
+        "contextWindow": {"source": "provider_metadata", "confidence": "reviewed"},
+        "maxTokens": {"source": "user_confirmed", "confidence": "authoritative"},
+    })
+    control, persisted, _ = _install_real_model_control_plane(module, monkeypatch, initial)
+    before = deepcopy(persisted)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_model_binding(
+        provider_id="provider", model_id="target", model_config={"contextWindow": window, "outputTokenMode": "auto"},
+        source_provider_id="provider", source_model_id="target", source="manual", replace_provider_models=False,
+        owner_id="owner", session_id="session", run_id="run",
+    )
+    assert service.commit(prepared["transactionId"], owner_id="owner")["state"] == "committed"
+    model = control.get_config()["providers"]["provider"]["models"]["target"]
+    assert model["contextWindow"] == window
+    assert model["outputTokenMode"] == "auto"
+    assert model["maxTokens"] == 8192
+    assert model["factProvenance"]["maxTokens"] == target["factProvenance"]["maxTokens"]
+    assert evaluate_model_eligibility(model, role="supervisor")["selectable"]
+    assert control.get_config()["roles"]["supervisor"] == "provider::target"
+    assert service.rollback(prepared["transactionId"], owner_id="owner")["state"] == "rolled_back"
+    assert persisted == before
+
+
 def test_model_binding_move_and_replace_block_bound_removed_models(tmp_path, monkeypatch) -> None:
     import core.config_broker_service as module
 

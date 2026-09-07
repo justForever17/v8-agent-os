@@ -10,6 +10,7 @@ import { createTranslator } from "@/src/lib/locale";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
+    buildRuntimeEpisodeGraph,
     coerceAdminResourceRef,
     normalizeCreativeCanvasGraphRunStateEvent,
     projectCreativeCanvasGraphRunHumanSurface,
@@ -810,6 +811,10 @@ export function buildPhoneRuntimeStageModel(
     const runtimeActivitiesById = new Map<PhoneRuntimeId, PhoneRuntimeStageActivity[]>();
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
     const isBusy = isActiveRunStatus(runtimeStatus);
+    const activeEpisodeRuntimes = new Set(buildRuntimeEpisodeGraph(messageActivities.map((activity) => ({
+        id: activity.id, topic: activity.topic, timestamp: activity.timestamp,
+        data: activity.node.kind === "execution" ? activity.node.data as Record<string, unknown> : undefined,
+    }))).filter((episode) => episode.id !== "supervisor" && episode.status === "active").map((episode) => episode.runtimeId));
     const visibleRuntimeOrder = VISIBLE_PHONE_RUNTIME_ORDER.filter((runtimeId) => {
         const runtimeActivities = runtimeActivitiesForCard(runtimeId, summaryActivities);
         const ownerVisible = runtimeId === rawActiveRuntimeId && (isBusy || options?.pendingApproval);
@@ -828,11 +833,14 @@ export function buildPhoneRuntimeStageModel(
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getPhoneRuntimeDescriptor(runtimeId, options?.locale);
         const runtimeActivities = runtimeActivitiesById.get(runtimeId) || [];
-        const lastActivity = runtimeActivities[0];
+        const detailActivities = runtimeActivitiesForCard(runtimeId, messageActivities);
+        const lastActivity = detailActivities[0] || runtimeActivities[0];
 
         let status: PhoneRuntimeCardStatus = "idle";
         if (runtimeId === activeRuntimeId && isBusy) {
             status = options?.pendingApproval ? "attention" : "active";
+        } else if (isBusy && activeEpisodeRuntimes.has(runtimeId)) {
+            status = "active";
         } else if (runtimeId === activeRuntimeId && runtimeStatus === "failed") {
             status = "attention";
         } else if (lastActivity) {
@@ -845,7 +853,7 @@ export function buildPhoneRuntimeStageModel(
             shortLabel: descriptor.shortLabel,
             description: descriptor.description,
             status,
-            eventCount: runtimeActivities.length,
+            eventCount: detailActivities.length,
             lastActivity: runtimeId === activeRuntimeId && options?.currentStepTitle
                 ? options.currentStepTitle
                 : lastActivity?.summary,

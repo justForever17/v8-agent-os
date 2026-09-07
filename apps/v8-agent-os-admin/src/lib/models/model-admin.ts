@@ -23,6 +23,7 @@ export type AdminModelRecord = {
     type: string;
     contextWindow: number | null;
     maxTokens: number | null;
+    outputTokenMode?: "auto" | "fixed";
     capabilityClass?: string | null;
     capabilities?: Record<string, boolean> | null;
     eligibility?: {
@@ -102,6 +103,7 @@ export function mapEngineModel(
         type: String(modelMeta.type || "TEXT"),
         contextWindow: asNullableNumber(modelMeta.contextWindow),
         maxTokens: asNullableNumber(modelMeta.maxTokens),
+        outputTokenMode: modelMeta.outputTokenMode === "auto" ? "auto" : modelMeta.outputTokenMode === "fixed" || asNullableNumber(modelMeta.maxTokens) ? "fixed" : "auto",
         capabilityClass: String(modelMeta.capabilityClass || "") || null,
         capabilities: modelMeta.capabilities && typeof modelMeta.capabilities === "object"
             ? modelMeta.capabilities as Record<string, boolean>
@@ -174,6 +176,7 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
         type: data.type,
         contextWindow: parseOptionalInteger(data.contextWindow),
         maxTokens: parseOptionalInteger(data.maxTokens),
+        ...(data.outputTokenMode === "auto" || data.outputTokenMode === "fixed" ? { outputTokenMode: data.outputTokenMode } : {}),
         costPerInput: parseOptionalFloat(data.costPerInput),
         costPerOutput: parseOptionalFloat(data.costPerOutput),
         rerank_api_flavor: String(data.rerankApiFlavor || "").trim() || undefined,

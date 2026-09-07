@@ -114,6 +114,13 @@ def build_delegation_context(
     }
     if invocation_id:
         payload["invocationId"] = str(invocation_id).strip()
+    task_context = (payload.get("taskBrief") or {}).get("context") or {}
+    if isinstance(task_context, dict):
+        inherited = [dict(item) for item in task_context.get("upstreamHandoffs") or [] if isinstance(item, dict)]
+        if inherited:
+            # Only the evidence already selected for this parent task may
+            # propagate to its terminal verifier; do not regain sibling scope.
+            payload["handoffRefs"] = inherited[:6]
     return payload
 
 

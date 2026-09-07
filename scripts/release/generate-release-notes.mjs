@@ -114,6 +114,13 @@ function releaseTitle(product, version, channel) {
 }
 
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "2026.09.06.1": Object.freeze({
+    all: Object.freeze([
+      "模型输出新增自动预算选项；保留人工设置的输出与上下文预算，预置估算值不再覆盖用户选择。",
+      "深度调研改进答案审核、局部修正和已存答案复用；区分有据可用的部分答案与失败草稿，减少重复写作和重复调研。",
+      "修复委派前读取调研证据被误拦截的问题，并统一浏览器登录授权入口及 Web、Phone 运行详情计数。",
+    ]),
+  }),
   "2026.08.18.1": Object.freeze({
     all: Object.freeze([
       "文档读取依赖已迁入显著的“文档读取能力包”；安装会按界面语言选择官方 PyPI 或可信中文镜像，未安装时明确提示，不再让 `read_native_file` 静默失败。",
@@ -283,6 +290,7 @@ ${release.product === "all"
 ## 已知限制
 
 ${knownLimits(release.product, release.channel)}
+${release.version === "2026.09.06.1" ? "\n- 深度调研的一手资料获取仍在优化；来源不足时会交付有明确限制的部分答案，不代表已满足全部调研要求。重要结论仍需核对原始来源。" : ""}
 
 ## 校验
 

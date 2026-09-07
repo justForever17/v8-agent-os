@@ -6,6 +6,7 @@ import { Globe2, Loader2, ShieldCheck } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { fetchConfigDomain, saveConfigDomain } from "@/lib/config-registry";
 
 type AgentBrowserResult = {
@@ -22,10 +23,14 @@ type SystemBaseData = {
     [key: string]: unknown;
 };
 
-const LOGIN_TARGETS = {
-    metaso: { url: "https://metaso.cn/", hosts: ["metaso.cn"] },
-    baidu: { url: "https://www.baidu.com/", hosts: ["baidu.com"] },
-} as const;
+export function parseAgentBrowserLoginTarget(value: string) {
+    const url = new URL(value.trim());
+    if (!["https:", "http:"].includes(url.protocol) || !url.hostname
+        || url.username || url.password || url.hostname.includes("*")) {
+        throw new Error("invalid_login_site");
+    }
+    return { url: url.href, hosts: [url.hostname.toLowerCase()] };
+}
 
 function responseSummary(payload: Record<string, unknown>, fallback: string) {
     const summary = typeof payload.summary === "string" && payload.summary.trim()
@@ -48,69 +53,72 @@ function responseSummary(payload: Record<string, unknown>, fallback: string) {
 
 export function AgentBrowserPanel() {
     const t = useT();
-    const [opening, setOpening] = useState<"generic" | keyof typeof LOGIN_TARGETS | null>(null);
+    const [opening, setOpening] = useState(false);
+    const [siteUrl, setSiteUrl] = useState("");
     const [result, setResult] = useState<AgentBrowserResult | null>(null);
 
-    const openAgentBrowser = async (target: "generic" | keyof typeof LOGIN_TARGETS = "generic") => {
+    const openAgentBrowser = async () => {
         if (opening) return;
-        setOpening(target);
-        setResult(null);
-        const loginTarget = target === "generic" ? null : LOGIN_TARGETS[target];
-        let profileReady = !loginTarget;
+        let loginTarget: { url: string; hosts: string[] };
         try {
-            if (loginTarget) {
-                const envelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
-                const existingData = envelope.data || {};
-                const webFetch = existingData.webFetch || {};
-                const allowlist = Array.from(new Set([
-                    ...(Array.isArray(webFetch.agentBrowserProfileAllowlist) ? webFetch.agentBrowserProfileAllowlist : []),
-                    ...loginTarget.hosts,
-                ].map((host) => String(host || "").trim().toLowerCase()).filter(Boolean)));
-                await saveConfigDomain<SystemBaseData>("system-base", {
-                    data: {
-                        ...existingData,
-                        webFetch: {
-                            ...webFetch,
-                            useAgentBrowserProfile: true,
-                            agentBrowserProfileAllowlist: allowlist,
-                        },
+            loginTarget = parseAgentBrowserLoginTarget(siteUrl);
+        } catch {
+            setResult({ ok: false, summary: t("app.admin.dashboard.research.runtime.agentBrowser.invalidSite") });
+            return;
+        }
+        setOpening(true);
+        setResult(null);
+        let profileReady = false;
+        try {
+            const envelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
+            const existingData = envelope.data || {};
+            const webFetch = existingData.webFetch || {};
+            const allowlist = Array.from(new Set([
+                ...(Array.isArray(webFetch.agentBrowserProfileAllowlist) ? webFetch.agentBrowserProfileAllowlist : []),
+                ...loginTarget.hosts,
+            ].map((host) => String(host || "").trim().toLowerCase()).filter(Boolean)));
+            await saveConfigDomain<SystemBaseData>("system-base", {
+                data: {
+                    ...existingData,
+                    webFetch: {
+                        ...webFetch,
+                        useAgentBrowserProfile: true,
+                        agentBrowserProfileAllowlist: allowlist,
                     },
+                },
+            });
+            // Read effective config before opening the login window.
+            const effectiveEnvelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
+            const effectiveWebFetch = effectiveEnvelope.data?.webFetch || {};
+            const effectiveAllowlist = new Set(
+                (Array.isArray(effectiveWebFetch.agentBrowserProfileAllowlist)
+                    ? effectiveWebFetch.agentBrowserProfileAllowlist
+                    : [])
+                    .map((host) => String(host || "").trim().toLowerCase())
+                    .filter(Boolean),
+            );
+            const effectiveProfileEnabled = effectiveWebFetch.useAgentBrowserProfile === true;
+            const effectiveHostsAllowed = loginTarget.hosts.every((host) => {
+                const normalizedHost = host.toLowerCase();
+                return Array.from(effectiveAllowlist).some((allowedHost) => (
+                    allowedHost === normalizedHost
+                    || allowedHost === `*.${normalizedHost}`
+                    || (allowedHost.startsWith("*.") && normalizedHost.endsWith(allowedHost.slice(1)))
+                ));
+            });
+            if (!effectiveProfileEnabled || !effectiveHostsAllowed) {
+                setResult({
+                    ok: false,
+                    summary: t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed"),
                 });
-                // Saving invalidates the registry cache; force a fresh read-back
-                // before opening a login window so Research cannot observe the
-                // previous disabled/empty effective configuration.
-                const effectiveEnvelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
-                const effectiveWebFetch = effectiveEnvelope.data?.webFetch || {};
-                const effectiveAllowlist = new Set(
-                    (Array.isArray(effectiveWebFetch.agentBrowserProfileAllowlist)
-                        ? effectiveWebFetch.agentBrowserProfileAllowlist
-                        : [])
-                        .map((host) => String(host || "").trim().toLowerCase())
-                        .filter(Boolean),
-                );
-                const effectiveProfileEnabled = effectiveWebFetch.useAgentBrowserProfile === true;
-                const effectiveHostsAllowed = loginTarget.hosts.every((host) => {
-                    const normalizedHost = host.toLowerCase();
-                    return Array.from(effectiveAllowlist).some((allowedHost) => (
-                        allowedHost === normalizedHost
-                        || allowedHost === `*.${normalizedHost}`
-                        || (allowedHost.startsWith("*.") && normalizedHost.endsWith(allowedHost.slice(1)))
-                    ));
-                });
-                if (!effectiveProfileEnabled || !effectiveHostsAllowed) {
-                    setResult({
-                        ok: false,
-                        summary: t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed"),
-                    });
-                    return;
-                }
-                profileReady = true;
+                return;
             }
+            profileReady = true;
 
             const response = await fetch("/api/agent-browser/open", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url: loginTarget?.url || "about:blank" }),
+                body: JSON.stringify({ url: loginTarget.url }),
             });
             const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
             const browserOk = response.ok && payload.ok !== false;
@@ -118,21 +126,19 @@ export function AgentBrowserPanel() {
                 ok: browserOk,
                 summary: !browserOk
                     ? responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.failed"))
-                    : loginTarget
-                        ? responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.opened"))
-                        : t("app.admin.dashboard.research.runtime.agentBrowser.genericOpened"),
+                    : responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.opened")),
             });
         } catch (error) {
             setResult({
                 ok: false,
-                summary: loginTarget && !profileReady
+                summary: !profileReady
                     ? t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed")
                     : error instanceof Error
                     ? error.message
                     : t("app.admin.dashboard.research.runtime.agentBrowser.failed"),
             });
         } finally {
-            setOpening(null);
+            setOpening(false);
         }
     };
 
@@ -156,23 +162,20 @@ export function AgentBrowserPanel() {
                         </div>
                     </div>
                 </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                    <Button type="button" variant="outline" onClick={() => void openAgentBrowser("metaso")} disabled={Boolean(opening)}>
-                        {opening === "metaso" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
-                        {t("app.admin.dashboard.research.runtime.agentBrowser.openMetaso")}
-                    </Button>
-                    <Button type="button" variant="outline" onClick={() => void openAgentBrowser("baidu")} disabled={Boolean(opening)}>
-                        {opening === "baidu" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
-                        {t("app.admin.dashboard.research.runtime.agentBrowser.openBaidu")}
-                    </Button>
-                    <Button type="button" onClick={() => void openAgentBrowser("generic")} disabled={Boolean(opening)}>
-                        {opening === "generic" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
-                        {opening === "generic"
-                            ? t("app.admin.dashboard.research.runtime.agentBrowser.opening")
-                            : t("app.admin.dashboard.research.runtime.agentBrowser.open")}
-                    </Button>
-                </div>
             </CardContent>
+            <form className="flex flex-wrap items-center gap-2 border-t px-5 py-3" onSubmit={(event) => {
+                event.preventDefault();
+                void openAgentBrowser();
+            }}>
+                <Input type="url" value={siteUrl} onChange={(event) => setSiteUrl(event.target.value)}
+                    aria-label={t("app.admin.dashboard.research.runtime.agentBrowser.siteUrl")}
+                    placeholder="https://example.com" required disabled={Boolean(opening)}
+                    className="min-w-0 flex-1 basis-52" />
+                <Button type="submit" variant="outline" disabled={Boolean(opening) || !siteUrl.trim()}>
+                    {opening ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                    {t("app.admin.dashboard.research.runtime.agentBrowser.authorizeSite")}
+                </Button>
+            </form>
             {result ? (
                 <div className={`border-t px-5 py-3 text-xs leading-5 ${result.ok
                     ? "border-emerald-200 bg-emerald-50/70 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200"

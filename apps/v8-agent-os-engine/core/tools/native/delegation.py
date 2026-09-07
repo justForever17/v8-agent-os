@@ -297,11 +297,13 @@ def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[
 def _managed_research_gap_from_context(context: dict[str, Any]) -> dict[str, Any]:
     """Project only the Research gap needed to prevent an alternate retry owner.
 
-    The full answer/fact acceptance policy remains in ``supervisor_turn``.  The
+    Answer provenance is validated by ``research_quality``. The
     delegation boundary needs a smaller invariant: once a managed Research
     handoff reports missing stable brief IDs, a Research-shaped subagent may
     not replace the one bounded ``runtime_broker`` retry.
     """
+
+    from core.tools.research_quality import research_reviewed_partial_brief_ids
 
     handoffs = [
         dict(item)
@@ -314,6 +316,7 @@ def _managed_research_gap_from_context(context: dict[str, Any]) -> dict[str, Any
     latest_status: dict[str, str] = {}
     attempts: dict[str, int] = {}
     for handoff in handoffs:
+        reviewed_partial_ids = research_reviewed_partial_brief_ids(handoff)
         result_ids: set[str] = set()
         for result in list(handoff.get("taskBriefResults") or []):
             if not isinstance(result, dict):
@@ -328,7 +331,7 @@ def _managed_research_gap_from_context(context: dict[str, Any]) -> dict[str, Any
                     if str(value or "").strip()
                 )
             )
-            status = str(result.get("status") or "degraded").strip().lower()
+            status = "usable_partial" if primary_id in reviewed_partial_ids else str(result.get("status") or "degraded").strip().lower()
             for brief_id in brief_ids:
                 result_ids.add(brief_id)
                 latest_status[brief_id] = status
@@ -342,6 +345,8 @@ def _managed_research_gap_from_context(context: dict[str, Any]) -> dict[str, Any
             normalized_id = str(brief_id or "").strip()
             if not normalized_id:
                 continue
+            if normalized_id in reviewed_partial_ids:
+                continue
             latest_status[normalized_id] = "degraded"
             if normalized_id not in result_ids:
                 attempts[normalized_id] = attempts.get(normalized_id, 0) + 1
@@ -349,7 +354,7 @@ def _managed_research_gap_from_context(context: dict[str, Any]) -> dict[str, Any
     missing_ids = [
         brief_id
         for brief_id, status in latest_status.items()
-        if status not in _RESEARCH_READY_STATUSES
+        if status not in _RESEARCH_READY_STATUSES and status != "usable_partial"
     ]
     return {
         "missingTaskBriefIds": missing_ids,
@@ -709,7 +714,10 @@ def _handoff_recovery_metadata(
 
 
 def _compact_upstream_handoff_for_agent(handoff: dict[str, Any]) -> dict[str, Any]:
+    from core.research_verification_bindings import research_evidence_bindings
+
     payload = dict(handoff or {})
+    bindings = research_evidence_bindings(payload)
     summary, summary_omitted = _bounded_handoff_text(
         payload.get("compactSummary") or payload.get("summary"),
         limit=6000,
@@ -736,6 +744,12 @@ def _compact_upstream_handoff_for_agent(handoff: dict[str, Any]) -> dict[str, An
         "identityAliases": identity_aliases[:8],
         "kind": str(payload.get("kind") or "runtime_handoff").strip(),
         "status": str(payload.get("status") or "unknown").strip(),
+        "deliveryScope": payload.get("deliveryScope"),
+        "reviewDecision": payload.get("reviewDecision"),
+        "usableAnswer": payload.get("usableAnswer"),
+        "coverageComplete": payload.get("coverageComplete"),
+        "evidenceBindings": bindings[:32],
+        "evidenceBindingsComplete": (len(bindings) <= 32 and payload.get("evidenceBindingsComplete", True) is True) if bindings else None,
         "summary": summary,
         "confidence": str(payload.get("confidence") or "").strip(),
         "refs": refs[:8],
@@ -795,6 +809,7 @@ def _compact_upstream_handoff_for_agent(handoff: dict[str, Any]) -> dict[str, An
         ("detailRefs", max(0, len(detail_refs) - 8), "items"),
         ("childResults", max(0, len(unique_child_handoffs) - 6), "items"),
         ("claimTable", len(payload.get("claimTable") or []), "items"),
+        ("evidenceBindings", max(0, len(bindings) - 32), "items"),
         ("sources", len(payload.get("sources") or []), "items"),
         ("answer", len(str(payload.get("answer") or "")), "characters"),
     ):
@@ -1031,8 +1046,8 @@ def _inject_inherited_handoffs_into_tasks(
                 "These handoffs are injected evidence, not filesystem paths. Summaries are navigation aids, not full evidence. "
                 "For independent verification read the exact rawRef with tool_observation_detail(max_chars=60000); "
                 "if paginated, continue with start_char until the end before deciding. "
-                "The original claim IDs, citation keys and URLs in that evidence are authoritative; task prose is an assignment, "
-                "not a replacement claim index. Report conflicting proposed IDs/URLs and use the original bindings in your result. "
+                "Original citation keys, URLs and read hashes identify immutable observations; conclusions and applicability remain reviewable. "
+                "Task prose is an assignment, not a replacement evidence index. Report conflicting IDs/URLs and use original bindings in your result. "
                 "An unproven source identity may remain unknown with a stated limitation; do not infer its publisher from the domain "
                 "or resolve it using outside knowledge when the task is closed-world. "
                 "Read summary/childResults directly for status; "

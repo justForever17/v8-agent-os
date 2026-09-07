@@ -14,6 +14,8 @@ from langgraph.types import Command
 from core.tools.research_quality import (
     TARGET_RESEARCH_SOURCE_COUNT,
     research_answer_text,
+    research_answer_is_usable,
+    research_independent_review,
     research_as_of,
     research_bundle_is_high_quality,
     research_critical_missing_evidence,
@@ -1300,15 +1302,21 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str, *, bu
             and transport_answer == canonical_answer
             and research_bundle_is_high_quality(quality_payload)
         )
+        usable = bool(accepted or (
+            research_independent_review(quality_payload).get("reviewContract") == "research-agent-review.v1"
+            and research_independent_review(quality_payload).get("deliveryScope") == "partial"
+            and transport_answer and transport_answer == canonical_answer
+            and research_answer_is_usable(quality_payload)
+        ))
         as_of = research_as_of(quality_payload)
         sources = research_selected_sources(payload)
         if not sources and quality_payload is not payload:
             sources = research_selected_sources(quality_payload)
         quality_tier = research_quality_tier(quality_payload if accepted else payload)
 
-        if accepted:
+        if accepted or usable:
             answer = transport_answer
-            lines = ["Research answer", answer]
+            lines = ["Research answer" if accepted else "Research partial answer (not complete)", answer]
             if question:
                 lines.append(f"Question: {_short_text(question, 220)}")
             if as_of:

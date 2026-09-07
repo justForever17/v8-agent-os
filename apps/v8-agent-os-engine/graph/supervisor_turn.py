@@ -18,6 +18,7 @@ from .supervisor_context import (
 )
 from .no_progress_breaker import apply_no_progress_breaker, apply_remaining_steps_guard
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
+from .runtime_handoff_reads import is_research_handoff_read, research_handoff_read_targets
 from core.context.delegation import build_delegation_context
 from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.memory_observability import log_memory_observation
@@ -723,12 +724,15 @@ def _delegation_orchestration_guidance(*, correction: bool = False) -> SystemMes
     return SystemMessage(content=(
         "[Required Delegation Dispatch]\n"
         + ("This is the single correction attempt. " if correction else "")
-        + "The next user-requested action is delegation_broker(mode='dispatch'), not a runtime_broker route. "
+        + "The next user-requested execution is delegation_broker(mode='dispatch'), not a runtime_broker route. "
+        "You may first read the received Research handoff's exact rawRef with tool_observation_detail, or its evidenceBundleId with research_broker(mode='get_evidence'), when needed to prepare an accurate task. "
+        "This is evidence preparation, not completion of the requested delegation; do not restart Research or fetch unrelated material. "
         "Use the exact Agent identity from the visible registry, never guess a family name. "
         "Copy the flat tasks array below, replace placeholders with the current request and received evidence, "
         "and retain expectedOutputs and acceptanceContract for read-only tasks as well as writes. "
         "Do not wrap tasks in taskBrief, use taskBriefs, or claim the worker has already completed. "
         "Carry original claim IDs, citation keys, actual URLs and detail refs without renumbering. "
+        "Use readSet for actual filesystem paths only. Put the original Research references in evidenceRefs/detailRefs; never invent a resource scheme or turn a bundle ID into a filename. "
         "Preserve requested read-only/no-further-delegation boundaries as typed fields: readOnly=true, "
         "writeRequired=false, writeSet=[], allowChildDelegation=false, not only prose in behaviorScope. "
         "Only declare a bounded writeSet when writing was authorized. "
@@ -2317,6 +2321,8 @@ def _runtime_research_gap_state(state) -> dict:
     the same stable brief ID count as the one allowed managed retry.
     """
 
+    from core.tools.research_quality import research_reviewed_partial_brief_ids
+
     route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
     handoffs = [
         dict(item)
@@ -2340,6 +2346,7 @@ def _runtime_research_gap_state(state) -> dict:
         kind = str(handoff.get("kind") or "").strip().lower()
         if "research" not in kind:
             continue
+        reviewed_partial_ids = research_reviewed_partial_brief_ids(handoff)
         producer_id = str(handoff.get("producerEpisodeId") or handoff.get("episodeId") or "").strip()
         downstream_allowed = downstream_allowed or bool(handoff.get("downstreamAllowed"))
         if isinstance(handoff.get("continuationPolicy"), dict):
@@ -2361,7 +2368,7 @@ def _runtime_research_gap_state(state) -> dict:
             )
             if not brief_ids:
                 continue
-            status = str(result.get("status") or "").strip().lower()
+            status = "usable_partial" if primary_brief_id in reviewed_partial_ids else str(result.get("status") or "").strip().lower()
             result_detail = {
                 "status": status or "degraded",
                 "limitations": [str(value) for value in list(result.get("limitations") or []) if str(value).strip()][:6],
@@ -2419,7 +2426,7 @@ def _runtime_research_gap_state(state) -> dict:
             if brief_id and (not episode_id or producer_by_brief.get(brief_id) in {"", episode_id, None}):
                 episode_briefs[brief_id] = dict(brief)
 
-    missing = [brief_id for brief_id, item in latest.items() if str(item.get("status") or "") not in {"ready", "completed", "success", "ok"}]
+    missing = [brief_id for brief_id, item in latest.items() if str(item.get("status") or "") not in {"ready", "completed", "success", "ok", "usable_partial"}]
     current_ready_ids = [
         brief_id
         for brief_id, item in latest.items()
@@ -2427,6 +2434,7 @@ def _runtime_research_gap_state(state) -> dict:
     ]
     return {
         "missingTaskBriefIds": missing,
+        "partialTaskBriefIds": [brief_id for brief_id, item in latest.items() if item.get("status") == "usable_partial"],
         "attempts": {brief_id: max(1, int(attempts.get(brief_id) or 0)) for brief_id in missing},
         "details": {brief_id: latest.get(brief_id, {}) for brief_id in missing},
         "briefs": {brief_id: episode_briefs.get(brief_id, {}) for brief_id in missing},
@@ -2761,6 +2769,12 @@ def _runtime_handoff_continuation_message(state) -> HumanMessage:
 def _runtime_handoff_final_message(state=None) -> HumanMessage:
     research_gap = _runtime_research_gap_state(state)
     exhausted_gap = ""
+    if research_gap.get("partialTaskBriefIds"):
+        exhausted_gap = (
+            " Research supplied reviewed partial answers, not failed drafts. Preserve their supported conclusions and "
+            "explicit limitations. Decide whether remaining user needs require a focused update or allow bounded delivery; "
+            "do not claim full coverage or restart every brief automatically."
+        )
     if research_gap.get("missingTaskBriefIds") and not research_gap.get("retryAvailable"):
         exhausted_gap = (
             " The managed Research retry is exhausted for these unresolved brief IDs: "
@@ -3411,6 +3425,8 @@ def execute_supervisor_turn(
         if required_orchestration_kind
         else ""
     )
+    handoff_read_targets = research_handoff_read_targets(state) if required_orchestration_kind == "delegation" else {}
+    orchestration_tool_choice = "required" if handoff_read_targets else required_orchestration_tool or None
     explicit_coordination_send = (
         False
         if completion_truth_correction
@@ -3537,15 +3553,16 @@ def execute_supervisor_turn(
         if _memory_no_match_since_latest_human(state):
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, {"memory_broker"})
         if pending_required_runtime_kinds:
+            orchestration_tool_names = {required_orchestration_tool, *handoff_read_targets}
             filtered_supervisor_tools = [
                 tool_ref
                 for tool_ref in list(filtered_supervisor_tools or [])
-                if _tool_ref_name(tool_ref) == required_orchestration_tool
+                if _tool_ref_name(tool_ref) in orchestration_tool_names
             ]
             filtered_supervisor_tools = _ensure_named_tools(
                 filtered_supervisor_tools,
                 visible_supervisor_tools,
-                {required_orchestration_tool},
+                orchestration_tool_names,
             )
         try:
             route_bundle.filtered_tools = list(filtered_supervisor_tools)
@@ -3922,6 +3939,8 @@ def execute_supervisor_turn(
             sanitized_response = _normalize_runtime_broker_response_arguments(
                 sanitize_response_tool_calls(candidate_response)
             )
+            if is_research_handoff_read(sanitized_response, handoff_read_targets):
+                return None
             routed_kinds = _response_runtime_route_kinds(sanitized_response)
             required_attempt = _response_has_required_broker_attempt(
                 sanitized_response,
@@ -3972,7 +3991,7 @@ def execute_supervisor_turn(
                 _role="supervisor",
                 **invoke_caller_kwargs,
             ),
-            tool_choice=required_orchestration_tool or None,
+            tool_choice=orchestration_tool_choice,
             invocation_config=(
                 {"metadata": {"v8_internal_model_surface": "runtime_route_compiler"}}
                 if use_runtime_route_compiler
@@ -4073,6 +4092,7 @@ def execute_supervisor_turn(
                 )
             if not use_runtime_route_compiler and (
                 required_kind not in _response_runtime_route_kinds(response)
+                and not is_research_handoff_read(response, handoff_read_targets)
                 and not _response_has_required_broker_attempt(
                     response,
                     required_orchestration_tool,
@@ -4099,7 +4119,7 @@ def execute_supervisor_turn(
                         _role="supervisor",
                         **invoke_caller_kwargs,
                     ),
-                    tool_choice=required_orchestration_tool,
+                    tool_choice=orchestration_tool_choice,
                     result_validator=_required_route_result_validator,
                 )
                 response = _normalize_runtime_broker_response_arguments(
@@ -4107,6 +4127,7 @@ def execute_supervisor_turn(
                 )
                 if (
                     required_kind not in _response_runtime_route_kinds(response)
+                    and not is_research_handoff_read(response, handoff_read_targets)
                     and not _response_has_required_broker_attempt(
                         response,
                         required_orchestration_tool,

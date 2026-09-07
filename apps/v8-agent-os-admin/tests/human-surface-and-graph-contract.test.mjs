@@ -131,10 +131,10 @@ test("Agent Browser is configured from Research without exposing Chrome and Edge
     assert.match(browserPanel, /effectiveEnvelope/);
     assert.match(browserPanel, /effectiveProfileEnabled/);
     assert.match(browserPanel, /effectiveHostsAllowed/);
-    assert.match(browserPanel, /genericOpened/);
+    assert.match(browserPanel, /parseAgentBrowserLoginTarget\(siteUrl\)/);
     assert.match(browserPanel, /agentBrowser\.profileConfigFailed/);
-    assert.match(browserPanel, /https:\/\/metaso\.cn\//);
-    assert.match(browserPanel, /https:\/\/www\.baidu\.com\//);
+    assert.doesNotMatch(browserPanel, /LOGIN_TARGETS|openMetaso|openBaidu|about:blank/);
+    assert.equal((browserPanel.match(/<Button\b/g) || []).length, 1);
     assert.match(browserPanel, /agentBrowser\.title/);
     assert.doesNotMatch(browserPanel, /openChrome|openEdge|browserKind/);
     assert.doesNotMatch(desktopPage, /openAgentBrowser|agentBrowser\.openChrome|agentBrowser\.openEdge/);

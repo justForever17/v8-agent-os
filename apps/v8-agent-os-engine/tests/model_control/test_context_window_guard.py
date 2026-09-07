@@ -40,7 +40,7 @@ def test_effective_window_uses_minimum_text_generation_participant(monkeypatch):
     assert {item["role"] for item in resolved["participants"]} == {"supervisor", "summary"}
 
 
-def test_summary_model_can_lower_effective_window(monkeypatch):
+def test_summary_model_limits_its_fragment_not_supervisor_context(monkeypatch):
     _install_fake_metadata(
         monkeypatch,
         {
@@ -57,7 +57,7 @@ def test_summary_model_can_lower_effective_window(monkeypatch):
         compression={"use_llm_summary": True},
     )
 
-    assert resolved["effectiveContextWindowTokens"] == 262_144
+    assert resolved["effectiveContextWindowTokens"] == 1_000_000
     assert resolved["summaryInputBudgetTokens"] <= 262_144
 
 
@@ -87,7 +87,7 @@ def test_non_text_models_do_not_enter_context_window_participants(monkeypatch):
     assert [item["modelRef"] for item in resolved["participants"]] == ["supervisor-1m", "summary-1m"]
 
 
-def test_missing_and_below_min_windows_are_reported(monkeypatch):
+def test_missing_summary_window_does_not_reject_small_user_budget(monkeypatch):
     _install_fake_metadata(
         monkeypatch,
         {
@@ -104,11 +104,11 @@ def test_missing_and_below_min_windows_are_reported(monkeypatch):
         compression={"use_llm_summary": True, "default_context_window_tokens": 32_000},
     )
 
-    assert resolved["effectiveContextWindowTokens"] == 32_000
-    assert {item["reason"] for item in resolved["warnings"]} == {"below_min_context_window", "missing_context_window"}
+    assert resolved["effectiveContextWindowTokens"] == 128_000
+    assert {item["reason"] for item in resolved["warnings"]} == {"missing_context_window"}
     validation = validate_text_role_model_window("supervisor", "small-chat")
-    assert validation["ok"] is False
-    assert validation["minimumRequiredContextWindowTokens"] == MIN_TEXT_CONTEXT_WINDOW_TOKENS
+    assert validation["ok"] is True
+    assert validation["participant"]["minimumRequiredContextWindowTokens"] == MIN_TEXT_CONTEXT_WINDOW_TOKENS
 
 
 def test_provider_context_overflow_is_normalized():

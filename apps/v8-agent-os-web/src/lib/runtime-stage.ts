@@ -1,6 +1,7 @@
 import { Message, UiArtifactNode, UiExecutionNode, UiGovernanceNode, UiTimelineNode } from "@/store/chat-types";
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
+    buildRuntimeEpisodeGraph,
     coerceAdminResourceRef,
     type ContextGovernanceDigest,
     type MemoryRuntimeInsight,
@@ -649,6 +650,10 @@ export function buildRuntimeStageModel(
     const runtimeActivitiesById = new Map<RuntimeId, RuntimeStageActivity[]>();
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
     const isBusy = isActiveRunStatus(runtimeStatus);
+    const activeEpisodeRuntimes = new Set(buildRuntimeEpisodeGraph(messageActivities.map((activity) => ({
+        id: activity.id, topic: activity.topic, timestamp: activity.timestamp,
+        data: activity.node.kind === "execution" ? activity.node.data as Record<string, unknown> : undefined,
+    }))).filter((episode) => episode.id !== "supervisor" && episode.status === "active").map((episode) => episode.runtimeId));
     const visibleRuntimeOrder = VISIBLE_RUNTIME_ORDER.filter((runtimeId) => {
         const runtimeActivities = runtimeActivitiesForCard(runtimeId, summaryActivities);
         const ownerVisible = runtimeId === rawActiveRuntimeId && (isBusy || options?.pendingApproval || options?.recoverable);
@@ -667,11 +672,14 @@ export function buildRuntimeStageModel(
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getRuntimeDescriptor(runtimeId, options?.locale || "zh-CN");
         const runtimeActivities = runtimeActivitiesById.get(runtimeId) || [];
-        const lastActivity = runtimeActivities[0];
+        const detailActivities = runtimeActivitiesForCard(runtimeId, messageActivities);
+        const lastActivity = detailActivities[0] || runtimeActivities[0];
 
         let status: RuntimeCardStatus = "idle";
         if (runtimeId === activeRuntimeId && isBusy) {
             status = options?.pendingApproval ? "attention" : "active";
+        } else if (isBusy && activeEpisodeRuntimes.has(runtimeId)) {
+            status = "active";
         } else if (runtimeId === activeRuntimeId && (options?.recoverable || String(options?.status || "").trim().toLowerCase() === "failed")) {
             status = "attention";
         } else if (lastActivity) {
@@ -684,7 +692,7 @@ export function buildRuntimeStageModel(
             shortLabel: descriptor.shortLabel,
             description: descriptor.description,
             status,
-            eventCount: runtimeActivities.length,
+            eventCount: detailActivities.length,
             lastActivity: runtimeId === activeRuntimeId && options?.currentStepTitle
                 ? options.currentStepTitle
                 : lastActivity?.summary,

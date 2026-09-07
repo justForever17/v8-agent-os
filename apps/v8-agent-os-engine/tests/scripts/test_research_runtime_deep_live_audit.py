@@ -64,7 +64,8 @@ def test_fixed_bundle_cli_still_requires_explicit_live(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("attempt_fetch", [False, True])
-def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch, tmp_path, attempt_fetch):
+@pytest.mark.parametrize("prune_original", [False, True])
+def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch, tmp_path, attempt_fetch, prune_original):
     from core.tools import research_broker as research
     from tests.scripts import run_research_runtime_fixed_bundle_acceptance as fixed
 
@@ -72,7 +73,8 @@ def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch,
               "sourceMatrix": [{"url": "https://example.org/fact"}],
               "shards": [{"fetchedTopSources": [{"text": "Exact source text"}]}]}
     before = copy.deepcopy(bundle)
-    monkeypatch.setattr(fixed, "load_fixed_bundle", lambda *_args, **_kwargs: bundle)
+    ledger_path = tmp_path / "ledger.json"
+    ledger_path.write_text(json.dumps({"evidenceBundles": [bundle]}), encoding="utf-8")
     monkeypatch.setattr(fixed, "_result_assessment", lambda _: {
         "highQualityIssues": [], "reviewDecision": "accept", "providerModels": ["fixture"],
     })
@@ -81,6 +83,8 @@ def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch,
     def synthesize(**kwargs):
         kwargs["source_matrix"].clear()
         kwargs["shards"].clear()
+        if prune_original:
+            ledger_path.write_text(json.dumps({"evidenceBundles": []}), encoding="utf-8")
         if attempt_fetch:
             # Even if runtime catches this exception, the audit must fail.
             try:
@@ -90,12 +94,19 @@ def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch,
         return {"answerMarkdown": "fixture answer"}
 
     monkeypatch.setattr(research, "_web_research_architect_pack", synthesize)
-    case = audit._run_fixed_bundle_case(tmp_path / "ledger.json", "fixture", tmp_path)
+    case = audit._run_fixed_bundle_case(ledger_path, "fixture", tmp_path)
     assert case.status == ("failed" if attempt_fetch else "ok")
     assert ("fixed_evidence_acquisition_attempted" in case.failures) is attempt_fetch
     assert bundle == before
     assert research.web_read.func is original_read
-    assert len(list(tmp_path.glob("*.result.json"))) == 1
+    inputs = list(tmp_path.glob("input-*.result.json"))
+    results = list(tmp_path.glob("synthesis-*.result.json"))
+    assert len(inputs) == len(results) == 1
+    assert fixed.load_fixed_bundle(inputs[0], bundle_id="fixture") == before
+    assert json.loads(results[0].read_text(encoding="utf-8")) == {"answerMarkdown": "fixture answer"}
+    evidence = [json.loads(row) for row in case.evidence]
+    assert evidence[0]["frozenInputSha256"] == hashlib.sha256(inputs[0].read_bytes()).hexdigest()
+    assert evidence[1]["bundleDigest"] == fixed.bundle_digest(before)
 
 
 def _technical_bundle() -> dict:

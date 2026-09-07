@@ -12,6 +12,15 @@ from graph.compat import sanitize_response_tool_calls
 
 
 class ResponseNormalizerToolCallIdTests(unittest.TestCase):
+    def test_reasoning_boundary_is_not_visible_answer_or_a_destructive_rewrite(self):
+        for delimiter in ("</think>", "</mm:think>", "</vendor:think>"):
+            message = AIMessage(content=delimiter + "\n第一段\n\n第二段", additional_kwargs={"reasoning_content": "Analysis"})
+            self.assertEqual(extract_text_and_reasoning(message), ("\n第一段\n\n第二段", "Analysis"))
+            self.assertTrue(message.content.startswith(delimiter))
+            self.assertEqual(extract_text_and_reasoning(AIMessage(content=delimiter)), (delimiter, ""))
+        literal = "```xml\n</mm:think>\n```"
+        self.assertEqual(extract_text_and_reasoning(AIMessage(content=literal, additional_kwargs={"reasoning_content": "Analysis"}))[0], literal)
+
     def test_reasoning_preserves_stream_token_whitespace_and_line_breaks(self):
         first = SimpleNamespace(
             content="",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -137,13 +138,22 @@ class SubagentStreamProgressAggregator:
         channel = self._channels[kind]
         if not channel.content:
             return
+        visible = channel.content
+        if kind == "text" and self._channels["analysis"].content:
+            if not finalized and re.fullmatch(r"\s*<(?:/[\w:.-]*)?", visible):
+                return  # Hold an incomplete reasoning boundary across chunks.
+            visible, _reasoning = extract_text_and_reasoning({
+                "content": visible, "reasoning_content": self._channels["analysis"].content,
+            })
+            if not visible.strip():
+                return
         if not finalized and channel.emitted_chars >= len(channel.content):
             return
         channel.sequence += 1
         channel.emitted_chars = len(channel.content)
         channel.last_emitted_at = float(now if now is not None else time.monotonic())
         self._last_projected_at = channel.last_emitted_at
-        bounded, omitted_chars = project_subagent_stream_text(channel.content)
+        bounded, omitted_chars = project_subagent_stream_text(visible)
         is_analysis = kind == "analysis"
         topic = "subagent.reasoning.delta" if is_analysis else "subagent.text.delta"
         timeline_node = {

@@ -350,6 +350,19 @@ def test_task_query_redacts_auth_without_erasing_non_secret_policy_context():
     assert "authorizationMode" in query
 
 
+def test_compact_upstream_handoff_keeps_partial_delivery_distinct_from_missing_answer():
+    handoff = {"kind": "research", "status": "degraded", "deliveryScope": "partial",
+               "reviewDecision": "accept", "usableAnswer": True, "coverageComplete": False,
+               "rawRef": "toolobs://fixture", "answer": "Supported portion [S1]",
+               "limitations": ["The remaining requirement is unverified."]}
+    compact = _compact_upstream_handoff_for_agent(handoff)
+    for field in ("status", "deliveryScope", "reviewDecision", "usableAnswer", "coverageComplete"):
+        assert compact[field] == handoff[field]
+    assert compact["limitations"] == handoff["limitations"]
+    assert "answer" not in compact
+    assert compact["truncation"]["recoveryAvailable"] is True
+
+
 def test_compact_upstream_handoff_reports_omissions_and_preserves_recovery_contract():
     compact = _compact_upstream_handoff_for_agent(
         {
@@ -1181,6 +1194,36 @@ def test_read_only_file_contract_keeps_explicit_structured_command() -> None:
 
     assert expectations["requiredTools"] == ["read_native_file", "run_system_command"]
     assert expectations["requiredCommands"] == ["python -m pytest tests/test_readme.py"]
+
+
+@pytest.mark.parametrize("reference", [
+    "research://bundle/fixture", "toolobs://fixture", "https://example.org/spec", "urn:evidence:fixture", "path: https://example.org/spec",
+    "evidence_bundle://fixture", "task_result://fixture", "path: evidence_bundle://fixture",
+])
+def test_read_only_resource_reference_does_not_demand_native_file_tools(reference) -> None:
+    task_brief = {"readOnly": True, "readSet": [reference],
+                  "toolPolicy": {"mode": "allowlist", "allowedTools": ["web_broker", "tool_observation_detail"]}}
+    prompt = _format_delegated_task_contract(task_brief)
+    expectations = _verification_expectations({"taskBrief": task_brief})
+    assert "call `read_native_file` first" not in prompt
+    assert "resource URIs are not filesystem paths" in prompt
+    assert expectations["requiredTools"] == []
+    assert expectations["requiredReadPaths"] == []
+
+
+@pytest.mark.parametrize("path", ["README.md", "./docs/spec.md", r"C:\project\spec.md", "C:/project/spec.md", "C:spec.md", r"\\server\share\spec.md", "file:///project/spec.md"])
+def test_mixed_read_set_keeps_native_file_verification(path) -> None:
+    task_brief = {"readOnly": True, "readSet": ["research://bundle/fixture", path]}
+    expectations = _verification_expectations({"taskBrief": task_brief})
+    assert expectations["requiredTools"] == ["read_native_file"]
+    assert expectations["requiredReadPaths"] == [path]
+    assert "call `read_native_file` first" in _format_delegated_task_contract(task_brief)
+
+
+def test_labeled_file_read_has_consistent_prompt_and_execution_requirement() -> None:
+    task_brief = {"readOnly": True, "readSet": ["target file: README.md"]}
+    assert "call `read_native_file` first" in _format_delegated_task_contract(task_brief)
+    assert _verification_expectations({"taskBrief": task_brief})["requiredReadPaths"] == ["README.md"]
 
 
 def test_delegated_task_language_prefers_structured_user_language_over_english_brief() -> None:

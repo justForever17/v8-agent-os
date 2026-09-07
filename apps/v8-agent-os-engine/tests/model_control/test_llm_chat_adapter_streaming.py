@@ -161,7 +161,10 @@ def test_public_astream_events_emits_model_identity_only_once(monkeypatch) -> No
     assert combined.response_metadata["v8_model_id"] == "MiniMax-M3"
     assert combined.response_metadata["v8_model_ref"] == "minimax-cn::MiniMax-M3"
     assert combined.response_metadata["v8_provider_adapter"] == "openai-compatible"
-    assert combined.response_metadata["v8_prompt_cache"] == {"cacheKey": "stream-probe"}
+    assert combined.response_metadata["v8_prompt_cache"] == {
+        "cacheKey": "stream-probe",
+        "outputTokenBudget": {"mode": "auto", "maxTokens": None, "source": "provider_default"},
+    }
 
 
 def test_specific_required_tool_choice_limits_provider_phase_to_that_tool():

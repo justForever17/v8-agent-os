@@ -9,6 +9,7 @@ from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
 from core.model_role_doctor import diagnose_model_role
 from core.model_eligibility import evaluate_model_eligibility
+from core.model_token_policy import normalize_output_token_policy, output_token_mode
 from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata, resolve_thinking_control_for_metadata
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
@@ -95,10 +96,13 @@ def normalize_config_temperature(value: Any) -> Optional[float]:
     return max(min(parsed, 2.0), 0.05)
 
 
-def _fact_provenance_for_patch(model_patch: Dict[str, Any], source: str) -> Dict[str, Any]:
+def _fact_provenance_for_patch(model_patch: Dict[str, Any], source: str, previous: Dict[str, Any] | None = None) -> Dict[str, Any]:
     patch = dict(model_patch or {})
-    existing = dict(patch.get("factProvenance") or {})
+    previous = dict(previous or {})
+    existing = {**dict(previous.get("factProvenance") or {}), **dict(patch.get("factProvenance") or {})}
     normalized_source = str(source or "manual").strip().lower() or "manual"
+    if normalized_source == "manual" and "maxTokens" in patch and "outputTokenMode" not in patch:
+        patch["outputTokenMode"] = "fixed" if patch["maxTokens"] not in (None, "") else "auto"
     if normalized_source == "manual":
         provenance = {"source": "user_confirmed", "confidence": "authoritative"}
     elif normalized_source in {"web_research", "agent_research", "research"}:
@@ -108,6 +112,11 @@ def _fact_provenance_for_patch(model_patch: Dict[str, Any], source: str) -> Dict
     else:
         provenance = {"source": normalized_source, "confidence": "hint"}
     for key in ("contextWindow", "maxTokens", "type", "capabilities", "capabilityClass"):
+        if key == "maxTokens" and patch.get("outputTokenMode") == "auto":
+            continue
+        if normalized_source == "manual" and key in previous and previous[key] == patch.get(key):
+            if key != "maxTokens" or patch.get("outputTokenMode", output_token_mode(previous)) == output_token_mode(previous):
+                continue
         if key in patch and patch.get(key) not in (None, "", {}):
             current = dict(existing.get(key) or {})
             existing[key] = (
@@ -794,7 +803,7 @@ class ModelControlPlane:
             provider_runtime_ready = self._runtime_ready_for_provider(meta)
             normalized_models: Dict[str, Any] = {}
             for model_id, model_meta_raw in models.items():
-                model_meta = dict(model_meta_raw or {})
+                model_meta = normalize_output_token_policy(model_meta_raw or {})
                 if str(model_id).strip().lower() in PLUGIN_ONLY_MEDIA_MODEL_IDS:
                     continue
                 declared_operations = list(model_meta.get("operationKinds") or [])
@@ -1128,7 +1137,7 @@ class ModelControlPlane:
             source_container = dict(providers.get(source_provider_key) or {})
             source_models = dict(source_container.get("models") or {})
             existing_model = dict(source_models.get(source_model_key) or {})
-            annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source)
+            annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source, existing_model)
             merged_model = {**existing_model, **annotated_patch}
             binding_identity_changed = (
                 source_provider_key != normalized_provider_id
@@ -1207,7 +1216,7 @@ class ModelControlPlane:
             }
             validate_provider_channels(provider_meta)
             models = {} if replace_provider_models else dict(existing.get("models") or {})
-            annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source)
+            annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source, dict(models.get(normalized_model_id) or {}))
             next_model = persist_model_endpoint_binding(
                 normalized_provider_id,
                 normalized_model_id,
@@ -1723,6 +1732,7 @@ class ModelControlPlane:
                     "type": model_meta.get("type") or "TEXT",
                     "contextWindow": model_meta.get("contextWindow"),
                     "maxTokens": model_meta.get("maxTokens"),
+                    "outputTokenMode": model_meta.get("outputTokenMode"),
                     "observedInputTokenLimit": model_meta.get("observedInputTokenLimit"),
                     "observedInputTokenLimitSource": model_meta.get("observedInputTokenLimitSource"),
                     "observedInputTokenLimitAt": model_meta.get("observedInputTokenLimitAt"),

@@ -1,7 +1,7 @@
 from core.model_role_doctor import diagnose_model_role
 
 
-def test_text_generation_model_requires_long_context_window():
+def test_text_generation_small_context_is_advisory_not_blocking():
     result = diagnose_model_role(
         {
             "type": "TEXT",
@@ -13,8 +13,9 @@ def test_text_generation_model_requires_long_context_window():
         role="supervisor",
     )
 
-    assert result["blocking"] is True
-    assert result["issues"][0]["code"] == "below_min_context_window"
+    assert result["blocking"] is False
+    assert result["issues"] == []
+    assert result["warnings"][0]["code"] == "context_budget_below_recommended"
 
 
 def test_embedding_uses_context_window_as_input_limit_without_max_tokens():

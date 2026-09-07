@@ -644,6 +644,15 @@ def _result_assessment(result: dict[str, Any]) -> dict[str, Any]:
     )
     issues = list(research_high_quality_issues(result))
     writer_mode = str(model_synthesis.get("writerMode") or "").strip()
+    if writer_mode == "agent":
+        trace = model_synthesis.get("trace") or []
+        if not any(item.get("stage") == "review" for item in trace):
+            issues.append("independent_review_execution_missing")
+        return {
+            "reviewDecision": research_review_decision(result), "highQualityIssues": issues,
+            "qualityMetrics": metrics, "writerMode": writer_mode, "writerSectionCount": 0,
+            "providerModels": [model_synthesis.get("modelId"), model_synthesis.get("reviewerModelId")],
+        }
     writer_section_count = model_synthesis.get("writerSectionCount")
     single_writer = writer_mode in {"single", "single_reviewer_revised"}
     if not single_writer and not writer_mode.startswith("segmented"):

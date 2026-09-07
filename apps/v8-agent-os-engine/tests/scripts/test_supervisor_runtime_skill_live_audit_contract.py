@@ -13,6 +13,49 @@ from tests.runtime_core.test_runtime_episode_runner import _accepted_research_pa
 from tests.scripts import run_supervisor_runtime_skill_live_audit as audit
 
 
+def test_reviewed_partial_terminal_is_observable_but_unreviewed_degraded_is_not():
+    from tests.core.test_research_agent import saved_bundle
+    bundle = saved_bundle(partial=True)
+    result = {**bundle, "taskBriefId": "limited", "query": bundle["question"], "sources": bundle["sourceMatrix"]}
+    event = {"seq": 12, "topic": "runtime.episode.degraded", "payload": {
+        "episode": {"id": "research-episode", "kind": "research"},
+        "handoff": {"taskBriefResults": [result]},
+    }}
+    assert audit._research_completion_seq([event], {"research-episode"}) == 12
+    result["answer"] += " Unverified change."
+    assert audit._research_completion_seq([event], {"research-episode"}) is None
+
+
+def test_harness_session_continuation_uses_new_message_identity_and_rejects_user_session(monkeypatch):
+    requests = []
+    def request(_url, **kwargs):
+        requests.append(kwargs["payload"])
+        return {"runId": "run-new"}
+    monkeypatch.setattr(audit, "_json_request", request)
+    case = audit._case_specs("research_delegated_verification")[0]
+    arguments = {"case": case, "model_profile": "fixture", "timestamp": "new-attempt", "workspace": str(audit.REPO_ROOT)}
+    audit._submit_case("http://localhost:9530", **arguments, existing_session_id="supervisor-runtime-skill-live-prior")
+    assert requests[0]["session_id"] == "supervisor-runtime-skill-live-prior"
+    assert requests[0]["clientMessageId"].endswith("new-attempt")
+    with pytest.raises(ValueError, match="harness-owned"):
+        audit._submit_case("http://localhost:9530", **arguments, existing_session_id="user-session")
+    assert len(requests) == 1
+
+
+def test_continuation_audit_does_not_count_prior_run_events(monkeypatch):
+    prior = {"id": "old", "run_id": "run-old", "seq": 2, "topic": "tool.started"}
+    current = {"id": "new", "run_id": "run-current", "seq": 4, "topic": "runtime.episode.completed"}
+    monkeypatch.setattr(database_module, "db", SimpleNamespace(
+        get_runtime_events=lambda _: [prior, current],
+        get_runtime_events_for_run=lambda *_args, **_kwargs: [current],
+    ))
+    result = audit.LiveCaseResult(spec=audit.LiveCaseSpec(case_id="reuse", title="reuse", prompt="test"),
+                                 session_id="same-session", run_id="run-current")
+    events, error = audit._load_durable_runtime_events(result)
+    assert error is None
+    assert events == [current]
+
+
 def test_unreachable_web_prevents_billable_live_submission(monkeypatch):
     def unreachable(*_args, **_kwargs):
         raise urllib.error.URLError("connection refused")
@@ -191,6 +234,10 @@ def test_delegated_research_diagnostic_requires_sequential_durable_truth(monkeyp
         ],
     )
     result.final_text += "\n" + research_payload["answer"]
+    result.final_text += (
+        "\n生成式人工智能服务管理暂行办法；互联网信息服务深度合成管理规定；"
+        "人工智能生成合成内容标识办法；GB 45438-2025。未核实事项仍列为证据缺口；上线清单如下。"
+    )
     monkeypatch.setattr(
         audit,
         "_research_handoff_assessment",
@@ -344,6 +391,33 @@ def test_verification_proof_rejects_mirror_relabeling_and_unbound_success():
     assert diagnostic["mismatches"] == ["C3/S3:source_url_mismatch"]
     assert audit._verification_binding_audit("Verification Engineer 全部验证成功。" * 1000, [payload])["passed"] is False
     assert audit._verification_binding_audit(proof, [])["passed"] is False
+
+
+def test_verification_audit_does_not_grade_navigation_as_a_verified_conclusion():
+    payload = {"claimTable": [{"claimId": f"read_S{i}:R1", "supportingSources": [
+        {"citationKey": f"S{i}", "url": f"https://mirror.example/document-{i}"}
+    ]} for i in range(1, 4)]}
+    navigation = "| claimId | [S#] | URL |\n|---|---|---|\n| read_S1:R1 | [S1] | https://mirror.example/... |\n\n"
+    verified = "| claimId | [S#] | URL | 核验结论 |\n|---|---|---|---|\n" + "\n".join(
+        f"| read_S{i}:R1 | [S{i}] | https://mirror.example/document-{i} | 部分支持，限制已说明 |" for i in range(1, 4))
+    assert audit._verification_binding_audit(navigation + verified, [payload])["passed"] is True
+    assert audit._verification_binding_audit(navigation, [payload])["passed"] is False
+    mutant = verified.replace("https://mirror.example/document-1", "https://official.example/original")
+    assert audit._verification_binding_audit(navigation + mutant, [payload])["passed"] is False
+
+
+def test_delivery_coverage_accepts_paraphrase_but_rejects_missing_domains_and_unread_urls():
+    urls = [f"https://official-{i}.gov.cn/document" for i in range(5)]
+    text = ("截至2026年9月3日，生成式人工智能服务管理暂行办法、互联网信息服务深度合成管理规定、"
+            "人工智能生成合成内容标识办法和GB 45438-2025的适用关系、义务和上线清单如下。"
+            "与原答案不同，复核已更正结论并保留未核实事项。\n" + "\n".join(urls))
+    report = audit._delegated_research_delivery_coverage(text, urls)
+    assert report["passed"] is True
+    assert report["semanticTruthAssessed"] is False
+    for removed in ("生成式人工智能服务管理暂行办法", "GB 45438-2025", "未核实", "上线清单", urls[0]):
+        assert audit._delegated_research_delivery_coverage(text.replace(removed, ""), urls)["passed"] is False
+    assert audit._delegated_research_delivery_coverage(text, urls[1:])["passed"] is False
+    assert audit._delegated_research_delivery_coverage("全文见Research。" + "\n".join(urls), urls)["passed"] is False
 
 
 def test_research_handoff_assessment_recomputes_instead_of_trusting_forged_metrics():

@@ -17,6 +17,7 @@ export type AdminModelSelectOption = {
   capabilityClass?: string | null;
   contextWindow?: number | null;
   maxTokens?: number | null;
+  outputTokenMode?: "auto" | "fixed";
   capabilities?: Record<string, boolean> | string[] | null;
   eligibility?: {
     status?: string;
@@ -31,7 +32,6 @@ export type AdminModelSelectOption = {
   providerName?: string | null;
   warningReason?: string | null;
 };
-const MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262144;
 const NON_TEXT_TYPES = new Set(["IMAGE", "VIDEO", "VOICE", "MUSIC", "MODEL3D", "WORKFLOW", "EMBEDDING", "RERANK", "VECTOR"]);
 const NON_TEXT_CAPABILITY_CLASSES = new Set(["media_generation", "embedding", "reranker", "rerank", "workflow", "model3d"]);
 function hasCapability(model: AdminModelSelectOption, key: string): boolean {
@@ -52,15 +52,14 @@ function isTextGenerationOption(model: AdminModelSelectOption): boolean {
   }
   return true;
 }
-function contextWindowInvalidReason(model: AdminModelSelectOption, minimum: number): string {
+function contextWindowInvalidReason(model: AdminModelSelectOption): string {
   if (model.eligibility && model.eligibility.selectable === false) {
     return String(model.eligibility.shortLabel || model.eligibility.reasons?.[0]?.message || "Model configuration is incomplete");
   }
   if (!isTextGenerationOption(model)) return "";
   const contextWindow = typeof model.contextWindow === "number" ? model.contextWindow : null;
   if (!contextWindow) return "Context window is not configured; this model cannot be used for long-context text roles";
-  if (contextWindow < minimum) return `context window ${contextWindow} < ${minimum}`;
-  if (!model.maxTokens) return "Maximum output tokens are not configured";
+  if (model.outputTokenMode === "fixed" && !model.maxTokens) return "Fixed output budget is not configured";
   return "";
 }
 function modelOptionIcon(model: AdminModelSelectOption): string | null {
@@ -164,7 +163,6 @@ export function ModelSelect({
   emptyOutputValue = "",
   showCompatibilityHint = true,
   enforceTextContextWindow = true,
-  minimumContextWindow = MIN_TEXT_CONTEXT_WINDOW_TOKENS,
   className
 }: {
   models: AdminModelSelectOption[];
@@ -187,7 +185,7 @@ export function ModelSelect({
     model,
     value: modelOptionValue(model),
     label: modelOptionLabel(model),
-    invalidReason: enforceTextContextWindow ? contextWindowInvalidReason(model, minimumContextWindow) : ""
+    invalidReason: enforceTextContextWindow ? contextWindowInvalidReason(model) : ""
   })).filter(item => {
     if (!item.value || seen.has(item.value)) return false;
     seen.add(item.value);
@@ -213,7 +211,7 @@ export function ModelSelect({
                 </SelectContent>
             </Select>
             {resolvedInvalidReason ? <p className="text-xs leading-5 text-amber-700">
-                    {ti(t, "ka0af8f7df5")} {resolved.selectValue} {resolvedInvalidReason}{ti(t, "k89878d272c")} {minimumContextWindow} {ti(t, "k9dea91123a")}
+                    {ti(t, "ka0af8f7df5")} {resolved.selectValue} {resolvedInvalidReason}
                 </p> : null}
             {showCompatibilityHint && resolved.message ? <p className="text-xs leading-5 text-amber-700">{resolved.message}</p> : null}
         </div>;

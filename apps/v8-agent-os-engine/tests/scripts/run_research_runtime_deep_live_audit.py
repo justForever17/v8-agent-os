@@ -1265,6 +1265,10 @@ def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> Audi
     try:
         bundle = fixed.load_fixed_bundle(path, bundle_id=bundle_id)
         before = fixed.bundle_digest(bundle)
+        frozen_path, frozen_sha = fixed._write_result_artifact(
+            output_dir, f"input-{time.time_ns()}", {"evidenceBundles": [bundle]},
+        )
+        case.evidence.append(_redact({"frozenInputRef": str(frozen_path), "frozenInputSha256": frozen_sha}))
         with fixed.forbid_evidence_acquisition(research_module) as counters:
             result = research_module._web_research_architect_pack(
                 question=str(bundle["question"]),
@@ -1275,17 +1279,17 @@ def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> Audi
                 freshness=str(bundle.get("freshness") or "auto"),
                 architect_call_state={},
             )
+        artifact, digest = fixed._write_result_artifact(
+            output_dir, f"synthesis-{time.time_ns()}", result,
+        )
         assessment = fixed._result_assessment(result)
         case.failures.extend(assessment["highQualityIssues"])
         if assessment["reviewDecision"] != "accept":
             case.failures.append("fixed_review_not_accepted")
         if any(counters.values()):
             case.failures.append("fixed_evidence_acquisition_attempted")
-        if before != fixed.bundle_digest(fixed.load_fixed_bundle(path, bundle_id=bundle_id)):
+        if before != fixed.bundle_digest(fixed.load_fixed_bundle(frozen_path, bundle_id=bundle_id)):
             case.failures.append("fixed_evidence_drifted")
-        artifact, digest = fixed._write_result_artifact(
-            output_dir, f"synthesis-{time.time_ns()}", result,
-        )
         case.providers = assessment["providerModels"]
         case.evidence.append(_redact({
             "evidenceMode": "fixed-evidence-provider-live", "bundleDigest": before,
@@ -1299,12 +1303,100 @@ def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> Audi
     return case
 
 
+def _run_agent_question(question: str, seed_urls: list[str], output_dir: Path, followup_question: str = "") -> AuditCaseResult:
+    from core.tools import research_broker as research_module
+    from core.tools.research_quality import research_acceptance_issues, research_answer_is_usable
+
+    case = AuditCaseResult("research_agent", "研究 Agent 真实获取、合成与审查")
+    started = time.perf_counter()
+    state = {"session_id": f"research-agent-audit-{time.time_ns()}"}
+    try:
+        payload = json.loads(research_module.research_broker.func(
+            mode="run", question=question, seedUrls=seed_urls, forceRefresh=True,
+            maxShards=4, maxRounds=3, preferredLanguage="zh-CN",
+            tool_call_id=f"live-research-agent-{time.time_ns()}",
+            state=state,
+        ))
+        canonical = _persisted_research_bundle(payload)
+        if not canonical:
+            case.failures.append("persisted_evidence_missing")
+        else:
+            issues = research_acceptance_issues(canonical)
+            case.failures.extend(issues)
+            if (payload.get("researchAnswerPack") or {}).get("answer", payload.get("answer")) != canonical.get("answer"):
+                case.failures.append("live_persisted_answer_drift")
+            model = (canonical.get("finalExperiencePack") or {}).get("modelSynthesis") or {}
+            case.providers = [str(model.get("modelId") or ""), str(model.get("reviewerModelId") or "")]
+            from tests.scripts.run_research_runtime_fixed_bundle_acceptance import _write_result_artifact
+            artifact, digest = _write_result_artifact(output_dir, f"agent-{time.time_ns()}", canonical)
+            case.evidence.append(_redact({
+                "evidenceMode": "acquisition-and-provider-live", "resultRef": str(artifact),
+                "resultSha256": digest, "deliveryReady": canonical.get("deliveryReady"),
+                "usableAnswer": research_answer_is_usable(canonical), "modelSynthesis": model,
+                "answerChars": len(canonical.get("answer") or ""),
+                "sourceCount": len(canonical.get("sourceUrls") or []),
+            }))
+            case.summary = f"scope={canonical.get('deliveryScope')}; sources={len(canonical.get('sourceUrls') or [])}; issues={issues}"
+            if followup_question and not case.failures:
+                _exercise_answer_lifecycle(case, canonical, state, followup_question, output_dir)
+    except Exception as exc:
+        case.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    case.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    case.status = "failed" if case.failures else "ok"
+    return case
+
+
+def _exercise_answer_lifecycle(case, original, state, followup_question, output_dir):
+    from core.tools import research_broker as broker, research_ledger as ledger
+    from core.tools.research_quality import research_acceptance_issues
+    from tests.scripts.run_research_runtime_fixed_bundle_acceptance import _write_result_artifact
+
+    update = original.get("experienceUpdate") or {}
+    if update.get("status") != "created" or not update.get("experiencePackId"):
+        raise AssertionError("lifecycle_requires_an_answer_created_by_this_audit")
+    pack_id = update["experiencePackId"]
+
+    def invoke(**kwargs):
+        return json.loads(broker.research_broker.func(state=state, tool_call_id=f"live-lifecycle-{time.time_ns()}", **kwargs))
+
+    start = time.perf_counter()
+    reused = invoke(mode="run", question=original["question"])
+    assert reused.get("deliveryReady") is True, "exact_reuse_not_deliverable"
+    assert reused.get("evidenceBundleId") == original["evidenceBundleId"], "exact_reuse_restarted_research"
+    assert (reused.get("researchAnswerPack") or {}).get("answer", reused.get("answer")) == original["answer"], "exact_reuse_answer_drift"
+    reuse_ms = int((time.perf_counter() - start) * 1000)
+    revised = invoke(mode="run", question=followup_question, experiencePackId=pack_id, preferredLanguage="zh-CN")
+    canonical = _persisted_research_bundle(revised)
+    assert canonical and not research_acceptance_issues(canonical), "revision_not_accepted"
+    assert canonical.get("experienceUpdate", {}).get("status") == "updated", "revision_not_saved"
+    assert ledger.get_experience_pack(pack_id)["createdFromBundleId"] == canonical["evidenceBundleId"], "revision_readback_drift"
+    assert canonical["answer"] == (revised.get("researchAnswerPack") or {}).get("answer", revised.get("answer")), "revision_surface_drift"
+    artifact, digest = _write_result_artifact(output_dir, f"revision-{time.time_ns()}", canonical)
+    for mode in ("archive_experience", "restore_experience"):
+        result = invoke(mode=mode, experiencePackId=pack_id)
+        assert result.get("ok") is True, f"{mode}_failed"
+        if mode == "archive_experience":
+            unavailable = invoke(mode="run", question=followup_question, experiencePackId=pack_id)
+            assert unavailable.get("error") == "experience_not_available", "archived_answer_reactivated"
+    # Delete only the synthetic answer created above, never user library records.
+    assert invoke(mode="delete_experience", experiencePackId=pack_id, confirm=True).get("ok") is True
+    assert ledger.get_experience_pack(pack_id, include_archived=True) is None
+    case.evidence.append(_redact({"evidenceMode": "answer-lifecycle-provider-live", "exactReuseElapsedMs": reuse_ms,
+                          "revisionResultRef": str(artifact), "revisionSha256": digest,
+                          "revisionSearchCount": canonical["researchResult"]["modelSynthesis"]["searchCount"],
+                          "archiveRestoreDeleteVerified": True}))
+    case.summary += f"; lifecycle=passed; exactReuseMs={reuse_ms}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run live Research Runtime deep audit.")
     parser.add_argument("--live", action="store_true", help="Required to perform network/provider live calls.")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--case", choices=[*CASES.keys(), "all"], default="all")
     selection.add_argument("--fixed-bundle", type=Path, help="Replay stored evidence with live configured models; forbids new acquisition.")
+    selection.add_argument("--agent-question", help="Run one question through the production research agent, real acquisition and configured models.")
+    parser.add_argument("--seed-url", action="append", default=[])
+    parser.add_argument("--followup-question", default="", help="With --agent-question, verify exact reuse, live revision, then archive/restore/delete only this audit's new answer.")
     parser.add_argument("--bundle-id", default="", help="Select one bundle from --fixed-bundle ledger.")
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_REPORT_ROOT)
@@ -1312,10 +1404,13 @@ def main() -> int:
     if not args.live:
         print("Refusing to run live audit without --live.")
         return 2
+    if args.followup_question and not args.agent_question:
+        parser.error("--followup-question requires --agent-question")
     selected = list(CASES.keys()) if args.case == "all" else [args.case]
     results = (
         [_run_fixed_bundle_case(args.fixed_bundle, args.bundle_id, args.output_dir)]
-        if args.fixed_bundle else [CASES[case_id]() for case_id in selected]
+        if args.fixed_bundle else [_run_agent_question(args.agent_question, args.seed_url, args.output_dir, args.followup_question)]
+        if args.agent_question else [CASES[case_id]() for case_id in selected]
     )
     for item in results:
         print(f"[{item.status}] {item.case_id}: {item.summary or '; '.join(item.failures) or item.title}")

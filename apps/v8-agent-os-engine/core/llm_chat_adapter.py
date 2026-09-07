@@ -13,6 +13,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel as PydanticModel, ConfigDict, PrivateAttr
 
 from core.model_capability_matrix import build_effective_capability_matrix
+from core.model_token_policy import OUTPUT_TOKEN_KEYS, prepare_output_token_kwargs
 from core.llm_exceptions import V8LLMStructuredOutputError, raise_as_v8_llm_error
 from core.prompt_cache_gateway import PreparedPromptCacheRequest, prompt_cache_gateway
 from core.provider_hosted_tools import provider_hosted_tool_schemas
@@ -956,7 +957,26 @@ class V8ChatModelAdapter(BaseChatModel):
         streaming: bool = False,
         **kwargs: Any,
     ) -> PreparedPromptCacheRequest:
-        return prompt_cache_gateway.prepare_request(
+        capabilities = self._meta.get("capabilities") or {}
+        if (streaming and self.provider_standard == "openai"
+                and self._meta.get("wire_protocol") != "openai.responses"
+                and (capabilities.get("streamUsage") or capabilities.get("supportsStreamUsage"))):
+            kwargs.setdefault("stream_usage", True)
+        token_key = "max_output_tokens" if self.provider_standard in {"google", "gemini"} else "max_tokens"
+        containers = [kwargs, kwargs.get("extra_body") or {}, kwargs.get("model_kwargs") or {}]
+        if not any(key in container for container in containers for key in OUTPUT_TOKEN_KEYS):
+            constructor_budget = next((self._model_kwargs[key] for key in OUTPUT_TOKEN_KEYS if self._model_kwargs.get(key)), None)
+            if constructor_budget is not None:
+                kwargs[token_key] = constructor_budget
+        kwargs, budget = prepare_output_token_kwargs(
+            self._meta, kwargs, key=token_key, requires_value=self.provider_standard == "anthropic",
+        )
+        if self.provider_standard == "anthropic":
+            from core.model_thinking_control import ensure_anthropic_thinking_budget_headroom
+            ensure_anthropic_thinking_budget_headroom(
+                {**self._model_kwargs, **kwargs}, output_limit=budget["maxTokens"],
+            )
+        prepared = prompt_cache_gateway.prepare_request(
             messages=messages,
             kwargs=kwargs,
             stop=stop,
@@ -969,6 +989,8 @@ class V8ChatModelAdapter(BaseChatModel):
             bound_tools=self._runtime_bound_tools(),
             streaming=streaming,
         )
+        prepared.diagnostics["outputTokenBudget"] = budget
+        return prepared
 
     def _finalize_prompt_cache_response(self, message: AIMessage, prepared: PreparedPromptCacheRequest) -> AIMessage:
         prompt_cache_gateway.decorate_response(message, prepared.diagnostics)

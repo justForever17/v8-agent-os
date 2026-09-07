@@ -2,19 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from core.tools.research_quality import (
-    MIN_RESEARCH_ANSWER_CHARS,
-    MIN_RESEARCH_CLAIM_COUNT,
-    MIN_RESEARCH_DISTINCT_HOST_COUNT,
-    MIN_RESEARCH_SOURCE_COUNT,
-    TARGET_RESEARCH_ANSWER_CHARS,
-    TARGET_RESEARCH_CLAIM_COUNT,
-    TARGET_RESEARCH_DISTINCT_HOST_COUNT,
-    TARGET_RESEARCH_SOURCE_COUNT,
-)
-
-
-RESEARCH_PROMPT_CONTRACT_VERSION = "2026-08-31.1"
+RESEARCH_PROMPT_CONTRACT_VERSION = "2026-09-05.1"
 RESEARCH_INTERNAL_STAGES = frozenset(
     {
         "query_plan",
@@ -22,6 +10,8 @@ RESEARCH_INTERNAL_STAGES = frozenset(
         "evidence_plan",
         "structure_projection",
         "answer_writer",
+        "research_agent",
+        "research_review",
     }
 )
 
@@ -47,7 +37,7 @@ def build_research_runtime_system_prompt(*, stage: str, stage_prompt: str) -> st
         "Authority and roles:\n"
         "- The Supervisor has already selected the Research route and remains the final user-facing decision maker.\n"
         "- Research Runtime owns search, page/PDF reads, parallel shard execution, retries, URL deduplication, the canonical ledger, validation, and delivery gates.\n"
-        "- You are the model bound to exactly one internal stage. Use only the supplied stage inputs, do not call tools, do not delegate, do not address the end user, and do not self-approve delivery.\n"
+        "- Use only the tools explicitly bound to this stage. Do not delegate or change Supervisor's task. The research agent owns knowledge selection and synthesis, not permissions or its own independent review.\n"
         "Evidence contract:\n"
         "- Treat only successfully read source bodies and Runtime-verified excerpts as evidence. Search snippets, unread URLs, provider summaries, and aggregate counts are not evidence.\n"
         "- Preserve every supplied facetId/taskBriefId and bind every material claim to supplied source lineage. Never fabricate facts, excerpts, dates, citations, or official positions.\n"
@@ -58,13 +48,9 @@ def build_research_runtime_system_prompt(*, stage: str, stage_prompt: str) -> st
         "- Write every free-text field in the question's primary language unless a verbatim source excerpt must retain its original language. Preserve identifiers and schema field names exactly.\n"
         "- When a stage emits query, searchQuery, or recommendedNextQueries, write literal search-engine queries. Do not prefix them with commands such as Fetch, Retrieve, Read, Open, Search for, or equivalent imperatives.\n"
         "Quality policy:\n"
-        f"- Hard rejection floor: {MIN_RESEARCH_SOURCE_COUNT} readable selected sources, "
-        f"{MIN_RESEARCH_DISTINCT_HOST_COUNT} independent hosts, {MIN_RESEARCH_CLAIM_COUNT} "
-        f"source-backed claims, and {MIN_RESEARCH_ANSWER_CHARS} effective non-URL answer characters.\n"
-        f"- Normal delivery target: at least {TARGET_RESEARCH_SOURCE_COUNT} sources, "
-        f"{TARGET_RESEARCH_DISTINCT_HOST_COUNT} hosts, {TARGET_RESEARCH_CLAIM_COUNT} "
-        f"supported conclusions, and {TARGET_RESEARCH_ANSWER_CHARS} effective answer characters. "
-        "A result between the rejection floor and target is only minimum-qualified; continue research when useful evidence is still obtainable.\n"
+        "- Source/host/claim/word counts are descriptive or advisory, never default eligibility or completion gates. Respect explicit user requirements; one relevant primary document may suffice.\n"
+        "- Decide relevance, applicability and sufficiency from the actual question and read material. Short, undated or older documents are not automatically inadequate.\n"
+        "- Source identity and read snapshots are immutable; research claims are revisable. Excerpts are navigational evidence, not a closed boundary on available knowledge. Use bound read tools to recover omitted context before declaring it missing.\n"
         "- Coverage and usefulness outrank raw counts. Never pad with repetition, irrelevant background, navigation text, duplicated claims, or invented detail.\n"
         "- Gate the claims that will actually be published, not every candidate sentence discovered during search. Drop unsupported candidates; do not let one discarded candidate erase an otherwise grounded answer.\n"
         "Stage contract:\n"

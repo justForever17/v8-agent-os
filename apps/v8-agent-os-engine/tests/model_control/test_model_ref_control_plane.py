@@ -538,7 +538,7 @@ def test_connectable_text_and_vision_catalog_has_complete_output_limit_provenanc
         if provider_id == "minimax-cn" and model["modelId"] == "MiniMax-M2.7"
     )
     assert minimax_m27["maxTokens"] == 131072
-    assert evaluate_model_eligibility(minimax_m27)["status"] == "unavailable"
+    assert evaluate_model_eligibility(minimax_m27)["status"] == "ready"
     assert evaluate_model_eligibility(minimax_m27)["requiredFacts"] == []
 
 
@@ -858,10 +858,10 @@ def test_role_cards_expose_role_doctor_readiness():
     supervisor = next(item for item in cards if item["key"] == "supervisor")
 
     assert supervisor["bindingState"] == "explicit"
-    assert supervisor["readiness"] == "blocked"
-    assert supervisor["readinessReason"] == "below_min_context_window"
+    assert supervisor["readiness"] == "warning"
+    assert supervisor["readinessReason"] == "context_budget_below_recommended"
     assert supervisor["roleDoctor"]["role"] == "supervisor"
-    assert supervisor["roleDoctor"]["blocking"] is True
+    assert supervisor["roleDoctor"]["blocking"] is False
 
 
 def test_anthropic_official_probe_url_stays_v1_models():
@@ -2640,7 +2640,7 @@ def test_anthropic_kwargs_apply_reasoning_effort_controls_with_budget_headroom()
             "reasoning_effort_control": budget_control,
             "request_reasoning_effort": "low",
         },
-        max_tokens=512,
+        max_tokens=8192,
     )
     effort_kwargs = llm_factory._build_anthropic_kwargs(
         "claude-opus-4-8",
@@ -2654,7 +2654,7 @@ def test_anthropic_kwargs_apply_reasoning_effort_controls_with_budget_headroom()
     )
 
     assert budget_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
-    assert budget_kwargs["max_tokens_to_sample"] == 5120
+    assert budget_kwargs["max_tokens_to_sample"] == 8192
     assert effort_kwargs["thinking"] == {"type": "adaptive"}
     assert effort_kwargs["effort"] == "high"
 

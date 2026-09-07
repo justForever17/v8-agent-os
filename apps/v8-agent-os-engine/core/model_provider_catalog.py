@@ -2711,6 +2711,7 @@ class ModelProviderCatalog:
             or prompt_cache_profile_id_for_provider(str(provider.get("id") or "")),
             "contextWindow": context_window,
             "maxTokens": max_tokens,
+            **({"outputTokenMode": "auto"} if used_conservative_max_tokens else {}),
             "factProvenance": fact_provenance,
             "capabilities": capability_map,
             "reasoningSurface": reasoning_surface,

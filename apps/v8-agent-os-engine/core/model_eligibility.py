@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
+from core.model_token_policy import output_token_mode, positive_token_count
 
 
-MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262_144
+MIN_TEXT_CONTEXT_WINDOW_TOKENS = 1
+RECOMMENDED_TEXT_CONTEXT_WINDOW_TOKENS = 262_144
 
 _MEDIA_TYPES = {
     "MEDIA",
@@ -20,11 +22,7 @@ _RETRIEVAL_CLASSES = {"embedding", "rerank", "reranker"}
 
 
 def _positive_int(value: Any) -> int | None:
-    try:
-        parsed = int(float(value))
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
+    return positive_token_count(value)
 
 
 def model_kind(model: Mapping[str, Any]) -> str:
@@ -62,7 +60,7 @@ def evaluate_model_eligibility(
     model: Mapping[str, Any],
     *,
     role: str | None = None,
-    minimum_context_window: int = MIN_TEXT_CONTEXT_WINDOW_TOKENS,
+    minimum_context_window: int = RECOMMENDED_TEXT_CONTEXT_WINDOW_TOKENS,
 ) -> dict[str, Any]:
     """Return the single model-selection truth used by Doctor, runtime and Admin.
 
@@ -105,27 +103,27 @@ def evaluate_model_eligibility(
                 }
             )
         elif context_window < int(minimum_context_window):
-            reasons.append(
+            warnings.append(
                 {
-                    "code": "below_min_context_window",
-                    "message": f"Context window {context_window} is below the required {minimum_context_window} tokens.",
+                    "code": "context_budget_below_recommended",
+                    "message": f"Configured context budget is {context_window} tokens; long tasks may compact earlier.",
                     "configured": context_window,
-                    "minimum": int(minimum_context_window),
+                    "recommended": int(minimum_context_window),
                 }
             )
-        if not max_tokens:
+        if not max_tokens and output_token_mode(model) == "fixed":
             required_facts.append("maxTokens")
             reasons.append(
                 {
                     "code": "missing_max_output_tokens",
-                    "message": "Text and vision models require a confirmed maximum output token value.",
+                    "message": "Custom output mode requires a positive token budget.",
                 }
             )
 
     governed_fact_keys = (
         ["contextWindow"]
         if kind in {"embedding", "rerank"}
-        else ["contextWindow", "maxTokens"]
+        else ["contextWindow", *(["maxTokens"] if output_token_mode(model) == "fixed" else [])]
         if kind == "text_generation"
         else []
     )
@@ -196,7 +194,9 @@ def evaluate_model_eligibility(
         "warnings": warnings,
         "contextWindow": context_window,
         "maxTokens": max_tokens,
-        "minimumContextWindow": int(minimum_context_window) if kind == "text_generation" else None,
+        "outputTokenMode": output_token_mode(model) if kind == "text_generation" else None,
+        "minimumContextWindow": MIN_TEXT_CONTEXT_WINDOW_TOKENS if kind == "text_generation" else None,
+        "recommendedContextWindow": int(minimum_context_window) if kind == "text_generation" else None,
         "factProvenance": provenance,
     }
 

@@ -194,6 +194,8 @@ def test_long_handoff_exposes_binding_index_before_narrative_without_loss():
     assert text.index("## Claim-to-source bindings") < text.index("## Accepted answer")
     assert answer in text
     assert "Only public deployments apply." in text
+    assert "claimId is the canonical read-observation ID" in text[:2500]
+    assert "no separate semantic claim table" in text[:2500]
     assert payload == before
 
 

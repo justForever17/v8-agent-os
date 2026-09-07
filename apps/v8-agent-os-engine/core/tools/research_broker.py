@@ -24,6 +24,7 @@ from langgraph.prebuilt import InjectedState
 
 from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import extract_reasoning_token_count, sanitize_background_model_output
+from runtimes.research.evidence import normalize_citation_tokens as _normalize_research_citation_tokens
 from core.model_thinking_control import no_think_request_patch
 from core.research_runtime_prompts import (
     RESEARCH_PROMPT_CONTRACT_VERSION,
@@ -77,6 +78,7 @@ from core.tools.research_quality import (
     build_research_review_binding,
     research_acceptance_metrics,
     research_acceptance_issues,
+    research_answer_is_usable,
     research_document_date_candidates,
     research_effective_answer_chars,
     research_high_quality_issues,
@@ -119,7 +121,7 @@ _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS = (
 # One low-output provider needs four bounded writer sections, two independent
 # reviews, and enough reserve for one reviewer-guided rewrite. This is a hard
 # ceiling; accepted runs still return as soon as the chain completes.
-_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS = 360_000
+_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS = 480_000
 _MAX_RESEARCH_ARCHITECT_FULL_SYNTHESIS_ATTEMPTS = 3
 _MAX_RESEARCH_READ_ATTEMPTS = 2
 _MAX_RESEARCH_HOST_RETRYABLE_FAILURES = 2
@@ -807,7 +809,10 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
     if not pack and isinstance(payload.get("researchResult"), dict):
         pack = payload.get("researchResult") or {}
     answer = _research_answer_from_pack(pack, payload)
-    answer_was_low_quality = _is_low_quality_research_answer(answer)
+    agent_owned = (pack.get("independentReview") or payload.get("independentReview") or {}).get(
+        "reviewContract"
+    ) == "research-agent-review.v1"
+    answer_was_low_quality = not agent_owned and _is_low_quality_research_answer(answer)
     low_quality_answer_note = _compact_research_text(answer, limit=360) if answer_was_low_quality else ""
     if answer_was_low_quality:
         answer = ""
@@ -836,14 +841,14 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
     claim_table = []
     for item in list(
         pack.get("claimTable") or payload.get("claimTable") or evidence_bank.get("claims") or []
-    )[:_RESEARCH_ARCHITECT_MAX_CLAIM_COUNT]:
+    )[:48 if agent_owned else _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT]:
         if isinstance(item, dict):
             claim_table.append(
                 {
                     key: value
                     for key, value in {
                         "claimId": item.get("claimId"),
-                        "claim": _compact_research_text(item.get("claim"), limit=800),
+                        "claim": item.get("claim") if agent_owned else _compact_research_text(item.get("claim"), limit=800),
                         "claimType": item.get("claimType") or item.get("claimKind"),
                         "normativeCue": _compact_research_text(item.get("normativeCue"), limit=160),
                         "sourceRole": item.get("sourceRole"),
@@ -851,7 +856,7 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
                         "supportingSources": list(item.get("supportingSources") or [])[:4],
                         "confidence": item.get("confidence"),
                         "evidenceExcerptKey": item.get("evidenceExcerptKey"),
-                        "evidenceExcerpt": _compact_research_text(item.get("evidenceExcerpt"), limit=600),
+                        "evidenceExcerpt": item.get("evidenceExcerpt") if agent_owned else _compact_research_text(item.get("evidenceExcerpt"), limit=600),
                         "evidenceExcerptSha256": item.get("evidenceExcerptSha256"),
                         "evidenceVerified": item.get("evidenceVerified") is True,
                     }.items()
@@ -903,7 +908,8 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
     # hidden made restricted-network runs indistinguishable from runs with no
     # readable evidence at all.
     delivery_ready = quality_tier in {"minimum_qualified", "high_quality"} and not answer_was_low_quality
-    if not delivery_ready:
+    usable_answer = research_answer_is_usable(validation_payload)
+    if not usable_answer:
         answer = ""
     evidence_id = _safe_text(payload.get("evidenceBundleId"))
     return {
@@ -912,6 +918,8 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
         "reviewDecision": review_decision,
         "reviewReasons": list(pack.get("reviewReasons") or payload.get("reviewReasons") or [])[:12],
         "answer": answer,
+        "usableAnswer": usable_answer,
+        "deliveryScope": (pack.get("independentReview") or {}).get("deliveryScope") or pack.get("deliveryScope"),
         "sources": sources,
         "claimTable": claim_table,
         "independentReview": pack.get("independentReview") or payload.get("independentReview") or {},
@@ -2623,6 +2631,10 @@ def _compact_delivery_review(value: Any, *, minimal: bool = False) -> dict[str, 
             "reviewerModelId",
             "reviewedAt",
             "reviewMode",
+            "reviewContract",
+            "assessmentDigest",
+            "deliveryScope",
+            "limitations",
         )
         return {
             key: item.get(key)
@@ -2669,6 +2681,8 @@ def _compact_delivery_answer_pack(value: Any, *, minimal: bool = False) -> dict[
         return {}
     compact = {
         "reviewDecision": pack.get("reviewDecision"),
+        "deliveryScope": pack.get("deliveryScope"),
+        "usableAnswer": pack.get("usableAnswer"),
         "answer": _truncate_research_text(
             pack.get("answer"),
             limit=_MAX_RESEARCH_VISIBLE_ANSWER_CHARS,
@@ -2829,6 +2843,8 @@ def _compact_visible_answer_pack(value: Any) -> dict[str, Any]:
         return {}
     compact = {
         "deliveryRequirements": pack.get("deliveryRequirements") or {},
+        "deliveryScope": pack.get("deliveryScope"),
+        "usableAnswer": pack.get("usableAnswer"),
         "reviewDecision": pack.get("reviewDecision"),
         "reviewReasons": list(pack.get("reviewReasons") or [])[:12],
         "answer": _truncate_research_text(pack.get("answer"), limit=_MAX_RESEARCH_VISIBLE_ANSWER_CHARS),
@@ -2861,7 +2877,9 @@ def _compact_visible_answer_pack(value: Any) -> dict[str, Any]:
 
 
 def _visible_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    answer_pack = _research_answer_pack(bundle)
     visible = {key: value for key, value in bundle.items() if not str(key).startswith("_")}
+    visible.pop("candidateDraft", None)
     visible["sourceMatrix"] = [
         _compact_visible_source(item)
         for item in list(visible.get("sourceMatrix") or [])[:_RESEARCH_ARCHITECT_MAX_SOURCE_COUNT]
@@ -2880,13 +2898,13 @@ def _visible_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     raw_shards.sort(key=lambda item: 0 if isinstance(item, dict) and item.get("fetchedTopSources") else 1)
     visible["shards"] = [_compact_visible_shard(item) for item in raw_shards[:8]]
     visible["shards"] = [item for item in visible["shards"] if item]
-    answer_pack = _research_answer_pack(visible)
     visible["researchAnswerPack"] = _compact_visible_answer_pack(answer_pack)
     delivery_ready = bool(((answer_pack.get("score") or {}).get("deliveryReady")))
     for key in ("researchResult", "finalExperiencePack"):
         if isinstance(visible.get(key), dict):
             visible[key] = {**visible[key], "answer": "", "researchResult": ""}
-    if not delivery_ready:
+            visible[key].pop("candidateDraft", None)
+    if not answer_pack.get("usableAnswer"):
         visible["answer"] = ""
         visible["resultPreview"] = ""
     return visible
@@ -3260,7 +3278,7 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
     fallback_text = json.dumps(fallback, ensure_ascii=False, indent=2)
     if len(fallback_text) <= max_chars:
         return fallback_text
-    if payload.get("deliveryReady"):
+    if payload.get("deliveryReady") or payload.get("usableAnswer"):
         raw_answer_pack = payload.get("researchAnswerPack") or _research_answer_pack(payload)
         delivery_answer_pack = _compact_delivery_answer_pack(
             raw_answer_pack,
@@ -3300,7 +3318,7 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
             if key in {"phase", "stopReason", "researchLoopReport"}
         }
         priority = {
-            "ok": True,
+            "ok": payload.get("ok") is True,
             "kind": payload.get("kind") or "research_evidence_bundle",
             "summary": _safe_text(payload.get("summary"))[:600],
             # researchAnswerPack is the one canonical delivery copy. The full
@@ -3310,7 +3328,9 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
             "question": payload.get("question") or fallback_final_pack.get("question"),
             "freshness": payload.get("freshness") or fallback_final_pack.get("freshness"),
             "evidenceBundleId": evidence_bundle_id,
-            "deliveryReady": True,
+            "deliveryReady": payload.get("deliveryReady") is True,
+            "usableAnswer": payload.get("usableAnswer") is True or payload.get("deliveryReady") is True,
+            "deliveryScope": payload.get("deliveryScope"),
             "qualityTier": payload.get("qualityTier"),
             "reviewDecision": payload.get("reviewDecision"),
             "asOf": payload.get("asOf"),
@@ -3829,6 +3849,15 @@ def _experience_reuse_decision(
     refresh_candidates: list[dict[str, Any]] = []
     requested_as_of = _explicit_question_as_of(question)
     for pack, match_reason in exact_candidates:
+        if (pack.get("independentReview") or {}).get("reviewContract") == "research-agent-review.v1":
+            return {
+                "reuseDecision": "reuse" if pack.get("deliveryScope") == "complete" else "review",
+                "reason": "reviewed_answer_matches_question" if pack.get("deliveryScope") == "complete" else "partial_answer_requires_applicability_review",
+                "candidatePackId": pack.get("experiencePackId"), "matchReason": match_reason,
+                "topicFingerprint": pack.get("topicFingerprint") or _topic_fingerprint(question),
+                "skippedSearches": pack.get("deliveryScope") == "complete",
+                "supervisorContentNote": "已有答案保留原始资料日期；是否需要新近核查由 Supervisor 结合本次任务判断。需要更新时用 run + experiencePackId；强制重抓才用 forceRefresh。",
+            }
         pack_freshness_state = _safe_text(pack.get("freshnessState")).lower()
         freshness_notice: dict[str, Any] = {}
         if pack_freshness_state in {"aging", "stale", "expired"}:
@@ -3933,7 +3962,7 @@ def _experience_reuse_decision(
     if adjacent_candidates:
         pack, match_reason = adjacent_candidates[0]
         return {
-            "reuseDecision": "refresh",
+            "reuseDecision": "review",
             "reason": "adjacent_topic_requires_fresh_semantic_review",
             "matchReason": match_reason,
             "candidatePackId": pack.get("experiencePackId"),
@@ -3987,6 +4016,9 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
     )
     architect_pack = {
         "kind": "research_result_pack",
+        "researchContract": pack.get("researchContract"),
+        "deliveryScope": pack.get("deliveryScope"),
+        "limitations": list(pack.get("limitations") or []),
         "architectAgentId": "web-research-architect",
         "architectName": "Web Research Architect",
         "question": question,
@@ -4009,6 +4041,9 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
     bundle = {
         "ok": False,
         "kind": "research_evidence_bundle",
+        "researchContract": pack.get("researchContract"),
+        "deliveryScope": pack.get("deliveryScope"),
+        "limitations": list(pack.get("limitations") or []),
         "summary": architect_pack["headline"],
         "question": question,
         "evidenceBundleId": evidence_bundle_id or None,
@@ -4049,7 +4084,7 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
             "conflictClaims": [],
             "nextQueries": [],
         },
-        "experienceReuse": {**reuse, "pack": pack},
+        "experienceReuse": {**reuse, "experiencePackId": experience_pack_id, "originalAsOf": pack.get("asOf")},
         "confidence": pack.get("confidence") or "medium",
         "authorityScore": pack.get("authorityScore"),
         "recommendedNextAction": "use_reused_experience_pack",
@@ -11806,7 +11841,7 @@ def _create_web_research_architect_llm_candidates() -> list[tuple[Any, str, str]
         model_id = ""
     if model_id:
         add_candidate(
-            lambda model_id=model_id: llm_factory.create_chat_model(model_id, temperature=0.1, max_tokens=7500, _role=agent_id),
+            lambda model_id=model_id: llm_factory.create_chat_model(model_id, temperature=0.1, max_retries=0, _role=agent_id),
             model_id=model_id,
             role=agent_id,
             resolved_model_ref=model_id,
@@ -11826,7 +11861,7 @@ def _create_web_research_architect_llm_candidates() -> list[tuple[Any, str, str]
         try:
             resolved_model_ref = _safe_text(storage.get_role_model_id(role))
             add_candidate(
-                lambda role=role: llm_factory.create_for_role(role, temperature=0.1, max_tokens=7500),
+                lambda role=role: llm_factory.create_for_role(role, temperature=0.1, max_retries=0),
                 model_id=f"role:{role}",
                 role=role,
                 resolved_model_ref=resolved_model_ref or f"role:{role}",
@@ -11837,7 +11872,7 @@ def _create_web_research_architect_llm_candidates() -> list[tuple[Any, str, str]
     for model_ref in _research_architect_fallback_model_refs():
         try:
             add_candidate(
-                lambda model_ref=model_ref: llm_factory.create_chat_model(model_ref, temperature=0.1, max_tokens=7500, _role=agent_id),
+                lambda model_ref=model_ref: llm_factory.create_chat_model(model_ref, temperature=0.1, max_retries=0, _role=agent_id),
                 model_id=model_ref,
                 role=agent_id,
                 resolved_model_ref=model_ref,
@@ -11848,7 +11883,7 @@ def _create_web_research_architect_llm_candidates() -> list[tuple[Any, str, str]
     if not candidates:
         try:
             add_candidate(
-                lambda: llm_factory.create_for_role("supervisor", temperature=0.1, max_tokens=7500),
+                lambda: llm_factory.create_for_role("supervisor", temperature=0.1, max_retries=0),
                 model_id="role:supervisor",
                 role="supervisor",
                 resolved_model_ref=_safe_text(storage.get_role_model_id("supervisor")) or "role:supervisor",
@@ -11884,15 +11919,11 @@ def _research_agent_stage_system_prompt(
 def _create_web_research_reviewer_llm_candidates(
     architect_candidates: list[tuple[Any, str, str]],
 ) -> list[tuple[Any, str, str]]:
-    """Prefer governed, model-distinct reviewers for production research.
+    """Resolve the configured Verification Engineer before other reviewers.
 
-    The deterministic renderer is not a model writer, but reusing the planning
-    model for both reviews still creates a correlated blind spot.  The actual
-    Supervisor model is the most relevant independent consumer for the first
-    review.  A separately bound verification engineer is preferred for the
-    adversarial pass, while the Research Architect remains available only after
-    those independent consumers. Test fixtures and legacy callers without a
-    real agent-binding origin keep their supplied candidate order.
+    Independent review is a separate conversation, not a requirement to use
+    another provider/model or a second adversarial pass. Never overwrite an
+    explicit user binding to manufacture model diversity.
     """
 
     candidates = list(architect_candidates)
@@ -11908,7 +11939,7 @@ def _create_web_research_reviewer_llm_candidates(
         reviewer = llm_factory.create_for_role(
             "supervisor",
             temperature=0.0,
-            max_tokens=_RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
+            max_retries=0,
         )
         meta = getattr(reviewer, "_meta", None)
         if isinstance(meta, dict):
@@ -11929,7 +11960,7 @@ def _create_web_research_reviewer_llm_candidates(
             reviewer = llm_factory.create_chat_model(
                 verification_model_ref,
                 temperature=0.0,
-                max_tokens=_RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
+                max_retries=0,
                 _role=verification_agent_id,
             )
             meta = getattr(reviewer, "_meta", None)
@@ -11938,9 +11969,7 @@ def _create_web_research_reviewer_llm_candidates(
                     "research_candidate_origin",
                     "agent_reviewer:verification-engineer",
                 )
-            governed_reviewers.append(
-                (reviewer, verification_model_ref, verification_agent_id)
-            )
+            governed_reviewers.insert(0, (reviewer, verification_model_ref, verification_agent_id))
         except Exception:
             pass
 
@@ -12517,25 +12546,6 @@ def _architect_segment_tasks(
             }
         )
     return tasks
-
-
-def _normalize_research_citation_tokens(value: Any) -> str:
-    text = _safe_text(value)
-    text = re.sub(
-        r"(?:\[|【)\s*(S\d+)\s*:\s*E\d+\s*(?:\]|】)",
-        lambda match: f"[{match.group(1).upper()}]",
-        text,
-        flags=re.IGNORECASE,
-    )
-    pattern = re.compile(
-        r"(?:\[|【)\s*(S\d+(?:\s*[,，;；、/]\s*S\d+)*)\s*(?:\]|】)",
-        re.IGNORECASE,
-    )
-
-    def replace_group(match: re.Match[str]) -> str:
-        return "".join(f"[{key.upper()}]" for key in re.findall(r"S\d+", match.group(1), re.IGNORECASE))
-
-    return pattern.sub(replace_group, text)
 
 
 def _research_answer_section_from_model_output(value: Any, *, section_id: str) -> tuple[str, bool]:
@@ -14662,17 +14672,30 @@ def _invoke_architect_candidate_with_deadline(
     messages: list[Any],
     *,
     seconds: float,
-    max_tokens: int,
+    max_tokens: int | None,
     disable_thinking: bool = False,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = None,
+    idle_timeout_seconds: float | None = None,
 ) -> Any:
     llm = candidate[0]
-    configured_limit = _architect_segmented_writer_profile(candidate)["configuredMaxTokens"]
-    effective_max_tokens = min(max_tokens, configured_limit) if configured_limit else max_tokens
-    request_timeout = max(0.25, float(seconds) - 0.25)
+    from core.model_token_policy import resolve_output_token_budget
+    output_budget = resolve_output_token_budget(getattr(llm, "_meta", None) or {}, max_tokens)
+    effective_max_tokens = output_budget["maxTokens"]
+    if tools is not None:
+        llm = llm.bind_tools(tools, **({"tool_choice": tool_choice} if tool_choice else {}))
+    request_timeout = max(0.25, min(float(seconds), float(idle_timeout_seconds or seconds)) - 0.25)
     request_kwargs: dict[str, Any] = {
         "timeout": request_timeout,
-        "max_tokens": effective_max_tokens,
+        **({"max_tokens": effective_max_tokens} if effective_max_tokens is not None else {}),
     }
+    if tools is not None:
+        from runtimes.research.model_call import invoke_bounded
+        meta = getattr(llm, "_meta", None) or {}
+        supports_streaming = (meta.get("effective_capability_matrix") or {}).get("supports_streaming", True)
+        return invoke_bounded(llm, messages, seconds=seconds, request_kwargs=request_kwargs,
+                              streaming=supports_streaming is True and callable(getattr(llm, "stream", None)),
+                              idle_timeout_seconds=idle_timeout_seconds)
     if disable_thinking:
         meta = getattr(llm, "_meta", None)
         control = dict(meta.get("thinking_control") or {}) if isinstance(meta, dict) else {}
@@ -14862,2899 +14885,8 @@ def _architect_unbound_answer_citations(
     return sorted(used - verified)
 
 
-def _invoke_web_research_architect_staged(
-    *,
-    question: str,
-    sources: list[dict[str, Any]],
-    freshness: str,
-    timeout_seconds: int,
-    per_call_timeout_seconds: int | None = None,
-    preferred_language: str = "",
-    delivery_requirements: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    started_at = time.perf_counter()
-    _report_research_progress(
-        stage="evidence_plan",
-        status="active",
-        summary="正在建立证据与结论的对应关系",
-        toolName="research_architect",
-        nodeId="research-evidence-plan",
-    )
-    total_budget = max(5, int(timeout_seconds or 0))
-    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
-    minimum_sources = _as_int(requirements.get("minimumSources"), MIN_RESEARCH_SOURCE_COUNT)
-    minimum_claims = _as_int(requirements.get("minimumClaims"), MIN_RESEARCH_CLAIM_COUNT)
-    minimum_answer_chars = _as_int(
-        requirements.get("minimumAnswerChars"),
-        MIN_RESEARCH_ANSWER_CHARS,
-    )
-    configured_call_timeout = (
-        _as_int(per_call_timeout_seconds, 0)
-        if per_call_timeout_seconds is not None
-        else _as_int(_research_config().get("architectAgentTimeoutSeconds"), 60)
-    )
-    call_timeout_cap_seconds = max(
-        5.0,
-        min(float(configured_call_timeout or 60), 90.0, float(total_budget)),
-    )
-    delivery_reserve = min(120.0, max(4.0, total_budget * 0.5))
-    review_reserve = min(80.0, max(8.0, total_budget * 0.3))
-    candidate_errors: list[str] = []
-    context_preparations: list[dict[str, Any]] = []
-    context_preparations_lock = threading.Lock()
-
-    def remaining_seconds() -> float:
-        return max(0.0, total_budget - (time.perf_counter() - started_at))
-
-    def prepared_messages(
-        candidate: tuple[Any, str, str],
-        *,
-        system_prompt: str,
-        instruction: str,
-        materials: list[dict[str, str]],
-        target_role: str,
-        node: str,
-    ) -> list[Any]:
-        if target_role == "web-research-answer-writer":
-            configured_limit = _architect_segmented_writer_profile(candidate)["configuredMaxTokens"]
-            if configured_limit:
-                instruction = (
-                    f"本模型已配置输出上限为 {configured_limit} tokens，阶段合同若更小则以阶段为准。"
-                    "用紧凑表格或段落覆盖知识要求并完成结尾，不为推荐篇幅扩写。\n"
-                    + instruction
-                )
-        prepared = prepare_background_model_messages(
-            system_prompt=system_prompt,
-            instruction=instruction,
-            materials=materials,
-            runtime_kind="research",
-            target_role=target_role,
-            resolved_model_id=_architect_candidate_context_model_ref(candidate),
-            component="research",
-            node=node,
-        )
-        audit = dict(prepared.audit or {})
-        material_stats = [
-            {
-                "title": _safe_text(material.get("title")),
-                "kind": _safe_text(material.get("kind")),
-                "chars": len(_safe_text(material.get("content"))),
-                "sha256": hashlib.sha256(
-                    _safe_text(material.get("content")).encode("utf-8", errors="ignore")
-                ).hexdigest(),
-            }
-            for material in materials
-        ]
-        preparation = {
-            "node": node,
-            "modelId": _architect_candidate_identity(candidate),
-            "resolvedModelRef": _architect_candidate_context_model_ref(candidate),
-            "modelRole": candidate[2],
-            "selectionOrigin": _architect_candidate_selection_origin(candidate),
-            "originalMessageCount": int(audit.get("original_message_count") or 0),
-            "preparedMessageCount": len(prepared.messages),
-            "preparedMessageChars": sum(
-                len(_safe_text(getattr(message, "content", "")))
-                for message in prepared.messages
-            ),
-            "estimatedInputTokens": int(audit.get("estimated_input_tokens") or 0),
-            "effectiveContextWindowTokens": int(
-                audit.get("effective_context_window_tokens") or 0
-            ),
-            "compactionApplied": audit.get("compaction_applied") is True,
-            "compactionMode": _safe_text(audit.get("compaction_mode")),
-            "triggerReason": _safe_text(audit.get("trigger_reason")),
-            "materials": material_stats,
-        }
-        if "[RESEARCH-RUNTIME-CONTRACT " in system_prompt:
-            preparation.update(
-                {
-                    "researchPromptContractVersion": RESEARCH_PROMPT_CONTRACT_VERSION,
-                    "researchPromptContractDigest": research_runtime_prompt_digest(system_prompt),
-                }
-            )
-        with context_preparations_lock:
-            context_preparations.append(preparation)
-        return prepared.messages
-
-    compact_sources: list[dict[str, Any]] = []
-    for source in sources[:_RESEARCH_ARCHITECT_MAX_SOURCE_COUNT]:
-        fallback_evidence_query = _safe_text(source.get("evidenceQuery")) or question
-        evidence_queries = list(
-            dict.fromkeys(
-                _safe_text(value)
-                for value in list(source.get("evidenceQueries") or [])
-                if _safe_text(value)
-            )
-        ) or [fallback_evidence_query]
-        source_evidence_query = min(evidence_queries, key=len)
-        facet_by_query = {
-            _safe_text(view.get("evidenceQuery")): _safe_text(
-                view.get("researchFacetId")
-            )
-            for view in list(source.get("evidenceViews") or [])
-            if isinstance(view, dict) and _safe_text(view.get("evidenceQuery"))
-        }
-        source_text = _safe_text(
-            _safe_text(source.get("text"))[:_RESEARCH_ARCHITECT_SOURCE_TEXT_CHARS]
-        )
-        retrieved_at = _safe_text(source.get("retrievedAt"))
-        original_content_chars = _as_int(
-            source.get("originalContentChars")
-            or source.get("contentChars")
-            or len(_safe_text(source.get("text"))),
-            len(_safe_text(source.get("text"))),
-        )
-        compact_source = {
-            "sourceId": _safe_text(source.get("sourceId")),
-            "citationKey": _safe_text(source.get("citationKey")),
-            "title": _safe_text(source.get("title")),
-            "url": _safe_text(source.get("url")),
-            "tier": source.get("tier"),
-            "sourceRole": _architect_support_role(source),
-            "authorityTier": source.get("authorityTier"),
-            "authorityScore": source.get("authorityScore"),
-            "catalogCategory": source.get("catalogCategory"),
-            "catalogSourceId": source.get("catalogSourceId"),
-            "sourceCapability": source.get("sourceCapability"),
-            "runtimeOfficialSeed": source.get("runtimeOfficialSeed") is True,
-            "qualityDimensions": source.get("qualityDimensions") or {},
-            "retrievedAt": retrieved_at,
-            "publishedAt": source.get("publishedAt"),
-            "updatedAt": source.get("updatedAt"),
-            "sourceDate": source.get("sourceDate"),
-            "sourceDateKind": source.get("sourceDateKind"),
-            "version": source.get("version"),
-            "temporalEvidence": source.get("temporalEvidence") or {},
-            "selectedForEvidence": True,
-            "contentChars": len(source_text),
-            "originalContentChars": original_content_chars,
-            "omittedChars": max(0, original_content_chars - len(source_text)),
-            "evidenceSelection": source.get("evidenceSelection") or "read_body",
-            "readEvidence": _read_evidence_receipt(
-                source_text,
-                retrieved_at=retrieved_at or None,
-            ),
-            "researchFacetId": source.get("researchFacetId"),
-            "researchFacetIds": list(source.get("researchFacetIds") or []),
-            "researchFacetGoal": source.get("researchFacetGoal"),
-            "evidenceQueries": evidence_queries,
-            "evidenceQuery": source_evidence_query,
-            "text": source_text,
-        }
-        compact_source = scoped_catalog_projection(
-            compact_source, _catalog_match(compact_source["url"])
-        )
-        evidence_candidates = _architect_multi_query_evidence_candidates(
-            compact_source,
-            evidence_queries,
-            facet_by_query=facet_by_query,
-        )
-        citation_key = _safe_text(compact_source.get("citationKey")).strip("[]")
-        compact_source["evidenceCandidates"] = [
-            {
-                **candidate,
-                "evidenceExcerptKey": f"{citation_key}:E{index}",
-            }
-            for index, candidate in enumerate(evidence_candidates, start=1)
-        ]
-        compact_source["answerabilityScore"] = max(
-            [
-                int(candidate.get("relevanceScore") or 0)
-                for candidate in compact_source["evidenceCandidates"]
-                if isinstance(candidate, dict)
-            ]
-            or [0]
-        )
-        compact_source["subjectFocused"] = _architect_source_subject_focused(
-            compact_source,
-            source_evidence_query,
-            evidence_candidates=compact_source["evidenceCandidates"],
-        )
-        compact_sources.append(compact_source)
-    prompt_sources = [
-        {
-            key: source.get(key)
-            for key in (
-                "sourceId",
-                "citationKey",
-                "title",
-                "url",
-                "tier",
-                "authorityTier",
-                "authorityScore",
-                "catalogCategory",
-                "catalogSourceId",
-                "runtimeOfficialSeed",
-                "retrievedAt",
-                "publishedAt",
-                "updatedAt",
-                "sourceDate",
-                "sourceDateKind",
-                "version",
-                "researchFacetIds",
-                "researchFacetGoal",
-                "evidenceCandidates",
-                "answerabilityScore",
-                "subjectFocused",
-            )
-            if source.get(key) not in (None, "", [], {})
-        }
-        for source in compact_sources
-    ]
-    # Architect repair shard IDs are acquisition bookkeeping and must never
-    # become self-referential answer gates in the next synthesis pass. Other
-    # planned facet IDs remain valid for root-question decomposition.
-    required_plan_facet_ids = [
-        facet_id
-        for facet_id in list(
-            dict.fromkeys(
-                [
-                    *[
-                        _research_facet_id(kind)
-                        for _goal, kind in _build_explicit_question_facets(question)
-                        if _research_facet_id(kind)
-                    ],
-                    *[
-                        _safe_text(facet_id)
-                        for source in prompt_sources
-                        for facet_id in [
-                            *list(source.get("researchFacetIds") or []),
-                            source.get("researchFacetId"),
-                        ]
-                        if _safe_text(facet_id)
-                    ],
-                ]
-            )
-        )
-        if _research_facet_requires_atomic_claim(facet_id)
-    ]
-    prompt_sources = _architect_facet_focused_prompt_sources(
-        prompt_sources,
-        required_plan_facet_ids,
-    )
-    synthesis_structural_stats = _research_architect_structural_stats(
-        question,
-        compact_sources,
-        freshness=freshness,
-    )
-    normal_target_mode = synthesis_structural_stats.get("structuralTargetMet") is True
-    target_sources = _as_int(
-        requirements.get("targetSources"),
-        TARGET_RESEARCH_SOURCE_COUNT,
-    )
-    target_claims = _as_int(
-        requirements.get("targetClaims"),
-        TARGET_RESEARCH_CLAIM_COUNT,
-    )
-    required_source_count = target_sources if normal_target_mode else minimum_sources
-    required_claim_count = target_claims if normal_target_mode else minimum_claims
-    required_claim_sources = _architect_required_claim_source_keys(
-        prompt_sources,
-        limit=required_source_count,
-        question=question,
-    )
-    if len(required_claim_sources) < required_source_count:
-        return {
-            "_agentError": "architect_evidence_candidates_insufficient",
-            "_architectMode": "full_synthesis",
-            "_modelFallbackAttempts": [
-                f"evidence_candidate_source_coverage:{len(required_claim_sources)}/{required_source_count}"
-            ],
-        }
-
-    named_decision_audiences = _research_named_decision_audiences(question)
-    required_deliverables = _build_explicit_question_deliverables(question)
-    question_requires_synthesis = question_requires_structure(question)
-    claim_plan_started_at = time.perf_counter()
-    try:
-        plan = build_canonical_claim_plan(
-            question=question,
-            sources=compact_sources,
-            required_source_keys=required_claim_sources,
-            required_facet_ids=required_plan_facet_ids,
-            minimum_source_count=minimum_sources,
-            minimum_claim_count=minimum_claims,
-            # Analytical questions use the existing bounded evidence capacity;
-            # the recommendation is not a cap that may discard read obligations.
-            # This does not raise the minimum claim count or require padding.
-            target_claim_count=(
-                _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT
-                if question_requires_synthesis else min(target_claims, _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT)
-            ),
-            # Search decomposition produces useful coverage targets, but one
-            # target without an exact claim must not erase an otherwise
-            # reviewable minimum evidence set. The plan keeps that facet
-            # blocked and visible; no unsupported claim is synthesized.
-            allow_supported_scope=True,
-        )
-    except CanonicalClaimPlanError as exc:
-        _report_research_progress(
-            stage="evidence_plan",
-            status="failed",
-            summary="Canonical evidence plan did not satisfy the Runtime contract",
-            toolName="research_architect",
-            nodeId="research-evidence-plan",
-        )
-        return {
-            "_agentError": exc.code,
-            "_architectMode": "full_synthesis",
-            "_canonicalClaimPlan": exc.diagnostics,
-            "_modelFallbackAttempts": [exc.code],
-        }
-    claim_plan_elapsed_ms = int(
-        (time.perf_counter() - claim_plan_started_at) * 1000
-    )
-    claim_plan_diagnostics = dict(plan.get("canonicalClaimPlan") or {})
-    claim_plan_diagnostics["elapsedMs"] = claim_plan_elapsed_ms
-    blocked_plan_facet_ids = {
-        _safe_text(value)
-        for value in list(claim_plan_diagnostics.get("missingFacetIds") or [])
-        if _safe_text(value)
-    }
-
-    verified_claims, claim_issues = _verify_architect_claim_excerpts(
-        plan.get("claimTable"),
-        compact_sources,
-        require_evidence_key=True,
-    )
-    if claim_issues or len(verified_claims) != len(list(plan.get("claimTable") or [])):
-        _report_research_progress(
-            stage="evidence_plan",
-            status="failed",
-            summary="Canonical evidence claims did not pass exact-excerpt validation",
-            toolName="research_architect",
-            nodeId="research-evidence-plan",
-        )
-        return {
-            "_agentError": "canonical_claim_plan_validation_failed",
-            "_architectMode": "full_synthesis",
-            "_canonicalClaimPlan": claim_plan_diagnostics,
-            "_modelFallbackAttempts": list(claim_issues)[:16],
-        }
-    verified_claims, attributed_secondary_claim_ids = (
-        _architect_govern_claim_source_roles_for_question(
-            verified_claims,
-            question,
-        )
-    )
-    if attributed_secondary_claim_ids:
-        claim_plan_diagnostics["attributedSecondaryClaimIds"] = (
-            attributed_secondary_claim_ids
-        )
-    plan["claimTable"] = verified_claims
-    plan["canonicalClaimPlan"] = claim_plan_diagnostics
-
-    candidates = _create_web_research_architect_llm_candidates()
-    if not candidates:
-        return {
-            "_agentError": "architect_writer_model_unavailable",
-            "_architectMode": "full_synthesis",
-            "_canonicalClaimPlan": claim_plan_diagnostics,
-        }
-    plan_candidate = candidates[0]
-    structure_system_prompt = _research_agent_stage_system_prompt(
-        (
-            "You are the structure projection stage for Research Runtime. "
-            "The supplied canonical claim ledger is immutable and already exact-excerpt verified. "
-            "Keep the citationIndex document identity and attribution: a draft, commentary or "
-            "recommendation is not an enacted rule merely because its source is primary. "
-            "You may only group existing claimIds into an outline and add bounded cross-source "
-            "inferences whose premiseClaimIds are in one outline section. Never emit, rewrite, "
-            "delete, merge, or replace claims."
-        ),
-        stage="structure_projection",
-    )
-    structure_prompt = (
-        "Return one strict JSON object with exactly answerOutline and compositeInferences. "
-        "answerOutline must contain 2-6 section objects with sectionId, title, objective, "
-        "and claimIds; every supplied claimId must occur exactly once. compositeInferences "
-        "may be empty and otherwise contain only inferenceId, inference, premiseClaimIds. "
-        "Use the QUESTION language for title, objective, and inference text. Do not return "
-        "claimTable or repeat claim text. Generate an inference only when the question asks "
-        "for a recommendation, comparison, decision, or explicit deliverable, and label it "
-        "as a synthesis rather than an official source statement.\n"
-        f"QUESTION: {question}\n"
-        f"NAMED_DECISION_AUDIENCES: {json.dumps(named_decision_audiences, ensure_ascii=False)}\n"
-        f"REQUIRED_DELIVERABLES: {json.dumps(required_deliverables, ensure_ascii=False)}"
-    )
-    structure_attempt: dict[str, Any] = {
-        "status": "skipped_not_required",
-        "modelId": _architect_candidate_identity(plan_candidate),
-        "modelRole": plan_candidate[2],
-        "selectionOrigin": _architect_candidate_selection_origin(plan_candidate),
-        "elapsedMs": 0,
-    }
-    structure_required = bool(
-        question_requires_synthesis
-        or named_decision_audiences
-        or required_deliverables
-    )
-    if structure_required:
-        structure_budget = min(
-            call_timeout_cap_seconds,
-            24.0,
-            max(0.0, remaining_seconds() - review_reserve - 12.0),
-        )
-        if structure_budget < 3.0:
-            structure_attempt["status"] = "skipped_delivery_budget_reserved"
-            candidate_errors.append("canonical_structure_delivery_budget_reserved")
-        else:
-            structure_messages = prepared_messages(
-                plan_candidate,
-                system_prompt=structure_system_prompt,
-                instruction=structure_prompt,
-                materials=[
-                    {
-                        "title": "Immutable canonical claim plan",
-                        "kind": "research_canonical_claim_plan",
-                        "content": json.dumps(
-                            canonical_structure_material(plan),
-                            ensure_ascii=False,
-                        ),
-                    }
-                ],
-                target_role="web-research-structure-projector",
-                node="web_research_structure_projection",
-            )
-            structure_started_at = time.perf_counter()
-            try:
-                structure_response = _invoke_architect_candidate_with_deadline(
-                    plan_candidate,
-                    structure_messages,
-                    seconds=structure_budget,
-                    max_tokens=_RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS,
-                    disable_thinking=True,
-                )
-            except concurrent.futures.TimeoutError:
-                structure_attempt.update(
-                    {
-                        "status": "deadline_timeout",
-                        "elapsedMs": int(
-                            (time.perf_counter() - structure_started_at) * 1000
-                        ),
-                    }
-                )
-                candidate_errors.append("canonical_structure_timeout")
-            except Exception as exc:  # noqa: BLE001 - deterministic outline remains authoritative.
-                structure_attempt.update(
-                    {
-                        "status": "provider_error",
-                        "elapsedMs": int(
-                            (time.perf_counter() - structure_started_at) * 1000
-                        ),
-                        "failureCode": type(exc).__name__,
-                    }
-                )
-                candidate_errors.append(
-                    f"canonical_structure_{type(exc).__name__}: {_safe_text(exc)[:180]}"
-                )
-            else:
-                sanitized_structure = sanitize_background_model_output(
-                    structure_response
-                )
-                parsed_structure = _extract_json_object(
-                    sanitized_structure.text
-                )
-                projected_plan, projection_issues = apply_structure_projection(
-                    plan,
-                    parsed_structure,
-                )
-                normalized_inferences = _research_normalize_named_decision_inferences(
-                    projected_plan.get("compositeInferences"),
-                    named_decision_audiences,
-                )
-                accepted_inferences, inference_issues = (
-                    _architect_filter_composite_inferences(
-                        projected_plan.get("answerOutline"),
-                        verified_claims,
-                        normalized_inferences,
-                    )
-                )
-                projected_plan["compositeInferences"] = accepted_inferences
-                structure_issues = list(
-                    dict.fromkeys([*projection_issues, *inference_issues])
-                )
-                if (
-                    named_decision_audiences
-                    and len(accepted_inferences) < len(named_decision_audiences)
-                ):
-                    structure_issues.append(
-                        "named_audience_inference_coverage_incomplete:"
-                        f"{len(accepted_inferences)}/{len(named_decision_audiences)}"
-                    )
-                plan = projected_plan
-                structure_attempt.update(
-                    {
-                        "status": (
-                            "accepted_with_drops"
-                            if structure_issues
-                            else "accepted"
-                        ),
-                        "elapsedMs": int(
-                            (time.perf_counter() - structure_started_at) * 1000
-                        ),
-                        "responseChars": len(sanitized_structure.text),
-                        "requestedMaxTokens": _RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS,
-                        "claimMutationIgnored": bool(
-                            isinstance(parsed_structure, dict)
-                            and parsed_structure.get("claimTable") is not None
-                        ),
-                        "issues": structure_issues[:12],
-                        **_architect_response_safe_diagnostics(
-                            structure_response,
-                            sanitized_structure,
-                        ),
-                    }
-                )
-                candidate_errors.extend(
-                    f"canonical_structure:{issue}" for issue in structure_issues
-                )
-
-    plan["canonicalClaimPlan"] = claim_plan_diagnostics
-    plan["_canonicalClaimPlan"] = claim_plan_diagnostics
-    plan["_structureAttempt"] = structure_attempt
-    _report_research_progress(
-        stage="evidence_plan",
-        status="completed",
-        summary=(
-            f"Canonical evidence plan locked {len(verified_claims)} claims"
-            + (
-                f"; {len(blocked_plan_facet_ids)} unsupported facet(s) remain blocked"
-                if blocked_plan_facet_ids
-                else ""
-            )
-        ),
-        toolName="research_architect",
-        nodeId="research-evidence-plan",
-    )
-
-    ordered_writer_candidates = list(candidates)
-    # Start with the configured writer. The Runtime, not this model, owns and
-    # validates the immutable canonical claim plan.
-    writer_candidates = [plan_candidate] + [
-        candidate
-        for candidate in ordered_writer_candidates
-        if candidate[0] is not plan_candidate[0]
-    ]
-    resolved_language = normalize_preferred_language(preferred_language) or infer_preferred_language(question)
-    answer_language = {
-        "zh-CN": "简体中文",
-        "ja": "Japanese",
-        "ko": "Korean",
-        "ru": "Russian",
-    }.get(resolved_language, "English")
-    supported_scope_boundary = supported_scope_limitation_markdown(
-        plan,
-        preferred_language=resolved_language,
-    )
-
-    def with_supported_scope_boundary(candidate_answer: str) -> str:
-        value = _safe_text(candidate_answer)
-        if not supported_scope_boundary or supported_scope_boundary in value:
-            return value
-        return f"{value.rstrip()}\n\n{supported_scope_boundary}".strip()
-
-    writer_system_prompt = (
-        "你是 Research Runtime 的最终答案撰写器。只使用 VERIFIED PLAN 和 SOURCES 中已经读取并由 Runtime 验真的事实，"
-        "不要添加常识性补写、未经证据支持的数据或虚构的官方立场。直接回答用户问题，不要描述调研流程。"
-        "source_fact 只能写成来源直接事实；explicit_normative 才能归因为来源明确推荐或要求。"
-        "组合建议只能来自 VERIFIED PLAN 已登记的 compositeInferences，必须明确写成“综合判断”或“本报告建议”，"
-        "同一内容单元引用全部 premiseClaimIds 的来源；禁止自行新增综合建议或写成官方推荐。"
-        "问题即使询问 best practices，也不能把 source_fact 改写成官方最佳实践；应把可执行建议明确标成"
-        "“本报告的综合判断”或“practical synthesis”；secondary 来源须保留归属，不得冒充官方立场。"
-        f"{RESEARCH_TEMPORAL_JUDGMENT_INSTRUCTION}"
-        "不要输出逐字大段引文或 Markdown blockquote；应在不改变含义的前提下简洁转述已验证 claim。"
-        "不要自行声称某做法是最高杠杆、基础性设计决策、独立类别、等价接口或无条件适用；除非 VERIFIED PLAN "
-        "已登记且其全部 premise 明确支持这一关系。"
-        "来源摘录只有月日而没有年份时，必须明确写‘来源未标明年份’，不得补成当前年份、2026 或其他年份，"
-        "其是否适用于当前问题须结合正文与版本判断。"
-        f"本任务证据覆盖要求至少 {minimum_sources} 个来源。"
-        f"{RESEARCH_ANSWER_LENGTH_GUIDANCE}"
-        "QUESTION 含多个 [facet-id] 时，正文必须逐项实质回答每个 facet，并在对应内容单元引用支持该 facet 的来源。"
-        "QUESTION 含 Deliverable requirements/交付要求时，必须在正文中完成这些输出目标；它们只综合已验证证据，"
-        "不得被误当成需要另行搜索的新事实，也不得凭空增加行动建议。"
-        "VERIFIED PLAN 若列出 blockedFacets，表示这些分面没有形成逐字验真的来源断言；不得猜测补写、不得用其他分面的"
-        "来源冒充支持。Runtime 会在成稿末尾追加明确的证据限制。"
-        "VERIFIED PLAN 含 namedDecisionAudiences 时，必须逐一给出对应的本报告综合判断；不得用通用总结替代，"
-        "也不得把这些跨来源结论冒充为某一官方来源的原话。"
-        f"答案正文必须只使用 {answer_language}，来源原标题除外。"
-    )
-    writer_system_prompt = _research_agent_stage_system_prompt(
-        writer_system_prompt,
-        stage="answer_writer",
-    )
-    prompt_contracts = {
-        "claimPlan": {
-            "stage": "canonical_claim_plan",
-            "version": CANONICAL_CLAIM_PLAN_VERSION,
-            "digest": claim_plan_diagnostics.get("claimDigest"),
-        },
-        "structureProjection": {
-            "stage": "structure_projection",
-            "version": RESEARCH_PROMPT_CONTRACT_VERSION,
-            "digest": research_runtime_prompt_digest(structure_system_prompt),
-        },
-        "answerWriter": {
-            "stage": "answer_writer",
-            "version": RESEARCH_PROMPT_CONTRACT_VERSION,
-            "digest": research_runtime_prompt_digest(writer_system_prompt),
-        },
-    }
-    verified_citation_keys = {
-        _safe_text(support.get("citationKey")).strip("[]")
-        for claim in verified_claims
-        for support in list(claim.get("supportingSources") or [])
-        if isinstance(support, dict) and _safe_text(support.get("citationKey"))
-    }
-    # Writers and reviewers must see the same locked evidence, not additional
-    # planning excerpts that only the writer can use and the reviewer rejects.
-    writer_source_material = json.dumps(
-        _architect_review_claim_ledger(verified_claims, compact_sources), ensure_ascii=False,
-    )
-    writer_required_source_count = max(
-        minimum_sources,
-        min(required_source_count, len(verified_citation_keys)),
-    )
-    delivery_target_min_chars = max(
-        minimum_answer_chars,
-        min(
-            _as_int(
-                requirements.get("targetAnswerChars"),
-                TARGET_RESEARCH_ANSWER_CHARS,
-            ),
-            600 + len(verified_claims) * 260 + max(1, len(required_plan_facet_ids)) * 180,
-        ),
-    )
-    delivery_target_max_chars = min(
-        _RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS,
-        max(delivery_target_min_chars + 800, int(delivery_target_min_chars * 1.5)),
-    )
-    writer_prompt = (
-        "用与 QUESTION 相同的主要语言撰写紧凑、完整的 Markdown 答案。"
-        f"{RESEARCH_ANSWER_LENGTH_GUIDANCE}"
-        "先给直接结论，再覆盖问题各项；相同主题的相容事实合并转述，保留条件、例外与来源归属，"
-        "不要为复述账本而逐条展开，不解释内部 claim/schema/审核流程。"
-        f"在单次输出预算内完成正文和来源表，至少 {writer_required_source_count} 个不同来源出现在相关段落的 [S#] 引用中。"
-        "只能使用 VERIFIED PLAN 已绑定的引用编号："
-        + " ".join(f"[{key}]" for key in sorted(verified_citation_keys))
-        + "；不得引用规划候选中未绑定到 claim 的其他编号。"
-        "必须明确 as-of 时点，区分来源直接事实、跨来源综合推论、冲突或限制；结尾列出实际使用的来源标题、URL、日期/版本。"
-        "只输出答案正文，不要 JSON、不要代码围栏。完成全部正文和来源列表后，最后单独输出完成标记 "
-        f"{_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\nQUESTION: {question}"
-    )
-    verified_plan = {
-        "question": question,
-        "requiredFacets": [
-            {
-                "facetId": _research_facet_id(kind),
-                "goal": _safe_text(goal),
-            }
-            for goal, kind in _build_explicit_question_facets(question)
-            if _research_facet_id(kind)
-        ],
-        "requiredDeliverables": _build_explicit_question_deliverables(question),
-        "namedDecisionAudiences": named_decision_audiences,
-        "headline": plan.get("headline"),
-        "claimTable": verified_claims,
-        "answerOutline": plan.get("answerOutline") or [],
-        "compositeInferences": plan.get("compositeInferences") or [],
-        "conflictMatrix": plan.get("conflictMatrix") or [],
-        "missingEvidence": plan.get("missingEvidence") or [],
-        "blockedFacets": plan.get("blockedFacets") or [],
-        "blockedSourceKeys": plan.get("blockedSourceKeys") or [],
-        "supportedScopeLimited": claim_plan_diagnostics.get("supportedScopeLimited")
-        is True,
-        "assumptions": plan.get("assumptions") or [],
-        "temporalAssessment": _architect_runtime_temporal_assessment(prompt_sources),
-        "asOf": _utc_now_iso(),
-    }
-    # Keep one source/date authority in the writer request, shared with review.
-    # The full Runtime plan repeats every excerpt and source metadata; sending
-    # it as well as the ledger both bloated context and exposed uncited dates.
-    writer_plan_material = json.dumps(
-        {
-            **{key: value for key, value in verified_plan.items()
-               if key not in {"claimTable", "temporalAssessment"}},
-            "claimIds": [claim["claimId"] for claim in verified_claims],
-        },
-        ensure_ascii=False,
-    )
-    answer = ""
-    writer_candidate: tuple[Any, str, str] | None = None
-    writer_revision_count = 0
-    writer_section_diagnostics: list[dict[str, Any]] = []
-    writer_section_diagnostics_lock = threading.Lock()
-    review_attempts: list[dict[str, Any]] = []
-
-    def answer_structural_issues(candidate_answer: str) -> list[str]:
-        candidate_payload = {
-            "question": question,
-            "freshness": freshness,
-            "deliveryRequirements": requirements,
-            "reviewDecision": "accept",
-            "answer": candidate_answer,
-            "sourceUrls": compact_sources,
-            "claimTable": verified_claims,
-            "criticalMissingEvidence": [],
-            "asOf": verified_plan["asOf"],
-        }
-        issues = [
-            issue
-            for issue in _architect_delivery_quality_issues(candidate_payload)
-            if issue != "independent_semantic_review_not_accepted"
-        ]
-        issues.extend(
-            f"answer_citation_not_bound_to_verified_claim:{citation_key}"
-            for citation_key in _architect_unbound_answer_citations(
-                candidate_answer,
-                verified_claims,
-            )
-        )
-        brief_coverage = _research_brief_coverage(
-            question=question,
-            source_matrix=compact_sources,
-            claim_table=verified_claims,
-            answer=candidate_answer,
-        )
-        issues.extend(
-            f"required_facet_not_answered:{item.get('taskBriefId')}:{item.get('status')}"
-            for item in list(brief_coverage.get("items") or [])
-            if (
-                isinstance(item, dict)
-                and item.get("status") != "supported"
-                and _safe_text(item.get("taskBriefId"))
-                not in blocked_plan_facet_ids
-            )
-        )
-        return issues
-
-    def write_segmented_answer(
-        candidate: tuple[Any, str, str],
-        profile: dict[str, Any],
-        *,
-        review_feedback: list[str] | None = None,
-        accepted_sections: dict[int, str] | None = None,
-        previous_sections: dict[int, str] | None = None,
-        alternate_writer_reserve: float = 0.0,
-    ) -> tuple[str, int, int, list[str], dict[int, str]]:
-        tasks = _architect_segment_tasks(
-            verified_plan,
-            section_count=int(profile.get("sectionCount") or 4),
-            target_min_chars=int(profile.get("targetMinChars") or 0),
-            target_max_chars=int(profile.get("targetMaxChars") or 0),
-        )
-        if len(tasks) < 2:
-            return "", 0, len(tasks), ["segmented_writer_requires_multiple_sections"], {}
-        model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-        valid_citations = {
-            _safe_text(source.get("citationKey")).strip("[]")
-            for source in prompt_sources
-            if _safe_text(source.get("citationKey"))
-        }
-        split_slots = max(0, 6 - len(tasks))
-        split_slots_lock = threading.Lock()
-
-        def generate_section(
-            task: dict[str, Any],
-            *,
-            split_depth: int = 0,
-        ) -> tuple[int, str, int, list[str], int]:
-            nonlocal split_slots
-            section_id = _safe_text(task.get("sectionId"))
-            section_sequence = int(task.get("sequence") or 0)
-            previous_accepted_section = (
-                _safe_text(dict(previous_sections or {}).get(section_sequence))
-                if split_depth == 0
-                else ""
-            )
-            required_citations = {
-                _safe_text(value).strip("[]")
-                for value in list(task.get("requiredCitationKeys") or [])
-                if _safe_text(value)
-            }
-            if not required_citations or not required_citations.issubset(valid_citations):
-                return int(task.get("sequence") or 0), "", 0, [f"{section_id}: invalid_assigned_citations"], 0
-            assigned_claims = _research_dict_list(
-                task.get("assignedClaims"),
-                limit=_RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
-            )
-            relevant_sources: list[dict[str, Any]] = []
-            for source in prompt_sources:
-                citation_key = _safe_text(source.get("citationKey")).strip("[]")
-                if citation_key not in required_citations:
-                    continue
-                source_claims = [
-                    {
-                        "claimId": _safe_text(claim.get("claimId")),
-                        "claim": _safe_text(claim.get("claim")),
-                        "claimType": _safe_text(claim.get("claimType")),
-                        "normativeCue": _safe_text(claim.get("normativeCue")),
-                        "evidenceExcerptKey": _safe_text(claim.get("evidenceExcerptKey")),
-                        "exactEvidenceExcerpt": _safe_text(claim.get("evidenceExcerpt")),
-                        "temporalBoundary": _safe_text(claim.get("temporalBoundary")),
-                    }
-                    for claim in assigned_claims
-                    if citation_key
-                    in {
-                        _safe_text(
-                            support.get("citationKey") or support.get("citation")
-                            if isinstance(support, dict)
-                            else support
-                        ).strip("[]")
-                        for support in list(claim.get("supportingSources") or [])
-                    }
-                ]
-                relevant_sources.append(
-                    {
-                        "citationKey": citation_key,
-                        "title": source.get("title"),
-                        "url": source.get("url"),
-                        "sourceRole": _architect_support_role(source),
-                        "publishedAt": source.get("publishedAt"),
-                        "updatedAt": source.get("updatedAt"),
-                        "version": source.get("version"),
-                        "temporalEvidence": source.get("temporalEvidence") or {},
-                        "verifiedClaims": source_claims,
-                    }
-                )
-            claim_evidence_digest = hashlib.sha256(
-                json.dumps(
-                    [
-                        {
-                            "claimId": _safe_text(claim.get("claimId")),
-                            "citationKeys": checklist.get("citationKeys") or [],
-                            "evidenceExcerptSha256": _safe_text(
-                                claim.get("evidenceExcerptSha256")
-                            )
-                            or hashlib.sha256(
-                                _safe_text(claim.get("evidenceExcerpt")).encode(
-                                    "utf-8", errors="ignore"
-                                )
-                            ).hexdigest(),
-                        }
-                        for claim, checklist in zip(
-                            assigned_claims,
-                            _architect_claim_citation_checklist(assigned_claims),
-                            strict=False,
-                        )
-                    ],
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ).encode("utf-8", errors="ignore")
-            ).hexdigest()
-            section_source_payload_chars = len(
-                json.dumps(relevant_sources, ensure_ascii=False)
-            )
-            marker = f"<!-- {_RESEARCH_ARCHITECT_SECTION_COMPLETE_MARKER_PREFIX}:{section_id} -->"
-            previous_section = ""
-            local_errors: list[str] = []
-            for attempt_index in range(2):
-                remaining = remaining_seconds()
-                if remaining <= review_reserve + alternate_writer_reserve + 5:
-                    local_errors.append(f"{section_id}: review_budget_reserved")
-                    break
-                per_call_budget = min(
-                    call_timeout_cap_seconds,
-                    75.0,
-                    max(5.0, remaining - review_reserve - alternate_writer_reserve - 3.0),
-                )
-                instruction = (
-                    "只撰写 SECTION_CONTRACT 指定的一个 Markdown 章节，不要写总标题、总来源列表或其他章节。"
-                    f"正文只使用 {answer_language}。"
-                    "只能使用 assignedClaims、compositeInferences 与 VERIFIED SOURCES 中逐项列出的 exactEvidenceExcerpt；"
-                    "同一网页没有被列入本节的其他内容也不得使用，不得增加常识性事实或猜测。"
-                    "assignedClaims 是分工子集，不是整轮证据清单：未分配给本节不等于未检索或缺失。"
-                    "不得据此声称整轮缺少某来源、日期或条款；只写本节可支持的内容，不写搜索过程、待补查计划或内部字段名。"
-                    "claimCitationChecklist 用于核对引用绑定，不是逐条摘录配额。围绕本节问题选用相关断言，"
-                    "可简洁转述或合并重复事实，但须保留条件、例外和来源归属，并就近保留原始 [S#]。"
-                    "不要照抄全部摘录或为填充篇幅复述无关内容；未使用的候选断言仍留在证据账本，"
-                    "问题是否完整回答交给独立 Reviewer 判断；"
-                    "每个事实句必须在同句放置支持它的引用，不得把引用集中堆在段末，也不得引用范围外编号。"
-                    "主题标题应由紧随正文的引用支撑；若输出代码块，必须在代码块后紧接一行独立 [S#] 引用。"
-                    "API/类名/参数/配置键/版本/数值/代码示例、否定能力、性能效果与强度描述，只有在该引用绑定的 exact evidenceExcerpt "
-                    "逐字出现或明确蕴含时才能写；禁止用一个相关引用替新增事实背书。若摘录没有代码，就不要生成代码。"
-                    "若 assigned claim 的 temporalBoundary 标记为 source_month_day_without_year，正文必须保留‘年份未标明’边界，"
-                    "不得把该月日与当前年份、当前版本或当前选型建议绑定。"
-                    "SECTION_CONTRACT.permittedHardAnchors 是本节可出现的高风险事实锚点白名单；不在其中的锚点一律删除。"
-                    "只有 SECTION_CONTRACT.verbatimCodeBlocks 非空时才可输出代码块，而且必须逐字复制其中一个完整代码块，"
-                    "不得改变量名、参数或示例值；该列表为空时禁止输出任何代码块。"
-                    "来源直接事实、跨来源综合判断、冲突/限制与时效边界必须明确区分；"
-                    "来源链接可由附录统一列出，但作为事实本身的查询入口、API 等 URL 必须忠实保留，不能编造。"
-                    "sourceRole=unknown 表示程序未确认原始归属，不表示资料无效；按来源 URL、署名和正文"
-                    "区分原文、转载、解读与草案，不得按站点评分或政府/大学域名冒称一手发布。"
-                    + (
-                        "本节证据关联以下调研主题，仅用于理解上下文；各主题可以由多节合起来回答，"
-                        "不是要求本节独自覆盖全主题。只按 outlineHint 与 assignedClaims 撰写本节，"
-                        "不要为未分配的事实另写章节或声称整轮缺证："
-                        + json.dumps(task.get("facetGoals") or [], ensure_ascii=False)
-                        + "。"
-                        if task.get("facetGoals")
-                        else ""
-                    )
-                    + (
-                        "本节还承担以下交付目标；它们不是新增搜索事实，必须只用 assignedClaims 和已登记的 "
-                        "compositeInferences 完成，并让每个清单项或结论就近引用其证据："
-                        + json.dumps(task.get("deliverableGoals") or [], ensure_ascii=False)
-                        + "。"
-                        if task.get("deliverableGoals")
-                        else ""
-                    )
-                    + "禁止 Markdown blockquote 或复制整页；上述要求覆盖的绑定断言除外，不扩抄来源正文。secondary 教程、文章或社区来源"
-                    "只能明确标成 secondary/教程示例/历史材料，不能写入‘官方建议’或‘当前标准’标题。"
-                    "任何 best practice、should、recommended、最佳实践、应当或建议措辞，若不是 assignedClaims 中"
-                    "带 normativeCue 的 explicit_normative，就必须在同一内容单元明确写 practical synthesis / 本报告的综合判断，"
-                    "且内容必须对应 SECTION_CONTRACT.compositeInferences 中已登记的 inference，并引用所有 premise 前提；"
-                    "未登记的行动建议必须删除。secondary 或旧来源必须标明其二手/历史角色。"
-                    f"去空白有效字符建议目标为 {task['targetMinChars']}-{task['targetMaxChars']}；"
-                    f"{RESEARCH_ANSWER_LENGTH_GUIDANCE}"
-                    + ("本节开头直接给出与所分配证据相符的结论。" if task.get("directConclusionSection") else "")
-                    + (
-                        "本节前两个内容单元内必须明确使用 Practical synthesis: / 本报告的综合判断：标注综合结论，"
-                        "并在同一单元引用全部必要的一手、当前前提。"
-                        if task.get("requiresSynthesisConclusion")
-                        else ""
-                    )
-                    + (
-                        "本节收束 assignedClaims 直接支持的限制、风险和适用边界。显式 deliverableGoals 可把来源已经规定的"
-                        "义务改写成逐项执行清单，但必须标明这是操作化重述并就近引用；其他跨来源行动仍只有存在 "
-                        "SECTION_CONTRACT.compositeInferences 时才能写，不得为了凑成建议而使用 should/recommended/建议/应当等规范措辞。"
-                        if task.get("limitationsAndActionSection")
-                        else ""
-                    )
-                    + "提交前逐字核对必须出现的引用："
-                    + " ".join(f"[{key}]" for key in sorted(required_citations))
-                    + f"。完成本节后最后单独输出 {marker}。\nQUESTION: {question}"
-                )
-                if review_feedback:
-                    instruction += (
-                        "\n同一独立 Reviewer 对上一版完整答案给出以下意见。只修复与本节 assignedClaims 相关的部分，"
-                        "不要新增事实或扩大引用范围："
-                        + json.dumps(review_feedback, ensure_ascii=False)
-                    )
-                    if previous_accepted_section:
-                        instruction += (
-                            "\n上一版该章节已经通过段级事实与引用门禁。请以它为受控草稿完整重写："
-                            "保留其中正确的 assignedClaims、引用、来源角色和 synthesis 标记，只修改 Reviewer 指出的"
-                            "问题；不遗漏已支持的结论，也不要复制任何已被 Reviewer 指为不支持的句子。"
-                            "\nPREVIOUS_ACCEPTED_SECTION:\n"
-                            + previous_accepted_section[:12_000]
-                        )
-                if attempt_index:
-                    missing_citations = sorted(
-                        {
-                            issue.rsplit(":", 1)[-1]
-                            for issue in local_errors
-                            if "section_citation_missing:" in issue
-                        }
-                    )
-                    unsupported_anchors = sorted(
-                        {
-                            match.group(1)
-                            for issue in local_errors
-                            if (
-                                match := re.search(
-                                    r"(?:api|version|quantity|code)_anchor_not_in_evidence:([^,\s]+)",
-                                    issue,
-                                )
-                            )
-                        }
-                    )
-                    instruction += (
-                        "\n上一稿仅本节未通过 Runtime 门禁。请完整重写本节，不要改写其他章节。"
-                        f"失败原因：{', '.join(local_errors[-8:])}。\nPREVIOUS_SECTION:\n{previous_section}"
-                    )
-                    if missing_citations:
-                        instruction += "\n缺失的精确引用 token：" + " ".join(
-                            f"[{key}]" for key in missing_citations
-                        )
-                    if unsupported_anchors:
-                        instruction += (
-                            "\n以下锚点没有被 assignedClaims 的 exact excerpt 支持，必须删除其每一次出现，"
-                            "不得换成同义 API 或常识补写："
-                            + ", ".join(unsupported_anchors)
-                        )
-                messages = prepared_messages(
-                    candidate,
-                    system_prompt=writer_system_prompt,
-                    instruction=instruction,
-                    materials=[
-                        {
-                            "title": "Section contract",
-                            "kind": "research_section_contract",
-                            "content": json.dumps(task, ensure_ascii=False),
-                        },
-                        {
-                            "title": "Verified sources for this section",
-                            "kind": "research_section_sources",
-                            "content": json.dumps(relevant_sources, ensure_ascii=False),
-                        },
-                    ],
-                    target_role="web-research-answer-writer",
-                    node=(
-                        "web_research_architect_answer_section_revision"
-                        if attempt_index
-                        else "web_research_architect_answer_section"
-                    ),
-                )
-                try:
-                    response = _invoke_architect_candidate_with_deadline(
-                        candidate,
-                        messages,
-                        seconds=per_call_budget,
-                        max_tokens=int(profile.get("sectionMaxTokens") or _RESEARCH_ARCHITECT_SECTION_MAX_TOKENS),
-                        disable_thinking=True,
-                    )
-                except concurrent.futures.TimeoutError:
-                    local_errors.append(f"{section_id}: timeout")
-                    with writer_section_diagnostics_lock:
-                        writer_section_diagnostics.append(
-                            {
-                                "modelId": model_label,
-                                "sectionId": section_id,
-                                "attempt": attempt_index + 1,
-                                "status": "timeout",
-                                "assignedClaimIds": [
-                                    _safe_text(claim.get("claimId")) for claim in assigned_claims
-                                ],
-                                "requiredCitationKeys": sorted(required_citations),
-                                "claimEvidenceDigest": claim_evidence_digest,
-                                "sectionSourcePayloadChars": section_source_payload_chars,
-                            }
-                        )
-                    continue
-                except Exception as exc:  # noqa: BLE001 - retry only the failed section.
-                    local_errors.append(f"{section_id}: {type(exc).__name__}: {_safe_text(exc)[:180]}")
-                    with writer_section_diagnostics_lock:
-                        writer_section_diagnostics.append(
-                            {
-                                "modelId": model_label,
-                                "sectionId": section_id,
-                                "attempt": attempt_index + 1,
-                                "status": "provider_error",
-                                "failureCode": type(exc).__name__,
-                                "assignedClaimIds": [
-                                    _safe_text(claim.get("claimId")) for claim in assigned_claims
-                                ],
-                                "requiredCitationKeys": sorted(required_citations),
-                                "claimEvidenceDigest": claim_evidence_digest,
-                                "sectionSourcePayloadChars": section_source_payload_chars,
-                            }
-                        )
-                    continue
-                sanitized_output = sanitize_background_model_output(response)
-                raw_section = sanitized_output.text
-                raw_response_chars = len(raw_section)
-                section, complete = _research_answer_section_from_model_output(
-                    raw_section,
-                    section_id=section_id,
-                )
-                parsed_section_chars = len(section)
-                section, unverified_code_block_drops = _architect_strip_unverified_section_code_blocks(
-                    section,
-                    task,
-                )
-                post_code_block_chars = len(section)
-                if unverified_code_block_drops:
-                    local_errors.append(
-                        f"{section_id}: runtime_unverified_code_block_drops:"
-                        f"{unverified_code_block_drops}"
-                    )
-                section, citation_repairs = _architect_repair_unambiguous_section_citations(
-                    section,
-                    task,
-                )
-                post_citation_chars = len(section)
-                if citation_repairs:
-                    local_errors.append(
-                        f"{section_id}: runtime_unambiguous_citation_repairs:{citation_repairs}"
-                    )
-                section, source_role_repairs = _architect_repair_source_role_labels(
-                    section,
-                    task,
-                )
-                post_source_role_chars = len(section)
-                if source_role_repairs:
-                    local_errors.append(
-                        f"{section_id}: runtime_source_role_repairs:{source_role_repairs}"
-                    )
-                unsupported_unit_diagnostics: list[str] = []
-                unsupported_unit_reason_counts: dict[str, int] = {}
-                section, unsupported_unit_drops = _architect_drop_unsupported_section_units(
-                    section,
-                    task,
-                    diagnostics=unsupported_unit_diagnostics,
-                    reason_counts=unsupported_unit_reason_counts,
-                )
-                post_unsupported_drop_chars = len(section)
-                if unsupported_unit_drops:
-                    local_errors.append(
-                        f"{section_id}: runtime_unsupported_unit_drops:{unsupported_unit_drops}"
-                    )
-                    local_errors.extend(
-                        f"{section_id}: unsupported_unit_preview:{item}"
-                        for item in unsupported_unit_diagnostics
-                    )
-                # Do not pad the writer's answer with unused excerpts or erase
-                # URLs that are themselves evidence. Coverage/entailment is
-                # reviewed against the unchanged canonical ledger below.
-                section, repeated_unit_drops = _architect_dedupe_repeated_content_units(section)
-                if repeated_unit_drops:
-                    local_errors.append(
-                        f"{section_id}: runtime_repeated_unit_drops:{repeated_unit_drops}"
-                    )
-                previous_section = section
-                section_issues = _architect_section_issues(section, task, complete=complete)
-                diagnostic_status = "accepted" if not section_issues else "rejected"
-                with writer_section_diagnostics_lock:
-                    writer_section_diagnostics.append(
-                        {
-                            "modelId": model_label,
-                            "sectionId": section_id,
-                            "attempt": attempt_index + 1,
-                            "status": diagnostic_status,
-                            "finishReason": _architect_response_finish_reason(response),
-                            "requestedMaxTokens": int(
-                                profile.get("sectionMaxTokens")
-                                or _RESEARCH_ARCHITECT_SECTION_MAX_TOKENS
-                            ),
-                            "configuredMaxTokens": profile.get("configuredMaxTokens"),
-                            **_architect_response_safe_diagnostics(response, sanitized_output),
-                            "assignedClaimIds": [
-                                _safe_text(claim.get("claimId")) for claim in assigned_claims
-                            ],
-                            "requiredCitationKeys": sorted(required_citations),
-                            "claimEvidenceDigest": claim_evidence_digest,
-                            "sectionSourcePayloadChars": section_source_payload_chars,
-                            "rawResponseChars": raw_response_chars,
-                            "parsedSectionChars": parsed_section_chars,
-                            "postCodeBlockChars": post_code_block_chars,
-                            "postCitationChars": post_citation_chars,
-                            "postSourceRoleChars": post_source_role_chars,
-                            "postUnsupportedDropChars": post_unsupported_drop_chars,
-                            "validatedSectionChars": len(section),
-                            "citationRepairCount": citation_repairs,
-                            "unverifiedCodeBlockDropCount": unverified_code_block_drops,
-                            "sourceRoleRepairCount": source_role_repairs,
-                            "unsupportedUnitDropCount": unsupported_unit_drops,
-                            "unsupportedUnitReasons": dict(
-                                sorted(unsupported_unit_reason_counts.items())
-                            ),
-                            "effectiveChars": research_effective_answer_chars(
-                                {"answer": section}
-                            ),
-                            "recommendedChars": int(
-                                task.get("targetMinChars") or 0
-                            ),
-                            "issues": list(section_issues)[:8],
-                        }
-                    )
-                if not complete:
-                    finish_reason = _architect_response_finish_reason(response)
-                    if finish_reason:
-                        section_issues[0] = f"section_incomplete:{finish_reason}"
-                if not section_issues:
-                    return int(task.get("sequence") or 0), section, attempt_index, local_errors, 1
-                local_errors.extend(f"{section_id}: {issue}" for issue in section_issues)
-            children: list[dict[str, Any]] = []
-            splittable_failure = bool(
-                len(assigned_claims) > 1
-                and any(
-                    marker in issue
-                    for issue in local_errors
-                    for marker in (
-                        "section_incomplete",
-                        "section_unsupported_hard_fact",
-                        "runtime_unsupported_unit_drops",
-                        ": timeout",
-                    )
-                )
-            )
-            if split_depth < 2 and splittable_failure:
-                with split_slots_lock:
-                    if split_slots > 0:
-                        children = _split_architect_section_task(task)
-                        if children:
-                            split_slots -= 1
-            if children and remaining_seconds() > review_reserve + alternate_writer_reserve + 8:
-                child_sections: list[str] = []
-                child_revisions = 1
-                child_count = 0
-                for child in children:
-                    _sequence, child_section, revisions, child_errors, produced_count = generate_section(
-                        child,
-                        split_depth=split_depth + 1,
-                    )
-                    local_errors.extend(child_errors)
-                    if not child_section:
-                        return int(task.get("sequence") or 0), "", child_revisions, local_errors, 0
-                    child_sections.append(child_section)
-                    child_revisions += revisions
-                    child_count += produced_count
-                return (
-                    int(task.get("sequence") or 0),
-                    "\n\n".join(child_sections),
-                    child_revisions,
-                    local_errors,
-                    child_count,
-                )
-            return int(task.get("sequence") or 0), "", 0, local_errors, 0
-
-        section_results: dict[int, str] = {
-            int(sequence): _safe_text(section)
-            for sequence, section in dict(accepted_sections or {}).items()
-            if 1 <= int(sequence) <= len(tasks) and _safe_text(section)
-        }
-        pending_tasks = [
-            task for task in tasks if int(task.get("sequence") or 0) not in section_results
-        ]
-        revision_count = 0
-        produced_section_count = len(section_results)
-        errors: list[str] = []
-        warm_base_model = getattr(candidate[0], "_get_base_model", None)
-        if pending_tasks and callable(warm_base_model):
-            try:
-                warm_base_model()
-            except Exception as exc:  # noqa: BLE001 - expose provider setup failure before parallel calls.
-                errors.append(
-                    f"{model_label}: segmented_writer_prewarm_{type(exc).__name__}: {_safe_text(exc)[:180]}"
-                )
-                return "", revision_count, produced_section_count, errors, section_results
-        with ThreadPoolExecutor(max_workers=min(2, len(pending_tasks) or 1)) as executor:
-            if pending_tasks:
-                _report_research_progress(
-                    stage="answer_writer",
-                    status="active",
-                    summary=f"正在撰写 {len(pending_tasks)} 个答案章节",
-                    toolName="research_architect",
-                    nodeId="research-answer-writer",
-                )
-            futures = [executor.submit(generate_section, task) for task in pending_tasks]
-            for future in as_completed(futures):
-                try:
-                    sequence, section, revisions, section_errors, produced_count = future.result()
-                except Exception as exc:  # noqa: BLE001 - never deliver a partial segmented answer.
-                    errors.append(f"{model_label}: segmented_section_{type(exc).__name__}: {_safe_text(exc)[:180]}")
-                    _report_research_progress(
-                        stage="answer_section",
-                        status="failed",
-                        summary="一个答案章节未能通过校验",
-                        toolName="research_architect",
-                        nodeId=f"research-answer-section:error:{len(errors)}",
-                    )
-                    continue
-                errors.extend(section_errors)
-                if section:
-                    section_results[sequence] = section
-                    revision_count += revisions
-                    produced_section_count += produced_count
-                _report_research_progress(
-                    stage="answer_section",
-                    status="completed" if section else "failed",
-                    summary=(
-                        f"答案章节 {len(section_results)}/{len(tasks)} 已完成"
-                        if section
-                        else f"答案章节 {sequence}/{len(tasks)} 未通过校验"
-                    ),
-                    toolName="research_architect",
-                    nodeId=f"research-answer-section:{sequence}",
-                )
-        if len(section_results) != len(tasks):
-            errors.append(f"{model_label}: segmented_section_coverage:{len(section_results)}/{len(tasks)}")
-            return "", revision_count, produced_section_count, errors, section_results
-        ordered_sections = [section_results[index] for index in range(1, len(tasks) + 1)]
-        assembled = _assemble_architect_sections(
-            question=question,
-            verified_plan=verified_plan,
-            sections=ordered_sections,
-            sources=compact_sources,
-        )
-        assembled, repeated_unit_drops = _architect_dedupe_repeated_content_units(assembled)
-        if repeated_unit_drops:
-            errors.append(f"{model_label}: runtime_repeated_unit_drops:{repeated_unit_drops}")
-        if len(assembled) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-            errors.append(f"{model_label}: answer_exceeds_delivery_surface_limit")
-            return "", revision_count, produced_section_count, errors, section_results
-        structural_issues = answer_structural_issues(assembled)
-        if structural_issues:
-            errors.append(f"{model_label}: " + ",".join(structural_issues[:8]))
-            return "", revision_count, produced_section_count, errors, section_results
-        return assembled, revision_count, produced_section_count, errors, section_results
-
-    writer_mode = "single"
-    writer_runtime_fallback = False
-    writer_section_count = 0
-    writer_attempts: list[dict[str, Any]] = []
-    accepted_segmented_sections: dict[int, str] = {}
-    segmented_contributor_count = 0
-    segmented_contract_profile: dict[str, Any] | None = None
-    productive_writer_candidates: list[tuple[float, int, int, tuple[Any, str, str]]] = []
-    deterministic_answer = ""
-    compact_writer_mode = requirements.get("mode") == "narrow_authoritative_technical"
-
-    def stable_segmented_profile(profile: dict[str, Any]) -> dict[str, Any]:
-        nonlocal segmented_contract_profile
-        if segmented_contract_profile is None:
-            section_count = int(profile.get("sectionCount") or 4)
-            segmented_contract_profile = {
-                "sectionCount": section_count,
-                "targetMinChars": max(
-                    700,
-                    (delivery_target_min_chars + section_count - 1) // section_count,
-                ),
-                "targetMaxChars": max(
-                    int(profile.get("targetMaxChars") or 0),
-                    1_100,
-                    (delivery_target_max_chars + section_count - 1) // section_count,
-                ),
-            }
-        return {
-            **profile,
-            **segmented_contract_profile,
-            "enabled": True,
-        }
-
-    # Plan provenance must not choose the writer policy. A Runtime-recovered,
-    # exact-excerpt plan is just as safe to hand to the normal model writer as
-    # an Architect-authored plan. This preserves provider-adaptive segmented
-    # writing; the deterministic claim report remains a fail-safe only after
-    # every configured writer has actually failed.
-    for writer_index, candidate in enumerate(writer_candidates):
-        model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-        segmented_profile = _architect_segmented_writer_profile(candidate)
-        if compact_writer_mode:
-            segmented_profile = {**segmented_profile, "enabled": False}
-        if segmented_profile.get("enabled") or accepted_segmented_sections:
-            effective_segmented_profile = stable_segmented_profile(segmented_profile)
-            attempt_started_at = time.perf_counter()
-            starting_remaining = remaining_seconds()
-            prior_accepted_count = len(accepted_segmented_sections)
-            future_writer_count = max(0, len(writer_candidates) - writer_index - 1)
-            target_task_count = len(
-                _architect_segment_tasks(
-                    verified_plan,
-                    section_count=int(effective_segmented_profile.get("sectionCount") or 4),
-                    target_min_chars=int(effective_segmented_profile.get("targetMinChars") or 0),
-                    target_max_chars=int(effective_segmented_profile.get("targetMaxChars") or 0),
-                )
-            )
-            alternate_reserve = (
-                min(45.0, max(0.0, starting_remaining - review_reserve - 10.0))
-                if future_writer_count
-                else 0.0
-            )
-            segmented_answer, revisions, section_count, segmented_errors, accepted_sections = write_segmented_answer(
-                candidate,
-                effective_segmented_profile,
-                accepted_sections=accepted_segmented_sections,
-                alternate_writer_reserve=alternate_reserve,
-            )
-            accepted_segmented_sections = accepted_sections
-            new_accepted_count = max(0, len(accepted_sections) - prior_accepted_count)
-            elapsed_ms = int((time.perf_counter() - attempt_started_at) * 1000)
-            if new_accepted_count:
-                segmented_contributor_count += 1
-                productive_writer_candidates.append(
-                    (
-                        new_accepted_count / max(1, elapsed_ms),
-                        new_accepted_count,
-                        -writer_index,
-                        candidate,
-                    )
-                )
-            writer_attempts.append(
-                {
-                    "modelId": model_label,
-                    "selectionOrigin": _architect_candidate_selection_origin(candidate),
-                    "mode": "segmented",
-                    "startedWithRemainingSeconds": round(starting_remaining, 1),
-                    "elapsedMs": elapsed_ms,
-                    "acceptedSectionCount": len(accepted_sections),
-                    "newAcceptedSectionCount": new_accepted_count,
-                    "targetSectionCount": target_task_count,
-                    "failureCodes": list(
-                        dict.fromkeys(
-                            error[:180]
-                            for error in segmented_errors
-                            if "unsupported_unit_preview" not in error
-                        )
-                    )[-8:],
-                }
-            )
-            candidate_errors.extend(
-                error
-                if error.startswith(f"{model_label}:")
-                else f"{model_label}: {error}"
-                for error in segmented_errors
-            )
-            if segmented_answer:
-                answer = segmented_answer
-                writer_candidate = candidate
-                writer_revision_count += revisions
-                writer_mode = (
-                    "segmented_candidate_handoff"
-                    if segmented_contributor_count > 1
-                    else "segmented"
-                )
-                writer_section_count = section_count
-                break
-            continue
-        writer_instruction = writer_prompt
-        observed_truncation = False
-        for attempt_index in range(2):
-            remaining = remaining_seconds()
-            if remaining <= review_reserve + 1:
-                candidate_errors.append("architect_review_budget_reserved")
-                break
-            remaining_writers = max(1, len(writer_candidates) - writer_index)
-            per_call_budget = min(
-                call_timeout_cap_seconds,
-                105.0,
-                max(2.0, (remaining - review_reserve) / min(2, remaining_writers)),
-            )
-            messages = prepared_messages(
-                candidate,
-                system_prompt=writer_system_prompt,
-                instruction=writer_instruction,
-                materials=[
-                    {"title": "Verified evidence plan", "kind": "research_plan", "content": writer_plan_material},
-                    {"title": "Research evidence candidates", "kind": "research_sources", "content": writer_source_material},
-                ],
-                target_role="web-research-answer-writer",
-                node="web_research_architect_answer_revision" if attempt_index else "web_research_architect_answer",
-            )
-            attempt_started_at = time.perf_counter()
-            writer_attempt = {
-                "modelId": model_label,
-                "selectionOrigin": _architect_candidate_selection_origin(candidate),
-                "mode": "single",
-                "startedWithRemainingSeconds": round(remaining, 1),
-                "accepted": False,
-            }
-            writer_attempts.append(writer_attempt)
-            try:
-                response = _invoke_architect_candidate_with_deadline(
-                    candidate,
-                    messages,
-                    seconds=per_call_budget,
-                    max_tokens=(
-                        min(3_200, _RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS)
-                        if compact_writer_mode
-                        else _RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS
-                    ),
-                    disable_thinking=True,
-                )
-            except concurrent.futures.TimeoutError:
-                writer_attempt["failureCodes"] = ["architect_answer_timeout"]
-                writer_attempt["elapsedMs"] = int((time.perf_counter() - attempt_started_at) * 1000)
-                candidate_errors.append(f"{model_label}: architect_answer_timeout")
-                if not compact_writer_mode and remaining_seconds() > review_reserve + 12:
-                    fallback_profile = stable_segmented_profile(segmented_profile)
-                    segmented_answer, revisions, section_count, segmented_errors, _accepted_sections = write_segmented_answer(
-                        candidate,
-                        fallback_profile,
-                    )
-                    candidate_errors.extend(
-                        error
-                        if error.startswith(f"{model_label}:")
-                        else f"{model_label}: {error}"
-                        for error in segmented_errors
-                    )
-                    if segmented_answer:
-                        answer = segmented_answer
-                        writer_candidate = candidate
-                        writer_revision_count += revisions
-                        writer_mode = "segmented_after_timeout"
-                        writer_section_count = section_count
-                break
-            except Exception as exc:  # noqa: BLE001 - try the next configured writer model.
-                writer_attempt["failureCodes"] = [f"architect_answer_{type(exc).__name__}"]
-                writer_attempt["elapsedMs"] = int((time.perf_counter() - attempt_started_at) * 1000)
-                candidate_errors.append(f"{model_label}: architect_answer_{type(exc).__name__}: {_safe_text(exc)[:220]}")
-                if not compact_writer_mode and remaining_seconds() > review_reserve + 12:
-                    fallback_profile = stable_segmented_profile(segmented_profile)
-                    segmented_answer, revisions, section_count, segmented_errors, _accepted_sections = write_segmented_answer(
-                        candidate,
-                        fallback_profile,
-                    )
-                    candidate_errors.extend(
-                        error
-                        if error.startswith(f"{model_label}:")
-                        else f"{model_label}: {error}"
-                        for error in segmented_errors
-                    )
-                    if segmented_answer:
-                        answer = segmented_answer
-                        writer_candidate = candidate
-                        writer_revision_count += revisions
-                        writer_mode = "segmented_after_error"
-                        writer_section_count = section_count
-                break
-            finally:
-                writer_attempt.setdefault("elapsedMs", int((time.perf_counter() - attempt_started_at) * 1000))
-            raw_answer = sanitize_background_model_output(response).text
-            candidate_answer, complete = _research_answer_from_model_output(raw_answer)
-            finish_reason = _architect_response_finish_reason(response)
-            structural_issues: list[str] = []
-            if not complete:
-                structural_issues.append(
-                    "architect_answer_incomplete" + (f":{finish_reason}" if finish_reason else "")
-                )
-                observed_truncation = finish_reason in {"length", "max_tokens", "max_output_tokens"} or bool(candidate_answer)
-            if len(candidate_answer) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-                structural_issues.append("answer_exceeds_delivery_surface_limit")
-            if complete and len(candidate_answer) <= _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-                structural_issues.extend(answer_structural_issues(candidate_answer))
-            writer_attempt.update({
-                "accepted": not structural_issues,
-                "finishReason": finish_reason,
-                "failureCodes": structural_issues[:8],
-            })
-            if not structural_issues:
-                answer = candidate_answer
-                writer_candidate = candidate
-                writer_revision_count += attempt_index
-                break
-            candidate_errors.append(f"{model_label}: " + ",".join(structural_issues[:8]))
-            if (
-                not compact_writer_mode
-                and observed_truncation
-                and remaining_seconds() > review_reserve + 12
-            ):
-                fallback_profile = stable_segmented_profile(segmented_profile)
-                segmented_answer, revisions, section_count, segmented_errors, _accepted_sections = write_segmented_answer(
-                    candidate,
-                    fallback_profile,
-                )
-                candidate_errors.extend(
-                    error
-                    if error.startswith(f"{model_label}:")
-                    else f"{model_label}: {error}"
-                    for error in segmented_errors
-                )
-                if segmented_answer:
-                    answer = segmented_answer
-                    writer_candidate = candidate
-                    writer_revision_count += revisions
-                    writer_mode = "segmented_after_truncation"
-                    writer_section_count = section_count
-                break
-            if attempt_index or not candidate_answer or remaining_seconds() <= review_reserve + 8:
-                break
-            writer_instruction = (
-                "完整重写上一份候选答案，不要补写附录，也不要解释门禁。保留所有正确事实和引用，修复以下 Runtime 门禁："
-                + ", ".join(structural_issues[:8])
-                + "。篇幅不设最低要求，覆盖问题并保留正确的限定和 [S#] 引用即可；"
-                + f"完成来源列表后单独输出完成标记 {_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\n"
-                + f"QUESTION: {question}\nPREVIOUS_DRAFT:\n{candidate_answer[:_MAX_RESEARCH_VISIBLE_ANSWER_CHARS]}"
-            )
-        if answer:
-            break
-
-    # Candidate handoff can leave one valid section missing after preserving
-    # all other work. Give the most productive writer one bounded final pass
-    # over that section only; the existing helper keeps every evidence and
-    # section gate in force and stops at the independent-review reserve.
-    if (
-        not answer
-        and accepted_segmented_sections
-        and segmented_contract_profile is not None
-        and productive_writer_candidates
-    ):
-        tail_tasks = _architect_segment_tasks(
-            verified_plan,
-            section_count=int(segmented_contract_profile.get("sectionCount") or 4),
-            target_min_chars=int(segmented_contract_profile.get("targetMinChars") or 0),
-            target_max_chars=int(segmented_contract_profile.get("targetMaxChars") or 0),
-        )
-        missing_sequences = [
-            int(task.get("sequence") or 0)
-            for task in tail_tasks
-            if int(task.get("sequence") or 0) not in accepted_segmented_sections
-        ]
-        if len(missing_sequences) == 1 and remaining_seconds() > review_reserve + 8:
-            tail_candidate = max(productive_writer_candidates, key=lambda item: item[:3])[3]
-            tail_label = (
-                _architect_candidate_identity(tail_candidate)
-                or tail_candidate[1]
-                or f"role:{tail_candidate[2]}"
-            )
-            tail_profile = stable_segmented_profile(
-                _architect_segmented_writer_profile(tail_candidate)
-            )
-            tail_started_at = time.perf_counter()
-            tail_starting_remaining = remaining_seconds()
-            prior_tail_count = len(accepted_segmented_sections)
-            (
-                tail_answer,
-                tail_revisions,
-                tail_section_count,
-                tail_errors,
-                tail_sections,
-            ) = write_segmented_answer(
-                tail_candidate,
-                tail_profile,
-                accepted_sections=accepted_segmented_sections,
-            )
-            accepted_segmented_sections = tail_sections
-            writer_attempts.append(
-                {
-                    "modelId": tail_label,
-                    "selectionOrigin": _architect_candidate_selection_origin(tail_candidate),
-                    "mode": "segmented_tail_recovery",
-                    "startedWithRemainingSeconds": round(tail_starting_remaining, 1),
-                    "elapsedMs": int((time.perf_counter() - tail_started_at) * 1000),
-                    "missingSectionSequencesBefore": missing_sequences,
-                    "acceptedSectionCount": len(tail_sections),
-                    "newAcceptedSectionCount": max(0, len(tail_sections) - prior_tail_count),
-                    "targetSectionCount": len(tail_tasks),
-                    "accepted": bool(tail_answer),
-                    "failureCodes": list(
-                        dict.fromkeys(
-                            error[:180]
-                            for error in tail_errors
-                            if "unsupported_unit_preview" not in error
-                        )
-                    )[-8:],
-                }
-            )
-            candidate_errors.extend(
-                error
-                if error.startswith(f"{tail_label}:")
-                else f"{tail_label}: {error}"
-                for error in tail_errors
-            )
-            if tail_answer:
-                answer = tail_answer
-                writer_candidate = tail_candidate
-                writer_revision_count += tail_revisions
-                writer_mode = "segmented_tail_recovered"
-                writer_section_count = tail_section_count
-
-    if not answer or writer_candidate is None:
-        deterministic_started_at = time.perf_counter()
-        deterministic_answer = _assemble_architect_claim_report(
-            question=question,
-            verified_plan=verified_plan,
-            sources=compact_sources,
-        )
-        deterministic_answer, deterministic_repeat_drops = _architect_dedupe_repeated_content_units(
-            deterministic_answer
-        )
-        deterministic_issues: list[str] = []
-        if deterministic_repeat_drops:
-            candidate_errors.append(
-                f"runtime_deterministic_claim_report_repeated_unit_drops:{deterministic_repeat_drops}"
-            )
-        if len(deterministic_answer) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-            deterministic_issues.append("answer_exceeds_delivery_surface_limit")
-        else:
-            deterministic_issues.extend(answer_structural_issues(deterministic_answer))
-        writer_attempts.append(
-            {
-                "modelId": "runtime:verified-claim-report",
-                "selectionOrigin": "runtime_deterministic_fallback",
-                "mode": "deterministic_claim_report_after_writer",
-                "startedWithRemainingSeconds": round(remaining_seconds(), 1),
-                "elapsedMs": int((time.perf_counter() - deterministic_started_at) * 1000),
-                "accepted": not deterministic_issues,
-                "failureCodes": list(dict.fromkeys(deterministic_issues))[-8:],
-            }
-        )
-        if not deterministic_issues:
-            answer = deterministic_answer
-            writer_candidate = plan_candidate
-            writer_mode = "deterministic_claim_report_after_writer"
-            writer_runtime_fallback = True
-            writer_section_count = max(1, len(verified_claims))
-        else:
-            candidate_errors.append(
-                "runtime:verified-claim-report: " + ",".join(deterministic_issues[:8])
-            )
-
-    if not answer or writer_candidate is None:
-        return {
-            "_agentError": "architect_answer_unavailable",
-            "_architectMode": "full_synthesis",
-            "_canonicalClaimPlan": claim_plan_diagnostics,
-            "_structureAttempt": structure_attempt,
-            "_writerAttempts": writer_attempts,
-            "_reviewAttempts": review_attempts,
-            "_contextPreparations": context_preparations[-24:],
-            "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
-            "_modelFallbackAttempts": candidate_errors[-16:],
-        }
-
-    if supported_scope_boundary:
-        answer = with_supported_scope_boundary(answer)
-        if len(answer) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-            return {
-                "_agentError": "architect_supported_scope_boundary_exceeds_delivery_surface",
-                "_architectMode": "full_synthesis",
-                "_canonicalClaimPlan": claim_plan_diagnostics,
-                "_structureAttempt": structure_attempt,
-                "_writerAttempts": writer_attempts,
-                "_reviewAttempts": review_attempts,
-                "_contextPreparations": context_preparations[-24:],
-                "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
-                "_modelFallbackAttempts": candidate_errors[-16:],
-            }
-
-    writer_identity = _architect_candidate_identity(writer_candidate)
-    deterministic_review_chain = writer_mode.startswith("deterministic_claim_report")
-    reviewer_pool = _create_web_research_reviewer_llm_candidates(candidates)
-    has_supervisor_consumer_reviewer = any(
-        _architect_candidate_selection_origin(candidate) == "role_reviewer:supervisor"
-        for candidate in reviewer_pool
-    )
-    # For a production agent binding, semantic review first exercises the
-    # configured Supervisor as the real downstream consumer. The adversarial
-    # pass then prefers a distinct model (normally the bound Architect).
-    # Fixture/legacy candidate lists retain their supplied order.
-    reviewer_candidates = (
-        list(reviewer_pool)
-        if deterministic_review_chain
-        else _ordered_architect_candidates(reviewer_pool, prefer_distinct_from=writer_identity)
-    )
-    review_system_prompt = REVIEW_SYSTEM_PROMPT
-    review_prompt = build_review_prompt(question)
-    adversarial_review_prompt = ADVERSARIAL_REVIEW_PROMPT
-    def invoke_independent_review(
-        candidate: tuple[Any, str, str],
-        candidate_answer: str,
-        *,
-        seconds: float,
-        node: str,
-        review_mode: str,
-        retry_reason: str = "",
-    ) -> tuple[dict[str, Any], str]:
-        model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-        review_started_at = time.perf_counter()
-        review_attempt_base = {
-            "modelId": model_label,
-            "modelRole": candidate[2],
-            "selectionOrigin": _architect_candidate_selection_origin(candidate),
-            "reviewMode": review_mode,
-            "requestedMaxTokens": _RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
-        }
-        review_candidate_payload = {
-            "answer": candidate_answer,
-            "asOf": verified_plan["asOf"],
-            # Source dates belong to the canonical citation index below. The
-            # planning assessment includes unused candidates, not answer facts.
-            "namedDecisionAudiences": verified_plan.get("namedDecisionAudiences") or [],
-            "requiredDeliverables": verified_plan.get("requiredDeliverables") or [],
-        }
-        review_claim_ledger = _architect_review_claim_ledger(
-            verified_claims,
-            compact_sources,
-        )
-        retry_instruction = ""
-        if retry_reason:
-            retry_instruction = (
-                "\n上一次 Reviewer 调用没有产生可验证的结构化结果，这不是对答案的实质性否决。"
-                "请重新独立审查同一候选答案，并严格满足输出 schema：reviewReasons、unsupportedClaims、"
-                "criticalMissingEvidence、recommendedNextQueries 必须是 JSON 数组，空值写 []，绝不能写 null；"
-                "questionCoverage、claimEntailment、freshnessAdequacy 必须是 JSON 布尔值。只输出一个 JSON 对象。"
-            )
-        messages = prepared_messages(
-            candidate,
-            system_prompt=review_system_prompt,
-            instruction=(
-                review_prompt
-                + (adversarial_review_prompt if review_mode == "adversarial" else "")
-                + retry_instruction
-            ),
-            materials=[
-                {
-                    "title": "Canonical verified claim ledger",
-                    "kind": "research_review_claim_ledger",
-                    "content": json.dumps(review_claim_ledger, ensure_ascii=False),
-                },
-                {"title": "Candidate answer", "kind": "research_review_candidate", "content": json.dumps(review_candidate_payload, ensure_ascii=False)},
-            ],
-            target_role="web-research-independent-reviewer",
-            node=node,
-        )
-        try:
-            response = _invoke_architect_candidate_with_deadline(
-                candidate,
-                messages,
-                seconds=seconds,
-                max_tokens=_RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
-                disable_thinking=True,
-            )
-        except concurrent.futures.TimeoutError:
-            review_attempts.append(
-                {
-                    **review_attempt_base,
-                    "status": "deadline_timeout",
-                    "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
-                }
-            )
-            return {}, f"{model_label}: independent_review_timeout"
-        except Exception as exc:  # noqa: BLE001 - caller may try another independent reviewer.
-            review_attempts.append(
-                {
-                    **review_attempt_base,
-                    "status": "provider_error",
-                    "failureCode": type(exc).__name__,
-                    "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
-                }
-            )
-            return {}, f"{model_label}: independent_review_{type(exc).__name__}: {_safe_text(exc)[:220]}"
-        sanitized_review = sanitize_background_model_output(response)
-        sanitized_review_text = sanitized_review.text
-        parsed_review = _extract_json_object(sanitized_review_text)
-        if not _independent_architect_review_schema_valid(parsed_review):
-            review_attempts.append(
-                {
-                    **review_attempt_base,
-                    "status": "invalid_schema",
-                    "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
-                    "responseChars": len(sanitized_review_text),
-                    **_architect_response_safe_diagnostics(response, sanitized_review),
-                }
-            )
-            compact_preview = re.sub(r"\s+", " ", sanitized_review_text).strip()[:180]
-            return {}, (
-                f"{model_label}: independent_review_invalid_schema"
-                + (f":{compact_preview}" if compact_preview else "")
-            )
-        normalized_review = {
-            **_normalize_independent_architect_review(parsed_review),
-            "reviewMode": review_mode,
-        }
-        reclassified_review = _architect_reclassify_review_evidence_gaps(
-            normalized_review,
-            question=question,
-        )
-        reconciled_review = _architect_reconcile_review_with_answer_surface(
-            reclassified_review,
-            question=question,
-            candidate_answer=candidate_answer,
-            claim_table=verified_claims,
-        )
-        review_attempts.append(
-            {
-                **review_attempt_base,
-                "status": "completed",
-                "accepted": _independent_architect_review_accepts(reconciled_review),
-                "candidateAnswerSha256": hashlib.sha256(candidate_answer.encode("utf-8")).hexdigest(),
-                "reviewDecision": reconciled_review.get("reviewDecision"),
-                **{
-                    key: [_compact_research_text(value, limit=300) for value in list(reconciled_review.get(key) or [])[:6]]
-                    for key in ("reviewReasons", "unsupportedClaims", "criticalMissingEvidence")
-                },
-                "elapsedMs": int((time.perf_counter() - review_started_at) * 1000),
-                "responseChars": len(sanitized_review_text),
-                **_architect_response_safe_diagnostics(response, sanitized_review),
-            }
-        )
-        return reconciled_review, ""
-
-    def run_review_consensus(
-        candidate_answer: str,
-        *,
-        node_prefix: str,
-    ) -> tuple[
-        list[tuple[dict[str, Any], tuple[Any, str, str], str]],
-        dict[str, Any],
-        tuple[Any, str, str] | None,
-    ]:
-        candidate_answer = with_supported_scope_boundary(candidate_answer)
-        accepted: list[tuple[dict[str, Any], tuple[Any, str, str], str]] = []
-        for review_mode in ("semantic", "adversarial"):
-            ordered = list(reviewer_candidates)
-            if accepted and (
-                has_supervisor_consumer_reviewer or not deterministic_review_chain
-            ):
-                ordered = _ordered_architect_candidates(
-                    reviewer_candidates,
-                    prefer_distinct_from=_architect_candidate_identity(accepted[-1][1]),
-                )
-            mode_accepted = False
-            for candidate in ordered:
-                retry_reason = ""
-                for review_attempt in range(2):
-                    remaining = remaining_seconds()
-                    remaining_modes = 2 - len(accepted)
-                    if remaining <= max(4.0, remaining_modes * 2.0):
-                        candidate_errors.append("architect_total_timeout")
-                        break
-                    per_call_budget = min(
-                        call_timeout_cap_seconds,
-                        32.0,
-                        max(3.0, (remaining - 2.0) / max(1, remaining_modes)),
-                    )
-                    review_node_id = f"research-review:{review_mode}:{review_attempt + 1}"
-                    _report_research_progress(
-                        stage=f"{review_mode}_review",
-                        status="active",
-                        summary="正在进行语义复核" if review_mode == "semantic" else "正在进行对抗性复核",
-                        toolName="research_architect",
-                        nodeId=review_node_id,
-                    )
-                    review, review_error = invoke_independent_review(
-                        candidate,
-                        candidate_answer,
-                        seconds=per_call_budget,
-                        node=(
-                            f"{node_prefix}_{review_mode}"
-                            if review_attempt == 0
-                            else f"{node_prefix}_{review_mode}_retry"
-                        ),
-                        review_mode=review_mode,
-                        retry_reason=retry_reason,
-                    )
-                    if review_error:
-                        _report_research_progress(
-                            stage=f"{review_mode}_review",
-                            status="failed",
-                            summary="复核调用未返回有效结构",
-                            toolName="research_architect",
-                            nodeId=review_node_id,
-                        )
-                        candidate_errors.append(review_error)
-                        retry_reason = review_error
-                        retry_budget_available = remaining_seconds() > max(
-                            6.0,
-                            remaining_modes * 3.0 + 3.0,
-                        )
-                        if review_attempt == 0 and retry_budget_available:
-                            continue
-                        break
-                    if not _independent_architect_review_accepts(review):
-                        _report_research_progress(
-                            stage=f"{review_mode}_review",
-                            status="failed",
-                            summary="语义复核未通过" if review_mode == "semantic" else "对抗性复核未通过",
-                            toolName="research_architect",
-                            nodeId=review_node_id,
-                        )
-                        model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-                        reasons = review.get("reviewReasons") or ["independent_semantic_review_rejected"]
-                        candidate_errors.append(f"{model_label}: " + ",".join(str(value) for value in reasons[:4]))
-                        # A substantive rejection vetoes the candidate answer. It
-                        # must be revised or sent back for more evidence; another
-                        # reviewer cannot override it.
-                        return [], review, candidate
-                    accepted.append((review, candidate, review_mode))
-                    _report_research_progress(
-                        stage=f"{review_mode}_review",
-                        status="completed",
-                        summary="语义复核已通过" if review_mode == "semantic" else "对抗性复核已通过",
-                        toolName="research_architect",
-                        nodeId=review_node_id,
-                    )
-                    mode_accepted = True
-                    break
-                if mode_accepted:
-                    break
-            if not mode_accepted:
-                return [], {}, None
-        return accepted, {}, None
-
-    independent_review: dict[str, Any] = {}
-    reviewer_candidate: tuple[Any, str, str] | None = None
-    accepted_review_passes, best_failed_review, failed_reviewer_candidate = run_review_consensus(
-        answer,
-        node_prefix="web_research_independent_review",
-    )
-    if accepted_review_passes:
-        independent_review = dict(accepted_review_passes[0][0])
-        reviewer_candidate = accepted_review_passes[0][1]
-
-    review_critical_missing = _research_text_list(best_failed_review.get("criticalMissingEvidence"), limit=12)
-    review_queries = _research_text_list(best_failed_review.get("recommendedNextQueries"), limit=4)
-    review_unsupported_claims = _research_text_list(
-        best_failed_review.get("unsupportedClaims"),
-        limit=12,
-    )
-    review_reclassified_same_evidence = _research_text_list(
-        best_failed_review.get("reclassifiedSameEvidenceIssues"),
-        limit=12,
-    )
-    review_has_same_evidence_repairs = bool(
-        review_unsupported_claims
-        or review_reclassified_same_evidence
-        or (not review_critical_missing and not review_queries)
-    )
-    if (
-        not independent_review
-        and best_failed_review
-        and writer_candidate is not None
-        and failed_reviewer_candidate is not None
-        and review_has_same_evidence_repairs
-        and remaining_seconds() > review_reserve + 16
-    ):
-        revision_feedback = _research_text_list(
-            [
-                *list(best_failed_review.get("reviewReasons") or []),
-                *list(best_failed_review.get("unsupportedClaims") or []),
-                *list(best_failed_review.get("reclassifiedSameEvidenceIssues") or []),
-                *(
-                    [
-                        "以下证据缺口仍未解决，必须在修订稿中明确保留为限制，不能用现有来源猜测补齐： "
-                        + "; ".join(review_critical_missing[:4])
-                    ]
-                    if review_critical_missing
-                    else []
-                ),
-            ],
-            limit=12,
-        )
-        writer_label = _architect_candidate_identity(writer_candidate) or writer_candidate[1]
-        revised_answer = ""
-        revision_issues: list[str] = []
-        revision_prompt = (
-            "同一独立 Reviewer 已拒绝上一稿。请先只用同一 VERIFIED PLAN 与 SOURCES 完整重写答案，"
-            "逐项修复 Reviewer 意见；不得添加新事实、不得写附录式补丁。二手来源的每个事实必须明确写成该教程/文章"
-            "自己的表述并点名来源；跨来源建议必须明确标成‘本报告的综合判断’或‘practical synthesis’，且在同一内容"
-            "单元引用全部 premise 来源。删除没有证据支持的优先级、最高杠杆、基础性决策、独立类别、等价接口、"
-            "无条件保证与泛化跨平台断言。Reviewer 指出的 unsupported claim 必须整句删除或收窄到对应 claim，"
-            "不得只换同义词保留原关系；未标年份的月日必须写明‘年份未标明’，不得套用当前年份。"
-            "若 Reviewer 同时指出真实证据缺口，只能明确标为未解决限制，绝不能声称本次同证据修订已补齐；"
-            "修订稿复核后 Runtime 才决定是否需要补查。"
-            f"完成来源列表后单独输出完成标记 {_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\n"
-            + "REVIEW_FEEDBACK: "
-            + json.dumps(revision_feedback, ensure_ascii=False)
-            + f"\nQUESTION: {question}\nPREVIOUS_DRAFT:\n{answer[:_MAX_RESEARCH_VISIBLE_ANSWER_CHARS]}"
-        )
-        try:
-            if writer_mode.startswith("segmented"):
-                revision_candidates = sorted(
-                    writer_candidates,
-                    key=lambda candidate: int(
-                        _architect_segmented_writer_profile(candidate).get("configuredMaxTokens") or 0
-                    ),
-                    reverse=True,
-                )
-                accepted_revision_sections: dict[int, str] = {}
-                section_revisions = 0
-                section_count = 0
-                revision_contributor_count = 0
-                # A high-output alternate can revise the assembled answer more
-                # coherently and cheaply than regenerating every accepted
-                # section.  Small-output providers keep the segmented path.
-                for full_revision_candidate in list(revision_candidates):
-                    full_profile = _architect_segmented_writer_profile(full_revision_candidate)
-                    configured_max_tokens = int(full_profile.get("configuredMaxTokens") or 0)
-                    if configured_max_tokens < _RESEARCH_ARCHITECT_COHERENT_REVISION_MIN_TOKENS:
-                        continue
-                    full_revision_remaining = remaining_seconds()
-                    review_budget_floor = max(
-                        45.0,
-                        min(review_reserve, full_revision_remaining * 0.55),
-                    )
-                    full_revision_budget = min(
-                        call_timeout_cap_seconds,
-                        45.0,
-                        max(0.0, full_revision_remaining - review_budget_floor - 4.0),
-                    )
-                    if full_revision_budget < 8.0:
-                        break
-                    full_revision_label = (
-                        _architect_candidate_identity(full_revision_candidate)
-                        or full_revision_candidate[1]
-                        or f"role:{full_revision_candidate[2]}"
-                    )
-                    full_revision_started_at = time.perf_counter()
-                    full_revision_errors: list[str] = []
-                    messages = prepared_messages(
-                        full_revision_candidate,
-                        system_prompt=writer_system_prompt,
-                        instruction=revision_prompt,
-                        materials=[
-                            {
-                                "title": "Verified evidence plan",
-                                "kind": "research_plan",
-                                "content": writer_plan_material,
-                            },
-                            {
-                                "title": "Research evidence candidates",
-                                "kind": "research_sources",
-                                "content": writer_source_material,
-                            },
-                        ],
-                        target_role="web-research-answer-writer",
-                        node="web_research_reviewer_guided_full_revision",
-                    )
-                    try:
-                        response = _invoke_architect_candidate_with_deadline(
-                            full_revision_candidate,
-                            messages,
-                            seconds=full_revision_budget,
-                            max_tokens=_RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS,
-                            disable_thinking=True,
-                        )
-                        full_answer, complete = _research_answer_from_model_output(
-                            sanitize_background_model_output(response).text
-                        )
-                        if not complete:
-                            finish_reason = _architect_response_finish_reason(response)
-                            full_revision_errors.append(
-                                "architect_answer_incomplete"
-                                + (f":{finish_reason}" if finish_reason else "")
-                            )
-                        global_revision_task = {
-                            "assignedClaims": verified_claims,
-                            "compositeInferences": verified_plan.get("compositeInferences") or [],
-                        }
-                        full_answer, citation_repairs = _architect_repair_unambiguous_section_citations(
-                            full_answer,
-                            global_revision_task,
-                        )
-                        if citation_repairs:
-                            full_revision_errors.append(
-                                f"runtime_citation_repairs:{citation_repairs}"
-                            )
-                        full_answer, source_role_repairs = _architect_repair_source_role_labels(
-                            full_answer,
-                            global_revision_task,
-                        )
-                        if source_role_repairs:
-                            full_revision_errors.append(
-                                f"runtime_source_role_repairs:{source_role_repairs}"
-                            )
-                        unsupported_diagnostics: list[str] = []
-                        full_answer, unsupported_drops = _architect_drop_unsupported_section_units(
-                            full_answer,
-                            global_revision_task,
-                            diagnostics=unsupported_diagnostics,
-                        )
-                        if unsupported_drops:
-                            full_revision_errors.append(
-                                f"runtime_unsupported_unit_drops:{unsupported_drops}"
-                            )
-                        full_answer, repeated_unit_drops = _architect_dedupe_repeated_content_units(
-                            full_answer
-                        )
-                        if repeated_unit_drops:
-                            full_revision_errors.append(
-                                f"runtime_repeated_unit_drops:{repeated_unit_drops}"
-                            )
-                        if len(full_answer) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-                            full_revision_errors.append("answer_exceeds_delivery_surface_limit")
-                        if complete and len(full_answer) <= _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-                            full_revision_errors.extend(answer_structural_issues(full_answer))
-                    except concurrent.futures.TimeoutError:
-                        full_answer = ""
-                        full_revision_errors.append("reviewer_guided_full_revision_timeout")
-                    except Exception as exc:  # noqa: BLE001 - fall back to segmented revision.
-                        full_answer = ""
-                        full_revision_errors.append(
-                            f"reviewer_guided_full_revision_{type(exc).__name__}: {_safe_text(exc)[:180]}"
-                        )
-                    hard_full_revision_errors = [
-                        issue
-                        for issue in full_revision_errors
-                        if not issue.startswith("runtime_source_role_repairs:")
-                        and not issue.startswith("runtime_unsupported_unit_drops:")
-                        and not issue.startswith("runtime_citation_repairs:")
-                        and not issue.startswith("runtime_repeated_unit_drops:")
-                    ]
-                    writer_attempts.append(
-                        {
-                            "modelId": full_revision_label,
-                            "selectionOrigin": _architect_candidate_selection_origin(
-                                full_revision_candidate
-                            ),
-                            "mode": "single_reviewer_revision",
-                            "startedWithRemainingSeconds": round(full_revision_remaining, 1),
-                            "elapsedMs": int((time.perf_counter() - full_revision_started_at) * 1000),
-                            "accepted": bool(full_answer and not hard_full_revision_errors),
-                            "failureCodes": list(dict.fromkeys(full_revision_errors))[-8:],
-                        }
-                    )
-                    candidate_errors.extend(
-                        f"{full_revision_label}: {issue}" for issue in hard_full_revision_errors
-                    )
-                    if full_answer and not hard_full_revision_errors:
-                        revised_answer = full_answer
-                        writer_candidate = full_revision_candidate
-                        writer_label = full_revision_label
-                        writer_identity = _architect_candidate_identity(writer_candidate)
-                        reviewer_candidates = _ordered_architect_candidates(
-                            reviewer_pool,
-                            prefer_distinct_from=writer_identity,
-                        )
-                        writer_mode = "single_reviewer_revised"
-                        section_count = 1
-                        revision_candidates = []
-                        break
-                for revision_index, revision_candidate in enumerate(revision_candidates):
-                    revision_label = (
-                        _architect_candidate_identity(revision_candidate)
-                        or revision_candidate[1]
-                        or f"role:{revision_candidate[2]}"
-                    )
-                    revision_started_at = time.perf_counter()
-                    revision_starting_remaining = remaining_seconds()
-                    prior_revision_count = len(accepted_revision_sections)
-                    future_revision_count = max(0, len(revision_candidates) - revision_index - 1)
-                    revision_reserve = (
-                        min(35.0, max(0.0, revision_starting_remaining - review_reserve - 8.0))
-                        if future_revision_count
-                        else 0.0
-                    )
-                    (
-                        candidate_revised_answer,
-                        candidate_section_revisions,
-                        candidate_section_count,
-                        segmented_errors,
-                        accepted_sections,
-                    ) = write_segmented_answer(
-                        revision_candidate,
-                        stable_segmented_profile(
-                            _architect_segmented_writer_profile(revision_candidate)
-                        ),
-                        review_feedback=revision_feedback,
-                        accepted_sections=accepted_revision_sections,
-                        previous_sections=accepted_segmented_sections,
-                        alternate_writer_reserve=revision_reserve,
-                    )
-                    accepted_revision_sections = accepted_sections
-                    section_revisions += candidate_section_revisions
-                    section_count = max(section_count, candidate_section_count)
-                    if len(accepted_sections) > prior_revision_count:
-                        revision_contributor_count += 1
-                    writer_attempts.append(
-                        {
-                            "modelId": revision_label,
-                            "selectionOrigin": _architect_candidate_selection_origin(
-                                revision_candidate
-                            ),
-                            "mode": "segmented_reviewer_revision",
-                            "startedWithRemainingSeconds": round(revision_starting_remaining, 1),
-                            "elapsedMs": int((time.perf_counter() - revision_started_at) * 1000),
-                            "acceptedSectionCount": len(accepted_sections),
-                            "newAcceptedSectionCount": max(
-                                0,
-                                len(accepted_sections) - prior_revision_count,
-                            ),
-                            "failureCodes": list(
-                                dict.fromkeys(
-                                    error[:180]
-                                    for error in segmented_errors
-                                    if "unsupported_unit_preview" not in error
-                                )
-                            )[-8:],
-                        }
-                    )
-                    candidate_errors.extend(
-                        error
-                        if error.startswith(f"{revision_label}:")
-                        else f"{revision_label}: {error}"
-                        for error in segmented_errors
-                    )
-                    if candidate_revised_answer:
-                        revised_answer = candidate_revised_answer
-                        writer_candidate = revision_candidate
-                        writer_label = revision_label
-                        writer_identity = _architect_candidate_identity(writer_candidate)
-                        reviewer_candidates = _ordered_architect_candidates(
-                            reviewer_pool,
-                            prefer_distinct_from=writer_identity,
-                        )
-                        writer_mode = (
-                            "segmented_reviewer_revised_handoff"
-                            if revision_contributor_count > 1
-                            else "segmented_reviewer_revised"
-                        )
-                        break
-                if not revised_answer:
-                    revision_issues.append("segmented_reviewer_guided_revision_failed")
-                else:
-                    writer_revision_count += 1 + section_revisions
-                    writer_section_count = section_count
-            else:
-                revision_prompt = (
-                    "同一独立 Reviewer 已拒绝上一稿。请先只用同一 VERIFIED PLAN 与 SOURCES 完整重写答案，"
-                    "逐项修复 Reviewer 意见；不得添加新事实、不得写附录式补丁。若 Reviewer 同时指出真实证据缺口，"
-                    "只能明确标为未解决限制，绝不能声称本次同证据修订已补齐；修订稿复核后 Runtime 才决定是否需要补查。"
-                    f"完成来源列表后单独输出完成标记 {_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\n"
-                    + "REVIEW_FEEDBACK: "
-                    + json.dumps(revision_feedback, ensure_ascii=False)
-                    + f"\nQUESTION: {question}\nPREVIOUS_DRAFT:\n{answer[:_MAX_RESEARCH_VISIBLE_ANSWER_CHARS]}"
-                )
-                remaining = remaining_seconds()
-                revision_budget = min(
-                    call_timeout_cap_seconds,
-                    75.0,
-                    max(5.0, (remaining - 8.0) * 0.7),
-                )
-                messages = prepared_messages(
-                    writer_candidate,
-                    system_prompt=writer_system_prompt,
-                    instruction=revision_prompt,
-                    materials=[
-                        {
-                            "title": "Verified evidence plan",
-                            "kind": "research_plan",
-                            "content": writer_plan_material,
-                        },
-                        {
-                            "title": "Research evidence candidates",
-                            "kind": "research_sources",
-                            "content": writer_source_material,
-                        },
-                    ],
-                    target_role="web-research-answer-writer",
-                    node="web_research_reviewer_guided_revision",
-                )
-                revision_started_at = time.perf_counter()
-                revision_attempt = {
-                    "modelId": writer_label,
-                    "selectionOrigin": _architect_candidate_selection_origin(writer_candidate),
-                    "mode": "single_reviewer_revision",
-                    "startedWithRemainingSeconds": round(remaining, 1),
-                    "accepted": False,
-                }
-                writer_attempts.append(revision_attempt)
-                try:
-                    response = _invoke_architect_candidate_with_deadline(
-                        writer_candidate,
-                        messages,
-                        seconds=revision_budget,
-                        max_tokens=_RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS,
-                        disable_thinking=True,
-                    )
-                finally:
-                    revision_attempt["elapsedMs"] = int((time.perf_counter() - revision_started_at) * 1000)
-                revised_answer, complete = _research_answer_from_model_output(
-                    sanitize_background_model_output(response).text
-                )
-                revision_issues = [] if complete else ["architect_answer_incomplete"]
-                if len(revised_answer) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-                    revision_issues.append("answer_exceeds_delivery_surface_limit")
-                if complete and len(revised_answer) <= _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-                    revision_issues.extend(answer_structural_issues(revised_answer))
-                revision_attempt.update({
-                    "accepted": not revision_issues,
-                    "finishReason": _architect_response_finish_reason(response),
-                    "failureCodes": revision_issues[:8],
-                })
-                if not revision_issues:
-                    writer_revision_count += 1
-                    writer_mode = "single_reviewer_revised"
-            if revision_issues:
-                candidate_errors.append(f"{writer_label}: " + ",".join(revision_issues[:8]))
-            elif revised_answer:
-                revised_passes, revised_failed_review, revised_failed_candidate = run_review_consensus(
-                    revised_answer,
-                    node_prefix="web_research_independent_review_revision",
-                )
-                if revised_passes:
-                    answer = with_supported_scope_boundary(revised_answer)
-                    accepted_review_passes = revised_passes
-                    independent_review = dict(revised_passes[0][0])
-                    reviewer_candidate = revised_passes[0][1]
-                elif revised_failed_review:
-                    answer = with_supported_scope_boundary(revised_answer)
-                    best_failed_review = revised_failed_review
-                    failed_reviewer_candidate = revised_failed_candidate
-                    review_critical_missing = _research_text_list(
-                        revised_failed_review.get("criticalMissingEvidence"), limit=12
-                    )
-                    review_queries = _research_text_list(
-                        revised_failed_review.get("recommendedNextQueries"), limit=4
-                    )
-        except concurrent.futures.TimeoutError:
-            candidate_errors.append(f"{writer_label}: reviewer_guided_revision_timeout")
-        except Exception as exc:  # noqa: BLE001 - preserve the substantive rejection.
-            candidate_errors.append(
-                f"{writer_label}: reviewer_guided_revision_{type(exc).__name__}: {_safe_text(exc)[:220]}"
-            )
-
-    # A structured same-evidence rejection is a repair request, not a reason
-    # to discard a complete model-written answer. Preserve the Reviewer
-    # feedback through the bounded rewrite/re-review above. The deterministic
-    # claim report is the final same-evidence fallback only when review could
-    # not produce structured feedback or the guided revision still failed.
-    fallback_critical_missing = _research_text_list(
-        best_failed_review.get("criticalMissingEvidence"), limit=12
-    )
-    fallback_queries = _research_text_list(
-        best_failed_review.get("recommendedNextQueries"), limit=4
-    )
-    if (
-        not independent_review
-        and not writer_mode.startswith("deterministic_claim_report")
-        and (
-            not best_failed_review
-            or (not fallback_critical_missing and not fallback_queries)
-        )
-    ):
-        deterministic_started_at = time.perf_counter()
-        deterministic_answer = _assemble_architect_claim_report(
-            question=question,
-            verified_plan=verified_plan,
-            sources=compact_sources,
-        )
-        deterministic_answer, deterministic_repeat_drops = _architect_dedupe_repeated_content_units(
-            deterministic_answer
-        )
-        deterministic_issues: list[str] = []
-        if deterministic_repeat_drops:
-            candidate_errors.append(
-                f"runtime_deterministic_claim_report_repeated_unit_drops:{deterministic_repeat_drops}"
-            )
-        if len(deterministic_answer) > _MAX_RESEARCH_VISIBLE_ANSWER_CHARS:
-            deterministic_issues.append("answer_exceeds_delivery_surface_limit")
-        else:
-            deterministic_issues.extend(answer_structural_issues(deterministic_answer))
-        deterministic_attempt = {
-            "modelId": "runtime:verified-claim-report",
-            "selectionOrigin": "runtime_deterministic_fallback",
-            "mode": "deterministic_claim_report_after_review",
-            "startedWithRemainingSeconds": round(remaining_seconds(), 1),
-            "elapsedMs": int((time.perf_counter() - deterministic_started_at) * 1000),
-            "accepted": False,
-            "failureCodes": list(dict.fromkeys(deterministic_issues))[-8:],
-        }
-        writer_attempts.append(deterministic_attempt)
-        if not deterministic_issues and remaining_seconds() > 12.0:
-            (
-                deterministic_passes,
-                deterministic_failed_review,
-                deterministic_failed_candidate,
-            ) = run_review_consensus(
-                deterministic_answer,
-                node_prefix="web_research_independent_review_claim_report",
-            )
-            deterministic_attempt["reviewed"] = True
-            deterministic_attempt["accepted"] = bool(deterministic_passes)
-            if deterministic_passes:
-                answer = with_supported_scope_boundary(deterministic_answer)
-                accepted_review_passes = deterministic_passes
-                independent_review = dict(deterministic_passes[0][0])
-                reviewer_candidate = deterministic_passes[0][1]
-                best_failed_review = {}
-                failed_reviewer_candidate = None
-                writer_revision_count += 1
-                writer_mode = "deterministic_claim_report_after_review"
-                writer_runtime_fallback = True
-                writer_section_count = max(1, len(verified_claims))
-            elif deterministic_failed_review:
-                answer = with_supported_scope_boundary(deterministic_answer)
-                best_failed_review = deterministic_failed_review
-                failed_reviewer_candidate = deterministic_failed_candidate
-                writer_revision_count += 1
-                writer_mode = "deterministic_claim_report_review_rejected"
-                writer_runtime_fallback = True
-                writer_section_count = max(1, len(verified_claims))
-        elif not deterministic_issues:
-            deterministic_attempt["failureCodes"] = ["architect_review_budget_reserved"]
-            candidate_errors.append("runtime:verified-claim-report: architect_review_budget_reserved")
-        else:
-            candidate_errors.append(
-                "runtime:verified-claim-report: " + ",".join(deterministic_issues[:8])
-            )
-
-    if not independent_review or reviewer_candidate is None:
-        review_reasons = _research_text_list(best_failed_review.get("reviewReasons"), limit=12)
-        critical_missing = _research_text_list(best_failed_review.get("criticalMissingEvidence"), limit=12)
-        recommended_queries = _research_text_list(best_failed_review.get("recommendedNextQueries"), limit=4)
-        same_evidence_rejected = bool(best_failed_review and not critical_missing and not recommended_queries)
-        rejected_answer = with_supported_scope_boundary(answer or deterministic_answer)
-        rejected_units = _architect_section_content_units(rejected_answer)
-        rejected_diagnostics = {
-            "rawChars": len(rejected_answer),
-            "effectiveChars": research_effective_answer_chars({"answer": rejected_answer}),
-            "citationKeys": sorted(
-                set(re.findall(r"\[(S\d+)\]", rejected_answer, re.IGNORECASE)),
-                key=lambda value: int(value[1:]),
-            ),
-            "synthesisUnitCount": sum(
-                1 for unit in rejected_units if _ARCHITECT_SYNTHESIS_LABEL_RE.search(unit)
-            ),
-            "headings": re.findall(r"(?m)^#{1,6}\s+(.+)$", rejected_answer)[:24],
-            "answerSha256": hashlib.sha256(rejected_answer.encode("utf-8")).hexdigest()
-            if rejected_answer
-            else "",
-            "preview": rejected_answer[:4_000],
-            "claimDigest": [
-                {
-                    "claimId": _safe_text(claim.get("claimId")),
-                    "claim": _compact_research_text(claim.get("claim"), limit=240),
-                    "citationKeys": [
-                        _safe_text(
-                            support.get("citationKey") or support.get("citation")
-                        ).strip("[]")
-                        for support in list(claim.get("supportingSources") or [])
-                        if isinstance(support, dict)
-                    ][:2],
-                    "evidenceExcerpt": _compact_research_text(
-                        claim.get("evidenceExcerpt"),
-                        limit=360,
-                    ),
-                }
-                for claim in verified_claims[:_RESEARCH_ARCHITECT_MAX_CLAIM_COUNT]
-            ],
-        }
-        return {
-            **plan,
-            "temporalAssessment": verified_plan.get("temporalAssessment") or {},
-            "reviewDecision": "reject" if same_evidence_rejected else "retry",
-            "reviewReasons": review_reasons or ["Independent semantic review rejected the candidate answer."],
-            "researchResult": "",
-            "answer": "",
-            "claimTable": verified_claims,
-            "criticalMissingEvidence": critical_missing,
-            "recommendedNextQueries": recommended_queries,
-            "asOf": verified_plan["asOf"],
-            "_independentReview": best_failed_review,
-            "_modelRole": writer_candidate[2],
-            "_modelId": _architect_candidate_identity(writer_candidate),
-            "_writerModelRole": writer_candidate[2],
-            "_writerModelId": _architect_candidate_identity(writer_candidate),
-            "_reviewerModelRole": failed_reviewer_candidate[2] if failed_reviewer_candidate else "",
-            "_reviewerModelId": (
-                _architect_candidate_identity(failed_reviewer_candidate) if failed_reviewer_candidate else ""
-            ),
-            "_modelParseMode": "staged_json_markdown",
-            "_architectMode": "full_synthesis",
-            "_architectPerCallTimeoutSeconds": call_timeout_cap_seconds,
-            "_sameEvidenceReviewRejected": same_evidence_rejected,
-            "_writerRevisionCount": writer_revision_count,
-            "_writerMode": writer_mode,
-            "_writerRuntimeFallback": writer_runtime_fallback,
-            "_writerSectionCount": writer_section_count,
-            "_modelFallbackAttempts": candidate_errors[:16],
-            "_canonicalClaimPlan": claim_plan_diagnostics,
-            "_structureAttempt": structure_attempt,
-            "_writerAttempts": writer_attempts,
-            "_reviewAttempts": review_attempts,
-            "_contextPreparations": context_preparations[-24:],
-            "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
-            "_rejectedAnswerDiagnostics": rejected_diagnostics,
-            "_researchPromptContracts": prompt_contracts,
-        }
-
-    answer = with_supported_scope_boundary(answer)
-    reviewed_source_urls = [
-        {
-            key: source.get(key)
-            for key in (
-                "sourceId",
-                "citationKey",
-                "title",
-                "url",
-                "tier",
-                "authorityTier",
-                "authorityScore",
-                "catalogCategory",
-                "catalogSourceId",
-                "runtimeOfficialSeed",
-                "sourceRole",
-                "selectedForEvidence",
-                "retrievedAt",
-                "publishedAt",
-                "updatedAt",
-                "sourceDate",
-                "sourceDateKind",
-                "version",
-                "temporalEvidence",
-                "contentChars",
-                "originalContentChars",
-                "omittedChars",
-                "evidenceSelection",
-                "readEvidence",
-                "researchFacetId",
-                "researchFacetIds",
-                "researchFacetGoal",
-                "evidenceQuery",
-                "subjectFocused",
-            )
-            if source.get(key) not in (None, "", [], {})
-        }
-        for source in compact_sources
-    ]
-    validation_payload = {
-        "question": question,
-        "freshness": freshness,
-        "deliveryRequirements": requirements,
-        "reviewDecision": "accept",
-        "answer": answer,
-        "sourceUrls": reviewed_source_urls,
-        "claimTable": verified_claims,
-        "criticalMissingEvidence": [],
-        "asOf": verified_plan["asOf"],
-    }
-    bound_consensus_reviews: list[dict[str, Any]] = []
-    for review, candidate, review_mode in accepted_review_passes:
-        reviewer_model_id = _architect_candidate_identity(candidate)
-        reviewed_at = _utc_now_iso()
-        bound_review = {
-            **review,
-            "reviewMode": review_mode,
-        }
-        bound_review.update(
-            build_research_review_binding(
-                validation_payload,
-                reviewer_model_id=reviewer_model_id,
-                reviewed_at=reviewed_at,
-            )
-        )
-        bound_consensus_reviews.append(bound_review)
-    independent_review = {
-        **bound_consensus_reviews[0],
-        "consensusAccepted": len(bound_consensus_reviews) >= 2,
-        "consensusReviewCount": len(bound_consensus_reviews),
-        "consensusReviewerModelIds": [
-            _safe_text(review.get("reviewerModelId")) for review in bound_consensus_reviews
-        ],
-        "consensusReviews": bound_consensus_reviews,
-    }
-    validation_payload["independentReview"] = independent_review
-    quality_issues = _architect_delivery_quality_issues(validation_payload)
-    if quality_issues:
-        return {
-            "_agentError": "architect_post_review_quality_gate_failed",
-            "_architectMode": "full_synthesis",
-            "_modelFallbackAttempts": [*candidate_errors, *quality_issues][:8],
-            "_canonicalClaimPlan": claim_plan_diagnostics,
-            "_structureAttempt": structure_attempt,
-            "_writerAttempts": writer_attempts,
-            "_reviewAttempts": review_attempts,
-            "_contextPreparations": context_preparations[-24:],
-            "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
-            "_researchPromptContracts": prompt_contracts,
-        }
-
-    return {
-        **plan,
-        "temporalAssessment": verified_plan.get("temporalAssessment") or {},
-        "reviewDecision": "accept",
-        "researchResult": answer,
-        "answer": answer,
-        "claimTable": verified_claims,
-        "criticalMissingEvidence": [],
-        "asOf": verified_plan["asOf"],
-        "_independentReview": independent_review,
-        "_modelRole": writer_candidate[2],
-        "_modelId": _architect_candidate_identity(writer_candidate),
-        "_writerModelRole": writer_candidate[2],
-        "_writerModelId": _architect_candidate_identity(writer_candidate),
-        "_reviewerModelRole": reviewer_candidate[2],
-        "_reviewerModelId": _architect_candidate_identity(reviewer_candidate),
-        "_reviewerConsensusCount": len(bound_consensus_reviews),
-        "_reviewerConsensusModelIds": [
-            _safe_text(review.get("reviewerModelId")) for review in bound_consensus_reviews
-        ],
-        "_modelParseMode": "staged_json_markdown",
-        "_architectMode": "full_synthesis",
-        "_architectPerCallTimeoutSeconds": call_timeout_cap_seconds,
-        "_writerRevisionCount": writer_revision_count,
-        "_writerMode": writer_mode,
-        "_writerRuntimeFallback": writer_runtime_fallback,
-        "_writerSectionCount": writer_section_count,
-        "_modelFallbackAttempts": candidate_errors,
-        "_canonicalClaimPlan": claim_plan_diagnostics,
-        "_structureAttempt": structure_attempt,
-        "_writerAttempts": writer_attempts,
-        "_reviewAttempts": review_attempts,
-        "_contextPreparations": context_preparations[-24:],
-        "_writerSectionDiagnostics": writer_section_diagnostics[-32:],
-        "_researchPromptContracts": prompt_contracts,
-        # The delivery merge must retain the exact read receipts and temporal
-        # projection reviewed here.  The deterministic base pack may carry a
-        # full-body receipt while Architect intentionally reviewed a bounded
-        # 32K body; swapping those receipts would invalidate an accepted review.
-        "_reviewedSourceUrls": reviewed_source_urls,
-    }
 
 
-def _invoke_web_research_architect_agent(
-    *,
-    question: str,
-    source_matrix: list[dict[str, Any]],
-    shards: list[dict[str, Any]],
-    confidence: str,
-    average_authority: float,
-    freshness: str,
-    timeout_seconds: int,
-    per_call_timeout_seconds: int | None = None,
-    architect_mode: str = "",
-    preferred_language: str = "",
-    delivery_requirements: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
-    sources = _research_architect_sources_for_prompt(
-        source_matrix,
-        shards,
-        question=question,
-        freshness=freshness,
-    )
-    if not sources:
-        return None
-    mode = architect_mode or _research_architect_mode(question, sources, freshness=freshness)
-    if mode == "full_synthesis" and _research_architect_mode(question, sources, freshness=freshness) != "full_synthesis":
-        mode = "gap_review"
-    if mode == "full_synthesis":
-        try:
-            return _invoke_web_research_architect_staged(
-                question=question,
-                sources=sources,
-                freshness=freshness,
-                timeout_seconds=timeout_seconds,
-                per_call_timeout_seconds=per_call_timeout_seconds,
-                preferred_language=preferred_language,
-                delivery_requirements=requirements,
-            )
-        except Exception as exc:  # noqa: BLE001 - deterministic fallback must keep Research Runtime alive.
-            return {"_agentError": f"{type(exc).__name__}: {exc}", "_architectMode": mode}
-
-    def _call() -> dict[str, Any] | None:
-        started_at = time.perf_counter()
-        total_budget = max(5, int(timeout_seconds or 0))
-        configured_call_timeout = (
-            _as_int(per_call_timeout_seconds, 0)
-            if per_call_timeout_seconds is not None
-            else _as_int(_research_config().get("architectAgentTimeoutSeconds"), 60)
-        )
-        call_timeout_cap_seconds = max(
-            5.0,
-            min(float(configured_call_timeout or 60), 90.0, float(total_budget)),
-        )
-        candidates = _create_web_research_architect_llm_candidates()
-        prompt_sources: list[dict[str, Any]] = []
-        for source in sources[:_RESEARCH_ARCHITECT_MAX_SOURCE_COUNT]:
-            compact_source = {
-                "sourceId": _safe_text(source.get("sourceId")),
-                "citationKey": _safe_text(source.get("citationKey")),
-                "title": _safe_text(source.get("title")),
-                "url": _safe_text(source.get("url")),
-                "tier": source.get("tier"),
-                "authorityScore": source.get("authorityScore"),
-                "retrievedAt": source.get("retrievedAt"),
-                "publishedAt": source.get("publishedAt"),
-                "updatedAt": source.get("updatedAt"),
-                "version": source.get("version"),
-                "selectedForEvidence": True,
-            }
-            source_with_text = {
-                **compact_source,
-                "text": _safe_text(source.get("text"))[:_RESEARCH_ARCHITECT_SOURCE_TEXT_CHARS],
-            }
-            compact_source["evidenceCandidates"] = _architect_evidence_candidates(
-                source_with_text,
-                question,
-                limit=3,
-            )
-            prompt_sources.append(compact_source)
-
-        system_prompt = (
-            "你是 Web Research Architect 的证据缺口审阅器。只判断已读取 SOURCES 还缺哪些必要原子前提，"
-            "不要写答案、扩写背景或引入 SOURCES 外事实。多份来源可以分别支持组合问题的原子前提；"
-            "没有单篇资料覆盖完整问题本身不是缺口。"
-        )
-        system_prompt = _research_agent_stage_system_prompt(
-            system_prompt,
-            stage="evidence_gap",
-        )
-        prompt = (
-            "只输出严格 JSON：reviewDecision, reviewReasons, criticalMissingEvidence, recommendedNextQueries。"
-            "reviewDecision 必须是 retry 或 reject；recommendedNextQueries 最多4项，每项应能直接交给搜索工具。"
-            f"最低结构目标：{_as_int(requirements.get('minimumSources'), MIN_RESEARCH_SOURCE_COUNT)} 个逻辑来源、"
-            f"{_as_int(requirements.get('minimumDistinctHosts'), MIN_RESEARCH_DISTINCT_HOST_COUNT)} 个独立主机；"
-            "时效充分性不是固定发布日期数量门槛：根据每个来源明确标注的发布/更新/版本/检索时间与问题风险判断，"
-            "只有确实无法判断关键当前性时才建议补搜。检索时间只表示本轮读取时间，不等于文档发布时间。"
-            f"\nQUESTION: {question}"
-        )
-        candidate_errors: list[str] = []
-        raw_previews: list[str] = []
-        for candidate_index, candidate in enumerate(candidates):
-            remaining = max(0.0, total_budget - (time.perf_counter() - started_at))
-            if remaining <= 1:
-                candidate_errors.append("architect_total_timeout")
-                break
-            remaining_candidates = max(1, len(candidates) - candidate_index)
-            per_call_budget = min(
-                call_timeout_cap_seconds,
-                60.0,
-                max(2.0, remaining / remaining_candidates),
-            )
-            model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-            prepared = prepare_background_model_messages(
-                system_prompt=system_prompt,
-                instruction=prompt,
-                materials=[
-                    {
-                        "title": "Research evidence candidates",
-                        "kind": "research_sources",
-                        "content": json.dumps(prompt_sources, ensure_ascii=False),
-                    }
-                ],
-                runtime_kind="research",
-                target_role="web-research-architect",
-                resolved_model_id=_architect_candidate_context_model_ref(candidate),
-                component="research",
-                node="web_research_architect_gap_review",
-            )
-            try:
-                response = _invoke_architect_candidate_with_deadline(
-                    candidate,
-                    prepared.messages,
-                    seconds=per_call_budget,
-                    max_tokens=_RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS,
-                    disable_thinking=True,
-                )
-            except concurrent.futures.TimeoutError:
-                candidate_errors.append(f"{model_label}: architect_gap_review_timeout")
-                continue
-            except Exception as exc:  # noqa: BLE001 - try the next configured Architect model.
-                candidate_errors.append(
-                    f"{model_label}: architect_gap_review_{type(exc).__name__}: {_safe_text(exc)[:220]}"
-                )
-                continue
-            raw_content = sanitize_background_model_output(response).text
-            if raw_content:
-                raw_previews.append(f"{model_label}: {raw_content[:400]}")
-            parsed = _extract_json_object(raw_content)
-            if not isinstance(parsed, dict):
-                candidate_errors.append(f"{model_label}: architect_gap_review_no_json")
-                continue
-            decision = _safe_text(parsed.get("reviewDecision")).lower()
-            if decision not in {"retry", "reject"}:
-                candidate_errors.append(f"{model_label}: architect_gap_review_invalid_decision")
-                continue
-            parsed.update(
-                {
-                    "reviewDecision": decision,
-                    "researchResult": "",
-                    "answer": "",
-                    "claimTable": [],
-                    "criticalMissingEvidence": _research_text_list(
-                        parsed.get("criticalMissingEvidence"), limit=12
-                    ),
-                    "recommendedNextQueries": _research_text_list(
-                        parsed.get("recommendedNextQueries"), limit=4
-                    ),
-                    "_modelRole": candidate[2],
-                    "_modelId": model_label,
-                    "_modelParseMode": "gap_review_json",
-                    "_architectMode": "gap_review",
-                    "_modelFallbackAttempts": candidate_errors,
-                    "_researchPromptContractVersion": RESEARCH_PROMPT_CONTRACT_VERSION,
-                    "_researchPromptContractDigest": research_runtime_prompt_digest(system_prompt),
-                }
-            )
-            return parsed
-        return {
-            "_agentError": "architect_gap_review_no_json",
-            "_architectMode": "gap_review",
-            "_rawPreview": "\n--- retry ---\n".join(raw_previews)[:800],
-            "_modelFallbackAttempts": candidate_errors[:16],
-            "_researchPromptContractVersion": RESEARCH_PROMPT_CONTRACT_VERSION,
-            "_researchPromptContractDigest": research_runtime_prompt_digest(system_prompt),
-        }
-
-    try:
-        return _call()
-    except Exception as exc:  # noqa: BLE001 - deterministic fallback must keep Research Runtime alive.
-        return {"_agentError": f"{type(exc).__name__}: {exc}", "_architectMode": mode}
 
 
 def _research_synthesis_stage_metrics(agent_pack: Any) -> dict[str, Any]:
@@ -17822,417 +14954,201 @@ def _research_synthesis_stage_metrics(agent_pack: Any) -> dict[str, Any]:
     }
 
 
-def _merge_web_research_architect_agent_pack(
-    base_pack: dict[str, Any],
-    agent_pack: dict[str, Any] | None,
-    *,
-    question: str,
-    freshness: str = "auto",
-) -> dict[str, Any]:
-    source_texts = dict(base_pack.get("_sourceTexts") or {}) if isinstance(base_pack.get("_sourceTexts"), dict) else {}
-    public_base_pack = {key: value for key, value in base_pack.items() if key != "_sourceTexts"}
-    architect_mode = _safe_text((agent_pack or {}).get("_architectMode")) if isinstance(agent_pack, dict) else ""
-    stage_metrics = _research_synthesis_stage_metrics(agent_pack)
-    if not isinstance(agent_pack, dict) or agent_pack.get("_agentError"):
-        fallback_reason = "architect_agent_no_result"
-        raw_preview = ""
-        if isinstance(agent_pack, dict) and agent_pack.get("_agentError"):
-            fallback_reason = _safe_text(agent_pack.get("_agentError")) or fallback_reason
-            raw_preview = _safe_text(agent_pack.get("_rawPreview"))[:500]
-        return {
-            **public_base_pack,
-            "synthesisMode": "deterministic_fallback",
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "mode": architect_mode or "unknown",
-                "fallbackReason": fallback_reason,
-                **stage_metrics,
-                **(
-                    {"missingFacetIds": _as_list(agent_pack.get("_missingFacetIds"))[:8]}
-                    if isinstance(agent_pack, dict) and agent_pack.get("_missingFacetIds")
-                    else {}
-                ),
-                **({"rawPreview": raw_preview} if raw_preview else {}),
-                **({"fallbackAttempts": list(agent_pack.get("_modelFallbackAttempts") or [])[-10:]} if isinstance(agent_pack, dict) and agent_pack.get("_modelFallbackAttempts") else {}),
-                **({"writerAttempts": list(agent_pack.get("_writerAttempts") or [])[-4:]} if isinstance(agent_pack, dict) and agent_pack.get("_writerAttempts") else {}),
-                **({"reviewAttempts": list(agent_pack.get("_reviewAttempts") or [])[-6:]} if isinstance(agent_pack, dict) and agent_pack.get("_reviewAttempts") else {}),
-                **({"contextPreparations": list(agent_pack.get("_contextPreparations") or [])[-24:]} if isinstance(agent_pack, dict) and agent_pack.get("_contextPreparations") else {}),
-                **({"writerSectionDiagnostics": list(agent_pack.get("_writerSectionDiagnostics") or [])[-32:]} if isinstance(agent_pack, dict) and agent_pack.get("_writerSectionDiagnostics") else {}),
-                **({"researchPromptContracts": dict(agent_pack.get("_researchPromptContracts") or {})} if isinstance(agent_pack, dict) and agent_pack.get("_researchPromptContracts") else {}),
-                **({"researchPromptContractVersion": agent_pack.get("_researchPromptContractVersion")} if isinstance(agent_pack, dict) and agent_pack.get("_researchPromptContractVersion") else {}),
-                **({"researchPromptContractDigest": agent_pack.get("_researchPromptContractDigest")} if isinstance(agent_pack, dict) and agent_pack.get("_researchPromptContractDigest") else {}),
-            },
-        }
-    decision = _safe_text(agent_pack.get("reviewDecision")).lower()
-    if decision not in {"accept", "retry", "reject"}:
-        return {
-            **public_base_pack,
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "mode": architect_mode or "unknown",
-                "fallbackReason": "architect_agent_invalid_review_decision",
-                **stage_metrics,
-            },
-        }
-    independent_review = _normalize_independent_architect_review(
-        agent_pack.get("_independentReview") or agent_pack.get("independentReview")
-    )
-    if decision == "accept" and not _independent_architect_review_consensus_accepts(independent_review):
-        return {
-            **public_base_pack,
-            "reviewDecision": "retry",
-            "reviewReasons": list(
-                dict.fromkeys(
-                    [
-                        *list(agent_pack.get("reviewReasons") or []),
-                        *list(independent_review.get("reviewReasons") or []),
-                        "Independent semantic and freshness review did not accept the proposed answer.",
-                    ]
-                )
-            ),
-            "answer": "",
-            "researchResult": "",
-            "criticalMissingEvidence": ["A separate semantic and freshness review must accept the answer before delivery."],
-            "synthesisMode": "model_agent",
-            "modelSynthesis": {
-                "used": True,
-                "agentId": "web-research-architect",
-                "mode": architect_mode or "full_synthesis",
-                "fallbackReason": "independent_semantic_review_not_accepted",
-                **stage_metrics,
-            },
-        }
-    research_result = _safe_text(agent_pack.get("researchResult") or agent_pack.get("answer"))
-    if decision == "accept" and not research_result:
-        return {
-            **public_base_pack,
-            "reviewReasons": ["Architect returned accept without a detailed answer."],
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "mode": architect_mode or "full_synthesis",
-                "fallbackReason": "architect_agent_missing_research_result",
-                **stage_metrics,
-            },
-        }
-    reviewed_sources = [
-        dict(item)
-        for item in list(agent_pack.get("_reviewedSourceUrls") or [])
-        if isinstance(item, dict)
-    ]
-    known_sources = reviewed_sources or [
-        item for item in list(base_pack.get("sourceUrls") or []) if isinstance(item, dict)
-    ]
-    evidence_sources = []
-    for item in known_sources:
-        evidence_text = next(
-            (
-                _safe_text(source_texts.get(alias) or source_texts.get(alias.strip("[]")))
-                for alias in (
-                    _safe_text(item.get("url")),
-                    _safe_text(item.get("sourceId")),
-                    _safe_text(item.get("citationKey")),
-                )
-                if alias and _safe_text(source_texts.get(alias) or source_texts.get(alias.strip("[]")))
-            ),
-            "",
-        )
-        evidence_sources.append({**item, "evidenceText": evidence_text})
-    verified_raw_claims, excerpt_issues = _verify_architect_claim_excerpts(agent_pack.get("claimTable"), evidence_sources)
-    if decision == "accept" and excerpt_issues:
-        return {
-            **public_base_pack,
-            "reviewDecision": "retry",
-            "reviewReasons": list(dict.fromkeys([*list(agent_pack.get("reviewReasons") or []), *excerpt_issues])),
-            "answer": "",
-            "researchResult": "",
-            "criticalMissingEvidence": ["Architect claims did not retain exact excerpts from their supporting source bodies."],
-            "synthesisMode": "model_agent",
-            "modelSynthesis": {
-                "used": True,
-                "agentId": "web-research-architect",
-                "mode": architect_mode or "full_synthesis",
-                "fallbackReason": "claim_evidence_excerpt_verification_failed",
-                **stage_metrics,
-            },
-        }
-    known_urls = {item.get("url") for item in known_sources if item.get("url")}
-    known_by_url = {
-        _safe_text(item.get("url")): item
-        for item in known_sources
-        if _safe_text(item.get("url"))
-    }
-    known_by_id = {_safe_text(item.get("sourceId")): item for item in known_sources if _safe_text(item.get("sourceId"))}
-    known_by_citation: dict[str, dict[str, Any]] = {}
-    for item in known_sources:
-        citation_key = _safe_text(item.get("citationKey"))
-        if citation_key:
-            known_by_citation[citation_key] = item
-            known_by_citation[citation_key.strip("[]")] = item
 
-    def enrich_supporting_source(source: dict[str, Any]) -> dict[str, Any]:
-        known = (
-            known_by_url.get(_safe_text(source.get("url") or source.get("sourceUrl")))
-            or known_by_id.get(_safe_text(source.get("sourceId")))
-            or known_by_citation.get(
-                _safe_text(source.get("citationKey") or source.get("citation"))
-            )
-            or known_by_citation.get(
-                _safe_text(source.get("citationKey") or source.get("citation")).strip("[]")
-            )
-            or {}
-        )
-        enriched = dict(source)
-        for key in (
-            "host",
-            "tier",
-            "authorityScore",
-            "subjectFocused",
-            "retrievedAt",
-            "publishedAt",
-            "updatedAt",
-            "sourceDate",
-            "sourceDateKind",
-            "version",
-            "temporalEvidence",
-        ):
-            value = known.get(key)
-            if value not in (None, "", [], {}):
-                enriched[key] = value
-        return {key: value for key, value in enriched.items() if value not in (None, "", [], {})}
 
-    claim_table: list[dict[str, Any]] = []
-    for raw_item in verified_raw_claims:
-        if not isinstance(raw_item, dict):
-            continue
-        supporting: list[dict[str, Any]] = []
-        for source in list(raw_item.get("supportingSources") or [])[:4]:
-            if isinstance(source, str):
-                if source in known_urls:
-                    source = {"url": source}
-                elif source in known_by_id:
-                    source = {"sourceId": source}
-                else:
-                    source = {"citationKey": source}
-            if not isinstance(source, dict):
+def _research_read_observations(
+    shards: list[dict[str, Any]], read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
+) -> list[dict[str, Any]]:
+    observations = []
+    for shard in shards:
+        results = {
+            _safe_text(item.get("url")): item
+            for item in shard.get("results") or [] if isinstance(item, dict)
+        }
+        for read in shard.get("fetchedTopSources") or []:
+            if not isinstance(read, dict) or read.get("ok") is not True:
                 continue
-            url = _safe_text(source.get("url") or source.get("sourceUrl"))
-            if url and url in known_urls:
-                known = next((item for item in known_sources if item.get("url") == url), {})
-                supporting.append(
-                    {
-                        "title": _safe_text(known.get("title") or source.get("title")) or url,
-                        "url": url,
-                        "sourceId": known.get("sourceId"),
-                        "citationKey": known.get("citationKey"),
-                    }
-                )
+            if read.get("missingContentReason"):
                 continue
-            source_id = _safe_text(source.get("sourceId"))
-            if source_id and source_id in known_by_id:
-                known = known_by_id[source_id]
-                known_url = _safe_text(known.get("url"))
-                if known_url:
-                    supporting.append(
-                        {
-                            "title": _safe_text(known.get("title")) or known_url,
-                            "url": known_url,
-                            "sourceId": source_id,
-                            "citationKey": known.get("citationKey"),
-                        }
-                    )
+            try:
+                if int(read.get("statusCode") or read.get("status") or 0) >= 400:
                     continue
-            citation_key = _safe_text(source.get("citationKey") or source.get("citation"))
-            known = known_by_citation.get(citation_key) or known_by_citation.get(citation_key.strip("[]"))
-            if known:
-                known_url = _safe_text(known.get("url"))
-                if known_url:
-                    supporting.append(
-                        {
-                            "title": _safe_text(known.get("title")) or known_url,
-                            "url": known_url,
-                            "sourceId": known.get("sourceId"),
-                            "citationKey": known.get("citationKey"),
-                        }
-                    )
-        if not supporting:
-            candidate_urls: list[str] = []
-            candidate_source_ids: list[str] = []
-            candidate_citation_keys: list[str] = []
-            for field in ("sourceURL", "sourceUrl", "url"):
-                value = _safe_text(raw_item.get(field))
-                if value:
-                    candidate_urls.append(value)
-            for field in ("sourceId", "sourceID"):
-                value = _safe_text(raw_item.get(field))
-                if value:
-                    candidate_source_ids.append(value)
-            for field in ("citationKey", "citation"):
-                value = _safe_text(raw_item.get(field))
-                if value:
-                    candidate_citation_keys.append(value)
-            for value in list(raw_item.get("sourceUrls") or [])[:4]:
-                if isinstance(value, str):
-                    candidate_urls.append(value)
-                elif isinstance(value, dict):
-                    candidate_urls.append(_safe_text(value.get("url")))
-                    candidate_source_ids.append(_safe_text(value.get("sourceId")))
-                    candidate_citation_keys.append(_safe_text(value.get("citationKey") or value.get("citation")))
-            for url in candidate_urls[:4]:
-                if url and url in known_urls:
-                    known = next((item for item in known_sources if item.get("url") == url), {})
-                    supporting.append(
-                        {
-                            "title": _safe_text(known.get("title")) or url,
-                            "url": url,
-                            "sourceId": known.get("sourceId"),
-                            "citationKey": known.get("citationKey"),
-                        }
-                    )
-            for source_id in candidate_source_ids[:4]:
-                if source_id and source_id in known_by_id:
-                    known = known_by_id[source_id]
-                    known_url = _safe_text(known.get("url"))
-                    if known_url:
-                        supporting.append(
-                            {
-                                "title": _safe_text(known.get("title")) or known_url,
-                                "url": known_url,
-                                "sourceId": source_id,
-                                "citationKey": known.get("citationKey"),
-                            }
-                        )
-            for citation_key in candidate_citation_keys[:4]:
-                known = known_by_citation.get(citation_key) or known_by_citation.get(citation_key.strip("[]"))
-                if known:
-                    known_url = _safe_text(known.get("url"))
-                    if known_url:
-                        supporting.append(
-                            {
-                                "title": _safe_text(known.get("title")) or known_url,
-                                "url": known_url,
-                                "sourceId": known.get("sourceId"),
-                                "citationKey": known.get("citationKey"),
-                            }
-                        )
-        if not supporting:
-            continue
-        supporting = [enrich_supporting_source(source) for source in supporting]
-        claim = _safe_text(raw_item.get("claim"))
-        if claim:
-            claim_table.append(
-                {
-                    **(
-                        {"claimId": _safe_text(raw_item.get("claimId"))}
-                        if _safe_text(raw_item.get("claimId"))
-                        else {}
-                    ),
-                    "claim": claim,
-                    "claimType": _safe_text(raw_item.get("claimType") or raw_item.get("claimKind")) or "source_fact",
-                    **(
-                        {"normativeCue": _safe_text(raw_item.get("normativeCue"))}
-                        if _safe_text(raw_item.get("normativeCue"))
-                        else {}
-                    ),
-                    **(
-                        {"sourceRole": _safe_text(raw_item.get("sourceRole"))}
-                        if _safe_text(raw_item.get("sourceRole"))
-                        else {}
-                    ),
-                    **(
-                        {"sourceClaim": _safe_text(raw_item.get("sourceClaim"))}
-                        if _safe_text(raw_item.get("sourceClaim"))
-                        else {}
-                    ),
-                    "supportingSources": supporting,
-                    "refutingSources": list(raw_item.get("refutingSources") or [])[:4],
-                    "confidence": _safe_text(raw_item.get("confidence")) or base_pack.get("confidence"),
-                    "evidenceExcerptKey": raw_item.get("evidenceExcerptKey"),
-                    "evidenceExcerpt": raw_item.get("evidenceExcerpt"),
-                    "evidenceExcerptSha256": raw_item.get("evidenceExcerptSha256"),
-                    "evidenceVerified": raw_item.get("evidenceVerified") is True,
-                }
-            )
-    headline = _safe_text(agent_pack.get("headline")) or f"Web Research Architect synthesized final evidence for: {question}"
-    candidate = {
-        **public_base_pack,
-        "question": question,
-        "freshness": freshness,
-        "reviewDecision": decision,
-        "reviewReasons": _research_text_list(agent_pack.get("reviewReasons"), limit=12),
-        "headline": headline,
-        "answer": research_result,
-        "researchResult": research_result,
-        "sourceUrls": known_sources,
-        "claimTable": claim_table,
-        "independentReview": independent_review,
-        "conflictMatrix": _research_text_list(agent_pack.get("conflictMatrix") or base_pack.get("conflictMatrix"), limit=12),
-        "missingEvidence": _research_text_list(agent_pack.get("missingEvidence") or base_pack.get("missingEvidence"), limit=12),
-        "criticalMissingEvidence": _research_text_list(agent_pack.get("criticalMissingEvidence"), limit=12),
-        "recommendedNextQueries": _research_text_list(agent_pack.get("recommendedNextQueries"), limit=12),
-        "assumptions": _research_text_list(agent_pack.get("assumptions") or base_pack.get("assumptions"), limit=12),
-        "asOf": _safe_text(agent_pack.get("asOf") or base_pack.get("asOf")) or _utc_now_iso(),
-        "temporalAssessment": agent_pack.get("temporalAssessment") if isinstance(agent_pack.get("temporalAssessment"), dict) else {},
-        "synthesisMode": "model_agent",
-        "modelSynthesis": {
-            "used": True,
-            "agentId": "web-research-architect",
-            "agentName": "Web Research Architect",
-            "mode": architect_mode or "full_synthesis",
-            "modelRole": agent_pack.get("_modelRole"),
-            "modelId": agent_pack.get("_modelId"),
-            **({"writerModelRole": agent_pack.get("_writerModelRole")} if agent_pack.get("_writerModelRole") else {}),
-            **({"writerModelId": agent_pack.get("_writerModelId")} if agent_pack.get("_writerModelId") else {}),
-            **({"reviewerModelRole": agent_pack.get("_reviewerModelRole")} if agent_pack.get("_reviewerModelRole") else {}),
-            **({"reviewerModelId": agent_pack.get("_reviewerModelId")} if agent_pack.get("_reviewerModelId") else {}),
-            "reviewerConsensusCount": int(agent_pack.get("_reviewerConsensusCount") or 0),
-            "reviewerConsensusModelIds": [
-                _safe_text(model_id)
-                for model_id in list(agent_pack.get("_reviewerConsensusModelIds") or [])[:4]
-                if _safe_text(model_id)
-            ],
-            "parseMode": agent_pack.get("_modelParseMode") or "json",
-            "sameEvidenceReviewRejected": agent_pack.get("_sameEvidenceReviewRejected") is True,
-            "writerRevisionCount": int(agent_pack.get("_writerRevisionCount") or 0),
-            "writerMode": _safe_text(agent_pack.get("_writerMode")) or "unknown",
-            "writerSectionCount": int(agent_pack.get("_writerSectionCount") or 0),
-            **stage_metrics,
-            **({"fallbackAttempts": list(agent_pack.get("_modelFallbackAttempts") or [])[-10:]} if agent_pack.get("_modelFallbackAttempts") else {}),
-            **({"writerAttempts": list(agent_pack.get("_writerAttempts") or [])[-4:]} if agent_pack.get("_writerAttempts") else {}),
-            **({"reviewAttempts": list(agent_pack.get("_reviewAttempts") or [])[-6:]} if agent_pack.get("_reviewAttempts") else {}),
-            **({"contextPreparations": list(agent_pack.get("_contextPreparations") or [])[-24:]} if agent_pack.get("_contextPreparations") else {}),
-            **({"writerSectionDiagnostics": list(agent_pack.get("_writerSectionDiagnostics") or [])[-32:]} if agent_pack.get("_writerSectionDiagnostics") else {}),
-            **({"researchPromptContracts": dict(agent_pack.get("_researchPromptContracts") or {})} if agent_pack.get("_researchPromptContracts") else {}),
-            **({"researchPromptContractVersion": agent_pack.get("_researchPromptContractVersion")} if agent_pack.get("_researchPromptContractVersion") else {}),
-            **({"researchPromptContractDigest": agent_pack.get("_researchPromptContractDigest")} if agent_pack.get("_researchPromptContractDigest") else {}),
-            **(
-                {"rejectedAnswerDiagnostics": dict(agent_pack.get("_rejectedAnswerDiagnostics") or {})}
-                if isinstance(agent_pack.get("_rejectedAnswerDiagnostics"), dict)
-                and agent_pack.get("_rejectedAnswerDiagnostics")
-                else {}
-            ),
-        },
+            except (TypeError, ValueError):
+                pass
+            result = results.get(_safe_text(read.get("url"))) or {}
+            temporal = _source_temporal_evidence(read, result)
+            cached = read_attempt_ledger.cached_payload(read.get("url")) if read_attempt_ledger else None
+            body = (cached or {}).get("originalText") or read.get("text") or read.get("markdown") or ""
+            observations.append({
+                **result, **read, **temporal,
+                # textPreview/search snippets do not become full read evidence.
+                "text": body, "omittedChars": max(0, int(read.get("originalContentChars") or len(body)) - len(body)),
+            })
+    return observations
+
+
+def _execute_research_agent(
+    *, question: str, shards: list[dict[str, Any]], freshness: str,
+    preferred_language: str = "", acquire: Callable[..., dict[str, Any]] | None = None,
+    max_searches: int = 3, state: dict[str, Any] | None = None,
+    read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
+    previous_bundle: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    from core.context_orchestrator import context_orchestrator
+    from core.context_governance import emit_context_prepared_event
+    from runtimes.research.agent import ResearchAgent
+
+    if not _research_config().get("architectAgentSynthesisEnabled", True):
+        return {"researchContract": "agent-research.v1", "answer": "", "deliveryScope": "none", "reviewDecision": "retry", "reviewReasons": ["research_agent_disabled"], "modelSynthesis": {"used": False, "fallbackReason": "research_agent_disabled"}}
+    try:
+        candidates = _create_web_research_architect_llm_candidates()
+        reviewers = _create_web_research_reviewer_llm_candidates(candidates)
+        if not candidates or not reviewers:
+            raise ValueError("configured_research_model_missing")
+    except Exception as exc:
+        return {"researchContract": "agent-research.v1", "answer": "", "deliveryScope": "none", "reviewDecision": "retry", "reviewReasons": ["research_model_configuration_unavailable"], "modelSynthesis": {"used": False, "fallbackReason": "research_model_configuration_unavailable", "errorType": type(exc).__name__}}
+    writer = candidates[0]
+    reviewers.sort(key=lambda candidate: _architect_candidate_selection_origin(candidate) != "agent_reviewer:verification-engineer")
+    reviewer = reviewers[0]
+    context_audits: list[dict[str, Any]] = []
+
+    def invoke(messages, tools, *, reviewer: bool, seconds: float, required: bool = False):
+        candidate = reviewers[0] if reviewer else writer
+        role = "research-reviewer" if reviewer else "web-research-architect"
+        prepared = context_orchestrator.prepare(
+            messages=messages, runtime_kind="research", target_role=role,
+            resolved_model_id=_architect_candidate_context_model_ref(candidate),
+            keep_recent_override=6,
+        )
+        emit_context_prepared_event(prepared.audit, component="research", node=role, agent_id=role)
+        context_audits.append({
+            "role": role, "estimatedInputTokens": prepared.audit.get("estimated_input_tokens"),
+            "compactionApplied": prepared.audit.get("compaction_applied") is True,
+            "modelId": _architect_candidate_identity(candidate),
+        })
+        return _invoke_architect_candidate_with_deadline(
+            candidate, prepared.messages, seconds=seconds,
+            max_tokens=None, tools=tools, tool_choice="required" if required else None,
+            idle_timeout_seconds=float(_research_config().get("architectAgentTimeoutSeconds") or 60),
+        )
+
+    def cancelled() -> bool:
+        run_id = _safe_text((state or {}).get("run_id") or (state or {}).get("runId"))
+        if not run_id:
+            return False
+        from core.database import db
+        run = db.get_run_record(run_id)
+        return bool(run and _safe_text(run.get("status")) in {"cancelled", "canceled"})
+
+    agent = ResearchAgent(
+        invoke=invoke, acquire=acquire, progress=_report_research_progress,
+        writer_id=_architect_candidate_identity(writer), reviewer_id=_architect_candidate_identity(reviewer),
+        timeout_seconds=timeout_seconds if timeout_seconds is not None else _RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000,
+        max_searches=max_searches, cancelled=cancelled,
+    )
+    if previous_bundle:
+        agent.store.restore((previous_bundle.get("researchEvidenceBank") or {}).get("sources") or [])
+    agent.store.add(_research_read_observations(shards, read_attempt_ledger))
+    previous_answer = {key: previous_bundle.get(key) for key in ("question", "answer", "deliveryScope", "limitations", "asOf")} if previous_bundle else None
+    result = agent.run(question=question, freshness=freshness, language=preferred_language or infer_preferred_language(question), previous_answer=previous_answer)
+    result.setdefault("modelSynthesis", {})["contextPreparations"] = context_audits
+    result["readSources"] = list(agent.store.sources.values())
+    return result
+
+
+def _run_agent_owned_research(
+    *, question: str, research_intent: str, source_policy: str, freshness: str,
+    allowed_domains: list[str], blocked_domains: list[str], use_agent_browser_profile: bool,
+    tool_call_id: str, max_shards: int, max_rounds: int, preferred_language: str,
+    seed_urls: list[str], deliverable: str, experience_reuse: dict[str, Any],
+    state: dict[str, Any] | None = None,
+    previous_bundle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    completed_shards: list[dict[str, Any]] = []
+    attempt_ledger = _ResearchReadAttemptLedger(question=question)
+    rounds: list[dict[str, Any]] = []
+
+    def acquire(*, queries: list[str], urls: list[str], seconds: float, source: str = "web") -> dict[str, Any]:
+        round_index = len(rounds) + 1
+        requests_to_run = [
+            {"kind": "seed_url", "query": url, "seedUrl": url, "evidenceQuery": question}
+            for url in urls
+        ] + [{"kind": "agent_query", "query": query} for query in queries]
+        requests_to_run = requests_to_run[:max_shards]
+        for index, shard in enumerate(requests_to_run, start=1):
+            shard["shardId"] = f"research_agent_{round_index}_{index}"
+        fetched = [_run_context7_source(queries[0] if queries else question, tool_call_id=tool_call_id)] if source == "documentation" else _run_search_shards(
+            requests_to_run, allowed_domains=allowed_domains, blocked_domains=blocked_domains,
+            source_policy=source_policy, max_rounds=max_rounds,
+            use_agent_browser_profile=use_agent_browser_profile, tool_call_id=tool_call_id,
+            read_attempt_ledger=attempt_ledger, read_round=round_index,
+            preferred_language=preferred_language, deadline_seconds=seconds,
+        )
+        completed_shards.extend(fetched)
+        observations = _research_read_observations(fetched, attempt_ledger)
+        rounds.append({"round": round_index, "queries": queries, "urls": urls, "readSourceCount": len(observations)})
+        return {"sources": observations, "diagnostics": [
+            {"query": shard.get("query"), "errors": shard.get("errors") or []}
+            for shard in fetched if shard.get("errors")
+        ]}
+
+    if seed_urls:
+        acquire(queries=[], urls=seed_urls, seconds=_RESEARCH_TOOL_DEADLINE_MS / 1000)
+    pack = _execute_research_agent(
+        question=question, shards=completed_shards, freshness=freshness,
+        preferred_language=preferred_language, acquire=acquire,
+        max_searches=max(0, max_rounds - len(rounds)), state=state, read_attempt_ledger=attempt_ledger,
+        previous_bundle=previous_bundle,
+        timeout_seconds=max(0, _RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000 - (time.perf_counter() - started)),
+    )
+    read_sources = pack.pop("readSources", [])
+    selected_keys = {row["citationKey"] for row in pack.get("sourceUrls") or []}
+    source_matrix = [
+        {key: value for key, value in row.items() if key != "text"}
+        | {"selectedForEvidence": row["citationKey"] in selected_keys}
+        for row in read_sources
+    ]
+    loop_state = {
+        "phase": "research_agent", "rounds": rounds,
+        "readableSourceCount": len(read_sources), "selectedSourceCount": len(selected_keys),
+        "stopReason": "answer_reviewed" if pack.get("reviewDecision") == "accept" else (
+            (pack.get("modelSynthesis") or {}).get("fallbackReason") or "research_incomplete"
+        ),
+        "readAttemptStats": attempt_ledger.snapshot(),
+        "performance": {"totalElapsedMs": int((time.perf_counter() - started) * 1000)},
+        "agentTrace": (pack.get("modelSynthesis") or {}).get("trace") or [],
     }
-    issues = research_acceptance_issues(candidate)
-    if decision == "accept" and issues:
-        return {
-            **candidate,
-            "reviewDecision": "retry",
-            "reviewReasons": list(dict.fromkeys([*candidate.get("reviewReasons", []), *issues])),
-            "answer": "",
-            "researchResult": "",
-            "criticalMissingEvidence": list(
-                dict.fromkeys(
-                    [
-                        *candidate.get("criticalMissingEvidence", []),
-                        "The proposed answer did not pass the independent Research quality gate.",
-                    ]
-                )
-            ),
-        }
-    return candidate
+    bundle = {
+        "researchContract": "agent-research.v1", "kind": "research_evidence_bundle", "question": question,
+        "topicFingerprint": _topic_fingerprint(question), "researchIntent": research_intent,
+        "sourcePolicy": source_policy, "freshness": freshness, "deliverable": deliverable,
+        "summary": "调研已形成有据可查的答案" if pack.get("reviewDecision") == "accept" else "调研尚未形成可交付答案",
+        "deliveryRequirements": _research_delivery_requirements(question),
+        "answer": pack.get("answer") or "", "resultPreview": pack.get("answer") or "",
+        "researchResult": pack, "finalExperiencePack": pack,
+        "claimTable": pack.get("claimTable") or [], "sourceMatrix": source_matrix,
+        "sourceUrls": [row["url"] for row in pack.get("sourceUrls") or []],
+        "reviewDecision": pack.get("reviewDecision"), "independentReview": pack.get("independentReview") or {},
+        "deliveryScope": pack.get("deliveryScope"), "limitations": pack.get("limitations") or [],
+        "criticalMissingEvidence": pack.get("criticalMissingEvidence") or [],
+        "reviewReasons": pack.get("reviewReasons") or [], "recommendedNextQueries": [],
+        "asOf": pack.get("asOf") or _utc_now_iso(), "confidence": pack.get("confidence") or "low",
+        "researchLoopState": loop_state, "experienceReuse": experience_reuse,
+        "researchEvidenceBank": {"sources": read_sources, "claims": pack.get("claimTable") or [], "rejectedSources": []},
+        "shards": completed_shards, "providerAttemptMatrix": _flatten_provider_attempts(completed_shards),
+        "citations": [{"title": row["title"], "url": row["url"]} for row in pack.get("sourceUrls") or []],
+    }
+    answer_pack = _research_answer_pack(bundle)
+    bundle.update(
+        researchAnswerPack=answer_pack, answer=answer_pack["answer"], resultPreview=answer_pack["answer"],
+        ok=answer_pack["usableAnswer"], deliveryReady=answer_pack["score"]["deliveryReady"],
+        usableAnswer=answer_pack["usableAnswer"], qualityTier=answer_pack["score"]["qualityTier"],
+        qualityMetrics=answer_pack["score"]["acceptanceMetrics"],
+        recommendedNextAction="use_research_answer_pack" if answer_pack["usableAnswer"] else "report_research_incomplete",
+    )
+    return bundle
 
 
 def _web_research_architect_pack(
@@ -18247,204 +15163,16 @@ def _web_research_architect_pack(
     preferred_language: str = "",
     delivery_requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    requirements = dict(delivery_requirements or _research_delivery_requirements(question))
-    prompt_sources = _research_architect_sources_for_prompt(
-        source_matrix,
-        shards,
-        question=question,
-        freshness=freshness,
+    # Fixed-bundle replay uses the same researcher with network acquisition absent.
+    if not _research_config().get("architectAgentSynthesisEnabled", True):
+        return {"answer": "", "reviewDecision": "retry", "claimTable": [],
+                "modelSynthesis": {"used": False, "fallbackReason": "architect_agent_synthesis_disabled"}}
+    result = _execute_research_agent(
+        question=question, shards=shards, freshness=freshness,
+        preferred_language=preferred_language, max_searches=0,
     )
-    base_pack = _deterministic_web_research_architect_pack(
-        question=question,
-        source_matrix=prompt_sources or source_matrix,
-        shards=shards,
-        confidence=confidence,
-        average_authority=average_authority,
-        delivery_requirements=requirements,
-    )
-    config = _research_config()
-    if not config.get("architectAgentSynthesisEnabled", True):
-        return {
-            **{key: value for key, value in base_pack.items() if key != "_sourceTexts"},
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "fallbackReason": "architect_agent_synthesis_disabled",
-            },
-        }
-    structural_stats = _research_architect_structural_stats(
-        question,
-        prompt_sources,
-        freshness=freshness,
-    )
-    mode = "full_synthesis" if structural_stats.get("structuralMinimumMet") is True else "gap_review"
-    call_state = architect_call_state if isinstance(architect_call_state, dict) else {}
-    if not prompt_sources:
-        return {
-            **{key: value for key, value in base_pack.items() if key != "_sourceTexts"},
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "mode": mode,
-                "fallbackReason": "architect_gap_review_no_readable_sources",
-            },
-        }
-    if mode == "gap_review":
-        minimum_sources = _as_int(
-            requirements.get("minimumSources"),
-            MIN_RESEARCH_SOURCE_COUNT,
-        )
-        minimum_hosts = _as_int(
-            requirements.get("minimumDistinctHosts"),
-            MIN_RESEARCH_DISTINCT_HOST_COUNT,
-        )
-        structural_gaps: list[str] = []
-        if int(structural_stats.get("selectedSourceCount") or 0) < minimum_sources:
-            structural_gaps.append(
-                "Architect-answerable source minimum not met: "
-                f"{structural_stats.get('selectedSourceCount', 0)}/{minimum_sources}."
-            )
-        if int(structural_stats.get("distinctHostCount") or 0) < minimum_hosts:
-            structural_gaps.append(
-                "Architect-answerable independent host minimum not met: "
-                f"{structural_stats.get('distinctHostCount', 0)}/{minimum_hosts}."
-            )
-        missing_facet_ids = [
-            _safe_text(value)
-            for value in list(structural_stats.get("missingFacetIds") or [])
-            if _safe_text(value)
-        ]
-        if missing_facet_ids:
-            structural_gaps.append(
-                "Architect-answerable evidence is missing for explicit Research facets: "
-                + ", ".join(missing_facet_ids)
-                + "."
-            )
-        minimum_reviewable = bool(
-            int(structural_stats.get("selectedSourceCount") or 0) >= minimum_sources
-            and int(structural_stats.get("distinctHostCount") or 0)
-            >= minimum_hosts
-        )
-        if (
-            minimum_reviewable
-            and int(call_state.get("gapReviewAttempts") or 0) < 1
-        ):
-            call_state["gapReviewAttempts"] = int(call_state.get("gapReviewAttempts") or 0) + 1
-            agent_pack = _invoke_web_research_architect_agent(
-                question=question,
-                source_matrix=prompt_sources or source_matrix,
-                shards=shards,
-                confidence=confidence,
-                average_authority=average_authority,
-                freshness=freshness,
-                timeout_seconds=min(
-                    90,
-                    int(_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000),
-                ),
-                per_call_timeout_seconds=int(config.get("architectAgentTimeoutSeconds") or 60),
-                architect_mode="gap_review",
-                preferred_language=preferred_language,
-                delivery_requirements=requirements,
-            )
-            merged = _merge_web_research_architect_agent_pack(
-                base_pack,
-                agent_pack,
-                question=question,
-                freshness=freshness,
-            )
-            model_synthesis = (
-                dict(merged.get("modelSynthesis") or {})
-                if isinstance(merged.get("modelSynthesis"), dict)
-                else {}
-            )
-            merged["modelSynthesis"] = {
-                **model_synthesis,
-                "mode": "gap_review",
-                "structuralTargetMet": False,
-                "structuralStats": structural_stats,
-            }
-            merged["criticalMissingEvidence"] = list(
-                dict.fromkeys(
-                    [
-                        *list(merged.get("criticalMissingEvidence") or []),
-                        *structural_gaps,
-                    ]
-                )
-            )
-            return merged
-        return {
-            **{key: value for key, value in base_pack.items() if key != "_sourceTexts"},
-            "criticalMissingEvidence": list(
-                dict.fromkeys(
-                    [
-                        *list(base_pack.get("criticalMissingEvidence") or []),
-                        *structural_gaps,
-                    ]
-                )
-            ),
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "mode": mode,
-                "fallbackReason": (
-                    "architect_gap_review_attempt_budget_exhausted"
-                    if minimum_reviewable
-                    else "architect_gap_review_deferred_until_minimum_floor"
-                ),
-                "structuralTargetMet": False,
-                "structuralStats": structural_stats,
-            },
-        }
-    if int(call_state.get("fullSynthesisAttempts") or 0) >= _MAX_RESEARCH_ARCHITECT_FULL_SYNTHESIS_ATTEMPTS:
-        return {
-            **{key: value for key, value in base_pack.items() if key != "_sourceTexts"},
-            "modelSynthesis": {
-                "used": False,
-                "agentId": "web-research-architect",
-                "mode": mode,
-                "fallbackReason": "architect_full_synthesis_attempt_budget_exhausted",
-                "attemptBudgetExhausted": True,
-            },
-        }
-    call_state["fullSynthesisAttempts"] = int(call_state.get("fullSynthesisAttempts") or 0) + 1
-    synthesis_timeout_seconds = int(_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000)
-    if requirements.get("mode") == "narrow_authoritative_technical":
-        synthesis_timeout_seconds = min(120, synthesis_timeout_seconds)
-    agent_pack = _invoke_web_research_architect_agent(
-        question=question,
-        # The deterministic base pack and the model/reviewer chain must see
-        # the same ordered evidence set.  Otherwise citation keys can be bound
-        # to one order while the final pack publishes another after relevance
-        # ranking, making an otherwise valid independent review unverifiable.
-        source_matrix=prompt_sources or source_matrix,
-        shards=shards,
-        confidence=confidence,
-        average_authority=average_authority,
-        freshness=freshness,
-        timeout_seconds=synthesis_timeout_seconds,
-        per_call_timeout_seconds=int(config.get("architectAgentTimeoutSeconds") or 60),
-        architect_mode=mode,
-        preferred_language=preferred_language,
-        delivery_requirements=requirements,
-    )
-    merged = _merge_web_research_architect_agent_pack(
-        base_pack,
-        agent_pack,
-        question=question,
-        freshness=freshness,
-    )
-    model_synthesis = (
-        dict(merged.get("modelSynthesis") or {})
-        if isinstance(merged.get("modelSynthesis"), dict)
-        else {}
-    )
-    merged["modelSynthesis"] = {
-        **model_synthesis,
-        "structuralMinimumMet": structural_stats.get("structuralMinimumMet") is True,
-        "structuralTargetMet": structural_stats.get("structuralTargetMet") is True,
-        "structuralStats": structural_stats,
-    }
-    return merged
+    result.pop("readSources", None)
+    return result
 
 
 def _deadline_failure(
@@ -18678,6 +15406,8 @@ def _research_delivery_requirements(question: str) -> dict[str, Any]:
         "targetDistinctHosts": target_hosts,
         "targetClaims": target_claims,
         "targetAnswerChars": 3_000 if narrow_authoritative else TARGET_RESEARCH_ANSWER_CHARS,
+        "countPolicy": "advisory",
+        "explicitUserSourceCount": explicit_source_floor,
     }
 
 
@@ -19581,19 +16311,12 @@ def _run_search_shard(
                     "readReuse": "shared_document_cache" if cached_read is not None else None,
                 }
             )
-            preflight_gate = _source_quality_gate(
-                question=query,
-                result=result,
-                read_payload={**read_payload, "text": text},
-                source_policy=source_policy,
-            )
-            fetched[-1]["preflightSourceQualityGate"] = preflight_gate
             # A cached projection gives this facet evidence but does not add a
             # new independent document. Keep the shard's two-source network
             # budget available for additional corroboration.
             if (
-                preflight_gate.get("selectedForEvidence")
-                and fetched[-1].get("ok") is True
+                fetched[-1].get("ok") is True
+                and not fetched[-1].get("missingContentReason")
                 and bool(text)
             ):
                 accepted_evidence_count += 1
@@ -19702,6 +16425,7 @@ def _run_search_shards(
     read_attempt_ledger: _ResearchReadAttemptLedger | None = None,
     read_round: int = 1,
     preferred_language: str = "",
+    deadline_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     if not shards:
         return []
@@ -19757,7 +16481,10 @@ def _run_search_shards(
             )
             futures[future] = index
         try:
-            for future in as_completed(futures, timeout=max(_RESEARCH_TOOL_DEADLINE_MS / 1000.0, 0.1)):
+            for future in as_completed(futures, timeout=max(0.1, min(
+                _RESEARCH_TOOL_DEADLINE_MS / 1000.0,
+                deadline_seconds if deadline_seconds is not None else _RESEARCH_TOOL_DEADLINE_MS / 1000.0,
+            ))):
                 index = futures[future]
                 shard = shards[index]
                 try:
@@ -23690,7 +20417,9 @@ def research_broker(
     independent fact domains, managed recovery/progress, or downstream evidence handoff; put every known domain in its
     initial researchBriefIds/researchBriefGoals arrays. A brief already owned by that episode must be repaired there, not through this direct tool.
     Reuse a suitable current experience pack; refresh stale, low-confidence, or conflicting evidence.
-    forceRefresh=true is reserved for explicit live validation that must prove a fresh search/read/synthesis pass.
+    run + experiencePackId rechecks/updates that saved answer using its original evidence before searching gaps.
+    search_experience/get_experience inspect saved answers; archive_experience hides one; delete_experience requires confirm=true.
+    Accepted answers are saved automatically. forceRefresh=true requests fresh network evidence, not merely a wording revision.
     Research inherits the governed System Base browser-profile setting when the caller omits the flag. Only
     allowlisted provider/page hosts may reuse that login state; public fallback providers remain profile-free.
     """
@@ -24069,6 +20798,11 @@ def research_broker(
         freshness=freshness,
         min_confidence=minConfidence,
     )
+    revision_pack = get_experience_pack(_safe_text(experiencePackId)) if experiencePackId else None
+    if experiencePackId and not revision_pack:
+        return _render_payload({"ok": False, "mode": "run", "error": "experience_not_available", "summary": "指定答案不存在或已归档，未开始调研。"}, max_chars=4000)
+    if revision_pack:
+        experience_reuse = {"reuseDecision": "review", "reason": "explicit_answer_revision", "candidatePackId": experiencePackId}
     if forceRefresh:
         experience_reuse = {
             **experience_reuse,
@@ -24100,574 +20834,17 @@ def research_broker(
                 )[:12],
             }
 
-    query_planning_started_at = time.perf_counter()
-    query_plan_state: dict[str, Any] = {
-        "used": False,
-        "reason": "deterministic_query_plan",
-        "facetCount": len(structured_facets),
-        "plannedShardCount": len(shards),
-    }
-    if len(structured_facets) >= 2 or (
-        not structured_facets and _research_should_decompose_root_question(clean_question)
-    ):
-        seed_shards = [shard for shard in shards if _safe_text(shard.get("kind")) == "seed_url"]
-        planning_facets = structured_facets or [
-            (clean_question, "facet:root-question")
-        ]
-        planned_shards, query_plan_state = _invoke_web_research_architect_query_plan(
-            question=clean_question,
-            facets=planning_facets,
-            source_policy=sourcePolicy,
-            freshness=freshness,
-            max_shards=max(0, task_shaped_shard_cap - len(seed_shards)),
-            preferred_language=preferred_language,
-        )
-        if planned_shards:
-            planned_shards, catalog_seed_audit = _apply_catalog_official_entity_seeds(
-                clean_question,
-                planned_shards,
-            )
-            query_plan_state["catalogOfficialEntitySeeds"] = catalog_seed_audit
-            shards = [*seed_shards, *planned_shards][:task_shaped_shard_cap]
-
-    recent_discovery_seeds = _recent_research_discovery_seed_shards(
-        clean_question,
-        shards,
-        scope=scope,
-        source_limit=task_shaped_shard_cap,
+    prior_pack = revision_pack or next((pack for pack in experience_candidates if pack.get("experiencePackId") == experience_reuse.get("candidatePackId")), None)
+    previous_bundle = get_evidence_bundle(prior_pack.get("createdFromBundleId")) if prior_pack and not forceRefresh else None
+    bundle = _run_agent_owned_research(
+        question=clean_question, research_intent=researchIntent, source_policy=sourcePolicy,
+        freshness=freshness, allowed_domains=allowed_domains, blocked_domains=blocked_domains,
+        use_agent_browser_profile=effective_agent_browser_profile, tool_call_id=tool_call_id,
+        max_shards=task_shaped_shard_cap, max_rounds=round_cap,
+        preferred_language=preferred_language, seed_urls=seed_urls, deliverable=deliverable,
+        experience_reuse=experience_reuse, state=state, previous_bundle=previous_bundle,
     )
-    query_plan_state["recentDiscoverySeedCount"] = len(recent_discovery_seeds)
-    query_plan_state["elapsedMs"] = int(
-        (time.perf_counter() - query_planning_started_at) * 1000
-    )
-    read_attempt_ledger = _ResearchReadAttemptLedger(question=clean_question)
-    _report_research_progress(
-        stage="discovery",
-        status="active",
-        summary=f"开始并行检索 {len(shards)} 个来源方向",
-        toolName="web_search",
-        nodeId="research-discovery:start",
-    )
-    completed_shards, research_loop_state = _run_research_loop(
-        question=clean_question,
-        initial_shards=shards,
-        allowed_domains=allowed_domains,
-        blocked_domains=blocked_domains,
-        source_policy=sourcePolicy,
-        freshness=freshness,
-        max_rounds=round_cap,
-        use_agent_browser_profile=effective_agent_browser_profile,
-        tool_call_id=tool_call_id,
-        read_attempt_ledger=read_attempt_ledger,
-        recent_discovery_seed_shards=recent_discovery_seeds,
-        preferred_language=preferred_language,
-        delivery_requirements=delivery_requirements,
-    )
-    research_loop_state["queryPlan"] = query_plan_state
-    architect_call_state: dict[str, Any] = {
-        "fullSynthesisAttempts": 0,
-        "gapReviewAttempts": 0,
-    }
-    readable_source_count = _read_source_count(completed_shards, question=clean_question)
-    _report_research_progress(
-        stage="synthesis",
-        status="active",
-        summary=f"已读取 {readable_source_count} 个来源，正在整合证据",
-        toolName="research_architect",
-        nodeId="research-synthesis:start",
-    )
-    initial_synthesis_started_at = time.perf_counter()
-    bundle = _synthesize_bundle(
-        question=clean_question,
-        research_intent=researchIntent,
-        source_policy=sourcePolicy,
-        freshness=freshness,
-        shards=completed_shards,
-        deliverable=deliverable,
-        research_loop_state=research_loop_state,
-        experience_reuse=experience_reuse,
-        architect_call_state=architect_call_state,
-        preferred_language=preferred_language,
-    )
-    research_loop_state.setdefault("performance", {})[
-        "initialSynthesisElapsedMs"
-    ] = int((time.perf_counter() - initial_synthesis_started_at) * 1000)
-    _report_research_progress(
-        stage="review",
-        status="completed" if bundle.get("deliveryReady") else "active",
-        summary="调研答案已通过复核" if bundle.get("deliveryReady") else "首轮复核发现证据缺口，正在定向补查",
-        toolName="research_architect",
-        nodeId="research-review:initial",
-    )
-    initial_architect_pack = (
-        bundle.get("finalExperiencePack")
-        if isinstance(bundle.get("finalExperiencePack"), dict)
-        else {}
-    )
-    initial_model_synthesis = (
-        initial_architect_pack.get("modelSynthesis")
-        if isinstance(initial_architect_pack.get("modelSynthesis"), dict)
-        else {}
-    )
-    if initial_model_synthesis.get("sameEvidenceReviewRejected") is True:
-        research_loop_state["stopReason"] = "same_evidence_review_rejected_after_revision"
-    final_discovery_round = next(
-        (
-            item
-            for item in reversed(list(research_loop_state.get("rounds") or []))
-            if isinstance(item, dict)
-        ),
-        {},
-    )
-    if (
-        not bundle.get("deliveryReady")
-        and len(list(research_loop_state.get("rounds") or [])) >= 2
-        and int(final_discovery_round.get("selectedSourceCount") or 0) == 0
-    ):
-        research_loop_state["stopReason"] = (
-            "no_qualified_sources_after_bounded_discovery"
-        )
-    repair_started_at = time.perf_counter()
-    while (
-        not bundle.get("deliveryReady")
-        and research_loop_state.get("stopReason")
-        not in {
-            "source_transport_exhausted",
-            "no_qualified_sources_after_bounded_discovery",
-        }
-        and len(list(research_loop_state.get("rounds") or [])) < round_cap
-        and int(architect_call_state.get("fullSynthesisAttempts") or 0)
-        < _MAX_RESEARCH_ARCHITECT_FULL_SYNTHESIS_ATTEMPTS
-    ):
-        architect_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
-        requested_queries = [
-            query
-            for query in (
-                _normalize_research_search_query(value)
-                for value in _research_text_list(
-                    architect_pack.get("recommendedNextQueries"), limit=4
-                )
-            )
-            if query
-        ]
-        model_synthesis = architect_pack.get("modelSynthesis") if isinstance(architect_pack.get("modelSynthesis"), dict) else {}
-        precise_missing_facet_ids = {
-            _safe_text(facet_id)
-            for facet_id in _as_list(model_synthesis.get("missingFacetIds"))
-            if _safe_text(facet_id)
-        }
-        if model_synthesis.get("sameEvidenceReviewRejected") is True and not requested_queries:
-            research_loop_state["stopReason"] = "same_evidence_review_rejected_after_revision"
-            break
-        structured_repair = len(
-            _required_research_facet_queries(clean_question, completed_shards)
-        ) >= 2
-        critical_gaps = _research_text_list(
-            architect_pack.get("criticalMissingEvidence"),
-            limit=4,
-        )
-        if (
-            not requested_queries
-            and not critical_gaps
-            and _architect_model_failure_without_evidence_gap(model_synthesis)
-        ):
-            research_loop_state["stopReason"] = (
-                "architect_model_failure_without_evidence_gap"
-            )
-            break
-        if not critical_gaps:
-            critical_gaps = _research_architect_plan_failure_gaps(
-                clean_question,
-                model_synthesis,
-            )
-        targeted_gap_queries = _research_critical_gap_queries(
-            clean_question,
-            critical_gaps,
-            limit=6,
-        )
-        if targeted_gap_queries:
-            # Reviewer-identified omissions have priority over generic
-            # "one more source for this facet" repairs.  Keep Architect
-            # queries after them so explicit URLs and model-suggested sources
-            # remain eligible in the same round.
-            requested_queries = [*targeted_gap_queries, *requested_queries]
-        if not requested_queries and not structured_repair:
-            requested_queries = [
-                " ".join((clean_question, gap, "official primary source evidence")).strip()
-                for gap in critical_gaps
-                if gap
-            ][:4]
-        seen_queries = {
-            _safe_text(shard.get("query")).lower()
-            for shard in completed_shards
-            if _safe_text(shard.get("query"))
-        }
-        requested_queries = [query for query in requested_queries if query.lower() not in seen_queries]
-        architect_requested_queries = list(requested_queries)
-        repair_round = len(list(research_loop_state.get("rounds") or [])) + 1
-        repair_shards: list[dict[str, Any]] = []
-        existing_document_projection_count = 0
-        direct_url_fallbacks: list[dict[str, str]] = []
-        seen_repair_urls: set[str] = {
-            _research_document_identity(
-                _safe_text(item.get("finalUrl") or item.get("url")),
-                question=clean_question,
-            )
-            for shard in completed_shards
-            for item in list(shard.get("fetchedTopSources") or [])
-            if isinstance(item, dict)
-            and item.get("ok")
-            and _safe_text(item.get("finalUrl") or item.get("url"))
-        }
-        skipped_seen_direct_queries: list[str] = []
-        if structured_repair:
-            repair_facet_stats = _selected_facet_evidence_stats(
-                clean_question,
-                completed_shards,
-                source_policy=sourcePolicy,
-            )
-            repair_shards = _build_refinement_shards(
-                clean_question,
-                completed_shards,
-                source_policy=sourcePolicy,
-                limit=max(
-                    4,
-                    min(8, len(list(repair_facet_stats.get("missingFacetIds") or []))),
-                ),
-                round_index=repair_round,
-                only_facet_ids=(precise_missing_facet_ids or None),
-                force_primary_facet_ids=(precise_missing_facet_ids or None),
-            )
-            requested_queries = _merge_research_repair_queries(
-                architect_requested_queries,
-                repair_shards,
-            )
-        elif not requested_queries:
-            repair_shards = _build_refinement_shards(
-                clean_question,
-                completed_shards,
-                source_policy=sourcePolicy,
-                limit=4,
-                round_index=repair_round,
-            )
-            requested_queries = [
-                _safe_text(shard.get("query"))
-                for shard in repair_shards
-                if _safe_text(shard.get("query"))
-            ]
-        repair_shard_index = 0
-        for index, query in enumerate(requested_queries, start=1):
-            if repair_shards and any(_safe_text(shard.get("query")) == query for shard in repair_shards):
-                continue
-            direct_urls, unread_direct_urls = _research_unread_direct_urls(
-                query,
-                question=clean_question,
-                read_document_identities=seen_repair_urls,
-            )
-            if direct_urls and not unread_direct_urls:
-                # An Architect URL request means "read this source", not
-                # "search the web again for this already-read URL plus its
-                # description". Reissuing it was the source of repeated PEP
-                # searches in live audits.
-                skipped_seen_direct_queries.append(query)
-                continue
-            direct_url = unread_direct_urls[0] if unread_direct_urls else ""
-            if direct_url:
-                seen_repair_urls.add(_research_document_identity(direct_url, question=clean_question))
-                repair_shard_index += 1
-                seed_shard_id = f"shard_architect_repair_{repair_round}_{repair_shard_index}"
-                repair_shards.append(
-                    {
-                        "shardId": seed_shard_id,
-                        "kind": "seed_url",
-                        "query": direct_url,
-                        "seedUrl": direct_url,
-                        "evidenceQuery": query,
-                        "reason": "web_research_architect_requested_direct_source",
-                    }
-                )
-                repair_query = _safe_text(query.replace(direct_url, " "))
-                repair_host = _host(direct_url)
-                site_query = " ".join(
-                    part
-                    for part in (
-                        f"site:{repair_host}" if repair_host else "",
-                        clean_question,
-                        repair_query,
-                    )
-                    if part
-                )
-                if (
-                    site_query.lower() not in seen_queries
-                    and not any(
-                        _safe_text(item.get("query")).lower() == site_query.lower()
-                        for item in direct_url_fallbacks
-                    )
-                ):
-                    direct_url_fallbacks.append(
-                        {
-                            "seedShardId": seed_shard_id,
-                            "query": site_query,
-                            "reason": "verify_or_correct_architect_requested_url",
-                        }
-                    )
-            else:
-                repair_shard_index += 1
-                repair_shards.append(
-                    {
-                        "shardId": f"shard_architect_repair_{repair_round}_{repair_shard_index}",
-                        "kind": "architect_evidence_repair",
-                        "query": query,
-                        "reason": "web_research_architect_requested_evidence",
-                    }
-                )
-        projection_shards = _architect_existing_document_projection_shards(
-            clean_question,
-            requested_queries,
-            completed_shards,
-            source_policy=sourcePolicy,
-            round_index=repair_round,
-            limit=8,
-        )
-        if projection_shards:
-            existing_document_projection_count = len(projection_shards)
-            repair_shards = [*projection_shards, *repair_shards]
-        if not repair_shards:
-            break
-        already_read_urls = {
-            _research_document_identity(
-                _safe_text(item.get("finalUrl") or item.get("url")),
-                question=clean_question,
-            )
-            for shard in completed_shards
-            for item in list(shard.get("fetchedTopSources") or [])
-            if isinstance(item, dict)
-            and item.get("ok")
-            and _safe_text(item.get("finalUrl") or item.get("url"))
-        }
-        existing_read_identities = set(already_read_urls)
-        existing_projection_identities = _research_evidence_projection_identities(
-            clean_question,
-            completed_shards,
-            source_policy=sourcePolicy,
-        )
-        repaired = _run_search_shards(
-            repair_shards,
-            allowed_domains=allowed_domains,
-            blocked_domains=blocked_domains,
-            source_policy=sourcePolicy,
-            max_rounds=round_cap,
-            use_agent_browser_profile=effective_agent_browser_profile,
-            tool_call_id=tool_call_id,
-            already_read_urls=already_read_urls,
-            read_attempt_ledger=read_attempt_ledger,
-            read_round=repair_round,
-            preferred_language=preferred_language,
-        )
-        for shard in repaired:
-            for item in list(shard.get("fetchedTopSources") or []):
-                if not isinstance(item, dict) or not item.get("ok"):
-                    continue
-                resolved_url = _safe_text(item.get("finalUrl") or item.get("url"))
-                if resolved_url:
-                    already_read_urls.add(
-                        _research_document_identity(resolved_url, question=clean_question)
-                    )
-        fallback_shards: list[dict[str, Any]] = []
-        repaired_by_shard_id = {
-            _safe_text(shard.get("shardId")): shard
-            for shard in repaired
-            if _safe_text(shard.get("shardId"))
-        }
-        for fallback in direct_url_fallbacks:
-            seed_result = repaired_by_shard_id.get(_safe_text(fallback.get("seedShardId")))
-            if seed_result and _research_shard_has_readable_fetch(seed_result):
-                continue
-            repair_shard_index += 1
-            fallback_shards.append(
-                {
-                    "shardId": f"shard_architect_repair_{repair_round}_{repair_shard_index}",
-                    "kind": "architect_url_search_fallback",
-                    "query": _safe_text(fallback.get("query")),
-                    "reason": _safe_text(fallback.get("reason")),
-                }
-            )
-        if fallback_shards:
-            repaired.extend(
-                _run_search_shards(
-                    fallback_shards,
-                    allowed_domains=allowed_domains,
-                    blocked_domains=blocked_domains,
-                    source_policy=sourcePolicy,
-                    max_rounds=round_cap,
-                    use_agent_browser_profile=effective_agent_browser_profile,
-                    tool_call_id=tool_call_id,
-                    already_read_urls=already_read_urls,
-                    read_attempt_ledger=read_attempt_ledger,
-                    read_round=repair_round,
-                    preferred_language=preferred_language,
-                )
-            )
-        completed_shards.extend(repaired)
-        repaired_read_identities = {
-            _research_document_identity(
-                _safe_text(item.get("finalUrl") or item.get("url")),
-                question=clean_question,
-            )
-            for shard in repaired
-            for item in list(shard.get("fetchedTopSources") or [])
-            if isinstance(item, dict) and item.get("ok") and _safe_text(item.get("finalUrl") or item.get("url"))
-        }
-        materially_new_identities = repaired_read_identities - existing_read_identities
-        repaired_projection_identities = _research_evidence_projection_identities(
-            clean_question,
-            repaired,
-            source_policy=sourcePolicy,
-        )
-        materially_new_projection_identities = (
-            repaired_projection_identities - existing_projection_identities
-        )
-        repair_stats = _selected_source_stats(clean_question, completed_shards, source_policy=sourcePolicy)
-        repair_facet_stats = _selected_facet_evidence_stats(
-            clean_question,
-            completed_shards,
-            source_policy=sourcePolicy,
-        )
-        research_loop_state.setdefault("rounds", []).append(
-            {
-                "round": repair_round,
-                "kind": "architect_evidence_repair",
-                "queries": requested_queries,
-                "skippedAlreadyReadDirectQueries": skipped_seen_direct_queries,
-                "existingDocumentProjectionCount": existing_document_projection_count,
-                "directUrlFallbackCount": len(fallback_shards),
-                "resultCount": sum(int(shard.get("resultCount") or 0) for shard in repaired),
-                "materialEvidenceChanged": bool(
-                    materially_new_identities or materially_new_projection_identities
-                ),
-                "newReadSourceCount": len(materially_new_identities),
-                "newEvidenceProjectionCount": len(materially_new_projection_identities),
-                "readSourceCount": _read_source_count(completed_shards, question=clean_question),
-                **repair_stats,
-                "facetEvidence": repair_facet_stats,
-            }
-        )
-        research_loop_state["readSources"] = repair_stats.get("sourceUrls") or []
-        research_loop_state["readAttemptStats"] = read_attempt_ledger.snapshot()
-        research_loop_state["facetEvidence"] = repair_facet_stats
-        research_loop_state["nextQueries"] = requested_queries
-        research_loop_state["stopReason"] = (
-            "architect_evidence_repair_completed"
-            if materially_new_identities or materially_new_projection_identities
-            else "architect_evidence_repair_no_new_evidence"
-        )
-        refreshed_gaps: list[str] = []
-        target_sources = _as_int(
-            delivery_requirements.get("targetSources"),
-            TARGET_RESEARCH_SOURCE_COUNT,
-        )
-        target_hosts = _as_int(
-            delivery_requirements.get("targetDistinctHosts"),
-            TARGET_RESEARCH_DISTINCT_HOST_COUNT,
-        )
-        if int(repair_stats.get("selectedSourceCount") or 0) < target_sources:
-            refreshed_gaps.append(
-                f"Readable source target not met: {repair_stats.get('selectedSourceCount', 0)}/{target_sources}."
-            )
-        if int(repair_stats.get("distinctHostCount") or 0) < target_hosts:
-            refreshed_gaps.append(
-                f"Independent host target not met: {repair_stats.get('distinctHostCount', 0)}/{target_hosts}."
-            )
-        if repair_facet_stats.get("missingFacetIds"):
-            refreshed_gaps.append(
-                "Readable evidence missing for explicit Research facets: "
-                + ", ".join(repair_facet_stats.get("missingFacetIds") or [])
-                + "."
-            )
-        refreshed_report = _research_loop_report(
-            clean_question,
-            completed_shards,
-            source_policy=sourcePolicy,
-            delivery_requirements=delivery_requirements,
-        )
-        research_loop_state.update(refreshed_report)
-        research_loop_state["uncoveredClaims"] = list(
-            dict.fromkeys([*list(refreshed_report.get("uncoveredClaims") or []), *refreshed_gaps])
-        )
-        if not materially_new_identities and not materially_new_projection_identities:
-            research_loop_state["stopReason"] = "architect_evidence_repair_no_new_evidence"
-            break
-        bundle = _synthesize_bundle(
-            question=clean_question,
-            research_intent=researchIntent,
-            source_policy=sourcePolicy,
-            freshness=freshness,
-            shards=completed_shards,
-            deliverable=deliverable,
-            research_loop_state=research_loop_state,
-            experience_reuse=experience_reuse,
-            architect_call_state=architect_call_state,
-            preferred_language=preferred_language,
-        )
-        refreshed_architect_pack = (
-            bundle.get("finalExperiencePack")
-            if isinstance(bundle.get("finalExperiencePack"), dict)
-            else {}
-        )
-        refreshed_model_synthesis = (
-            refreshed_architect_pack.get("modelSynthesis")
-            if isinstance(refreshed_architect_pack.get("modelSynthesis"), dict)
-            else {}
-        )
-        refreshed_structural_stats = refreshed_model_synthesis.get("structuralStats")
-        if isinstance(refreshed_structural_stats, dict) and research_loop_state.get("rounds"):
-            research_loop_state["rounds"][-1]["architectStructuralStats"] = dict(
-                refreshed_structural_stats
-            )
-    performance = research_loop_state.setdefault("performance", {})
-    performance["repairElapsedMs"] = int(
-        (time.perf_counter() - repair_started_at) * 1000
-    )
-    final_architect_pack = (
-        bundle.get("finalExperiencePack")
-        if isinstance(bundle.get("finalExperiencePack"), dict)
-        else {}
-    )
-    final_model_synthesis = (
-        final_architect_pack.get("modelSynthesis")
-        if isinstance(final_architect_pack.get("modelSynthesis"), dict)
-        else {}
-    )
-    if final_model_synthesis.get("claimPlanMode"):
-        performance["synthesisStages"] = {
-            key: final_model_synthesis.get(key)
-            for key in (
-                "claimPlanMode",
-                "claimPlanVersion",
-                "claimPlanDigest",
-                "claimPlanElapsedMs",
-                "claimPlanCandidateCount",
-                "claimPlanClaimCount",
-                "claimPlanSourceCount",
-                "claimPlanRequiredSourceCount",
-                "claimPlanRequiredClaimCount",
-                "claimPlanCoveredFacetIds",
-                "claimPlanMissingSourceKeys",
-                "claimPlanMissingFacetIds",
-                "claimPlanCoverageComplete",
-                "claimPlanSupportedScopeLimited",
-                "claimPlanBlockedFacets",
-                "structureStatus",
-                "structureElapsedMs",
-                "writerElapsedMs",
-                "reviewElapsedMs",
-                "modelPlanCallCount",
-            )
-            if final_model_synthesis.get(key) not in (None, "")
-        }
-    performance["totalElapsedMs"] = int(
-        (time.perf_counter() - run_started_at) * 1000
-    )
-    research_loop_state["architectCallState"] = dict(architect_call_state)
+    if revision_pack:
+        bundle.update(supersedesExperiencePackId=experiencePackId, supersedesBundleId=revision_pack.get("createdFromBundleId"))
     stored = _store_evidence(bundle, state=state)
     return _render_payload(_visible_bundle(stored), max_chars=36000)

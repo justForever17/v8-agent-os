@@ -44,6 +44,16 @@ test("stable notes match the production Android asset contract", () => {
   assert.doesNotMatch(notes, /android-preview\.apk/);
 });
 
+test("2026.09.06.1 notes describe automatic budgets without claiming unlimited or stable delivery", () => {
+  const notes = execFileSync(process.execPath, [GENERATOR, "--product", "all", "--version", "2026.09.06.1", "--channel", "preview"],
+    { cwd: ROOT, encoding: "utf8" });
+  assert.match(notes, /自动预算/);
+  assert.match(notes, /保留人工设置/);
+  assert.match(notes, /部分答案与失败草稿/);
+  assert.match(notes, /未签名 preview/);
+  assert.doesNotMatch(notes, /无限输出|全部实机通过|保证调研成功/);
+});
+
 test("2026.08.18.2 notes describe the governed document, bounded command, and run-state fixes only for that release", () => {
   const current = execFileSync(process.execPath, [
     GENERATOR,

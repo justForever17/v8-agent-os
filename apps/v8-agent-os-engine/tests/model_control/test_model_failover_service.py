@@ -330,6 +330,82 @@ def test_partial_stream_wall_clock_timeout_fails_closed_without_replay(monkeypat
     assert built == []
 
 
+def test_active_agent_stream_can_outlive_idle_budget_within_governed_total_budget(monkeypatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+
+    class Active(FakeLLM):
+        def stream(self, messages, config=None):
+            for _ in range(5):
+                yield AIMessageChunk(content="part ")
+                time.sleep(0.06)
+
+    result = service.invoke_with_failover(
+        config=_config(maxTotalAttempts=1, maxFailoverSeconds=2),
+        base_llm_instance=Active(), messages=[], tools=None, role="agent:verification-engineer",
+        preferred_model_id=make_model_ref("p-openai-a", "primary"), build_model=lambda _: None,
+        stream_observer=lambda _: None, stream_attempt_timeout_seconds=None, stream_idle_timeout_seconds=0.2,
+    )
+    assert result.content == "part " * 5
+
+
+def test_empty_keepalives_do_not_reset_meaningful_output_timeout():
+    from core.model_failover_service import _iterate_stream_with_deadline
+
+    def stream():
+        for _ in range(100):
+            yield AIMessageChunk(content="")
+            time.sleep(0.01)
+
+    with pytest.raises(TimeoutError, match="meaningful-output idle timeout"):
+        list(_iterate_stream_with_deadline(stream(), deadline_seconds=2, idle_timeout_seconds=0.05))
+
+
+def test_continuous_content_cannot_bypass_the_total_stream_budget():
+    from core.model_failover_service import _iterate_stream_with_deadline
+
+    def stream():
+        for _ in range(100):
+            yield AIMessageChunk(content="active")
+            time.sleep(0.01)
+
+    with pytest.raises(TimeoutError, match="wall-clock deadline"):
+        list(_iterate_stream_with_deadline(stream(), deadline_seconds=0.05, idle_timeout_seconds=1))
+
+
+def test_provider_stream_closes_in_its_producer_context_after_timeout():
+    import contextvars
+    import threading
+    from core.model_failover_service import _iterate_stream_with_deadline
+    identity = contextvars.ContextVar("stream_cleanup_identity", default="caller")
+    release, closed = Event(), Event()
+    evidence = {}
+
+    class Stream:
+        def __iter__(self):
+            return self
+        def __next__(self):
+            if "producer" not in evidence:
+                evidence["producer"] = threading.get_ident()
+                self.token = identity.set("provider")
+                return AIMessageChunk(content="first")
+            release.wait(2)
+            return AIMessageChunk(content="late")
+        def close(self):
+            evidence["closer"] = threading.get_ident()
+            identity.reset(self.token)
+            closed.set()
+
+    try:
+        with pytest.raises(TimeoutError):
+            list(_iterate_stream_with_deadline(Stream(), deadline_seconds=0.05))
+    finally:
+        release.set()
+    assert closed.wait(1)
+    assert evidence["producer"] == evidence["closer"] != threading.get_ident()
+    assert identity.get() == "caller"
+
+
 def test_stream_timeout_before_first_byte_exposes_exact_stage(monkeypatch: pytest.MonkeyPatch):
     service = ModelFailoverService()
     _patch_runtime_gates(monkeypatch, service)

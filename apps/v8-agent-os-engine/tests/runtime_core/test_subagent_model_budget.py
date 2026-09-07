@@ -311,7 +311,7 @@ def test_subagent_model_budget_omits_unknown_limit(monkeypatch):
     assert subagent_model_kwargs(None) == {}
 
 
-def test_model_output_limit_falls_back_to_provider_catalog(monkeypatch):
+def test_auto_output_does_not_promote_provider_catalog_to_request_cap(monkeypatch):
     monkeypatch.setattr(
         LLMFactory,
         "_resolve_model_metadata",
@@ -334,10 +334,10 @@ def test_model_output_limit_falls_back_to_provider_catalog(monkeypatch):
         lambda _provider, _model_id: {"maxTokens": 65536},
     )
 
-    assert LLMFactory.get_model_max_output_tokens("demo::demo-model") == 65536
+    assert LLMFactory.get_model_max_output_tokens("demo::demo-model") is None
 
 
-def test_model_output_limit_falls_back_to_capability_registry(monkeypatch):
+def test_auto_output_does_not_promote_capability_registry_to_request_cap(monkeypatch):
     monkeypatch.setattr(
         LLMFactory,
         "_resolve_model_metadata",
@@ -360,7 +360,7 @@ def test_model_output_limit_falls_back_to_capability_registry(monkeypatch):
         lambda _model_id: {"maxOutputTokens": 98304},
     )
 
-    assert LLMFactory.get_model_max_output_tokens("custom::known-model") == 98304
+    assert LLMFactory.get_model_max_output_tokens("custom::known-model") is None
 
 
 def test_create_subagent_chat_model_enforces_resolved_limit_and_role(monkeypatch):
@@ -505,6 +505,8 @@ def test_write_required_subagent_forces_tool_choice_until_successful_write(monke
 
     def _invoke(_llm, _messages, _tools, **kwargs):
         captured.append(kwargs.get("tool_choice"))
+        assert kwargs["stream_attempt_timeout_seconds"] is None
+        assert kwargs["stream_idle_timeout_seconds"] == 180.0
         if len(captured) == 1:
             return AIMessage(content="I need to inspect the task first.")
         return AIMessage(content="The artifact is complete.")

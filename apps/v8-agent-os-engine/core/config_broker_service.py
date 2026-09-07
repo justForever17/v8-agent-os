@@ -78,6 +78,7 @@ _MODEL_PATCH_KEYS = {
     "contextWindow",
     "context_window",
     "maxTokens",
+    "outputTokenMode",
     "max_tokens",
     "capabilities",
     "capabilityClass",
@@ -257,6 +258,8 @@ def _reject_secret_fields(value: Any, *, path: str = "config") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             raw_key = str(key or "").strip()
+            if path == "modelConfig" and raw_key == "outputTokenMode" and child in ("auto", "fixed"):
+                continue
             normalized = raw_key.lower().replace("-", "_")
             separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", raw_key)
             tokens = {
@@ -395,6 +398,15 @@ def _canonical_model_patch(value: Any) -> dict[str, Any]:
     for source, target in aliases.items():
         if source in patch:
             patch[target] = patch.pop(source)
+    from core.model_token_policy import positive_token_count
+    if "outputTokenMode" in patch and patch["outputTokenMode"] not in ("auto", "fixed"):
+        raise ConfigBrokerError("输出预算模式必须是 auto 或 fixed。", code="model_output_mode_invalid")
+    for field in ("contextWindow", "maxTokens"):
+        if field in patch and patch[field] not in (None, ""):
+            parsed = positive_token_count(patch[field])
+            if parsed is None:
+                raise ConfigBrokerError(f"{field} 必须是正整数。", code="model_token_budget_invalid")
+            patch[field] = parsed
     return patch
 
 
@@ -1294,6 +1306,7 @@ class ConfigBrokerService:
                     "statusLabel": eligibility.get("shortLabel"),
                     "contextWindow": model.get("contextWindow"),
                     "maxTokens": model.get("maxTokens"),
+                    "outputTokenMode": model.get("outputTokenMode"),
                     "defaultCategories": model.get("defaultCategories") or [],
                     "assignedRoles": model.get("assignedRoles") or [],
                     "providerHealth": provider_health.get("status") or provider_health.get("health") or None,
@@ -1948,13 +1961,17 @@ class ConfigBrokerService:
             or existing_model.get("type")
             or ("MULTIMODAL" if caps.get("vision") or caps.get("multimodal") else "TEXT")
         ).strip().upper()
+        validated_budget = _canonical_model_patch({
+            **({"contextWindow": context_window} if context_window is not None else {}),
+            **({"maxTokens": max_tokens} if max_tokens is not None else {}),
+        })
         effective_context_window = (
-            int(context_window)
+            validated_budget["contextWindow"]
             if context_window is not None
             else model_extra.get("contextWindow", existing_model.get("contextWindow"))
         )
         effective_max_tokens = (
-            int(max_tokens)
+            validated_budget["maxTokens"]
             if max_tokens is not None
             else model_extra.get("maxTokens", existing_model.get("maxTokens"))
         )
@@ -2015,6 +2032,10 @@ class ConfigBrokerService:
             )
         model_patch = {
             **model_extra,
+            "outputTokenMode": model_extra.get("outputTokenMode") or (
+                ("fixed" if effective_max_tokens else "auto") if max_tokens is not None or "maxTokens" in model_extra
+                else existing_model.get("outputTokenMode") or ("fixed" if effective_max_tokens else "auto")
+            ),
             "type": effective_model_type,
             "contextWindow": effective_context_window,
             "maxTokens": effective_max_tokens,

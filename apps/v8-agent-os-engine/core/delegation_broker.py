@@ -9,6 +9,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from core.command_environment import default_shell_dialect
 from core.engineering_capsule import ensure_engineering_task_capsule
@@ -19,6 +20,25 @@ from core.runtime_tool_access import normalize_subagent_runtime_bindings
 
 
 _WORD_PATTERN = re.compile(r"[a-z0-9_+.-]+", re.IGNORECASE)
+
+
+def is_non_file_read_reference(value: Any) -> bool:
+    """Read-set resource URIs are not native-file evidence requirements."""
+    text = str(value or "").strip().strip("`'\"")
+    text = re.sub(r"^(?:target[_ -]?file|source[_ -]?file|file|path|target)\s*[:=](?!//)\s*", "", text, flags=re.IGNORECASE)
+    if re.match(r"^[A-Za-z]:", text):
+        return False
+    resource = re.match(r"^([A-Za-z][A-Za-z0-9_+.-]*)://", text)
+    if resource:
+        # Resource labels need not be RFC URL schemes (e.g. an underscore).
+        # Classification does not authorize or resolve them; do not turn a
+        # malformed resource reference into a mandatory native-file read.
+        return resource.group(1).lower() != "file"
+    try:
+        scheme = urlsplit(text).scheme.lower()
+    except ValueError:
+        return False
+    return bool(scheme and scheme != "file")
 
 
 def _tokenize(value: Any) -> list[str]:

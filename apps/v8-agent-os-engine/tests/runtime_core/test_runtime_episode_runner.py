@@ -3159,6 +3159,59 @@ def test_research_episode_delivers_independently_reviewed_minimum_qualified_answ
     assert handoff["claimCount"] == 8
 
 
+def test_agent_reviewed_partial_answer_preserves_references_without_full_coverage(monkeypatch):
+    from tests.core.test_research_agent import saved_bundle, ANSWER
+    import core.native_tools as native_tools
+    payload = saved_bundle(partial=True)
+    payload.update(ok=False, deliveryReady=False, usableAnswer=True)
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=lambda **kwargs: json.dumps(
+        payload if kwargs.get("mode") == "run" else {"ok": True, "items": []}
+    )))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": payload["question"]},
+        kind="research", state="queued", continuation_target="runtime_episode_runner",
+        extra={"inputs": {"mode": "run", "taskBriefs": [{"taskBriefId": "partial", "goal": payload["question"]}]}},
+    )
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+    assert handoff["status"] == "degraded"
+    assert handoff["deliveryScope"] == "partial"
+    assert handoff["coverageComplete"] is False
+    assert handoff["answer"] == ANSWER
+    assert handoff["sourceCount"] == 1
+    assert handoff["researchRefs"] == ["research://bundle/research-original"]
+    assert handoff["partialEvidenceAvailable"] is True
+    assert handoff["reviewDecision"] == "accept"
+    assert handoff["partialAnswers"][0]["limitations"]
+    assert handoff["downstreamAllowed"] is True
+    assert handoff["rawRef"].startswith("toolobs://")
+    assert handoff["limitations"]
+    from core.tools.research_quality import research_reviewed_partial_brief_ids
+    from graph.supervisor_turn import _runtime_research_gap_state, _runtime_handoff_final_message
+    from runtimes.chat.supervisor_completion_gate import _unresolved_research_evidence_gaps
+    from core.tools.native.delegation import _managed_research_gap_from_context
+    state = {"current_route_context": {"handoffRefs": [handoff]}}
+    gap = _runtime_research_gap_state(state)
+    assert gap["missingTaskBriefIds"] == []
+    assert gap["partialTaskBriefIds"] == ["partial"]
+    assert gap["retryAvailable"] is False
+    previous_failure = {"kind": "research", "status": "degraded", "missingTaskBriefIds": ["partial"]}
+    delegation_gap = _managed_research_gap_from_context({"handoffRefs": [previous_failure, handoff]})
+    assert delegation_gap["missingTaskBriefIds"] == []
+    assert delegation_gap["retryAvailable"] is False
+    assert "do not claim full coverage" in _runtime_handoff_final_message(state).content
+    assert research_reviewed_partial_brief_ids(handoff) == {"partial"}
+    episode_id = handoff["producerEpisodeId"]
+    episodes = [{"episodeId": episode_id, "kind": "research", "state": "degraded"}]
+    assert _unresolved_research_evidence_gaps(episodes, {episode_id: [handoff]}) == []
+    from copy import deepcopy
+    altered = deepcopy(handoff)
+    altered["taskBriefResults"][0]["answer"] += " Unverified change."
+    assert research_reviewed_partial_brief_ids(altered) == set()
+    assert _managed_research_gap_from_context({"handoffRefs": [previous_failure, altered]})["missingTaskBriefIds"] == ["partial"]
+    assert _runtime_research_gap_state({"current_route_context": {"handoffRefs": [altered]}})["retryAvailable"] is True
+    assert _unresolved_research_evidence_gaps(episodes, {episode_id: [altered]})
+
+
 def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
     def _fake_research_broker(**kwargs):
         if kwargs.get("mode") == "run":

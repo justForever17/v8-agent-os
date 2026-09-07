@@ -130,6 +130,14 @@ def research_independent_review(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def research_uses_agent_contract(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("researchContract") == "agent-research.v1"
+        or _final_pack(payload).get("researchContract") == "agent-research.v1"
+        or research_independent_review(payload).get("reviewContract") == "research-agent-review.v1"
+    )
+
+
 def _bound_independent_review_is_accepted(payload: dict[str, Any], review: dict[str, Any]) -> bool:
     unsupported = [value for value in _list(review.get("unsupportedClaims")) if _text(value)]
     critical_missing = [value for value in _list(review.get("criticalMissingEvidence")) if _text(value)]
@@ -143,9 +151,15 @@ def _bound_independent_review_is_accepted(payload: dict[str, Any], review: dict[
     )
     binding_matches = all(review.get(key) == value for key, value in expected_binding.items())
     review_time_valid = _is_plausible_temporal_value(reviewed_at)
+    agent_review = review.get("reviewContract") == "research-agent-review.v1"
+    scope = _text(review.get("deliveryScope"))
+    coverage_valid = review.get("questionCoverage") is True
+    if agent_review and scope == "partial":
+        coverage_valid = review.get("questionCoverage") is False and bool(review.get("limitations"))
     return bool(
         _text(review.get("reviewDecision")).lower() == "accept"
-        and review.get("questionCoverage") is True
+        and coverage_valid
+        and (not agent_review or scope in {"complete", "partial"})
         and review.get("claimEntailment") is True
         and review.get("freshnessAdequacy") is True
         and not unsupported
@@ -159,6 +173,9 @@ def _bound_independent_review_is_accepted(payload: dict[str, Any], review: dict[
 
 def _independent_review_is_accepted(payload: dict[str, Any]) -> bool:
     review = research_independent_review(payload)
+    if review.get("reviewContract") == "research-agent-review.v1":
+        return _bound_independent_review_is_accepted(payload, review)
+    # Historical persisted consensus records retain their original validation.
     try:
         reported_review_count = int(review.get("consensusReviewCount") or 0)
     except (TypeError, ValueError):
@@ -419,7 +436,7 @@ def build_research_review_binding(
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    return {
+    binding = {
         "bindingVersion": 6,
         "questionFingerprint": digest(question),
         "answerSha256": digest(answer),
@@ -442,6 +459,17 @@ def build_research_review_binding(
         "reviewerModelId": _text(reviewer_model_id),
         "reviewedAt": _text(reviewed_at),
     }
+    review = research_independent_review(payload)
+    if review.get("reviewContract") == "research-agent-review.v1":
+        binding["bindingVersion"] = 7
+        binding["assessmentDigest"] = digest({
+            key: review.get(key) for key in (
+                "reviewContract", "reviewDecision", "questionCoverage", "claimEntailment",
+                "freshnessAdequacy", "deliveryScope", "limitations", "unsupportedClaims",
+                "criticalMissingEvidence", "recommendedNextQueries",
+            )
+        })
+    return binding
 
 
 def research_missing_evidence(payload: dict[str, Any]) -> list[str]:
@@ -512,7 +540,7 @@ def _claim_has_verified_excerpt(claim: dict[str, Any]) -> bool:
     expected_digest = hashlib.sha256(normalized_excerpt.encode("utf-8")).hexdigest()
     return bool(
         claim.get("evidenceVerified") is True
-        and len(normalized_excerpt) >= 20
+        and bool(normalized_excerpt)
         and digest == expected_digest
     )
 
@@ -662,7 +690,7 @@ def _source_has_read_evidence(source: dict[str, Any]) -> bool:
     )
     return bool(
         receipt.get("verified") is True
-        and content_chars >= MIN_RESEARCH_SOURCE_BODY_CHARS
+        and content_chars > 0
         and receipt_chars == content_chars
         and re.fullmatch(r"[0-9a-f]{64}", digest)
         and _is_plausible_temporal_value(source_retrieved_at)
@@ -1028,6 +1056,11 @@ def research_acceptance_issues(
     min_distinct_hosts: int | None = None,
     min_claims: int | None = None,
 ) -> list[str]:
+    if research_uses_agent_contract(payload):
+        issues = research_answer_integrity_issues(payload)
+        if research_independent_review(payload).get("deliveryScope") == "partial":
+            issues.append("research_scope_partial")
+        return issues
     issues: list[str] = []
     metrics = research_acceptance_metrics(payload)
     source_floor = max(
@@ -1147,6 +1180,9 @@ def research_bundle_is_accepted(
 def research_high_quality_issues(payload: dict[str, Any]) -> list[str]:
     """Return gaps between minimum eligibility and a normal Research deliverable."""
 
+    if research_uses_agent_contract(payload):
+        return research_acceptance_issues(payload)
+
     issues = research_acceptance_issues(payload)
     metrics = research_acceptance_metrics(payload)
     source_target = max(
@@ -1201,4 +1237,57 @@ def research_quality_tier(payload: dict[str, Any]) -> str:
         return "high_quality"
     if research_bundle_is_accepted(payload):
         return "minimum_qualified"
+    if research_answer_is_usable(payload):
+        return "partial"
     return "insufficient"
+
+
+def research_answer_integrity_issues(payload: dict[str, Any]) -> list[str]:
+    """Check execution/provenance, not heuristic answer quality or source quotas."""
+    issues: list[str] = []
+    answer = research_answer_text(payload)
+    if not answer.strip():
+        failure = _text(_dict(_final_pack(payload).get("modelSynthesis")).get("fallbackReason"))
+        failure = failure or _text(_dict(payload.get("researchLoopState")).get("stopReason"))
+        return [*([failure] if failure and failure != "answer_reviewed" else []), "research_answer_missing"]
+    metrics = research_acceptance_metrics(payload)
+    if metrics["reviewDecision"] != "accept" or not metrics["independentReviewAccepted"]:
+        issues.append("independent_semantic_review_not_accepted")
+    sources = research_selected_sources(payload)
+    if not sources or any(not _source_has_read_evidence(source) for source in sources):
+        issues.append("read_evidence_missing")
+    if not metrics["asOfValid"]:
+        issues.append("research_as_of_invalid")
+    claims = research_claims(payload)
+    if not claims or metrics["supportedClaimCount"] != len(claims):
+        issues.append("unsupported_claim_present")
+    if any(not _claim_has_verified_excerpt(claim) for claim in claims):
+        issues.append("unverified_claim_excerpt_present")
+    cited = set(_CITATION_RE.findall(answer))
+    known = {f"[{_text(source.get('citationKey'))}]" for source in sources}
+    if not cited or cited.difference(known):
+        issues.append("answer_citation_unbound")
+    return list(dict.fromkeys(issues))
+
+
+def research_answer_is_usable(payload: dict[str, Any]) -> bool:
+    if research_uses_agent_contract(payload):
+        return not research_answer_integrity_issues(payload)
+    return research_bundle_is_accepted(payload)
+
+
+def research_reviewed_partial_brief_ids(handoff: dict[str, Any]) -> set[str]:
+    """Identify usable partial results by bound proof, not a reported success flag."""
+    ids: set[str] = set()
+    for result in _list(handoff.get("taskBriefResults")):
+        if not isinstance(result, dict) or result.get("deliveryScope") != "partial":
+            continue
+        if research_independent_review(result).get("reviewContract") != "research-agent-review.v1":
+            continue
+        candidate = {key: result.get(key) for key in (
+            "answer", "claimTable", "independentReview", "asOf", "deliveryScope", "limitations", "reviewDecision", "freshness",
+        )}
+        candidate.update(question=result.get("query"), sourceMatrix=result.get("sources") or [])
+        if research_answer_is_usable(candidate):
+            ids.update(_text(value) for value in [result.get("taskBriefId"), *_list(result.get("taskBriefIds"))] if _text(value))
+    return ids

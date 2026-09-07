@@ -45,7 +45,13 @@ def extract_text_and_reasoning(message: Any) -> Tuple[str, str]:
     if isinstance(candidate, Mapping):
         _append_unique(reasoning_parts, _extract_reasoning_payload(candidate))
 
-    return "".join(text_parts), "".join(reasoning_parts)
+    visible, reasoning = "".join(text_parts), "".join(reasoning_parts)
+    if reasoning:
+        # Some native streams separate reasoning but leave its closing delimiter
+        # at the start of answer content. Only remove that boundary with explicit
+        # reasoning evidence; literal examples and the raw response stay intact.
+        visible = re.sub(r"^\s*</(?:[A-Za-z][\w.-]*:)?think>", "", visible, count=1, flags=re.I)
+    return visible, reasoning
 
 
 def extract_reasoning_summary(message: Any) -> str:

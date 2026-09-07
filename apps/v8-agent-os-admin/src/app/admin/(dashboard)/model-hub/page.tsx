@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { OutputTokenBudgetField } from "@/components/models/OutputTokenBudgetField";
 import { HydrationSafeClientOnly } from "@/components/ui/hydration-safe-client-only";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -67,6 +68,7 @@ type AIModel = {
     type: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
+    outputTokenMode?: "auto" | "fixed";
     rerankApiFlavor?: string;
     thinkingControl?: Record<string, unknown> | null;
     reasoningEffortControl?: Record<string, unknown> | null;
@@ -1243,6 +1245,7 @@ export default function ModelHubPage() {
                 type: model.type || controlMeta?.type || "TEXT",
                 contextWindow: model.contextWindow ?? controlMeta?.contextWindow ?? "",
                 maxTokens: model.maxTokens ?? controlMeta?.maxTokens ?? "",
+                outputTokenMode: model.outputTokenMode,
                 rerankApiFlavor: model.rerankApiFlavor || "",
                 reasoningEffortControl,
                 thinkingControl,
@@ -1278,6 +1281,7 @@ export default function ModelHubPage() {
                 type: model.type || controlMeta?.type || "TEXT",
                 contextWindow: model.contextWindow ?? controlMeta?.contextWindow ?? "",
                 maxTokens: model.maxTokens ?? controlMeta?.maxTokens ?? "",
+                outputTokenMode: model.outputTokenMode,
                 rerankApiFlavor: model.rerankApiFlavor || "",
                 endpointBinding,
             }),
@@ -3506,12 +3510,9 @@ export default function ModelHubPage() {
                                 <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
-                                    <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.contextWindowPlaceholder")}/>
+                                    <Input id="model-context-window" name="contextWindow" type="number" min={1} step={1} defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.contextWindowPlaceholder")}/>
                                 </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
-                                    <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.maxTokensPlaceholder")}/>
-                                </div>
+                                <OutputTokenBudgetField key={editingModel?.id || "new"} id="model-max-tokens" model={editingModel} />
                                 </div>
                                 <div className="space-y-2">
                                     <Label htmlFor="model-wire-protocol">{t("app.admin.dashboard.model.hub.page.wireProtocol")}</Label>

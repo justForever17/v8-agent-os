@@ -2,12 +2,13 @@ from core.model_control_plane import _fact_provenance_for_patch
 from core.model_eligibility import evaluate_model_eligibility, model_category
 
 
-def test_text_model_requires_both_context_and_output_facts() -> None:
+def test_text_model_requires_output_budget_only_in_fixed_mode() -> None:
     result = evaluate_model_eligibility(
         {
             "type": "MULTIMODAL",
             "contextWindow": 262_144,
             "maxTokens": None,
+            "outputTokenMode": "fixed",
             "capabilities": {"chat": True, "vision": True},
         }
     )

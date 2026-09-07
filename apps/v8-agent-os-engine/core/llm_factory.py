@@ -32,6 +32,7 @@ from core.provider_runtime_profiles import (
     runtime_readiness_for_provider,
 )
 from core.model_budget_service import model_budget_service
+from core.model_token_policy import output_token_mode, prepare_output_token_kwargs, resolve_output_token_budget
 from core.model_control_plane import model_control_plane, normalize_config_temperature
 from core.model_endpoint_binding import build_model_endpoint_binding
 from core.provider_hosted_tools import normalize_provider_hosted_tools
@@ -962,7 +963,8 @@ class LLMFactory:
                 "provider_adapter": provider_adapter,
                 "provider_adapter_label": provider_adapter_label,
                 "global_temperature": normalize_config_temperature(meta.get("temperature")),
-                "global_max_tokens": meta.get("maxTokens"),
+                "global_max_tokens": meta.get("maxTokens") if output_token_mode(meta) == "fixed" else None,
+                "output_token_mode": output_token_mode(meta),
                 "global_context_window": meta.get("contextWindow"),
                 "rerank_api_flavor": normalize_rerank_api_flavor(meta.get("rerank_api_flavor") or meta.get("rerankApiFlavor")),
                 "capabilities": capabilities,
@@ -1047,6 +1049,7 @@ class LLMFactory:
 
     @classmethod
     def _build_openai_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        kwargs, _ = prepare_output_token_kwargs(meta, kwargs)
         final_kwargs: Dict[str, Any] = dict(model=model_id)
 
         if meta.get("base_url"):
@@ -1089,10 +1092,9 @@ class LLMFactory:
                 final_kwargs["temperature"] = global_temperature
 
         model_kwargs = dict(kwargs.get("model_kwargs") or {})
-        if "max_tokens" in kwargs:
-            final_kwargs["max_tokens"] = int(kwargs["max_tokens"])
-        elif meta.get("global_max_tokens"):
-            final_kwargs["max_tokens"] = int(meta["global_max_tokens"])
+        output_budget = resolve_output_token_budget(meta, kwargs.get("max_tokens"))
+        if output_budget["maxTokens"] is not None:
+            final_kwargs["max_tokens"] = output_budget["maxTokens"]
 
         if model_kwargs:
             final_kwargs["model_kwargs"] = model_kwargs
@@ -1136,6 +1138,7 @@ class LLMFactory:
 
     @classmethod
     def _build_anthropic_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        kwargs, budget = prepare_output_token_kwargs(meta, kwargs, requires_value=True)
         credential = str(meta.get("api_key") or "")
         auth_headers, auth_query = _credential_transport(
             credential,
@@ -1175,7 +1178,7 @@ class LLMFactory:
             if global_temperature is not None:
                 final_kwargs["temperature"] = global_temperature
 
-        max_tokens = kwargs.get("max_tokens") or meta.get("global_max_tokens")
+        max_tokens = resolve_output_token_budget(meta, kwargs.get("max_tokens"), requires_value=True)["maxTokens"]
         if max_tokens:
             final_kwargs["max_tokens_to_sample"] = int(max_tokens)
 
@@ -1201,10 +1204,14 @@ class LLMFactory:
                 meta.get("request_reasoning_effort"),
             ),
         )
-        return ensure_anthropic_thinking_budget_headroom(final_kwargs)
+        return ensure_anthropic_thinking_budget_headroom(
+            final_kwargs,
+            output_limit=budget["maxTokens"] if budget["source"] != "required_parameter_default" else None,
+        )
 
     @classmethod
     def _build_gemini_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        kwargs, _ = prepare_output_token_kwargs(meta, kwargs)
         auth_contract = _normalized_auth_contract(meta.get("auth_contract"))
         auth_type = str(auth_contract.get("type") or "api_key").strip().lower()
         if auth_type == "api_key" and (
@@ -1236,7 +1243,7 @@ class LLMFactory:
             if global_temperature is not None:
                 final_kwargs["temperature"] = global_temperature
 
-        max_tokens = kwargs.get("max_tokens") or meta.get("global_max_tokens")
+        max_tokens = resolve_output_token_budget(meta, kwargs.get("max_tokens"))["maxTokens"]
         if max_tokens:
             final_kwargs["max_output_tokens"] = int(max_tokens)
 
@@ -1613,47 +1620,7 @@ class LLMFactory:
         meta = cls._resolve_model_metadata(model_id)
         if not meta.get("is_found"):
             return None
-
-        def _positive_int(value: Any) -> Optional[int]:
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError):
-                return None
-            return parsed if parsed > 0 else None
-
-        model_record = dict(meta.get("model_record") or {})
-        configured = (
-            _positive_int(meta.get("global_max_tokens"))
-            or _positive_int(model_record.get("maxTokens"))
-            or _positive_int(model_record.get("maxOutputTokens"))
-        )
-        if configured:
-            return configured
-
-        provider_id = str(meta.get("provider_id") or meta.get("provider_name") or "").strip()
-        wire_model_id = str(meta.get("model_id") or model_id or "").strip()
-        try:
-            from core.model_provider_catalog import model_provider_catalog
-
-            provider = model_provider_catalog.get_provider(provider_id) if provider_id else None
-            if provider and wire_model_id:
-                catalog_model = model_provider_catalog.normalize_model(provider, wire_model_id)
-                catalog_limit = (
-                    _positive_int(catalog_model.get("maxTokens"))
-                    or _positive_int(catalog_model.get("maxOutputTokens"))
-                )
-                if catalog_limit:
-                    return catalog_limit
-        except Exception:
-            pass
-
-        try:
-            from core.model_capability_registry import model_capability_registry
-
-            registry_model = model_capability_registry.find(wire_model_id)
-            return _positive_int((registry_model or {}).get("maxOutputTokens"))
-        except Exception:
-            return None
+        return resolve_output_token_budget(meta)["maxTokens"]
 
     @classmethod
     def create_embedding_for_role(cls, **kwargs) -> BaseEmbedding:

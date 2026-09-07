@@ -8,16 +8,6 @@ from core.research_runtime_prompts import (
     build_research_runtime_system_prompt,
     research_runtime_prompt_digest,
 )
-from core.tools.research_quality import (
-    MIN_RESEARCH_ANSWER_CHARS,
-    MIN_RESEARCH_CLAIM_COUNT,
-    MIN_RESEARCH_DISTINCT_HOST_COUNT,
-    MIN_RESEARCH_SOURCE_COUNT,
-    TARGET_RESEARCH_ANSWER_CHARS,
-    TARGET_RESEARCH_CLAIM_COUNT,
-    TARGET_RESEARCH_DISTINCT_HOST_COUNT,
-    TARGET_RESEARCH_SOURCE_COUNT,
-)
 
 
 @pytest.mark.parametrize("stage", sorted(RESEARCH_INTERNAL_STAGES))
@@ -31,7 +21,8 @@ def test_research_runtime_builds_authoritative_contract_for_every_internal_stage
     assert f"stage={stage}" in prompt
     assert f"STAGE-SCHEMA-SENTINEL:{stage}" in prompt
     assert "Research Runtime owns search" in prompt
-    assert "do not call tools" in prompt
+    assert "Use only the tools explicitly bound to this stage" in prompt
+    assert "do not call tools" not in prompt
     assert "successfully read source bodies" in prompt
     assert "explicitly undated source paired with retrieval time" in prompt
     assert "Attributed secondary sources remain valid" in prompt
@@ -43,25 +34,17 @@ def test_research_runtime_builds_authoritative_contract_for_every_internal_stage
     assert "Do not prefix them with commands" in prompt
 
 
-def test_research_runtime_contract_uses_shared_quality_policy_values():
+def test_research_runtime_contract_keeps_counts_advisory_and_claims_revisable():
     prompt = build_research_runtime_system_prompt(
         stage="evidence_plan",
         stage_prompt="Return the evidence-plan schema.",
     )
 
-    for value in (
-        MIN_RESEARCH_SOURCE_COUNT,
-        MIN_RESEARCH_DISTINCT_HOST_COUNT,
-        MIN_RESEARCH_CLAIM_COUNT,
-        MIN_RESEARCH_ANSWER_CHARS,
-        TARGET_RESEARCH_SOURCE_COUNT,
-        TARGET_RESEARCH_DISTINCT_HOST_COUNT,
-        TARGET_RESEARCH_CLAIM_COUNT,
-        TARGET_RESEARCH_ANSWER_CHARS,
-    ):
-        assert str(value) in prompt
+    assert "counts are descriptive or advisory" in prompt
+    assert "research claims are revisable" in prompt
+    assert "read snapshots are immutable" in prompt
     assert "Never pad" in prompt
-    assert "continue research when useful evidence is still obtainable" in prompt
+    assert "one relevant primary document may suffice" in prompt
 
 
 @pytest.mark.parametrize("stage", ["", "final_answer", "web_search", "unknown"])

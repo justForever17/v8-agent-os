@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+
+def test_explicit_registered_verifier_request_is_not_an_implicit_topic_route():
+    from graph.supervisor_turn import _explicit_runtime_orchestration_kinds
+
+    agents = [{"name": "Verification Engineer"}]
+    query = "复用保存答案，不重新调研。请委派注册的 Verification Engineer 做独立复核。"
+    assert _explicit_runtime_orchestration_kinds({}, query, agents) == ["delegation"]
+    assert _explicit_runtime_orchestration_kinds({}, "不再对整份答案改写。请委派注册的 Verification Engineer 一次复核", agents) == ["delegation"]
+    assert _explicit_runtime_orchestration_kinds({}, query, []) == []
+    assert _explicit_runtime_orchestration_kinds({}, "讨论 Verification Engineer 的职责", agents) == []
+    assert _explicit_runtime_orchestration_kinds({}, "不要委派 Verification Engineer，我自己看", agents) == []
+    assert _explicit_runtime_orchestration_kinds({}, "核对政策最新日期", agents) == []
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -1554,19 +1567,22 @@ def test_runtime_episode_wait_node_merges_completed_handoff() -> None:
     assert command.update["runtime_dispatch_status"]["state"] == "handoff_ready"
 
 
-def test_runtime_episode_wait_node_projects_result_ref_not_late_handoff_history() -> None:
+@pytest.mark.parametrize("episode_kind,handoff_kind", [
+    ("research", "research"), ("engineering", "engineering_patch_bundle"),
+])
+def test_runtime_episode_wait_node_projects_result_ref_not_late_handoff_history(episode_kind, handoff_kind) -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_current_delivery_{uuid4().hex}"
     episode = build_runtime_episode(
-        need={"episodeId": episode_id, "kind": "research", "reason": "need current evidence"},
-        kind="research",
+        need={"episodeId": episode_id, "kind": episode_kind, "reason": "need current evidence"},
+        kind=episode_kind,
         state="queued",
         continuation_target="runtime_episode_runner",
     )
     db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
     current = build_handoff_ref(
         producer_episode_id=episode_id,
-        kind="research",
+        kind=handoff_kind,
         compact_summary="Current research evidence is ready.",
         status="ready",
     )
@@ -1578,7 +1594,7 @@ def test_runtime_episode_wait_node_projects_result_ref_not_late_handoff_history(
     )
     stale = build_handoff_ref(
         producer_episode_id=episode_id,
-        kind="research",
+        kind=handoff_kind,
         compact_summary="Late stale failure must remain history only.",
         status="failed",
     )
@@ -1601,6 +1617,10 @@ def test_runtime_episode_wait_node_projects_result_ref_not_late_handoff_history(
     assert [item.get("handoffRefId") for item in refs] == [current["handoffRefId"]]
     assert stale["handoffRefId"] not in str(command.update["messages"][0].content)
     assert "Late stale failure" not in str(command.update["messages"][0].content)
+    if episode_kind == "engineering":
+        content = str(command.update["messages"][0].content)
+        assert f"producerEpisodeId: `{episode_id}`" in content
+        assert f"handoffRefId: `{current['handoffRefId']}`" in content
 
 
 def test_runtime_episode_wait_node_keeps_direct_creative_refs_in_runtime_surface() -> None:
@@ -1688,6 +1708,24 @@ def test_runtime_episode_wait_node_preserves_terminal_brief_coverage_for_supervi
     assert projected["remainingHandoffsExpected"] == 0
     assert "no further handoffs will arrive" in str(message.content)
     assert "fts5, jsonb, python-win" in str(message.content)
+
+
+@pytest.mark.parametrize("reversed_projection", [False, True])
+def test_research_repair_coverage_uses_producer_time_not_projection_order(reversed_projection):
+    from graph.supervisor_turn import _runtime_research_gap_state
+
+    brief_ids = ["scope", "dates", "obligations", "labels", "checklist"]
+    old = {"kind": "research_evidence_bundle", "producerEpisodeId": "first",
+           "createdAt": "2026-09-07T21:40:00Z", "missingTaskBriefIds": brief_ids,
+           "taskBriefResults": [{"taskBriefId": brief_ids[0], "taskBriefIds": brief_ids, "status": "degraded"}]}
+    repaired = {"kind": "research_evidence_bundle", "producerEpisodeId": "repair",
+                "createdAt": "2026-09-08T05:42:00+08:00", "coveredTaskBriefIds": brief_ids,
+                "taskBriefResults": [{"taskBriefId": brief_ids[0], "taskBriefIds": brief_ids, "status": "ready"}]}
+    handoffs = [old, repaired] if not reversed_projection else [repaired, old]
+    gap = _runtime_research_gap_state({"current_route_context": {"handoffRefs": handoffs}})
+    assert gap["retryAvailable"] is False
+    assert gap["missingTaskBriefIds"] == []
+    assert gap["readyTaskBriefIds"] == brief_ids
 
 
 def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry() -> None:
@@ -2624,6 +2662,90 @@ def test_runtime_episode_wait_node_does_not_resume_on_partial_handoff() -> None:
                 timeout=0.2,
             )
         )
+
+
+@pytest.mark.parametrize("identity_key", ["id", "episodeId"])
+def test_episode_idle_progress_uses_scoped_work_not_lease_or_heartbeat(monkeypatch, identity_key):
+    import sqlite3
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    import graph.workflow_assembly as assembly
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE runtime_events(session_id,run_id,topic,event_ts,payload_json)")
+    monkeypatch.setattr(assembly.db, "get_connection", lambda: conn)
+    monkeypatch.setattr(assembly, "time", SimpleNamespace(time=lambda: 2000.0))
+
+    def record(at, *, session="s", run="r", episode="e", stage="tools", node=True):
+        payload = {"episode": {identity_key: episode}, "progress": {"stage": stage}}
+        if node:
+            payload["progress"]["timelineNode"] = {"id": "tool-1", "topic": "subagent.tool.finished"}
+        conn.execute("INSERT INTO runtime_events VALUES(?,?,?,?,?)", (
+            session, run, "runtime.episode.progress",
+            datetime.fromtimestamp(at, timezone.utc).isoformat(), json.dumps(payload),
+        ))
+
+    record(1500)
+    record(1999, run="other")
+    record(1999, session="other")
+    record(1999, episode="other")
+    record(1999, stage="heartbeat")
+    record(1999, node=False)
+    args = dict(session_id="s", run_id="r", episodes=[{"id": "e", "state": "active"}], since_wall=1000)
+    assert assembly._recent_episode_work_at(**args) == 1500
+    assert assembly._recent_episode_work_at(**{**args, "since_wall": 1600}) is None
+    assert assembly._recent_episode_work_at(**{**args, "episodes": [{"id": "e", "deadline_at": "1970-01-01T00:30:00+00:00"}]}) is None
+    conn.close()
+
+
+def test_recent_progress_does_not_extend_a_future_absolute_episode_deadline(monkeypatch):
+    from types import SimpleNamespace
+    import graph.workflow_assembly as assembly
+
+    monkeypatch.setattr(assembly, "time", SimpleNamespace(monotonic=lambda: 100.0, time=lambda: 2000.0))
+    assert assembly._cap_episode_wait_deadline(699.0, [{"deadlineAt": "1970-01-01T00:33:21+00:00"}]) == 101.0
+    assert assembly._cap_episode_wait_deadline(100.5, [{"deadline_at": "1970-01-01T00:33:21+00:00"}]) == 100.5
+
+
+@pytest.mark.parametrize("recent_work", [True, False])
+def test_episode_wait_idle_boundary_does_not_fabricate_worker_failure(monkeypatch, recent_work):
+    from types import SimpleNamespace
+    import graph.workflow_assembly as assembly
+
+    episode_id = f"episode_progress_wait_{uuid4().hex}"
+    session_id, run_id = f"session_{episode_id}", f"run_{episode_id}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "engineering", "reason": "ongoing native writes"},
+        kind="engineering", state="active", continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=False)
+    elapsed = iter([0.0, 601.0, 601.0])
+    monkeypatch.setattr(assembly, "time", SimpleNamespace(monotonic=lambda: next(elapsed, 601.0), time=lambda: 2000.0))
+    monkeypatch.setattr(assembly, "_recent_episode_work_at", lambda **kwargs: 1999.0 if recent_work else None)
+
+    sleeps = []
+    async def finish_after_wait(_seconds):
+        sleeps.append(_seconds)
+        assert len(sleeps) == 1
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(assembly.asyncio, "sleep", finish_after_wait)
+    pending = assembly.build_runtime_episode_wait_node()({
+        "session_id": session_id, "run_id": run_id,
+        "current_route_context": {"capabilityEpisodes": [episode]},
+    })
+    if recent_work:
+        # Recent tools keep waiting; cancellation of the waiter still wins.
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(pending)
+        assert len(sleeps) == 1
+    else:
+        command = asyncio.run(pending)
+        status = command.update["runtime_dispatch_status"]
+        assert status["state"] == "episode_stalled"
+        assert status["executionTerminal"] is False
+        assert db.get_runtime_episode(episode_id)["state"] == "active"
+        assert "not a failed result" in command.update["messages"][0].content
 
 
 def test_parallel_join_routes_pending_child_delegations_from_top_level() -> None:

@@ -994,6 +994,84 @@ def test_creative_branch_stops_after_two_in_branch_evidence_corrections() -> Non
     ]
 
 
+@pytest.mark.parametrize("keep_repeating", [False, True])
+def test_parallel_file_version_progress_does_not_replay_old_write_receipts(keep_repeating):
+    turn = 0
+    def node(state):
+        nonlocal turn
+        index = turn
+        turn += 1
+        assert turn < 10, "unchanged reads escaped the bounded repeat guard"
+        if index == 3 and not keep_repeating:
+            return Command(goto="supervisor", update={"messages": [AIMessage(content="Verification complete.")]})
+        messages = []
+        if index < 3:
+            messages.extend([
+                AIMessage(content="", tool_calls=[{"id": f"write-{index}", "name": "write_native_file", "args": {"path": "result.txt", "content": str(index)}}]),
+                ToolMessage(content=json.dumps({"ok": True, "contentVersion": "sha256:" + str(index) * 64}), name="write_native_file", tool_call_id=f"write-{index}"),
+            ])
+        messages.extend([
+            AIMessage(content="", tool_calls=[{"id": f"read-{index}", "name": "read_native_file", "args": {"path": "result.txt"}}]),
+            ToolMessage(content="--- File: result.txt (Lines 1 to 1 of 1) ---\ncurrent", name="read_native_file", tool_call_id=f"read-{index}"),
+        ])
+        return Command(goto="worker", update={"messages": messages})
+    args = ({"messages": [], "parallel_branch": {"agentId": "worker", "taskBrief": {"goal": "Inspect revisions"}}},
+            {"node_func": node, "tool_mode": "test"})
+    if keep_repeating:
+        with pytest.raises(RuntimeError, match="repeated the same tool purpose"):
+            asyncio.run(_run_parallel_agent_branch(*args))
+    else:
+        result = asyncio.run(_run_parallel_agent_branch(*args))
+        assert result[2]["status"] == "ok"
+
+
+def test_parallel_unrelated_writes_cannot_reset_repeated_read_guard():
+    turn = 0
+    def node(state):
+        nonlocal turn
+        turn += 1
+        assert turn < 8, "unrelated writes manufactured progress for the target read"
+        return Command(goto="worker", update={"messages": [
+            AIMessage(content="", tool_calls=[{"id": f"write-{turn}", "name": "write_native_file",
+                                               "args": {"path": "unrelated.txt", "content": str(turn)}}]),
+            ToolMessage(content=json.dumps({"ok": True, "contentVersion": "sha256:" + str(turn) * 64}),
+                        name="write_native_file", tool_call_id=f"write-{turn}"),
+            AIMessage(content="", tool_calls=[{"id": f"read-{turn}", "name": "read_native_file",
+                                               "args": {"path": "target.txt"}}]),
+            ToolMessage(content="--- File: target.txt (Lines 1 to 1 of 1) ---\nunchanged",
+                        name="read_native_file", tool_call_id=f"read-{turn}"),
+        ]})
+    with pytest.raises(RuntimeError, match="repeated the same tool purpose"):
+        asyncio.run(_run_parallel_agent_branch(
+            {"messages": [], "parallel_branch": {"agentId": "worker", "taskBrief": {"goal": "Inspect the target"}}},
+            {"node_func": node, "tool_mode": "test"},
+        ))
+
+
+@pytest.mark.parametrize("has_read_proof", [False, True])
+def test_zero_blocker_narrative_neither_overrides_missing_proof_nor_fails_valid_delivery(has_read_proof):
+    narrative = "## 风险 / 阻塞 / 移交说明\n\n**零阻塞**：已完成目标。"
+    def node(state):
+        messages = []
+        if has_read_proof:
+            messages.extend([
+                AIMessage(content="", tool_calls=[{"id": "read", "name": "read_native_file", "args": {"path": "target.txt"}}]),
+                ToolMessage(content="--- File: target.txt (Lines 1 to 1 of 1) ---\nverified",
+                            name="read_native_file", tool_call_id="read"),
+            ])
+        return Command(goto="supervisor", update={"messages": [*messages, AIMessage(content=narrative)]})
+    messages, _, summary, _ = asyncio.run(_run_parallel_agent_branch(
+        {"messages": [], "parallel_branch": {"agentId": "worker", "taskBrief": {
+            "goal": "Read target.txt", "readOnly": True, "readSet": ["target.txt"],
+        }}},
+        {"node_func": node, "tool_mode": "test"},
+    ))
+    assert any(message.content == narrative for message in messages), "parent must receive the unmodified risk text"
+    assert summary["status"] == ("ok" if has_read_proof else "failed")
+    if not has_read_proof:
+        assert summary["missingVerificationTools"] == ["read_native_file"]
+
+
 def test_shared_runtime_timeline_retains_wait_resume_order_for_web_and_phone() -> None:
     events = []
     for seq, topic, state in [

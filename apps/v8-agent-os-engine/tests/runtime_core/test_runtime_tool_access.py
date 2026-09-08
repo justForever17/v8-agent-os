@@ -4,6 +4,9 @@ import asyncio
 import json
 import sys
 import types
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,7 +16,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 import core.tools.native.delegation as native_delegation
 import core.tools.native.runtime as native_runtime
-from core.database import db
+from core.database import DatabaseManager, db
 from core.actor_identity import (
     DIRECT_SUBAGENT_ACTOR,
     GRANDCHILD_ACTOR,
@@ -463,6 +466,7 @@ def test_common_default_tool_package_matches_product_contract():
         "send_background_input",
         "terminate_background_command",
         "web_broker",
+        "research_broker",
         "http_request",
         "download_media_for_vision",
         "vision_media_analyzer",
@@ -1349,6 +1353,7 @@ def test_runtime_broker_advertises_provider_safe_research_arrays_and_typed_task_
     assert public_fields["researchBriefIds"]["items"]["type"] == "string"
     assert public_fields["researchBriefGoals"]["items"]["type"] == "string"
     assert any(item.get("type") == "boolean" for item in public_fields["forceRefresh"]["anyOf"])
+    assert any(item.get("type") == "string" for item in public_fields["experiencePackId"]["anyOf"])
     assert "complete ordered list" in public_fields["researchBriefIds"]["description"]
     assert "equal length" in public_fields["researchBriefGoals"]["description"]
     assert public_fields["taskBriefs"]["items"]["type"] == "object"
@@ -1393,6 +1398,56 @@ def test_runtime_broker_zips_research_brief_arrays_to_internal_task_briefs():
     assert all(brief["readOnly"] is True and brief["writeSet"] == [] for brief in task_briefs)
     assert task_briefs[0]["context"] == {}
     assert task_briefs[1]["context"] == "Prefer official Python documentation."
+
+
+@pytest.mark.parametrize("pack_id", ["rxp-saved", "rxp-archived", None])
+def test_public_research_revision_reaches_broker_without_prose_id_inference(monkeypatch, pack_id):
+    import core.native_tools as native_tools
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+    from tests.runtime_core.test_runtime_episode_runner import _accepted_research_payload
+
+    session_id, run_id = "research-revision-public", "research-revision-public-run"
+    _ensure_runtime_binding(session_id, run_id)
+    args = {"mode": "route", "routeKind": "research", "routeReason": "Correct the saved answer",
+            "researchBriefIds": ["answer"], "researchBriefGoals": ["Correct attribution while preserving citations"],
+            "researchBriefContexts": ["experiencePackId=rxp-prose-only"], "forceRefresh": False,
+            "state": {"session_id": session_id, "run_id": run_id, "current_route_context": {}},
+            **({"experiencePackId": pack_id} if pack_id else {})}
+    command = runtime_broker.invoke({"type": "tool_call", "name": "runtime_broker",
+                                     "id": "public-revision-call", "args": args})
+    assert _tool_message_payload(command)["ok"] is True
+    projected = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    episode = db.get_runtime_episode(projected["episodeId"])
+    assert episode["inputs"].get("experiencePackId") == pack_id
+    calls = []
+
+    def broker(**kwargs):
+        calls.append(kwargs)
+        if kwargs["mode"] != "run":
+            return json.dumps({"ok": True})
+        if pack_id == "rxp-archived":
+            return json.dumps({"ok": False, "error": "experience_not_available", "summary": "已归档，未开始调研。"})
+        return json.dumps(_accepted_research_payload("revised-bundle", kwargs["question"]))
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=broker))
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+    executions = [item for item in calls if item["mode"] == "run"]
+    assert len(executions) == 1
+    assert executions[0]["experiencePackId"] == (pack_id or "")
+    assert executions[0]["forceRefresh"] is False
+    if pack_id == "rxp-archived":
+        assert handoff["status"] != "ready"
+        assert not handoff["researchRefs"]
+    else:
+        assert handoff["status"] == "ready"
+
+
+def test_research_revision_id_rejects_non_research_route():
+    command = runtime_broker.func(mode="route", routeKind="engineering", routeReason="wrong kind",
+                                  experiencePackId="rxp-saved", state={"current_route_context": {}},
+                                  tool_call_id="wrong-revision-kind")
+    assert _tool_message_payload(command)["ok"] is False
+    assert not command.update.get("runtime_pending_episode_ids")
 
 
 def test_runtime_broker_rejects_research_arrays_on_non_research_route():
@@ -1789,7 +1844,7 @@ def test_runtime_broker_reuses_completed_engineering_write_scope_in_same_run():
     assert payload["ok"] is True
     assert payload["routeBriefQuality"]["reason"] == "same_run_completed_engineering_scope"
     assert payload["routeBriefQuality"]["completedEpisodeIds"] == ["episode-engineering-completed"]
-    assert command.update["runtime_dispatch_status"]["nextAction"] == "accept_existing_handoff"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "review_existing_handoff"
     assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 1
 
 
@@ -1827,8 +1882,273 @@ def test_runtime_broker_reuses_completed_engineering_read_only_scope_in_same_run
     assert payload["ok"] is True
     assert payload["routeBriefQuality"]["reason"] == "same_run_completed_engineering_scope"
     assert payload["routeBriefQuality"]["completedEpisodeIds"] == ["episode-read-only-completed"]
-    assert command.update["runtime_dispatch_status"]["nextAction"] == "accept_existing_handoff"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "review_existing_handoff"
     assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 1
+
+
+@pytest.fixture
+def completed_engineering_acceptance(tmp_path, monkeypatch):
+    import core.runtime_episodes as runtime_episodes
+
+    manager = DatabaseManager(tmp_path / "acceptance.db")
+    session_id, run_id = "acceptance-session", "acceptance-run"
+    manager.create_or_update_session(session_id, "Acceptance fixture")
+    manager.create_run_record(run_id=run_id, session_id=session_id, run_type="chat", status="running")
+    context = {"session_id": session_id, "run_id": run_id, "workspace_path": str(tmp_path)}
+    monkeypatch.setattr(native_runtime, "db", manager)
+    monkeypatch.setattr(runtime_episodes, "db", manager)
+    monkeypatch.setattr(native_runtime, "get_runtime_context", lambda: context)
+    prior = runtime_episodes.build_runtime_episode(
+        need={"episodeId": "accepted-original", "kind": "engineering", "reason": "original implementation",
+              "inputs": {"workspacePath": str(tmp_path), "taskBriefs": [
+                  _bounded_engineering_route_task(task_id="original", write_set=["board.html", "notes.md"]),
+              ]}},
+        kind="engineering", state="queued",
+    )
+    manager.upsert_runtime_episode_record(prior, session_id=session_id, run_id=run_id, enqueue=True)
+    claimed = manager.claim_runtime_episode(worker_id="fixture-owner", lease_seconds=30, kinds=["engineering"])
+    assert claimed is not None
+    fence = {"worker_id": "fixture-owner", "lease_generation": claimed["leaseGeneration"]}
+    handoff = runtime_episodes.build_handoff_ref(
+        producer_episode_id=prior["episodeId"], kind="engineering_patch_bundle",
+        compact_summary="Execution ended; parent must still assess the result.", status="ready",
+    )
+    older_handoff = runtime_episodes.build_handoff_ref(
+        producer_episode_id=prior["episodeId"], kind="engineering_patch_bundle",
+        compact_summary="Older delivery retained as history, not the current result.", status="ready",
+    )
+    manager.add_runtime_episode_handoff(episode_id=prior["episodeId"], handoff=older_handoff, session_id=session_id, run_id=run_id, **fence)
+    manager.add_runtime_episode_handoff(episode_id=prior["episodeId"], handoff=handoff, session_id=session_id, run_id=run_id, **fence)
+    prior = manager.complete_runtime_episode(prior["episodeId"], state="completed", result_ref=handoff["handoffRefId"], **fence)
+    assert prior is not None
+    state = {**context, "current_route_context": {**context, "capabilityEpisodes": [prior]}}
+    acceptance = {"decision": "retry", "episodeId": prior["episodeId"], "handoffRefId": handoff["handoffRefId"],
+                  "gap": "The parent measured shorter descriptions than the user's requested approximate detail; preserve all records while improving them."}
+    return manager, state, acceptance
+
+
+def _dispatch_acceptance_repair(state, acceptance, write_set=None):
+    return runtime_broker.invoke({
+        "type": "tool_call", "name": "runtime_broker", "id": "acceptance-repair-call",
+        "args": {"mode": "route", "routeKind": "engineering", "routeReason": "repair the parent's observed acceptance gap",
+                 "parentAcceptance": acceptance,
+                 "taskBriefs": [_bounded_engineering_route_task(task_id="focused-repair", write_set=write_set or ["board.html"])],
+                 "state": state},
+    })
+
+
+def test_engineering_handoff_text_provides_current_refs_for_public_parent_repair(
+    completed_engineering_acceptance, monkeypatch,
+):
+    import graph.workflow_assembly as assembly
+
+    manager, state, expected = completed_engineering_acceptance
+    monkeypatch.setattr(assembly, "db", manager)
+    returned = asyncio.run(assembly.build_runtime_episode_wait_node()(state))
+    message = returned.update["messages"][0]
+    assert message.additional_kwargs["v8_governance_type"] == "runtime_handoff"
+    content = str(message.content)
+    # Consume only model-visible text, not additional_kwargs or our DB fixture.
+    visible = {}
+    for line in content.splitlines():
+        key, _, value = line.strip().partition(": ")
+        if key in {"producerEpisodeId", "handoffRefId"}:
+            visible[key] = value.strip("`")
+    assert visible == {
+        "producerEpisodeId": expected["episodeId"],
+        "handoffRefId": expected["handoffRefId"],
+    }
+    assert "Older delivery" not in content
+    assert "parentAcceptance.episodeId=producerEpisodeId" in content
+    assert "decision=retry" in content and "gap" in content
+    acceptance = {
+        "decision": "retry", "episodeId": visible["producerEpisodeId"],
+        "handoffRefId": visible["handoffRefId"], "gap": "The requested correction remains absent.",
+    }
+    repaired = _dispatch_acceptance_repair({**state, **returned.update}, acceptance)
+    assert _tool_message_payload(repaired)["ok"] is True
+    assert repaired.update["runtime_dispatch_status"]["dispatched"] is True
+    queued = manager.get_runtime_episode(repaired.update["runtime_dispatch_status"]["episodeId"])
+    assert queued["inputs"]["parentAcceptance"] == acceptance
+    assert queued["state"] == "queued"
+    assert manager.get_runtime_episode(expected["episodeId"])["resultRef"] == expected["handoffRefId"]
+
+
+@pytest.mark.parametrize("write_set", [["board.html"], ["board.html", "notes.md"]])
+def test_parent_acceptance_is_public_and_dispatches_one_durable_subset_repair(completed_engineering_acceptance, write_set):
+    manager, state, acceptance = completed_engineering_acceptance
+    fields = convert_to_openai_tool(runtime_broker)["function"]["parameters"]["properties"]
+    assert "parentAcceptance" in fields and "need" not in fields
+    command = _dispatch_acceptance_repair(state, acceptance, write_set)
+    payload = _tool_message_payload(command)
+    assert payload["ok"] is True
+    assert command.update["runtime_dispatch_status"]["dispatched"] is True
+    episode_id = command.update["runtime_dispatch_status"]["episodeId"]
+    stored = manager.get_runtime_episode(episode_id)
+    assert episode_id != acceptance["episodeId"] and stored["state"] == "queued"
+    assert stored["inputs"]["parentAcceptance"] == acceptance
+    assert stored["inputs"]["repairLineage"]["repairOfEpisodeIds"] == [acceptance["episodeId"]]
+    assert stored["inputs"]["repairLineage"]["repairOfHandoffRefs"] == [acceptance["handoffRefId"]]
+    assert stored["inputs"]["repairLineage"]["replacementWriteSet"] == write_set
+    assert stored["inputs"]["engineeringRepair"] == {"repairBudget": 1, "repairAttempt": 1, "finalRepairAttempt": True}
+    assert manager.get_runtime_episode(acceptance["episodeId"])["state"] == "completed"
+
+
+@pytest.mark.parametrize("fault,error", [
+    ("other-run", "engineering_parent_acceptance_scope_mismatch"),
+    ("old-result", "engineering_parent_acceptance_handoff_mismatch"),
+    ("expanded-writes", "engineering_parent_acceptance_write_scope_expansion"),
+    ("readonly-to-write", "engineering_parent_acceptance_write_scope_expansion"),
+    ("different-workspace", "engineering_parent_acceptance_workspace_mismatch"),
+])
+def test_parent_acceptance_rejects_invalid_authority(completed_engineering_acceptance, fault, error):
+    manager, state, acceptance = completed_engineering_acceptance
+    write_set = ["board.html"]
+    if fault == "other-run":
+        manager.create_run_record(run_id="other-acceptance-run", session_id="acceptance-session", run_type="chat", status="running")
+        with manager.get_connection() as conn:
+            conn.execute("UPDATE runtime_episodes SET run_id='other-acceptance-run' WHERE id=?", (acceptance["episodeId"],))
+            conn.commit()
+    elif fault == "old-result":
+        old_ref = next(row["payload"]["handoffRefId"] for row in manager.list_runtime_episode_handoffs(acceptance["episodeId"])
+                       if row["payload"]["handoffRefId"] != acceptance["handoffRefId"])
+        acceptance = {**acceptance, "handoffRefId": old_ref}
+    elif fault == "expanded-writes":
+        write_set.append("ungranted.txt")
+    elif fault in {"readonly-to-write", "different-workspace"}:
+        prior = manager.get_runtime_episode(acceptance["episodeId"])
+        inputs = dict(prior["inputs"])
+        if fault == "readonly-to-write":
+            inputs["taskBriefs"] = [{"taskBriefId": "original", "goal": "read only", "readOnly": True, "writeSet": []}]
+        else:
+            inputs["workspacePath"] = str(Path(state["workspace_path"]) / "other")
+        with manager.get_connection() as conn:
+            conn.execute("UPDATE runtime_episodes SET inputs_json=? WHERE id=?", (json.dumps(inputs), acceptance["episodeId"]))
+            conn.commit()
+    result = _dispatch_acceptance_repair(state, acceptance, write_set)
+    payload = _tool_message_payload(result)
+    assert payload["ok"] is False and payload["error"] == error
+    assert result.update["runtime_dispatch_status"]["dispatched"] is False
+    assert len(manager.list_runtime_episodes(session_id="acceptance-session")) == 1
+
+
+@pytest.mark.parametrize("repair_state", ["queued", "completed", "failed", "cancelled"])
+def test_parent_acceptance_budget_survives_every_repair_outcome_and_renaming(completed_engineering_acceptance, repair_state):
+    manager, state, acceptance = completed_engineering_acceptance
+    first = _dispatch_acceptance_repair(state, acceptance)
+    repair_id = first.update["runtime_dispatch_status"]["episodeId"]
+    if repair_state != "queued":
+        changed = manager.complete_runtime_episode(repair_id, state=repair_state)
+        assert changed is not None and changed["state"] == repair_state
+    # Use the original stale graph projection: the durable record must still
+    # prevent a reset, even with a differently named task and narrower scope.
+    second = runtime_broker.func(
+        mode="route", routeKind="engineering", routeReason="one more attempt under a new task name",
+        parentAcceptance={**acceptance, "gap": "Another observation of the same unmet item."},
+        taskBriefs=[_bounded_engineering_route_task(task_id="renamed-second-repair", write_set=["notes.md"])],
+        state=state, tool_call_id="second-acceptance-call",
+    )
+    assert _tool_message_payload(second)["error"] == "engineering_retry_exhausted"
+    assert second.update["runtime_dispatch_status"]["dispatched"] is False
+    assert len(manager.list_runtime_episodes(run_id="acceptance-run")) == 2
+
+    omitted = runtime_broker.func(
+        mode="route", routeKind="engineering", routeReason="rename and omit acceptance to try again",
+        taskBriefs=[_bounded_engineering_route_task(task_id="omitted-lineage", write_set=["notes.md"])],
+        state=state, tool_call_id="omitted-acceptance-call",
+    )
+    assert omitted.update["runtime_dispatch_status"]["dispatched"] is False
+    assert len(manager.list_runtime_episodes(run_id="acceptance-run")) == 2
+
+
+def test_completed_scope_reuse_does_not_claim_new_dispatch_or_force_acceptance(completed_engineering_acceptance):
+    _, state, _ = completed_engineering_acceptance
+    marker = "DO_NOT_REPEAT_THIS_COMPLETE_TASK_CONTEXT " * 20
+    task = _bounded_engineering_route_task(task_id="renamed-duplicate", write_set=["notes.md", "board.html"])
+    task["context"] = {"detail": marker}
+    result = runtime_broker.func(
+        mode="route", routeKind="engineering", routeReason="repair an acceptance gap under a different task label, without an explicit parent decision",
+        taskBriefs=[task],
+        state=state, tool_call_id="completed-reuse-call",
+    )
+    payload = _tool_message_payload(result)
+    assert payload["ok"] is True and result.update["runtime_dispatch_status"]["dispatched"] is False
+    assert "no new task" in payload["summary"]
+    assert "must be accepted" not in payload["summary"]
+    assert "parentAcceptance" in json.dumps(payload)
+    hint = payload["recommendedNextAction"]
+    assert "DO_NOT_REPEAT_THIS_COMPLETE_TASK_CONTEXT" not in hint
+    assert len(hint) < 1200
+
+
+@pytest.mark.parametrize("different_contract", [False, True])
+def test_concurrent_parent_acceptance_admission_keeps_first_claimed_contract(completed_engineering_acceptance, monkeypatch, different_contract):
+    manager, state, acceptance = completed_engineering_acceptance
+    append = native_runtime._append_runtime_episode
+    barrier, first_admitted, lock = threading.Barrier(2), threading.Event(), threading.Lock()
+    slots, first = [], {}
+
+    def raced_append(*args, **kwargs):
+        # Both real broker calls have passed the EXISTS budget query and all
+        # route guards. The second admission then races a claimed first task.
+        with lock:
+            slot = len(slots)
+            slots.append(slot)
+        barrier.wait(timeout=5)
+        if slot == 0:
+            try:
+                result = append(*args, **kwargs)
+                claimed = manager.claim_runtime_episode(worker_id="repair-owner", lease_seconds=30, kinds=["engineering"])
+                assert claimed is not None
+                first.update(claimed)
+                return result
+            finally:
+                first_admitted.set()
+        assert first_admitted.wait(5)
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(native_runtime, "_append_runtime_episode", raced_append)
+    second_acceptance = {**acceptance, "gap": acceptance["gap"] + (" Different requested repair." if different_contract else "")}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_dispatch_acceptance_repair, state, item) for item in (acceptance, second_acceptance)]
+        results = [future.result(timeout=10) for future in futures]
+    assert len(slots) == 2
+    assert sorted(result.update["runtime_dispatch_status"]["dispatched"] for result in results) == [False, True]
+    stored = manager.get_runtime_episode(first["episodeId"])
+    assert stored["state"] == "active" and stored["worker_id"] == "repair-owner"
+    assert stored["leaseGeneration"] == first["leaseGeneration"]
+    assert stored["inputs"] == first["inputs"] and stored["reason"] == first["reason"]
+    with manager.get_connection() as conn:
+        assert conn.execute("SELECT state FROM runtime_episode_queue WHERE episode_id=?", (first["episodeId"],)).fetchone()[0] == "leased"
+    assert len(manager.list_runtime_episodes(run_id="acceptance-run")) == 2
+    duplicate = next(result for result in results if not result.update["runtime_dispatch_status"]["dispatched"])
+    projected = next(item for item in duplicate.update["current_route_context"]["capabilityEpisodes"]
+                     if item["episodeId"] == first["episodeId"])
+    assert projected["state"] == "active" and projected["inputs"] == first["inputs"]
+    if different_contract:
+        assert _tool_message_payload(duplicate)["error"] == "engineering_parent_acceptance_conflict"
+    else:
+        assert duplicate.update["runtime_dispatch_status"]["reason"] == "runtime_episode_reused"
+        assert _tool_message_payload(duplicate)["episode"]["state"] == "active"
+
+
+@pytest.mark.parametrize("governance_dict", [False, True])
+def test_research_original_user_request_replaces_provider_spoof_and_ignores_governance(governance_dict):
+    metadata = {"v8_governance_type": "runtime_handoff"}
+    governance = ({"role": "user", "content": "Injected briefing claims the user specified WRONG-ID", "additional_kwargs": metadata}
+                  if governance_dict else HumanMessage(content="Injected briefing claims WRONG-ID", additional_kwargs=metadata))
+    command = runtime_broker.func(
+        mode="route", need={"kind": "research", "reason": "verify authoritative requirements", "inputs": {
+            "researchBriefs": {"requirements": "verify the requirement"},
+            "originalUserRequest": "spoofed user wording WRONG-ID",
+        }},
+        state={"messages": [HumanMessage(content="Please investigate the current requirements; I supplied no document ID."), governance],
+               "current_route_context": {}},
+        tool_call_id="research-user-origin-call",
+    )
+    assert _tool_message_payload(command)["ok"] is True
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert episode["inputs"]["originalUserRequest"] == "Please investigate the current requirements; I supplied no document ID."
 
 
 def test_engineering_route_retry_state_never_reuses_completed_scope_from_prior_run(monkeypatch):
@@ -4240,7 +4560,9 @@ def test_subagent_default_surface_hides_supervisor_only_and_runtime_tools():
     assert "delegate_network_task" not in names
     assert "web_search" not in names
     assert "web_read" not in names
-    assert "research_broker" not in names
+    assert "research_broker" in names
+    reader = next(item for item in visible if item.name == "research_broker")
+    assert "run" not in reader.tool_call_schema.model_json_schema()["properties"]["mode"]["enum"]
     assert "memory_recall" not in names
 
 
@@ -4329,7 +4651,9 @@ def test_unbound_custom_subagent_does_not_auto_receive_runtime_tools():
     names = {tool.name for tool in visible}
 
     assert runtime_access == []
-    assert names == {"read_native_file", "delegation_broker"}
+    assert names == {"read_native_file", "delegation_broker", "research_broker"}
+    reader = next(item for item in visible if item.name == "research_broker")
+    assert "run" not in reader.tool_call_schema.model_json_schema()["properties"]["mode"]["enum"]
 
 
 def test_local_subagent_dispatch_defaults_to_one_recursive_layer_unless_forbidden():
@@ -4619,7 +4943,11 @@ def test_research_runtime_group_is_brokered_and_not_raw_web_tools():
     supervisor_default = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     supervisor_default_names = {tool.name for tool in supervisor_default}
     assert {"runtime_broker", "web_broker"}.issubset(supervisor_default_names)
-    assert "research_broker" not in supervisor_default_names
+    assert "research_broker" in supervisor_default_names
+    reader = next(item for item in supervisor_default if item.name == "research_broker")
+    assert set(reader.tool_call_schema.model_json_schema()["properties"]["mode"]["enum"]) == {
+        "observe", "search_experience", "get_experience", "get_evidence",
+    }
     assert {"web_search", "web_read"}.isdisjoint(supervisor_default_names)
 
     supervisor_granted = filter_visible_tools_for_actor(
@@ -4644,6 +4972,47 @@ def test_research_runtime_appears_in_capability_registry_summary():
 
     assert "kind=research" in summary
     assert "research.core" in summary
+
+
+@pytest.mark.parametrize("actor,access", [("supervisor", []), ("subagent", []), ("grandchild", []), ("subagent", ["research.read"])])
+def test_saved_research_access_executes_canonical_reads_but_rejects_mutations(monkeypatch, actor, access):
+    from core.native_tools import research_broker
+    from pydantic import ValidationError
+
+    calls = []
+    monkeypatch.setattr(research_broker, "func", lambda **kwargs: calls.append(kwargs) or '{"ok":true}')
+    selected = filter_visible_tools_for_actor([research_broker], actor=actor, runtime_access=access)
+    assert len(selected) == 1
+    reader = selected[0]
+    state = {"current_route_context": {"scope": "workspace:reader"}}
+    result = reader.invoke({"mode": "get_evidence", "evidenceBundleId": "research_saved",
+                            "readAnswer": True, "startChar": 17, "state": state})
+    assert json.loads(result)["ok"]
+    assert calls[-1]["state"] == state
+    assert calls[-1]["evidenceBundleId"] == "research_saved"
+    assert calls[-1]["startChar"] == 17
+    for mode in ("run", "plan", "promote_experience", "archive_experience", "restore_experience", "delete_experience"):
+        with pytest.raises(ValidationError):
+            reader.invoke({"mode": mode, "experiencePackId": "saved", "state": state})
+    assert len(calls) == 1
+    # An explicit allowlist still governs a delegated reader.
+    from graph.agent_factories import _apply_task_tool_policy
+    assert _apply_task_tool_policy(selected, {"toolPolicy": {"mode": "allowlist", "allowedTools": []}}) == []
+
+
+def test_saved_research_read_does_not_reopen_failed_managed_research():
+    task = {"targetAgentName": "Verification Engineer", "runtimeAccess": ["research.read"],
+            "toolPolicy": {"mode": "allowlist", "allowedTools": ["research_broker"]}}
+    assert not native_delegation._delegation_task_replaces_managed_research(task)
+    assert native_delegation._delegation_task_replaces_managed_research({**task, "runtimeAccess": ["research.core"]})
+    assert native_delegation._delegation_task_replaces_managed_research({**task, "toolPolicy": {"allowedTools": ["web_broker"]}})
+
+
+def test_baseline_descriptors_describe_saved_reads_not_the_full_research_runtime():
+    from core.system_tools.baseline import build_baseline_system_tool_descriptors
+    description = next(row["description"] for row in build_baseline_system_tool_descriptors() if row["name"] == "research_broker")
+    assert description.startswith("Read saved Research answers")
+    assert "archive_experience" not in description
 
 
 def test_internal_orchestration_runtime_cards_explain_flow_boundary_and_handoff(monkeypatch):

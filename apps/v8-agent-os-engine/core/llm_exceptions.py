@@ -73,6 +73,7 @@ _ERROR_CLASS_MAP: dict[str, Type[V8LLMError]] = {
     "context_window_overflow": V8LLMContextWindowOverflowError,
     "content_policy_block": V8LLMContentPolicyError,
     "structured_output_invalid": V8LLMStructuredOutputError,
+    "model_output_incomplete": V8LLMStructuredOutputError,
 }
 
 

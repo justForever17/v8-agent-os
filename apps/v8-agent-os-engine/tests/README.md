@@ -61,6 +61,8 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改 ModelHub、provider、reasoning、embedding/rerank | `tests/model_control/` |
 | 改 Skill / MCP / Plugin Manager | `tests/extensions/` + `tests/plugin_manager/` |
 | 改 Research / Web source / evidence pack | `tests/core/test_research_broker.py`、`tests/core/test_research_ledger_experience_pack_lifecycle.py`、`tests/scripts/run_research_runtime_deep_live_audit.py` |
+| 改 Research Agent 检索/实读/审核 | `test_research_agent.py`、`test_research_model_call.py`、`test_research_review_retirement.py`；固定证据与实际 reviewer 对照先行，再做真实联网链 |
+| 改生成预算/工具参数完整性/连续写入 | `tests/model_control/test_model_token_policy.py`、`test_llm_chat_adapter_streaming.py`、`test_model_failover_service.py`、`tests/runtime_core/test_workspace_capability.py`；真实长写入用 `run_supervisor_runtime_skill_live_audit.py --live --allow-side-effects --case engineering_long_write --web-url <Web>`，只创建临时可信工作区，不把 fixture 长度要求提升为产品门槛 |
 | 改 Creative Media | `tests/creative_media/` + `tests/scripts/run_creative_media_*` |
 | 改 Safety / permissions / command gate | `tests/safety/` + `tests/runtime_core/test_runtime_tool_access.py` |
 | 改 Phone/Web realtime 投影 contract | `tests/contracts/` + `tests/chat_runtime/test_session_realtime_runtime_lane_contract.py` |

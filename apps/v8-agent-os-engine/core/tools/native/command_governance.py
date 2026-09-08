@@ -179,11 +179,21 @@ def _windows_shell_syntax_violation_payload(
     stripped = str(command or "").strip()
     if not stripped:
         return None
-    lowered = stripped.lower()
     # Braces inside quoted text are literal in both PowerShell and POSIX
     # shells. PowerShell format strings such as "{0,-32}" must not be
     # mistaken for POSIX brace expansion.
-    unquoted = re.sub(r'"(?:`.|[^"\r\n])*"|\'(?:\'\'|[^\'\r\n])*\'', "", stripped)
+    def literal_mask(match: re.Match[str]) -> str:
+        text = match.group(0)
+        # Double-quoted PowerShell strings may contain executable $(). Keep
+        # those expressions visible to syntax checks; this is not a permission
+        # parser, and Safety always receives the untouched original command.
+        if text.lstrip("@").startswith('"') and re.search(r"(?<!`)\$\(", text):
+            return text
+        return re.sub(r"[^\r\n]", " ", text)
+
+    unquoted = re.sub(r"(?m)@(?P<quote>['\"])[ \t]*\r?\n[\s\S]*?^(?P=quote)@", literal_mask, stripped)
+    unquoted = re.sub(r'"(?:`.|[^"\r\n])*"|\'(?:\'\'|[^\'\r\n])*\'', literal_mask, unquoted)
+    lowered = unquoted.lower()
     dialect = str(shell_dialect or "auto").strip().lower()
     violations: list[str] = []
     suggestions: list[str] = []
@@ -191,7 +201,12 @@ def _windows_shell_syntax_violation_payload(
         violations.append("mkdir_-p")
         suggestions.append("PowerShell: New-Item -ItemType Directory -Force <path>")
         suggestions.append("Prefer write_native_file for project files; it creates parent directories safely.")
-    if dialect != "bash" and re.search(r"\{[^{}\r\n,]+,[^{}\r\n]+\}", unquoted):
+    # Standalone {...} is also a PowerShell scriptblock: commas in array
+    # expressions or -f arguments are not evidence of POSIX expansion. Only
+    # an unquoted brace list joined to a path/file token is unambiguous here.
+    brace_list = r"\{[^{}\s,$@();=|&\"'`]+(?:,[^{}\s,$@();=|&\"'`]+)+\}"
+    brace_path = rf"(?:[^\s{{}}]*[/\\][^\s{{}}]*{brace_list}|{brace_list}(?:[/\\][^\s{{}}]+|\.[\w.-]+))"
+    if dialect != "bash" and re.search(brace_path, unquoted):
         violations.append("brace_expansion")
         suggestions.append("PowerShell: create each directory explicitly or use an array piped to New-Item.")
     if dialect != "bash" and re.search(r"(^|[;&|]\s*)ls\s+-[A-Za-z]*[la][A-Za-z]*(?:\s|$)", stripped):
@@ -205,7 +220,7 @@ def _windows_shell_syntax_violation_payload(
         ):
             violations.append("cmd_syntax_in_powershell")
             suggestions.append("Use $env:NAME for environment variables and Get-ChildItem for directory listing.")
-        elif dialect == "powershell" and ("&&" in stripped or "||" in stripped):
+        elif dialect == "powershell" and ("&&" in unquoted or "||" in unquoted):
             violations.append("powershell_5_chain_operator")
             suggestions.append("Pass cwd separately and run one PowerShell command, use '; if ($?) { ... }', or explicitly choose shell_dialect='pwsh'/'cmd' when that dialect is required.")
         elif dialect == "cmd" and (

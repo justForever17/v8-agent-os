@@ -228,8 +228,22 @@ export function isPidAlive(pid) {
   if (!Number.isInteger(numeric) || numeric <= 0) return false;
   try {
     process.kill(numeric, 0);
-    return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM proves presence, not exit. Keep ownership/stop recovery intact.
+    return error?.code === "EPERM";
   }
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${numeric}/stat`, "utf8");
+      // comm is parenthesized and may itself contain spaces or ')'. The
+      // state field follows its final ')', not a fixed whitespace offset.
+      const end = stat.lastIndexOf(")");
+      const state = end >= 0 ? stat.slice(end + 1).trimStart().split(/\s+/, 1)[0] : "";
+      if (state === "Z" || state === "X" || state === "x") return false;
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ESRCH") return false;
+      // An unreadable descriptor cannot prove that a process has stopped.
+    }
+  }
+  return true;
 }

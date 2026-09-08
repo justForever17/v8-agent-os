@@ -82,6 +82,12 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "mem_summary",
         ],
     },
+    "research.read": {
+        "runtimeKind": "research",
+        "label": "Saved Research read",
+        "summary": "读取已保存答案与原始引用，不启动调研、不修改或删除资料。",
+        "toolNames": ["research_broker"],
+    },
     "research.core": {
         "runtimeKind": "research",
         "label": "Research core",
@@ -513,6 +519,17 @@ def filter_visible_tools_for_actor(
                 visible.append(tool_ref)
             continue
         if name in RAW_WEB_INTERNAL_TOOL_NAMES:
+            continue
+        if name == "research_broker":
+            if "research.core" in granted_groups:
+                visible.append(tool_ref)
+            elif actor_identity.is_collaboration_actor:
+                # Project the same restriction for model binding and ToolNode
+                # execution. Reading a saved answer must not require starting
+                # a Research episode or grant its network/mutation operations.
+                from runtimes.research.tool_access import saved_research_reader
+
+                visible.append(saved_research_reader)
             continue
         if name == "memory_broker":
             if actor_identity.is_supervisor or name in granted_runtime_tools:

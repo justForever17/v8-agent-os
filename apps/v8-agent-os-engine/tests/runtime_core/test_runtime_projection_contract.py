@@ -131,7 +131,7 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(merged[0]["content"], "✅ 雷电将军的精美图片已经生成完成")
         self.assertEqual(len(merged[0]["parts"]), 2)
 
-    def test_extension_execution_completed_runtime_card_does_not_leak_message_preview(self):
+    def test_generic_model_response_does_not_claim_extension_execution(self):
         events = [
             {
                 "event_id": "evt_extension_done",
@@ -150,10 +150,16 @@ class RuntimeProjectionContractTests(unittest.TestCase):
 
         timeline = project_runtime_timeline_from_events(events)
 
-        self.assertEqual(len(timeline), 1)
-        self.assertEqual(timeline[0]["summary"], "扩展候选执行完成")
-        self.assertEqual(timeline[0]["status"], "completed")
-        self.assertNotIn("messagePreview", timeline[0]["metadata"])
+        self.assertEqual(timeline, [])
+        events[0]["payload"].update(hasToolCalls=True, toolNames=["read_native_file"])
+        self.assertEqual(project_runtime_timeline_from_events(events), [])
+        # A real extension invocation remains visible; requesting a tool and
+        # completing its execution are separate facts.
+        events[0]["topic"] = "extension.mcp.invoked"
+        events[0]["payload"]["toolNames"] = ["test_mcp_search"]
+        invoked = project_runtime_timeline_from_events(events)
+        self.assertEqual(invoked[0]["runtimeId"], "extensions")
+        self.assertEqual(invoked[0]["status"], "invoked")
 
     def test_extension_candidate_projection_keeps_counts_not_candidate_payloads(self):
         events = [

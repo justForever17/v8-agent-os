@@ -1791,8 +1791,8 @@ class WindowsUIADriver:
 
         left, top, right, bottom = bounds
         monitor = {
-            "left": max(0, left),
-            "top": max(0, top),
+            "left": left,
+            "top": top,
             "width": max(1, right - left),
             "height": max(1, bottom - top),
         }
@@ -2896,8 +2896,19 @@ class WindowsUIADriver:
         windows = self._safe_backend_windows(backend_name)
         if not windows:
             raise WindowsUIADriverError("当前桌面上没有可访问的顶层窗口。")
-        visible = [item for item in windows if (item.window_text() or "").strip()]
-        wrapper = visible[0] if visible else windows[0]
+        candidates = [(item, self._window_dict(item)) for item in windows]
+        visible = [(item, payload) for item, payload in candidates if payload.get("isVisible") is not False]
+        applications = [(item, payload) for item, payload in visible if not is_shell_surface_window(payload, platform=self.platform)]
+        eligible = applications or visible
+        foreground = self.foreground_window() or {}
+        selected = choose_best_window_candidate(
+            [payload for _, payload in eligible],
+            preferred_handle=foreground.get("handle"),
+            platform=self.platform,
+        )
+        if selected is None:
+            raise WindowsUIADriverError("当前桌面上没有可访问的应用或桌面窗口。")
+        wrapper = next(item for item, payload in eligible if payload.get("handle") == selected.get("handle"))
         handle = getattr(wrapper.element_info, "handle", None)
         if handle is not None:
             cache_key = self._window_cache_key(backend_name=backend_name, window_handle=int(handle))

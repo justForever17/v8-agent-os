@@ -3309,8 +3309,11 @@ def computer_use_execute_task(
             if success_criteria:
                 planner_goal = f"{planner_goal}\nSuccess criteria: {success_criteria}"
             task_loop = _get_computer_use_runtime().prepare_task_loop(
-                goal=planner_goal,
-                app_id=effective_app_id or "browser_checkout",
+                goal=effective_goal,
+                app_id=effective_app_id,
+                app_name=app_query,
+                target_url=effective_target,
+                playbook_inputs=variables,
             )
             computer_runtime = _get_computer_use_runtime()
             playbook_registry = getattr(computer_runtime, "playbook_executor_registry", None)
@@ -3361,6 +3364,7 @@ def computer_use_execute_task(
                 app_id=effective_app_id,
                 max_steps=effective_max_steps,
                 include_screenshot=False,
+                task_loop=task_loop,
             )
             planned_steps = list(((planning.get("planner") or {}).get("steps")) or [])
             if not planned_steps:

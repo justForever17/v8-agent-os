@@ -1091,6 +1091,12 @@ def _run_conflict_case() -> AuditCaseResult:
 
 
 def _semantic_review_contrast_cases(variant: str = "scope") -> list[tuple[str, str, bool]]:
+    if variant == "request_origin":
+        return [
+            ("research_premise_corrected", "已读规范给出的编号是 ZX 2041，2025年1月1日实施；研究任务中的 ZX 2040 需要更正，未提供用户原文，不能据此判断用户是否写错 [S7]。", True),
+            ("unsupported_user_typo", "用户原始消息误写 ZX 2040，这是用户的笔误；正确编号为 ZX 2041，2025年1月1日实施 [S7]。", False),
+            ("wrong_spec_identity", "已读规范证实 ZX 2040 是正确编号，2025年1月1日实施 [S7]。", False),
+        ]
     if variant == "metadata":
         return [
             ("page_date_and_document_header", "已读发布机关页面：标题下署有第15号令，所载办法于2023年8月15日施行。页面发布日期为2023年7月13日，这是页面日期，不据此推定签发日期 [S7]。", True),
@@ -1113,10 +1119,7 @@ def _semantic_review_contrast_cases(variant: str = "scope") -> list[tuple[str, s
 def _run_semantic_review_contrast_case(variant: str = "scope") -> AuditCaseResult:
     """Real configured reviewers on synthetic paired evidence; not acquisition/E2E."""
     from core.tools import research_broker as research
-    from core.background_context_guard import prepare_background_model_messages
-    from core.tools.research_review_prompt import (
-        ADVERSARIAL_REVIEW_PROMPT, REVIEW_SYSTEM_PROMPT, build_review_prompt,
-    )
+    from runtimes.research.agent import ResearchAgent
 
     result = AuditCaseResult("semantic_review_contrast", "真实审查模型的正反例判别（合成证据，非端到端）")
     started = time.perf_counter()
@@ -1127,70 +1130,59 @@ def _run_semantic_review_contrast_case(variant: str = "scope") -> AuditCaseResul
     excerpt = "本文为第三方转载，非发布机关原文。只有提供公开传播服务的单位才须在启用前提交评估；仅内部测试的单位不适用该义务。"
     sources = [{"citationKey": "S7", "sourceId": "synthetic-reprint", "title": "服务评估说明（转载）",
                 "sourceRole": "secondary", "tier": "primary", "url": "https://mirror.example.test/reprint"}]
-    claims = [{"claimId": "claim-scope", "claim": excerpt, "evidenceExcerpt": excerpt,
-               "sourceRole": "secondary", "evidenceExcerptKey": "S7:E1",
-               "supportingSources": [{"citationKey": "S7", "url": sources[0]["url"]}]}]
+    if variant == "request_origin":
+        result.case_id = "semantic_review_request_origin_contrast"
+        question = "请核查规范 ZX 2040 的实施日期。此任务由 Supervisor 转述，没有附用户原文。"
+        excerpt = "正式规范，编号 ZX 2041。该规范于2025年1月1日实施。本文不记录任何用户对话。"
+        sources[0].update(title="正式规范 ZX 2041", sourceRole="primary", url="https://issuer.example.test/spec/2041")
     if variant == "version":
         result.case_id = "semantic_review_version_contrast"
         question = "依据这份旧版厂商说明，说明缓存建议的版本和平台边界；明确它不能证明当前版本状态，不需要联网确认。"
         excerpt = "厂商运行说明，发布于2020年，仅适用于4.2版。建议Linux用户启用缓存，但不是强制要求；Windows不支持此选项。本文不涉及4.3版。"
         sources[0].update(title="厂商运行说明（4.2版）", sourceRole="primary", publishedAt="2020-01-01",
                           url="https://vendor.example.test/runtime/4.2")
-        claims[0].update(claimId="claim-version", claim=excerpt, evidenceExcerpt=excerpt, sourceRole="primary",
-                         supportingSources=[{"citationKey": "S7", "url": sources[0]["url"]}])
     if variant == "metadata":
         result.case_id = "semantic_review_metadata_contrast"
         question = "依据已读发布机关页面，说明办法的文号、施行日期与页面发布日期；不得把页面日期推定为签发日期。"
         excerpt = "服务管理办法\n令 第15号\n现予公布《服务管理办法》，自2023年8月15日起施行。"
         sources[0].update(title="服务管理办法", sourceRole="primary", publishedAt="2023-07-13",
                           url="https://issuer.example.test/rules/15")
-        claims[0].update(claimId="claim-header", claim=excerpt, evidenceExcerpt=excerpt, sourceRole="primary",
-                         supportingSources=[{"citationKey": "S7", "url": sources[0]["url"]}])
-    ledger = research._architect_review_claim_ledger(claims, sources)
     try:
         pool = research._create_web_research_reviewer_llm_candidates(
             research._create_web_research_architect_llm_candidates(),
         )
-        candidates = []
-        for candidate in pool:
-            identity = research._architect_candidate_identity(candidate)
-            if identity not in result.providers:
-                result.providers.append(identity)
-                candidates.append(candidate)
-            if len(candidates) == 2:
-                break
+        pool.sort(key=lambda candidate: research._architect_candidate_selection_origin(candidate) != "agent_reviewer:verification-engineer")
+        candidates = pool[:1]
         if not candidates:
             result.failures.append("no_configured_reviewer")
-        for model_index, candidate in enumerate(candidates):
-            mode = "semantic" if model_index == 0 else "adversarial"
+        for candidate in candidates:
+            identity = research._architect_candidate_identity(candidate)
+            result.providers.append(identity)
             for name, answer, expected_accept in _semantic_review_contrast_cases(variant):
-                prepared = prepare_background_model_messages(
-                    system_prompt=REVIEW_SYSTEM_PROMPT,
-                    instruction=build_review_prompt(question) + (ADVERSARIAL_REVIEW_PROMPT if mode == "adversarial" else ""),
-                    materials=[
-                        {"title": "Canonical verified claim ledger", "kind": "research_review_claim_ledger", "content": json.dumps(ledger, ensure_ascii=False)},
-                        {"title": "Candidate answer", "kind": "research_review_candidate", "content": json.dumps({"answer": answer}, ensure_ascii=False)},
-                    ],
-                    runtime_kind="research", target_role="web-research-independent-reviewer",
-                    resolved_model_id=research._architect_candidate_context_model_ref(candidate),
-                    component="research", node=f"review_contrast_{name}",
-                )
+                def invoke(messages, tools, **options):
+                    return research._invoke_architect_candidate_with_deadline(
+                        candidate, messages, seconds=options["seconds"], max_tokens=None,
+                        tools=tools, tool_choice="required",
+                    )
+                agent = ResearchAgent(invoke=invoke, acquire=None, progress=lambda **_: None,
+                                      writer_id=identity, reviewer_id=identity, timeout_seconds=120)
+                agent.store.add([{**sources[0], "ok": True, "text": excerpt}])
+                agent.store.read("S1")
                 call_started = time.perf_counter()
-                response = research._invoke_architect_candidate_with_deadline(
-                    candidate, prepared.messages, seconds=32,
-                    max_tokens=research._RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS, disable_thinking=True,
-                )
-                parsed = research._extract_json_object(research.sanitize_background_model_output(response).text)
-                schema_valid = research._independent_architect_review_schema_valid(parsed)
-                accepted = schema_valid and research._independent_architect_review_accepts(parsed)
+                try:
+                    parsed = agent.review(question, {"answer": answer.replace("[S7]", "[S1]"), "limitations": []}, "zh-CN")
+                    schema_valid = True
+                except (ValueError, RuntimeError, TimeoutError):
+                    parsed, schema_valid = {}, False
+                accepted = parsed.get("decision") == "accept"
                 if not schema_valid or accepted != expected_accept:
-                    result.failures.append(f"{result.providers[model_index]}:{name}:review_discrimination_failed")
+                    result.failures.append(f"{identity}:{name}:review_discrimination_failed")
                 result.evidence.append(_redact({
                     "evidenceMode": "synthetic-evidence-real-provider-contrast", "case": name,
-                    "modelId": result.providers[model_index], "reviewMode": mode,
+                    "modelId": identity, "reviewMode": "production_agent_reviewer",
                     "expectedAccept": expected_accept, "accepted": accepted, "schemaValid": schema_valid,
                     "answerChars": len(answer), "elapsedMs": int((time.perf_counter() - call_started) * 1000),
-                    "reviewReasons": parsed.get("reviewReasons") if isinstance(parsed, dict) else None,
+                    "reviewReasons": parsed.get("corrections"),
                 }))
     except Exception as exc:
         result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
@@ -1200,6 +1192,7 @@ def _run_semantic_review_contrast_case(variant: str = "scope") -> AuditCaseResul
 
 
 CASES = {
+    "semantic_review_request_origin_contrast": lambda: _run_semantic_review_contrast_case("request_origin"),
     "semantic_review_contrast": _run_semantic_review_contrast_case,
     "semantic_review_version_contrast": lambda: _run_semantic_review_contrast_case("version"),
     "semantic_review_metadata_contrast": lambda: _run_semantic_review_contrast_case("metadata"),
@@ -1255,12 +1248,63 @@ def _write_report(results: list[AuditCaseResult], output_root: Path) -> Path:
     return report_path
 
 
-def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> AuditCaseResult:
+def _stored_review_candidate(bundle: dict[str, Any]) -> dict[str, Any]:
+    draft = copy.deepcopy((bundle.get("researchResult") or {}).get("candidateDraft") or {})
+    if not draft.get("answer") and bundle.get("answer"):
+        draft = {"answer": bundle["answer"], "coverage": bundle.get("deliveryScope"), "limitations": list(bundle.get("limitations") or [])}
+    if not draft.get("answer"):
+        raise ValueError("fixed_review_requires_stored_candidate_draft")
+    return draft
+
+
+def _review_fixed_candidate(bundle: dict[str, Any], *, original_user_request: str = "") -> dict[str, Any]:
+    """Replay the stored draft/read observations, never re-search or re-write it."""
+    from core.tools import research_broker as broker
+    from core.context_orchestrator import context_orchestrator
+    from erc.runtime_context import bind_runtime_context
+    from runtimes.research.agent import ResearchAgent
+
+    draft = _stored_review_candidate(bundle)
+    candidates = broker._create_web_research_architect_llm_candidates()
+    reviewers = broker._create_web_research_reviewer_llm_candidates(candidates)
+    reviewers.sort(key=lambda item: broker._architect_candidate_selection_origin(item) != "agent_reviewer:verification-engineer")
+    candidate = reviewers[0]
+
+    def invoke(messages, tools, *, reviewer, seconds, required=False):
+        with bind_runtime_context(runtime_kind="research", agent_id="research-reviewer",
+                                  session_id=f"fixed-review-audit-{id(bundle)}"):
+            prepared = context_orchestrator.prepare(
+                messages=messages, runtime_kind="research", target_role="research-reviewer",
+                resolved_model_id=broker._architect_candidate_context_model_ref(candidate), keep_recent_override=6,
+            )
+            return broker._invoke_architect_candidate_with_deadline(
+                candidate, prepared.messages, seconds=seconds, max_tokens=None,
+                tools=tools, tool_choice="required" if required else None, idle_timeout_seconds=60,
+            )
+
+    identity = broker._architect_candidate_identity(candidate)
+    agent = ResearchAgent(invoke=invoke, acquire=None, progress=lambda **_kwargs: None,
+                          writer_id=identity, reviewer_id=identity, original_user_request=original_user_request)
+    agent.store.restore(bundle["researchEvidenceBank"]["sources"])
+    for entry in (bundle.get("researchResult") or {}).get("modelSynthesis", {}).get("trace", []):
+        if entry.get("stage") == "review_input":
+            break
+        if entry.get("name") == "read_research_source" and entry.get("citationKey"):
+            agent.store.read(entry["citationKey"], start=entry["start"], max_chars=entry["end"] - entry["start"])
+    review = agent.review(question=bundle["question"], candidate=draft, language="zh-CN")
+    return {"review": review, "trace": agent.trace, "modelId": identity,
+            "oracle": "review_protocol_only_not_independent_semantic_acceptance"}
+
+
+def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path, *, review_only: bool = False,
+                           original_user_request: str = "", expected_review_decision: str = "") -> AuditCaseResult:
     """Provider-live synthesis only; neither fresh acquisition nor end-to-end proof."""
     from tests.scripts import run_research_runtime_fixed_bundle_acceptance as fixed
     from core.tools import research_broker as research_module
 
     case = AuditCaseResult("fixed_bundle", "固定证据的真实模型生成与审核（非端到端）")
+    if review_only:
+        case = AuditCaseResult("fixed_review_protocol", "固定候选稿审核协议（不证明语义正确性或端到端）")
     started = time.perf_counter()
     try:
         bundle = fixed.load_fixed_bundle(path, bundle_id=bundle_id)
@@ -1269,6 +1313,27 @@ def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> Audi
             output_dir, f"input-{time.time_ns()}", {"evidenceBundles": [bundle]},
         )
         case.evidence.append(_redact({"frozenInputRef": str(frozen_path), "frozenInputSha256": frozen_sha}))
+        if review_only:
+            candidate_json = json.dumps(_stored_review_candidate(bundle), sort_keys=True, ensure_ascii=False)
+            with fixed.forbid_evidence_acquisition(research_module) as counters:
+                result = _review_fixed_candidate(bundle, **({"original_user_request": original_user_request} if original_user_request else {}))
+            artifact, digest = fixed._write_result_artifact(output_dir, f"review-{time.time_ns()}", result)
+            assert not any(counters.values()), "fixed_review_attempted_acquisition"
+            assert before == fixed.bundle_digest(bundle), "fixed_review_input_changed"
+            assert candidate_json == json.dumps(_stored_review_candidate(bundle), sort_keys=True, ensure_ascii=False), "fixed_review_candidate_changed"
+            case.evidence.append(_redact({"originalRequestSha256": hashlib.sha256(original_user_request.encode()).hexdigest() if original_user_request else None,
+                                         "expectedReviewDecision": expected_review_decision or None, "resultRef": str(artifact)}))
+            if expected_review_decision:
+                assert result["review"]["decision"] == expected_review_decision, "fixed_review_decision_mismatch"
+            case.providers = [result["modelId"]]
+            case.evidence.append(_redact({"evidenceMode": "fixed-candidate-review-protocol-live",
+                                         "oracle": result["oracle"], "reviewDecision": result["review"]["decision"],
+                                         "candidateSha256": hashlib.sha256(candidate_json.encode()).hexdigest(),
+                                         "calls": len([item for item in result["trace"] if item.get("stage") == "review"]),
+                                         "resultRef": str(artifact), "resultSha256": digest}))
+            case.status = "ok"
+            case.elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return case
         with fixed.forbid_evidence_acquisition(research_module) as counters:
             result = research_module._web_research_architect_pack(
                 question=str(bundle["question"]),
@@ -1278,6 +1343,7 @@ def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path) -> Audi
                 average_authority=float(bundle.get("authorityScore") or 0),
                 freshness=str(bundle.get("freshness") or "auto"),
                 architect_call_state={},
+                evidence_bank=copy.deepcopy(bundle.get("researchEvidenceBank")),
             )
         artifact, digest = fixed._write_result_artifact(
             output_dir, f"synthesis-{time.time_ns()}", result,
@@ -1346,6 +1412,69 @@ def _run_agent_question(question: str, seed_urls: list[str], output_dir: Path, f
     return case
 
 
+def _verify_saved_answer_access(original, state):
+    """Exercise durable public tool reads and their real Agent surface, no model."""
+    import hashlib
+    import re
+    from langchain_core.messages import ToolMessage
+    from core.tools import research_broker as broker
+    from core.tool_surface import apply_tool_surface_budget
+    pack_id = (original.get("experienceUpdate") or {}).get("experiencePackId")
+    if not pack_id:
+        raise AssertionError("saved_answer_experience_id_missing")
+    def visible(**kwargs):
+        call_id = f"live-saved-answer-{time.time_ns()}"
+        raw = broker.research_broker.func(state=state, tool_call_id=call_id, **kwargs)
+        return apply_tool_surface_budget(ToolMessage(content=raw, name="research_broker", tool_call_id=call_id),
+                                         {"agentVisibleBudget": 1400}).content
+    started = time.perf_counter()
+    preview = visible(mode="get_experience", experiencePackId=pack_id)
+    assert pack_id in preview and original["evidenceBundleId"] in preview, "experience_locator_lost_in_agent_surface"
+    assert "Answer " in preview and "Status:" in preview, "experience_preview_or_status_missing"
+    source = original["researchEvidenceBank"]["sources"][0]
+    offset, pages, pieces = 0, 0, []
+    while pages < 1000:
+        page = visible(mode="get_evidence", evidenceBundleId=original["evidenceBundleId"],
+                       sourceKey=source["citationKey"], startChar=offset, maxChars=12000)
+        pieces.append(page.split("<source>\n", 1)[1].rsplit("\n</source>", 1)[0])
+        pages += 1
+        next_page = re.search(r"nextOffset: (\d+|None)", page)
+        assert next_page, "saved_source_next_offset_missing"
+        if next_page[1] == "None":
+            break
+        assert int(next_page[1]) > offset, "saved_source_cursor_stalled"
+        offset = int(next_page[1])
+    restored = "".join(pieces)
+    assert restored == source["text"], "saved_source_surface_not_lossless"
+    assert hashlib.sha256(restored.encode()).hexdigest() == source["readEvidence"]["contentSha256"], "saved_source_hash_changed"
+    answer_parts, answer_offset, answer_pages, answer_hash = [], 0, 0, None
+    while answer_pages < 1000:
+        page = visible(mode="get_evidence", evidenceBundleId=original["evidenceBundleId"],
+                       readAnswer=True, startChar=answer_offset, maxChars=12000)
+        answer_parts.append(page.split("<answer-document>\n", 1)[1].rsplit("\n</answer-document>", 1)[0])
+        digest = re.search(r"Content hash: ([a-f0-9]{64})", page)
+        assert digest, "saved_answer_hash_missing"
+        assert answer_hash in (None, digest[1]), "saved_answer_changed_between_pages"
+        answer_hash = digest[1]
+        answer_pages += 1
+        next_page = re.search(r"nextOffset: (\d+|None)", page)
+        assert next_page, "saved_answer_next_offset_missing"
+        if next_page[1] == "None":
+            break
+        assert int(next_page[1]) > answer_offset, "saved_answer_cursor_stalled"
+        answer_offset = int(next_page[1])
+    answer_document = "".join(answer_parts)
+    from core.tools.research_quality import research_answer_text, research_selected_sources
+    assert answer_document.startswith(research_answer_text(original) + "\n\n"), "saved_answer_body_not_lossless"
+    assert hashlib.sha256(answer_document.encode()).hexdigest() == answer_hash, "saved_answer_document_hash_changed"
+    assert "## Limitations\n" in answer_document, "saved_answer_boundaries_missing"
+    assert all(source.get("url", source.get("sourceUrl", "")) in answer_document
+               for source in research_selected_sources(original)), "saved_answer_citation_directory_missing"
+    return {"passed": True, "pages": pages, "sourceChars": len(restored),
+            "answerPages": answer_pages, "answerDocumentChars": len(answer_document),
+            "elapsedMs": int((time.perf_counter() - started) * 1000), "networkRefreshed": False}
+
+
 def _exercise_answer_lifecycle(case, original, state, followup_question, output_dir):
     from core.tools import research_broker as broker, research_ledger as ledger
     from core.tools.research_quality import research_acceptance_issues
@@ -1355,6 +1484,7 @@ def _exercise_answer_lifecycle(case, original, state, followup_question, output_
     if update.get("status") != "created" or not update.get("experiencePackId"):
         raise AssertionError("lifecycle_requires_an_answer_created_by_this_audit")
     pack_id = update["experiencePackId"]
+    saved_access = _verify_saved_answer_access(original, state)
 
     def invoke(**kwargs):
         return json.loads(broker.research_broker.func(state=state, tool_call_id=f"live-lifecycle-{time.time_ns()}", **kwargs))
@@ -1385,6 +1515,7 @@ def _exercise_answer_lifecycle(case, original, state, followup_question, output_
                           "revisionResultRef": str(artifact), "revisionSha256": digest,
                           "revisionSearchCount": canonical["researchResult"]["modelSynthesis"]["searchCount"],
                           "archiveRestoreDeleteVerified": True}))
+    case.evidence.append(_redact({"savedAnswerAccess": saved_access}))
     case.summary += f"; lifecycle=passed; exactReuseMs={reuse_ms}"
 
 
@@ -1398,6 +1529,9 @@ def main() -> int:
     parser.add_argument("--seed-url", action="append", default=[])
     parser.add_argument("--followup-question", default="", help="With --agent-question, verify exact reuse, live revision, then archive/restore/delete only this audit's new answer.")
     parser.add_argument("--bundle-id", default="", help="Select one bundle from --fixed-bundle ledger.")
+    parser.add_argument("--review-only", action="store_true", help="With --fixed-bundle, replay only its stored draft's review protocol; no writer or acquisition, not semantic acceptance.")
+    parser.add_argument("--original-request-file", type=Path, help="With --review-only, supply the actual original user request (UTF-8), separate from the derived research question.")
+    parser.add_argument("--expect-review-decision", choices=["accept", "revise"], default="", help="With --review-only, assert a human-established expected decision for this fixed positive/negative example.")
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_REPORT_ROOT)
     args = parser.parse_args()
@@ -1406,9 +1540,18 @@ def main() -> int:
         return 2
     if args.followup_question and not args.agent_question:
         parser.error("--followup-question requires --agent-question")
+    if args.review_only and not args.fixed_bundle:
+        parser.error("--review-only requires --fixed-bundle")
+    if (args.original_request_file or args.expect_review_decision) and not args.review_only:
+        parser.error("--original-request-file/--expect-review-decision require --review-only")
+    review_options = {"review_only": True} if args.review_only else {}
+    if args.original_request_file:
+        review_options["original_user_request"] = args.original_request_file.read_text(encoding="utf-8-sig")
+    if args.expect_review_decision:
+        review_options["expected_review_decision"] = args.expect_review_decision
     selected = list(CASES.keys()) if args.case == "all" else [args.case]
     results = (
-        [_run_fixed_bundle_case(args.fixed_bundle, args.bundle_id, args.output_dir)]
+        [_run_fixed_bundle_case(args.fixed_bundle, args.bundle_id, args.output_dir, **review_options)]
         if args.fixed_bundle else [_run_agent_question(args.agent_question, args.seed_url, args.output_dir, args.followup_question)]
         if args.agent_question else [CASES[case_id]() for case_id in selected]
     )

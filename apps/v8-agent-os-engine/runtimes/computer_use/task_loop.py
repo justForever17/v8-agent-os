@@ -49,8 +49,8 @@ class ComputerUseTaskLoop:
         }
 
 
-def normalize_intent(goal: str) -> dict[str, Any]:
-    return classify_goal(goal)
+def normalize_intent(goal: str, *, target_url: str | None = None) -> dict[str, Any]:
+    return classify_goal(goal, target_url=target_url)
 
 
 def resolve_facts(intent: dict[str, Any], *, web_searcher: FactSearch | None = None) -> list[dict[str, Any]]:
@@ -58,12 +58,35 @@ def resolve_facts(intent: dict[str, Any], *, web_searcher: FactSearch | None = N
     return [dict(item) for item in result.evidence]
 
 
-def select_playbook(intent: dict[str, Any]) -> dict[str, Any] | None:
+def select_playbook(
+    intent: dict[str, Any],
+    *,
+    browser_target: bool | None = None,
+    playbook_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    # The existing executors act on web pages. A desktop app binding must not
+    # be replaced by a browser merely because its task says "submit"/"upload".
+    if browser_target is False:
+        return None
+    if not (browser_target or intent.get("explicitUrl") or intent.get("domain") == "github"):
+        return None
+    inputs = dict(playbook_inputs or {})
     for playbook in built_in_playbook_seeds():
         if (
             str(playbook.get("domain")) == str(intent.get("domain"))
             and str(playbook.get("operation")) == str(intent.get("operation"))
         ):
+            if playbook.get("preferredLane") == "browser_cdp_dom":
+                operation = str(playbook.get("operation") or "")
+                if operation == "form_submit" and not (
+                    isinstance(inputs.get("fields"), dict) and inputs["fields"]
+                ):
+                    return None
+                if operation == "file_upload" and not (
+                    str(inputs.get("selector") or inputs.get("fileInputSelector") or "").strip()
+                    and str(inputs.get("filePath") or inputs.get("file_path") or "").strip()
+                ):
+                    return None
             selected = dict(playbook)
             selected["status"] = "selected"
             return selected
@@ -74,11 +97,11 @@ def route_lane(
     *,
     intent: dict[str, Any],
     playbook: dict[str, Any] | None,
-    browser_decision: dict[str, Any] | None = None,
+    browser_decision: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     preferred_lane = str((playbook or {}).get("preferredLane") or "").strip()
-    browser_payload = dict(browser_decision or {})
     if preferred_lane == "browser_cdp_dom":
+        browser_payload = dict(browser_decision() if callable(browser_decision) else browser_decision or {})
         if browser_payload.get("available"):
             return {
                 "lane": "browser_cdp_dom",
@@ -165,14 +188,21 @@ def build_record_resume(loop_id: str, *, playbook: dict[str, Any] | None, facts:
 def prepare_task_loop(
     goal: str,
     *,
-    browser_decision: dict[str, Any] | None = None,
+    browser_decision: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
+    browser_target: bool | None = None,
+    target_url: str | None = None,
+    playbook_inputs: dict[str, Any] | None = None,
     web_searcher: FactSearch | None = None,
     loop_id: str = "computer_use_task_loop",
 ) -> ComputerUseTaskLoop:
-    intent = normalize_intent(goal)
-    facts = resolve_facts(intent, web_searcher=web_searcher)
-    playbook = select_playbook(intent)
-    lane = route_lane(intent=intent, playbook=playbook, browser_decision=browser_decision)
+    intent = normalize_intent(goal, target_url=target_url or str((playbook_inputs or {}).get("url") or ""))
+    playbook = select_playbook(intent, browser_target=browser_target, playbook_inputs=playbook_inputs)
+    facts = resolve_facts(intent, web_searcher=web_searcher) if playbook else []
+    needs_target = bool((playbook or {}).get("factResolution", {}).get("required")) and not facts
+    lane = route_lane(
+        intent=intent, playbook=playbook,
+        browser_decision={"available": False, "reason": "canonical_target_not_resolved"} if needs_target else browser_decision,
+    )
     plan = build_plan(intent=intent, playbook=playbook, facts=facts, lane=lane)
     if playbook and plan.get("status") == "blocked_before_gui":
         status = "needs_fact_resolution"

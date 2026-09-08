@@ -69,10 +69,10 @@ def normalize_repo_token(value: str | None) -> str:
     return str(value or "").strip().lower().replace("_", "-")
 
 
-def classify_goal(goal: str) -> dict[str, Any]:
+def classify_goal(goal: str, *, target_url: str | None = None) -> dict[str, Any]:
     normalized_goal = str(goal or "").strip()
     lowered = normalized_goal.lower()
-    explicit_url = _first_url(normalized_goal)
+    explicit_url = _first_url(str(target_url or "")) or _first_url(normalized_goal)
     githubish = "github" in lowered or "git hub" in lowered or bool(explicit_url and "github.com" in explicit_url.lower())
     unstarish = _contains_any(lowered, ["unstar", "消星", "取消星标", "取消 star", "取消star", "取消收藏", "移除星标"])
     starish = _contains_any(lowered, ["star", "星标", "点星", "收藏", "加星", "消星", "取消星标", "取消收藏"])

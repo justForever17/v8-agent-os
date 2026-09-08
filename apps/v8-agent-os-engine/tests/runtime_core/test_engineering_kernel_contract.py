@@ -391,6 +391,53 @@ def test_read_only_capsule_can_run_non_mutating_verification_but_not_write_comma
     assert write_block["kind"] == "engineering_capsule_required"
 
 
+@pytest.mark.parametrize("mode", ["sync", "session"])
+@pytest.mark.parametrize("write_command", [
+    "Set-Content -LiteralPath $probePath -Value $probe -Encoding UTF8",
+    "Add-Content -LiteralPath $probePath -Value $probe",
+    "Clear-Content -LiteralPath $probePath",
+    "$probe | Out-File -FilePath $probePath",
+    "$probe | Tee-Object -FilePath $probePath",
+    "$probe | Export-Clixml -Path $probePath",
+])
+def test_readonly_command_entry_rejects_multiline_probe_file_writes(monkeypatch, tmp_path, mode, write_command):
+    from core.tools.native import command as native_command
+
+    def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("read-only write reached command launch")
+
+    monkeypatch.setattr(native_command.execute_system_command, "func", forbidden_backend)
+    monkeypatch.setattr(native_command, "_launch_background_command", forbidden_backend)
+    command = "$probePath = Join-Path $env:TEMP 'verify.ps1'\n$probe = 'Write-Output 120'\n  " + write_command
+    with bind_runtime_context(runtime_kind="subagent", engineering_capsule_mode="verify", workspace_path=str(tmp_path)):
+        payload = json.loads(run_system_command.func(command, mode=mode, shell_dialect="powershell"))
+    assert payload["kind"] == "engineering_capsule_required"
+    assert payload["engineeringCapsuleMode"] == "verify"
+    assert payload["ok"] is False
+
+
+def test_readonly_statistics_pass_preflight_and_still_reach_safety_guardian(monkeypatch, tmp_path):
+    from core.tools.native import command as native_command
+    from core.tools.native import command_governance
+
+    monkeypatch.setattr(command_governance.sys, "platform", "win32")
+    monkeypatch.setattr(native_command, "preflight_command_workspace", lambda *_args, **_kwargs: {"ok": True, "cwd": str(tmp_path)})
+    decisions = []
+    def stop_before_launch(decision, **_kwargs):
+        decisions.append(decision)
+        return False, "fixture: safety boundary reached; no process launched"
+    monkeypatch.setattr(native_command, "_enforce_safety_decision", stop_before_launch)
+    command = (
+        "$data = Get-Content ./board.json -Raw -Encoding UTF8 | ConvertFrom-Json; "
+        '$data | ForEach-Object { "{0}={1}" -f $_.Name,$_.Count }; '
+        "$data | Where-Object {$_.category -notin @('work','study','life')}"
+    )
+    with bind_runtime_context(runtime_kind="subagent", engineering_capsule_mode="verify", workspace_path=str(tmp_path)):
+        result = run_system_command.func(command, mode="sync", shell_dialect="powershell")
+    assert result == "fixture: safety boundary reached; no process launched"
+    assert len(decisions) == 1 and decisions[0].verdict == "allow"
+
+
 def test_direct_write_capsule_shell_is_limited_to_read_and_validation_commands() -> None:
     runtime_context = {
         "runtime_kind": "subagent",

@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 import runtimes.chat.runtime as chat_runtime_module
 import erc.chat_canonical_transcript as transcript_module
@@ -295,6 +295,119 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.stream_state.authoritative_final_text, clean_final)
         self.assertNotIn("Usersuny", "".join(self.stream_state.output_buffer))
         self.assertEqual("".join(self.stream_state.output_buffer).count("已在工作区中找到3张JPEG格式的图片"), 1)
+
+    async def test_typed_text_deltas_preserve_repeated_tokens_before_model_end(self):
+        tokens = ["这", "是", "原", "生", "增", "量", "。", "哈", "哈", "！", "\n"]
+        for token in tokens:
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_stream", "run_id": "model-native",
+                "name": "V8ChatModelAdapter", "data": {"chunk": AIMessageChunk(content=token)},
+            })
+        await self.runtime._flush_pending_text_aggregator(self.chat_run, self.stream_state)
+        expected = "".join(tokens)
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], expected)
+        self.assertEqual(self.runtime._current_canonical_text(self.stream_state), expected)
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "model-native",
+            "name": "V8ChatModelAdapter", "data": {"output": AIMessage(content=expected)},
+        })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], expected)
+
+    async def test_terminal_correction_replaces_only_same_model_fragments_in_canonical_history(self):
+        early = "我先调研，再请独立验证者核查。\n"
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "prior-model",
+            "data": {"output": AIMessage(content=early)},
+        })
+        fragments = ["A" * 34 + "\n", "B" * 27 + "\n"]
+        for fragment in fragments:
+            await self.runtime._emit_stable_text_chunk(
+                self.chat_run, self.stream_state, fragment, model_run_id="final-model",
+            )
+        self.stream_state.text_snapshots_by_run["final-model"] = "".join(fragments)
+        self.runtime._append_message_output_text(self.stream_state, model_run_id="final-model", delta="".join(fragments))
+        answer = "# 核验答案\n" + "正文。" * 3198
+        answer = answer.ljust(9602, "。")[:9602]
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "final-model",
+            "data": {"output": AIMessage(content=answer)},
+        })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], early + answer)
+        self.assertEqual(self.runtime._current_canonical_text(self.stream_state), early + answer)
+        self.assertEqual(len([n for n in row["nodes"] if n.get("kind") == "narrative"]), 2)
+        self.assertEqual([len(e["payload"]["content"]) for e in self.chat_run.events if e["topic"] == "run.text.delta"], [len(early), 35, 28, 9602])
+        replacement = self.chat_run.events[-1]["payload"]
+        self.assertEqual(replacement["replaceStreamRunKey"], "chat:supervisor:text:final-model")
+
+    async def test_model_end_flushes_short_tail_before_a_different_model_starts(self):
+        for model_id, text in [("first", "已读取"), ("second", "准备验证")]:
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_stream", "run_id": model_id,
+                "data": {"chunk": AIMessageChunk(content=text)},
+            })
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_end", "run_id": model_id,
+                "data": {"output": AIMessage(content=text)},
+            })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        nodes = [node for node in row["nodes"] if node.get("kind") == "narrative"]
+        self.assertEqual([node["content"] for node in nodes], ["已读取", "准备验证"])
+        self.assertTrue(nodes[0]["ownerStreamKey"].startswith("chat:supervisor:text:first:"))
+        self.assertTrue(nodes[1]["ownerStreamKey"].startswith("chat:supervisor:text:second:"))
+        self.assertTrue(all(not node["partial"] for node in nodes))
+
+    async def test_shorter_terminal_correction_is_authoritative_with_or_without_overlap(self):
+        for index, (first, final) in enumerate([("错误开头，但结论成立。", "结论成立。"), ("原本描述是错误的。", "更正。")]):
+            model_id = f"correction-{index}"
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_stream", "run_id": model_id,
+                "data": {"chunk": AIMessageChunk(content=first)},
+            })
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_end", "run_id": model_id,
+                "data": {"output": AIMessage(content=final)},
+            })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], "结论成立。更正。")
+
+    async def test_terminal_replacement_equal_to_last_stream_chunk_removes_earlier_text(self):
+        for text in ("错误开头。", "结论成立。"):
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_stream", "run_id": "terminal-last-chunk",
+                "data": {"chunk": AIMessageChunk(content=text)},
+            })
+            await self.runtime._flush_pending_text_aggregator(self.chat_run, self.stream_state)
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], "错误开头。结论成立。")
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "terminal-last-chunk",
+            "data": {"output": AIMessage(content="结论成立。")},
+        })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], "结论成立。")
+        self.assertEqual(self.runtime._current_canonical_text(self.stream_state), "结论成立。")
+        replacement = next(event["payload"] for event in reversed(self.chat_run.events)
+                           if event["topic"] == "run.text.delta")
+        self.assertEqual(replacement["replaceStreamRunKey"], "chat:supervisor:text:terminal-last-chunk")
+
+    async def test_terminal_append_equal_to_last_stream_character_is_not_deduplicated(self):
+        for text in ("正文", "哈"):
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_chat_model_stream", "run_id": "terminal-repeat",
+                "data": {"chunk": AIMessageChunk(content=text)},
+            })
+            await self.runtime._flush_pending_text_aggregator(self.chat_run, self.stream_state)
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "terminal-repeat",
+            "data": {"output": AIMessage(content="正文哈哈")},
+        })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], "正文哈哈")
+        self.assertEqual(self.runtime._current_canonical_text(self.stream_state), "正文哈哈")
+        self.assertEqual([node["content"] for node in row["nodes"] if node["kind"] == "narrative"], ["正文", "哈", "哈"])
 
     async def test_terminal_reasoning_is_suppressed_after_narrative_started(self):
         await self.runtime.handle_stream_event(
@@ -911,6 +1024,94 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["runtimeContext"]["runtime_kind"], "subagent")
         self.assertEqual(emitted[0]["ownerRuntimeId"], "subagent_swarm")
         self.assertEqual(emitted[0]["ownerAgentId"], "implementation-engineer")
+
+    async def test_tool_error_closes_only_its_call_and_preserves_later_supervisor_delivery(self):
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_tool_start", "run_id": "failed-callback", "name": "delegation_broker",
+            "data": {"input": {"mode": "dispatch", "tasks": "invalid-array"}},
+            "metadata": {"langgraph_node": "supervisor_tools"},
+        })
+        failed_id = self.chat_run.events[-1]["payload"]["tool"]["toolCallId"]
+        self.stream_state.active_tool_call_ids.add("unrelated-running-call")
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_tool_error", "run_id": "failed-callback", "name": "delegation_broker",
+            "data": {"error": ValueError("PRIVATE_INPUT_CANARY"), "tool_call_id": failed_id},
+            "metadata": {"langgraph_node": "supervisor_tools"},
+        })
+        self.assertEqual(self.stream_state.active_tool_call_ids, {"unrelated-running-call"})
+        self.assertNotIn("failed-callback", self.stream_state.tool_call_id_by_callback_run_id)
+        finished = self.chat_run.events[-1]
+        self.assertEqual(finished["topic"], "tool.finished")
+        self.assertEqual(finished["payload"]["tool"]["toolCallId"], failed_id)
+        self.assertEqual(finished["payload"]["tool"]["resultStatus"], "failed")
+        self.assertNotIn("PRIVATE_INPUT_CANARY", str(finished))
+        self.assertIn("是否已产生副作用尚未确认", str(finished))
+        self.stream_state.active_tool_call_ids.remove("unrelated-running-call")
+        final = "验收决定：ACCEPT\n" + "已核对原始引用及适用条件。" * 150
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_stream", "run_id": "parent-delivery",
+            "metadata": {"langgraph_node": "supervisor"}, "data": {"chunk": AIMessageChunk(content=final)},
+        })
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "parent-delivery",
+            "metadata": {"langgraph_node": "supervisor"}, "data": {"output": AIMessage(content=final)},
+        })
+        row = self.test_db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["content_text"], final)
+        self.assertEqual(self.stream_state.authoritative_final_text, final)
+
+    async def test_installed_tool_callback_error_releases_chat_delivery(self):
+        from langchain_core.tools import tool
+        from pydantic import ValidationError
+
+        @tool("delegation_broker")
+        def invalid_delegate(tasks: list[dict]) -> str:
+            """Validation fixture: an invalid task collection must not execute."""
+            self.fail("invalid arguments reached tool execution")
+
+        callbacks = []
+        with self.assertRaises(ValidationError):
+            async for event in invalid_delegate.astream_events(
+                {"type": "tool_call", "name": "delegation_broker", "id": "real-validation-call",
+                 "args": {"tasks": "invalid-array"}},
+                config={"metadata": {"langgraph_node": "supervisor_tools"}}, version="v2",
+            ):
+                callbacks.append(event["event"])
+                await self.runtime.handle_stream_event(self.chat_run, self.stream_state, event)
+        self.assertIn("on_tool_error", callbacks)
+        self.assertNotIn("on_tool_end", callbacks)
+        self.assertFalse(self.stream_state.active_tool_call_ids)
+        self.assertEqual(self.chat_run.events[-1]["payload"]["tool"]["resultStatus"], "failed")
+        final = "参数错误已返回；现可继续核验并交付。"
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_chat_model_end", "run_id": "after-real-validation",
+            "metadata": {"langgraph_node": "supervisor"}, "data": {"output": AIMessage(content=final)},
+        })
+        self.assertEqual(self.stream_state.authoritative_final_text, final)
+
+    async def test_expected_graph_interrupt_is_not_a_tool_failure(self):
+        from langgraph.errors import GraphInterrupt
+
+        self.stream_state.active_tool_call_ids.add("ask-user-pending")
+        emitted = await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_tool_error", "run_id": "ask-callback", "name": "ask_user",
+            "data": {"error": GraphInterrupt(), "tool_call_id": "ask-user-pending"},
+        })
+        self.assertEqual(emitted, [])
+        self.assertEqual(self.stream_state.active_tool_call_ids, {"ask-user-pending"})
+        self.assertFalse(any(item["topic"] == "tool.finished" for item in self.chat_run.events))
+
+    async def test_ask_user_validation_error_does_not_leave_a_phantom_pending_tool(self):
+        self.stream_state.tool_calls_buffer.append({"id": "ask-provider-call", "name": "ask_user", "args": {}})
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_tool_start", "run_id": "ask-invalid", "name": "ask_user", "data": {"input": {}},
+        })
+        await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+            "event": "on_tool_error", "run_id": "ask-invalid", "name": "ask_user",
+            "data": {"error": ValueError("invalid"), "tool_call_id": "ask-provider-call"},
+        })
+        self.assertFalse(self.stream_state.active_tool_call_ids)
+        self.assertEqual(self.chat_run.events[-1]["payload"]["tool"]["resultStatus"], "failed")
 
     async def test_tool_result_reuses_start_tool_call_id_from_raw_input(self):
         await self.runtime.handle_stream_event(

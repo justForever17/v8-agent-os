@@ -5,6 +5,7 @@ import time
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
+from core.llm_exceptions import V8LLMStructuredOutputError
 from runtimes.research.model_call import IncompleteModelResponse, invoke_bounded
 
 
@@ -135,3 +136,41 @@ def test_reported_output_limit_is_not_a_schema_error_or_success(streaming):
             return AIMessage(content="partial", response_metadata={"stop_reason": "max_tokens"})
     with pytest.raises(IncompleteModelResponse, match="research_model_output_limit"):
         invoke_bounded(Model(), [], seconds=1, request_kwargs={}, streaming=streaming)
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+@pytest.mark.parametrize("reason,expected", [
+    ("output_limit", "research_model_output_limit"),
+    ("incomplete_tool_arguments", "research_model_response_incomplete"),
+])
+def test_shared_adapter_incomplete_error_preserves_local_recovery_type(streaming, reason, expected):
+    failure = V8LLMStructuredOutputError(
+        code="model_output_incomplete", message="incomplete", provider="fixture", model="fixture",
+        details={"reason": reason, "finishReason": "length" if reason == "output_limit" else ""},
+    )
+    calls = []
+    class Model:
+        def stream(self, *_args, **_kwargs):
+            calls.append("stream")
+            yield AIMessageChunk(content="progress")
+            raise failure
+        def invoke(self, *_args, **_kwargs):
+            calls.append("invoke")
+            raise failure
+
+    with pytest.raises(IncompleteModelResponse, match=expected) as error:
+        invoke_bounded(Model(), [], seconds=1, request_kwargs={}, streaming=streaming)
+    assert len(calls) == 1  # The Research agent, not this transport, owns retry.
+    assert error.value.__cause__ is failure
+    assert error.value.research_call_timing["finishReason"] == failure.details["finishReason"]
+    assert error.value.research_call_timing["chunkCount"] == (1 if streaming else 0)
+
+
+def test_non_incomplete_provider_errors_do_not_become_local_generation_retries():
+    failure = V8LLMStructuredOutputError(code="auth_error", message="authentication failed")
+    class Model:
+        def invoke(self, *_args, **_kwargs):
+            raise failure
+    with pytest.raises(V8LLMStructuredOutputError) as error:
+        invoke_bounded(Model(), [], seconds=1, request_kwargs={}, streaming=False)
+    assert error.value is failure

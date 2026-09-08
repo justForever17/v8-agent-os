@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -587,6 +587,7 @@ def _skill_query_canonical_family_match(skill: dict[str, Any], query_profile: di
 
 def _query_tokens_for_extensions(text: str) -> list[str]:
     _ensure_extension_lexicon_state()
+    text = _positive_extension_match_text(text)
     base_tokens = _expand_query_token_variants(_tokenize(text))
     query_text = str(text or "").strip().lower()
     core_tokens, _matched_terms = _expand_query_tokens_with_synonyms(
@@ -604,6 +605,7 @@ def _query_tokens_for_extensions(text: str) -> list[str]:
 
 def _clone_query_profile(profile: dict[str, Any]) -> dict[str, Any]:
     return {
+        "matchingQueryText": profile.get("matchingQueryText"),
         "artifactIntent": profile.get("artifactIntent"),
         "artifactIntents": list(profile.get("artifactIntents") or []),
         "directCanonicalFamilies": list(profile.get("directCanonicalFamilies") or []),
@@ -623,6 +625,38 @@ def _clone_query_profile(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _positive_extension_match_text(text: str) -> str:
+    """Exclude explicit negated lexicon anchors from candidate matching only.
+
+    The original user query remains the prompt/event/cache input. This narrow
+    lexical filter does not interpret requirements or change execution policy.
+    """
+    original = str(text or "")
+    if not re.search(r"不要|不需要|无需|不用|别|不", original):
+        return original
+    anchors = {
+        str(term).strip()
+        for mapping in (_QUERY_ARTIFACT_INTENT_SYNONYMS, _QUERY_PRIMARY_THEME_SYNONYMS, _QUERY_SECONDARY_THEME_SYNONYMS)
+        for terms in mapping.values() for term in terms if str(term).strip()
+    }
+    anchors.update(_EXTENSION_QUERY_SYNONYMS_EXACT)
+    anchors.update(_EXTENSION_QUERY_SYNONYMS_PHRASE)
+    chinese_anchors = sorted((term for term in anchors if re.search(r"[\u4e00-\u9fff]", term)), key=lambda term: (-len(term), term))
+    if not chinese_anchors:
+        return original
+    verbs = {"编写", "开发", "使用", *(str(term) for terms in _QUERY_OPERATION_INTENT_SYNONYMS.values() for term in terms if re.fullmatch(r"[\u4e00-\u9fff]+", str(term)))}
+    verb_pattern = "|".join(re.escape(term) for term in sorted(verbs, key=lambda term: (-len(term), term)))
+    anchor_pattern = "|".join(re.escape(term) for term in chinese_anchors)
+    pattern = re.compile(rf"(?:不要|不需要|无需|不用|别|不)\s*(?:(?:{verb_pattern})\s*)?(?:{anchor_pattern}){{1,3}}")
+
+    def omit(match: re.Match[str]) -> str:
+        if re.search(r"(?:不是|并非|不能|不可|不得|不要|别)\s*$", original[:match.start()]):
+            return match.group(0)  # Double negation is not a negative action.
+        return " " * len(match.group(0))
+
+    return pattern.sub(omit, original)
+
+
 def _analyze_extensions_query(text: str) -> tuple[list[str], dict[str, Any], bool, dict[str, Any], dict[str, Any]]:
     lexicon_state = _ensure_extension_lexicon_state()
     normalized_query = " ".join(str(text or "").strip().lower().split())
@@ -640,7 +674,7 @@ def _analyze_extensions_query(text: str) -> tuple[list[str], dict[str, Any], boo
         }
         return list(cached_tokens), cloned_profile, True, lexicon_state, market_state
 
-    raw_query_text = str(text or "")
+    raw_query_text = _positive_extension_match_text(text)
     normalized_lower = raw_query_text.strip().lower()
     base_tokens = _expand_query_token_variants(_tokenize(raw_query_text))
     core_tokens, _core_hit_terms = _expand_query_tokens_with_synonyms(
@@ -655,6 +689,7 @@ def _analyze_extensions_query(text: str) -> tuple[list[str], dict[str, Any], boo
     )
     query_tokens = _unique_preserve_order([*core_tokens, *list(market_enrichment.get("expandedTokens") or [])])
     query_profile = _detect_query_intents(raw_query_text, core_tokens)
+    query_profile["matchingQueryText"] = raw_query_text
     direct_canonical_families, canonical_families = _detect_query_canonical_families(raw_query_text, core_tokens)
     query_profile["directCanonicalFamilies"] = direct_canonical_families
     query_profile["canonicalFamilies"] = canonical_families
@@ -795,9 +830,9 @@ def _score_text(*, query_tokens: list[str], title: str, description: str) -> int
             score += 4
         if token in description_set:
             score += 2
-        if token in str(title or "").lower():
+        if _text_matches_phrase(title, token):
             score += 2
-        if token in str(description or "").lower():
+        if _text_matches_phrase(description, token):
             score += 1
     return score
 
@@ -973,8 +1008,16 @@ def _score_skill_entry(
     folder = str(skill.get("folder") or "").strip()
     description = str(skill.get("description") or "").strip()
     cleaned_description = _clean_skill_template_noise(description)
-    normalized_query = str(query_text or "").strip().lower()
-    score = _score_text(query_tokens=query_tokens, title=name or folder, description=cleaned_description)
+    normalized_query = str(query_profile.get("matchingQueryText") if query_profile.get("matchingQueryText") is not None else query_text or "").strip().lower()
+    # Generic operations (read/create/review) rank an already relevant skill;
+    # they cannot make every skill offering that operation a relevant match.
+    operation_terms = {
+        str(term).strip().lower()
+        for terms in _QUERY_OPERATION_INTENT_SYNONYMS.values()
+        for term in terms
+    }
+    lexical_tokens = [token for token in query_tokens if token not in operation_terms]
+    score = _score_text(query_tokens=lexical_tokens, title=name or folder, description=cleaned_description)
     has_query_signal = score > 0
     for candidate in (name, folder, str(skill.get("skillId") or ""), str(skill.get("skillName") or "")):
         normalized_candidate = str(candidate or "").strip().lower()
@@ -1093,14 +1136,12 @@ def _score_skill_entry(
             matched_operations = [item for item in matched_operations if item in {"advise", "analyze", "guide"}]
         if matched_operations:
             operation_match = True
-            has_query_signal = True
             if pure_theme_query:
                 score += 10 + (3 * len(matched_operations))
             else:
                 score += 14 + (4 * len(matched_operations))
         elif skill_class in {"advisor_or_perspective", "methodology_or_tutorial"} and "advise" in operation_intents:
             operation_match = True
-            has_query_signal = True
             score += 8
 
     theme_match = False
@@ -1558,9 +1599,15 @@ def _score_dynamic_family_entry(
         description=description,
         profile=profile,
     )
-    score = _score_text(query_tokens=query_tokens, title=family_name, description=scoring_text)
+    operation_terms = {
+        str(term).strip().lower()
+        for terms in _QUERY_OPERATION_INTENT_SYNONYMS.values()
+        for term in terms
+    }
+    lexical_tokens = [token for token in query_tokens if token not in operation_terms]
+    score = _score_text(query_tokens=lexical_tokens, title=family_name, description=scoring_text)
     has_query_signal = score > 0
-    normalized_query = str(query_text or "").strip().lower()
+    normalized_query = str(query_profile.get("matchingQueryText") if query_profile.get("matchingQueryText") is not None else query_text or "").strip().lower()
     if str(family_name or "").strip().lower() in normalized_query:
         score += 10
         has_query_signal = True
@@ -1611,7 +1658,8 @@ def _score_dynamic_family_entry(
         if pure_theme_query:
             matched_operations = [item for item in matched_operations if item in {"advise", "analyze", "guide"}]
         if matched_operations:
-            has_query_signal = True
+            # Operations rank relevant families; they do not establish a match
+            # between unrelated subjects, e.g. policy review and library docs.
             score += (9 if pure_theme_query else 12) + (3 * len(matched_operations))
 
     theme_match = False
@@ -1634,7 +1682,10 @@ def _score_dynamic_family_entry(
             score += 2 + len(matched_secondary_tags)
 
     if topic_tokens:
-        topic_score = _score_text(query_tokens=topic_tokens, title=family_name, description=scoring_text)
+        topic_score = _score_text(
+            query_tokens=[token for token in topic_tokens if token not in operation_terms],
+            title=family_name, description=scoring_text,
+        )
         score += min(topic_score, 14)
         if topic_score > 0:
             has_query_signal = True
@@ -1948,7 +1999,6 @@ class ExtensionsRuntimeService:
         self._refresh_lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
         self._route_cache: dict[str, tuple[float, ExtensionRouteBundle]] = {}
-        self._route_cache_ttl_seconds = 20.0
         self._last_skill_inventory_change: dict[str, Any] | None = None
         self._last_mcp_inventory_change: dict[str, Any] | None = None
         self._last_inventory_guard_at: float = 0.0
@@ -2115,57 +2165,11 @@ class ExtensionsRuntimeService:
         snapshot_freshness = str(skill_status.get("snapshotFreshness") or "cold")
         inventory_ready_state = str(skill_status.get("startupState") or "cold")
         barrier_applied = freshness_mode == _INVENTORY_FRESHNESS_GUARDED
-        wait_budget_ms = 0
-        wait_started_at = time.perf_counter()
-
-        if barrier_applied:
-            if inventory_ready_state == "cold" or not skill_status.get("skillCount"):
-                wait_budget_ms = 1200
-            elif dirty_visible_roots or inventory_ready_state == "refreshing" or snapshot_freshness != "live":
-                wait_budget_ms = 800
-
-            deadline = time.perf_counter() + (wait_budget_ms / 1000.0) if wait_budget_ms > 0 else 0.0
-            if wait_budget_ms > 0 and skill_status.get("backgroundRefreshInProgress"):
-                while time.perf_counter() < deadline:
-                    current_status = self._skill_inventory_status()
-                    if not current_status.get("backgroundRefreshInProgress"):
-                        break
-                    time.sleep(0.05)
-                skill_status = self._skill_inventory_status()
-                inventory_ready_state = str(skill_status.get("startupState") or inventory_ready_state or "cold")
-                snapshot_freshness = str(skill_status.get("snapshotFreshness") or snapshot_freshness or "cold")
-                dirty_visible_roots = list(
-                    SkillLoader._dirty_root_paths_for_descriptors(visible_descriptors)  # noqa: SLF001
-                )
-
-            if wait_budget_ms > 0 and (
-                inventory_ready_state in {"cold", "refreshing"} or dirty_visible_roots
-            ):
-                remaining_ms = max(0, int((deadline - time.perf_counter()) * 1000))
-                if remaining_ms > 0:
-                    skill_change = SkillLoader.refresh_root_descriptors_if_changed(
-                        visible_descriptors,
-                        compare_existing=False,
-                        timeout_ms=remaining_ms,
-                    )
-                    if skill_change.get("changed"):
-                        self._last_skill_inventory_change = {
-                            **skill_change,
-                            "changedAt": self._now_iso(),
-                            "reason": reason,
-                        }
-                        self._cached_catalog = None
-                        self._cached_health = None
-                skill_status = self._skill_inventory_status()
-                inventory_ready_state = str(skill_status.get("startupState") or inventory_ready_state or "cold")
-                snapshot_freshness = str(skill_status.get("snapshotFreshness") or snapshot_freshness or "cold")
-                dirty_visible_roots = list(
-                    SkillLoader._dirty_root_paths_for_descriptors(visible_descriptors)  # noqa: SLF001
-                )
-
-        inventory_barrier_wait_ms = round((time.perf_counter() - wait_started_at) * 1000, 2) if barrier_applied else 0.0
-        inventory_barrier_timed_out = bool(barrier_applied and wait_budget_ms > 0 and dirty_visible_roots)
-        exclude_root_paths = set(dirty_visible_roots) if inventory_barrier_timed_out else set()
+        # Installation/configuration notifications and the existing inventory
+        # watcher own refreshes. Ordinary agent preparation must not wait for or
+        # repeat a full directory hash scan. Keep the last completed revisions,
+        # excluding dirty roots until their refresh is published.
+        exclude_root_paths = set(dirty_visible_roots) if barrier_applied else set()
         return {
             "skillContext": skill_context,
             "visibleDescriptors": visible_descriptors,
@@ -2174,11 +2178,12 @@ class ExtensionsRuntimeService:
             "inventoryReadyState": inventory_ready_state,
             "snapshotFreshness": snapshot_freshness,
             "inventoryBarrierApplied": barrier_applied,
-            "inventoryBarrierWaitMs": inventory_barrier_wait_ms,
-            "inventoryBarrierTimedOut": inventory_barrier_timed_out,
+            "inventoryBarrierWaitMs": 0.0,
+            "inventoryBarrierTimedOut": False,
+            "inventoryRefreshPending": bool(dirty_visible_roots or inventory_ready_state in {"cold", "refreshing"}),
             "dirtyVisibleRoots": dirty_visible_roots,
             "excludeRootPaths": exclude_root_paths,
-            "waitBudgetMs": wait_budget_ms,
+            "waitBudgetMs": 0,
         }
 
     def _cache_path(self) -> Path:
@@ -2283,6 +2288,7 @@ class ExtensionsRuntimeService:
         self,
         *,
         force_refresh: bool = False,
+        allow_blocking_refresh: bool = True,
         prefer_cached_ready_inventory: bool = False,
         include_scoped: bool = True,
         session_id: str | None = None,
@@ -2331,6 +2337,7 @@ class ExtensionsRuntimeService:
                 }
         return SkillLoader.get_inventory(
             force_refresh=force_refresh,
+            allow_blocking_refresh=allow_blocking_refresh,
             include_scoped=include_scoped,
             runtime_kind=skill_context.get("runtime_kind"),
             session_id=skill_context.get("session_id"),
@@ -2790,6 +2797,9 @@ class ExtensionsRuntimeService:
                     "appToolCount": int(payload.get("appToolCount") or 0),
                     "uiResourceCount": int(payload.get("uiResourceCount") or 0),
                     "lastAppsError": payload.get("lastAppsError"),
+                    "toolsRefreshStatus": payload.get("toolsRefreshStatus"),
+                    "lastToolsRefreshError": payload.get("lastToolsRefreshError"),
+                    "lastInventoryProjectionError": payload.get("lastInventoryProjectionError"),
                 }
             )
 
@@ -3059,6 +3069,10 @@ class ExtensionsRuntimeService:
         )
         return change
 
+    async def _on_mcp_tools_changed(self, change: dict[str, Any]) -> None:
+        self._last_mcp_inventory_change = {**change, "changedAt": self._now_iso()}
+        await self._refresh_runtime_snapshot(clear_route_cache=False)
+
     async def refresh_inventory_if_changed(self, *, reason: str = "manual") -> dict[str, Any]:
         skill_change = await self._refresh_skill_inventory_if_changed(reason=reason, refresh_snapshot=False)
         mcp_change = await self._refresh_mcp_inventory_if_changed(reason=reason, refresh_snapshot=False)
@@ -3143,6 +3157,7 @@ class ExtensionsRuntimeService:
         wait_for_initial_refresh: bool = True,
     ) -> None:
         self._loop = asyncio.get_running_loop()
+        mcp_manager.inventory_change_callback = self._on_mcp_tools_changed
         if self._cached_catalog is None or self._cached_health is None:
             self._load_cache()
         if self._cached_catalog is None or self._cached_health is None:
@@ -3174,6 +3189,8 @@ class ExtensionsRuntimeService:
 
     async def stop(self) -> None:
         self._loop = None
+        if mcp_manager.inventory_change_callback == self._on_mcp_tools_changed:
+            mcp_manager.inventory_change_callback = None
         watcher_task = self._skills_inventory_watcher_task
         if watcher_task and not watcher_task.done():
             watcher_task.cancel()
@@ -3608,6 +3625,7 @@ class ExtensionsRuntimeService:
             )
         skill_inventory = _pre_resolved_skill_inventory or self._resolve_skill_inventory(
             force_refresh=False,
+            allow_blocking_refresh=False,
             prefer_cached_ready_inventory=True,
             include_scoped=True,
             session_id=str((inventory_freshness.get("skillContext") or {}).get("session_id") or "").strip() or None,
@@ -4525,6 +4543,7 @@ class ExtensionsRuntimeService:
         phase_started_at = time.perf_counter()
         skill_inventory = self._resolve_skill_inventory(
             force_refresh=False,
+            allow_blocking_refresh=False,
             include_scoped=True,
             session_id=str((inventory_freshness.get("skillContext") or {}).get("session_id") or "").strip() or None,
             explicit_workspace_id=str((inventory_freshness.get("skillContext") or {}).get("explicit_workspace_id") or "").strip() or None,
@@ -4539,6 +4558,11 @@ class ExtensionsRuntimeService:
         normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
         tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
         inventory_revision = self._inventory_revision_key(skill_inventory)
+        selection_signature = hashlib.sha256(json.dumps(
+            {"configuration": storage.get_extensions_config() or {},
+             "prefilter": self._resolve_prefilter_policy(), "agents": list(loaded_agents or [])},
+            ensure_ascii=False, sort_keys=True, default=str,
+        ).encode("utf-8")).hexdigest()
         plugin_reference_signature = json.dumps(
             context_payload.get("plugin_references")
             or context_payload.get("pluginReferences")
@@ -4556,15 +4580,14 @@ class ExtensionsRuntimeService:
                 str(context_payload.get("workspace_path") or ""),
                 normalized_query,
                 inventory_revision,
-                str(len(list(loaded_agents or []))),
+                selection_signature,
                 str(skill_limit),
                 str(mcp_limit),
                 tool_signature,
                 lexicon_signature,
                 plugin_reference_signature,
-                ",".join(
-                    str(item.get("grantId") or "")
-                    for item in __import__("runtimes.plugin_manager.service", fromlist=["plugin_manager_service"])
+                hashlib.sha256(json.dumps(
+                    __import__("runtimes.plugin_manager.service", fromlist=["plugin_manager_service"])
                     .plugin_manager_service.active_grants(
                         session_id=str(context_payload.get("session_id") or ""),
                         run_id=str(context_payload.get("run_id") or "").strip() or None,
@@ -4580,16 +4603,24 @@ class ExtensionsRuntimeService:
                             or context_payload.get("delegationId")
                             or ""
                         ).strip() or None,
-                    )
-                ) if str(context_payload.get("session_id") or "").strip() else "",
+                    ),
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+                ).encode("utf-8")).hexdigest() if str(context_payload.get("session_id") or "").strip() else "",
             ]
         )
         cache_key_ms = round((time.perf_counter() - phase_started_at) * 1000, 2)
         now = time.monotonic()
-        cache_allowed = not bool(inventory_freshness.get("inventoryBarrierTimedOut"))
+        cache_allowed = not bool(inventory_freshness.get("dirtyVisibleRoots") or inventory_freshness.get("inventoryBarrierTimedOut"))
         cached = self._route_cache.get(cache_key) if cache_allowed else None
-        if cached and (now - cached[0]) <= self._route_cache_ttl_seconds:
-            return cached[1]
+        if cached:
+            # Inventory/configuration/query/authority changes invalidate by key.
+            # Elapsed generation time alone must not rerun the same prefilter.
+            return replace(cached[1], candidate_summary={
+                **cached[1].candidate_summary, "routeCacheHit": True,
+                "supervisorRouteTimingMs": {"context": context_ms, "inventoryFreshness": inventory_freshness_ms,
+                    "skillInventory": skill_inventory_ms, "cacheKey": cache_key_ms, "contextualRoute": 0.0,
+                    "total": round((time.perf_counter() - route_started_at) * 1000, 2)},
+            })
 
         bundle = self.build_contextual_route(
             user_query=user_query,
@@ -4602,6 +4633,7 @@ class ExtensionsRuntimeService:
             _pre_resolved_inventory_freshness=inventory_freshness,
         )
         summary = dict(bundle.candidate_summary or {})
+        summary["routeCacheHit"] = False
         summary["supervisorRouteTimingMs"] = {
             "context": context_ms,
             "inventoryFreshness": inventory_freshness_ms,
@@ -4675,6 +4707,9 @@ class ExtensionsRuntimeService:
 
     def emit_route_selected(self, *, user_query: str, route_bundle: ExtensionRouteBundle) -> None:
         candidate_summary = route_bundle.candidate_summary if isinstance(route_bundle.candidate_summary, dict) else {}
+        if candidate_summary.get("routeCacheHit") is True:
+            # Reusing an unchanged shortlist is not another prefilter run.
+            return
         compact_counts: dict[str, Any] = {}
         for key, value in candidate_summary.items():
             if isinstance(value, list):

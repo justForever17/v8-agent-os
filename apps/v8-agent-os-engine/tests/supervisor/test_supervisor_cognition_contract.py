@@ -99,8 +99,11 @@ def test_research_web_and_managed_episode_descriptions_form_a_clear_ladder():
     ]
     assert engineering_briefs[0]["dependencies"] == []
     assert engineering_briefs[1]["dependencies"] == ["engineering-implementation"]
-    assert len(engineering_briefs[0]["writeSet"]) == 2
-    assert len(engineering_briefs[1]["writeSet"]) == 1
+    assert len(engineering_briefs[0]["writeSet"]) == 1
+    assert engineering_briefs[1]["writeSet"] == []
+    assert engineering_briefs[1]["readOnly"] is True
+    assert engineering_briefs[1]["writeRequired"] is False
+    assert engineering_briefs[1]["readSet"] == engineering_briefs[0]["writeSet"]
 
     rpa_example = runtime_route_contract_example("rpa")
     rpa_execution = rpa_example["taskBriefs"][0]["context"]["rpaExecution"]
@@ -243,6 +246,22 @@ def test_prepare_supervisor_messages_injects_authority_map_without_replacing_his
         remaining_steps=10,
     )
     assert "Supervisor Execution Authority" in captured[0]["leading_system_content"]
+
+
+def test_selected_engineering_route_receives_worker_sequence_discipline(monkeypatch):
+    from graph import supervisor_context, supervisor_turn
+    from core.runtime_route_contract import ENGINEERING_TASK_UNIT_DISCIPLINE
+    state = {"current_route_context": {"supervisorRuntimeMode": "engineering"},
+             "task_shape_hint": {"boundaryDecision": {}}}
+    monkeypatch.setattr(supervisor_context, "_resolved_workspace_binding_for_state", lambda *_: SimpleNamespace(
+        source="test", trust_state="trusted", side_effects_allowed=True))
+    guidance = supervisor_turn._authoritative_runtime_route_guidance(["engineering"], state=state)
+    bundle = supervisor_context.build_runtime_route_compiler_system_content(
+        state=state, config={"system_prompt": "Supervisor"}, user_query="创建同一个文件后连续做两次小改",
+        current_scope="test", session_id="route-test", required_runtime_kind="engineering",
+        route_guidance=guidance.content)
+    assert ENGINEERING_TASK_UNIT_DISCIPLINE in bundle["system_content"]
+    assert ENGINEERING_TASK_UNIT_DISCIPLINE in supervisor_turn._explicit_runtime_orchestration_guidance(["engineering"]).content
 
 
 def test_supervisor_debug_surface_does_not_print_opaque_continuation(capsys):

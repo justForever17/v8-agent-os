@@ -184,7 +184,12 @@ class PromptBudgetGovernanceTests(unittest.TestCase):
                         }
                     return {}
 
-                def fake_scan_single(descriptor):  # noqa: ANN001, ANN201
+                def fake_scan_single(  # noqa: ANN001, ANN201
+                    descriptor, *, manifest=None, summarize_structure=True, allow_llm_profile_inference=True,
+                ):
+                    self.assertIsInstance(manifest, dict)
+                    self.assertFalse(summarize_structure)
+                    self.assertFalse(allow_llm_profile_inference)
                     if descriptor.get("sourceType") == "scoped_workspace":
                         return fake_scan([descriptor])
                     return {}

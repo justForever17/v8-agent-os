@@ -203,3 +203,51 @@ def test_adapter_enforces_budget_at_actual_invoke_boundary(asynchronous, streami
     assert "max_completion_tokens" not in captured[0]
     assert "max_tokens" not in captured[0].get("extra_body", {})
     assert captured[0].get("stream_usage") is (True if streaming else None)
+
+
+@pytest.mark.parametrize("role", ["agent:worker", "reviewer:worker", "vision", "summary"])
+@pytest.mark.parametrize("mode,requested,expected", [
+    ("auto", None, None), ("auto", 128, 128), ("fixed", None, 4096),
+    ("fixed", 128, 128), ("fixed", 8192, 4096),
+])
+def test_role_factory_to_sdk_wire_preserves_auto_fixed_and_short_requests(monkeypatch, role, mode, requested, expected):
+    import json
+    import httpx
+    from langchain_core.messages import HumanMessage
+    from core.llm_factory import LLMFactory
+    from graph.agent_factories import create_subagent_chat_model
+
+    captured = []
+    def transport(request):
+        captured.append(json.loads(request.content))
+        chunks = [
+            {"id": "fixture", "object": "chat.completion.chunk", "created": 0, "model": "fixture-model",
+             "choices": [{"index": 0, "delta": {"role": "assistant", "content": "wire-ok"}, "finish_reason": None}]},
+            {"id": "fixture", "object": "chat.completion.chunk", "created": 0, "model": "fixture-model",
+             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        ]
+        body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    meta = {"is_found": True, "provider_id": "fixture", "model_id": "fixture-model",
+            "api_standard": "openai", "base_url": "https://fixture.invalid/v1", "api_key": "fixture-only",
+            "model_record": model(outputTokenMode=mode),
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True, "supportsStreaming": True}}
+    monkeypatch.setattr(LLMFactory, "_resolve_model_metadata", classmethod(lambda cls, _model_id: deepcopy(meta)))
+    monkeypatch.setattr(LLMFactory, "_attach_telemetry", classmethod(lambda cls, kwargs, *_args, **_kwargs: kwargs))
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        kwargs = {"http_client": client, "temperature": 0, "streaming": True}
+        if requested is not None:
+            kwargs["max_tokens"] = requested
+        adapter = (
+            create_subagent_chat_model("fixture::fixture-model", role=role, **kwargs)
+            if role.startswith(("agent:", "reviewer:"))
+            else LLMFactory.create_chat_model("fixture::fixture-model", _role=role, **kwargs)
+        )
+        response = adapter.invoke([HumanMessage(content=f"Return wire-ok for {role}/{mode}/{requested}.")])
+    assert response.content == "wire-ok"
+    assert len(captured) == 1
+    assert captured[0]["stream"] is True
+    assert captured[0].get("max_completion_tokens") == expected
+    assert "max_tokens" not in captured[0]

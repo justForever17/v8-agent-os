@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.tools.research_quality import (
     research_acceptance_metrics,
@@ -215,7 +215,9 @@ def _referenced_bundle_ids(payload: dict[str, Any]) -> set[str]:
             for key in ("createdFromBundleId", "previousBundleId") if item.get(key)}
 
 
-def _scope_matches(item: dict[str, Any], scope: str) -> bool:
+def _scope_matches(item: dict[str, Any], scope: str, access_check: Callable[[dict[str, Any]], bool] | None = None) -> bool:
+    if access_check is not None:
+        return access_check(item)
     normalized_scope = _safe_text(scope) or "global"
     return normalized_scope == "global" or _safe_text(item.get("scope")) in {normalized_scope, "global"}
 
@@ -661,14 +663,21 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "usageCount": 0,
         "tags": list(tags or []),
         "scope": bundle.get("scope") or "global",
+        "sourceContext": dict(bundle.get("sourceContext") or {}),
     }
 
 
-def store_evidence_bundle(bundle: dict[str, Any], *, ttl_seconds: int, scope: str) -> dict[str, Any]:
+def store_evidence_bundle(bundle: dict[str, Any], *, ttl_seconds: int, scope: str, access_check: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any]:
     with _LOCK:
         payload = _prune_expired(_read_store())
         bundle = _normalize_bundle_kinds(bundle)
         bundle_id = _safe_text(bundle.get("evidenceBundleId")) or f"research_{uuid.uuid4().hex[:12]}"
+        if access_check is not None:
+            existing_bundle = next((item for item in payload["evidenceBundles"] if item.get("evidenceBundleId") == bundle_id), None)
+            revision_id = _safe_text(bundle.get("supersedesExperiencePackId"))
+            revision = next((item for item in payload["experiencePacks"] if item.get("experiencePackId") == revision_id), None) if revision_id else None
+            if (existing_bundle and not access_check(existing_bundle)) or (revision_id and (not revision or not access_check(revision))):
+                raise PermissionError("research_scope_unauthorized")
         created_at = _safe_text(bundle.get("createdAt")) or _utc_now_iso()
         stored = {
             **bundle,
@@ -762,6 +771,7 @@ def _search_experience_packs(
     min_confidence: str,
     limit: int,
     include_archived: bool,
+    access_check: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     q_tokens = _question_tokens(query)
     query_fingerprint = _topic_fingerprint(query)
@@ -773,7 +783,7 @@ def _search_experience_packs(
     with _LOCK:
         payload = _read_store()
         for item in payload["experiencePacks"]:
-            if not isinstance(item, dict) or not _scope_matches(item, scope):
+            if not isinstance(item, dict) or not _scope_matches(item, scope, access_check):
                 continue
             if _pack_excluded_from_default_search(item):
                 continue
@@ -823,7 +833,7 @@ def _search_experience_packs(
     return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
 
 
-def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dict[str, Any]]:
+def list_evidence_bundles(*, scope: str = "global", limit: int = 50, access_check: Callable[[dict[str, Any]], bool] | None = None) -> list[dict[str, Any]]:
     with _LOCK:
         payload = _read_store()
         previous_count = len(_as_list(payload.get("evidenceBundles")))
@@ -837,7 +847,7 @@ def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dic
         safe_limit = max(1, min(int(limit or 50), 200))
         items: list[dict[str, Any]] = []
         for item in payload["evidenceBundles"]:
-            if not isinstance(item, dict) or not _scope_matches(item, scope):
+            if not isinstance(item, dict) or not _scope_matches(item, scope, access_check):
                 continue
             visible = _visible(item)
             visible["promotable"] = _has_reusable_answer_pack(item)
@@ -847,12 +857,14 @@ def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dic
         return items
 
 
-def get_evidence_bundle(evidence_bundle_id: str) -> dict[str, Any] | None:
+def get_evidence_bundle(evidence_bundle_id: str, *, access_check: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any] | None:
     with _LOCK:
         payload = _prune_expired(_read_store())
         target = _safe_text(evidence_bundle_id)
         for item in payload["evidenceBundles"]:
             if _safe_text(item.get("evidenceBundleId")) == target:
+                if access_check is not None and not access_check(item):
+                    return None
                 visible = _visible(item)
                 visible["promotable"] = _has_reusable_answer_pack(item)
                 return visible
@@ -878,6 +890,7 @@ def search_experience_packs_with_options(
     min_confidence: str = "",
     limit: int = 10,
     include_archived: bool = False,
+    access_check: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     return _search_experience_packs(
         query=query,
@@ -886,6 +899,7 @@ def search_experience_packs_with_options(
         min_confidence=min_confidence,
         limit=limit,
         include_archived=include_archived,
+        access_check=access_check,
     )
 
 
@@ -894,12 +908,15 @@ def get_experience_pack(
     *,
     include_archived: bool = False,
     record_usage: bool = False,
+    access_check: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
     with _LOCK:
         payload = _read_store()
         target = _safe_text(experience_pack_id)
         for item in payload["experiencePacks"]:
             if _safe_text(item.get("experiencePackId")) == target:
+                if access_check is not None and not access_check(item):
+                    return None
                 if _safe_text(item.get("status")).lower() == "archived" and not include_archived:
                     return None
                 if record_usage:
@@ -910,7 +927,7 @@ def get_experience_pack(
     return None
 
 
-def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: list[str] | None = None) -> dict[str, Any] | None:
+def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: list[str] | None = None, access_check: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any] | None:
     with _LOCK:
         payload = _prune_expired(_read_store())
         bundle = None
@@ -919,7 +936,7 @@ def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: l
             if _safe_text(item.get("evidenceBundleId")) == target_bundle_id:
                 bundle = item
                 break
-        if not bundle:
+        if not bundle or (access_check is not None and not access_check(bundle)):
             return None
         bundle = _normalize_bundle_kinds(bundle)
         if not _has_reusable_answer_pack(bundle):
@@ -938,13 +955,15 @@ def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: l
         return _visible_experience(candidate)
 
 
-def archive_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin", reason: str = "") -> dict[str, Any] | None:
+def archive_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin", reason: str = "", access_check: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any] | None:
     with _LOCK:
         payload = _read_store()
         target = _safe_text(experience_pack_id)
         now = _utc_now_iso()
         for item in payload["experiencePacks"]:
             if _safe_text(item.get("experiencePackId")) == target:
+                if access_check is not None and not access_check(item):
+                    return None
                 item["status"] = "archived"
                 item["archivedAt"] = now
                 item["archivedBy"] = _safe_text(initiated_by) or "admin"
@@ -955,13 +974,15 @@ def archive_experience_pack(experience_pack_id: str, *, initiated_by: str = "adm
     return None
 
 
-def restore_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin") -> dict[str, Any] | None:
+def restore_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin", access_check: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any] | None:
     with _LOCK:
         payload = _read_store()
         target = _safe_text(experience_pack_id)
         now = _utc_now_iso()
         for item in payload["experiencePacks"]:
             if _safe_text(item.get("experiencePackId")) == target:
+                if access_check is not None and not access_check(item):
+                    return None
                 issues = _experience_acceptance_issues(item)
                 item["status"] = "draft" if issues else "active"
                 if issues:
@@ -980,7 +1001,7 @@ def restore_experience_pack(experience_pack_id: str, *, initiated_by: str = "adm
     return None
 
 
-def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False) -> bool:
+def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False, access_check: Callable[[dict[str, Any]], bool] | None = None) -> bool:
     if not confirm:
         return False
     with _LOCK:
@@ -989,7 +1010,7 @@ def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False) ->
         before = len(payload["experiencePacks"])
         payload["experiencePacks"] = [
             item for item in payload["experiencePacks"]
-            if not (isinstance(item, dict) and _safe_text(item.get("experiencePackId")) == target)
+            if not (isinstance(item, dict) and _safe_text(item.get("experiencePackId")) == target and (access_check is None or access_check(item)))
         ]
         changed = len(payload["experiencePacks"]) != before
         if changed:
@@ -998,7 +1019,7 @@ def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False) ->
         return changed
 
 
-def list_experience_packs(*, scope: str = "global", limit: int = 50, include_archived: bool = False) -> list[dict[str, Any]]:
+def list_experience_packs(*, scope: str = "global", limit: int = 50, include_archived: bool = False, access_check: Callable[[dict[str, Any]], bool] | None = None) -> list[dict[str, Any]]:
     with _LOCK:
         payload = _read_store()
         now = datetime.now(timezone.utc)
@@ -1007,7 +1028,7 @@ def list_experience_packs(*, scope: str = "global", limit: int = 50, include_arc
         for item in payload["experiencePacks"]:
             if (
                 not isinstance(item, dict)
-                or not _scope_matches(item, scope)
+                or not _scope_matches(item, scope, access_check)
                 or (not include_archived and _safe_text(item.get("status")).lower() == "archived")
             ):
                 continue
@@ -1140,7 +1161,7 @@ def maintain_experience_packs(*, now: datetime | None = None) -> dict[str, Any]:
         }
 
 
-def research_ledger_summary(*, scope: str = "global", include_archived: bool = False, limit: int = 30) -> dict[str, Any]:
+def research_ledger_summary(*, scope: str = "global", include_archived: bool = False, limit: int = 30, access_check: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any]:
     safe_limit = max(1, min(int(limit or 30), 100))
     with _LOCK:
         payload = _read_store()
@@ -1155,13 +1176,13 @@ def research_ledger_summary(*, scope: str = "global", include_archived: bool = F
         scoped_bundles = [
             item
             for item in payload["evidenceBundles"]
-            if isinstance(item, dict) and _scope_matches(item, scope)
+            if isinstance(item, dict) and _scope_matches(item, scope, access_check)
         ][:200]
         scoped_packs = [
             item
             for item in payload["experiencePacks"]
             if isinstance(item, dict)
-            and _scope_matches(item, scope)
+            and _scope_matches(item, scope, access_check)
             and (include_archived or _safe_text(item.get("status")).lower() != "archived")
         ][:200]
 

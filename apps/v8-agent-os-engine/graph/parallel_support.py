@@ -16,6 +16,7 @@ from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_broker import is_non_file_read_reference, task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
+from core.native_file_progress import NativeFileProgress
 from core.observability_db import redact_observability_text
 from core.response_normalizer import extract_text_and_reasoning
 from core.subagent_streaming import project_subagent_stream_text
@@ -562,6 +563,11 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
         for ordinal, call in enumerate(_tool_call_dicts_from_message(message)):
             tool_name = str(call.get("name") or "tool").strip() or "tool"
             tool_call_id = str(call.get("id") or f"{message_id}:tool:{ordinal}").strip()
+            tool_args = _normalize_tool_call_args(call.get("args"))
+            content = tool_args.get("content")
+            content_proof = ({"inputContentChars": len(content),
+                              "inputContentSha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+                             if tool_name == "write_native_file" and isinstance(content, str) else {})
             nodes.append(
                 {
                     "id": f"{tool_call_id}:call",
@@ -570,7 +576,8 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
                     "topic": "subagent.tool.started",
                     "toolName": tool_name,
                     "toolCallId": tool_call_id,
-                    "args": _sanitize_subagent_timeline_value(_normalize_tool_call_args(call.get("args"))),
+                    "args": _sanitize_subagent_timeline_value(tool_args),
+                    **({"data": content_proof} if content_proof else {}),
                 }
             )
         return nodes
@@ -578,6 +585,9 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
         tool_name = str(getattr(message, "name", None) or "tool").strip() or "tool"
         tool_call_id = str(getattr(message, "tool_call_id", None) or message_id).strip()
         content = getattr(message, "content", "")
+        from core.native_file_progress import completed_write_version
+
+        write_version = completed_write_version(message)
         nodes.append(
             {
                 "id": f"{message_id}:result",
@@ -587,6 +597,7 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
                 "toolName": tool_name,
                 "toolCallId": tool_call_id,
                 "agentVisibleResult": _sanitize_subagent_timeline_value(content),
+                **({"resultStatus": "completed", "data": {"contentVersion": write_version}} if write_version else {}),
             }
         )
     return nodes
@@ -680,7 +691,11 @@ def _subagent_runtime_input_request(
 
 
 def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | None:
-    """Recognize an explicit final blocker without guessing from ordinary prose."""
+    """Recognize explicit terminal fields; leave narrative risk review to the parent.
+
+    Risk/notes headings and words in their body are not terminal declarations.
+    Typed tool/artifact/verification failures are enforced independently.
+    """
 
     text = str(result_text or "").strip()
     if not text:
@@ -696,78 +711,6 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
             r"(?:\*\*)?(阻塞|失败)\b",
             text,
         )
-    if not match:
-        section_match = re.search(
-            r"(?im)^\s*#{1,6}\s*[^\r\n]*?"
-            r"(blockers?|blocked|failures?|failed|errors?|阻塞|失败)"
-            r"[^\r\n]*$",
-            text,
-        )
-        if section_match:
-            heading = section_match.group(0).strip().lower()
-            section_body = text[section_match.end() :]
-            next_heading = re.search(r"(?m)^\s*#{1,6}\s+", section_body)
-            if next_heading:
-                section_body = section_body[: next_heading.start()]
-            first_line = next(
-                (line.strip() for line in section_body.splitlines() if line.strip()),
-                "",
-            )
-            normalized_first_line = re.sub(r"^[\s>*_`~-]+", "", first_line).strip().lower()
-            normalized_first_line = normalized_first_line.replace("**", "").replace("__", "")
-            explicitly_empty = bool(
-                re.match(
-                    r"^(?:(?:blockers?|risks?|errors?|阻塞|风险|错误)\s*[:：]\s*"
-                    r"(?:none\b|no\b|n/?a\b|无(?:\s|$)|没有(?:\s|$)|暂无(?:\s|$))|"
-                    r"none\b|n/?a\b|not\s+applicable\b|"
-                    r"no\s+(?:known\s+)?(?:blockers?|risks?|errors?)\b|"
-                    r"无(?:阻塞|风险|错误)?\b|暂无\b|没有\b|未发现\b)",
-                    normalized_first_line,
-                )
-            )
-            heading_explicitly_empty = bool(
-                re.search(r"\bno\s+(?:known\s+)?(?:blockers?|failures?|errors?)\b", heading)
-                or re.search(r"无(?:阻塞|失败|错误)", heading)
-            )
-            mixed_risk_heading = bool(
-                re.search(r"\brisks?\b|notes?|handoff|风险|备注|说明", heading, re.IGNORECASE)
-            )
-            candidate_lines = (
-                [first_line]
-                if mixed_risk_heading
-                else [line for line in section_body.splitlines() if line.strip()]
-            )
-            body_reports_terminal_failure = any(
-                re.search(
-                    r"(?:\b(?:blocked|failed|failure|deferred|unable|unavailable|cannot|"
-                    r"could\s+not|did\s+not\s+run|not\s+verified)\b|"
-                    r"\bmissing\s+(?:required|expected|artifact|file|evidence|dependency|output)\b|"
-                    r"^(?:blocker|error|missing)\s*[:：]|"
-                    r"阻断|阻塞|失败|无法|未运行|未验证|未通过|缺失)",
-                    re.sub(r"^[\s>*_`~-]+", "", line).strip(),
-                    re.IGNORECASE,
-                )
-                for line in candidate_lines
-                if line.strip()
-                and not re.search(
-                    r"(?:无需|不(?:存在|需要|触发)|未(?:发现|发生|出现)|没有)"
-                    r".{0,16}(?:缺失|阻塞|失败|错误)",
-                    re.sub(r"^[\s>*_`~-]+", "", line).strip(),
-                    re.IGNORECASE,
-                )
-                and not re.match(
-                    r"^[\s>*_`~-]*(?:none\b|n/?a\b|no\s+|无(?:阻塞|风险|错误)?\b|暂无\b|没有\b|未发现\b)",
-                    line.strip(),
-                    re.IGNORECASE,
-                )
-            )
-            if (
-                first_line
-                and not explicitly_empty
-                and not heading_explicitly_empty
-                and body_reports_terminal_failure
-            ):
-                match = section_match
     if not match:
         match = re.search(
             r"(?im)^\s*(?:\*\*)?(阻断原因|阻塞原因)(?:\*\*)?\s*[:：]",
@@ -966,6 +909,8 @@ def _tool_message_evidence_succeeded(message: Any, *, tool_name: str) -> bool:
         return False
     if str(getattr(message, "name", "") or "").strip() != tool_name:
         return False
+    if getattr(message, "status", None) == "error":
+        return False
     content = str(getattr(message, "content", "") or "").strip()
     if not content:
         return False
@@ -988,6 +933,9 @@ def _tool_message_evidence_succeeded(message: Any, *, tool_name: str) -> bool:
             )
         return payload.get("ok") is not False
     lowered = content.lower()
+    if tool_name == "read_native_file" and re.match(r"^--- File: .+ \(Lines? \d+ to \d+ of \d+\) ---", content):
+        # A file containing an error example was still read successfully.
+        return True
     if any(
         marker in lowered
         for marker in (
@@ -1427,11 +1375,11 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
         values = value if isinstance(value, (list, tuple, set)) else [value]
         return list(dict.fromkeys(str(item or "").strip() for item in values if str(item or "").strip()))
 
+    verifying = (str(capsule.get("executionMode") or capsule.get("execution_mode") or "").lower() == "verify"
+                 or bool(task_brief.get("readOnly") or task_brief.get("read_only")))
     declared_read_values = _texts(
-        explicit.get("requiredReadPaths")
-        or capsule.get("mustRead")
-        or capsule.get("readSet")
-        or task_brief.get("readSet")
+        explicit["requiredReadPaths"] if "requiredReadPaths" in explicit else
+        capsule.get("mustRead") or ((capsule.get("readSet") or task_brief.get("readSet")) if verifying else [])
     )
     read_paths = list(
         dict.fromkeys(
@@ -1550,6 +1498,8 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     )
     command_targets = _texts(explicit.get("requiredCommandTargets"))
     required_tools = _required_verification_tools(branch)
+    if read_paths:
+        required_tools.add("read_native_file")
     if required_commands or command_targets:
         required_tools.add("run_system_command")
     if "run_system_command" in required_tools and not required_commands:
@@ -1775,7 +1725,7 @@ def _repeat_sensitive_tool_call_signature(call: dict[str, Any]) -> tuple[str, st
         if name == "creative_media_jobs" and action in {"get", "list", "artifacts", "cancel"}:
             return None
         canonical_args = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-        return name, canonical_args[:2400]
+        return name, hashlib.sha256(canonical_args.encode("utf-8")).hexdigest()
     return None
 
 
@@ -2651,6 +2601,10 @@ async def _run_parallel_agent_branch(
     artifact_correction_count = 0
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
+    file_progress = NativeFileProgress(
+        agent_id=agent_id,
+        workspace_path=str(_runtime_context_from_parallel_state(local_state, branch=branch).get("workspace_path") or ""),
+    )
     verification_expectations = _verification_expectations(branch)
     required_verification_commands = list(verification_expectations.get("requiredCommands") or [])
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
@@ -3104,10 +3058,14 @@ async def _run_parallel_agent_branch(
             continue
         repeated_tool_violation: tuple[str, str] | None = None
         for message in delta_messages_for_guard:
-            for call in _tool_call_dicts_from_message(message):
+            calls = _tool_call_dicts_from_message(message)
+            file_progress.observe(message, calls)
+            for call in calls:
                 signature = _repeat_sensitive_tool_call_signature(call)
                 if not signature:
                     continue
+                if signature[0] == "read_native_file":
+                    signature = (signature[0], f"{signature[1]}:file-version:{file_progress.read_epoch(call)}")
                 call_id = str(call.get("id") or "").strip() or f"{signature[0]}:{signature[1]}:{len(seen_tool_call_ids)}"
                 if call_id in seen_tool_call_ids:
                     continue

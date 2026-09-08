@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import os
 import re
@@ -282,14 +283,20 @@ def _read_before_write_key(runtime_context: dict[str, Any], target_path: Path) -
         str(runtime_context.get("session_id") or "").strip(),
         str(runtime_context.get("run_id") or runtime_context.get("root_run_id") or "").strip(),
         str(runtime_context.get("workspace_id") or runtime_context.get("project_id") or "").strip(),
+        str(runtime_context.get("agent_id") or runtime_context.get("agentId") or "").strip(),
+        str(runtime_context.get("subagent_id") or runtime_context.get("subagentId") or "").strip(),
+        str(runtime_context.get("delegation_id") or runtime_context.get("delegationId") or "").strip(),
     )
     normalized_path = os.path.normcase(str(target_path.resolve(strict=False)))
     return "\x1f".join((*scope_parts, normalized_path))
 
 
-def _file_state_fingerprint(target_path: Path) -> tuple[int, int]:
-    stat = target_path.stat()
-    return int(stat.st_size), int(stat.st_mtime_ns)
+def _content_version(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _file_state_fingerprint(target_path: Path) -> str:
+    return _content_version(target_path.read_bytes()) if target_path.exists() else "missing"
 
 
 def _prune_read_before_write_receipts(now: float) -> None:
@@ -310,10 +317,10 @@ def _prune_read_before_write_receipts(now: float) -> None:
         _READ_BEFORE_WRITE_RECEIPTS.pop(key, None)
 
 
-def _record_file_read(runtime_context: dict[str, Any], target_path: Path) -> None:
+def _record_file_read(runtime_context: dict[str, Any], target_path: Path, *, version: str) -> None:
     now = time.monotonic()
     receipt = {
-        "fingerprint": _file_state_fingerprint(target_path),
+        "fingerprint": version,
         "recordedAtMonotonic": now,
     }
     with _READ_BEFORE_WRITE_LOCK:
@@ -321,7 +328,7 @@ def _record_file_read(runtime_context: dict[str, Any], target_path: Path) -> Non
         _READ_BEFORE_WRITE_RECEIPTS[_read_before_write_key(runtime_context, target_path)] = receipt
 
 
-def _consume_file_read_receipt(runtime_context: dict[str, Any], target_path: Path) -> tuple[bool, str]:
+def _check_file_read_receipt(runtime_context: dict[str, Any], target_path: Path, *, version: str) -> tuple[bool, str]:
     if not target_path.exists() or not target_path.is_file():
         return True, ""
     now = time.monotonic()
@@ -331,15 +338,10 @@ def _consume_file_read_receipt(runtime_context: dict[str, Any], target_path: Pat
         receipt = _READ_BEFORE_WRITE_RECEIPTS.get(key)
         if not receipt:
             return False, "missing"
-        if tuple(receipt.get("fingerprint") or ()) != _file_state_fingerprint(target_path):
+        if receipt.get("fingerprint") != version:
             _READ_BEFORE_WRITE_RECEIPTS.pop(key, None)
             return False, "stale"
     return True, ""
-
-
-def _invalidate_file_read_receipt(runtime_context: dict[str, Any], target_path: Path) -> None:
-    with _READ_BEFORE_WRITE_LOCK:
-        _READ_BEFORE_WRITE_RECEIPTS.pop(_read_before_write_key(runtime_context, target_path), None)
 
 
 def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str, Any]:
@@ -360,13 +362,8 @@ def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str
     }
 
 
-def _atomic_write_text(target_path: Path, content: str, *, append: bool = False) -> None:
+def _atomic_write_text(target_path: Path, content: str, *, expected_version: str) -> None:
     """Write text without exposing a partially truncated target file."""
-    existing_content = ""
-    if append and target_path.exists():
-        with target_path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
-            existing_content = handle.read()
-
     target_path.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{target_path.name}.",
@@ -379,7 +376,7 @@ def _atomic_write_text(target_path: Path, content: str, *, append: bool = False)
     try:
         with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
             descriptor_open = False
-            handle.write(existing_content + str(content or ""))
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         if target_path.exists():
@@ -387,7 +384,13 @@ def _atomic_write_text(target_path: Path, content: str, *, append: bool = False)
                 os.chmod(temporary_path, target_path.stat().st_mode & 0o777)
             except OSError:
                 pass
-        os.replace(temporary_path, target_path)
+        # Serialize V8OS commits and check again after validation/fsync. External
+        # editors do not take this lock; this is optimistic conflict detection,
+        # not an OS-wide filesystem transaction.
+        with _READ_BEFORE_WRITE_LOCK:
+            if _file_state_fingerprint(target_path) != expected_version:
+                raise ValueError("file_changed_before_commit")
+            os.replace(temporary_path, target_path)
     except BaseException:
         if descriptor_open:
             try:
@@ -479,6 +482,8 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
     Use this for known text, JSON, Markdown, source, task brief, Spec, or config paths in the active workspace.
     Do not use shell commands, Python one-liners, `type`, `Get-Content`, or `cat` just to read a known file.
     Reading a file also creates the same-run receipt required before modifying an existing file with `write_native_file`.
+    Text reads include the full file's byte count and SHA-256 content version, even for a line range;
+    reuse these facts for size/hash verification instead of launching a shell.
 
     Supported office documents are converted to bounded Markdown/text with the
     same document-ingestion parser used by Memory. Other binary files are
@@ -556,8 +561,8 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
             )
 
         else:
-            with open(target_path, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
+            read_bytes = target_path.read_bytes()
+            lines = read_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
 
         total_lines = len(lines)
         if start_line is not None and start_line < 1:
@@ -612,7 +617,11 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
             if truncated
             else ""
         )
-        _record_file_read(runtime_context, target_path)
+        # Bind exactly what was read, not a later stat of a potentially changed file.
+        if target_path.suffix.lower() not in DOCUMENT_EXTENSIONS:
+            version = _content_version(read_bytes)
+            _record_file_read(runtime_context, target_path, version=version)
+            header += f"Content version: {version}\nFile bytes: {len(read_bytes)}\n"
 
         return header + content + footer
 
@@ -685,14 +694,18 @@ def write_native_file(
     line_end: int | None = None,
     expected_old_text: str = "",
     allow_full_replace: bool = False,
+    expected_version: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Author governed text/JSON/Markdown/source artifacts in the active workspace.
 
     Use this instead of shell commands or redirection for content-bearing project files. New files may be created
     directly. Before changing or appending to an existing file,
-    call `read_native_file` in the same run. A successful write consumes that read receipt,
-    so read the file again before another modification. For an existing file, choose exactly
+    call `read_native_file` in the same run and actor. A successful create/write renews the
+    receipt to the returned content version: consecutive edits need no repeat read unless
+    another actor changed the file or the receipt expired. Optionally pass expected_version
+    from the latest read/write to reject stale queued edits. This never bypasses read or write-set permissions.
+    For an existing file, choose exactly
     one explicit mutation intent: append=True, a line/expected-text scoped patch, or
     allow_full_replace=True for a deliberate whole-file replacement. The default must never
     silently truncate an existing file.
@@ -706,6 +719,7 @@ def write_native_file(
         line_end (int | None): Optional 1-based end line for scoped replacement.
         expected_old_text (str): Optional exact text anchor for scoped replacement.
         allow_full_replace (bool): Explicitly allow full overwrite of an existing file.
+        expected_version (str): Optional exact content version returned by the latest read/write.
     """
     try:
         runtime_context = get_runtime_context()
@@ -748,7 +762,11 @@ def write_native_file(
                 ensure_ascii=False,
                 indent=2,
             )
-        read_allowed, read_block_reason = _consume_file_read_receipt(runtime_context, target_path)
+        original_bytes = target_path.read_bytes() if target_path.exists() else None
+        base_version = _content_version(original_bytes) if original_bytes is not None else "missing"
+        if expected_version and expected_version != base_version:
+            return json.dumps(_read_before_write_block_payload(target_path, "stale"), ensure_ascii=False)
+        read_allowed, read_block_reason = _check_file_read_receipt(runtime_context, target_path, version=base_version)
         if not read_allowed:
             return json.dumps(
                 _read_before_write_block_payload(target_path, read_block_reason),
@@ -781,7 +799,7 @@ def write_native_file(
         write_content = incoming_content
         write_reason = "file_write"
         if scoped_patch_requested:
-            original_text = target_path.read_text(encoding="utf-8", errors="ignore")
+            original_text = original_bytes.decode("utf-8", errors="strict")
             patch_result = _apply_scoped_text_patch(
                 original=original_text,
                 replacement=write_content,
@@ -809,7 +827,7 @@ def write_native_file(
             write_reason = "file_scoped_patch"
         elif not append and target_path.exists() and not allow_full_replace:
             existing_line_count = _line_count_for_guard(
-                target_path.read_text(encoding="utf-8", errors="ignore")
+                original_bytes.decode("utf-8", errors="strict")
             )
             return json.dumps(
                 {
@@ -826,8 +844,8 @@ def write_native_file(
             )
 
         final_content = write_content
-        if append and target_path.exists():
-            final_content = target_path.read_text(encoding="utf-8", errors="ignore") + write_content
+        if append and original_bytes is not None:
+            final_content = original_bytes.decode("utf-8", errors="strict") + write_content
         if target_path.suffix.lower() in {".html", ".htm"}:
             integrity_issues = _html_integrity_issues(final_content)
             if integrity_issues:
@@ -837,8 +855,14 @@ def write_native_file(
                     indent=2,
                 )
 
-        _atomic_write_text(target_path, write_content, append=append)
-        _invalidate_file_read_receipt(runtime_context, target_path)
+        try:
+            _atomic_write_text(target_path, final_content, expected_version=base_version)
+        except ValueError as exc:
+            if str(exc) != "file_changed_before_commit":
+                raise
+            return json.dumps(_read_before_write_block_payload(target_path, "stale"), ensure_ascii=False)
+        written_version = _content_version(final_content.encode("utf-8"))
+        _record_file_read(runtime_context, target_path, version=written_version)
 
         safety_guardian.observe_post_action(
             action_family="file_write",
@@ -871,13 +895,14 @@ def write_native_file(
                     "summary": f"已按局部锚点替换文件：{target_path}",
                     "path": str(target_path),
                     "charsWritten": len(write_content),
+                    "contentVersion": written_version,
                     "proof": patch_proof,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         action = "Appended" if append else "Created/Overwritten"
-        return f"Successfully {action} file: {target_path} ({len(write_content)} chars written)"
+        return f"Successfully {action} file: {target_path} ({len(write_content)} chars written)\nContent version: {written_version}; same-actor consecutive edits can reuse this receipt."
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error writing file '{path}': {str(e)}"

@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -142,6 +143,102 @@ def test_provider_duplicate_tool_projection_counts_as_one_call():
     assert observation["toolCallCount"] == 1
     assert observation["exactRepeatCount"] == 1
     assert observation["blocked"] is False
+
+
+def test_long_writes_with_a_shared_prefix_are_not_an_exact_tool_loop():
+    messages = [
+        _owned_tool_call("write_native_file", f"write-{index}", {
+            "path": "large.html", "content": "x" * 5000 + f"revision-{index}",
+        }) for index in range(3)
+    ]
+    distinct = _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])
+    assert not distinct["blocked"]
+    assert distinct["exactRepeatCount"] == 1
+
+    repeated = [messages[-1]] * 3
+    duplicate = _delegated_tool_loop_observation(repeated, agent_id="worker", current_message=repeated[-1])
+    assert duplicate["blocked"]
+    assert duplicate["reason"] == "delegated_exact_tool_loop"
+
+
+@pytest.mark.parametrize("tool", ["read_native_file", "grep_search"])
+def test_read_verification_after_changed_write_is_progress_not_an_exact_loop(tool):
+    messages = []
+    for index in range(3):
+        messages.extend([
+            _owned_tool_call("write_native_file", f"write-{index}", {"path": "result.txt", "content": f"revision {index}"}),
+            ToolMessage(content=json.dumps({"ok": True, "contentVersion": "sha256:" + str(index) * 64}),
+                        name="write_native_file", tool_call_id=f"write-{index}"),
+            _owned_tool_call(tool, f"read-{index}", {"path": "result.txt"}),
+        ])
+    assert not _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])["blocked"]
+    # Failed writes and no-op versions must not provide artificial progress.
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            message.content = json.dumps({"ok": False, "contentVersion": "sha256:" + "a" * 64})
+    assert _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])["blocked"]
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            message.content = json.dumps({"ok": True, "contentVersion": "sha256:" + "a" * 64})
+    assert _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])["blocked"]
+
+
+def test_failed_agent_surface_write_is_not_successful_write_proof():
+    from graph.agent_factories import _delegated_write_tool_observation
+    request = _owned_tool_call("write_native_file", "write", {"path": "file.txt", "content": "new"})
+    response = ToolMessage(content="write native file result\nStatus: failed\nSummary: 文件在读取后发生了变化，已阻止基于旧内容继续修改。",
+                           name="write_native_file", tool_call_id="write")
+    assert _delegated_write_tool_observation([request, response], agent_id="worker")["successful"] is False
+
+
+@pytest.mark.parametrize("tool,target,write_path,should_block", [
+    ("read_native_file", "target.txt", "unrelated.txt", True),
+    ("grep_search", "src", "src-other/file.txt", True),
+    ("grep_search", "src", "src/file.txt", False),
+])
+def test_only_read_target_changes_reset_delegated_repeat_count(tool, target, write_path, should_block):
+    messages = []
+    for index in range(3):
+        messages.extend([
+            _owned_tool_call("write_native_file", f"w{index}", {"path": write_path, "content": str(index)}),
+            ToolMessage(content=json.dumps({"ok": True, "contentVersion": "sha256:" + str(index) * 64}),
+                        name="write_native_file", tool_call_id=f"w{index}"),
+            _owned_tool_call(tool, f"r{index}", {"path": target}),
+        ])
+    result = _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])
+    assert result["blocked"] is should_block
+
+
+def test_delegated_old_write_receipts_cannot_reset_repeated_reads():
+    messages = []
+    for index in range(2):
+        messages.extend([
+            _owned_tool_call("write_native_file", f"w{index}", {"path": "target.txt", "content": str(index)}),
+            ToolMessage(content=json.dumps({"ok": True, "contentVersion": "sha256:" + str(index) * 64}),
+                        name="write_native_file", tool_call_id=f"w{index}"),
+        ])
+    receipts = [messages[1], messages[3]]
+    for index in range(3):
+        messages.extend([receipts[index % 2].model_copy(update={"id": f"replay-{index}"}),
+                         _owned_tool_call("read_native_file", f"r{index}", {"path": "target.txt"})])
+    result = _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])
+    assert result["blocked"]
+    assert result["exactRepeatCount"] == 3
+
+
+def test_real_file_progress_does_not_expand_total_48_call_budget():
+    messages = []
+    for index in range(24):
+        messages.extend([
+            _owned_tool_call("write_native_file", f"w{index}", {"path": "target.txt", "content": str(index)}),
+            ToolMessage(content=json.dumps({"ok": True, "contentVersion": "sha256:" + f"{index:064x}"}),
+                        name="write_native_file", tool_call_id=f"w{index}"),
+            _owned_tool_call("read_native_file", f"r{index}", {"path": "target.txt"}),
+        ])
+    result = _delegated_tool_loop_observation(messages, agent_id="worker", current_message=messages[-1])
+    assert result["toolCallCount"] == 48
+    assert result["exactRepeatCount"] == 1
+    assert result["reason"] == "delegated_tool_call_budget_exhausted"
 
 
 def test_delegated_tool_budget_counts_full_history_not_bounded_prompt_window():
@@ -363,7 +460,7 @@ def test_auto_output_does_not_promote_capability_registry_to_request_cap(monkeyp
     assert LLMFactory.get_model_max_output_tokens("custom::known-model") is None
 
 
-def test_create_subagent_chat_model_enforces_resolved_limit_and_role(monkeypatch):
+def test_create_subagent_chat_model_preserves_explicit_narrow_request_and_role(monkeypatch):
     captured = {}
     sentinel = object()
     monkeypatch.setattr(
@@ -393,7 +490,7 @@ def test_create_subagent_chat_model_enforces_resolved_limit_and_role(monkeypatch
             "_role": "reviewer:worker",
             "streaming": True,
             "timeout": 180,
-            "max_tokens": 49152,
+            "max_tokens": 1234,
         },
     }
 
@@ -456,6 +553,8 @@ def test_explicit_agent_and_reviewer_initial_models_use_subagent_factory(monkeyp
 
 def test_write_required_subagent_forces_tool_choice_until_successful_write(monkeypatch):
     captured = []
+    preparation_records = []
+    clock = [100.0]
     route_selected = []
     write_tool = SimpleNamespace(name="write_native_file", metadata={})
     task_brief = {
@@ -470,16 +569,22 @@ def test_write_required_subagent_forces_tool_choice_until_successful_write(monke
         "graph.agent_factories._resolved_workspace_binding_for_state",
         lambda _state: {"activeWorkspaceRoot": ".", "mainWorkspaceRoot": "."},
     )
-    monkeypatch.setattr(
-        "graph.agent_factories.build_engineering_kernel_context",
-        lambda **_kwargs: ("", {}),
-    )
+    def kernel(**_kwargs):
+        clock[0] += 2.0
+        return "", {}
+
+    monkeypatch.setattr("graph.agent_factories.time", SimpleNamespace(perf_counter=lambda: clock[0]))
+    monkeypatch.setattr("graph.agent_factories.build_engineering_kernel_context", kernel)
     monkeypatch.setattr(
         "graph.agent_factories.detect_command_environment",
         lambda: {"commandLanguage": "PowerShell", "shellDialect": "powershell"},
     )
     monkeypatch.setattr("graph.agent_factories.render_host_alerts_line", lambda: "")
-    monkeypatch.setattr("graph.agent_factories.render_host_load_line", lambda: "")
+    def host_load():
+        clock[0] += 0.125
+        return "Host Load: CPU n/a (sampling)"
+
+    monkeypatch.setattr("graph.agent_factories.render_host_load_line", host_load)
     monkeypatch.setattr("graph.agent_factories.utc_now_iso", lambda: "2026-08-21T00:00:00Z")
     monkeypatch.setattr(
         "graph.agent_factories._resolve_inherited_route_context",
@@ -501,10 +606,12 @@ def test_write_required_subagent_forces_tool_choice_until_successful_write(monke
         "graph.agent_factories.extensions_runtime_service.emit_route_selected",
         lambda **kwargs: route_selected.append(kwargs),
     )
-    monkeypatch.setattr("graph.agent_factories.bind_runtime_context", lambda **_kwargs: nullcontext())
+    from erc.runtime_context import get_runtime_context
 
     def _invoke(_llm, _messages, _tools, **kwargs):
         captured.append(kwargs.get("tool_choice"))
+        preparation_records.append(dict(get_runtime_context()["context_preparation_ms"]))
+        assert "context_preparation_ms" not in kwargs
         assert kwargs["stream_attempt_timeout_seconds"] is None
         assert kwargs["stream_idle_timeout_seconds"] == 180.0
         if len(captured) == 1:
@@ -572,6 +679,10 @@ def test_write_required_subagent_forces_tool_choice_until_successful_write(monke
     assert captured == ["required", None]
     assert len(route_selected) == 1
     assert second.goto == "supervisor"
+    assert preparation_records == [
+        {"hostAlerts": 0.0, "engineeringKernel": 2000.0, "hostLoad": 125.0, "messagePreparation": 0.0, "total": 2125.0},
+    ] * 2
+    assert "context_preparation_ms" not in get_runtime_context()
 
 
 def test_reviewer_without_override_reuses_budgeted_default_agent_model(monkeypatch):

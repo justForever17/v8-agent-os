@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -23,8 +26,9 @@ class HostLoadPromptContextTests(unittest.TestCase):
         host_load.clear_host_load_cache()
 
     def test_host_load_uses_psutil_and_gpu_probe_when_available(self):
+        probe_order = []
         fake_psutil = SimpleNamespace(
-            cpu_percent=Mock(return_value=12.2),
+            cpu_percent=Mock(side_effect=lambda **_kwargs: (probe_order.append("cpu"), 12.2)[1]),
             virtual_memory=Mock(return_value=SimpleNamespace(percent=60.7)),
             pids=Mock(return_value=[1, 2, 3]),
         )
@@ -37,11 +41,13 @@ class HostLoadPromptContextTests(unittest.TestCase):
 
         with patch.object(host_load, "psutil", fake_psutil), patch("core.host_load.shutil.which", return_value="nvidia-smi"), patch(
             "core.host_load.run_windowless",
-            return_value=completed,
+            side_effect=lambda *_args, **_kwargs: (probe_order.append("gpu"), completed)[1],
         ):
             line = host_load.render_host_load_line(use_cache=False)
 
         self.assertEqual(line, "Host Load: CPU 12%, Mem 61%, GPU 42%, Procs 3")
+        fake_psutil.cpu_percent.assert_called_once_with(interval=0.1)
+        self.assertEqual(probe_order, ["gpu", "cpu"])
 
     def test_host_load_degrades_to_na_without_psutil_or_gpu(self):
         with patch.object(host_load, "psutil", None), patch("core.host_load.shutil.which", return_value=None):
@@ -61,13 +67,153 @@ class HostLoadPromptContextTests(unittest.TestCase):
             "core.host_load.run_windowless",
             return_value=completed,
         ) as run:
-            first = host_load.render_host_load_line()
+            first = host_load.render_host_load_line(use_cache=False)
             second = host_load.render_host_load_line()
 
         self.assertEqual(first, second)
         run.assert_called_once()
 
+    def _join_sampler(self):
+        with host_load._CACHE_LOCK:
+            sampler = host_load._SAMPLER
+        if sampler is not None:
+            sampler.join(timeout=2)
+            self.assertFalse(sampler.is_alive(), "test sampler did not stop")
+
+    def test_cold_prompt_does_not_wait_for_slow_collection_and_shares_one_sampler(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def collect():
+            entered.set()
+            release.wait(timeout=2)
+            return host_load.HostLoadSnapshot(12, 61, 42, 3)
+
+        with patch.object(host_load, "_sample_host_load_snapshot", side_effect=collect) as sample:
+            try:
+                started = time.perf_counter()
+                first = host_load.render_host_load_line()
+                self.assertLess(time.perf_counter() - started, 0.5)
+                self.assertIn("CPU n/a", first)
+                self.assertIn("sampling", first)
+                self.assertTrue(entered.wait(timeout=1))
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    lines = list(pool.map(lambda _: host_load.render_host_load_line(), range(24)))
+                self.assertTrue(all("sampling" in line for line in lines))
+                sample.assert_called_once()
+            finally:
+                release.set()
+                self._join_sampler()
+            self.assertEqual(host_load.render_host_load_line(), "Host Load: CPU 12%, Mem 61%, GPU 42%, Procs 3")
+            sample.assert_called_once()
+
+    def test_prompt_cache_ttl_starts_when_slow_sampling_finishes(self):
+        clock = [100.0]
+
+        def collect():
+            clock[0] = 120.0
+            return host_load.HostLoadSnapshot(1, 2, 3, 4)
+
+        with patch.object(host_load.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
+            host_load, "_sample_host_load_snapshot", side_effect=collect,
+        ) as sample:
+            host_load.render_host_load_line()
+            self._join_sampler()
+            clock[0] = 124.9
+            self.assertEqual(host_load.render_host_load_line(), "Host Load: CPU 1%, Mem 2%, GPU 3%, Procs 4")
+            sample.assert_called_once()
+
+    def test_expired_prompt_reports_sample_age_without_waiting_for_refresh(self):
+        clock = [100.0]
+        release = threading.Event()
+        snapshot = host_load.HostLoadSnapshot(1, 2, 3, 4)
+        with patch.object(host_load.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
+            host_load, "_sample_host_load_snapshot", return_value=snapshot,
+        ):
+            host_load.collect_host_load_snapshot(use_cache=False)
+            clock[0] = 112.0
+            with patch.object(host_load, "_sample_host_load_snapshot", side_effect=lambda: (release.wait(timeout=2), snapshot)[1]):
+                try:
+                    started = time.perf_counter()
+                    line = host_load.render_host_load_line()
+                    self.assertLess(time.perf_counter() - started, 0.5)
+                    self.assertIn("CPU 1%", line)
+                    self.assertIn("sample age: 12.0s; sampling", line)
+                finally:
+                    release.set()
+                    self._join_sampler()
+
+    def test_clear_rejects_late_sample_without_starting_overlapping_probe(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def collect():
+            entered.set()
+            release.wait(timeout=2)
+            return host_load.HostLoadSnapshot(99, 99, 99, 99)
+
+        with patch.object(host_load, "_sample_host_load_snapshot", side_effect=collect) as sample:
+            try:
+                host_load.render_host_load_line()
+                self.assertTrue(entered.wait(timeout=1))
+                host_load.clear_host_load_cache()
+                self.assertIn("sampling", host_load.render_host_load_line())
+                sample.assert_called_once()
+            finally:
+                release.set()
+                self._join_sampler()
+            self.assertIsNone(host_load._CACHE)
+        with patch.object(host_load, "_sample_host_load_snapshot", return_value=host_load.HostLoadSnapshot(1, 2, 3, 4)):
+            host_load.render_host_load_line()
+            self._join_sampler()
+        self.assertIn("CPU 1%", host_load.render_host_load_line())
+
+    def test_background_sample_exception_has_cooldown(self):
+        clock = [100.0]
+        with patch.object(host_load.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
+            host_load, "_sample_host_load_snapshot", side_effect=RuntimeError("probe failed"),
+        ) as sample:
+            host_load.render_host_load_line()
+            self._join_sampler()
+            clock[0] = 104.9
+            for _ in range(10):
+                self.assertIn("unavailable; retry pending", host_load.render_host_load_line())
+            sample.assert_called_once()
+            clock[0] = 105.1
+            host_load.render_host_load_line()
+            self._join_sampler()
+            self.assertEqual(sample.call_count, 2)
+
+    def test_explicit_collect_remains_synchronous_and_clear_rejects_its_late_cache(self):
+        entered, release = threading.Event(), threading.Event()
+        snapshot = host_load.HostLoadSnapshot(1, 2, 3, 4)
+
+        def collect():
+            entered.set()
+            release.wait(timeout=2)
+            return snapshot
+
+        with patch.object(host_load, "_sample_host_load_snapshot", side_effect=collect):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(host_load.collect_host_load_snapshot, use_cache=False)
+                try:
+                    self.assertTrue(entered.wait(timeout=1))
+                    self.assertFalse(pending.done())
+                    host_load.clear_host_load_cache()
+                finally:
+                    release.set()
+                self.assertEqual(pending.result(timeout=2), snapshot)
+            self.assertIsNone(host_load._CACHE)
+
     def test_supervisor_environment_includes_dynamic_host_load_segment(self):
+        clock = [100.0]
+
+        def host_load():
+            clock[0] += 0.125
+            return "Host Load: CPU 12%, Mem 61%, GPU n/a, Procs 286"
+
+        def kernel(**_kwargs):
+            clock[0] += 2.0
+            return "", []
+
         with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(
             "graph.supervisor_context._build_workspace_rules_context",
             return_value=("", []),
@@ -79,7 +225,11 @@ class HostLoadPromptContextTests(unittest.TestCase):
             return_value=("", []),
         ), patch(
             "graph.supervisor_context.render_host_load_line",
-            return_value="Host Load: CPU 12%, Mem 61%, GPU n/a, Procs 286",
+            side_effect=host_load,
+        ), patch(
+            "graph.supervisor_context.build_engineering_kernel_context", side_effect=kernel,
+        ), patch(
+            "graph.supervisor_context.time", SimpleNamespace(perf_counter=lambda: clock[0]),
         ), patch(
             "graph.supervisor_context.utc_now_iso",
             return_value="2026-04-30T00:00:00Z",
@@ -106,6 +256,9 @@ class HostLoadPromptContextTests(unittest.TestCase):
         ]
         self.assertEqual(len(host_segments), 1)
         self.assertEqual(host_segments[0]["type"], "dynamic")
+        self.assertEqual(result["context_preparation_ms"], {
+            "hostAlerts": 0.0, "hostLoad": 125.0, "engineeringKernel": 2000.0,
+        })
 
     def test_supervisor_environment_includes_dynamic_host_alerts_segment_when_present(self):
         with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(

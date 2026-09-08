@@ -6,6 +6,7 @@ import {
   applyRealtimeEventToMessages,
   createInitialSessionRealtimeMessageState,
   evaluateSessionRuntimeEvent,
+  findRuntimeEventTaxonomyEntryByTopic,
   isClientAudioAttachment,
   isClientVisualAttachment,
   mergeTimelineNodesByIdentity,
@@ -14,6 +15,18 @@ import {
   SessionRuntimeEventContiguousCursor,
   shouldAuthoritativelyRefreshOnRuntimeEvent,
 } from "../dist/index.js";
+
+test("model response diagnostics do not impersonate extension activity", () => {
+  const diagnostic = findRuntimeEventTaxonomyEntryByTopic("extension.execution.completed");
+  assert.equal(diagnostic?.visibility, "excluded");
+  assert.deepEqual(diagnostic?.targets, []);
+  for (const topic of ["extension.skill.loaded", "extension.skill.blocked", "extension.mcp.invoked"]) {
+    const activity = findRuntimeEventTaxonomyEntryByTopic(topic);
+    assert.equal(activity?.runtimeId, "extensions");
+    assert.equal(activity?.visibility, "visible");
+    assert.ok(activity?.targets.includes("runtime_card"));
+  }
+});
 
 test("compact authoritative snapshots distinguish omitted messages from an empty transcript", () => {
   const compact = {
@@ -381,4 +394,31 @@ test("reasoning deltas update one node with canonical millisecond timing", () =>
   assert.equal(updated.currentAiMsg.nodes[0].time, 1750);
   assert.equal(updated.currentAiMsg.nodes[0].data.durationMs, 1750);
   assert.equal(updated.currentAiMsg.nodes[0].content, "first second");
+});
+
+test("terminal text correction replaces only its model stream in live and replay", () => {
+  const first = "chat:supervisor:text:prior-model";
+  const last = "chat:supervisor:text:final-model";
+  const finalText = "完整答案。".repeat(1600).padEnd(9602, "。");
+  const makeEvent = (stream, seq, content, replacement = false) => ({
+    type: "text_chunk", topic: "run.text.delta", runtimeId: "chat", visibility: "visible",
+    message_id: "assistant-1", run_id: "run-1", node_id: `node-${seq}`,
+    content, targets: ["message"],
+    data: { snapshot: content, finalized: true, partial: false,
+      ownerAgentId: "supervisor", ownerAgentKind: "supervisor", ownerRuntimeId: "chat",
+      ownerStreamKey: `${stream}:segment:${seq}`, streamRunKey: stream,
+      ...(replacement ? { replaceStreamRunKey: stream } : {}),
+    },
+  });
+  const events = [makeEvent(first, 1, "我先调研再核验。"), makeEvent(last, 2, "A".repeat(35)),
+    makeEvent(last, 3, "B".repeat(28)), makeEvent(last, 4, finalText, true)];
+  const live = [];
+  for (const event of events) applyRealtimeEventToMessages(event, live, undefined, {});
+  assert.equal(live[0].content, `我先调研再核验。${finalText}`);
+  assert.deepEqual(live[0].nodes.filter((node) => node.kind === "narrative").map((node) => node.id), ["node-1", "node-4"]);
+  const replay = [];
+  for (const event of events) applyRealtimeEventToMessages(event, replay, undefined, {});
+  assert.equal(replay[0].content, live[0].content);
+  applyRealtimeEventToMessages(events.at(-1), live, undefined, {});
+  assert.equal(live[0].content, replay[0].content, "replayed correction is idempotent");
 });

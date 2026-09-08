@@ -4,6 +4,8 @@ import copy
 import hashlib
 import json
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +14,7 @@ from tests.scripts import run_research_runtime_deep_live_audit as audit
 
 
 @pytest.mark.parametrize("behavior", ["correct", "always_accept", "always_reject", "invalid_schema"])
-@pytest.mark.parametrize("variant", ["scope", "version", "metadata"])
+@pytest.mark.parametrize("variant", ["scope", "version", "metadata", "request_origin"])
 def test_semantic_review_contrast_detects_false_success_and_false_veto(monkeypatch, behavior, variant):
     from core.tools import research_broker as research
     from langchain_core.messages import AIMessage
@@ -26,28 +28,31 @@ def test_semantic_review_contrast_detects_false_success_and_false_veto(monkeypat
 
     def invoke(candidate, messages, **kwargs):
         text = "\n".join(str(message.content) for message in messages)
-        assert "S7:E1" in text
+        assert '"citationKey": "S1"' in text
         if variant == "scope":
             assert "第三方转载" in text and "Verification Engineer" in text
         elif variant == "version":
             assert "2020-01-01" in text and "4.2" in text and "Linux" in text
-        else:
+        elif variant == "metadata":
             assert "2023-07-13" in text and "第15号" in text
-        assert kwargs["seconds"] == 32 and kwargs["disable_thinking"] is True
+        else:
+            assert "Supervisor 转述" in text and "ZX 2041" in text
+        assert 0 < kwargs["seconds"] <= 120 and kwargs["max_tokens"] is None
+        assert kwargs["tool_choice"] == "required"
         expected = audit._semantic_review_contrast_cases(variant)[len(calls) % 3][2]
         calls.append(candidate[1])
         accept = expected if behavior == "correct" else behavior == "always_accept"
-        payload = {"reviewDecision": "accept" if accept else "retry", "questionCoverage": True,
-                   "claimEntailment": accept, "freshnessAdequacy": True,
-                   "reviewReasons": [], "unsupportedClaims": [] if accept else ["counterexample"],
-                   "criticalMissingEvidence": [], "recommendedNextQueries": []}
-        return AIMessage(content=json.dumps({} if behavior == "invalid_schema" else payload))
+        candidate = json.loads(messages[1].content)["candidate"]
+        payload = {"decision": "accept" if accept else "revise", "coverage": "complete",
+                   "corrections": [] if accept else [{"kind": "fact", "answerQuote": candidate["answer"], "reason": "counterexample"}]}
+        return AIMessage(content="", tool_calls=[{"name": "review_research_answer", "id": f"review-{len(calls)}",
+                                                  "args": {} if behavior == "invalid_schema" else payload}])
 
     monkeypatch.setattr(research, "_invoke_architect_candidate_with_deadline", invoke)
     result = audit._run_semantic_review_contrast_case(variant)
-    assert len(calls) == 6
+    assert len(calls) == (18 if behavior == "invalid_schema" else 3)
     assert result.status == ("ok" if behavior == "correct" else "failed")
-    assert len(result.evidence) == 6
+    assert len(result.evidence) == 3
     assert all(json.loads(row)["evidenceMode"] == "synthetic-evidence-real-provider-contrast" for row in result.evidence)
 
 
@@ -57,10 +62,165 @@ def test_semantic_review_contrast_requires_live(monkeypatch):
     assert audit.main() == 2
 
 
-def test_fixed_bundle_cli_still_requires_explicit_live(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "argv", ["audit", "--fixed-bundle", str(tmp_path / "ledger.json")])
-    monkeypatch.setattr(audit, "_run_fixed_bundle_case", lambda *_: pytest.fail("live without consent"))
+@pytest.mark.parametrize("review_flags", [[], ["--review-only", "--original-request-file", "original.txt", "--expect-review-decision", "revise"]])
+def test_fixed_bundle_cli_still_requires_explicit_live(monkeypatch, tmp_path, review_flags):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Read input or invoked live code without --live")
+
+    monkeypatch.setattr(sys, "argv", ["audit", "--fixed-bundle", str(tmp_path / "ledger.json"), *review_flags])
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setattr(audit, "_run_fixed_bundle_case", forbidden)
+    monkeypatch.setattr(audit, "_review_fixed_candidate", forbidden)
     assert audit.main() == 2
+
+
+def _accepted_review_bundle():
+    body = "发布机关正文：规范编号 ZX 2041。本文不包含任何用户对话。"
+    source = {"citationKey": "S1", "sourceId": "fixture-source", "url": "https://example.org/fact", "text": body,
+              "readEvidence": {"verified": True, "contentSha256": hashlib.sha256(body.encode()).hexdigest()}}
+    return {"evidenceBundleId": "accepted-fixture", "question": "Supervisor 派生任务：核查 ZX 2040。",
+            "answer": "用户把 ZX 2040 写错了。\n保留原答案换行。[S1]", "deliveryScope": "partial",
+            "limitations": ["没有逐字用户引文。"], "reviewDecision": "accept",
+            "sourceMatrix": [{"url": "https://example.org/fact"}],
+            "shards": [{"fetchedTopSources": [{"text": "Frozen source"}]}],
+            "researchEvidenceBank": {"sources": [source]},
+            "researchResult": {"modelSynthesis": {"trace": [
+                {"name": "read_research_source", "citationKey": "S1", "start": 0, "end": len(body)},
+                {"stage": "review_input"},
+            ]}}}
+
+
+@pytest.mark.parametrize("stored_draft", [False, True])
+def test_stored_review_candidate_keeps_accepted_answer_or_existing_draft(stored_draft):
+    bundle = _accepted_review_bundle()
+    expected = {"answer": bundle["answer"], "coverage": "partial", "limitations": list(bundle["limitations"])}
+    if stored_draft:
+        expected = {"answer": "Unaccepted candidate\nkept verbatim", "coverage": "complete", "limitations": ["draft limitation"]}
+        bundle["researchResult"] = {"candidateDraft": copy.deepcopy(expected)}
+    before = copy.deepcopy(bundle)
+    restored = audit._stored_review_candidate(bundle)
+    assert restored == expected
+    restored["answer"] = "changed"
+    restored["limitations"].append("changed")
+    assert bundle == before
+    bundle.pop("answer")
+    bundle.pop("researchResult", None)
+    with pytest.raises(ValueError, match="fixed_review_requires_stored_candidate_draft"):
+        audit._stored_review_candidate(bundle)  # A derived question is never an answer fallback.
+
+
+@pytest.mark.parametrize("expected,actual", [("revise", "accept"), ("accept", "revise"), ("revise", "revise"), ("accept", "accept")])
+def test_fixed_review_cli_preserves_original_request_and_enforces_expected_decision(monkeypatch, tmp_path, expected, actual):
+    bundle = _accepted_review_bundle()
+    ledger, original = tmp_path / "ledger.json", tmp_path / "original.txt"
+    ledger.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+    original_text = "请查规范实施时间。\n请保留说明边界。\n"
+    original.write_text(original_text, encoding="utf-8-sig")
+    observed = {}
+
+    def review(value, *, original_user_request=""):
+        observed["request"] = original_user_request
+        assert value == bundle
+        return {"modelId": "fixture-reviewer", "review": {"decision": actual}, "trace": [],
+                "oracle": "review_protocol_only_not_independent_semantic_acceptance"}
+
+    execute = audit._run_fixed_bundle_case
+
+    def capture(*args, **kwargs):
+        observed["result"] = execute(*args, **kwargs)
+        return observed["result"]
+
+    monkeypatch.setattr(audit, "_review_fixed_candidate", review)
+    monkeypatch.setattr(audit, "_run_fixed_bundle_case", capture)
+    monkeypatch.setattr(sys, "argv", ["audit", "--live", "--fixed-bundle", str(ledger), "--review-only",
+                                      "--original-request-file", str(original), "--expect-review-decision", expected,
+                                      "--output-dir", str(tmp_path / "out")])
+    assert audit.main() == (0 if expected == actual else 1)
+    assert observed["request"] == original_text and observed["request"] != bundle["question"]
+    result = observed["result"]
+    assert any("fixed_review_decision_mismatch" in item for item in result.failures) is (expected != actual)
+    receipt = next(json.loads(row) for row in result.evidence if "originalRequestSha256" in row)
+    assert receipt["originalRequestSha256"] == hashlib.sha256(original_text.encode()).hexdigest()
+    assert receipt["expectedReviewDecision"] == expected
+
+
+@pytest.mark.parametrize("original_request", ["", "请查规范实施时间，未指定编号。"])
+@pytest.mark.parametrize("claim_from_derived", [False, True])
+def test_fixed_reviewer_wire_separates_original_request_from_derived_question(monkeypatch, original_request, claim_from_derived):
+    from core.context_orchestrator import context_orchestrator
+    from core.tools import research_broker as research
+    from langchain_core.messages import AIMessage
+
+    bundle = _accepted_review_bundle()
+    pool = [object()]
+    monkeypatch.setattr(research, "_create_web_research_architect_llm_candidates", lambda: pool)
+    monkeypatch.setattr(research, "_create_web_research_reviewer_llm_candidates", lambda _: pool)
+    monkeypatch.setattr(research, "_architect_candidate_selection_origin", lambda _: "agent_reviewer:verification-engineer")
+    monkeypatch.setattr(research, "_architect_candidate_context_model_ref", lambda _: "fixture-reviewer")
+    monkeypatch.setattr(research, "_architect_candidate_identity", lambda _: "fixture-reviewer")
+    monkeypatch.setattr(context_orchestrator, "prepare", lambda **kwargs: SimpleNamespace(messages=kwargs["messages"]))
+    calls = []
+
+    def invoke(_candidate, messages, **kwargs):
+        payload = json.loads(messages[1].content)
+        assert payload["requestContext"]["originalUserRequest"] == original_request
+        assert payload["requestContext"]["questionSource"] == (
+            "supervisor_derived_task" if original_request else "unattributed_research_task"
+        )
+        assert payload["question"] == bundle["question"]
+        assert payload["candidate"]["answer"] == bundle["answer"]
+        assert payload["candidate"]["limitations"] == bundle["limitations"]
+        assert payload["observedSourceKeys"] == ["S1"]
+        assert bundle["researchEvidenceBank"]["sources"][0]["text"] in json.dumps(payload["observedPassages"], ensure_ascii=False)
+        assert kwargs["max_tokens"] is None and kwargs["tool_choice"] == "required"
+        calls.append(payload)
+        review = {"decision": "accept" if claim_from_derived else "revise", "coverage": "partial",
+                  "limitations": bundle["limitations"], "corrections": [] if claim_from_derived else [
+                      {"kind": "attribution", "answerQuote": bundle["answer"], "reason": "派生任务不能证明用户用词。"}],
+                  "requestAttribution": {"verdict": "supported" if claim_from_derived else "unverified",
+                      "answerQuote": bundle["answer"], "originalRequestQuote": "ZX 2040" if claim_from_derived else "",
+                      "explanation": "核对原请求与转述任务的来源。"}}
+        return AIMessage(content="", tool_calls=[{"name": "review_research_answer", "id": f"review-{len(calls)}", "args": review}])
+
+    monkeypatch.setattr(research, "_invoke_architect_candidate_with_deadline", invoke)
+    if claim_from_derived:
+        with pytest.raises(RuntimeError, match="research_review_step_budget_exhausted"):
+            audit._review_fixed_candidate(bundle, original_user_request=original_request)
+        assert len(calls) == 6  # Reject even a schema-valid accept with a quote found only in the derived task.
+    else:
+        result = audit._review_fixed_candidate(bundle, original_user_request=original_request)
+        assert result["review"]["decision"] == "revise" and len(calls) == 1
+
+
+@pytest.mark.parametrize("mutate_input", ["", "source", "candidate"])
+def test_fixed_review_protocol_keeps_rejection_and_avoids_writer(monkeypatch, tmp_path, mutate_input):
+    from core.tools import research_broker as research
+
+    bundle = {"evidenceBundleId": "fixture", "question": "Compare facts",
+              "sourceMatrix": [{"url": "https://example.org/fact"}],
+              "shards": [{"fetchedTopSources": [{"text": "Exact source text"}]}],
+              "researchResult": {"candidateDraft": {"answer": "Candidate kept verbatim"}}}
+    path = tmp_path / "ledger.json"
+    path.write_text(json.dumps(bundle), encoding="utf-8")
+    monkeypatch.setattr(research, "_web_research_architect_pack", lambda **_: pytest.fail("Review replay called writer"))
+
+    def review(value):
+        assert value["researchResult"]["candidateDraft"]["answer"] == "Candidate kept verbatim"
+        if mutate_input == "source":
+            value["shards"][0]["fetchedTopSources"][0]["text"] = "Changed"
+        elif mutate_input == "candidate":
+            value["researchResult"]["candidateDraft"]["answer"] = "Changed"
+        return {"modelId": "configured", "review": {"decision": "revise"}, "trace": [],
+                "oracle": "review_protocol_only_not_independent_semantic_acceptance"}
+
+    monkeypatch.setattr(audit, "_review_fixed_candidate", review)
+    result = audit._run_fixed_bundle_case(path, "fixture", tmp_path / "out", review_only=True)
+    assert result.status == ("failed" if mutate_input else "ok")
+    assert result.case_id == "fixed_review_protocol"
+    if not mutate_input:
+        proof = json.loads(result.evidence[-1])
+        assert proof["reviewDecision"] == "revise"
+        assert proof["oracle"] == "review_protocol_only_not_independent_semantic_acceptance"
 
 
 @pytest.mark.parametrize("attempt_fetch", [False, True])

@@ -165,12 +165,16 @@ class SupervisorComputerUseBrokerTests(unittest.TestCase):
             mock.patch.object(native_tools_module, "_get_computer_use_runtime", return_value=computer_use_runtime), \
             mock.patch.object(native_tools_module, "_guard_computer_use_steps", return_value=(True, None)), \
             mock.patch.object(native_tools_module, "_computer_use_attach_plan_contract_summary", return_value=compact_execution_payload):
-            result = native_tools_module.computer_use_execute_task.func(goal="打开记事本")
+            result = native_tools_module.computer_use_execute_task.func(
+                goal="打开记事本", successCriteria="截图验收，不提交 https://example.com/form",
+            )
 
         payload = json.loads(result)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["executedBy"], "computer_use")
         computer_use_runtime.plan.assert_called_once()
+        self.assertEqual(computer_use_runtime.prepare_task_loop.call_args.kwargs["goal"], "打开记事本")
+        self.assertEqual(computer_use_runtime.plan.call_args.kwargs["task_loop"], {"domain": {}})
 
     def test_execute_task_dispatches_reuse_mode_to_rpa(self):
         route = {

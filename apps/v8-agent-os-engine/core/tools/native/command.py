@@ -272,11 +272,11 @@ def _engineering_command_scope_block(
         return {
             "ok": False,
             "kind": "git_parallel_isolation_required",
-            "summary": "当前任务在原工作区直接执行；为保证 writeSet 不被 shell 绕过，写盘、安装或任意脚本命令需要 Git 并行隔离。",
+            "summary": "命令未执行：当前任务在原工作区直接执行，shell 只允许可识别的只读/验证命令；写盘、安装或任意脚本需要 Git 并行隔离。此拒绝不代表文件或目录不存在。",
             "operation": operation,
             "command": str(command or "").strip(),
             "engineeringCapsuleMode": capsule_mode,
-            "recommendedNextAction": "使用受 writeSet 约束的文件工具完成修改，并运行只读/验证命令；确需 shell 写盘时，由用户在工作区设置中启用 Git 并行隔离。",
+            "recommendedNextAction": "绑定工作区无须重新创建。读取文件使用 read_native_file，目录检查用当前 shell 的简单只读命令；修改使用受 writeSet 约束的 write_native_file。复杂只读验证交给已有验证子任务；确需 shell 写盘时，由用户启用 Git 并行隔离。",
         }
     if capsule_mode in {"read_only", "verify"} and not command_may_change_workspace(command):
         return None

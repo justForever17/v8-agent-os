@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -27,6 +28,122 @@ from core.tools.research_quality import (
     build_research_review_binding,
     research_acceptance_metrics,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_engineering_environment_probes(monkeypatch):
+    """Runner unit contracts must not inspect the developer's real repository.
+
+    Workspace/provider integration belongs in the explicit live harness. These
+    two inputs only describe the environment in the runner's handoff summary;
+    delegation, permissions, artifact guards and state transitions stay real.
+    Individual tests can override either fixture when that input is under test.
+    """
+    from runtimes.engineering.service import engineering_lane_service
+
+    monkeypatch.setattr(runtime_episode_runner_module, "build_engineering_kernel_context",
+                        lambda **_kwargs: ("isolated test workspace digest", []))
+    monkeypatch.setattr(engineering_lane_service, "build_context_pack", lambda **_kwargs: {
+        "trigger": {"active": False, "workspaceMode": "unbound"},
+        "repo": {"repoDetected": False},
+    })
+
+
+def _context_probe_episode():
+    return build_runtime_episode(need={"kind": "engineering", "source": "test", "reason": "Prepare a plan"},
+        kind="engineering", state="queued", continuation_target="runtime_episode_runner",
+        extra={"inputs": {"deliverableKind": "plan_only", "writeRequired": False}})
+
+
+def test_slow_engineering_context_allows_executor_lease_heartbeats(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    entered, finished, beat_during_probe = threading.Event(), threading.Event(), threading.Event()
+    def prepare(**_kwargs):
+        entered.set()
+        try:
+            beat_during_probe.wait(timeout=1)
+            return "workspace digest", "context ready"
+        finally:
+            finished.set()
+    def heartbeat(*_args):
+        if entered.is_set() and not finished.is_set():
+            beat_during_probe.set()
+    monkeypatch.setattr(runner, "_prepare_engineering_context", prepare)
+    monkeypatch.setattr(runner, "_heartbeat", heartbeat)
+    progress = []
+    monkeypatch.setattr(runner, "_emit", lambda _topic, **kwargs: progress.append(kwargs["progress"]))
+    monkeypatch.setattr(runner, "_episode_cancellation_requested", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runtime_episode_runner_module, "_EPISODE_HEARTBEAT_INTERVAL_SECONDS", .1)
+    episode = _context_probe_episode()
+    result = asyncio.run(runner._await_episode_executor(episode, runner._execute_engineering(episode)))
+    assert beat_during_probe.is_set(), "a synchronous probe starved the lease heartbeat"
+    assert result["engineeringState"] == "work_plan_ready"
+    assert [item["status"] for item in progress] == ["active", "completed"]
+    assert progress[0]["timelineNode"]["id"] == progress[1]["timelineNode"]["id"]
+
+
+@pytest.mark.parametrize("lost_boundary", ["cancel", "lease"])
+def test_late_engineering_context_cannot_continue_after_cancel_or_lease_change(monkeypatch, lost_boundary):
+    runner = RuntimeEpisodeRunner()
+    context_finished = threading.Event()
+    def prepare(**_kwargs):
+        context_finished.set()
+        return "old workspace snapshot", "context ready"
+    def heartbeat(_episode_id, progress):
+        if lost_boundary == "lease" and context_finished.is_set():
+            raise runtime_episode_runner_module.RuntimeEpisodeLeaseLost("old claim")
+    monkeypatch.setattr(runner, "_prepare_engineering_context", prepare)
+    monkeypatch.setattr(runner, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner, "_episode_cancellation_requested",
+                        lambda *_args, **_kwargs: lost_boundary == "cancel" and context_finished.is_set())
+    advanced = []
+    monkeypatch.setattr(runner, "_is_engineering_plan_only_request", lambda **_kwargs: advanced.append(True) or True)
+    expected = (runtime_episode_runner_module.RuntimeEpisodeCancelled if lost_boundary == "cancel"
+                else runtime_episode_runner_module.RuntimeEpisodeLeaseLost)
+    with pytest.raises(expected):
+        asyncio.run(runner._execute_engineering(_context_probe_episode()))
+    assert advanced == []
+
+
+@pytest.mark.parametrize("lose_after_start", [False, True])
+def test_executor_is_stopped_when_heartbeat_loses_its_lease(monkeypatch, lose_after_start):
+    runner = RuntimeEpisodeRunner()
+    lease_error = runtime_episode_runner_module.RuntimeEpisodeLeaseLost("fixture: newer owner holds the lease")
+    monkeypatch.setattr(runner, "_episode_cancellation_requested", lambda *_args, **_kwargs: False)
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        completed, cancelled = [], []
+
+        async def executor():
+            entered.set()
+            try:
+                await release.wait()
+                completed.append("old owner continued")
+                return {"status": "ready"}
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        def heartbeat(*_args):
+            if not lose_after_start or entered.is_set():
+                raise lease_error
+
+        monkeypatch.setattr(runner, "_heartbeat", heartbeat)
+        with pytest.raises(runtime_episode_runner_module.RuntimeEpisodeLeaseLost) as observed:
+            await runner._await_cancellable_task(
+                "lease-loss-fixture", executor(), progress="working", heartbeat_interval_seconds=0.1,
+            )
+        assert observed.value is lease_error
+        # Keep this same loop alive: asyncio.run's final cleanup must not hide
+        # an orphan that can still finish after the owner has lost its lease.
+        release.set()
+        await asyncio.sleep(0)
+        assert completed == []
+        if lose_after_start:
+            assert cancelled == [True]
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
 
 
 def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: str = "worker") -> Send:
@@ -2947,6 +3064,10 @@ def test_research_episode_hydrates_compact_nonready_payload_for_internal_truth(
     assert result["observedEvidence"]["sourceCount"] == 8
     assert result["observedEvidence"]["claimCount"] == 8
     assert result["observedEvidence"]["evidenceBundleId"] == "research_compact_internal"
+    restored_draft = full_bundle["researchAnswerPack"]["answer"]
+    assert result["observedEvidence"]["candidateAnswerChars"] == len(restored_draft)
+    assert result["observedEvidence"]["candidateAnswerSha256"] == hashlib.sha256(restored_draft.encode("utf-8")).hexdigest()
+    assert result["observedEvidence"]["accepted"] is False
     assert handoff["sourceCount"] == 0
     assert handoff["claimCount"] == 0
     assert handoff["observedSourceCount"] == 8
@@ -3180,6 +3301,10 @@ def test_agent_reviewed_partial_answer_preserves_references_without_full_coverag
     assert handoff["sourceCount"] == 1
     assert handoff["researchRefs"] == ["research://bundle/research-original"]
     assert handoff["partialEvidenceAvailable"] is True
+    observed = handoff["taskBriefResults"][0]["observedEvidence"]
+    assert observed["accepted"] is True
+    assert observed["candidateAnswerChars"] == len(ANSWER)
+    assert observed["candidateAnswerSha256"] == hashlib.sha256(ANSWER.encode("utf-8")).hexdigest()
     assert handoff["reviewDecision"] == "accept"
     assert handoff["partialAnswers"][0]["limitations"]
     assert handoff["downstreamAllowed"] is True
@@ -3250,9 +3375,11 @@ def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
 
 
 @pytest.mark.parametrize("review_decision", ["retry", "reject"])
+@pytest.mark.parametrize("draft_visible", [True, False])
 def test_research_episode_rejected_review_never_promotes_draft_or_summary(
     monkeypatch,
     review_decision,
+    draft_visible,
 ):
     rejected_payload = _accepted_research_payload(
         "research_review_retry",
@@ -3264,6 +3391,12 @@ def test_research_episode_rejected_review_never_promotes_draft_or_summary(
     rejected_payload["researchAnswerPack"]["criticalMissingEvidence"] = [
         "The official version boundary is not yet verified."
     ]
+    rejected_payload["researchLoopState"] = {
+        "phase": "research_agent", "readableSourceCount": 12,
+        "selectedSourceCount": 8, "stopReason": "answer_review_rejected",
+    }
+    if not draft_visible:
+        rejected_payload["researchAnswerPack"]["answer"] = ""
     rejected_payload["finalExperiencePack"]["reviewDecision"] = review_decision
     rejected_payload["finalExperiencePack"]["recommendedNextQueries"] = [
         "site:docs.example.com current API version boundary"
@@ -3311,6 +3444,7 @@ def test_research_episode_rejected_review_never_promotes_draft_or_summary(
     assert handoff["reviewDecision"] == review_decision
     assert handoff["qualityTier"] == "insufficient"
     assert "RAW SEARCH SUMMARY" not in handoff["compactSummary"]
+    assert "Research fetched 12 readable source(s)" in handoff["compactSummary"]
     result = handoff["taskBriefResults"][0]
     assert result["answer"] == ""
     assert result["evidenceBundleId"] is None
@@ -3320,6 +3454,14 @@ def test_research_episode_rejected_review_never_promotes_draft_or_summary(
     assert result["sourceUrls"] == []
     assert result["observedEvidence"]["sourceCount"] == 8
     assert result["observedEvidence"]["claimCount"] == 8
+    assert result["observedEvidence"]["readableSourceCount"] == 12
+    assert result["observedEvidence"]["accepted"] is False
+    if draft_visible:
+        draft = rejected_payload["researchAnswerPack"]["answer"]
+        assert result["observedEvidence"]["candidateAnswerChars"] == len(draft)
+    else:
+        assert "candidateAnswerChars" not in result["observedEvidence"]
+        assert "candidateAnswerSha256" not in result["observedEvidence"]
     assert result["reviewDecision"] == review_decision
     assert result["qualityTier"] == "insufficient"
     assert "architect_review_not_accepted" in result["evidenceStatusReasons"]

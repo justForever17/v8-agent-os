@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import dataclass
@@ -35,6 +36,27 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except Exception:
         return 0.0
+
+
+def _context_preparation_timings(value: Any) -> Dict[str, float]:
+    """Keep measured stages only; never copy arbitrary runtime context to logs."""
+    if not isinstance(value, Mapping):
+        return {}
+    timings: Dict[str, float] = {}
+    for stage in (
+        "hostLoad", "hostAlerts", "engineeringKernel", "extensionRoute",
+        "systemContent", "messagePreparation", "passiveRag", "total",
+    ):
+        elapsed = value.get(stage)
+        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+            continue
+        try:
+            measured = float(elapsed)
+        except (ValueError, OverflowError):
+            continue
+        if math.isfinite(measured) and measured >= 0:
+            timings[stage] = round(measured, 2)
+    return timings
 
 
 def _extract_usage_from_mapping(payload: Mapping[str, Any]) -> Dict[str, int]:
@@ -500,10 +522,12 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         key = str(run_id)
         if key in self._starts:
             return
+        context = get_runtime_context()
+        context["context_preparation_ms"] = _context_preparation_timings(context.get("context_preparation_ms"))
         self._starts[key] = _InvocationStart(
             started_at=time.perf_counter(),
             started_at_iso=_utc_now(),
-            context=get_runtime_context(),
+            context=context,
             message_batches=max(int(message_batches or 0), 0),
         )
 
@@ -620,6 +644,11 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             error_message=str(error),
             metadata={
                 "exception_type": error.__class__.__name__,
+                "structuredOutputDiagnostic": {
+                    key: value for key, value in dict(getattr(error, "details", None) or {}).items()
+                    if key in {"reason", "finishReason", "toolCallCount", "argumentsChars", "argumentSha256", "jsonErrorOffset"}
+                    and isinstance(value, (str, int, bool))
+                },
                 "message_batches": start.message_batches if start else 0,
                 "providerAdapter": self.provider_adapter,
                 "effectiveCapabilityMatrix": self.effective_capability_matrix,
@@ -718,6 +747,9 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         invocation_id = str(uuid.uuid4())
         finished_at = _utc_now()
         scope_type, scope_id = _resolve_scope(ctx)
+        preparation = _context_preparation_timings(ctx.get("context_preparation_ms"))
+        if preparation:
+            metadata = {**metadata, "contextPreparationMs": preparation}
         log_record = {
             "id": invocation_id,
             "run_id": ctx.get("run_id"),

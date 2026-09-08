@@ -75,6 +75,80 @@ def test_single_source_complete_answer_needs_no_planner_or_second_adversarial_pa
                    for request, _, _ in transport.requests for message in request)
 
 
+def test_writer_and_reviewer_receive_original_request_separate_from_derived_question():
+    original = "Please identify the applicable content-labeling standard."
+    derived = "Verify standard GB 00000-2025 and its effective date."
+    accepted = approve()
+    accepted.tool_calls[0]["args"]["requestAttribution"] = {
+        "verdict": "not_claimed", "explanation": "The answer does not claim that the user supplied an identifier.",
+    }
+    instance, transport = agent([read(), submit()], [accepted], original_user_request=original)
+    result = instance.run(question=derived)
+    assert result["answer"] == ANSWER
+    seen_roles = set()
+    for messages, _, reviewer in transport.requests:
+        request = json.loads(messages[1].content)
+        assert request["question"] == derived
+        assert request["requestContext"]["originalUserRequest"] == original
+        assert "00000" not in request["requestContext"]["originalUserRequest"]
+        seen_roles.add(reviewer)
+    assert seen_roles == {False, True}
+
+
+def test_direct_review_without_original_request_does_not_invent_conversation_provenance():
+    instance, transport = agent([], [approve()])
+    instance.store.read("S1")
+    instance.review("Derived task wording", {"answer": ANSWER, "limitations": []}, "en")
+    request = json.loads(transport.requests[0][0][1].content)
+    assert request["requestContext"] == {"questionSource": "unattributed_research_task", "originalUserRequest": ""}
+
+
+@pytest.mark.parametrize("failure", ["invented_original_quote", "contradictory_accept"])
+def test_request_attribution_quotes_cannot_be_borrowed_from_the_derived_task(failure):
+    candidate = {"answer": "The user supplied GB 00000. The actual standard differs. [S1]", "limitations": []}
+    attribution = {"verdict": "supported", "answerQuote": "The user supplied GB 00000.",
+                   "originalRequestQuote": "GB 00000", "explanation": "The derived question supplied this number."}
+    if failure == "contradictory_accept":
+        attribution.update(verdict="incorrect", originalRequestQuote="")
+    bad = approve()
+    bad.tool_calls[0]["args"]["requestAttribution"] = attribution
+    correction = call("review_research_answer", decision="revise", coverage="partial",
+        requestAttribution={**attribution, "verdict": "incorrect", "originalRequestQuote": ""},
+        corrections=[{"kind": "attribution", "answerQuote": "The user supplied GB 00000.",
+                      "reason": "Only the derived task supplies the number; correct its attribution."}])
+    instance, transport = agent([], [bad, correction], original_user_request="Identify the standard.")
+    instance.store.read("S1")
+    result = instance.review("Verify GB 00000", candidate, "en")
+    assert result["decision"] == "revise"
+    feedback = [str(message.content) for message in transport.requests[-1][0] if isinstance(message, ToolMessage)]
+    expected = "request_attribution_original_quote_not_located" if failure == "invented_original_quote" else "review_decision_conflicts_with_request_attribution"
+    assert any(expected in message for message in feedback)
+
+
+def test_review_added_limitations_cannot_publish_unknown_references():
+    instance, transport = agent([read(), submit()], [
+        approve("partial", ["Unverified migration requirement 【S99】"]),
+        approve("partial", ["Deployment behavior has not been tested."]),
+    ])
+    result = instance.run(question="Does version 2 change the file format?")
+    assert result["reviewDecision"] == "accept"
+    assert result["limitations"] == ["Deployment behavior has not been tested."]
+    repair = transport.requests[-1][0][-1]
+    assert json.loads(repair.content)["unknownSourceKeys"] == ["S99"]
+
+
+def test_reviewer_source_reads_are_bound_to_delivered_limitations():
+    instance, _ = agent([read(), submit()], [
+        call("read_research_source", sourceKey="S2"),
+        approve("partial", ["Remote filesystems are excluded. [S2]"]),
+    ])
+    instance.store.add([source("Remote filesystems are excluded.", "https://example.org/spec/exclusions")])
+    result = instance.run(question="Does version 2 change the file format?")
+    assert result["reviewDecision"] == "accept"
+    assert {support["citationKey"] for claim in result["claimTable"] for support in claim["supportingSources"]} == {"S1", "S2"}
+    assert len(result["sourceUrls"]) == 2
+
+
 @pytest.mark.parametrize("marker", ["【S1】", "[s1]", "[来源：S1（规范原文）]", "[Sources: S1 (specification)]"])
 def test_explicit_citation_typography_is_normalized_before_review_and_binding(marker):
     from runtimes.research.evidence import normalize_citation_tokens
@@ -121,9 +195,37 @@ def test_agent_owned_sections_are_reviewed_as_one_answer_and_revised_without_dup
     assert research_bundle_is_accepted(result)
     review_requests = [messages for messages, _, reviewer in transport.requests if reviewer]
     assert len(review_requests) == 2
-    assert json.loads(review_requests[-1][1].content)["candidate"]["answer"] == expected
+    assert json.loads(review_requests[-1][-1].content)["candidate"]["answer"] == expected
+    assert any(isinstance(message, ToolMessage) and "Review recorded" in message.content
+               for message in review_requests[-1][:-1])
+    assert json.loads(review_requests[-1][-1].content)["observedPassages"] == []
     assert result["modelSynthesis"]["revisionCount"] == 1
     assert instance.searches == 0
+
+
+def test_limitations_are_reviewed_and_their_citations_need_actual_reads():
+    correction = call("review_research_answer", decision="revise", coverage="partial", corrections=[{
+        "kind": "fact", "answerQuote": "All files are deleted.", "reason": "Contradicts the original",
+        "sourceKey": "S1", "evidenceQuote": FACT,
+    }])
+    instance, transport = agent([
+        read(), submit(coverage="partial", limitations=["All files are deleted. [S1]"]),
+        submit(coverage="partial", limitations=["Other formats were not examined."]),
+    ], [correction, approve("partial", ["Other formats were not examined."])])
+    result = instance.run(question="Format behavior")
+    assert result["deliveryScope"] == "partial"
+    review = next(row for row in result["modelSynthesis"]["trace"] if row["stage"] == "review_tool")
+    assert review["unlocatedFindings"] == []
+    assert "All files are deleted" not in " ".join(result["limitations"])
+
+    instance, transport = agent([
+        read(), submit(coverage="partial", limitations=["Unsupported assertion [S99]"]),
+        submit(coverage="partial", limitations=["Other formats were not examined."]),
+    ], [approve("partial", ["Other formats were not examined."])])
+    result = instance.run(question="Format behavior")
+    assert result["reviewDecision"] == "accept"
+    assert any(row.get("unknownSourceKeys") == ["S99"] for row in result["modelSynthesis"]["trace"])
+    assert len([request for request in transport.requests if request[2]]) == 1
 
 
 def test_saved_sections_cannot_become_accepted_or_visible_without_submission_and_review():
@@ -366,6 +468,69 @@ def test_search_uses_governed_callback_and_preserves_observations():
     assert requests[0]["queries"] == ["format v2 specification"]
 
 
+def test_exhausted_discovery_does_not_block_fetching_a_known_original():
+    requests = []
+    instance = ResearchAgent(invoke=lambda *_: None, acquire=lambda **kw: requests.append(kw) or {
+        "sources": [source()] if kw["urls"] else [],
+        "diagnostics": [{"candidates": [{"url": source()["url"], "readStatus": "not_fetched"}]}],
+    }, progress=lambda **_: None, writer_id="writer", reviewer_id="reviewer", max_searches=1)
+    discovered = instance.execute_search({"queries": ["format specification"]})
+    assert discovered["diagnostics"][0]["candidates"][0]["readStatus"] == "not_fetched"
+    fetched = instance.execute_search({"queries": ["another query"], "urls": [source()["url"]]})
+    assert requests[-1]["queries"] == []
+    assert requests[-1]["urls"] == [source()["url"]]
+    assert fetched["addedSourceKeys"] == ["S1"]
+    assert fetched["skippedQueries"] == ["another query"]
+    assert instance.searches == 1
+    # Fetched documents remain unread until the researcher actually opens them.
+    with pytest.raises(ValueError, match="every_answer_citation_needs_observed_evidence"):
+        instance.store.bind_answer(ANSWER)
+    instance.execute_read({"sourceKey": "S1"})
+    assert instance.store.bind_answer(ANSWER)[0]["evidenceExcerpt"] == FACT
+
+
+def test_original_links_are_recoverable_and_never_inherited_as_evidence():
+    store = EvidenceStore()
+    links = [{"url": f"https://example.org/original/{i}", "text": f"Original {i}"} for i in range(45)]
+    store.add([{**source(), "links": links}])
+    first = store.read("S1")
+    second = store.read("S1", link_start=first["nextLinkStart"])
+    assert first["links"] + second["links"] == links
+    assert not first["linksAreReadEvidence"]
+    assert len(store.sources) == 1
+    assert store.bind_answer(ANSWER)[0]["supportingSources"][0]["url"] == source()["url"]
+    assert "links" not in store.selected(store.bind_answer(ANSWER))[0]
+
+
+def test_acquisition_feedback_distinguishes_not_fetched_from_network_failure():
+    from runtimes.research.acquisition import acquisition_feedback
+
+    rows = [{"url": f"https://example.org/{name}", "title": name, "snippet": "Discovery only"}
+            for name in ("good", "slow", "original", "index")]
+    rows[-1]["readSelectionReason"] = "navigation_candidate"
+    result = acquisition_feedback([{"query": "site:example.org specification", "provider": "configured",
+        "results": rows, "fetchedTopSources": [
+            {"url": rows[0]["url"], "ok": True},
+            {"url": rows[1]["url"], "ok": False, "failureClass": "timeout"},
+        ]}])[0]
+    assert [r["readStatus"] for r in result["candidates"]] == ["fetched", "fetch_failed", "not_fetched", "not_fetched"]
+    assert result["candidates"][1]["readReason"] == "timeout"
+    assert result["candidates"][3]["readReason"] == "navigation_candidate"
+    assert "text" not in result["candidates"][0]
+
+
+def test_researcher_can_switch_provider_without_repeating_the_same_search():
+    requests = []
+    instance = ResearchAgent(invoke=lambda *_: None, acquire=lambda **kw: requests.append(kw) or {},
+                             progress=lambda **_: None, writer_id="writer", reviewer_id="reviewer", max_searches=2)
+    instance.execute_search({"queries": ["site:example.org original"], "searchEngine": "metaso"})
+    instance.execute_search({"queries": ["site:example.org original"], "searchEngine": "bing_cn"})
+    assert [r["search_engine"] for r in requests] == ["metaso", "bing_cn"]
+    assert instance.searches == 2
+    assert instance.execute_search({"queries": ["site:example.org original"], "searchEngine": "baidu"})["status"] == "search_budget_exhausted"
+    assert len(requests) == 2
+
+
 def test_cancel_does_not_call_the_model_or_acquire_sources():
     instance, transport = agent([], [], cancelled=lambda: True)
     with pytest.raises(InterruptedError, match="research_cancelled"):
@@ -445,15 +610,23 @@ def test_review_has_no_search_write_command_or_delegation_authority():
 
 @pytest.mark.parametrize("partial", [False, True])
 @pytest.mark.parametrize("output_budget", [4096, 8192, None])
-def test_broker_persistence_surface_and_episode_share_the_same_review(monkeypatch, partial, output_budget):
+@pytest.mark.parametrize("explicit_batch", [False, True])
+def test_broker_persistence_surface_and_episode_share_the_same_review(monkeypatch, partial, output_budget, explicit_batch):
     from core.tools import research_broker as broker
     from core.tools import research_ledger
     from core.runtime_episode_runner import _research_evidence_status
     from core.tool_surface import _render_research_broker_surface
+    from core.database import db
+    from erc.runtime_context import get_runtime_context
+
+    db.create_or_update_session("research-owner-session", "Research context test")
+    db.create_run_record("research-owner-run", "research-owner-session")
 
     limitations = ["Migration tooling has not been verified."] if partial else []
     transport = ScriptedTransport(
-        [read(), submit(coverage="partial" if partial else "complete", limitations=limitations)],
+        ([call("search_research_sources", queries=["specification v2", "original format"],
+               urls=["https://example.org/spec/v2", "https://example.org/original"], searchEngine="bing_cn")]
+         if explicit_batch else []) + [read(), submit(coverage="partial" if partial else "complete", limitations=limitations)],
         [approve(coverage="partial" if partial else "complete", limitations=limitations)],
     )
 
@@ -468,6 +641,9 @@ def test_broker_persistence_surface_and_episode_share_the_same_review(monkeypatc
 
         def invoke(self, messages, **kwargs):
             assert kwargs.get("max_tokens") == output_budget
+            assert get_runtime_context()["run_id"] == "research-owner-run"
+            assert get_runtime_context()["session_id"] == "research-owner-session"
+            assert get_runtime_context()["runtime_episode_id"] == "research-owner-episode"
             return transport(messages, self.tools, reviewer=self.reviewer, seconds=kwargs["timeout"])
 
     monkeypatch.setattr(broker, "_create_web_research_architect_llm_candidates", lambda: [(Model(False), "test-writer", "subagent")])
@@ -479,14 +655,27 @@ def test_broker_persistence_surface_and_episode_share_the_same_review(monkeypatc
         return json.dumps(source())
 
     monkeypatch.setattr(broker, "_source_router_read", read_page)
+    progress = []
+    monkeypatch.setattr(broker, "_report_research_progress", lambda **event: progress.append(event))
+    searches = []
+    monkeypatch.setattr(broker, "_source_router_search", lambda **kwargs: searches.append(kwargs) or json.dumps({"ok": True, "provider": "bing_cn", "results": []}))
     bundle = broker._run_agent_owned_research(
         question="Does version 2 change the file format?", research_intent="format comparison",
         source_policy="authoritative", freshness="current", allowed_domains=["example.org"],
         blocked_domains=[], use_agent_browser_profile=False, tool_call_id="test-read",
-        max_shards=2, max_rounds=2, preferred_language="en", seed_urls=["https://example.org/spec/v2"],
+        max_shards=1, max_rounds=2, preferred_language="en", seed_urls=[] if explicit_batch else ["https://example.org/spec/v2"],
         deliverable="evidence_bundle", experience_reuse={},
+        state={"run_id": "research-owner-run", "session_id": "research-owner-session", "runtime_episode_id": "research-owner-episode"},
     )
-    assert len(reads) == 1
+    assert len(reads) == (2 if explicit_batch else 1)
+    search_events = [event for event in progress if event.get("stage") == "source_search"]
+    started_ids = {event["nodeId"] for event in search_events if event["status"] == "active"}
+    final_status = {event["nodeId"]: event["status"] for event in search_events}
+    assert started_ids and all(final_status[node] in {"completed", "failed"} for node in started_ids)
+    if explicit_batch:
+        assert {item["url"] for item in reads} == {"https://example.org/spec/v2", "https://example.org/original"}
+        assert {item["query"] for item in searches} == {"specification v2", "original format"}
+        assert all(item["search_engine"] == "bing_cn" for item in searches)
     assert bundle["answer"] == ANSWER
     assert bundle["usableAnswer"] is True
     assert bundle["ok"] is True
@@ -635,6 +824,58 @@ def test_changed_saved_source_cannot_inherit_original_read_proof():
     rows[0]["text"] = "The opposite of the source."
     with pytest.raises(ValueError, match="digest_mismatch"):
         EvidenceStore().restore(rows)
+
+
+def test_durable_source_pages_recover_full_text_under_small_surface_budget(monkeypatch, tmp_path):
+    import re
+    from core.tools import research_broker as broker, research_ledger as ledger
+    from core.tool_surface import _render_research_broker_surface
+    from runtimes.research.evidence import digest
+    from tests.core.research_scope_fixture import research_sessions
+
+    _, create, _ = research_sessions(monkeypatch, tmp_path)
+    context = create("source-pages")
+    bundle = saved_bundle()
+    body = "Original paragraph\n" * 1000 + "End canary."
+    row = bundle["researchEvidenceBank"]["sources"][0]
+    row.update(text=body, contentChars=len(body), originalContentChars=len(body))
+    row["readEvidence"].update(contentChars=len(body), contentSha256=digest(body))
+    stored = ledger.store_evidence_bundle(bundle, ttl_seconds=60, scope=context["session_id"])
+    # No transient observation or network is needed after reload.
+    monkeypatch.setattr(broker, "_source_router_read", lambda **_: pytest.fail("unnecessary fetch"))
+    offset, pages = 0, []
+    while True:
+        page = json.loads(broker.research_broker.func(mode="get_evidence", evidenceBundleId=stored["evidenceBundleId"],
+                                                   sourceKey="S1", startChar=offset, maxChars=12000, state=context))
+        assert page["contentSha256"] == digest(body)
+        visible = _render_research_broker_surface(page, "", budget=1400)
+        pages.append(visible.split("<source>\n", 1)[1].rsplit("\n</source>", 1)[0])
+        assert len(visible) <= 1400
+        match = re.search(r"nextOffset: (\d+|None)", visible)
+        if match[1] == "None":
+            break
+        offset = int(match[1])
+        assert offset == sum(map(len, pages))
+    assert "".join(pages) == body
+
+
+def test_large_saved_answer_lookup_keeps_identity_and_honest_preview(monkeypatch, tmp_path):
+    from core.tools import research_broker as broker, research_ledger as ledger
+    from tests.core.research_scope_fixture import research_sessions
+
+    _, create, _ = research_sessions(monkeypatch, tmp_path)
+    context = create("answer-preview")
+    stored = ledger.store_evidence_bundle(saved_bundle(), ttl_seconds=60, scope=context["session_id"])
+    pack_id = stored["experienceUpdate"]["experiencePackId"]
+    payload = ledger._read_store()
+    payload["experiencePacks"][0]["researchResult"] = "Answer content. " * 2000
+    ledger._write_store(payload)
+    result = json.loads(broker.research_broker.func(mode="get_experience", experiencePackId=pack_id, state=context))
+    assert result["ok"]
+    assert result["item"]["experiencePackId"] == pack_id
+    assert result["item"]["answerComplete"] is False
+    assert result["item"]["answerChars"] == 31999
+    assert stored["evidenceBundleId"] in result["detailTool"]
 
 
 def test_selected_research_evidence_survives_child_grandchild_and_context_rebuild():

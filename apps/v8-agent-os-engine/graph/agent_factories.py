@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
 import platform
 import re
+import time
 import uuid
 from typing import Any, Callable
 
@@ -10,6 +12,7 @@ from langgraph.types import Command
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.background_context_guard import prepare_background_model_messages
+from core.native_file_progress import NativeFileProgress
 from core.delegation_broker import (
     infer_engineering_task_role,
     is_non_file_read_reference,
@@ -90,13 +93,11 @@ def create_subagent_chat_model(
     normalized_model_id = str(model_id or "").strip()
     if not normalized_model_id:
         raise ValueError("Subagent model_id must be provided")
-    model_kwargs = dict(kwargs)
-    model_kwargs.pop("max_tokens", None)
+    model_kwargs = {**subagent_model_kwargs(normalized_model_id), **kwargs}
     # Registered workers and their reviewers are user-visible subagent work.
     # Keep this invariant here so a caller cannot silently drop their
     # canonical text/reasoning stream by passing a stale non-streaming flag.
     model_kwargs["streaming"] = True
-    model_kwargs.update(subagent_model_kwargs(normalized_model_id))
     return llm_factory.create_chat_model(
         normalized_model_id,
         _role=role,
@@ -262,6 +263,8 @@ def _tool_result_succeeded(message: Any) -> bool:
         return False
     lowered = text.lower()
     if lowered.startswith(("error", "failed", "failure", "blocked")):
+        return False
+    if re.search(r"(?im)^status:\s*(failed|blocked|error|cancelled)\b", text):
         return False
     if any(marker in lowered for marker in ("write was blocked", "写入失败", "写入被阻止", "已阻止写入")):
         return False
@@ -430,15 +433,19 @@ def _delegated_tool_loop_observation(
     *,
     agent_id: str,
     current_message: AIMessage | None = None,
+    workspace_path: str = "",
 ) -> dict[str, Any]:
     """Detect an exact tool loop before another provider round is started."""
 
     signatures: list[str] = []
+    file_progress = NativeFileProgress(agent_id=agent_id, workspace_path=workspace_path)
     for message in list(messages or []):
         owner_id = _delegated_message_owner_id(message)
+        calls = _delegated_tool_call_dicts(message)
+        file_progress.observe(message, calls)
         if not isinstance(message, AIMessage) or (owner_id and owner_id != agent_id):
             continue
-        for call in _delegated_tool_call_dicts(message):
+        for call in calls:
             name = str(call.get("name") or "").strip()
             if not name:
                 continue
@@ -447,7 +454,8 @@ def _delegated_tool_loop_observation(
                 encoded = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
             except Exception:
                 encoded = str(args or "")
-            signatures.append(f"{name}:{encoded[:4000]}")
+            epoch = f":file-version:{file_progress.read_epoch(call)}" if name in {"read_native_file", "grep_search"} else ""
+            signatures.append(f"{name}:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}{epoch}")
     counts: dict[str, int] = {}
     for signature in signatures:
         counts[signature] = counts.get(signature, 0) + 1
@@ -462,7 +470,8 @@ def _delegated_tool_loop_observation(
                 encoded = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
             except Exception:
                 encoded = str(args or "")
-            current_signatures.append(f"{name}:{encoded[:4000]}")
+            epoch = f":file-version:{file_progress.read_epoch(call)}" if name in {"read_native_file", "grep_search"} else ""
+            current_signatures.append(f"{name}:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}{epoch}")
     current_repeated = max(
         (counts.get(signature, 0) for signature in current_signatures),
         default=0,
@@ -1992,6 +2001,7 @@ def build_agent_node(
     route_reuse_cache: dict[str, tuple[ExtensionRouteBundle, list[Any]]] = {}
 
     def agent_node_func(state):
+        preparation_started_at = time.perf_counter()
         try:
             messages = state["messages"]
             task_messages = extract_task_context(messages)
@@ -2017,20 +2027,27 @@ def build_agent_node(
             os_name = platform.system()
             command_environment = detect_command_environment()
             current_time = utc_now_iso()
+            stage_started_at = time.perf_counter()
             host_alerts_line = render_host_alerts_line()
+            context_preparation_ms = {"hostAlerts": round((time.perf_counter() - stage_started_at) * 1000, 2)}
             host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
+            stage_started_at = time.perf_counter()
             engineering_kernel_context, _engineering_kernel_diagnostics = build_engineering_kernel_context(
                 state=state,
                 session_id=state.get("session_id") or state.get("sessionId"),
                 actor="subagent",
             )
+            context_preparation_ms["engineeringKernel"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
+            stage_started_at = time.perf_counter()
+            host_load_line = render_host_load_line()
+            context_preparation_ms["hostLoad"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
             env_context = (
                 f"<environment>\n"
                 f"OS: {os_name}\n"
                 f"Command Shell: {command_environment['commandLanguage']} (shell_dialect={command_environment['shellDialect']})\n"
                 f"User-Visible Language: {preferred_language}. Use it for all progress text, reasoning summaries, task prose, handoffs, and final replies. Preserve code, commands, identifiers, URLs, and literal tool output.\n"
                 f"Current Time: {current_time}\n"
-                f"{render_host_load_line()}\n"
+                f"{host_load_line}\n"
                 f"{host_alerts_context}"
                 f"Active Workspace Root: {workspace_path}\n"
                 f"Main V8 Workspace Store: {main_workspace_path}\n"
@@ -2319,12 +2336,14 @@ def build_agent_node(
             run_messages = [sys_msg] + task_messages
             run_messages = [ensure_reasoning_content(m) for m in run_messages]
             run_messages = sanitize_message_chain(run_messages)
+            stage_started_at = time.perf_counter()
             prepared_context = context_orchestrator.prepare(
                 messages=run_messages,
                 runtime_kind=str(get_runtime_context().get("runtime_kind") or "chat"),
                 target_role=f"agent:{agent_id}",
                 resolved_model_id=agent_model_id or supervisor_model_id,
             )
+            context_preparation_ms["messagePreparation"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
             run_messages = prepared_context.messages
             emit_context_prepared_event(
                 prepared_context.audit,
@@ -2401,6 +2420,7 @@ def build_agent_node(
                 plugin_references=delegated_plugin_references,
             )
             try:
+                context_preparation_ms["total"] = round((time.perf_counter() - preparation_started_at) * 1000, 2)
                 with bind_runtime_context(
                     session_id=state.get("session_id"),
                     run_id=state.get("run_id"),
@@ -2409,6 +2429,7 @@ def build_agent_node(
                     workspace_path=state.get("workspace_path"),
                     runtime_kind="subagent",
                     trigger_source="delegation_broker",
+                    context_preparation_ms=context_preparation_ms,
                     agent_id=agent_id,
                     subagent_id=agent_id,
                     delegation_id=inherited_route_context.get("delegationId"),
@@ -2513,6 +2534,8 @@ def build_agent_node(
                 [*messages, response],
                 agent_id=agent_id,
                 current_message=response,
+                workspace_path=str(state.get("workspace_path") or state.get("workspacePath")
+                                   or inherited_route_context.get("workspace_path") or ""),
             )
             route_context_record.update(
                 {

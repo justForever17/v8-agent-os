@@ -12,6 +12,24 @@ from core.workspace_capability import preflight_command_workspace, resolve_works
 from erc.runtime_context import bind_runtime_context
 
 
+@pytest.mark.parametrize("command,target", [
+    (r'Get-ChildItem "C:\Program Files\普通应用"', r"C:\Program Files\普通应用"),
+    (r"Get-Item 'C:\Program Files (x86)\示例\App.exe'", r"C:\Program Files (x86)\示例\App.exe"),
+    (r'Get-Content "\\server\share name\文档.txt"', r"\\server\share name\文档.txt"),
+])
+def test_host_command_extract_preserves_complete_quoted_paths(command, target):
+    assert workspace_capability_module.extract_absolute_paths_from_command(command) == [target]
+
+
+@pytest.mark.parametrize("expression", ["%ProgramFiles%", "$env:ProgramFiles", "${env:ProgramFiles}"])
+def test_host_command_extract_preserves_expanded_path_spaces(monkeypatch, expression):
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    target = r"C:\Program Files\普通应用\App.exe"
+    assert workspace_capability_module.extract_absolute_paths_from_command(
+        f'Start-Process -FilePath "{expression}\\普通应用\\App.exe"'
+    ) == [target]
+
+
 class _FakeProject:
     def __init__(self, *, project_id: str, workspace_id: str, workspace_path: str, workspace_trust_state: str = "trusted"):
         self.project_id = project_id
@@ -64,6 +82,166 @@ def _patch_descriptor(
 
 def _patch_home(monkeypatch, home: Path) -> None:
     monkeypatch.setattr(workspace_capability_module.Path, "home", lambda: home)
+
+
+@pytest.mark.parametrize("template", [
+    'Get-ChildItem -LiteralPath "{target}" -Directory',
+    'Get-Content -Encoding UTF8 -LiteralPath "{target}"',
+    'Start-Process -FilePath "{target}"',
+    '& "{target}"',
+])
+def test_host_command_root_simple_access_reaches_safety(tmp_path, monkeypatch, template):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    target = tmp_path / "Program Files" / "应用" / "App.exe"
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"}
+    result = preflight_command_workspace(template.format(target=target), runtime_context=context)
+    assert result["ok"] is True
+    assert result["hostAccess"]["safetyAssessmentRequired"] is True
+    assert result["binding"]["allowedExtraRoots"] == []
+    assert result["cwd"] == str(root.resolve())
+
+
+@pytest.mark.parametrize("overrides", [
+    {"runtime_kind": "subagent", "agent_id": "worker", "actor_role": "direct_subagent"},
+    {"runtime_kind": "delegation", "agent_id": "worker", "actor_role": "grandchild", "delegation_depth": 2},
+    {"engineering_task_capsule": {"taskId": "child-task", "writeSet": []}},
+    {"runtime_kind": "subagent", "actor_role": "supervisor", "agent_id": "worker"},
+    {"engineering_capsule_mode": "write"},
+    {"delegation_id": "delegation_child"},
+    {"sandbox_policy": {"leaseId": "managed_child"}},
+])
+def test_host_command_does_not_expand_child_or_capsule_scope(tmp_path, monkeypatch, overrides):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor", **overrides}
+    result = preflight_command_workspace(f'Get-Content "{tmp_path / "outside.txt"}"', runtime_context=context)
+    assert result["ok"] is False
+    assert result["error"] == "workspace_command_path_violation"
+
+
+@pytest.mark.parametrize("template", [
+    'Get-Content "{target}"; Set-Content "{target}" changed',
+    'Get-Content "{target}" | ForEach-Object {{ $_ }}',
+    'powershell -Command "Get-Content \'{target}\'"',
+    'Set-Content -LiteralPath "{target}" -Value changed',
+    'Start-Process -FilePath "{target}" -Verb RunAs',
+    'Start-Process -FilePath "{target}" -ArgumentList \'-Command Write-Output test\'',
+])
+def test_host_command_unresolved_scripts_and_writes_keep_workspace_gate(tmp_path, monkeypatch, template):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"}
+    result = preflight_command_workspace(template.format(target=tmp_path / "outside.exe"), runtime_context=context)
+    assert result["ok"] is False
+    assert result["error"] == "workspace_command_path_violation"
+
+
+def test_host_command_unknown_environment_path_is_not_silently_ignored(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    monkeypatch.delenv("V8_MISSING_HOST_ROOT", raising=False)
+    result = preflight_command_workspace(
+        r'Get-Content "$env:V8_MISSING_HOST_ROOT\secret.txt"',
+        runtime_context={"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "workspace_command_unresolved_path"
+    assert preflight_command_workspace(
+        "Write-Output $env:V8_MISSING_HOST_ROOT",
+        runtime_context={"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"},
+    )["ok"] is True  # An unset scalar is not a cross-workspace path.
+
+
+def test_host_command_keeps_cwd_trust_and_managed_boundaries(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"}
+    command = f'Get-Content "{tmp_path / "outside.txt"}"'
+    assert preflight_command_workspace(command, cwd=str(tmp_path), runtime_context=context)["error"] == "workspace_cwd_violation"
+    binding = workspace_capability_module.build_workspace_binding(context)
+    monkeypatch.setattr(workspace_capability_module, "build_workspace_binding", lambda *_args, **_kwargs: replace(binding, managed_execution=True))
+    assert preflight_command_workspace(command, runtime_context=context)["error"] == "workspace_command_path_violation"
+    monkeypatch.setattr(workspace_capability_module, "build_workspace_binding", lambda *_args, **_kwargs: replace(binding, side_effects_allowed=False, trust_state="restricted"))
+    assert preflight_command_workspace(command, runtime_context=context)["error"] == "workspace_not_trusted"
+
+
+@pytest.mark.parametrize("command", [
+    r'Get-Content "\\server\share name\file.txt"',
+    r'Start-Process "C:\Windows\System32\cmd.exe"',
+    r'Get-Content "C:\Program Files\App\$(Get-Content secret)"',
+    r'Get-Item C:\Program Files\App',
+    r'Get-Content "C:\App"";Set-Content file bad"',
+    r'Get-Content -Path "C:\App\*.json"',
+])
+def test_host_command_remote_dynamic_and_interpreter_grammar_is_not_host_access(command):
+    assert workspace_capability_module.simple_host_command_access(command) is None
+
+
+@pytest.mark.parametrize("mode", ["manual", "reduced", "minimal"])
+@pytest.mark.parametrize("operation", ["read", "launch"])
+def test_host_command_actual_entry_still_assesses_and_audits(tmp_path, monkeypatch, mode, operation):
+    from core.tools.native import command as native_command
+    from core.tools.native import tool_governance
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    target = tmp_path / "Program Files" / "普通应用" / "App.exe"
+    command = f'Get-ChildItem -LiteralPath "{target}"' if operation == "read" else f'Start-Process -FilePath "{target}"'
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor", "safety_approval_mode": mode}
+    audits, launches = [], []
+    real_assess = native_command.safety_guardian.assess_system_command
+    assessments = []
+
+    def assess(*args, **kwargs):
+        decision = real_assess(*args, **kwargs)
+        assessments.append(decision)
+        return decision
+
+    def stopped_before_process(command_text, dialect, runtime_context):
+        launches.append((command_text, dialect))
+        raise OSError("fixture: intentionally stop before process creation")
+
+    monkeypatch.setattr(native_command, "get_runtime_context", lambda: context)
+    monkeypatch.setattr(tool_governance, "get_runtime_context", lambda: context)
+    monkeypatch.setattr(native_command.safety_guardian, "assess_system_command", assess)
+    monkeypatch.setattr(native_command.safety_guardian, "log_decision_event", lambda **kwargs: audits.append(kwargs))
+    monkeypatch.setattr(native_command, "_shell_subprocess_launch", stopped_before_process)
+    monkeypatch.setattr(native_command.subprocess, "Popen", lambda *_a, **_k: pytest.fail("no real command may run"))
+    result = json.loads(native_command.execute_system_command.func(command, shell_dialect="powershell", tool_call_id="host-fixture"))
+    assert len(assessments) == len(launches) == 1
+    assert assessments[0].verdict == "allow"
+    assert audits[0]["action"] == "native_tool_safety"
+    assert audits[0]["metadata"]["toolCallId"] == "host-fixture"
+    assert result["ok"] is False  # Permission proof is not application/window success.
+    assert "launch_failed" in json.dumps(result)
+    assert tool_governance.current_safety_approval_mode() == mode
+
+
+@pytest.mark.parametrize("target", [r"C:\Windows\System32\drivers\core.sys", r"C:\Protected V8\config.json"])
+def test_host_command_kernel_writes_stay_blocked_at_actual_workspace_entry(tmp_path, monkeypatch, target):
+    from core.tools.native import command as native_command
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    monkeypatch.setattr(native_command, "get_runtime_context", lambda: {
+        "workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor", "safety_approval_mode": "minimal",
+    })
+    monkeypatch.setattr(native_command.safety_guardian, "assess_system_command", lambda *_a, **_k: pytest.fail("outside write must stop at workspace"))
+    monkeypatch.setattr(native_command.subprocess, "Popen", lambda *_a, **_k: pytest.fail("outside write must not execute"))
+    result = json.loads(native_command.execute_system_command.func(f'Set-Content -LiteralPath "{target}" -Value changed', shell_dialect="powershell"))
+    assert result["kind"] == "workspace_boundary_block"
+    assert result["error"] == "workspace_command_path_violation"
+    assert result["violations"][0]["path"] == target
 
 
 def test_relative_tool_path_resolves_inside_active_workspace(tmp_path, monkeypatch):
@@ -799,7 +977,7 @@ def test_write_native_file_requires_read_before_modifying_existing_file(tmp_path
             "after",
             expected_old_text="before",
         )
-        blocked_again = native_tools.write_native_file.func(
+        continued = native_tools.write_native_file.func(
             "src/existing.txt",
             "after-again",
             expected_old_text="after",
@@ -807,8 +985,91 @@ def test_write_native_file_requires_read_before_modifying_existing_file(tmp_path
 
     assert "read_before_write_required" in blocked
     assert "scoped_file_patch" in allowed
-    assert "read_before_write_required" in blocked_again
-    assert target.read_text(encoding="utf-8") == "after"
+    assert "scoped_file_patch" in continued
+    assert target.read_text(encoding="utf-8") == "after-again"
+
+
+def test_write_versions_preserve_actor_boundary_and_detect_same_stat_change(tmp_path, monkeypatch):
+    import os
+    from core.tools.native import workspace_file as files
+    from core.database import db
+    db.create_or_update_session("receipt-session", "Version receipt test")
+    db.create_run_record("receipt-run", "receipt-session")
+
+    active_root, main_root = tmp_path / "active", tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    target = active_root / "receipt.txt"
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root),
+                              session_id="receipt-session", run_id="receipt-run", agent_id="author"):
+        created = files.write_native_file.func("receipt.txt", "before\r\n")
+        assert "Content version: sha256:" in created
+        version = files._file_state_fingerprint(target)
+        with bind_runtime_context(agent_id="other-author"):
+            denied = files.write_native_file.func("receipt.txt", "after", expected_old_text="before", expected_version=version)
+            assert "existing_file_not_read" in denied
+        edited = json.loads(files.write_native_file.func("receipt.txt", "AFTER!", expected_old_text="before", expected_version=version))
+        assert edited["ok"]
+        assert edited["contentVersion"] != version
+        assert target.read_bytes() == b"AFTER!\r\n"
+        stale_queued_edit = files.write_native_file.func("receipt.txt", "wrong", expected_old_text="AFTER!", expected_version=version)
+        assert "file_changed_after_read" in stale_queued_edit
+        stat = target.stat()
+        target.write_bytes(b"extern\r\n")
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        stale = files.write_native_file.func("receipt.txt", "wrong", allow_full_replace=True)
+        assert "file_changed_after_read" in stale
+        assert target.read_bytes() == b"extern\r\n"
+
+
+def test_partial_native_read_reports_full_file_bytes_and_same_snapshot_hash(tmp_path, monkeypatch):
+    import hashlib
+    from core.tools.native import workspace_file as files
+
+    active_root, main_root = tmp_path / "active", tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    content = "首行😀\r\n第二行\r\n".encode("utf-8")
+    (active_root / "size.txt").write_bytes(content)
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), agent_id="verifier"):
+        result = files.read_native_file.func("size.txt", start_line=2, end_line=2)
+    assert f"File bytes: {len(content)}\n" in result
+    assert f"Content version: sha256:{hashlib.sha256(content).hexdigest()}\n" in result
+    assert "首行" not in result
+    assert "第二行\r\n" in result
+
+
+def test_write_conflict_during_validation_and_failed_replace_do_not_advance_receipt(tmp_path, monkeypatch):
+    from core.tools.native import workspace_file as files
+    from core.database import db
+    db.create_or_update_session("fault-session", "Write conflict test")
+    db.create_run_record("fault-run", "fault-session")
+
+    active_root, main_root = tmp_path / "active", tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    target = active_root / "receipt.txt"
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root),
+                              session_id="fault-session", run_id="fault-run", agent_id="author"):
+        files.write_native_file.func("receipt.txt", "base")
+        def failed_replace(*args):
+            raise PermissionError("replace denied")
+        with monkeypatch.context() as fault:
+            fault.setattr(files.os, "replace", failed_replace)
+            assert "replace denied" in files.write_native_file.func("receipt.txt", "next", expected_old_text="base")
+        assert target.read_text() == "base"
+        assert "scoped_file_patch" in files.write_native_file.func("receipt.txt", "next", expected_old_text="base")
+        real_commit = files._atomic_write_text
+        def concurrent_commit(path, content, **kwargs):
+            target.write_text("external")
+            real_commit(path, content, **kwargs)
+        monkeypatch.setattr(files, "_atomic_write_text", concurrent_commit)
+        assert "file_changed_after_read" in files.write_native_file.func("receipt.txt", "lost", expected_old_text="next")
+        assert target.read_text() == "external"
+        assert not list(active_root.glob("*.v8os-tmp"))
 
 
 def test_write_native_file_rejects_stale_read_receipt(tmp_path, monkeypatch):
@@ -836,3 +1097,52 @@ def test_write_native_file_rejects_stale_read_receipt(tmp_path, monkeypatch):
     assert "read_before_write_required" in result
     assert "file_changed_after_read" in result
     assert target.read_text(encoding="utf-8") == "changed elsewhere with a different size"
+
+
+def test_expired_write_receipt_and_invalid_utf8_cannot_be_bypassed(tmp_path, monkeypatch):
+    from core.tools.native import workspace_file as files
+
+    active_root, main_root = tmp_path / "active", tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), agent_id="expiry-test"):
+        files.write_native_file.func("version.txt", "base")
+        version = files._file_state_fingerprint(active_root / "version.txt")
+        now = files.time.monotonic()
+        with monkeypatch.context() as expired:
+            expired.setattr(files.time, "monotonic", lambda: now + files._READ_BEFORE_WRITE_TTL_SECONDS + 1)
+            assert "existing_file_not_read" in files.write_native_file.func("version.txt", "lost", allow_full_replace=True, expected_version=version)
+        target = active_root / "invalid.txt"
+        target.write_bytes(b"base\xff\r\n")
+        files.read_native_file.func("invalid.txt")
+        assert "utf-8" in files.write_native_file.func("invalid.txt", "appended", append=True)
+        assert target.read_bytes() == b"base\xff\r\n"
+
+
+def test_concurrent_writes_from_same_version_have_only_one_winner(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from core.tools.native import workspace_file as files
+
+    active_root, main_root = tmp_path / "active", tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    context = dict(runtime_kind="chat", workspace_path=str(active_root), agent_id="concurrent-test")
+    with bind_runtime_context(**context):
+        files.write_native_file.func("version.txt", "base")
+    barrier = Barrier(2)
+    commit = files._atomic_write_text
+    def synchronized_commit(*args, **kwargs):
+        barrier.wait(timeout=10)
+        return commit(*args, **kwargs)
+    monkeypatch.setattr(files, "_atomic_write_text", synchronized_commit)
+    def write(value):
+        with bind_runtime_context(**context):
+            return files.write_native_file.func("version.txt", value, expected_old_text="base")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(write, ["first", "second"]))
+    assert sum("scoped_file_patch" in result for result in results) == 1
+    assert sum("file_changed_after_read" in result for result in results) == 1
+    assert (active_root / "version.txt").read_text() in {"first", "second"}

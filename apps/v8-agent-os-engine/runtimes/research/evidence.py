@@ -80,6 +80,8 @@ class EvidenceStore:
                 "updatedAt": value.get("updatedAt"),
                 "version": value.get("version"),
                 "sourceRole": value.get("sourceRole") or "unknown",
+                "links": [dict(link) for link in value.get("links") or []
+                          if isinstance(link, dict) and urlsplit(str(link.get("url") or "")).scheme in {"http", "https"}],
                 "selectedForEvidence": True,
                 "readEvidence": {
                     "verified": True, "contentChars": len(body),
@@ -111,7 +113,7 @@ class EvidenceStore:
             if keys != [row.get("citationKey")]:
                 raise ValueError("research_saved_source_identity_mismatch")
 
-    def read(self, key: str, *, start: int = 0, max_chars: int = 6000, find: str = "") -> dict[str, Any]:
+    def read(self, key: str, *, start: int = 0, max_chars: int = 6000, find: str = "", link_start: int = 0) -> dict[str, Any]:
         row = self.sources.get(key)
         if row is None:
             raise ValueError("unknown_source_key")
@@ -133,6 +135,10 @@ class EvidenceStore:
             "nextOffset": end if end < len(body) else None,
             "evidenceRef": reference,
             "text": body[start:end],
+            "links": deepcopy(row["links"][link_start:link_start + 30]),
+            "nextLinkStart": link_start + 30 if link_start + 30 < len(row["links"]) else None,
+            "linkCount": len(row["links"]),
+            "linksAreReadEvidence": False,
         }
 
     def bind_read_refs(self, references: list[str], answer: str) -> list[dict[str, Any]]:
@@ -199,5 +205,5 @@ class EvidenceStore:
 
     def selected(self, claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
         keys = {support["citationKey"] for claim in claims for support in claim["supportingSources"]}
-        return [{field: deepcopy(value) for field, value in row.items() if field != "text"}
+        return [{field: deepcopy(value) for field, value in row.items() if field not in {"text", "links"}}
                 for key, row in self.sources.items() if key in keys]

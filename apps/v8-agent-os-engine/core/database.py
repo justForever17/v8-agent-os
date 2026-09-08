@@ -5796,9 +5796,10 @@ class DatabaseManager:
             {"sessionId": None, **idempotency_payload}
         )
         resolved_result_episode_id = episode_id
+        admission_reused = False
 
         def _write():
-            nonlocal resolved_result_episode_id
+            nonlocal resolved_result_episode_id, admission_reused
             with self.get_connection() as conn:
                 # Serialize the key lookup and insert across threads/processes.
                 # The ledger is the canonical uniqueness boundary; the legacy
@@ -5926,6 +5927,7 @@ class DatabaseManager:
                             )
                         if existing_episode_id != episode_id:
                             resolved_result_episode_id = existing_episode_id
+                            admission_reused = bool(enqueue)
                             if stored_fingerprint != idempotency_fingerprint:
                                 conn.execute(
                                     "UPDATE runtime_episode_idempotency SET payload_fingerprint = ?, updated_at = ? WHERE idempotency_key = ?",
@@ -5938,6 +5940,18 @@ class DatabaseManager:
                                 "UPDATE runtime_episode_idempotency SET payload_fingerprint = ?, updated_at = ? WHERE idempotency_key = ?",
                                 (idempotency_fingerprint, now_iso, ledger_storage_key),
                             )
+                        if enqueue and not idempotency_key.startswith("episode:") and conn.execute(
+                            "SELECT 1 FROM runtime_episodes WHERE id=? AND COALESCE(session_id, '')=? AND COALESCE(run_id, '')=?",
+                            (episode_id, resolved_session_id or "", resolved_run_id or ""),
+                        ).fetchone():
+                            # An explicit ingress key admits an immutable task
+                            # once. Replaying even the same ID must not reset a
+                            # claimed/terminal row or its queue to 'queued'.
+                            # Ordinary episode: lifecycle updates and legacy
+                            # binding backfill keep their existing paths.
+                            admission_reused = True
+                            conn.commit()
+                            return
                 if parent_episode_id:
                     parent_row = conn.execute(
                         "SELECT id, session_id FROM runtime_episodes WHERE id = ?",
@@ -6126,11 +6140,14 @@ class DatabaseManager:
                 conn.commit()
 
         self._run_write_with_retry(_write)
-        return self.get_runtime_episode(resolved_result_episode_id) or {
+        result = self.get_runtime_episode(resolved_result_episode_id) or {
             **episode,
             "episodeId": resolved_result_episode_id,
             "state": state,
         }
+        if admission_reused:
+            result["admissionReused"] = True
+        return result
 
     def enqueue_runtime_episode(
         self,

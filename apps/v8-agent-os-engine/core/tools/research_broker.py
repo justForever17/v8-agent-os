@@ -25,11 +25,10 @@ from langgraph.prebuilt import InjectedState
 from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import extract_reasoning_token_count, sanitize_background_model_output
 from runtimes.research.evidence import normalize_citation_tokens as _normalize_research_citation_tokens
+from runtimes.research.access_scope import ResearchAccessScope, research_access_denied
 from core.model_thinking_control import no_think_request_patch
 from core.research_runtime_prompts import (
-    RESEARCH_PROMPT_CONTRACT_VERSION,
     build_research_runtime_system_prompt,
-    research_runtime_prompt_digest,
 )
 from core.storage import storage
 from core.system_base import get_web_fetch_config
@@ -130,7 +129,6 @@ _RESEARCH_SOURCE_CAPTURE_CHARS = 32_000
 _RESEARCH_ARCHITECT_SOURCE_TEXT_CHARS = 32_000
 _RESEARCH_ARCHITECT_EVIDENCE_CANDIDATE_COUNT = 6
 _RESEARCH_ARCHITECT_STRUCTURE_MAX_TOKENS = 1_400
-_RESEARCH_ARCHITECT_QUERY_PLAN_MAX_TOKENS = 3_200
 
 
 _RESEARCH_PROGRESS_REPORTER: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
@@ -166,7 +164,6 @@ def _report_research_progress(**payload: Any) -> None:
     except Exception:
         # Product progress must never alter Research evidence or retry truth.
         return
-_RESEARCH_ARCHITECT_QUERY_PLAN_TIMEOUT_SECONDS = 60
 _RESEARCH_ARCHITECT_ANSWER_MAX_TOKENS = 12_000
 _RESEARCH_ARCHITECT_REVIEW_MAX_TOKENS = 1_800
 _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT = 24
@@ -182,10 +179,7 @@ _RESEARCH_ARCHITECT_IDEAL_CLAIM_COUNT = max(
 _RESEARCH_ARCHITECT_MAX_SOURCE_COUNT = 24
 _RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER = "<!-- research-answer-complete -->"
 _RESEARCH_ARCHITECT_SECTION_COMPLETE_MARKER_PREFIX = "research-section-complete"
-_RESEARCH_ARCHITECT_SECTION_MAX_TOKENS = 3_200
 _RESEARCH_ARCHITECT_COHERENT_REVISION_MIN_TOKENS = 8_192
-_RESEARCH_ARCHITECT_IDEAL_ANSWER_MIN_CHARS = 6_500
-_RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS = 11_000
 # Raw Markdown includes citation labels, temporal boundaries, source titles,
 # and compact excerpts beyond the effective-content target.  Keep enough room
 # for an evidence-rich deterministic report so it is not replaced by a lower-
@@ -2413,7 +2407,9 @@ def _cleanup_ledger() -> None:
 
 
 def _ledger_scope(state: dict[str, Any] | None) -> str:
-    context = dict(state or {})
+    from erc.runtime_context import get_runtime_context
+    state = dict(state or {})
+    context = {**dict(state.get("route_context") or {}), **state, **get_runtime_context()}
     # Experience reuse must survive a new run in the same conversation. The
     # evidence bundle still carries its run lineage; scope controls visibility.
     for key in ("session_id", "sessionId", "conversation_id", "conversationId", "run_id", "runId"):
@@ -2427,9 +2423,11 @@ def _store_evidence(bundle: dict[str, Any], *, state: dict[str, Any] | None) -> 
     _cleanup_ledger()
     config = _research_config()
     scope = _ledger_scope(state)
+    access = ResearchAccessScope(state)
     bundle_id = _safe_text(bundle.get("evidenceBundleId")) or f"research_{uuid.uuid4().hex[:12]}"
     stored = {
         **bundle,
+        "sourceContext": access.source_context,
         "evidenceBundleId": bundle_id,
         "scope": scope,
         "createdAt": _utc_now_iso(),
@@ -2437,8 +2435,12 @@ def _store_evidence(bundle: dict[str, Any], *, state: dict[str, Any] | None) -> 
         "_expiresAt": time.time() + config["evidenceTtlSeconds"],
     }
     stored["researchAnswerPack"] = _research_answer_pack(stored)
+    try:
+        result = store_evidence_bundle(stored, ttl_seconds=config["evidenceTtlSeconds"], scope=scope, access_check=access.allows)
+    except PermissionError:
+        return research_access_denied("run")
     _EVIDENCE_LEDGER[bundle_id] = stored
-    return store_evidence_bundle(stored, ttl_seconds=config["evidenceTtlSeconds"], scope=scope)
+    return result
 
 
 def _compact_visible_quality_gate(value: Any) -> dict[str, Any]:
@@ -9755,1987 +9757,6 @@ def _architect_partial_plan_evidence_ready(
     return not required or required.issubset(available_facet_ids)
 
 
-def _architect_reconcile_review_with_answer_surface(
-    review: dict[str, Any],
-    *,
-    question: str,
-    candidate_answer: str,
-    claim_table: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Discard only reviewer absence claims disproved by the visible answer.
-
-    This is deliberately narrower than a second semantic reviewer. It cannot
-    overrule an unsupported API/fact claim or an actual freshness conflict. It
-    only fences a known long-answer reviewer failure mode: reporting that an
-    exact label or historical boundary is absent even though that exact surface
-    is present in the candidate and the allegedly current guidance excludes the
-    historical citations.
-    """
-
-    if not isinstance(review, dict):
-        return {}
-    normalized = dict(review)
-    verified_claims = [
-        claim for claim in list(claim_table or []) if isinstance(claim, dict)
-    ]
-
-    def guidance_section() -> str:
-        match = re.search(
-            r"(?ims)^##\s+(?:Evidence-backed practical guidance|基于证据的可执行实践指南)\s*$"
-            r"(?P<body>.*?)"
-            r"(?=^##\s+(?:Facts and usages directly supported by primary sources|一手资料直接支持的事实与用法)\s*$|\Z)",
-            candidate_answer,
-        )
-        return match.group("body") if match else ""
-
-    def named_subsection(pattern: str) -> str:
-        match = re.search(
-            rf"(?ims)^###\s+(?:{pattern})\s*$"
-            r"(?P<body>.*?)"
-            r"(?=^###\s+|^##\s+|\Z)",
-            candidate_answer,
-        )
-        return match.group("body") if match else ""
-
-    guidance = guidance_section()
-    conversion_validation_section = named_subsection(
-        r"Type conversion and input validation|类型转换与输入验证"
-    )
-    integration_section = named_subsection(
-        r"CLI parsing and framework integration|CLI 解析与框架接入"
-    )
-    configuration_section = named_subsection(
-        r"Application configuration locations|应用配置目录"
-    )
-    choice_section = named_subsection(
-        r"Choose by CLI context, not by an unconditional library ranking|按 CLI 场景选择，而不是做无条件库排名"
-    )
-    path_semantics_section = named_subsection(
-        r"Path semantics, filesystem operations, and historical boundaries|路径语义、文件系统操作与历史边界"
-    )
-    path_protocol_section = named_subsection(
-        r"Path protocol and API compatibility boundary|路径协议与 API 兼容边界"
-    )
-    direct_match = re.search(
-        r"(?ims)^##\s+(?:Direct answer(?: and interpretation rule)?|直接回答(?:与判断规则)?)\s*$"
-        r"(?P<body>.*?)"
-        r"(?=^##\s+|\Z)",
-        candidate_answer,
-    )
-    direct_section = direct_match.group("body") if direct_match else ""
-    framework_scoped_direct_synthesis_present = bool(
-        (
-            (
-                re.search(
-                    r"When that framework exposes documented validation options|"
-                    r"当该框架确实提供已记录的校验选项",
-                    direct_section,
-                    re.IGNORECASE,
-                )
-                and re.search(
-                    r"cross-source synthesis of separately verified contracts|"
-                    r"对分别核验合同的跨来源综合",
-                    direct_section,
-                    re.IGNORECASE,
-                )
-                and re.search(
-                    r"not a claim that any one source prescribes a universal workflow|"
-                    r"不声称任何单一来源规定了通用工作流",
-                    direct_section,
-                    re.IGNORECASE,
-                )
-            )
-            or (
-                re.search(
-                    r"Best-practice implementation pattern|最佳实践实施模式",
-                    direct_section,
-                    re.IGNORECASE,
-                )
-                and re.search(
-                    r"action sequence above is this report's engineering recommendation|"
-                    r"上述动作顺序是本报告.{0,40}工程建议",
-                    direct_section,
-                    re.IGNORECASE,
-                )
-                and re.search(
-                    r"not a claim that one source published a universal cross-framework rule|"
-                    r"不是把任一来源改写成跨框架统一规则",
-                    direct_section,
-                    re.IGNORECASE,
-                )
-            )
-        )
-        and len(set(re.findall(r"\[(S\d+)\]", direct_section, re.IGNORECASE))) >= 2
-    )
-    argparse_example_scope_present = bool(
-        re.search(r"`?type=pathlib\.Path`?", choice_section, re.IGNORECASE)
-        and (
-            (
-                re.search(
-                    r"asserts only the parser configuration visible in that example|"
-                    r"只陈述示例展示的解析器配置",
-                    choice_section,
-                    re.IGNORECASE,
-                )
-                and re.search(
-                    r"downstream Path operations are supported by separate primary Path sources|"
-                    r"后续 Path 操作由独立的 Path 一手资料支撑",
-                    choice_section,
-                    re.IGNORECASE,
-                )
-            )
-            or re.search(
-                r"argparse example shows that exact setting.{0,160}"
-                r"does not rewrite the example as an official recommendation|"
-                r"argparse 示例明确展示该配置.{0,160}不把示例改写成官方推荐",
-                choice_section,
-                re.IGNORECASE | re.DOTALL,
-            )
-        )
-    )
-    attributed_secondary_advice_visible = bool(
-        re.search(
-            r"Secondary source.{0,240}You should use Path objects anywhere you work with file paths|"
-            r"二手来源.{0,240}应该在处理文件路径的任何地方使用 Path",
-            integration_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-    )
-    visible_contextual_practice_answer = bool(
-        choice_section
-        and all(
-            re.search(rf"\b{framework}\b", choice_section, re.IGNORECASE)
-            for framework in ("argparse", "Click", "Typer")
-        )
-        and len(set(re.findall(r"\[(S\d+)\]", choice_section, re.IGNORECASE))) >= 3
-        and re.search(r"Practical synthesis|本报告的综合判断", choice_section, re.IGNORECASE)
-        and re.search(
-            r"Existing argparse application:.{0,500}(?:documented|use)|"
-            r"已采用 argparse.{0,500}(?:官方|使用)",
-            choice_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(
-            r"Existing Click application:.{0,500}(?:use|Path)|"
-            r"已采用 Click.{0,500}(?:使用|Path)",
-            choice_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(
-            r"Existing Typer application:.{0,500}(?:receive|use|Path)|"
-            r"已采用 Typer.{0,500}(?:使用|接收|Path)",
-            choice_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(
-            r"convert at the CLI input boundary and keep using Path downstream|"
-            r"selected framework's input boundary produces a Path.{0,180}keep using that Path|"
-            r"在 CLI 输入边界完成转换.{0,80}后续处理继续使用 Path|"
-            r"在所选框架的输入边界得到 Path 后.{0,180}继续使用 Path",
-            integration_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-    )
-    argparse_example_boundary_present = bool(
-        re.search(
-            r"Existing argparse application.{0,500}documented example.{0,300}"
-            r"does not rewrite it as an official recommendation|"
-            r"Existing argparse application.{0,500}argparse example shows that exact setting.{0,300}"
-            r"does not rewrite the example as an official recommendation|"
-            r"已采用 argparse.{0,500}官方示例.{0,300}不把示例改写成官方推荐",
-            choice_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(r"\[S\d+\]", choice_section, re.IGNORECASE)
-    )
-    verified_argparse_normative_scope = any(
-        re.search(
-            r"argparse is the default recommended standard library module.{0,120}"
-            r"implementing basic command[- ]line applications",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"default recommended standard library module.{0,120}"
-            r"implementing basic command line applications",
-            _safe_text(claim.get("evidenceExcerpt")),
-            re.IGNORECASE,
-        )
-        for claim in verified_claims
-    )
-    argparse_normative_scope_present = bool(
-        verified_argparse_normative_scope
-        and re.search(
-            r"default recommended standard-library module for implementing basic command-line applications|"
-            r"用于实现基础命令行应用的默认推荐标准库模块",
-            choice_section,
-            re.IGNORECASE,
-        )
-        and re.search(r"\[S\d+\]", choice_section, re.IGNORECASE)
-    )
-    click_option_application_boundary_present = bool(
-        re.search(
-            r"The source documents (?:a configurable option|those configurable options).{0,240}"
-            r"report's engineering synthesis.{0,180}not a claim about Click's default value or an official preference|"
-            r"source records those conversion and validation options.{0,240}"
-            r"combining them at a concrete command boundary is this report's engineering synthesis|"
-            r"来源记录的是(?:可配置选项|这些可配置选项).{0,240}本报告的工程综合.{0,180}"
-            r"不表示 Click 默认(?:值|如此)或官方偏好|"
-            r"来源记录这些转换与校验选项.{0,240}把它们组合到具体命令边界是本报告的工程综合",
-            choice_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(r"\bClick\b.{0,500}\[S\d+\]", choice_section, re.IGNORECASE | re.DOTALL)
-    )
-    verified_click_path_setting = any(
-        re.search(
-            r"Allow passing\s+`?path_type\s*=\s*pathlib\.Path`?",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        for claim in verified_claims
-    )
-    verified_click_path_conversion = any(
-        re.search(r"\bpath_type\b", _safe_text(claim.get("claim")), re.IGNORECASE)
-        and re.search(
-            r"Convert the incoming path value to this type|"
-            r"convert(?:s|ed|ing)? an? incoming path value",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        for claim in verified_claims
-    )
-    verified_click_parameter_conversion_claims = [
-        claim
-        for claim in verified_claims
-        if (
-        re.search(r"\bpath_type\b", _safe_text(claim.get("claim")), re.IGNORECASE)
-        and re.search(
-            r"convert(?:s|ed|ing)? (?:the )?incoming path value.{0,100}(?:specified|this) type|"
-            r"convert(?:s|ed|ing)?.{0,100}pathlib\.Path",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"Convert the incoming path value to this type.{0,220}"
-            r"Useful to convert to.{0,100}pathlib\.Path",
-            _normalized_evidence_text(claim.get("evidenceExcerpt")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        and any(
-            isinstance(support, dict)
-            and _architect_support_role(support) == "primary"
-            and re.search(
-                r"\bClick\b|click\.palletsprojects\.com",
-                " ".join(
-                    (
-                        _safe_text(support.get("title")),
-                        _safe_text(support.get("url") or support.get("sourceUrl")),
-                    )
-                ),
-                re.IGNORECASE,
-            )
-            for support in list(claim.get("supportingSources") or [])
-        )
-        )
-    ]
-    verified_click_parameter_conversion_contract = bool(
-        verified_click_parameter_conversion_claims
-    )
-    click_conversion_contract_present = bool(
-        (
-            verified_click_parameter_conversion_contract
-            or (verified_click_path_setting and verified_click_path_conversion)
-        )
-        and (
-            re.search(
-                    r"set\s+`?path_type=pathlib\.Path`?.{0,500}allows? this setting.{0,240}"
-                r"path_type converts the incoming path value to the specified type.{0,300}"
-                r"(?:makes no claim about path_type's default value|"
-                r"verified signature records path_type=None)|"
-                r"设置 path_type=pathlib\.Path.{0,500}允许该设置.{0,240}"
-                r"path_type 会把输入路径值转换为指定类型.{0,300}"
-                r"(?:不陈述 path_type 的默认值|已验证签名记录 path_type=None)",
-                choice_section,
-                re.IGNORECASE | re.DOTALL,
-            )
-            or (
-                verified_click_parameter_conversion_contract
-                and re.search(
-                    r"(?:Source-backed finding|来源支撑的结论).{0,120}"
-                    r"path_type.{0,160}convert.{0,160}pathlib\.Path.{0,80}\[S\d+\]",
-                    candidate_answer,
-                    re.IGNORECASE | re.DOTALL,
-                )
-                and re.search(
-                    r"(?:configure|设置).{0,120}(?:Click(?:'s)? documented )?"
-                    r"Path/?path_type|path_type\s*=\s*pathlib\.Path",
-                    choice_section,
-                    re.IGNORECASE | re.DOTALL,
-                )
-            )
-        )
-        and re.search(r"\bClick\b.{0,900}\[S\d+\]", choice_section, re.IGNORECASE | re.DOTALL)
-    )
-    choice_synthesis_boundary_present = bool(
-        re.search(
-            r"Practical synthesis.{0,80}actionable choice|本报告的综合判断.{0,40}可执行选择",
-            choice_section,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"recommends neither a framework migration nor a universally superior library.{0,180}"
-            r"organizes the separate framework contracts|"
-            r"不建议迁移框架.{0,120}不声称某个框架普遍更优.{0,180}各框架独立合同",
-            choice_section,
-            re.IGNORECASE,
-        )
-        and len(set(re.findall(r"\[(S\d+)\]", choice_section, re.IGNORECASE))) >= 3
-    )
-    source_role_boundary_present = bool(
-        re.search(
-            r"Secondary material and attributed experience|二手资料与署名经验",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"they do not establish an official rule|不承担官方规范证明",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"Secondary source\s+[\"“][^\"”]{1,180}[\"”]\s+states:\s*"
-            r"You should use Path objects anywhere you work with file paths(?:\.|。)?\s*\[S\d+\]|"
-            r"二手来源《[^》]{1,180}》的表述：.{0,120}应该在处理文件路径的任何地方使用 Path.{0,20}\[S\d+\]",
-            guidance,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and attributed_secondary_advice_visible
-    )
-    dedicated_secondary_boundary_present = bool(
-        re.search(
-            r"Secondary material and attributed experience|二手资料与署名经验",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"they do not establish an official rule|不承担官方规范证明",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"Attributed statement from secondary source|二手来源《[^》]+》的署名表述",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-    )
-    secondary_claim_citation_keys = {
-        _safe_text(support.get("citationKey") or support.get("citation"))
-        .strip("[]")
-        .upper()
-        for claim in verified_claims
-        for support in list(claim.get("supportingSources") or [])
-        if isinstance(support, dict)
-        and _architect_support_role(support) == "secondary"
-        and _safe_text(support.get("citationKey") or support.get("citation"))
-    }
-    guidance_citation_keys = {
-        key.upper()
-        for key in re.findall(r"\[(S\d+)\]", guidance, re.IGNORECASE)
-    }
-    secondary_excluded_from_actionable_guidance = bool(
-        secondary_claim_citation_keys
-        and not secondary_claim_citation_keys.intersection(guidance_citation_keys)
-    )
-    attributed_secondary_claim_present = any(
-        _safe_text(claim.get("claimType")).lower() == "explicit_normative"
-        and re.search(
-            r"^Secondary source\s+[\"“][^\"”]{1,180}[\"”]\s+states:\s*"
-            r"You should use Path objects anywhere you work with file paths|"
-            r"^二手来源《[^》]{1,180}》的表述：.{0,120}应该在处理文件路径的任何地方使用 Path",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        and any(
-            isinstance(support, dict)
-            and _architect_support_role(support) == "secondary"
-            for support in list(claim.get("supportingSources") or [])
-        )
-        for claim in verified_claims
-    )
-    has_verified_conversion_claim = any(
-        re.search(
-            r"\b(?:type\s*example.{0,50}(?:pathlib\.Path|converter)|path_type|"
-            r"convert(?:s|ed|ing)?.{0,50}(?:pathlib\.Path|Path object)|Path[- ]typed argument)\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        for claim in verified_claims
-    )
-    has_verified_validation_claim = any(
-        re.search(
-            r"\b(?:exists|file_okay|dir_okay|readable|writable|resolve_path|"
-            r"validat(?:e|es|ed|ing|ion)|permission)\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        for claim in verified_claims
-    )
-    conversion_validation_synthesis_present = bool(
-        has_verified_conversion_claim
-        and has_verified_validation_claim
-        and re.search(
-            r"Treat 'convert this token to Path' and 'which path values are acceptable' as separate decisions|"
-            r"The conversion claim states how path_type or a Path-typed entry determines.{0,260}"
-            r"The validation claim enumerates|"
-            r"Recommended implementation \(report synthesis\).{0,420}"
-            r"Documented basis:.{0,260}conversion claim establishes.{0,260}"
-            r"validation claim enumerates|"
-            r"把[‘'\"]?转换成 Path[’'\"]?和[‘'\"]?允许什么路径值[’'\"]?作为两个独立决定",
-            conversion_validation_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and len(
-            set(
-                re.findall(
-                    r"\[(S\d+)\]",
-                    conversion_validation_section,
-                    re.IGNORECASE,
-                )
-            )
-        )
-        >= 2
-    )
-    conversion_validation_boundary_present = bool(
-        conversion_validation_synthesis_present
-        and re.search(
-            r"Evidence[- ]boundary inference:.{0,420}not presented as a verbatim official negative rule|"
-            r"Evidence boundary:.{0,520}implementation sequence;.{0,180}"
-            r"does not attribute a universal workflow rule to any one source|"
-            r"Documented basis:.{0,520}sources establish those controls individually.{0,180}"
-            r"report composes the implementation sequence|"
-            r"证据边界.{0,520}(?:实施顺序|综合推断).{0,180}"
-            r"(?:不把|并非).{0,100}(?:通用工作流|官方规则|单一来源)|"
-            r"文档依据.{0,520}来源分别证明这些控制项.{0,180}本报告只负责组合实施顺序",
-            conversion_validation_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-    )
-    has_verified_path_operation_claim = any(
-        re.search(
-            r"\b(?:path(?:lib)?\.Path|Path object|pure paths?|concrete paths?|"
-            r"filesystem path|exists\(\)|is_dir\(\)|open\(\)|with_suffix|operator)\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE,
-        )
-        for claim in verified_claims
-    )
-    path_layer_inference_trace_present = bool(
-        has_verified_conversion_claim
-        and has_verified_path_operation_claim
-        and re.search(
-            r"Engineering-decomposition boundary|工程分解边界",
-            path_semantics_section,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"report's methodology, not a verbatim official recommendation|"
-            r"本报告的方法，不冒充官方资料逐字发布的推荐",
-            path_semantics_section,
-            re.IGNORECASE,
-        )
-        and len(
-            set(re.findall(r"\[(S\d+)\]", path_semantics_section, re.IGNORECASE))
-        )
-        >= 2
-        and not re.search(
-            r"\bofficial(?:ly)?\s+(?:requires?|recommends?|mandates?)\b|"
-            r"\b(?:all|every)\s+CLI\b.{0,80}\bmust\b|"
-            r"\buniversal(?:ly)?\s+(?:requires?|guarantees?)\b|"
-            r"官方(?:明确)?(?:要求|规定|推荐).{0,80}(?:所有|任何)?\s*CLI",
-            path_semantics_section,
-            re.IGNORECASE,
-        )
-    )
-    interpretation_rule_present = bool(
-        re.search(
-            r"^##\s+(?:Direct answer(?: and interpretation rule)?|直接回答(?:与判断规则)?)\s*$",
-            candidate_answer,
-            re.IGNORECASE | re.MULTILINE,
-        )
-        and re.search(
-            r"must not be upgraded to 'the official preferred practice'|"
-            r"'the official documentation shows this usage' is not the same as 'the official preferred practice'|"
-            r"不能把.{0,80}官方文档展示了这种用法.{0,80}改写成.{0,80}官方首选|"
-            r"官方文档展示了这种用法.{0,80}不等于.{0,80}官方首选",
-            candidate_answer,
-            re.IGNORECASE | re.DOTALL,
-        )
-    )
-    synthesis_units_for_trace = [
-        unit
-        for unit in _architect_section_content_units(candidate_answer)
-        if _ARCHITECT_SYNTHESIS_LABEL_RE.search(unit)
-    ]
-
-    def synthesis_unit_has_complete_citation_tail(unit: str) -> bool:
-        all_keys = list(
-            dict.fromkeys(
-                key.upper()
-                for key in re.findall(r"\[(S\d+)\]", unit, re.IGNORECASE)
-            )
-        )
-        if len(all_keys) < 2:
-            return False
-        tail = re.search(r"((?:\[S\d+\])+)[.!。]?\s*$", unit, re.IGNORECASE)
-        if not tail:
-            return False
-        tail_keys = {
-            key.upper()
-            for key in re.findall(r"\[(S\d+)\]", tail.group(1), re.IGNORECASE)
-        }
-        return set(all_keys).issubset(tail_keys)
-
-    synthesis_citation_trace_complete = bool(
-        len(synthesis_units_for_trace) >= 3
-        and all(
-            synthesis_unit_has_complete_citation_tail(unit)
-            for unit in synthesis_units_for_trace
-        )
-    )
-    claim_type_boundary_present = bool(
-        interpretation_rule_present
-        and attributed_secondary_claim_present
-        and re.search(
-            r"Unless an excerpt itself uses prescriptive language|"
-            r"除非某条摘录本身含明确推荐词",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"Source-backed finding|来源支撑的结论",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-    )
-    integration_inference_trace_present = bool(
-        visible_contextual_practice_answer
-        and has_verified_conversion_claim
-        and len(
-            set(re.findall(r"\[(S\d+)\]", integration_section, re.IGNORECASE))
-        )
-        >= 3
-        and (
-            not attributed_secondary_advice_visible
-            or attributed_secondary_claim_present
-        )
-        and re.search(
-            r"this report's explicitly labeled cross-source inference|"
-            r"report's cross-source inference from the primary contracts|"
-            r"本报告明确标注的跨来源推论|本报告从多个一手转换合同得出的跨来源推论",
-            integration_section,
-            re.IGNORECASE,
-        )
-    )
-    asks_for_official_normative_wording = bool(
-        re.search(
-            r"(?:what|which).{0,60}(?:official|documentation|docs).{0,60}(?:recommend|require|prefer)|"
-            r"(?:官方|权威)(?:文档|资料|来源)?.{0,16}(?:明确)?(?:推荐|要求|首选)(?:什么|哪些|哪种|的)",
-            _safe_text(question),
-            re.IGNORECASE,
-        )
-    )
-    dated_pep_scope_present = bool(
-        re.search(
-            r"Dated/versioned PEP entries retain their explicit time and version scope; their date alone neither establishes nor negates current applicability|"
-            r"带日期/版本的 PEP 保留其明确时间与版本范围；不能仅凭日期认定或否定当前适用性",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"source-reported document date shown; no fixed age cutoff is applied|"
-            r"来源报告的文档日期已列出；不套用固定年龄截止",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-    )
-    date_label_not_deprecation_present = bool(
-        re.search(
-            r"A date or version label does not itself mean that material is superseded or deprecated|"
-            r"日期或版本标签本身不表示资料已被替代或废弃",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-    )
-    click_default_nonassertion_present = bool(
-        re.search(
-            r"makes no claim about (?:Click's|path_type's) default value|"
-            r"不陈述 (?:Click|path_type) 的默认值",
-            choice_section,
-            re.IGNORECASE,
-        )
-        and re.search(r"\bClick\b.{0,900}\[S\d+\]", choice_section, re.IGNORECASE | re.DOTALL)
-    )
-    verified_click_none_signature = any(
-        re.search(
-            r"\bClick\.Path(?:'s)?\b.{0,120}\bsignature\b.{0,120}"
-            r"\bpath_type\s*=\s*None\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        for claim in verified_claims
-    )
-    verified_click_none_behavior = any(
-        re.search(
-            r"\bClick(?:'s)?\b.{0,120}\bpath_type\b.{0,180}\bif\s+None\b"
-            r".{0,160}\bdefault\b.{0,80}\bstr\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        for claim in verified_claims
-    )
-    click_default_contract_present = bool(
-        verified_click_none_signature
-        and verified_click_none_behavior
-        and re.search(
-            r"verified signature records path_type=None.{0,180}"
-            r"None keeps Python's default str|"
-            r"已验证签名记录 path_type=None.{0,180}None 会保留 Python 默认的 str",
-            choice_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(r"\bClick\b.{0,1200}\[S\d+\]", choice_section, re.IGNORECASE | re.DOTALL)
-    )
-    click_validation_default_pairs = (
-        ("exists", "false"),
-        ("file_okay", "true"),
-        ("dir_okay", "true"),
-        ("writable", "false"),
-        ("readable", "true"),
-        ("resolve_path", "false"),
-    )
-    verified_click_path_signature_default_claims = [
-        claim
-        for claim in verified_claims
-        if (
-        all(
-            re.search(
-                rf"\b{re.escape(name)}\s*=\s*{value}\b",
-                _normalized_evidence_text(claim.get("claim")),
-                re.IGNORECASE,
-            )
-            and re.search(
-                rf"\b{re.escape(name)}\s*=\s*{value}\b",
-                _normalized_evidence_text(claim.get("evidenceExcerpt")),
-                re.IGNORECASE,
-            )
-            for name, value in click_validation_default_pairs
-        )
-        and any(
-            isinstance(support, dict)
-            and _architect_support_role(support) == "primary"
-            and re.search(
-                r"\bClick\b|click\.palletsprojects\.com",
-                " ".join(
-                    (
-                        _safe_text(support.get("title")),
-                        _safe_text(support.get("url") or support.get("sourceUrl")),
-                    )
-                ),
-                re.IGNORECASE,
-            )
-            for support in list(claim.get("supportingSources") or [])
-        )
-        )
-    ]
-    verified_click_path_signature_defaults = bool(
-        verified_click_path_signature_default_claims
-    )
-    verified_path_intro_scope_claims = [
-        claim
-        for claim in verified_claims
-        if re.search(
-            r"\b(?:pathlib\.)?Path\b.{0,120}\bmost likely\b.{0,120}\b(?:need|needed)\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(
-            r"\bPath is most likely what you need\b",
-            _safe_text(claim.get("evidenceExcerpt")),
-            re.IGNORECASE,
-        )
-        and any(
-            isinstance(support, dict)
-            and _architect_support_role(support) == "primary"
-            and re.search(
-                r"docs\.python\.org/(?:3|\d+(?:\.\d+)?)/library/pathlib\.html|"
-                r"\bpathlib\b.{0,80}\bObject-oriented filesystem paths\b",
-                " ".join(
-                    (
-                        _safe_text(support.get("title")),
-                        _safe_text(support.get("url") or support.get("sourceUrl")),
-                    )
-                ),
-                re.IGNORECASE,
-            )
-            for support in list(claim.get("supportingSources") or [])
-        )
-    ]
-    verified_concrete_path_io_claims = [
-        claim
-        for claim in verified_claims
-        if re.search(
-            r"\b(?:pathlib\.)?Path\b.{0,160}\bconcrete\b.{0,120}\bI/O operations?\b|"
-            r"\bconcrete path class\b.{0,160}\bI/O operations?\b",
-            _safe_text(claim.get("claim")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(
-            r"\bconcrete paths?\b.{0,180}\binherit from pure paths?\b.{0,180}"
-            r"\b(?:also )?provide I/O operations?\b",
-            _safe_text(claim.get("evidenceExcerpt")),
-            re.IGNORECASE | re.DOTALL,
-        )
-        and any(
-            isinstance(support, dict)
-            and _architect_support_role(support) == "primary"
-            and re.search(
-                r"docs\.python\.org/(?:3|\d+(?:\.\d+)?)/library/pathlib\.html",
-                _safe_text(support.get("url") or support.get("sourceUrl")),
-                re.IGNORECASE,
-            )
-            for support in list(claim.get("supportingSources") or [])
-        )
-    ]
-    inline_undated_boundary_keys: set[str] = set()
-    for evidence_block in re.split(
-        r"(?=^###\s+(?:(?:Evidence item|证据项)\s+\d+|(?:Source|来源)\s+\[S\d+\]|\[S\d+\]))",
-        candidate_answer,
-        flags=re.IGNORECASE | re.MULTILINE,
-    ):
-        if not re.search(
-            r"Currency and applicability:\s*undated|"
-            r"时效与适用边界：\s*无文档日期",
-            evidence_block,
-            re.IGNORECASE,
-        ):
-            continue
-        inline_undated_boundary_keys.update(
-            key.upper()
-            for key in re.findall(r"\[(S\d+)\]", evidence_block, re.IGNORECASE)
-        )
-    retrieval_date_caveat_present = bool(
-        re.search(
-            r"Retrieval time proves that a source was read, not that it is still the latest version|"
-            r"检索时间只证明本次读取发生过，不等于文档仍是最新版本",
-            candidate_answer,
-            re.IGNORECASE,
-        )
-    )
-    path_protocol_nonimplication_present = bool(
-        path_protocol_section
-        and re.search(
-            r"not (?:an )?actionable CLI premise|not used to claim.{0,100}"
-            r"(?:argparse|Click|Typer).{0,100}accepts? PathLike|"
-            r"不作为可执行 CLI 前提|不用于声称.{0,100}(?:argparse|Click|Typer).{0,100}接受 PathLike",
-            path_protocol_section,
-            re.IGNORECASE | re.DOTALL,
-        )
-        and re.search(
-            r"does not claim that any unverified API (?:accepts|rejects)"
-            r"(?:\s+or\s+(?:accepts|rejects))?\s+PathLike|"
-            r"不声称任何未核验 API (?:接受|拒绝)(?:或(?:接受|拒绝))? PathLike",
-            path_protocol_section,
-            re.IGNORECASE,
-        )
-        and re.search(r"\[S\d+\]", path_protocol_section, re.IGNORECASE)
-    )
-
-    missing_label_cue = re.compile(
-        r"(?:未(?:明确)?标注|没有标注|缺少标注)|"
-        r"\b(?:not|isn['’]t|wasn['’]t|without)\b.{0,30}\b(?:label(?:led|ed)?|mark(?:ed)?)\b",
-        re.IGNORECASE,
-    )
-    missing_attribution_cue = re.compile(
-        r"(?:未(?:保持)?(?:明确)?归因|没有归因|缺少归因)|"
-        r"\b(?:not|isn['’]t|wasn['’]t|without)\b.{0,40}\b(?:attribut(?:e|ed|ion)|credit(?:ed)?)\b",
-        re.IGNORECASE,
-    )
-
-    def exact_surface_contradiction(issue: str) -> str:
-        text = _safe_text(issue)
-        if not text:
-            return ""
-        if (
-            re.search(r"\bcorrectly\b|正确(?:地|保持|标注|归因)|符合要求", text, re.IGNORECASE)
-            and re.search(r"\bacceptable\b|可接受|符合(?:审查|指令|要求)", text, re.IGNORECASE)
-            and not re.search(
-                r"\bhowever\b|\bbut\s+(?:not|fails?|lacks?|missing|unsupported)|"
-                r"(?:但是|然而|不过|仍然).{0,80}(?:错误|缺少|不支持|未能)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "reviewer_positive_observation"
-        mentioned_claim_ids = {
-            value.lower()
-            for value in re.findall(
-                r"\b(?:claim_runtime_[a-z0-9_]+|C\d+)\b",
-                text,
-                re.IGNORECASE,
-            )
-        }
-        mentioned_claim_ids_are_verified = bool(
-            not mentioned_claim_ids
-            or all(
-                any(
-                    _safe_text(claim.get("claimId")).lower() == claim_id
-                    for claim in verified_claims
-                )
-                for claim_id in mentioned_claim_ids
-            )
-        )
-        api_term_aliases = {
-            "exists": ("exists", "existence"),
-            "file_okay": ("file_okay",),
-            "dir_okay": ("dir_okay",),
-            "writable": ("writable",),
-            "readable": ("readable",),
-            "resolve_path": ("resolve_path",),
-        }
-        mentioned_api_terms = {
-            canonical
-            for canonical, aliases in api_term_aliases.items()
-            if any(re.search(rf"\b{re.escape(alias)}\b", text, re.IGNORECASE) for alias in aliases)
-        }
-        verified_api_list_coverage = bool(
-            len(mentioned_api_terms) >= 3
-            and re.search(r"truncat(?:e|ed|ion)|截断", text, re.IGNORECASE)
-            and re.search(r"full.{0,30}list|validation list|完整.{0,20}(?:列表|清单)|校验列表", text, re.IGNORECASE)
-            and any(
-                all(
-                    any(
-                        re.search(rf"\b{re.escape(alias)}\b", _safe_text(claim.get("claim")), re.IGNORECASE)
-                        for alias in api_term_aliases[term]
-                    )
-                    and re.search(
-                        rf"\b{re.escape(term)}\b",
-                        _safe_text(claim.get("evidenceExcerpt")),
-                        re.IGNORECASE,
-                    )
-                    for term in mentioned_api_terms
-                )
-                for claim in verified_claims
-            )
-        )
-        exact_attributed_secondary_claim = any(
-            _safe_text(claim.get("claimId")).lower() in mentioned_claim_ids
-            and any(
-                isinstance(support, dict)
-                and _architect_support_role(support) == "secondary"
-                for support in list(claim.get("supportingSources") or [])
-            )
-            and _ARCHITECT_SOURCE_ROLE_ATTRIBUTION_RE.match(
-                _safe_text(claim.get("claim"))
-            )
-            and bool(_safe_text(claim.get("evidenceExcerpt")))
-            and _normalized_evidence_text(
-                _architect_assertion_text(claim.get("claim"))
-            )
-            in _normalized_evidence_text(claim.get("evidenceExcerpt"))
-            for claim in verified_claims
-        )
-        verified_unused_evidence_claim = any(
-            _safe_text(claim.get("claimId")).lower() in mentioned_claim_ids
-            and bool(_safe_text(claim.get("claim")))
-            and bool(_safe_text(claim.get("evidenceExcerpt")))
-            for claim in verified_claims
-        )
-        if (
-            visible_contextual_practice_answer
-            and verified_unused_evidence_claim
-            and re.search(
-                r"factually correct|verbatim match|事实(?:正确|一致)|逐字一致",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"never use(?:d|s)|not used|isn['’]t used|没有用于|未用于",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"best[- ]practice|practice claim|recommendation|最佳实践|实践建议",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_evidence_fact_not_required_as_synthesis_premise"
-        mentioned_source_keys = {
-            key.upper()
-            for key in re.findall(r"\b(S\d+)\b", text, re.IGNORECASE)
-        }
-
-        def issue_is_bound_to(claims: list[dict[str, Any]]) -> bool:
-            if mentioned_claim_ids and not any(
-                _safe_text(claim.get("claimId")).lower() in mentioned_claim_ids
-                for claim in claims
-            ):
-                return False
-            if mentioned_source_keys and not any(
-                mentioned_source_keys.intersection(
-                    {
-                        _safe_text(support.get("citationKey") or support.get("citation"))
-                        .strip("[]")
-                        .upper()
-                        for support in list(claim.get("supportingSources") or [])
-                        if isinstance(support, dict)
-                    }
-                )
-                for claim in claims
-            ):
-                return False
-            return True
-        exact_claim_excerpt_records = [
-            claim
-            for claim in verified_claims
-            if _normalized_evidence_text(claim.get("claim"))
-            and _normalized_evidence_text(claim.get("claim"))
-            == _normalized_evidence_text(claim.get("evidenceExcerpt"))
-        ]
-        if (
-            mentioned_claim_ids
-            and issue_is_bound_to(exact_claim_excerpt_records)
-            and re.search(
-                r"\bclaim\b.{0,100}\bomits?\b|"
-                r"\bomits?\b.{0,100}\b(?:claim|mention|detail|specificity)\b|"
-                r"(?:claim|声明|结论).{0,80}(?:省略|遗漏)|"
-                r"(?:省略|遗漏).{0,80}(?:细节|说明|声明|结论)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"\bexcerpt\b|\bsource\b|\bS\d+(?::E\d+)?\b|摘录|来源",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            # If the bound claim and excerpt are textually identical after
-            # normalization, the claim cannot have omitted a detail that the
-            # reviewer simultaneously quotes from that same excerpt.
-            return "verified_exact_claim_excerpt_no_omission"
-        verified_click_return_contract = any(
-            _safe_text(claim.get("claimId")).lower() in mentioned_claim_ids
-            and re.search(
-                r"returns the filename instead of an open file",
-                _safe_text(claim.get("claim")),
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"returns the filename instead of an open file",
-                _safe_text(claim.get("evidenceExcerpt")),
-                re.IGNORECASE,
-            )
-            and (
-                not mentioned_source_keys
-                or bool(
-                    mentioned_source_keys.intersection(
-                        {
-                            _safe_text(support.get("citationKey") or support.get("citation"))
-                            .strip("[]")
-                            .upper()
-                            for support in list(claim.get("supportingSources") or [])
-                            if isinstance(support, dict)
-                        }
-                    )
-                )
-            )
-            for claim in verified_claims
-        )
-        if (
-            verified_click_return_contract
-            and re.search(r"\bClick\b|\bC\d+\b", text, re.IGNORECASE)
-            and re.search(
-                r"not entailed|not (?:a )?verified return-value contract|"
-                r"signature.{0,80}not.{0,40}return|不(?:足以)?证明.{0,30}返回",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_click_filename_return_contract"
-        if (
-            path_protocol_nonimplication_present
-            and re.search(r"\bPathLike\b|路径协议", text, re.IGNORECASE)
-            and re.search(
-                r"(?:all|every)\s+(?:CLI\s+)?framework|"
-                r"actual acceptance|ungrounded implication|"
-                r"所有.{0,20}(?:CLI|框架)|实际接受|未经支撑的暗示",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_path_protocol_nonimplication_boundary"
-        if (
-            verified_path_intro_scope_claims
-            and issue_is_bound_to(verified_path_intro_scope_claims)
-            and re.search(r"\bmost likely\b.{0,100}\b(?:need|needed)\b", text, re.IGNORECASE)
-            and re.search(
-                r"(?:adds?|added).{0,100}(?:scope|qualifier)|"
-                r"without specifying.{0,100}(?:scope|module)|"
-                r"does not specify.{0,100}(?:scope|module)|"
-                r"未(?:说明|写明).{0,80}(?:范围|模块)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_path_intro_page_scope"
-        if (
-            verified_concrete_path_io_claims
-            and issue_is_bound_to(verified_concrete_path_io_claims)
-            and (
-                mentioned_claim_ids
-                or re.search(r"\bconcrete paths?\b|\bI/O operations?\b", text, re.IGNORECASE)
-            )
-            and re.search(
-                r"omits?.{0,100}inheritance|semantic narrowing|"
-                r"does not (?:mention|include).{0,100}inherit|"
-                r"省略.{0,80}继承|语义收窄",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_concrete_path_io_semantic_narrowing"
-        if (
-            argparse_example_boundary_present
-            and not asks_for_official_normative_wording
-            and re.search(
-                r"\bargparse\b.{0,180}(?:documented )?type example|"
-                r"argparse.{0,180}(?:type\s*=\s*pathlib\.Path|pathlib\.Path.{0,40}converter)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:does not|doesn't|not).{0,100}(?:recommend(?:ed|ation)?|best practice)|"
-                r"(?:recommend(?:ed|ation)?|best practice).{0,100}(?:does not|doesn't|not)|"
-                r"(?:未|没有).{0,100}(?:推荐|最佳实践)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_argparse_example_not_upgraded_to_recommendation"
-        if (
-            argparse_normative_scope_present
-            and re.search(r"\bargparse\b", text, re.IGNORECASE)
-            and re.search(r"basic(?: command[- ]line| CLI)|基础命令行", text, re.IGNORECASE)
-            and re.search(
-                r"(?:does not|doesn't|not|fails? to).{0,100}(?:limit|scope|qualif)|"
-                r"(?:未|没有).{0,100}(?:限定|范围|条件)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_argparse_basic_application_scope"
-        if (
-            click_option_application_boundary_present
-            and re.search(r"\bClick\b|\bpath_type\b", text, re.IGNORECASE)
-            and re.search(
-                r"only documents?.{0,160}(?:parameter )?option.{0,160}not.{0,120}(?:boundary|practice)|"
-                r"does not (?:state|document).{0,160}(?:boundary|practice)|"
-                r"仅(?:记录|说明).{0,120}(?:选项|参数).{0,120}(?:不是|未).{0,100}(?:边界|实践)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_click_option_application_boundary"
-        if (
-            click_conversion_contract_present
-            and re.search(r"\bClick\b|\bpath_type\b", text, re.IGNORECASE)
-            and re.search(
-                r"(?:only|merely) records?.{0,160}Allow passing.{0,80}path_type|"
-                r"(?:claimTable|claim).{0,180}(?:only|merely).{0,120}Allow passing|"
-                r"仅记录.{0,160}Allow passing.{0,80}path_type",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:does not|doesn't|not|unverified).{0,120}(?:behavior|conversion|semantics)|"
-                r"未记录.{0,120}(?:行为|转换|语义)|未经验证的语义",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_click_path_type_conversion_contract"
-        if (
-            verified_click_parameter_conversion_contract
-            and click_conversion_contract_present
-            and issue_is_bound_to(verified_click_parameter_conversion_claims)
-            and re.search(r"\bClick\b|\bpath_type\b|\bC\d+\b", text, re.IGNORECASE)
-            and re.search(
-                r"(?:only|merely).{0,100}(?:documents?|describes?).{0,140}"
-                r"(?:parameter|description)|"
-                r"(?:documented\s+)?parameter description.{0,120}(?:is\s+)?not"
-                r".{0,80}(?:guarantee|proof).{0,140}"
-                r"(?:conversion|convert|supported type|value)|"
-                r"does not (?:show|include).{0,100}(?:working|runtime) example|"
-                r"does not (?:demonstrate|guarantee).{0,140}(?:conversion|succeeds?)|"
-                r"lacks? evidence.{0,180}(?:returns?|return[- ]type|handler)|"
-                r"unverified.{0,100}(?:Click|Path).{0,100}return[- ]type|"
-                r"转换.{0,100}(?:缺少|没有).{0,100}(?:运行示例|返回类型)",
-                text,
-                re.IGNORECASE | re.DOTALL,
-            )
-        ):
-            # A primary parameter contract that explicitly says it converts
-            # the incoming value to the requested type and names pathlib.Path
-            # is direct source_fact evidence. Requiring a second runnable
-            # example would turn ordinary API documentation into an
-            # unnecessarily strict proof standard.
-            return "verified_click_path_type_parameter_contract"
-        if (
-            verified_click_path_signature_defaults
-            and issue_is_bound_to(verified_click_path_signature_default_claims)
-            and re.search(r"\bClick\b|\bC\d+\b|\bpath_type\b", text, re.IGNORECASE)
-            and re.search(
-                r"signature line|escaped underscores?|without prose|prose confirmation|"
-                r"behavioral defaults?|签名行|转义下划线|缺少.{0,30}文字说明",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"defaults?|exists|file_okay|dir_okay|writable|readable|resolve_path|默认",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_click_path_signature_defaults"
-        if (
-            click_default_nonassertion_present
-            and re.search(r"\bClick\b|\bpath_type\b", text, re.IGNORECASE)
-            and re.search(r"default value|默认值", text, re.IGNORECASE)
-            and re.search(
-                r"(?:lack|without|no|not).{0,120}(?:evidence|support)|"
-                r"(?:缺乏|没有|未提供).{0,100}(?:证据|支持)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_click_default_nonassertion"
-        if (
-            click_default_contract_present
-            and re.search(r"\bClick\b|\bpath_type\b", text, re.IGNORECASE)
-            and re.search(r"default value|默认值|默认.*None|None.*默认", text, re.IGNORECASE)
-            and re.search(
-                r"(?:not|isn['’]t|wasn['’]t|missing|omits?|fails? to).{0,140}"
-                r"(?:state|show|reflect|include|mention)|"
-                r"(?:未|没有|缺少).{0,120}(?:体现|呈现|说明|写明|提及)",
-                text,
-                re.IGNORECASE | re.DOTALL,
-            )
-        ):
-            return "verified_click_none_default_contract"
-        verified_typer_specific_claim = any(
-            _safe_text(claim.get("claimId")).lower() in mentioned_claim_ids
-            and re.search(r"\bTyper(?:'s)?\b", _safe_text(claim.get("claim")), re.IGNORECASE)
-            and any(
-                isinstance(support, dict)
-                and re.search(
-                    r"\bTyper\b|typer\.tiangolo\.com",
-                    " ".join(
-                        (
-                            _safe_text(support.get("title")),
-                            _safe_text(support.get("url")),
-                        )
-                    ),
-                    re.IGNORECASE,
-                )
-                for support in list(claim.get("supportingSources") or [])
-            )
-            for claim in verified_claims
-        )
-        verified_typer_prefer_normative_claim = any(
-            _safe_text(claim.get("claimId")).lower() in mentioned_claim_ids
-            and _safe_text(claim.get("claimType")).lower() == "explicit_normative"
-            and re.search(r"\bTyper\b.{0,160}\bAnnotated\b", _safe_text(claim.get("claim")), re.IGNORECASE)
-            and re.search(
-                r"\bPrefer to use the Annotated version if possible\b",
-                _safe_text(claim.get("evidenceExcerpt")),
-                re.IGNORECASE,
-            )
-            and any(
-                isinstance(support, dict)
-                and _architect_support_role(support) == "primary"
-                and re.search(
-                    r"\bTyper\b|typer\.tiangolo\.com",
-                    " ".join(
-                        (
-                            _safe_text(support.get("title")),
-                            _safe_text(support.get("url")),
-                        )
-                    ),
-                    re.IGNORECASE,
-                )
-                for support in list(claim.get("supportingSources") or [])
-            )
-            for claim in verified_claims
-        )
-        if (
-            verified_typer_prefer_normative_claim
-            and re.search(r"\bTyper\b.{0,180}\bAnnotated\b", text, re.IGNORECASE)
-            and re.search(
-                r"(?:excerpt|source).{0,100}(?:only )?(?:says?|labels?).{0,100}\btip\b|"
-                r"\btip\b.{0,120}not an? official recommendation|"
-                r"仅是.{0,40}(?:提示|tip).{0,100}不是官方推荐",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_primary_tip_normative_cue"
-        if (
-            verified_typer_specific_claim
-            and re.search(r"\bTyper\b", text, re.IGNORECASE)
-            and re.search(
-                r"without clarifying.{0,80}Typer[- ]specific|"
-                r"not universal pathlib|universal pathlib features?|"
-                r"未(?:明确)?限定.{0,50}Typer|误写为 pathlib 通用",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_typer_specific_claim_scope"
-        if (
-            exact_attributed_secondary_claim
-            and re.search(r"cross[- ]platform|跨平台", text, re.IGNORECASE)
-            and re.search(r"guarantee|保证|担保", text, re.IGNORECASE)
-        ):
-            return "verified_attributed_secondary_exact_wording"
-        if (
-            attributed_secondary_claim_present
-            and re.search(
-                r"(?:claimTable|claim table|claim_table).{0,160}(?:未|没有|not|without).{0,80}(?:归因|attribut)|"
-                r"(?:未|没有|not|without).{0,100}(?:claimTable|claim table|claim_table).{0,100}(?:归因|attribut)|"
-                r"(?:未|没有|not|without).{0,80}(?:归因|attribut).{0,160}(?:claimTable|claim table|claim_table)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(r"(?:secondary|二手|should use Path objects)", text, re.IGNORECASE)
-        ):
-            return "verified_claim_table_secondary_attribution"
-        if (
-            attributed_secondary_claim_present
-            and re.search(
-                r"correctly (?:prefixed|attributed|labeled|labelled)|"
-                r"已正确(?:加前缀|归因|标注)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"no escalation to (?:an? )?official rule|"
-                r"no (?:upgrade|escalation).{0,80}official|"
-                r"未升级为官方规则|没有冒充官方",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_secondary_attribution_positive_observation"
-        if (
-            conversion_validation_synthesis_present
-            and re.search(
-                r"(?:convert(?: this token)? to Path|转换成 Path).{0,200}"
-                r"(?:separate decisions|separation principle|分离决策|分离原则|独立决定)|"
-                r"(?:separate decisions|separation principle|分离决策|分离原则|独立决定).{0,200}"
-                r"(?:convert(?: this token)? to Path|转换成 Path|validate path)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:claimTable|claim table|claim_table|对应 claim|claim 支持|"
-                r"verified premise|verified claim|来源直接陈述|source directly states?|"
-                r"(?:no|does not cite any) source.{0,100}explicitly states?.{0,100}separation|"
-                r"(?:没有|未引用任何)来源.{0,100}明确(?:陈述|说明).{0,100}分离)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_conversion_validation_synthesis"
-        if (
-            conversion_validation_synthesis_present
-            and re.search(
-                r"This report's synthesis.{0,120}explicit cross-source engineering recommendation|"
-                r"本报告的综合判断.{0,80}明确的跨来源工程建议",
-                conversion_validation_section,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:not|does not|doesn't|without).{0,100}(?:label(?:led|ed|ing)?|mark(?:ed|ing)?).{0,100}"
-                r"cross-source|"
-                r"(?:not|does not|doesn't|without).{0,100}(?:individually|each framework).{0,100}cit|"
-                r"(?:does not|doesn't|without).{0,100}cit(?:e|ing).{0,120}(?:premise|source).{0,120}separation|"
-                r"(?:未|没有).{0,100}(?:明确标注|逐一引用).{0,100}(?:跨来源|每个框架|前提)|"
-                r"(?:未引用任何|没有引用).{0,140}(?:支持.{0,80}分离原则|前提来源)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_conversion_validation_synthesis"
-        if (
-            choice_synthesis_boundary_present
-            and re.search(
-                r"Keep the CLI framework already used|沿用应用已经采用的 CLI 框架",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:no|without|does not).{0,120}(?:source|excerpt).{0,120}(?:support|state)|"
-                r"(?:not|without).{0,100}(?:label(?:led|ed)|mark(?:ed)?).{0,80}synthesi|"
-                r"(?:未|没有).{0,100}(?:来源|摘录).{0,100}支持|"
-                r"(?:未|没有).{0,100}标注.{0,80}(?:综合|推论)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_choice_synthesis_boundary"
-        if (
-            conversion_validation_synthesis_present
-            and re.search(r"\bpath_type\b|Path annotation|Path 类型", text, re.IGNORECASE)
-            and re.search(
-                r"否定性(?:综合)?推断|否定结论|negative (?:claim|conclusion|inference)|"
-                r"(?:未|没有).{0,80}(?:官方来源|官方资料).{0,80}(?:明确声明|明确声称|支持)|"
-                r"(?:no|without).{0,80}official source.{0,80}(?:states?|supports?)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_conversion_validation_evidence_boundary"
-        if (
-            conversion_validation_boundary_present
-            and re.search(
-                r"(?:actionable (?:practice|sequence)|implementation sequence).{0,220}"
-                r"(?:combin(?:e|es|ed|ing)|independent framework options?|conversion|validation)|"
-                r"(?:combin(?:e|es|ed|ing)|independent framework options?|conversion|validation).{0,220}"
-                r"(?:actionable (?:practice|sequence)|implementation sequence)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:no|without) (?:a |any )?(?:single )?source.{0,180}"
-                r"(?:universal (?:implementation )?workflow|states?|directly supports?)|"
-                r"(?:universal (?:implementation )?workflow|通用工作流).{0,160}"
-                r"(?:not stated|without (?:a |any )?source|没有来源|未由来源)|"
-                r"(?:实施顺序|可执行做法).{0,180}(?:没有|缺少|未由).{0,100}(?:来源|单篇资料)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_conversion_validation_synthesis"
-        if (
-            framework_scoped_direct_synthesis_present
-            and re.search(
-                r"Lead ['\"]?Direct answer|直接回答",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"supported by S\d+.{0,120}but not by S\d+|"
-                r"attribution across argparse is an extrapolation|"
-                r"跨 argparse.{0,80}(?:外推|扩大)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"existence|file/directory|permission|validation|存在性|文件/目录|权限|校验",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_framework_scoped_validation_synthesis"
-        if (
-            path_layer_inference_trace_present
-            and re.search(
-                r"分离评估.{0,40}方法论|分离.{0,80}(?:官方来源|官方资料).{0,80}(?:支持|声明)|"
-                r"separat(?:e|ion).{0,100}(?:methodology|official source|official recommendation)|"
-                r"engineering[- ]layer separation.{0,180}(?:no|without).{0,40}primary source|"
-                r"engineering[- ]decomposition boundary.{0,120}report(?:'s)? methodology.{0,120}"
-                r"not source text|"
-                r"(?:lacks?|missing|without).{0,80}engineering[- ]decomposition boundary|"
-                r"(?:缺少|缺乏|没有).{0,80}工程分解边界",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_report_engineering_decomposition_boundary"
-        if (
-            path_layer_inference_trace_present
-            and mentioned_claim_ids_are_verified
-            and re.search(
-                r"(?:cross[- ]source engineering (?:advice|synthesis)|engineering[- ]decomposition boundary|"
-                r"report(?:'s)? methodology|跨来源工程(?:建议|综合)|工程分解边界|本报告的方法)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:CLI (?:input )?(?:conversion|parsing)).{0,180}"
-                r"(?:downstream|later) path(?:-object)? operations?|"
-                r"(?:downstream|later) path(?:-object)? operations?.{0,180}"
-                r"CLI (?:input )?(?:conversion|parsing)|"
-                r"CLI 输入转换.{0,120}后续路径对象操作",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"does not directly state|not (?:source text|stated by (?:a |any )?source)|"
-                r"(?:no|without) (?:a |any )?(?:single )?(?:primary )?source|"
-                r"不是来源原文|没有单一来源|未由单篇资料直接陈述",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_cli_integration_inference_trace"
-        if (
-            argparse_example_scope_present
-            and path_layer_inference_trace_present
-            and re.search(
-                r"Argparse bullet implies.{0,160}handler.{0,100}(?:Path|path)|"
-                r"argparse 条目.{0,160}处理函数.{0,100}Path",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"only shows?\s+`?type=pathlib\.Path`?.{0,180}(?:example|converter)|"
-                r"只展示.{0,80}`?type=pathlib\.Path`?",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_argparse_example_scope"
-        if (
-            argparse_example_scope_present
-            and re.search(
-                r"argparse(?:'s)? documented type example.{0,120}"
-                r"(?:passes|uses).{0,80}pathlib\.Path.{0,80}(?:converter|type)|"
-                r"argparse.{0,120}官方示例.{0,100}type\s*=\s*pathlib\.Path",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"does not state.{0,100}(?:recommended|best practice)|"
-                r"not (?:a )?(?:recommendation|best practice)|"
-                r"未(?:说明|声明|证明).{0,80}(?:推荐|最佳实践)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            # The visible bullet deliberately limits itself to the exact
-            # parser configuration shown by the official example and says it
-            # is not an official recommendation. A reviewer cannot turn that
-            # descriptive example fact into a missing normative premise.
-            return "verified_argparse_example_not_upgraded_to_recommendation"
-        if (
-            visible_contextual_practice_answer
-            and re.search(
-                r"choose by CLI context, not by an unconditional library ranking|"
-                r"按 CLI 场景选择，而不是做无条件库排名",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"(?:缺乏|缺少|未|没有|lack|missing).{0,100}(?:前提|premise|显式引用|explicit citations?)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_choice_matrix_citation_trace"
-        if (
-            interpretation_rule_present
-            and re.search(
-                r"(?:Direct answer(?: and interpretation rule)?|直接回答(?:与判断规则)?|证据标准|evidence standard).{0,180}"
-                r"(?:未|没有|not).{0,80}(?:claimTable|claim table|claim_table|可验证的 claim|verifiable claim)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "epistemic_interpretation_rule_not_source_fact"
-        if (
-            synthesis_citation_trace_complete
-            and re.search(
-                r"(?:Practical synthesis|Mixed-source synthesis|本报告的综合判断|综合推论).{0,180}"
-                r"(?:未|没有|not|without).{0,100}(?:全部前提来源|all premise sources|全部引用|all citations)|"
-                r"(?:部分推论|some inferences).{0,120}(?:未|没有|not).{0,80}(?:前提来源|premise sources|引用|citations)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_synthesis_citation_trace"
-        if (
-            claim_type_boundary_present
-            and re.search(
-                r"(?:未|没有|not).{0,80}(?:区分|distinguish).{0,80}"
-                r"(?:source_fact|source fact).{0,80}(?:explicit_normative|explicit normative)|"
-                r"(?:source_fact|source fact).{0,80}(?:explicit_normative|explicit normative).{0,80}"
-                r"(?:模糊|unclear|not distinguished)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_source_fact_normative_boundary"
-        if (
-            integration_inference_trace_present
-            and re.search(
-                r"(?:CLI parsing and framework integration|CLI 解析与框架接入).{0,180}"
-                r"(?:unsupported|not fully justified|未充分支撑|无证据|缺乏前提)|"
-                r"(?:unsupported|not fully justified|未充分支撑|无证据|缺乏前提).{0,180}"
-                r"(?:cross-source inference|跨来源推论|CLI parsing and framework integration|CLI 解析与框架接入)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_cli_integration_inference_trace"
-        if (
-            integration_inference_trace_present
-            and re.search(
-                r"claimTable.{0,180}(?:does not contain|lacks?|missing).{0,120}"
-                r"(?:synthesis claim|corresponding synthesis|all premises)|"
-                r"(?:synthesis claim|corresponding synthesis).{0,160}(?:missing|absent|not in).{0,80}claimTable|"
-                r"claimTable.{0,160}缺少.{0,80}(?:综合|推论|全部前提)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_cli_integration_inference_trace"
-        if (
-            integration_inference_trace_present
-            and re.search(
-                r"convert at (?:the )?CLI (?:input )?boundary and keep using Path downstream|"
-                r"在 CLI 输入边界.{0,80}继续使用 Path",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"not (?:attributed|label(?:led|ed)) as (?:a )?cross-source inference|"
-                r"not explicitly label(?:led|ed) as (?:a )?report inference|"
-                r"without explicit (?:synthesis|cross-source inference) label(?:ling|ing)?|"
-                r"(?:no|without) (?:a )?single source (?:stating|that states)|"
-                r"not supported by any single source or combination(?: of sources)?|"
-                r"does not cite any source.{0,180}(?:demonstrates?|recommends?|supports?)"
-                r".{0,120}(?:combined workflow|combined pattern|this workflow)|"
-                r"no source supports.{0,100}downstream(?:-only)? pattern|"
-                r"not stated or implied by any (?:single )?primary source|"
-                r"no primary source states? or implies?|"
-                r"未(?:明确)?(?:归因|标注)为跨来源推论",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "verified_cli_integration_inference_trace"
-        if verified_api_list_coverage:
-            return "verified_api_list_excerpt_coverage"
-        concrete_api_shape = re.compile(
-            r"`|\[(?:S|SRC|SOURCE)[-_ ]?\d+\]|\b(?:path_type|file_okay|dir_okay|"
-            r"resolve_path|readable|writable|exists)\b|=",
-            re.IGNORECASE,
-        )
-        if (
-            visible_contextual_practice_answer
-            and not concrete_api_shape.search(text)
-            and re.search(
-                r"(?:does not|doesn't|never|fails? to).{0,60}(?:answer|deliver).{0,100}"
-                r"(?:QUESTION|requested best practices?|best practices?)|"
-                r"\bno actionable best practices? (?:are |is )?(?:presented|provided|given)|"
-                r"(?:meta-analysis of evidence boundaries|describes? its own methodology).{0,160}"
-                r"(?:not|rather than|instead of).{0,80}(?:a list|best practices?|usable response)|"
-                r"(?:role of a reviewer|critique of its own evidence).{0,180}"
-                r"(?:rather than|instead of|not).{0,80}(?:usable response|answer provider|best practices?)|"
-                r"(?:no actionable practices?|only meta-commentary|without delivering actionable best practices?)|"
-                r"(?:Practical synthesis|Engineering-decomposition boundary).{0,180}"
-                r"(?:without delivering|do not state|does not state).{0,80}(?:actionable )?best practices?|"
-                r"structure.{0,100}(?:obscures rather than delivers|cannot extract).{0,100}"
-                r"(?:concrete guidance|best practices?)|"
-                r"Direct answer.{0,140}meta-instruction.{0,80}not a best practice|"
-                r"(?:central|core) actionable claim.{0,220}(?:reasonable|supported).{0,120}"
-                r"(?:fails? to present|buried in).{0,100}(?:direct answer|hedging)|"
-                r"(?:central|core) claim.{0,220}(?:supported by the cited sources|reasonable engineering synthesis).{0,180}"
-                r"(?:fails? to present|unsupported in the context)|"
-                r"(?:没有|未能|从未).{0,60}(?:回答|给出|提供).{0,80}(?:问题|最佳实践|可执行建议)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_contextual_practice_answer"
-        if visible_contextual_practice_answer and not concrete_api_shape.search(text):
-            if text.startswith("Exact official prescriptive wording is not required"):
-                return "visible_contextual_practice_answer"
-            if (
-                re.search(
-                    r"(?:拒绝|不能|不得).{0,100}(?:官方|official).{0,80}(?:升级|改写|upgrade).{0,80}(?:推荐|首选|recommend|prefer)|"
-                    r"(?:official|first[- ]party).{0,100}(?:usage|example|用法|示例).{0,100}(?:not|cannot|不得|不能).{0,80}(?:recommend|prefer|推荐|首选)",
-                    text,
-                    re.IGNORECASE,
-                )
-                and re.search(
-                    r"(?:QUESTION|问题|用户要求).{0,40}(?:矛盾|冲突|contradict|conflict)|"
-                    r"(?:矛盾|冲突|contradict|conflict).{0,40}(?:QUESTION|问题|用户要求)",
-                    text,
-                    re.IGNORECASE,
-                )
-                and not asks_for_official_normative_wording
-            ):
-                return "visible_contextual_practice_answer"
-            if (
-                re.search(
-                    r"(?:未(?:明确)?(?:回答|提供|给出)|回避|仅(?:列出|描述)).{0,100}(?:current best practices|最佳实践|规范回答|综合推荐|推荐|优先级)|"
-                    r"(?:current best practices|best practices).{0,100}(?:not answered|missing|only lists?|no recommendation)|"
-                    r"(?:未引用|缺少).{0,80}(?:官方|official).{0,50}(?:recommended|preferred|推荐性语言)|"
-                    r"(?:未引用|缺少).{0,80}(?:官方|official).{0,80}(?:best practices?|规范性结论|规范建议)|"
-                    r"(?:未|没有).{0,80}(?:推出|综合成|形成).{0,50}(?:实践建议|最佳实践|best practice)|"
-                    r"(?:Practical synthesis|Mixed-source synthesis|综合判断).{0,100}(?:空泛|没有具体|no concrete|merely repeats?|only repeats?)|"
-                    r"(?:隐含|暗示|implies?).{0,80}(?:best practices?|最佳实践).{0,100}(?:无|没有|without|no).{0,80}(?:官方|official).{0,80}(?:推荐语义|recommendation|normative)",
-                    text,
-                    re.IGNORECASE,
-                )
-                and not asks_for_official_normative_wording
-            ):
-                return "visible_contextual_practice_answer"
-        if (
-            source_role_boundary_present
-            and re.search(
-                r"(?:未区分|没有区分|not distinguish).{0,100}(?:官方|official).{0,100}(?:二手|secondary|教程|tutorial)|"
-                r"(?:二手|secondary|教程|tutorial).{0,100}(?:作为主要证据|main evidence).{0,100}(?:未区分|without distinction)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_primary_secondary_role_boundary"
-        if (
-            visible_contextual_practice_answer
-            and re.search(
-                r"Choose by CLI context, not by an unconditional library ranking|"
-                r"按 CLI 场景选择，而不是做无条件库排名",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"does not cite.{0,100}primary source.{0,120}(?:best practice|official guidance)|"
-                r"未引用.{0,100}一手来源.{0,120}(?:最佳实践|官方指导)",
-                text,
-                re.IGNORECASE,
-            )
-            and not asks_for_official_normative_wording
-        ):
-            return "visible_choice_matrix_citation_trace"
-        if (
-            visible_contextual_practice_answer
-            and source_role_boundary_present
-            and re.search(
-                r"(?:secondary|二手).{0,120}(?:用于支撑|used to support).{0,100}(?:best practice|最佳实践).{0,100}(?:官方规范|official normative|official recommendation)|"
-                r"(?:best practice|最佳实践).{0,100}(?:secondary|二手).{0,100}(?:official normative|官方规范)",
-                text,
-                re.IGNORECASE,
-            )
-            and not asks_for_official_normative_wording
-        ):
-            return "visible_primary_secondary_role_boundary"
-        if (
-            dedicated_secondary_boundary_present
-            and secondary_excluded_from_actionable_guidance
-            and re.search(r"\bS\d+\b|secondary|tutorial|二手|教程", text, re.IGNORECASE)
-            and re.search(
-                r"actionable guidance|guidance section|actionable practice sections?|framework-scoped applications?|"
-                r"可执行指南|实践指南|可执行实践(?:部分|章节)|框架限定",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"does not clearly attribute|without (?:clearly )?(?:attributing|distinguishing)|"
-                r"未(?:清楚|明确)?(?:归因|区分)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "secondary_excluded_from_actionable_guidance"
-        if (
-            missing_attribution_cue.search(text)
-            and re.search(r"(?:secondary|tier\s*=\s*secondary|二手|经验来源)", text, re.IGNORECASE)
-            and re.search(
-                r"Secondary source\s+[\"“][^\"”]{1,180}[\"”]\s+states:\s*"
-                r"You should use Path objects anywhere you work with file paths(?:\.|。)?\s*\[S\d+\]|"
-                r"二手来源《[^》]{1,180}》的表述：.{0,120}应该在处理文件路径的任何地方使用 Path.{0,20}\[S\d+\]",
-                integration_section,
-                re.IGNORECASE | re.DOTALL,
-            )
-        ):
-            return "visible_attributed_secondary_normative"
-        if (
-            missing_label_cue.search(text)
-            and re.search(r"Practical synthesis|本报告的综合判断", text, re.IGNORECASE)
-            and re.search(r"\*\*Practical synthesis:\*\*|\*\*本报告的综合判断：\*\*", conversion_validation_section)
-            and len(set(re.findall(r"\[(S\d+)\]", conversion_validation_section, re.IGNORECASE))) >= 2
-        ):
-            return "visible_practical_synthesis_label"
-        if (
-            missing_label_cue.search(text)
-            and re.search(r"mixed[- ]source|混合来源|二手来源", text, re.IGNORECASE)
-            and re.search(r"Mixed-source synthesis with secondary context|含二手来源的综合判断", integration_section, re.IGNORECASE)
-            and len(set(re.findall(r"\[(S\d+)\]", integration_section, re.IGNORECASE))) >= 2
-        ):
-            return "visible_mixed_source_label"
-        if (
-            missing_label_cue.search(text)
-            and re.search(r"Source-backed application pattern|来源支撑的应用模式", text, re.IGNORECASE)
-            and re.search(r"Source-backed application pattern|来源支撑的应用模式", configuration_section, re.IGNORECASE)
-            and re.search(r"\bTyper\b", configuration_section, re.IGNORECASE)
-            and re.search(r"\[S\d+\]", configuration_section, re.IGNORECASE)
-        ):
-            return "visible_source_backed_application_pattern"
-        if (
-            re.search(r"PEP\s*(?:428|519)|\bS(?:6|11)\b", text, re.IGNORECASE)
-            and re.search(
-                r"current[- ]practice|current best|current applicability|current guarantee|"
-                r"当前(?:实践|最佳|结论|适用性|保证)",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"未(?:充分)?(?:限制|标注|说明)|does not mark|not marked|misuse|用于支撑|used to support|"
-                r"without (?:a )?clear historical(?:/version)? boundary|"
-                r"presented without (?:a )?clear historical boundary",
-                text,
-                re.IGNORECASE,
-            )
-            and dated_pep_scope_present
-            and guidance
-        ):
-            cited_keys = set(re.findall(r"\b(S\d+)\b", text, re.IGNORECASE))
-            cited_keys = cited_keys or {"S6", "S11"}
-            if not re.search(r"PEP\s*(?:428|519)", guidance, re.IGNORECASE) and not any(
-                f"[{key.upper()}]" in guidance.upper() for key in cited_keys
-            ):
-                return "historical_pep_excluded_from_current_guidance"
-        if (
-            date_label_not_deprecation_present
-            and re.search(r"PEP\s*(?:428|519)|dated|date|version[- ]bound|日期|版本限定", text, re.IGNORECASE)
-            and re.search(r"supersed|deprecat|\u66ff\u4ee3|废弃", text, re.IGNORECASE)
-            and re.search(
-                r"(?:no|without|does not|doesn't|lack).{0,120}(?:evidence|source|proof)|"
-                r"(?:未提供|没有|缺乏).{0,100}(?:证据|来源)",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "date_version_label_not_deprecation_claim"
-        mentioned_undated_keys = {
-            key.upper()
-            for key in re.findall(r"\b(S\d+)\b", text, re.IGNORECASE)
-        }
-        if (
-            mentioned_undated_keys
-            and mentioned_undated_keys.issubset(inline_undated_boundary_keys)
-            and retrieval_date_caveat_present
-            and re.search(r"\bundated\b|无文档日期|无日期", text, re.IGNORECASE)
-            and re.search(
-                r"recent publication|current official recommendation|current(?:ly)?|"
-                r"近期(?:发布|更新)|当前官方推荐|当前性",
-                text,
-                re.IGNORECASE,
-            )
-            and re.search(
-                r"does not (?:consistently )?(?:flag|mark)|not (?:consistently )?(?:flagged|marked)|"
-                r"cannot establish|未(?:一致|逐项)?(?:标注|说明)|不能证明",
-                text,
-                re.IGNORECASE,
-            )
-        ):
-            return "visible_undated_source_boundaries"
-        return ""
-
-    original_reasons = _research_text_list(normalized.get("reviewReasons"), limit=12)
-    original_unsupported = _research_text_list(normalized.get("unsupportedClaims"), limit=12)
-    removed_surface_reasons = [
-        issue for issue in original_reasons if exact_surface_contradiction(issue)
-    ]
-    removed_surface_unsupported = [
-        issue for issue in original_unsupported if exact_surface_contradiction(issue)
-    ]
-    if removed_surface_reasons or removed_surface_unsupported:
-        kept_reasons = [
-            issue for issue in original_reasons if issue not in removed_surface_reasons
-        ]
-        kept_unsupported = [
-            issue for issue in original_unsupported if issue not in removed_surface_unsupported
-        ]
-        reconciliation_kinds = list(
-            dict.fromkeys(
-                exact_surface_contradiction(issue)
-                for issue in [*removed_surface_reasons, *removed_surface_unsupported]
-                if exact_surface_contradiction(issue)
-            )
-        )
-        normalized.update(
-            {
-                "reviewReasons": kept_reasons,
-                "unsupportedClaims": kept_unsupported,
-                "reconciledVisibleAnswerIssues": list(
-                    dict.fromkeys(
-                        [
-                            *_research_text_list(
-                                normalized.get("reconciledVisibleAnswerIssues"),
-                                limit=12,
-                            ),
-                            *removed_surface_reasons,
-                            *removed_surface_unsupported,
-                        ]
-                    )
-                )[:12],
-                "reconciledVisibleAnswerKinds": reconciliation_kinds,
-            }
-        )
-        if not kept_unsupported:
-            normalized["claimEntailment"] = True
-        if {
-            "historical_pep_excluded_from_current_guidance",
-            "date_version_label_not_deprecation_claim",
-            "visible_undated_source_boundaries",
-        }.intersection(reconciliation_kinds):
-            normalized["freshnessAdequacy"] = True
-        if {
-            "visible_contextual_practice_answer",
-            "visible_choice_matrix_citation_trace",
-            "verified_cli_integration_inference_trace",
-        }.intersection(reconciliation_kinds):
-            normalized["questionCoverage"] = True
-
-    if normalized.get("claimEntailment") is not True or normalized.get("freshnessAdequacy") is not True:
-        return normalized
-
-    unsupported_claims = _research_text_list(normalized.get("unsupportedClaims"), limit=12)
-    if (
-        unsupported_claims
-        or _research_text_list(normalized.get("criticalMissingEvidence"), limit=12)
-        or _research_text_list(normalized.get("recommendedNextQueries"), limit=4)
-    ):
-        return normalized
-    if (
-        (removed_surface_reasons or removed_surface_unsupported)
-        and not _research_text_list(normalized.get("reviewReasons"), limit=12)
-        and normalized.get("questionCoverage") is True
-    ):
-        normalized["reviewDecision"] = "accept"
-        return normalized
-
-    synthesis_units = [
-        unit
-        for unit in _architect_section_content_units(candidate_answer)
-        if _ARCHITECT_SYNTHESIS_LABEL_RE.search(unit)
-        and len(set(re.findall(r"\[(S\d+)\]", unit, re.IGNORECASE))) >= 2
-    ]
-    if len(synthesis_units) < 2:
-        return normalized
-
-    framework_units = [
-        unit
-        for unit in synthesis_units
-        if len(
-            {
-                name
-                for name in ("argparse", "click", "typer")
-                if re.search(rf"\b{re.escape(name)}\b", unit, re.IGNORECASE)
-            }
-        )
-        >= 2
-    ]
-    validation_units = [
-        unit
-        for unit in synthesis_units
-        if re.search(
-            r"\b(?:exists|file_okay|dir_okay|validation|validate|path_type|path conversion|"
-            r"application directory|configuration)\b|(?:存在性|文件.?目录|输入验证|路径转换|应用目录|配置目录)",
-            unit,
-            re.IGNORECASE,
-        )
-    ]
-    platform_units = [
-        unit
-        for unit in synthesis_units
-        if re.search(r"\b(?:cross[- ]platform|platform semantics|application directory)\b|(?:跨平台|平台语义|应用目录)", unit, re.IGNORECASE)
-    ]
-
-    absence_cue = re.compile(
-        r"\b(?:no|not|lack(?:s|ing)?|missing|omit(?:s|ted)?|fails? to|does not|doesn't|"
-        r"only (?:lists?|catalogs?|summari[sz]es?))\b|(?:没有|未能?|缺少|欠缺|遗漏|仅(?:列出|罗列|汇总))",
-        re.IGNORECASE,
-    )
-    synthesis_topic = re.compile(
-        r"\b(?:cross[- ](?:source|library)|synthesis|guidance|best practices?|recommendations?)\b|"
-        r"(?:跨来源|跨库|综合(?:判断|建议)?|实践指南|最佳实践|可执行建议|指导|指南)",
-        re.IGNORECASE,
-    )
-    official_normative_topic = re.compile(
-        r"(?:official|first[- ]party|authoritative).{0,80}(?:recommend|guidance|best practice|preferred)|"
-        r"(?:官方|一手|权威).{0,50}(?:推荐|建议|指南|最佳实践|首选)",
-        re.IGNORECASE,
-    )
-    asks_for_official_normative_wording = bool(
-        re.search(
-            r"(?:what|which).{0,60}(?:official|documentation|docs).{0,60}(?:recommend|require|prefer)|"
-            r"(?:官方|权威)(?:文档|资料|来源)?.{0,16}(?:明确)?(?:推荐|要求|首选)(?:什么|哪些|哪种|的)",
-            _safe_text(question),
-            re.IGNORECASE,
-        )
-    )
-    concrete_fact_dispute = re.compile(
-        r"\b(?:unsupported|not supported|not entailed|overstates?|contradicts?|incorrect|inaccurate|"
-        r"fabricated|hallucinated|wrong|false|misstates?|claims? that|states? that|asserts? that)\b|"
-        r"(?:无证据支持|并非摘录所述|夸大|矛盾|错误|不准确|捏造|声称)",
-        re.IGNORECASE,
-    )
-    concrete_fact_shape = re.compile(
-        r"`|[\"“”]|\[(?:S|SRC|SOURCE)[-_ ]?\d+\]|\b[a-z][a-z0-9]*_[a-z0-9_]+\b|"
-        r"\b\d+(?:\.\d+)+(?:\b|\.)|=",
-        re.IGNORECASE,
-    )
-
-    def objectively_present(issue: str) -> bool:
-        text = _safe_text(issue)
-        if not text or concrete_fact_dispute.search(text) or concrete_fact_shape.search(text):
-            return False
-        if official_normative_topic.search(text) and not asks_for_official_normative_wording:
-            return True
-        if not (absence_cue.search(text) and synthesis_topic.search(text)):
-            return False
-        if re.search(r"\b(?:argparse|click|typer|cross[- ]library|integration)\b|(?:跨库|接入)", text, re.IGNORECASE):
-            return bool(framework_units)
-        if re.search(r"\b(?:validat|exists|file|directory|configuration)\b|(?:验证|存在|文件|目录|配置)", text, re.IGNORECASE):
-            return bool(validation_units)
-        if re.search(r"\b(?:cross[- ]platform|platform)\b|(?:跨平台|平台)", text, re.IGNORECASE):
-            return bool(platform_units)
-        return True
-
-    review_reasons = _research_text_list(normalized.get("reviewReasons"), limit=12)
-    removed_reasons = [issue for issue in review_reasons if objectively_present(issue)]
-    if not removed_reasons:
-        return normalized
-
-    kept_reasons = [issue for issue in review_reasons if issue not in removed_reasons]
-    normalized.update(
-        {
-            "reviewReasons": kept_reasons,
-            "unsupportedClaims": unsupported_claims,
-            "reconciledVisibleAnswerIssues": removed_reasons,
-        }
-    )
-    if (
-        not kept_reasons
-        and not unsupported_claims
-        and not _research_text_list(normalized.get("criticalMissingEvidence"), limit=12)
-        and not _research_text_list(normalized.get("recommendedNextQueries"), limit=4)
-    ):
-        normalized.update(
-            {
-                "reviewDecision": "accept",
-                "questionCoverage": True,
-            }
-        )
-    return normalized
-
-
 def _independent_architect_review_schema_valid(value: Any) -> bool:
     value = _adapt_independent_architect_review_schema(value)
     if not isinstance(value, dict):
@@ -12123,45 +10144,6 @@ def _research_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
-
-
-def _architect_segmented_writer_profile(candidate: tuple[Any, str, str]) -> dict[str, Any]:
-    llm = candidate[0]
-    meta = getattr(llm, "_meta", None)
-    metadata = dict(meta or {}) if isinstance(meta, dict) else {}
-    configured_limit = _research_positive_int(
-        metadata.get("global_max_tokens")
-        or metadata.get("max_output_tokens")
-        or metadata.get("maxOutputTokens")
-    )
-    # Length is advisory: routing provenance cannot force a long split report.
-    # Normal budgets first synthesize the whole question; actual truncation
-    # still enters the existing bounded section writer below.
-    enabled = configured_limit <= 3_200 if configured_limit is not None else True
-    if configured_limit is not None and configured_limit <= 1_600:
-        section_count = 6
-    elif configured_limit is not None and configured_limit <= 2_500:
-        section_count = 5
-    else:
-        section_count = 4
-    max_tokens = min(
-        _RESEARCH_ARCHITECT_SECTION_MAX_TOKENS,
-        configured_limit or _RESEARCH_ARCHITECT_SECTION_MAX_TOKENS,
-    )
-    return {
-        "enabled": enabled,
-        "configuredMaxTokens": configured_limit,
-        "sectionCount": section_count,
-        "sectionMaxTokens": max_tokens,
-        "targetMinChars": max(
-            900,
-            (_RESEARCH_ARCHITECT_IDEAL_ANSWER_MIN_CHARS + section_count - 1) // section_count,
-        ),
-        "targetMaxChars": max(
-            1_500,
-            (_RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS + section_count - 1) // section_count,
-        ),
-    }
 
 
 def _architect_outline_text(value: Any) -> str:
@@ -14983,6 +12965,7 @@ def _research_read_observations(
                 **result, **read, **temporal,
                 # textPreview/search snippets do not become full read evidence.
                 "text": body, "omittedChars": max(0, int(read.get("originalContentChars") or len(body)) - len(body)),
+                "links": ((cached or {}).get("readPayload") or {}).get("links") or read.get("links") or [],
             })
     return observations
 
@@ -15016,22 +12999,30 @@ def _execute_research_agent(
     def invoke(messages, tools, *, reviewer: bool, seconds: float, required: bool = False):
         candidate = reviewers[0] if reviewer else writer
         role = "research-reviewer" if reviewer else "web-research-architect"
-        prepared = context_orchestrator.prepare(
-            messages=messages, runtime_kind="research", target_role=role,
-            resolved_model_id=_architect_candidate_context_model_ref(candidate),
-            keep_recent_override=6,
-        )
-        emit_context_prepared_event(prepared.audit, component="research", node=role, agent_id=role)
-        context_audits.append({
-            "role": role, "estimatedInputTokens": prepared.audit.get("estimated_input_tokens"),
-            "compactionApplied": prepared.audit.get("compaction_applied") is True,
-            "modelId": _architect_candidate_identity(candidate),
-        })
-        return _invoke_architect_candidate_with_deadline(
-            candidate, prepared.messages, seconds=seconds,
-            max_tokens=None, tools=tools, tool_choice="required" if required else None,
-            idle_timeout_seconds=float(_research_config().get("architectAgentTimeoutSeconds") or 60),
-        )
+        from erc.runtime_context import bind_runtime_context
+
+        with bind_runtime_context(
+            session_id=(state or {}).get("session_id") or (state or {}).get("sessionId"),
+            run_id=(state or {}).get("run_id") or (state or {}).get("runId"),
+            runtime_episode_id=(state or {}).get("runtime_episode_id"),
+            runtime_kind="research", agent_id=role,
+        ):
+            prepared = context_orchestrator.prepare(
+                messages=messages, runtime_kind="research", target_role=role,
+                resolved_model_id=_architect_candidate_context_model_ref(candidate),
+                keep_recent_override=6,
+            )
+            emit_context_prepared_event(prepared.audit, component="research", node=role, agent_id=role)
+            context_audits.append({
+                "role": role, "estimatedInputTokens": prepared.audit.get("estimated_input_tokens"),
+                "compactionApplied": prepared.audit.get("compaction_applied") is True,
+                "modelId": _architect_candidate_identity(candidate),
+            })
+            return _invoke_architect_candidate_with_deadline(
+                candidate, prepared.messages, seconds=seconds,
+                max_tokens=None, tools=tools, tool_choice="required" if required else None,
+                idle_timeout_seconds=float(_research_config().get("architectAgentTimeoutSeconds") or 60),
+            )
 
     def cancelled() -> bool:
         run_id = _safe_text((state or {}).get("run_id") or (state or {}).get("runId"))
@@ -15046,6 +13037,7 @@ def _execute_research_agent(
         writer_id=_architect_candidate_identity(writer), reviewer_id=_architect_candidate_identity(reviewer),
         timeout_seconds=timeout_seconds if timeout_seconds is not None else _RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000,
         max_searches=max_searches, cancelled=cancelled,
+        original_user_request=str((state or {}).get("research_original_user_request") or ""),
     )
     if previous_bundle:
         agent.store.restore((previous_bundle.get("researchEvidenceBank") or {}).get("sources") or [])
@@ -15070,43 +13062,52 @@ def _run_agent_owned_research(
     attempt_ledger = _ResearchReadAttemptLedger(question=question)
     rounds: list[dict[str, Any]] = []
 
-    def acquire(*, queries: list[str], urls: list[str], seconds: float, source: str = "web") -> dict[str, Any]:
+    def acquire(*, queries: list[str], urls: list[str], seconds: float, source: str = "web", search_engine: str = "auto") -> dict[str, Any]:
+        batch_deadline = time.monotonic() + seconds
         round_index = len(rounds) + 1
         requests_to_run = [
             {"kind": "seed_url", "query": url, "seedUrl": url, "evidenceQuery": question}
             for url in urls
-        ] + [{"kind": "agent_query", "query": query} for query in queries]
-        requests_to_run = requests_to_run[:max_shards]
+        ] + [{"kind": "agent_query", "query": query, "searchEngine": search_engine} for query in queries]
+        # Bound concurrency without dropping explicitly chosen URLs/queries.
         for index, shard in enumerate(requests_to_run, start=1):
             shard["shardId"] = f"research_agent_{round_index}_{index}"
-        fetched = [_run_context7_source(queries[0] if queries else question, tool_call_id=tool_call_id)] if source == "documentation" else _run_search_shards(
-            requests_to_run, allowed_domains=allowed_domains, blocked_domains=blocked_domains,
+        network_requests = [item for item in requests_to_run if source != "documentation" or item["kind"] == "seed_url"]
+        fetched = _run_search_shards(
+            network_requests, allowed_domains=allowed_domains, blocked_domains=blocked_domains,
             source_policy=source_policy, max_rounds=max_rounds,
             use_agent_browser_profile=use_agent_browser_profile, tool_call_id=tool_call_id,
             read_attempt_ledger=attempt_ledger, read_round=round_index,
             preferred_language=preferred_language, deadline_seconds=seconds,
+            max_parallel_shards=max_shards,
         )
+        if source == "documentation":
+            for query in queries:
+                remaining = batch_deadline - time.monotonic()
+                if remaining <= 0:
+                    fetched.append({"query": query, "ok": False, "errors": ["research_shard_deadline_exceeded"]})
+                else:
+                    fetched.append(_run_context7_source(query, tool_call_id=tool_call_id, timeout_seconds=min(20, remaining)))
         completed_shards.extend(fetched)
         observations = _research_read_observations(fetched, attempt_ledger)
         rounds.append({"round": round_index, "queries": queries, "urls": urls, "readSourceCount": len(observations)})
-        return {"sources": observations, "diagnostics": [
-            {"query": shard.get("query"), "errors": shard.get("errors") or []}
-            for shard in fetched if shard.get("errors")
-        ]}
+        from runtimes.research.acquisition import acquisition_feedback
+
+        return {"sources": observations, "diagnostics": acquisition_feedback(fetched)}
 
     if seed_urls:
         acquire(queries=[], urls=seed_urls, seconds=_RESEARCH_TOOL_DEADLINE_MS / 1000)
     pack = _execute_research_agent(
         question=question, shards=completed_shards, freshness=freshness,
         preferred_language=preferred_language, acquire=acquire,
-        max_searches=max(0, max_rounds - len(rounds)), state=state, read_attempt_ledger=attempt_ledger,
+        max_searches=max_rounds, state=state, read_attempt_ledger=attempt_ledger,
         previous_bundle=previous_bundle,
         timeout_seconds=max(0, _RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000 - (time.perf_counter() - started)),
     )
     read_sources = pack.pop("readSources", [])
     selected_keys = {row["citationKey"] for row in pack.get("sourceUrls") or []}
     source_matrix = [
-        {key: value for key, value in row.items() if key != "text"}
+        {key: value for key, value in row.items() if key not in {"text", "links"}}
         | {"selectedForEvidence": row["citationKey"] in selected_keys}
         for row in read_sources
     ]
@@ -15162,14 +13163,16 @@ def _web_research_architect_pack(
     architect_call_state: dict[str, Any] | None = None,
     preferred_language: str = "",
     delivery_requirements: dict[str, Any] | None = None,
+    evidence_bank: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Fixed-bundle replay uses the same researcher with network acquisition absent.
     if not _research_config().get("architectAgentSynthesisEnabled", True):
         return {"answer": "", "reviewDecision": "retry", "claimTable": [],
                 "modelSynthesis": {"used": False, "fallbackReason": "architect_agent_synthesis_disabled"}}
     result = _execute_research_agent(
-        question=question, shards=shards, freshness=freshness,
+        question=question, shards=[] if evidence_bank else shards, freshness=freshness,
         preferred_language=preferred_language, max_searches=0,
+        previous_bundle={"researchEvidenceBank": evidence_bank} if evidence_bank else None,
     )
     result.pop("readSources", None)
     return result
@@ -15591,9 +13594,9 @@ async def _call_context7_source_async(question: str) -> dict[str, Any]:
     return {"ok": False, "error": last_error or "context7_docs_empty", "serverName": server_name, "attempts": attempts}
 
 
-def _run_context7_source(question: str, *, tool_call_id: str) -> dict[str, Any]:
+def _run_context7_source(question: str, *, tool_call_id: str, timeout_seconds: float = 20) -> dict[str, Any]:
     try:
-        payload = _run_coro_blocking(_call_context7_source_async(question), timeout_seconds=20)
+        payload = _run_coro_blocking(_call_context7_source_async(question), timeout_seconds=timeout_seconds)
     except (asyncio.CancelledError, Exception) as exc:
         return {
             "shardId": "context7_docs",
@@ -15835,6 +13838,7 @@ def _run_seed_url_shard(
         "textPreview": text[:1200],
         "contentChars": len(text),
         "originalContentChars": original_content_chars,
+        "links": read_payload.get("links") or [],
         "metadata": read_payload.get("metadata") if isinstance(read_payload.get("metadata"), dict) else {},
         "retrievedAt": temporal.get("retrievedAt"),
         "publishedAt": temporal.get("publishedAt"),
@@ -15951,7 +13955,7 @@ def _run_search_shard(
             _source_router_search(
                 query=query,
                 limit=8,
-                search_engine="auto",
+                search_engine=_safe_text(shard.get("searchEngine")) or "auto",
                 mode="auto" if use_agent_browser_profile else "static",
                 referer_mode="none",
                 referer_url="",
@@ -15966,7 +13970,7 @@ def _run_search_shard(
                 ) / 1000.0,
                 locale_hint=preferred_language,
                 allow_browser_profile_fallback=use_agent_browser_profile,
-                preferred_providers=search_route_hints.get("preferredProviders") or [],
+                preferred_providers=(search_route_hints.get("preferredProviders") or []) if shard.get("searchEngine", "auto") == "auto" else [],
                 excluded_providers=list(
                     dict.fromkeys(
                         [
@@ -16078,6 +14082,9 @@ def _run_search_shard(
                 "requestedSourceIntent": source_intent or None,
                 "siteConstraintRelaxed": site_constraint_relaxed,
                 "siteConstraintDomains": site_domains if site_constraint_relaxed else [],
+                "readSelectionReason": ("eager_read_budget_or_ranking" if url in read_eligible_urls
+                                        else "navigation_candidate" if research_source_is_navigation(url, title=title)
+                                        else "source_intent_hint"),
             }
         )
     top_results = sorted(
@@ -16292,6 +14299,7 @@ def _run_search_shard(
                     "textPreview": text[:1200],
                     "contentChars": len(text),
                     "originalContentChars": original_content_chars,
+                    "links": read_payload.get("links") or [],
                     "metadata": read_payload.get("metadata") if isinstance(read_payload.get("metadata"), dict) else {},
                     "retrievedAt": temporal.get("retrievedAt"),
                     "publishedAt": temporal.get("publishedAt"),
@@ -16334,6 +14342,7 @@ def _run_search_shard(
     )
     if (
         accepted_evidence_count == 0
+        and shard.get("searchEngine", "auto") == "auto"
         and search_payload.get("ok") is True
         and selected_provider
         and bool(results)
@@ -16426,6 +14435,7 @@ def _run_search_shards(
     read_round: int = 1,
     preferred_language: str = "",
     deadline_seconds: float | None = None,
+    max_parallel_shards: int | None = None,
 ) -> list[dict[str, Any]]:
     if not shards:
         return []
@@ -16441,7 +14451,8 @@ def _run_search_shards(
     cancel_event = threading.Event()
     timed_out = False
     executor = ThreadPoolExecutor(
-        max_workers=max(1, min(len(shards), _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS))
+        max_workers=max(1, min(len(shards), _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS,
+                               max_parallel_shards or _RESEARCH_MAX_PARALLEL_SEARCH_SHARDS))
     )
     try:
         futures: dict[Any, int] = {}
@@ -16505,6 +14516,7 @@ def _run_search_shards(
                     for item in list(completed_shard.get("fetchedTopSources") or [])
                     if isinstance(item, dict)
                     and item.get("ok") is True
+                    and not item.get("missingContentReason")
                     and _safe_text(item.get("text") or item.get("markdown") or item.get("textPreview"))
                 ]
                 if readable:
@@ -16519,14 +14531,13 @@ def _run_search_shards(
                             toolName="web_read",
                             nodeId=f"research-read:{read_round}:{index + 1}:{source_index}",
                         )
-                else:
-                    _report_research_progress(
-                        stage="source_search",
-                        status="failed",
-                        summary=f"该轮未读取到正文：{_safe_text(shard.get('query'))[:88] or '当前来源'}",
-                        toolName="web_search",
-                        nodeId=f"research-search-result:{read_round}:{index + 1}",
-                    )
+                _report_research_progress(
+                    stage="source_search",
+                    status="completed" if completed_shard.get("ok") else "failed",
+                    summary=f"本轮检索结束，已读取 {len(readable)} 个来源" if readable else "本轮检索结束，未读到可用正文",
+                    toolName="web_read" if shard.get("seedUrl") else "web_search",
+                    nodeId=f"research-search:{read_round}:{index + 1}",
+                )
         except TimeoutError:
             timed_out = True
             cancel_event.set()
@@ -16558,7 +14569,7 @@ def _run_search_shards(
                     status="failed",
                     summary="来源检索超过本轮时限",
                     toolName="web_search",
-                    nodeId=f"research-search-timeout:{read_round}:{index + 1}",
+                    nodeId=f"research-search:{read_round}:{index + 1}",
                 )
     finally:
         if timed_out:
@@ -18282,610 +16293,6 @@ def _research_brief_coverage(
     }
 
 
-def _invoke_web_research_architect_query_plan(
-    *,
-    question: str,
-    facets: list[tuple[str, str]],
-    source_policy: str,
-    freshness: str,
-    max_shards: int,
-    preferred_language: str = "",
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Ask the bound Research Architect to design atomic search queries.
-
-    The Runtime, not the model, still owns and executes all search/read tools.
-    The model only converts a broad structured question into short queries and
-    source intents.  A validated deterministic fallback remains available when
-    a provider cannot return the strict plan schema.
-    """
-
-    normalized_facets: list[dict[str, str]] = []
-    for goal, kind in facets:
-        facet_id = _research_facet_id(kind)
-        if not facet_id:
-            continue
-        normalized_facets.append({"facetId": facet_id, "goal": _safe_text(goal)})
-    decompose_root_question = bool(
-        len(normalized_facets) == 1
-        and normalized_facets[0]["facetId"] == "root-question"
-    )
-    if (len(normalized_facets) < 2 and not decompose_root_question) or max_shards <= 0:
-        return [], {"used": False, "reason": "structured_multi_facet_plan_not_required"}
-
-    official_host_hints = _catalog_official_host_hints(question)
-    official_entity_hints = _catalog_official_entity_hints(question)
-    entity_focus_parts = _research_entity_query_focus_parts(question)
-    entity_matrix_target = len(official_entity_hints) * len(entity_focus_parts)
-    entity_matrix_budgeted = bool(
-        decompose_root_question
-        and len(official_entity_hints) >= 2
-        and len(entity_focus_parts) >= 2
-        and int(max_shards) >= entity_matrix_target
-    )
-    root_primary_target = (
-        entity_matrix_target
-        if entity_matrix_budgeted
-        else min(8, int(max_shards))
-        if len(official_entity_hints) >= 2 and len(entity_focus_parts) >= 2
-        else min(6, int(max_shards))
-    )
-    authority_budget = (
-        min(2, max(0, int(max_shards) - root_primary_target))
-        if decompose_root_question
-        else min(
-            max(0, int(max_shards) - len(normalized_facets)),
-            _research_authority_query_budget(len(normalized_facets)),
-        )
-    )
-    stage_prompt = _research_agent_stage_system_prompt(
-        "你是 Research Runtime 的查询架构阶段。你只设计查询，不执行搜索、不写答案。"
-        "把每个结构化 facet 转成一个短而原子的主查询，保留法条、版本、日期、组织、产品或标准等判别词。"
-        "任何缩写都必须同时带上当前语境中的完整名称；遇到同名缩写或实体歧义时，加入足以排除常见同名概念的限定词，"
-        "不得把未展开的缩写单独当作主题锚点。"
-        "查询语言应优先匹配最可能的一手来源语言；跨法域、国际标准和主流技术文档通常优先英文，必要时可保留原文关键词。"
-        "规范、法律、处罚、适用日期、官方指南和产品当前行为优先 official_primary；行业经验、案例和争议允许 independent_secondary；"
-        "不要把完整多 facet 问题复制进任何一个查询，不要编造具体页面 URL。"
-        "Runtime 会提供与问题实体匹配的 officialHostHints；它们是可选的权威来源候选而非网络 allowlist，"
-        "当某个 official_primary facet 明确对应其中的厂商或产品时，优先用 site:host 生成原子查询。"
-        "如果 explicitEntities 含多个用户明确点名的比较对象，每个对象必须至少出现在一个 verification=false 主查询中；"
-        "不得只围绕第一个对象按维度拆分而遗漏其余对象。"
-        "Runtime 会提供 entityFocusParts。查询额度足够时，每个 explicit entity 必须为其中每个维度分别生成一条主查询；"
-        "每条都只聚焦一个实体和一个维度，不能用罗列多个产品或多个维度的宽泛比较查询代替原子证据查询。"
-        "每个主查询必须对应且仅对应一个 facetId。补充核验查询只能覆盖最高风险或一手证据最关键的 facet。"
-        + (
-            "当输入只有 root-question 时，先根据用户真实意图拆成互不重复的原子事实域，自行生成简短稳定的 ASCII facetId；"
-            "不要把 root-question 当成输出 facetId，也不要只给同一整句问题换后缀。"
-            if decompose_root_question
-            else "只能使用输入已给的 facetId，不得改名或新增 facet。"
-        ),
-        stage="query_plan",
-    )
-    stage_contract_digest = research_runtime_prompt_digest(stage_prompt)
-    instruction = (
-        "只输出严格 JSON 对象，字段 shards。shards 每项字段：facetId, query, sourceIntent, verification。"
-        "sourceIntent 只能是 official_primary、independent_secondary、mixed；verification 必须是布尔值。"
-        + (
-            (
-                f"把 root-question 拆成恰好 {root_primary_target} 个 verification=false 的原子主查询，"
-                if entity_matrix_budgeted
-                else f"把 root-question 拆成 {min(4, root_primary_target)}-{root_primary_target} 个 verification=false 的原子主查询，"
-            )
-            + f"每个主查询使用不同 facetId；然后最多输出 {authority_budget} 个 verification=true 的补充核验查询，"
-            + "其 facetId 必须复用某个主查询。"
-            if decompose_root_question
-            else f"先为每个 facetId 恰好输出一个 verification=false 的主查询；然后最多输出 {authority_budget} 个 verification=true 的补充核验查询。"
-        )
-        + f"总数不得超过 {max_shards}。每条 query 必须单行、8-280 字符、可直接交给搜索引擎；禁止解释文字。"
-        f"\nSOURCE_POLICY: {_safe_text(source_policy) or 'authoritative'}"
-        f"\nFRESHNESS: {_safe_text(freshness) or 'auto'}"
-        f"\nUSER_VISIBLE_LANGUAGE: {normalize_preferred_language(preferred_language) or infer_preferred_language(question)}"
-    )
-    material = json.dumps(
-        {
-            "facets": normalized_facets,
-            "officialHostHints": official_host_hints,
-            "explicitEntities": official_entity_hints,
-            "entityFocusParts": [
-                {"dimension": dimension, "focus": focus}
-                for dimension, focus in entity_focus_parts
-            ],
-        },
-        ensure_ascii=False,
-    )
-
-    def runtime_entity_fallback(
-        reason: str,
-        *,
-        errors: list[str],
-        raw_preview: str = "",
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if not decompose_root_question or len(official_entity_hints) < 2:
-            return [], {
-                "used": False,
-                "reason": reason,
-                "errors": errors[-8:],
-                **({"rawPreview": raw_preview[:800]} if raw_preview else {}),
-                "researchPromptContractVersion": RESEARCH_PROMPT_CONTRACT_VERSION,
-                "researchPromptContractDigest": stage_contract_digest,
-            }
-        split_entity_focus = bool(
-            len(entity_focus_parts) >= 2
-            and int(max_shards)
-            >= len(official_entity_hints) * len(entity_focus_parts)
-        )
-        compact_focus_parts: list[tuple[str, str]] = []
-        for family, dimension_ids in (
-            ("operations", _RESEARCH_OPERATIONAL_DIMENSIONS),
-            ("governance", _RESEARCH_GOVERNANCE_DIMENSIONS),
-        ):
-            values = [
-                focus
-                for dimension, focus in entity_focus_parts
-                if dimension in dimension_ids
-            ]
-            if values:
-                compact_focus_parts.append((family, " ".join(values)))
-        compact_entity_focus = bool(
-            len(compact_focus_parts) >= 2
-            and int(max_shards)
-            >= len(official_entity_hints) * len(compact_focus_parts)
-        )
-        fallback_focus_parts = (
-            entity_focus_parts
-            if split_entity_focus
-            else compact_focus_parts
-            if compact_entity_focus
-            else [("focus", _research_entity_query_focus(question))]
-        )
-        primary_rows: list[dict[str, Any]] = []
-        primary_rows_with_hints: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        used_facet_ids: set[str] = set()
-        seen_fallback_queries: set[str] = set()
-        for hint in official_entity_hints:
-            label = _safe_text(hint.get("label"))
-            if not label:
-                continue
-            for focus_id, focus in fallback_focus_parts:
-                if len(primary_rows) >= int(max_shards):
-                    break
-                facet_slug = re.sub(r"[^a-z0-9_-]+", "-", label.lower()).strip("-")
-                facet_id = f"entity-{facet_slug or _query_slug(label)}-{focus_id}"[:64]
-                if facet_id in used_facet_ids:
-                    facet_id = f"{facet_id[:54]}-{_query_slug(focus)}"
-                query = _normalize_research_search_query(
-                    f'"{label}" {focus} official documentation'
-                )[:280].strip()
-                if len(query) < 8 or query.casefold() in seen_fallback_queries:
-                    continue
-                row = {
-                    "shardId": f"shard_plan_entity_fallback_{len(primary_rows) + 1}_{_query_slug(query)}",
-                    "kind": f"facet:{facet_id}",
-                    "researchFacetId": facet_id,
-                    "query": query,
-                    "evidenceQuery": query,
-                    "facetGoal": f"{label}: {focus}",
-                    "sourceIntent": "official_primary",
-                    "verification": False,
-                    "reason": "runtime_explicit_entity_fallback",
-                    "plannedBy": "research-runtime",
-                }
-                primary_rows.append(row)
-                primary_rows_with_hints.append((row, hint))
-                used_facet_ids.add(facet_id)
-                seen_fallback_queries.add(query.casefold())
-
-        verification_rows: list[dict[str, Any]] = []
-        for primary_row, hint in primary_rows_with_hints:
-            if len(primary_rows) + len(verification_rows) >= int(max_shards):
-                break
-            host = _safe_text(hint.get("host"))
-            if not host:
-                continue
-            query = _normalize_research_search_query(
-                f"site:{host} {_safe_text(primary_row.get('query'))}"
-            )[:280].strip()
-            if len(query) < 8 or query.casefold() in seen_fallback_queries:
-                continue
-            verification_rows.append(
-                {
-                    **primary_row,
-                    "shardId": f"shard_plan_entity_fallback_verify_{len(verification_rows) + 1}_{_query_slug(query)}",
-                    "query": query,
-                    "evidenceQuery": query,
-                    "verification": True,
-                    "reason": "runtime_official_entity_fallback_verification",
-                }
-            )
-            seen_fallback_queries.add(query.casefold())
-        rows = [*primary_rows, *verification_rows]
-        return rows, {
-            "used": False,
-            "fallbackUsed": True,
-            "reason": reason,
-            "errors": errors[-8:],
-            **({"rawPreview": raw_preview[:800]} if raw_preview else {}),
-            "decomposedRootQuestion": True,
-            "plannedShardCount": len(rows),
-            "facetCount": len(primary_rows),
-            "explicitEntityCount": len(official_entity_hints),
-            "runtimeEntityCoverageCount": len(
-                {
-                    _safe_text(hint.get("label"))
-                    for _row, hint in primary_rows_with_hints
-                    if _safe_text(hint.get("label"))
-                }
-            ),
-            "runtimeAuthorityVerificationCount": len(verification_rows),
-            "researchPromptContractVersion": RESEARCH_PROMPT_CONTRACT_VERSION,
-            "researchPromptContractDigest": stage_contract_digest,
-        }
-
-    candidate_errors: list[str] = []
-    raw_previews: list[str] = []
-    try:
-        candidates = _create_web_research_architect_llm_candidates()
-    except Exception as exc:  # noqa: BLE001 - deterministic queries remain available.
-        return runtime_entity_fallback(
-            "query_planner_model_unavailable",
-            errors=[f"{type(exc).__name__}: {_safe_text(exc)[:220]}"],
-        )
-
-    known_facets = {item["facetId"]: item for item in normalized_facets}
-    for candidate in candidates:
-        model_label = _architect_candidate_identity(candidate) or candidate[1] or f"role:{candidate[2]}"
-        prepared = prepare_background_model_messages(
-            system_prompt=stage_prompt,
-            instruction=instruction,
-            materials=[
-                {
-                    "title": "Structured research facets",
-                    "kind": "research_query_facets",
-                    "content": material,
-                }
-            ],
-            runtime_kind="research",
-            target_role="web-research-architect",
-            resolved_model_id=_architect_candidate_context_model_ref(candidate),
-            component="research",
-            node="web_research_architect_query_plan",
-        )
-        try:
-            response = _invoke_architect_candidate_with_deadline(
-                candidate,
-                prepared.messages,
-                seconds=_RESEARCH_ARCHITECT_QUERY_PLAN_TIMEOUT_SECONDS,
-                max_tokens=_RESEARCH_ARCHITECT_QUERY_PLAN_MAX_TOKENS,
-                disable_thinking=True,
-            )
-        except concurrent.futures.TimeoutError:
-            candidate_errors.append(f"{model_label}: query_plan_timeout")
-            continue
-        except Exception as exc:  # noqa: BLE001 - try configured fallback candidates.
-            candidate_errors.append(
-                f"{model_label}: query_plan_{type(exc).__name__}: {_safe_text(exc)[:220]}"
-            )
-            continue
-        sanitized_output = sanitize_background_model_output(response)
-        raw_content = sanitized_output.text
-        if raw_content:
-            raw_previews.append(f"{model_label}: {raw_content[:500]}")
-        parsed = _extract_json_object(raw_content)
-        raw_shards = list(parsed.get("shards") or []) if isinstance(parsed, dict) else []
-        if not raw_shards:
-            diagnostic = sanitized_output.no_visible_text_reason or "schema_or_shards_missing"
-            candidate_errors.append(
-                f"{model_label}: query_plan_no_shards:{diagnostic}:"
-                f"visible_chars={sanitized_output.visible_chars}:"
-                f"reasoning_chars={sanitized_output.reasoning_chars}"
-            )
-            continue
-
-        primary_by_facet: dict[str, dict[str, Any]] = {}
-        verification_rows: list[dict[str, Any]] = []
-        seen_queries: set[str] = set()
-        for raw_item in raw_shards:
-            if not isinstance(raw_item, dict):
-                continue
-            facet_id = re.sub(
-                r"[^a-z0-9_-]+",
-                "-",
-                _safe_text(raw_item.get("facetId")).lower(),
-            ).strip("-")
-            if (
-                not facet_id
-                or (decompose_root_question and facet_id == "root-question")
-                or (not decompose_root_question and facet_id not in known_facets)
-            ):
-                continue
-            query = _normalize_research_search_query(raw_item.get("query"))
-            if len(query) < 8 or len(query) > 280 or query.casefold() in seen_queries:
-                continue
-            source_intent = _safe_text(raw_item.get("sourceIntent")).lower()
-            if source_intent not in {"official_primary", "independent_secondary", "mixed"}:
-                source_intent = "mixed"
-            verification = raw_item.get("verification") is True
-            row = {
-                "shardId": f"shard_plan_{len(primary_by_facet) + len(verification_rows) + 1}_{_query_slug(query)}",
-                "kind": f"facet:{facet_id}",
-                "researchFacetId": facet_id,
-                "query": query,
-                "evidenceQuery": query,
-                "facetGoal": (
-                    query
-                    if decompose_root_question
-                    else known_facets[facet_id]["goal"]
-                ),
-                "sourceIntent": source_intent,
-                "verification": verification,
-                "reason": "web_research_architect_query_plan",
-                "plannedBy": "web-research-architect",
-                "queryPlanModelId": model_label,
-            }
-            seen_queries.add(query.casefold())
-            if verification:
-                verification_rows.append(row)
-            elif facet_id not in primary_by_facet:
-                primary_by_facet[facet_id] = row
-
-        if decompose_root_question:
-            required_primary_count = min(4, int(max_shards))
-            if len(primary_by_facet) < required_primary_count:
-                candidate_errors.append(
-                    f"{model_label}: query_plan_decomposition_too_small:"
-                    f"{len(primary_by_facet)}/{required_primary_count}"
-                )
-                continue
-            ordered_primary = list(primary_by_facet.values())
-            verification_rows = [
-                row
-                for row in verification_rows
-                if _safe_text(row.get("researchFacetId")) in primary_by_facet
-            ]
-        else:
-            if len(primary_by_facet) != len(known_facets):
-                candidate_errors.append(
-                    f"{model_label}: query_plan_facet_coverage:{len(primary_by_facet)}/{len(known_facets)}"
-                )
-                continue
-            ordered_primary = [primary_by_facet[item["facetId"]] for item in normalized_facets]
-
-        architect_primary_count = len(ordered_primary)
-        runtime_entity_rows: list[dict[str, Any]] = []
-        if decompose_root_question and len(official_entity_hints) >= 2:
-            def represented_entity_indexes(rows: list[dict[str, Any]]) -> set[int]:
-                represented: set[int] = set()
-                for row in rows:
-                    row_text = " ".join(
-                        (
-                            _safe_text(row.get("query")),
-                            _safe_text(row.get("facetGoal")),
-                        )
-                    ).lower()
-                    for entity_index, hint in enumerate(official_entity_hints):
-                        if any(
-                            _safe_text(alias).lower() in row_text
-                            for alias in list(hint.get("matchedAliases") or [])
-                        ):
-                            represented.add(entity_index)
-                return represented
-
-            required_primary_count = min(4, int(max_shards))
-            while len(ordered_primary) > required_primary_count:
-                represented = represented_entity_indexes(ordered_primary)
-                missing_count = len(official_entity_hints) - len(represented)
-                if len(ordered_primary) + missing_count <= int(max_shards):
-                    break
-                coverage_counts: dict[int, int] = {}
-                row_entity_indexes: list[set[int]] = []
-                for row in ordered_primary:
-                    indexes = represented_entity_indexes([row])
-                    row_entity_indexes.append(indexes)
-                    for entity_index in indexes:
-                        coverage_counts[entity_index] = coverage_counts.get(entity_index, 0) + 1
-                removable_index = next(
-                    (
-                        index
-                        for index in range(len(ordered_primary) - 1, -1, -1)
-                        if not row_entity_indexes[index]
-                        or all(
-                            coverage_counts.get(entity_index, 0) > 1
-                            for entity_index in row_entity_indexes[index]
-                        )
-                    ),
-                    None,
-                )
-                if removable_index is None:
-                    break
-                ordered_primary.pop(removable_index)
-
-            represented = represented_entity_indexes(ordered_primary)
-            query_focus = _research_entity_query_focus(question)
-            used_facet_ids = {
-                _safe_text(row.get("researchFacetId")) for row in ordered_primary
-            }
-            for entity_index, hint in enumerate(official_entity_hints):
-                if entity_index in represented or len(ordered_primary) + len(runtime_entity_rows) >= int(max_shards):
-                    continue
-                label = _safe_text(hint.get("label"))
-                host = _safe_text(hint.get("host"))
-                if not label or not host:
-                    continue
-                facet_slug = re.sub(r"[^a-z0-9_-]+", "-", label.lower()).strip("-")
-                facet_id = f"entity-{facet_slug or _query_slug(label)}"[:64]
-                if facet_id in used_facet_ids:
-                    facet_id = f"{facet_id[:54]}-{_query_slug(label)}"
-                query = _normalize_research_search_query(
-                    f'site:{host} "{label}" {query_focus}'
-                )[:280].strip()
-                if len(query) < 8 or query.casefold() in seen_queries:
-                    continue
-                runtime_entity_rows.append(
-                    {
-                        "shardId": f"shard_plan_entity_{len(runtime_entity_rows) + 1}_{_query_slug(query)}",
-                        "kind": f"facet:{facet_id}",
-                        "researchFacetId": facet_id,
-                        "query": query,
-                        "evidenceQuery": query,
-                        "facetGoal": f"{label}: {query_focus}",
-                        "sourceIntent": "official_primary",
-                        "verification": False,
-                        "reason": "runtime_explicit_entity_coverage",
-                        "plannedBy": "research-runtime",
-                        "queryPlanModelId": model_label,
-                    }
-                )
-                used_facet_ids.add(facet_id)
-                seen_queries.add(query.casefold())
-            ordered_primary = [*ordered_primary, *runtime_entity_rows]
-
-        required_dimension_classes = _research_query_dimension_classes(question)
-        require_entity_dimension_matrix = bool(
-            decompose_root_question
-            and len(official_entity_hints) >= 2
-            and len(required_dimension_classes) >= 2
-            and int(max_shards)
-            >= len(official_entity_hints) * len(required_dimension_classes)
-        )
-        if require_entity_dimension_matrix:
-            missing_entity_dimensions: list[str] = []
-            for entity_index, hint in enumerate(official_entity_hints):
-                entity_rows = [
-                    row
-                    for row in ordered_primary
-                    if _research_entity_indexes_in_text(
-                        official_entity_hints,
-                        " ".join(
-                            (
-                                _safe_text(row.get("query")),
-                                _safe_text(row.get("facetGoal")),
-                            )
-                        ),
-                    )
-                    == {entity_index}
-                ]
-                covered_dimensions = set().union(
-                    *(
-                        _research_query_dimension_classes(
-                            " ".join(
-                                (
-                                    _safe_text(row.get("query")),
-                                    _safe_text(row.get("facetGoal")),
-                                )
-                            )
-                        )
-                        for row in entity_rows
-                    )
-                ) if entity_rows else set()
-                missing_dimensions = sorted(
-                    required_dimension_classes - covered_dimensions
-                )
-                if (
-                    len(entity_rows) < len(required_dimension_classes)
-                    or missing_dimensions
-                ):
-                    missing_entity_dimensions.append(
-                        f"{_safe_text(hint.get('label'))}:"
-                        + ",".join(missing_dimensions or ["atomic_query_count"])
-                    )
-            if missing_entity_dimensions:
-                candidate_errors.append(
-                    f"{model_label}: query_plan_entity_dimension_coverage:"
-                    + ";".join(missing_entity_dimensions)
-                )
-                continue
-
-        runtime_verification_rows: list[dict[str, Any]] = []
-        represented_site_hosts = {
-            host
-            for row in [*ordered_primary, *verification_rows]
-            for host in _query_site_domains(row.get("query"))
-        }
-        for row in ordered_primary:
-            if len(runtime_verification_rows) >= authority_budget:
-                break
-            if row.get("sourceIntent") != "official_primary" or _query_site_domains(
-                row.get("query")
-            ):
-                continue
-            row_text = " ".join(
-                (
-                    _safe_text(row.get("query")),
-                    _safe_text(row.get("facetGoal")),
-                )
-            ).lower()
-            matched_hint = next(
-                (
-                    hint
-                    for hint in official_entity_hints
-                    if not any(
-                        _safe_text(host) in represented_site_hosts
-                        for host in list(hint.get("hosts") or [hint.get("host")])
-                    )
-                    and any(
-                        _safe_text(alias).lower() in row_text
-                        for alias in list(hint.get("matchedAliases") or [])
-                    )
-                ),
-                None,
-            )
-            if not matched_hint:
-                continue
-            host = _safe_text(matched_hint.get("host"))
-            verification_query = _normalize_research_search_query(
-                f"site:{host} {_safe_text(row.get('query'))}"
-            )[:280].strip()
-            if len(verification_query) < 8 or verification_query.casefold() in seen_queries:
-                continue
-            runtime_verification_rows.append(
-                {
-                    **row,
-                    "shardId": f"shard_plan_verify_{len(runtime_verification_rows) + 1}_{_query_slug(verification_query)}",
-                    "query": verification_query,
-                    "evidenceQuery": verification_query,
-                    "verification": True,
-                    "reason": "runtime_official_host_verification",
-                    "plannedBy": "research-runtime",
-                }
-            )
-            represented_site_hosts.add(host)
-            seen_queries.add(verification_query.casefold())
-        verification_capacity = max(0, authority_budget - len(runtime_verification_rows))
-        accepted = [
-            *ordered_primary,
-            *runtime_verification_rows,
-            *verification_rows[:verification_capacity],
-        ][:max_shards]
-        if len(accepted) < len(normalized_facets):
-            candidate_errors.append(f"{model_label}: query_plan_effective_cap_too_small")
-            continue
-        return accepted, {
-            "used": True,
-            "agentId": "web-research-architect",
-            "modelId": model_label,
-            "facetCount": len(ordered_primary),
-            "architectFacetCount": architect_primary_count,
-            "decomposedRootQuestion": decompose_root_question,
-            "plannedShardCount": len(accepted),
-            "authorityVerificationCount": sum(item.get("verification") is True for item in accepted),
-            "runtimeAuthorityVerificationCount": sum(
-                item.get("reason") == "runtime_official_host_verification" for item in accepted
-            ),
-            "explicitEntityCount": len(official_entity_hints),
-            "runtimeEntityCoverageCount": sum(
-                item.get("reason") == "runtime_explicit_entity_coverage" for item in accepted
-            ),
-            "errorsBeforeSuccess": candidate_errors[-6:],
-            "researchPromptContractVersion": RESEARCH_PROMPT_CONTRACT_VERSION,
-            "researchPromptContractDigest": stage_contract_digest,
-        }
-
-    return runtime_entity_fallback(
-        "query_planner_protocol_failure",
-        errors=candidate_errors,
-        raw_preview="\n--- retry ---\n".join(raw_previews),
-    )
-
-
 def _research_query_subject(question: str) -> str:
     generic_terms = {
         "about",
@@ -20399,6 +17806,10 @@ def research_broker(
     deliverable: str = "evidence_bundle",
     evidenceBundleId: str = "",
     experiencePackId: str = "",
+    sourceKey: str = "",
+    readAnswer: bool = False,
+    startChar: int = 0,
+    maxChars: int = 6000,
     title: str = "",
     tags: list[str] | str | None = None,
     minConfidence: str = "",
@@ -20420,6 +17831,12 @@ def research_broker(
     run + experiencePackId rechecks/updates that saved answer using its original evidence before searching gaps.
     search_experience/get_experience inspect saved answers; archive_experience hides one; delete_experience requires confirm=true.
     Accepted answers are saved automatically. forceRefresh=true requests fresh network evidence, not merely a wording revision.
+    get_evidence + evidenceBundleId recovers durable answers even if an observation rawRef is unavailable.
+    Add readAnswer=true to page the complete reviewed answer, limitations and original citation list with startChar/maxChars.
+    Follow the returned nextOffset until null; an answer preview is not the full document. readAnswer and sourceKey are mutually exclusive.
+    Answer offsets count Unicode code points in that document, not bytes or JavaScript UTF-16 units. Compare contentSha256 across pages; restart if it changes.
+    Add sourceKey (S1 etc.) to read that saved original source, with startChar/maxChars for pagination.
+    This reads the original snapshot, not today's website; no search or model call is needed.
     Research inherits the governed System Base browser-profile setting when the caller omits the flag. Only
     allowlisted provider/page hosts may reuse that login state; public fallback providers remain profile-free.
     """
@@ -20474,9 +17891,22 @@ def research_broker(
         )
 
     scope = _ledger_scope(state)
+    access = ResearchAccessScope(state)
+    read_modes = {"observe", "search_experience", "get_experience", "get_evidence"}
+    mutation_modes = {"archive_experience", "restore_experience", "delete_experience", "promote_experience"}
+    if normalized_mode in read_modes and not access.valid:
+        return json.dumps(research_access_denied(normalized_mode), ensure_ascii=False)
+    if normalized_mode in mutation_modes or (normalized_mode == "run" and experiencePackId):
+        if not access.can_mutate():
+            return json.dumps(research_access_denied(normalized_mode), ensure_ascii=False)
+        target = (get_evidence_bundle(_safe_text(evidenceBundleId), access_check=access.allows)
+                  if normalized_mode == "promote_experience"
+                  else get_experience_pack(_safe_text(experiencePackId), include_archived=True, access_check=access.allows))
+        if not target:
+            return json.dumps(research_access_denied(normalized_mode), ensure_ascii=False)
     if normalized_mode == "observe":
-        items = list_evidence_bundles(scope=scope, limit=limit)
-        summary = research_ledger_summary(scope=scope, include_archived=includeArchived)
+        items = list_evidence_bundles(scope=scope, limit=limit, access_check=access.allows)
+        summary = research_ledger_summary(scope=scope, include_archived=includeArchived, access_check=access.allows)
         return _render_payload(
             {
                 "ok": True,
@@ -20499,10 +17929,44 @@ def research_broker(
         )
 
     if normalized_mode == "get_evidence":
-        bundle = get_evidence_bundle(_safe_text(evidenceBundleId))
+        from core.tools.research_quality import research_answer_text, research_claims
+        from core.research_verification_bindings import research_evidence_bindings
+        from runtimes.research.answer_read import answer_preview_proof, answer_read_tool, saved_answer_page
+
+        if readAnswer and sourceKey:
+            return json.dumps({"ok": False, "kind": "research_answer_page", "error": "choose_answer_or_source_not_both"})
+        bundle = get_evidence_bundle(_safe_text(evidenceBundleId), access_check=access.allows)
+        if not bundle:
+            return json.dumps(research_access_denied(normalized_mode), ensure_ascii=False)
         if bundle:
+            if readAnswer:
+                return json.dumps(saved_answer_page(bundle, start=startChar, max_chars=maxChars), ensure_ascii=False)
+            if sourceKey:
+                from runtimes.research.evidence import EvidenceStore
+
+                store = EvidenceStore()
+                try:
+                    store.restore((bundle.get("researchEvidenceBank") or {}).get("sources") or [])
+                    page = store.read(sourceKey, start=max(0, startChar), max_chars=max(100, min(maxChars, 12000)))
+                except ValueError as exc:
+                    return json.dumps({"ok": False, "kind": "research_source_page", "error": str(exc),
+                                       "evidenceBundleId": evidenceBundleId, "sourceKey": sourceKey,
+                                       "availableSourceKeys": list(store.sources)}, ensure_ascii=False)
+                original_bindings = [
+                    row for row in research_evidence_bindings({"claimTable": research_claims(bundle)})
+                    if row["citationKey"] == page["citationKey"] and row["url"] == page["url"]
+                ]
+                # This page reopens a saved snapshot. Its transient store read
+                # counter is not the original research observation's identity.
+                page.pop("evidenceRef", None)
+                return json.dumps({"ok": True, "kind": "research_source_page", "evidenceBundleId": evidenceBundleId,
+                                   "snapshotOnly": True, "originalReadBindings": original_bindings, **page}, ensure_ascii=False)
+            full_answer = research_answer_text(bundle)
             answer_pack = _compact_visible_answer_pack(_research_answer_pack(bundle))
-            return _render_payload(
+            # A bounded summary is transport, never a replacement for the
+            # reviewed text. The durable page reader is its recovery path.
+            answer_pack["answer"] = full_answer[:2400] if research_answer_is_usable(bundle) else ""
+            rendered = json.loads(_render_payload(
                 {
                     "ok": True,
                     "mode": normalized_mode,
@@ -20516,14 +17980,21 @@ def research_broker(
                     "evidenceBundleId": bundle.get("evidenceBundleId"),
                     "answer": answer_pack.get("answer") or "",
                     "researchAnswerPack": answer_pack,
+                    "sourceReadTool": f"research_broker(mode='get_evidence', evidenceBundleId='{bundle.get('evidenceBundleId')}', sourceKey='S1', startChar=0)",
                     "deliveryReady": bool(((answer_pack.get("score") or {}).get("deliveryReady"))),
                     "qualityTier": (answer_pack.get("score") or {}).get("qualityTier"),
                     "qualityMetrics": (answer_pack.get("score") or {}).get("acceptanceMetrics") or {},
-                    "detailTool": "research_broker(mode='get_experience', experiencePackId=...)",
+                    "detailTool": answer_read_tool(str(bundle.get("evidenceBundleId") or "")),
                     "recommendedNextAction": "use_evidence_bundle",
                 },
                 max_chars=60_000,
-            )
+            ))
+            # Generic proof compaction may omit optional keys; retain these
+            # small recovery fields after it, without copying the full answer.
+            rendered["answerPreview"] = answer_preview_proof(full_answer)
+            rendered["evidenceBindings"] = research_evidence_bindings({"claimTable": research_claims(bundle)})
+            rendered["detailTool"] = answer_read_tool(str(bundle.get("evidenceBundleId") or ""))
+            return json.dumps(rendered, ensure_ascii=False)
         return _render_payload(
             {
                 "ok": False,
@@ -20551,6 +18022,7 @@ def research_broker(
             min_confidence=minConfidence,
             limit=limit,
             include_archived=includeArchived,
+            access_check=access.allows,
         )
         reuse_decision = _experience_reuse_decision(
             packs,
@@ -20602,22 +18074,34 @@ def research_broker(
         )
 
     if normalized_mode == "get_experience":
-        pack = get_experience_pack(_safe_text(experiencePackId), include_archived=includeArchived)
-        return _render_payload(
+        from runtimes.research.answer_read import answer_read_tool
+        pack = get_experience_pack(_safe_text(experiencePackId), include_archived=includeArchived, access_check=access.allows)
+        if not pack:
+            return json.dumps(research_access_denied(normalized_mode), ensure_ascii=False)
+        # The generic result fallback discards `item` when proof exceeds 8K.
+        # Return a bounded, explicitly labelled preview and a real durable locator.
+        item = {key: value for key, value in (pack or {}).items() if key in {
+            "experiencePackId", "createdFromBundleId", "title", "question", "status", "version",
+            "deliveryScope", "limitations", "asOf", "updatedAt", "scope", "qualityAccepted", "reuseEligible",
+        }}
+        answer = _safe_text((pack or {}).get("researchResult") or (pack or {}).get("answer"))
+        if pack:
+            item.update(answerPreview=answer[:2400], answerChars=len(answer), answerComplete=len(answer) <= 2400)
+        return json.dumps(
             {
                 "ok": bool(pack),
                 "mode": normalized_mode,
                 "kind": "research_experience_pack",
                 "summary": "Experience pack found." if pack else "Experience pack not found.",
-                **({"item": pack} if pack else {}),
-                "detailTool": "research_broker(mode='get_evidence', evidenceBundleId=item.createdFromBundleId)",
-                "recommendedNextAction": "reuse_experience" if pack else "search_experience_then_run",
+                **({"item": item} if pack else {}),
+                "detailTool": answer_read_tool(str((pack or {}).get('createdFromBundleId') or '')) if pack else None,
+                "recommendedNextAction": "get_evidence" if pack else "search_experience",
             },
-            max_chars=8000,
+            ensure_ascii=False,
         )
 
     if normalized_mode == "archive_experience":
-        pack = archive_experience_pack(_safe_text(experiencePackId), initiated_by="research_broker")
+        pack = archive_experience_pack(_safe_text(experiencePackId), initiated_by="research_broker", access_check=access.allows)
         return _render_payload(
             {
                 "ok": bool(pack),
@@ -20631,7 +18115,7 @@ def research_broker(
         )
 
     if normalized_mode == "restore_experience":
-        pack = restore_experience_pack(_safe_text(experiencePackId), initiated_by="research_broker")
+        pack = restore_experience_pack(_safe_text(experiencePackId), initiated_by="research_broker", access_check=access.allows)
         return _render_payload(
             {
                 "ok": bool(pack),
@@ -20645,7 +18129,7 @@ def research_broker(
         )
 
     if normalized_mode == "delete_experience":
-        deleted = delete_experience_pack(_safe_text(experiencePackId), confirm=confirm)
+        deleted = delete_experience_pack(_safe_text(experiencePackId), confirm=confirm, access_check=access.allows)
         return _render_payload(
             {
                 "ok": bool(deleted),
@@ -20659,7 +18143,7 @@ def research_broker(
         )
 
     if normalized_mode == "promote_experience":
-        pack = promote_experience_pack(_safe_text(evidenceBundleId), title=title, tags=_as_list(tags))
+        pack = promote_experience_pack(_safe_text(evidenceBundleId), title=title, tags=_as_list(tags), access_check=access.allows)
         return _render_payload(
             {
                 "ok": bool(pack),
@@ -20790,6 +18274,7 @@ def research_broker(
         min_confidence=minConfidence,
         limit=3,
         include_archived=False,
+        access_check=access.allows,
     )
     experience_reuse = _experience_reuse_decision(
         experience_candidates,
@@ -20798,7 +18283,7 @@ def research_broker(
         freshness=freshness,
         min_confidence=minConfidence,
     )
-    revision_pack = get_experience_pack(_safe_text(experiencePackId)) if experiencePackId else None
+    revision_pack = get_experience_pack(_safe_text(experiencePackId), access_check=access.allows) if experiencePackId else None
     if experiencePackId and not revision_pack:
         return _render_payload({"ok": False, "mode": "run", "error": "experience_not_available", "summary": "指定答案不存在或已归档，未开始调研。"}, max_chars=4000)
     if revision_pack:
@@ -20813,7 +18298,7 @@ def research_broker(
         }
     if experience_reuse.get("reuseDecision") == "reuse" and experience_candidates:
         pack_id = _safe_text(experience_reuse.get("candidatePackId"))
-        pack = get_experience_pack(pack_id, record_usage=True) if pack_id else experience_candidates[0]
+        pack = get_experience_pack(pack_id, record_usage=True, access_check=access.allows) if pack_id else experience_candidates[0]
         if pack:
             reused_bundle = _bundle_from_reused_pack(
                 pack,
@@ -20835,7 +18320,7 @@ def research_broker(
             }
 
     prior_pack = revision_pack or next((pack for pack in experience_candidates if pack.get("experiencePackId") == experience_reuse.get("candidatePackId")), None)
-    previous_bundle = get_evidence_bundle(prior_pack.get("createdFromBundleId")) if prior_pack and not forceRefresh else None
+    previous_bundle = get_evidence_bundle(prior_pack.get("createdFromBundleId"), access_check=access.allows) if prior_pack and not forceRefresh else None
     bundle = _run_agent_owned_research(
         question=clean_question, research_intent=researchIntent, source_policy=sourcePolicy,
         freshness=freshness, allowed_domains=allowed_domains, blocked_domains=blocked_domains,
@@ -20847,4 +18332,6 @@ def research_broker(
     if revision_pack:
         bundle.update(supersedesExperiencePackId=experiencePackId, supersedesBundleId=revision_pack.get("createdFromBundleId"))
     stored = _store_evidence(bundle, state=state)
+    if stored.get("kind") == "research_access_denied":
+        return json.dumps(stored, ensure_ascii=False)
     return _render_payload(_visible_bundle(stored), max_chars=36000)

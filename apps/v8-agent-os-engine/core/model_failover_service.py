@@ -92,9 +92,9 @@ def _iterate_stream_with_deadline(
         name="v8-model-stream",
         daemon=True,
     )
-    producer.start()
     started_at = time.monotonic()
-    deadline_at = time.monotonic() + max(float(deadline_seconds), 0.01)
+    deadline_at = started_at + max(float(deadline_seconds), 0.01)
+    producer.start()
     chunk_count = 0
     first_chunk_ms: int | None = None
     last_chunk_ms: int | None = None
@@ -491,6 +491,8 @@ class ModelFailoverService:
         max_total_attempts = self._max_total_attempts(governance, max_local_retries=max_local_retries)
         max_failover_seconds = self._max_failover_seconds(governance)
         total_attempts = 0
+        corrected_tool_arguments = False
+        attempt_messages = messages
         caps_exhausted_reason = ""
         effective_preferred_record = model_control_plane.get_model_record(effective_preferred_model_id, config)
         effective_preferred_runtime_id = str((effective_preferred_record or {}).get("model_ref") or effective_preferred_model_id)
@@ -537,16 +539,28 @@ class ModelFailoverService:
                     )
                 try:
                     if stream_observer is None:
-                        result = (
-                            bound_llm.invoke(messages, config=invocation_config)
-                            if invocation_config
-                            else bound_llm.invoke(messages)
-                        )
+                        def invoke_once():
+                            return (bound_llm.invoke(attempt_messages, config=invocation_config)
+                                    if invocation_config else bound_llm.invoke(attempt_messages))
+
+                        if corrected_tool_arguments:
+                            def corrected_response():
+                                yield invoke_once()
+
+                            # Reuse the existing bounded producer. A blocked SDK
+                            # may finish later, but its late tool response never
+                            # reaches the caller or authorizes an action.
+                            for result in _iterate_stream_with_deadline(
+                                corrected_response(), deadline_seconds=attempt_timeout_seconds,
+                            ):
+                                pass
+                        else:
+                            result = invoke_once()
                     else:
                         stream = (
-                            bound_llm.stream(messages, config=invocation_config)
+                            bound_llm.stream(attempt_messages, config=invocation_config)
                             if invocation_config
-                            else bound_llm.stream(messages)
+                            else bound_llm.stream(attempt_messages)
                         )
                         aggregate = None
                         for chunk in _iterate_stream_with_deadline(
@@ -613,6 +627,9 @@ class ModelFailoverService:
                         model_id=candidate.model_id,
                         capability_class=capability_class,
                     )
+                    if corrected_tool_arguments and hasattr(result, "response_metadata"):
+                        result.response_metadata = {**(result.response_metadata or {}),
+                                                    "toolArgumentCorrection": {"used": True, "attemptCount": total_attempts}}
                     return result
                 except Exception as exc:
                     if isinstance(exc, V8LLMError):
@@ -675,6 +692,33 @@ class ModelFailoverService:
                         normalized["code"],
                         normalized["message"],
                     )
+                    if (corrected_tool_arguments and stream_observer is None
+                            and isinstance(exc, _ModelStreamDeadlineExceeded)):
+                        attempt["diagnostic"].update({
+                            "timeoutStage": "tool_argument_correction",
+                            "transportCancellation": "not_guaranteed",
+                            "lateToolResponse": "discarded",
+                        })
+                        caps_exhausted_reason = "tool_argument_correction_deadline_exceeded"
+                        break
+                    if (normalized["code"] == "model_output_incomplete" and tools
+                            and not corrected_tool_arguments and stream_observer is None
+                            and retry_index + 1 < local_attempts):
+                        from langchain_core.messages import HumanMessage
+
+                        # No tool in the rejected response has executed. Reuse
+                        # one already-authorized local attempt, on this model,
+                        # with an actionable correction rather than JSON repair.
+                        # Public observer streams require caller-owned recovery.
+                        corrected_tool_arguments = True
+                        attempt["correction"] = "complete_tool_arguments"
+                        attempt_messages = [*messages, HumanMessage(content=(
+                            "上次模型响应的工具参数不是完整有效的 JSON 对象，该响应中的工具均未执行。"
+                            "现在仅纠正一次：提交完整且正确转义的原生工具参数，不要手写伪工具标签或补全半截响应。"
+                            "保持当前模型预算、权限与写集；保留之前已完成的工作，只重新提出尚未执行的动作。"
+                            "委派任务只需清晰完整的任务合同，不要在路由参数里展开整个实现文件。"
+                        ))]
+                        continue
                     if observed_stream_chunks > 0:
                         # Replaying a partially emitted tool/reasoning stream can
                         # duplicate user-visible events and tool intent. Fail

@@ -1,5 +1,6 @@
 import ast
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -25,7 +26,7 @@ from core.memory_observability import log_memory_observation
 from core.prompt_cache_segments import hash_prompt_segment
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.runtime_tool_access import filter_visible_tools_for_actor
-from core.runtime_route_contract import render_runtime_route_contract
+from core.runtime_route_contract import ENGINEERING_TASK_UNIT_DISCIPLINE, render_runtime_route_contract
 from core.runtime_contract_errors import SupervisorRuntimeRouteContractError
 from core.runtime.reflex_gate import (
     render_gate_prompt_addition,
@@ -35,6 +36,7 @@ from core.runtime.reflex_gate import (
     runtime_reflex_service,
 )
 from core.system_tools.baseline import select_baseline_system_tool_names
+from erc.runtime_context import bind_runtime_context
 
 
 _SUPERVISOR_RUNTIME_MODE_KINDS = frozenset({
@@ -44,7 +46,6 @@ _SUPERVISOR_RUNTIME_MODE_KINDS = frozenset({
     "computer_use",
     "rpa",
 })
-_RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS = 1_024
 
 def _last_memory_session_context_diagnostics() -> dict:
     try:
@@ -424,7 +425,7 @@ _RUNTIME_ORCHESTRATION_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 _EXPLICIT_RUNTIME_SELECTION_PREFIX_RE = re.compile(
     r"(?:请(?:先|直接)?(?:交给|使用|调用|启用|通过|用|让|切换到|进入|改用)|交给|使用|调用|启用|通过|"
-    r"切换到|进入|改用|route\s+(?:this\s+)?to|hand\s+off\s+to|use|run|invoke)",
+    r"切换到|进入|改用|委派|delegate\s+(?:to\s+)?|route\s+(?:this\s+)?to|hand\s+off\s+to|use|run|invoke)",
     re.IGNORECASE,
 )
 _EXPLICIT_RUNTIME_SELECTION_DENY_RE = re.compile(
@@ -650,7 +651,7 @@ def _has_mixed_direct_and_runtime_execution_boundaries(user_query: str) -> bool:
     return False
 
 
-def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
+def _explicit_runtime_orchestration_kinds(state, user_query: str, loaded_agents=None) -> list[str]:
     if not isinstance(state, dict):
         return []
     hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
@@ -673,7 +674,18 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
     ):
         return []
     strongly_selected: set[str] = set()
-    for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
+    # A direct request to delegate to a registered name is the same explicit
+    # choice as "use subagent". Do not infer a role from the task's topic.
+    registered_names = tuple(
+        str(agent.get("name") or "").strip()
+        for agent in loaded_agents or []
+        if isinstance(agent, dict) and str(agent.get("name") or "").strip()
+    )
+    markers_by_kind = tuple(
+        (kind, (*markers, *registered_names) if kind == "delegation" else markers)
+        for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS
+    )
+    for kind, markers in markers_by_kind:
         for marker in markers:
             for marker_match in re.finditer(re.escape(marker.lower()), query):
                 prefix = query[max(0, marker_match.start() - 28) : marker_match.start()]
@@ -685,6 +697,9 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
                 if len(between) > 16:
                     continue
                 deny_window = prefix[max(0, selector.start() - 12) : selector.end()]
+                # A prohibition in the preceding clause does not negate a
+                # new explicit request ("不再改写。请委派注册的 …").
+                deny_window = re.split(r"[。！？!?；;，,\n]", deny_window)[-1]
                 if _EXPLICIT_RUNTIME_SELECTION_DENY_RE.search(deny_window):
                     continue
                 strongly_selected.add(kind)
@@ -693,7 +708,7 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
                 break
     allowed.update(strongly_selected)
     positions: list[tuple[int, str]] = []
-    for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
+    for kind, markers in markers_by_kind:
         if kind not in allowed:
             continue
         marker_positions = [query.find(marker.lower()) for marker in markers if query.find(marker.lower()) >= 0]
@@ -737,11 +752,18 @@ def _delegation_orchestration_guidance(*, correction: bool = False) -> SystemMes
         "writeRequired=false, writeSet=[], allowChildDelegation=false, not only prose in behaviorScope. "
         "Only declare a bounded writeSet when writing was authorized. "
         "For verification of an upstream Research handoff, compact summaries do not contain the complete claim table, "
-        "excerpts and answer: pass its exact evidenceRefs and allow the read-only recovery tool with "
-        "toolPolicy={\"mode\":\"allowlist\",\"allowedTools\":[\"tool_observation_detail\"]}. "
+        "excerpts and answer: pass its exact evidenceRefs and allow the matching saved reader. "
+        "Keep context to the question and specific checks; do not reconstruct a large claim table in dispatch arguments. "
+        "The worker can recover the original read-observation index and open relevant sourceKey bodies; "
+        "reading only the saved answer is not independent source verification. "
+        "Use research_broker(get_experience/get_evidence) for saved pack/bundle IDs; tool_observation_detail "
+        "accepts only an actual toolobs:// rawRef, never a research:// URI. "
+        "toolPolicy={\"mode\":\"allowlist\",\"allowedTools\":[\"research_broker\",\"tool_observation_detail\"]} "
+        "keeps both recovery paths; the baseline research_broker is read-only and does not start Research. "
         "Do not choose mode=none merely because verification is read-only; it forbids even this evidence read. "
         "If tools are explicitly forbidden by the user, supply complete evidence in the task context instead. "
-        "Review the returned handoff before final delivery.\n"
+        "Review the returned handoff before final delivery. A missing current-run handoff match does not invalidate "
+        "an explicitly referenced saved answer; use its exact saved reader instead of searching files or old memories.\n"
         + json.dumps(example, ensure_ascii=False, indent=2)
     ))
 
@@ -785,6 +807,7 @@ def _explicit_runtime_orchestration_guidance(
             "runtime_broker route call for the first runtime in the chain. Copy the complete JSON shape below, replace placeholder "
             "values, and preserve every object/array type; never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
             f"{contract_example}{downstream_task_contract}\n"
+            f"{ENGINEERING_TASK_UNIT_DISCIPLINE if 'engineering' in kinds else ''}\n"
             "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
             "For a read-only task brief, use readOnly=true, writeRequired=false, writeSet=[], "
             "expectedOutputs=[\"<human-readable output>\"], and a non-empty acceptance or acceptanceContract. "
@@ -901,6 +924,7 @@ def _authoritative_runtime_route_guidance(
         )
     elif required_kind == "engineering":
         handoff_discipline = (
+            ENGINEERING_TASK_UNIT_DISCIPLINE + " " +
             "Carry the current request and workspace binding into bounded task briefs. When engineeringContinuation is active, "
             "also carry its prior episode/proof refs. Include a bounded write set when known and explicit verification expectations. "
             "After the typed handoff returns, review its proof and deliver or repair it once."
@@ -2329,6 +2353,18 @@ def _runtime_research_gap_state(state) -> dict:
         for item in list(route_context.get("effectiveHandoffRefs") or route_context.get("handoffRefs") or [])
         if isinstance(item, dict)
     ]
+    def created_at(handoff):
+        raw = handoff.get("createdAt") or handoff.get("created_at")
+        try:
+            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            return stamp.replace(tzinfo=stamp.tzinfo or timezone.utc).timestamp()
+        except (ValueError, TypeError):
+            return float("-inf")
+
+    # Reconciliation re-appends producer deliveries in database row order.
+    # That order is not chronology: an old failed attempt must not overwrite
+    # a newer successful repair of the same stable brief.
+    handoffs.sort(key=created_at)
     latest: dict[str, dict] = {}
     attempts: dict[str, int] = {}
     producer_by_brief: dict[str, str] = {}
@@ -2908,8 +2944,24 @@ def _runtime_handoff_final_response(state) -> AIMessage:
     return AIMessage(content=_runtime_handoff_final_text(state))
 
 
+def _runtime_wait_timed_out_while_active(state) -> bool:
+    dispatch = dict((state or {}).get("runtime_dispatch_status") or {})
+    active_ids = dispatch.get("activeEpisodeIds")
+    return (
+        dispatch.get("state") == "episode_stalled"
+        and isinstance(active_ids, (list, tuple))
+        and any(str(item or "").strip() for item in active_ids)
+    )
+
+
 def _runtime_recoverable_failure_final_text(state) -> str:
     dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
+    if _runtime_wait_timed_out_while_active(state):
+        return (
+            "这次任务尚未完成：等待运行进展超时，原执行尚未进入终态。\n"
+            "需要先核对原执行的状态和已有产物；如需停止，先取消原执行并确认停止后再恢复。"
+            "不能重复启动同一份工作，也不能把尚未验证的结果当作已交付。"
+        )
     reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
     failed_episode_count = int(dispatch_status.get("failedEpisodeCount") or dispatch_status.get("episodeCount") or 0)
     failed_handoff_count = int(dispatch_status.get("failedHandoffCount") or 0)
@@ -2932,6 +2984,16 @@ def _runtime_recoverable_failure_final_response(state) -> AIMessage:
 def _runtime_recoverable_failure_message(state) -> HumanMessage:
     dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
     reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
+    if _runtime_wait_timed_out_while_active(state):
+        return HumanMessage(content=(
+            "[Runtime Recoverable Failure]\n"
+            "Runtime wait timed out while required episodes are still active, not terminal. "
+            "This is not evidence that the episode failed. You MUST NOT claim completion or delivered artifacts.\n"
+            f"Wait reason: {reason}\n"
+            "Inspect the existing episode and its progress before recovery. If cancellation is needed, "
+            "cancel the original episode and confirm it stopped before resuming. Do not start duplicate work "
+            "or bypass the runtime with direct mutation tools."
+        ))
     return HumanMessage(
         content=(
             "[Runtime Recoverable Failure]\n"
@@ -3192,6 +3254,9 @@ def _retry_delegation_acceptance_once(
 def _coerce_recoverable_failure_response(response, state):
     if not _runtime_episode_recoverable_failure(state) or _response_has_tool_calls(response):
         return response
+    if _runtime_wait_timed_out_while_active(state):
+        response.content = _runtime_recoverable_failure_final_text(state)
+        return response
     content = str(getattr(response, "content", "") or "")
     if any(marker in content for marker in ("未完成", "失败", "阻塞", "需要修复", "recoverable", "failed", "blocked")):
         return response
@@ -3347,6 +3412,7 @@ def execute_supervisor_turn(
     llm_factory,
     sanitize_response_tool_calls,
 ):
+    preparation_started_at = time.perf_counter()
     compat_diagnostics = _compat_ingress_diagnostics_from_state(state)
     session_coordination = _session_coordination_from_state(state)
     coordination_requires_reply = _session_coordination_requires_reply(session_coordination)
@@ -3396,7 +3462,7 @@ def execute_supervisor_turn(
     explicit_runtime_kinds = (
         []
         if completion_truth_correction
-        else _explicit_runtime_orchestration_kinds(state, user_query)
+        else _explicit_runtime_orchestration_kinds(state, user_query, loaded_agents)
     )
     authoritative_runtime_kinds = (
         []
@@ -3425,7 +3491,7 @@ def execute_supervisor_turn(
         if required_orchestration_kind
         else ""
     )
-    handoff_read_targets = research_handoff_read_targets(state) if required_orchestration_kind == "delegation" else {}
+    handoff_read_targets = research_handoff_read_targets(state, user_query=user_query) if required_orchestration_kind == "delegation" else {}
     orchestration_tool_choice = "required" if handoff_read_targets else required_orchestration_tool or None
     explicit_coordination_send = (
         False
@@ -3820,6 +3886,7 @@ def execute_supervisor_turn(
             remaining_steps = int(raw_remaining_steps) if raw_remaining_steps is not None else None
         except (TypeError, ValueError):
             remaining_steps = None
+        message_preparation_started_at = time.perf_counter()
         prepared_result = prepare_supervisor_messages(
             messages=prepared_messages,
             system_content=system_content,
@@ -3838,6 +3905,7 @@ def execute_supervisor_turn(
             ),
             return_state_updates=True,
         )
+        message_preparation_ms = round((time.perf_counter() - message_preparation_started_at) * 1000, 2)
         if isinstance(prepared_result, tuple):
             prepared_messages, state_compaction_updates = prepared_result
         else:
@@ -3879,11 +3947,20 @@ def execute_supervisor_turn(
                 prepared_messages,
                 route_guidance,
             )
+        context_preparation_ms = {
+            **dict(context_bundle.get("context_preparation_ms") or {}),
+            "extensionRoute": route_duration_ms,
+            "systemContent": prompt_duration_ms,
+            "messagePreparation": message_preparation_ms,
+            "passiveRag": passive_rag_duration_ms,
+            "total": round((time.perf_counter() - preparation_started_at) * 1000, 2),
+        }
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],
                 "routeBuildMs": route_duration_ms,
                 "systemContentBuildMs": prompt_duration_ms,
+                "contextPreparationMs": context_preparation_ms,
                 "passiveRagMs": passive_rag_duration_ms,
                 "selectedSkillCount": len(route_bundle.selected_skill_names or []),
                 "selectedMcpToolCount": len(route_bundle.exposed_mcp_tool_names or []),
@@ -3905,23 +3982,22 @@ def execute_supervisor_turn(
         )
 
         debug_supervisor_messages(prepared_messages)
+        # Corrections reuse this prepared context. Do not count a preceding
+        # provider call as context preparation or forward timing as model kwargs.
+        underlying_invoke = robust_invoke
+
+        def invoke_with_preparation(*args, **kwargs):
+            with bind_runtime_context(context_preparation_ms=context_preparation_ms):
+                return underlying_invoke(*args, **kwargs)
+
+        robust_invoke = invoke_with_preparation
         invoke_llm = supervisor_base_llm
         invoke_caller_kwargs = caller_kwargs
         if use_runtime_route_compiler:
-            configured_output_limit = 0
-            resolve_output_limit = getattr(llm_factory, "get_model_max_output_tokens", None)
-            if callable(resolve_output_limit):
-                try:
-                    configured_output_limit = int(resolve_output_limit(sup_model_name) or 0)
-                except (TypeError, ValueError):
-                    configured_output_limit = 0
-            compiler_output_limit = min(
-                configured_output_limit or _RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS,
-                _RUNTIME_ROUTE_COMPILER_MAX_OUTPUT_TOKENS,
-            )
+            # A route may carry a full Engineering task contract. Keep its
+            # output policy with the shared resolver, not a hidden stage cap.
             invoke_caller_kwargs = {
                 **caller_kwargs,
-                "max_tokens": compiler_output_limit,
                 "_reasoning_effort": "minimal",
             }
             invoke_llm = llm_factory.create_chat_model(

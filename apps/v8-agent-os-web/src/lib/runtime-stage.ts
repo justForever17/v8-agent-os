@@ -267,6 +267,33 @@ export function mergeRuntimeTimeline(
     });
 }
 
+export interface RuntimeTimelineSnapshotFields {
+    sessionId?: string;
+    latestSeq?: number;
+    runtimeTimeline?: unknown[];
+    runtimeTimelineWindow?: { compacted?: boolean; [key: string]: unknown };
+}
+
+export function mergeRuntimeTimelineSnapshot(
+    current: RuntimeTimelineSnapshotFields | null,
+    incoming: RuntimeTimelineSnapshotFields,
+    preserveCurrent = false,
+) {
+    const sameSession = Boolean(incoming.sessionId && incoming.sessionId === current?.sessionId);
+    const partial = incoming.runtimeTimelineWindow?.compacted === true;
+    const timeline = normalizeRuntimeTimeline(incoming.runtimeTimeline || []);
+    return {
+        sessionId: incoming.sessionId,
+        latestSeq: sameSession ? Math.max(current?.latestSeq || 0, incoming.latestSeq || 0) : incoming.latestSeq || 0,
+        runtimeTimelineWindow: incoming.runtimeTimelineWindow,
+        // A compact window omits old events; omission is not a deletion.
+        // Complete authoritative snapshots retain their replacement semantics.
+        runtimeTimeline: sameSession && (partial || preserveCurrent)
+            ? mergeRuntimeTimeline(normalizeRuntimeTimeline(current?.runtimeTimeline || []), timeline)
+            : timeline,
+    };
+}
+
 function runtimeCardIdForActivity(activity: RuntimeStageActivity): RuntimeId {
     return activity.runtimeId === "subagent_swarm" ? "chat" : activity.runtimeId;
 }

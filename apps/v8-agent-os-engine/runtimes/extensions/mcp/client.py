@@ -6,9 +6,10 @@ import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Any
+from typing import List, Any, Awaitable, Callable
 
 from mcp import ClientSession, StdioServerParameters
+from mcp.types import ServerNotification, ToolListChangedNotification
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -82,6 +83,7 @@ class MCPManager:
         self._app_registry_by_tool: dict[tuple[str, str], dict[str, Any]] = {}
         self._app_resources_by_uri: dict[tuple[str, str], dict[str, Any]] = {}
         self._app_instances: dict[str, dict[str, Any]] = {}
+        self.inventory_change_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
     def _log_server_task_result(self, name: str, task: asyncio.Task) -> None:
         try:
@@ -105,11 +107,25 @@ class MCPManager:
     def _revision_from_state(self) -> str:
         server_payload: list[dict[str, Any]] = []
         for name in sorted(set(self._server_config_fingerprints) | set(self._server_tools) | set(self._server_state)):
+            tool_contracts = []
+            for tool in list(self._server_tools.get(name) or []):
+                schema = getattr(tool, "args_schema", None)
+                if isinstance(schema, type) and hasattr(schema, "model_json_schema"):
+                    schema = schema.model_json_schema()
+                tool_contracts.append({
+                    "name": str(getattr(tool, "name", "") or ""),
+                    "description": str(getattr(tool, "description", "") or ""),
+                    "inputSchema": schema,
+                    "metadata": getattr(tool, "metadata", None),
+                    # Adapter tools close over a ClientSession. Even an identical
+                    # schema after reconnect must invalidate executable routes.
+                    "instance": id(tool),
+                })
             server_payload.append(
                 {
                     "name": name,
                     "configFingerprint": self._server_config_fingerprints.get(name),
-                    "toolNames": sorted(str(getattr(tool, "name", "") or "") for tool in list(self._server_tools.get(name) or [])),
+                    "tools": sorted(tool_contracts, key=lambda item: (item["name"], item["instance"])),
                     "status": str((self._server_state.get(name) or {}).get("status") or ""),
                 }
             )
@@ -153,7 +169,7 @@ class MCPManager:
         ui_meta = meta.get("ui") if isinstance(meta.get("ui"), dict) else {}
         return dict(ui_meta or {})
 
-    async def _discover_apps_for_server(self, name: str, session: ClientSession) -> dict[str, Any]:
+    async def _discover_apps_for_server(self, name: str, session: ClientSession, *, publish: bool = True) -> dict[str, Any]:
         app_tools: list[dict[str, Any]] = []
         resources: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -186,7 +202,8 @@ class MCPManager:
                         ).encode("utf-8")
                     ).hexdigest()[:16],
                 }
-                self._app_registry_by_tool[(name, tool_name)] = entry
+                if publish:
+                    self._app_registry_by_tool[(name, tool_name)] = entry
                 app_tools.append(entry)
         except Exception as exc:
             errors.append(f"tools/list apps metadata failed: {type(exc).__name__}: {exc}")
@@ -210,7 +227,8 @@ class MCPManager:
                     "description": resource_payload.get("description"),
                     "uiMeta": self._extract_ui_meta(meta),
                 }
-                self._app_resources_by_uri[(name, uri)] = entry
+                if publish:
+                    self._app_resources_by_uri[(name, uri)] = entry
                 resources.append(entry)
         except Exception as exc:
             errors.append(f"resources/list failed: {type(exc).__name__}: {exc}")
@@ -223,6 +241,58 @@ class MCPManager:
             "uiResources": resources,
             "lastAppsError": "; ".join(errors) if errors else None,
         }
+
+    def _publish_server_tools(self, name: str, server_tools: list[Any], apps: dict[str, Any]) -> None:
+        self._remove_server_tools(name)
+        self._remove_server_apps(name)
+        for entry in apps.get("appTools") or []:
+            self._app_registry_by_tool[(name, entry["toolName"])] = entry
+        for entry in apps.get("uiResources") or []:
+            self._app_resources_by_uri[(name, entry["uri"])] = entry
+        for tool in server_tools:
+            tool.metadata = dict(getattr(tool, "metadata", None) or {})
+            tool.metadata["server_name"] = name
+            app = self._app_registry_by_tool.get((name, str(getattr(tool, "name", "") or "")))
+            if app:
+                tool.metadata["mcp_app"] = {"resourceUri": app["resourceUri"], "uiMeta": app.get("uiMeta") or {}}
+        self.tools.extend(server_tools)
+        self._server_tools[name] = list(server_tools)
+
+    async def _refresh_notified_tools(self, name: str, session: ClientSession, requested: asyncio.Event, stop_event: asyncio.Event) -> None:
+        while True:
+            await requested.wait()
+            requested.clear()
+            if self._closing or stop_event.is_set() or self.sessions.get(name) is not session:
+                return
+            try:
+                async with asyncio.timeout(MCP_SERVER_INIT_TIMEOUT_SECONDS):
+                    server_tools = await load_mcp_tools(session)
+                    apps = await self._discover_apps_for_server(name, session, publish=False)
+                if self._closing or stop_event.is_set() or self.sessions.get(name) is not session:
+                    return
+                self._publish_server_tools(name, server_tools, apps)
+                self._set_server_state(name, toolCount=len(server_tools), toolsRefreshStatus="ready", lastToolsRefreshError=None,
+                    appsSupported=bool(apps.get("appsSupported")), appToolCount=int(apps.get("appToolCount") or 0),
+                    uiResourceCount=int(apps.get("uiResourceCount") or 0), lastAppsError=apps.get("lastAppsError"))
+                revision = self._commit_inventory_revision()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self.sessions.get(name) is session and not stop_event.is_set():
+                    self._set_server_state(name, toolsRefreshStatus="error", lastToolsRefreshError=type(exc).__name__)
+                continue
+            callback = self.inventory_change_callback
+            if callback is not None:
+                try:
+                    await callback({"changed": True, "revision": revision, "reason": "tools_list_changed",
+                                    "mcpChangedServers": {"added": [], "updated": [name], "removed": []}})
+                    if self.sessions.get(name) is session and not stop_event.is_set():
+                        self._set_server_state(name, lastInventoryProjectionError=None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if self.sessions.get(name) is session and not stop_event.is_set():
+                        self._set_server_state(name, lastInventoryProjectionError=type(exc).__name__)
 
     async def initialize(self):
         if self._initialized:
@@ -422,6 +492,16 @@ class MCPManager:
         # The canonical config, fingerprints, logs and API responses keep refs.
         srv_config = resolve_config_credential_refs(srv_config)
         stack = AsyncExitStack()
+        tools_refresh_task: asyncio.Task | None = None
+        tools_refresh_requested = asyncio.Event()
+
+        async def on_notification(message: Any) -> None:
+            # The SDK dispatches this from its receive loop. Only wake the owned
+            # worker here; list_tools must never wait on this same receive loop.
+            if (isinstance(message, ServerNotification) and isinstance(message.root, ToolListChangedNotification)
+                    and not self._closing and not stop_event.is_set()):
+                tools_refresh_requested.set()
+
         command = srv_config.get("command")
         url = srv_config.get("url")
         transport_type = srv_config.get("type") or ("stdio" if command else ("http" if str(url or "").startswith("http") else "sse"))
@@ -493,25 +573,14 @@ class MCPManager:
             else:
                 raise ValueError(f"Unknown transport type: {transport_type}")
 
-            session = await stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(ClientSession(read, write, message_handler=on_notification))
             initialization = await session.initialize()
             initialization_metadata = _initialization_metadata(initialization)
 
             server_tools = await load_mcp_tools(session)
-            apps_discovery = await self._discover_apps_for_server(name, session)
-            for t in server_tools:
-                t.metadata = getattr(t, "metadata", {}) or {}
-                t.metadata["server_name"] = name
-                app_entry = self._app_registry_by_tool.get((name, str(getattr(t, "name", "") or "")))
-                if app_entry:
-                    t.metadata["mcp_app"] = {
-                        "resourceUri": app_entry.get("resourceUri"),
-                        "uiMeta": app_entry.get("uiMeta") or {},
-                    }
-
-            self.tools.extend(server_tools)
+            apps_discovery = await self._discover_apps_for_server(name, session, publish=False)
             self.sessions[name] = session
-            self._server_tools[name] = list(server_tools)
+            self._publish_server_tools(name, server_tools, apps_discovery)
             self._set_server_state(
                 name,
                 transport=transport_type,
@@ -527,10 +596,17 @@ class MCPManager:
                 lastErrorKind=None,
                 executionImpacted=False,
                 readyAt=self._now_iso(),
+                toolsRefreshStatus="ready",
+                lastToolsRefreshError=None,
+                lastInventoryProjectionError=None,
             )
             if bool(srv_config.get("oauth")):
                 mcp_oauth_coordinator.mark_connected(name)
             self._commit_inventory_revision()
+            tools_refresh_task = asyncio.create_task(
+                self._refresh_notified_tools(name, session, tools_refresh_requested, stop_event),
+                name=f"mcp:{name}:tools_refresh",
+            )
             if not ready_future.done():
                 ready_future.set_result({"tool_count": len(server_tools)})
             print(f"[MCP] Successfully loaded {len(server_tools)} tools from '{name}'.")
@@ -568,6 +644,9 @@ class MCPManager:
                 ready_future.set_exception(exc)
             raise
         finally:
+            if tools_refresh_task is not None:
+                tools_refresh_task.cancel()
+                await asyncio.gather(tools_refresh_task, return_exceptions=True)
             self.sessions.pop(name, None)
             self.subprocesses.pop(name, None)
             self._remove_server_tools(name)
@@ -879,6 +958,9 @@ class MCPManager:
                 "serverInfoVersion": server_state.get("serverInfoVersion"),
                 "protocolVersion": server_state.get("protocolVersion"),
                 "lastAppsError": server_state.get("lastAppsError"),
+                "toolsRefreshStatus": server_state.get("toolsRefreshStatus"),
+                "lastToolsRefreshError": server_state.get("lastToolsRefreshError"),
+                "lastInventoryProjectionError": server_state.get("lastInventoryProjectionError"),
             }
             if server_state.get("status"):
                 status[name]["status"] = server_state.get("status")
@@ -1118,15 +1200,16 @@ class MCPManager:
             current_status = str(server.get("status") or "unknown").strip()
             if current_status == "connected":
                 connected += 1
-            if current_status in {"error", "reconnecting"}:
+            inventory_error = server.get("lastToolsRefreshError") or server.get("lastInventoryProjectionError")
+            if current_status in {"error", "reconnecting"} or inventory_error:
                 degraded_servers.append(
                     {
                         "name": name,
                         "transport": server.get("transport"),
                         "status": current_status,
-                        "impact": server.get("impact") or "background_reconnect",
-                        "lastError": server.get("lastError"),
-                        "lastErrorKind": server.get("lastErrorKind"),
+                        "impact": "tool_inventory_stale" if inventory_error else (server.get("impact") or "background_reconnect"),
+                        "lastError": server.get("lastError") or inventory_error,
+                        "lastErrorKind": server.get("lastErrorKind") or inventory_error,
                     }
                 )
             if str(server.get("transport") or "") == "http" and str(server.get("lastErrorKind") or "") == "BrokenResourceError":

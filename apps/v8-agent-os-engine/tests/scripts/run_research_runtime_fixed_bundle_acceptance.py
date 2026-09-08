@@ -83,6 +83,8 @@ def _immutable_bundle_projection(bundle: dict[str, Any]) -> dict[str, Any]:
         field: copy.deepcopy(bundle.get(field))
         for field in IMMUTABLE_BUNDLE_FIELDS
     }
+    if isinstance(bundle.get("researchEvidenceBank"), dict):
+        projection["researchEvidenceBank"] = copy.deepcopy(bundle["researchEvidenceBank"])
     if not str(projection.get("evidenceBundleId") or "").strip():
         raise FixedBundleAcceptanceError("fixed bundle is missing evidenceBundleId")
     if not str(projection.get("question") or "").strip():
@@ -111,6 +113,8 @@ def load_fixed_bundle(path: Path, *, bundle_id: str = "") -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise FixedBundleAcceptanceError(f"cannot read fixed bundle ledger: {exc}") from exc
     bundles = ledger.get("evidenceBundles") if isinstance(ledger, dict) else None
+    if isinstance(ledger, dict) and ledger.get("evidenceBundleId"):
+        bundles = [ledger]  # A prior harness result is also a frozen input.
     if not isinstance(bundles, list) or not bundles:
         raise FixedBundleAcceptanceError("fixed bundle ledger has no evidenceBundles")
     candidates = [item for item in bundles if isinstance(item, dict)]
@@ -734,6 +738,7 @@ def run_attempt(
                 average_authority=float(bundle.get("authorityScore") or 0.0),
                 freshness=str(bundle.get("freshness") or "auto"),
                 architect_call_state={},
+                evidence_bank=copy.deepcopy(bundle.get("researchEvidenceBank")),
             )
         terminal_status = "completed"
     except Exception as exc:  # noqa: BLE001 - terminal evidence must be recorded fail-closed.
@@ -807,6 +812,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run one append-only fixed-bundle Research acceptance attempt."
     )
+    parser.add_argument("--live", action="store_true", help="Required before reading inputs/configuration or calling configured models.")
     parser.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE_PATH)
     parser.add_argument("--bundle-id", default="")
     parser.add_argument("--attempt-log", type=Path, default=DEFAULT_ATTEMPT_LOG)
@@ -893,6 +899,9 @@ def _execute_main(args: argparse.Namespace, *, result_dir: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if not args.live:
+        print("Refusing to run fixed-bundle model acceptance without --live.", file=sys.stderr)
+        return 2
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if args.required_streak < 1:

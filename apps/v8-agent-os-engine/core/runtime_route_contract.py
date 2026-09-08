@@ -14,6 +14,15 @@ RUNTIME_ROUTE_KINDS = (
 )
 
 
+ENGINEERING_TASK_UNIT_DISCIPLINE = (
+    "One Engineering brief owns one coherent change, including ordered edits to the same file. "
+    "Keep a user-requested create-then-edit sequence in one worker context so its write receipts remain usable; "
+    "carry every step and the final state inside that brief, not only routeReason. "
+    "Split only independently acceptable work or a genuinely independent verification. "
+    "Examples specify types, not a mandatory task count or permission to create extra files."
+)
+
+
 def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool = False) -> dict[str, Any]:
     """Return one copyable route example with stable JSON types.
 
@@ -74,12 +83,11 @@ def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool
                 "readOnly": False,
                 "writeSet": [
                     "<workspace-relative implementation path>",
-                    "<closely coupled test path>",
                 ],
-                "expectedOutputs": ["Implemented change and its focused test"],
+                "expectedOutputs": ["Requested implementation and relevant verification result"],
                 "acceptanceContract": [
                     "The bounded implementation exists",
-                    "The focused test passes",
+                    "Requested checks have traceable evidence",
                 ],
                 "constraints": [],
                 "detailRefs": [],
@@ -87,14 +95,15 @@ def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool
             },
             {
                 "taskBriefId": "engineering-verification",
-                "goal": "Run final verification and persist machine-readable proof.",
+                "goal": "Verify the implemented change and return evidence in the typed handoff.",
                 "context": {
                     "priorRefs": ["engineering-implementation"],
                 },
-                "writeRequired": True,
-                "readOnly": False,
-                "writeSet": ["<workspace-relative verification result path>"],
-                "expectedOutputs": ["Machine-readable verification evidence"],
+                "writeRequired": False,
+                "readOnly": True,
+                "readSet": ["<workspace-relative implementation path>"],
+                "writeSet": [],
+                "expectedOutputs": ["Verification evidence with outcome and limitations"],
                 "acceptanceContract": [
                     "Final verification succeeds or reports an explicit blocker",
                     "Proof identifies the verified implementation result",
@@ -106,7 +115,7 @@ def runtime_route_contract_example(kind: str = "engineering", *, read_only: bool
         ]
         proof_expectations = [
             "changed-file or artifact references per taskBriefId",
-            "final verification command/check and machine-readable outcome",
+            "final verification check and structured outcome in the handoff",
         ]
     elif normalized_kind == "creative_media":
         task_briefs = [
@@ -260,9 +269,10 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
                 else "Use taskBriefs for new calls; workerBriefs/tasks are read-only legacy aliases."
             ),
             "Coverage first: write one compact brief for every known work unit before adding optional detail. Completeness of taskBriefs outranks detail inside any one brief.",
+            "The example illustrates types and dependencies, not a mandatory task count or new files. Keep only needed work within the user's scope. Return verification evidence in the handoff; add a report file only when requested or explicitly authorized.",
             "Keep each goal to one sentence. For read-only Research, omit optional context before omitting a known fact domain.",
             "For research, put every currently known independent fact domain in the same initial ID/goal arrays; both arrays must have equal length and order. Do not route only the first domain and defer already-known domains to repair episodes.",
-            "For engineering, one taskBrief is one coherent independently executable and acceptable work unit. Split separable implementation, generated results/documentation, and final verification into dependent briefs; do not assign one worker an unrelated project-wide writeSet or rename the same oversized brief as a repair.",
+            ENGINEERING_TASK_UNIT_DISCIPLINE,
             "For Creative Media, when operationKind and all required inputs are already known, put the exact job in taskBriefs[].context.creativeMediaExecutionContract using schema v8.creative_media_execution.v1. The runtime executes that contract without re-inferring operationKind. Omit the contract only when the Creative Media Director must genuinely plan unresolved choices.",
             "For RPA, put the exact typed execution in taskBriefs[].context.rpaExecution. Use action plus one target family: draftId, scriptId, templateId, robotFile, traceRunId, traceRunIds, or runIds. Keep variables as an object and traceRunIds/runIds as arrays; the runtime never infers these values from goal prose.",
             "Engineering writeSet entries are paths relative to the original bound workspace. Never copy an absolute managed-worktree path from a handoff. Declare every generated file deterministically, or confine variable names below one declared output directory; do not let versioned/cache/report variants escape the declared scope.",

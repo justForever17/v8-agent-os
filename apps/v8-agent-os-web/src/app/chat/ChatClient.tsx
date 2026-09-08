@@ -29,6 +29,7 @@ import {
     buildRuntimeStageModel,
     buildRuntimeTimelineEntryFromEvent,
     mergeRuntimeTimeline,
+    mergeRuntimeTimelineSnapshot,
     normalizeRuntimeTimeline,
 } from "@/lib/runtime-stage";
 import {
@@ -177,6 +178,9 @@ type SupervisorDisplayProfile = {
 type ReasoningEffortLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 type SessionProjectionView = AuthoritativeSessionView & {
+    sessionId?: string;
+    latestSeq?: number;
+    runtimeTimelineWindow?: { compacted?: boolean; [key: string]: unknown };
     contextGovernance?: Record<string, unknown> | null;
     contextGovernanceHistory?: Record<string, unknown>[];
 };
@@ -2556,7 +2560,15 @@ export default function ChatClient() {
             conversationId,
         );
         const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
-        setSessionProjection(projection);
+        setSessionProjection((current) => projection ? {
+            ...projection,
+            ...mergeRuntimeTimelineSnapshot(current, {
+                sessionId: conversationId,
+                latestSeq: Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0),
+                runtimeTimeline: projection.runtimeTimeline,
+                runtimeTimelineWindow: projectionPayload?.runtimeTimelineWindow,
+            }),
+        } : null);
         if (projection?.askUserInteractions?.length) {
             const askUserInteraction = projection.askUserInteractions.find((item) => String(item.status || "pending").toLowerCase() === "pending") || null;
             if (askUserInteraction) {
@@ -4029,25 +4041,19 @@ export default function ChatClient() {
                     if (!nextView) {
                         return current;
                     }
-                    if (!current) {
-                        return nextView;
-                    }
                     return {
                         ...nextView,
-                        runtimeTimeline: (
-                            localStreamActive
-                            || snapshotLatestSeq < latestRealtimeSeqRef.current
-                        )
-                            ? mergeRuntimeTimeline(
-                                normalizeRuntimeTimeline(current.runtimeTimeline || []),
-                                normalizeRuntimeTimeline(nextView.runtimeTimeline || []),
-                            )
-                            : nextView.runtimeTimeline,
-                        contextGovernance: nextView.contextGovernance || current.contextGovernance,
+                        ...mergeRuntimeTimelineSnapshot(current, {
+                            sessionId: activeConversationId,
+                            latestSeq: snapshotLatestSeq,
+                            runtimeTimeline: nextView.runtimeTimeline,
+                            runtimeTimelineWindow: snapshotRecord.runtimeTimelineWindow as SessionProjectionView["runtimeTimelineWindow"],
+                        }, localStreamActive || snapshotLatestSeq < latestRealtimeSeqRef.current),
+                        contextGovernance: nextView.contextGovernance || current?.contextGovernance || null,
                         contextGovernanceHistory:
                             Array.isArray(nextView.contextGovernanceHistory) && nextView.contextGovernanceHistory.length > 0
                                 ? nextView.contextGovernanceHistory
-                                : current.contextGovernanceHistory,
+                                : current?.contextGovernanceHistory || [],
                     };
                 });
                 if (Array.isArray(nextView?.processes) && nextView.processes.length > 0) {

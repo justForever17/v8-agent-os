@@ -5723,6 +5723,17 @@ class ChatRuntime:
     ) -> tuple[list[dict[str, Any]], str]:
         node_id = str(node.get("id") or "").strip() or str(uuid.uuid4())
         normalized_node = {**node, "id": node_id}
+        replace_stream_key = str(normalized_node.pop("replaceStreamRunKey", "") or "")
+        owner_stream_key = str(normalized_node.get("ownerStreamKey") or "")
+        if (replace_stream_key and normalized_node.get("kind") == "narrative"
+                and owner_stream_key.startswith(f"{replace_stream_key}:segment:")):
+            nodes = [existing for existing in nodes if not (
+                existing.get("kind") == "narrative"
+                and str(existing.get("ownerStreamKey") or "").startswith(f"{replace_stream_key}:segment:")
+                and existing.get("ownerAgentId") == normalized_node.get("ownerAgentId")
+                and existing.get("ownerRuntimeId") == normalized_node.get("ownerRuntimeId")
+                and existing.get("ownerAgentKind") == normalized_node.get("ownerAgentKind")
+            )]
         for index, existing in enumerate(nodes):
             if str(existing.get("id") or "").strip() == node_id:
                 nodes[index] = {**existing, **normalized_node}
@@ -6505,6 +6516,7 @@ class ChatRuntime:
         canonical_event_at_ms: int | None = None,
         partial: bool = False,
         owner: dict[str, Any] | None = None,
+        replace_stream: bool = False,
     ) -> dict[str, Any] | None:
         if not stable_chunk:
             return None
@@ -6563,6 +6575,9 @@ class ChatRuntime:
             "finalized": True,
             "partial": bool(partial),
         }
+        if replace_stream and bool(owner.get("displayInMessage")):
+            text_event["replaceStreamRunKey"] = stream_run_key
+            narrative_node["replaceStreamRunKey"] = stream_run_key
         runtime_event = self._emit_owner_scoped_runtime_event(
             chat_run,
             stream_state,
@@ -6964,12 +6979,21 @@ class ChatRuntime:
         provider_delta_at_ms: int | None = None,
         canonical_event_at_ms: int | None = None,
         owner: dict[str, Any] | None = None,
+        replace_stream: bool = False,
     ) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
             return emitted_events
         owner = dict(owner or self._resolve_event_owner(stream_state))
         resolved_snapshot = None if bool(owner.get("displayInMessage")) else snapshot
+        if replace_stream and bool(owner.get("displayInMessage")):
+            self._clear_text_flush_deadline(stream_state)
+            text_event = await self._emit_stable_text_chunk(
+                chat_run, stream_state, delta, model_run_id=model_run_id,
+                provider_delta_at_ms=provider_delta_at_ms, canonical_event_at_ms=canonical_event_at_ms,
+                owner=owner, replace_stream=True,
+            )
+            return [text_event] if text_event is not None else []
         if not bool(owner.get("displayInMessage")):
             text_event = await self._emit_stable_text_chunk(
                 chat_run,
@@ -7024,6 +7048,7 @@ class ChatRuntime:
         from_timer: bool = False,
         final: bool = False,
         ready_only: bool = False,
+        owner: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         self._clear_text_flush_deadline(stream_state)
         flush_ready = stream_state.text_aggregator.should_flush_now()
@@ -7047,6 +7072,7 @@ class ChatRuntime:
             model_run_id=stream_state.last_text_delta_run_id,
             snapshot=None,
             partial=bool(final and not flush_ready),
+            owner=owner,
         )
         return [text_event] if text_event is not None else []
 
@@ -8645,6 +8671,7 @@ class ChatRuntime:
         delta: str,
         model_run_id: str,
         kind: str,
+        additive: bool = False,
     ) -> str:
         normalized_delta = delta or ""
         if not normalized_delta:
@@ -8658,10 +8685,10 @@ class ChatRuntime:
             last_delta = stream_state.last_text_delta
             last_run_id = stream_state.last_text_delta_run_id
 
-        if last_delta and normalized_delta == last_delta:
+        if not additive and last_delta and normalized_delta == last_delta:
             return ""
 
-        if last_delta and normalized_run_id != last_run_id:
+        if not additive and last_delta and normalized_run_id != last_run_id:
             if normalized_delta.startswith(last_delta):
                 normalized_delta = normalized_delta[len(last_delta):]
             elif last_delta.startswith(normalized_delta) or normalized_delta in last_delta:
@@ -8757,6 +8784,28 @@ class ChatRuntime:
         name = event.get("name", "")
         data = event.get("data", {})
         metadata = event.get("metadata") or {}
+
+        if kind == "on_tool_error":
+            # LangChain emits error instead of end. Reuse the same terminal
+            # projection/cleanup so a failed call cannot suppress every later
+            # Supervisor model event. Exception text may contain private inputs.
+            error = data.get("error")
+            from langgraph.errors import GraphBubbleUp
+
+            if isinstance(error, (GraphBubbleUp, asyncio.CancelledError)):
+                # Interrupt/resume and cancellation have their own lifecycle;
+                # an expected ask_user pause is not a failed tool result.
+                return emitted_events
+            error_type = type(error).__name__ if isinstance(error, BaseException) else "ToolExecutionError"
+            callback_id = str(event.get("run_id") or "")
+            tool_call_id = str(data.get("tool_call_id") or stream_state.tool_call_id_by_callback_run_id.get(callback_id) or callback_id)
+            return await self.handle_stream_event(chat_run, stream_state, {
+                **event, "event": "on_tool_end", "data": {**data, "output": ToolMessage(content=json.dumps({
+                    "ok": False, "kind": "tool_execution_error", "error": error_type,
+                    "summary": "工具调用异常退出；是否已产生副作用尚未确认。检查已有结果后再决定重试。",
+                    "executionOutcome": "unverified",
+                }, ensure_ascii=False), name=name, tool_call_id=tool_call_id, status="error")},
+            })
 
         agent_event = self._maybe_agent_start_event(chat_run, stream_state, metadata)
         if agent_event:
@@ -8872,6 +8921,7 @@ class ChatRuntime:
                         delta=text_delta,
                         model_run_id=model_run_id,
                         kind="text",
+                        additive=model_event.diagnostics.get("textStreamMode") == "delta",
                     )
                     if not text_delta:
                         continue
@@ -9002,6 +9052,10 @@ class ChatRuntime:
                         delta=text_delta,
                         model_run_id=model_event.model_run_id,
                         kind="text",
+                        # The canonical adapter already computed the exact
+                        # terminal append/replacement for this model run.
+                        # Matching the last token is not duplicate evidence.
+                        additive=True,
                     )
                     if not text_delta:
                         continue
@@ -9031,6 +9085,7 @@ class ChatRuntime:
                             provider_delta_at_ms=provider_delta_at_ms,
                             canonical_event_at_ms=canonical_event_at_ms,
                             owner=owner,
+                            replace_stream=bool(model_event.diagnostics.get("terminalTextCorrection")),
                         )
                     )
                 elif model_event.event_type == "reasoning_suppressed":
@@ -9098,6 +9153,12 @@ class ChatRuntime:
                     run_ids=[self._normalized_stream_run_id(item) for item in model_end_run_ids],
                 )
             )
+            if stream_state.last_text_delta_run_id in model_end_run_ids and bool(event_owner.get("displayInMessage")):
+                # A model boundary completes even a short, unpunctuated tail.
+                # Do not carry it into the next model's narrative segment.
+                emitted_events.extend(await self._flush_pending_text_aggregator(
+                    chat_run, stream_state, owner=event_owner,
+                ))
             for ended_model_run_id in model_end_run_ids:
                 self._maybe_fire_supervisor_thinking_end(
                     chat_run,
@@ -9245,7 +9306,7 @@ class ChatRuntime:
                 stream_state=stream_state,
             )
             tool_call_id = candidate_tool_call_id
-            if str(name or "").strip() == "ask_user":
+            if str(name or "").strip() == "ask_user" and getattr(output, "status", None) != "error":
                 interaction = self._resolve_ask_user_tool_result_context(
                     chat_run,
                     stream_state,

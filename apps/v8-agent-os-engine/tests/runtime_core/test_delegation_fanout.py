@@ -674,7 +674,7 @@ def test_explicit_extensions_are_always_marked_non_authoritative():
 
 def test_explicit_blocker_handoff_cannot_be_normalized_to_success():
     assert _subagent_reported_terminal_failure(
-        "## Blocker / Degraded Handoff\n\nThe independent verification could not run."
+        "Status: BLOCKED\n\n## Blocker / Degraded Handoff\n\nThe independent verification could not run."
     ) == ("blocked", "subagent_reported_terminal_failure")
     assert _subagent_reported_terminal_failure(
         "## 验证结果\n\n**阻断原因**：当前验证胶囊没有命令执行能力。"
@@ -735,9 +735,8 @@ No blockers. The independent verification passed.
     ) is None
 
 
-def test_mixed_risks_blockers_section_preserves_explicit_dynamic_verification_blocker():
-    assert _subagent_reported_terminal_failure(
-        """## Risks, Blockers, Handoff Notes
+def test_mixed_risk_narrative_is_not_a_terminal_field_but_explicit_status_remains_one():
+    text = """## Risks, Blockers, Handoff Notes
 
 - **Dynamic test run blocked**: npm test could not run.
 
@@ -745,7 +744,34 @@ def test_mixed_risks_blockers_section_preserves_explicit_dynamic_verification_bl
 
 - Build / runtime tests: DEFERRED.
 """
-    ) == ("blocked", "subagent_reported_terminal_failure")
+    assert _subagent_reported_terminal_failure(text) is None
+    assert _subagent_reported_terminal_failure("Status: blocked\n" + text) == (
+        "blocked", "subagent_reported_terminal_failure"
+    )
+
+
+@pytest.mark.parametrize("risk", [
+    "无新风险，无阻塞。", "无新增风险，未发现阻塞或错误。",
+    "**零阻塞**：三次 write 均成功，完整性校验通过。",
+    "并非无阻塞，依赖仍未就绪。", "无新风险，无阻塞，但验证失败。",
+])
+def test_risk_wording_is_preserved_for_parent_review_instead_of_keyword_status(risk):
+    prefix = "完成。验收全过。\n\n## 风险 / 阻塞 / 移交说明\n\n- "
+    assert _subagent_reported_terminal_failure(prefix + risk) is None
+    assert _subagent_reported_terminal_failure("执行状态：阻塞\n" + prefix + risk) == (
+        "blocked", "subagent_reported_terminal_failure"
+    )
+
+
+def test_subagent_write_preview_retains_full_argument_hash():
+    import hashlib
+    from langchain_core.messages import AIMessage
+    from graph.parallel_support import _subagent_timeline_nodes_from_message
+    content = "x" * 8000 + "THE-END"
+    message = AIMessage(content="", tool_calls=[{"id": "write", "name": "write_native_file", "args": {"path": "result.txt", "content": content}}])
+    node = _subagent_timeline_nodes_from_message(message)[0]
+    assert len(node["args"]["content"]) < len(content)
+    assert node["data"] == {"inputContentChars": len(content), "inputContentSha256": hashlib.sha256(content.encode()).hexdigest()}
 
 
 def test_mixed_risks_section_does_not_promote_optional_or_superseded_tool_blocks():
@@ -1179,6 +1205,29 @@ def test_read_only_file_contract_requires_native_read_without_inventing_shell() 
     assert expectations["requiredTools"] == ["read_native_file"]
     assert expectations["requiredReadPaths"] == ["README.md"]
     assert expectations["requiredCommands"] == []
+
+
+def test_implementation_read_permission_is_not_an_extra_required_verification_step():
+    from graph.parallel_support import _verification_evidence_result
+    task = {"goal": "Apply two edits using the latest write receipt", "writeRequired": True,
+            "readSet": ["result.html"], "writeSet": ["result.html"],
+            "engineeringTaskCapsule": {"executionMode": "write", "readSet": ["result.html"], "mustRead": []}}
+    evidence, missing, mismatches = _verification_evidence_result(branch={"taskBrief": task}, delta_messages=[])
+    assert evidence["expectations"]["requiredReadPaths"] == []
+    assert missing == mismatches == []
+    task["verificationEvidenceContract"] = {"requiredReadPaths": ["result.html"]}
+    evidence, missing, mismatches = _verification_evidence_result(branch={"taskBrief": task}, delta_messages=[])
+    assert missing == ["read_native_file"] and mismatches == ["read_path_not_verified:result.html"]
+
+
+def test_native_read_of_error_example_is_successful_evidence():
+    from langchain_core.messages import ToolMessage
+    from graph.parallel_support import _tool_message_evidence_succeeded
+    message = ToolMessage(content="--- File: result.py (Lines 1 to 2 of 2) ---\nprint('Error: invalid input')\n",
+                           name="read_native_file", tool_call_id="read")
+    assert _tool_message_evidence_succeeded(message, tool_name="read_native_file")
+    message.status = "error"
+    assert not _tool_message_evidence_succeeded(message, tool_name="read_native_file")
 
 
 def test_read_only_file_contract_keeps_explicit_structured_command() -> None:

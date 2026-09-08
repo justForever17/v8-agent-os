@@ -11,6 +11,7 @@ from typing import Any
 
 from langchain_core.messages import message_chunk_to_message
 
+from core.llm_exceptions import V8LLMError
 from core.response_normalizer import extract_text_and_reasoning
 
 
@@ -107,6 +108,16 @@ def invoke_bounded(llm: Any, messages: list[Any], *, seconds: float, request_kwa
         stopped.set()
         timing["elapsedMs"] = int((time.monotonic() - started) * 1000)
         timing["idleMs"] = int((time.monotonic() - last_progress) * 1000)
+        if isinstance(exc, V8LLMError) and exc.code == "model_output_incomplete":
+            timing["finishReason"] = str(exc.details.get("finishReason") or "")
+            # Preserve this runtime's existing one-turn local correction when
+            # the shared adapter catches incomplete arguments before we do.
+            mapped = IncompleteModelResponse(
+                "research_model_output_limit" if exc.details.get("reason") == "output_limit"
+                else "research_model_response_incomplete"
+            )
+            mapped.research_call_timing = dict(timing)
+            raise mapped from exc
         exc.research_call_timing = dict(timing)
         raise
     finally:

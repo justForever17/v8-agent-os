@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
@@ -15,6 +16,52 @@ from core.observability_db import ObservabilityDatabaseManager
 from core.model_telemetry import ModelTelemetryCallback, _find_cached_input_tokens, _public_invocation_record
 from core.prompt_cache_gateway import PromptCacheGateway, load_prompt_cache_profiles, prompt_cache_profile_for_provider
 from core.prompt_cache_segments import build_prompt_segments_from_parts
+from erc.runtime_context import bind_runtime_context
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_model_telemetry_keeps_start_time_preparation_snapshot_and_filters_context(monkeypatch, failed):
+    records = []
+    monkeypatch.setattr(telemetry_module, "db", SimpleNamespace(
+        add_model_invocation_log=lambda record: records.append(record),
+        upsert_usage_ledger=lambda _record: None,
+        add_provider_health_log=lambda _record: None,
+    ))
+    callback = ModelTelemetryCallback(model_id="model", provider_id="provider", provider_name="Provider")
+    preparation = {
+        "hostLoad": 0.125, "engineeringKernel": 20000, "total": 20005,
+        "hostAlerts": True, "systemContent": float("inf"), "passiveRag": -1,
+        "messagePreparation": float("nan"), "extensionRoute": "123",
+        "privateContext": "must never be copied",
+    }
+    with bind_runtime_context(run_id="measured-run", context_preparation_ms=preparation):
+        callback.on_chat_model_start({}, [[HumanMessage(content="task")]], run_id="model-call")
+    preparation["total"] = 999999
+    with bind_runtime_context(run_id="unrelated-run", context_preparation_ms={"total": 4}):
+        if failed:
+            callback.on_llm_error(RuntimeError("provider failed"), run_id="model-call")
+        else:
+            callback.on_llm_end(LLMResult(generations=[[ChatGeneration(message=AIMessage(content="done"))]]), run_id="model-call")
+    assert records[0]["run_id"] == "measured-run"
+    assert records[0]["metadata"]["contextPreparationMs"] == {
+        "hostLoad": 0.12, "engineeringKernel": 20000.0, "total": 20005.0,
+    }
+    assert telemetry_module._context_preparation_timings({"total": 10 ** 1000}) == {}
+    assert records[0]["status"] == ("failed" if failed else "completed")
+
+
+def test_model_telemetry_does_not_invent_missing_preparation_timing(monkeypatch):
+    records = []
+    monkeypatch.setattr(telemetry_module, "db", SimpleNamespace(
+        add_model_invocation_log=lambda record: records.append(record),
+        upsert_usage_ledger=lambda _record: None,
+        add_provider_health_log=lambda _record: None,
+    ))
+    callback = ModelTelemetryCallback(model_id="model", provider_id="provider", provider_name="Provider")
+    with bind_runtime_context(context_preparation_ms={}):
+        callback.on_chat_model_start({}, [[HumanMessage(content="task")]], run_id="unmeasured")
+        callback.on_llm_error(RuntimeError("failed"), run_id="unmeasured")
+    assert "contextPreparationMs" not in records[0]["metadata"]
 
 
 class FakePromptCacheDb:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -33,6 +34,55 @@ from .parallel_support import (
 RUNTIME_EPISODE_WAIT_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_WAIT_SECONDS", "600"))
 RUNTIME_EPISODE_QUEUE_GRACE_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_QUEUE_GRACE_SECONDS", "60"))
 RUNTIME_EPISODE_POLL_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_POLL_SECONDS", "0.8"))
+
+
+def _cap_episode_wait_deadline(deadline, episodes):
+    now_wall, now_monotonic = time.time(), time.monotonic()
+    for item in episodes:
+        raw = item.get("deadline_at") or item.get("deadlineAt")
+        if raw:
+            try:
+                absolute = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+                deadline = min(deadline, now_monotonic + max(0.0, absolute - now_wall))
+            except (ValueError, TypeError):
+                return now_monotonic
+    return deadline
+
+
+def _recent_episode_work_at(*, session_id, run_id, episodes, since_wall):
+    """Read actual scoped work only at the idle boundary; leases are not progress."""
+    episode_ids = [str(item.get("episodeId") or item.get("id") or "") for item in episodes]
+    episode_ids = [value for value in episode_ids if value]
+    if not session_id or not run_id or not episode_ids:
+        return None
+    now = time.time()
+    for item in episodes:
+        raw = item.get("deadline_at") or item.get("deadlineAt")
+        if raw:
+            try:
+                if datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp() <= now:
+                    return None
+            except (ValueError, TypeError):
+                return None
+    try:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT MAX(event_ts) FROM runtime_events WHERE session_id=? AND run_id=? "
+                "AND topic='runtime.episode.progress' "
+                "AND json_type(payload_json, '$.progress.timelineNode')='object' "
+                "AND COALESCE(json_extract(payload_json, '$.progress.stage'), '') "
+                "NOT IN ('heartbeat', 'waiting', 'idle', 'poll') "
+                "AND COALESCE(json_extract(payload_json, '$.episode.id'), "
+                "json_extract(payload_json, '$.episode.episodeId')) IN ("
+                + ",".join("?" for _ in episode_ids) + ")",
+                (session_id, run_id, *episode_ids),
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        observed = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).timestamp()
+        return observed if since_wall < observed <= now else None
+    except (ValueError, TypeError, OSError, sqlite3.Error):
+        return None
 
 
 def _merged_tool_command_update(commands: list[Command]) -> dict:
@@ -1017,6 +1067,28 @@ def build_runtime_episode_wait_node():
                 runtime_only_ref_values = bool(handoff.get("runtimeOnlyRefValues"))
                 display_kind = "Creative Media" if runtime_only_ref_values else kind
                 lines.append(f"- {display_kind}{f' / {status_label}' if status_label else ''}: {summary}")
+                producer_id = _string_value(handoff.get("producerEpisodeId"))
+                handoff_ref = _string_value(handoff.get("handoffRefId"))
+                producer = next(
+                    (item for item in episodes if _string_value(item.get("episodeId"), item.get("id")) == producer_id),
+                    {},
+                )
+                if producer.get("kind") == "engineering" and producer_id and handoff_ref:
+                    # These are model-consumable refs, not worker/delegation IDs.
+                    # Keep them in the governed message body, not metadata only.
+                    lines.append(f"  producerEpisodeId: `{producer_id}`")
+                    lines.append(f"  handoffRefId: `{handoff_ref}`")
+                    if producer.get("state") == "completed" and _string_value(
+                        producer.get("resultRef"), producer.get("result_ref")
+                    ) == handoff_ref:
+                        lines.append(
+                            "  Parent acceptance remains yours. If a concrete gap needs a bounded repair, "
+                            "call runtime_broker(mode=route, routeKind=engineering) with "
+                            "parentAcceptance.episodeId=producerEpisodeId, parentAcceptance.handoffRefId=handoffRefId, "
+                            "parentAcceptance.decision=retry and a nonempty parentAcceptance.gap; "
+                            "keep complete taskBriefs within the original writeSet. "
+                            "The runtime checks the remaining one-repair budget; this handoff does not dispatch a new task."
+                        )
                 direct_artifact_refs = [
                     label
                     for item in list(handoff.get("refs") or [])[:8]
@@ -1760,7 +1832,20 @@ def build_runtime_episode_wait_node():
                             ],
                         },
                     )
+                deadline = _cap_episode_wait_deadline(deadline, active)
                 if time.monotonic() >= deadline:
+                    work_at = _recent_episode_work_at(
+                        session_id=session_id, run_id=run_id, episodes=active, since_wall=wait_started_wall,
+                    )
+                    if work_at is not None:
+                        remaining_idle = RUNTIME_EPISODE_WAIT_SECONDS - max(0.0, time.time() - work_at)
+                        if remaining_idle > 0:
+                            # A ten-minute execution with recent tools is not a
+                            # stalled episode. Keep the canonical owner running;
+                            # heartbeat-only or expired work cannot extend this.
+                            deadline = _cap_episode_wait_deadline(time.monotonic() + remaining_idle, active)
+                            await asyncio.sleep(max(0.1, RUNTIME_EPISODE_POLL_SECONDS))
+                            continue
                     return Command(
                         goto="supervisor",
                         update={
@@ -1770,6 +1855,7 @@ def build_runtime_episode_wait_node():
                                 "mode": "runtime_episode",
                                 "nextAction": "recoverable_failure",
                                 "state": "episode_stalled",
+                                "executionTerminal": False,
                                 "episodeCount": len(active),
                                 "activeEpisodeIds": [
                                     _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
@@ -1780,8 +1866,8 @@ def build_runtime_episode_wait_node():
                                 _summary_message(
                                     episodes=active,
                                     handoffs=[],
-                                    status="Recoverable Failure",
-                                    reason="episode_stalled",
+                                    status="Progress Wait Expired",
+                                    reason="episode_stalled; execution is still active, not a failed result. Inspect or cancel the existing episode before recovery; do not start duplicate work.",
                                 )
                             ],
                         },

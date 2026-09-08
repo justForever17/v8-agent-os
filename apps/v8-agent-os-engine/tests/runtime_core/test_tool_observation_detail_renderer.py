@@ -4,6 +4,22 @@ import json
 import pytest
 
 
+def test_scoped_write_surface_preserves_next_edit_version(tmp_path, monkeypatch):
+    import core.observability_db as observations
+    from core.tool_surface import apply_tool_surface_budget
+    from langchain_core.messages import ToolMessage
+    monkeypatch.setattr(observations, "observability_db", observations.ObservabilityDatabaseManager(tmp_path / "observations.db"))
+    version = "sha256:" + "b" * 64
+    payload = {"ok": True, "kind": "scoped_file_patch", "summary": "Patched file", "contentVersion": version}
+    visible = apply_tool_surface_budget(ToolMessage(content=json.dumps(payload), name="write_native_file", tool_call_id="edit"),
+                                        {"agentVisibleBudget": 1200}).content
+    assert version in visible and "expected_version" in visible
+    payload["ok"] = False
+    failed = apply_tool_surface_budget(ToolMessage(content=json.dumps(payload), name="write_native_file", tool_call_id="failed"),
+                                       {"agentVisibleBudget": 1200}).content
+    assert "reuse as expected_version" not in failed
+
+
 @pytest.mark.parametrize("surface_budget", [None, 750])
 def test_plain_evidence_pagination_is_lossless_and_redacts_before_boundaries(tmp_path, monkeypatch, surface_budget):
     import re

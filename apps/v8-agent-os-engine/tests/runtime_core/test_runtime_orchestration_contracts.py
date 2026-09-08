@@ -63,6 +63,18 @@ def test_subagent_timeline_projection_keeps_readable_activity_and_redacts_secret
     assert "<redacted>" in result_nodes[0]["agentVisibleResult"]
 
 
+def test_subagent_write_progress_preserves_receipt_success_without_worker_status():
+    version = "sha256:" + "a" * 64
+    message = ToolMessage(name="write_native_file", tool_call_id="write-1",
+        content=f"write native file result\nContent version: {version}; reuse as expected_version.\nKind: scoped_file_patch")
+    node = _subagent_timeline_nodes_from_message(message)[0]
+    assert node["resultStatus"] == "completed"
+    assert node["data"]["contentVersion"] == version
+    message.status = "error"
+    rejected = _subagent_timeline_nodes_from_message(message)[0]
+    assert rejected.get("resultStatus") != "completed"
+
+
 def _dependent_episode() -> dict:
     return {
         "episodeId": "episode-dependent",
@@ -651,6 +663,13 @@ def test_creative_media_repair_loops_use_bounded_repeat_signatures() -> None:
     assert create_signature == reordered_signature
     assert create_signature and create_signature[0] == "creative_media_jobs"
     assert poll_signature is None
+
+
+def test_long_creative_requests_compare_full_arguments_not_preview_prefixes() -> None:
+    first = {"name": "creative_media_edit", "args": {"prompt": "x" * 3000 + "red"}}
+    second = {"name": "creative_media_edit", "args": {"prompt": "x" * 3000 + "blue"}}
+    assert _repeat_sensitive_tool_call_signature(first) != _repeat_sensitive_tool_call_signature(second)
+    assert _repeat_sensitive_tool_call_signature(first) == _repeat_sensitive_tool_call_signature(dict(first))
 
 
 def test_parallel_delegation_publishes_denoised_progress_and_terminal_handoff(monkeypatch) -> None:

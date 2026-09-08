@@ -3,6 +3,23 @@ from types import SimpleNamespace
 import pytest
 
 from graph.runtime_handoff_reads import is_research_handoff_read, research_handoff_read_targets
+
+
+def test_saved_answer_preparation_keeps_exact_refs_and_pagination_before_delegation():
+    targets = research_handoff_read_targets({}, user_query="复核 rxp_12345678，当前包 research_87654321")
+    for args in [
+        {"mode": "get_experience", "experiencePackId": "rxp_12345678"},
+        {"mode": "get_evidence", "evidenceBundleId": "research_87654321", "readAnswer": True, "startChar": 5371, "maxChars": 6000},
+        {"mode": "get_evidence", "evidenceBundleId": "research_87654321", "sourceKey": "S3", "startChar": 0},
+    ]:
+        assert is_research_handoff_read(SimpleNamespace(tool_calls=[{"name": "research_broker", "args": args}]), targets)
+    for args in [
+        {"mode": "run", "experiencePackId": "rxp_12345678"},
+        {"mode": "get_experience", "experiencePackId": "rxp_other123"},
+        {"mode": "get_evidence", "evidenceBundleId": "research_other123"},
+        {"mode": "get_evidence", "evidenceBundleId": "research_87654321", "forceRefresh": True},
+    ]:
+        assert not is_research_handoff_read(SimpleNamespace(tool_calls=[{"name": "research_broker", "args": args}]), targets)
 from graph.supervisor_turn import _response_runtime_route_kinds
 
 

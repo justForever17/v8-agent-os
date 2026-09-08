@@ -446,6 +446,93 @@ def test_required_tool_choice_is_forwarded_to_every_failover_candidate(monkeypat
     assert backup.tool_bindings == [{"tool_choice": "required"}]
 
 
+def test_incomplete_tool_arguments_get_one_actionable_same_model_correction(monkeypatch):
+    from langchain_core.messages import AIMessage, HumanMessage
+    from core.llm_exceptions import V8LLMStructuredOutputError
+
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    requests = []
+    error = V8LLMStructuredOutputError(code="model_output_incomplete", message="incomplete", retryable=False)
+    class Captured(FakeLLM):
+        def invoke(self, messages, config=None):
+            requests.append(list(messages))
+            return super().invoke(messages, config)
+    complete = AIMessage(content="", tool_calls=[{"id": "write", "name": "write_native_file", "args": {"content": "complete"}}])
+    model = Captured(error, complete)
+    messages = [HumanMessage(content="Keep the existing file and permissions.")]
+    result = service.invoke_with_failover(
+        config=_config(maxLocalRetries=1, maxTotalAttempts=2), base_llm_instance=model, messages=messages,
+        tools=[object()], role="supervisor", preferred_model_id=make_model_ref("p-openai-a", "primary"),
+        build_model=lambda _: pytest.fail("must not switch models to repair arguments"), tool_choice="required",
+    )
+    assert result.tool_calls == complete.tool_calls
+    assert model.calls == 2
+    assert len(messages) == 1 and requests[1][0] == messages[0]
+    assert "均未执行" in requests[1][-1].content
+    assert "预算" in requests[1][-1].content
+    assert result.response_metadata["toolArgumentCorrection"] == {"used": True, "attemptCount": 2}
+
+
+@pytest.mark.parametrize("local_retries,total_limit,expected_calls", [(0, 3, 1), (1, 1, 1), (3, 5, 2)])
+def test_incomplete_tool_correction_obeys_attempt_limits_and_never_loops(monkeypatch, local_retries, total_limit, expected_calls):
+    from core.llm_exceptions import V8LLMStructuredOutputError
+
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    errors = [V8LLMStructuredOutputError(code="model_output_incomplete", message="incomplete", retryable=False) for _ in range(4)]
+    model = FakeLLM(*errors)
+    with pytest.raises(V8LLMError) as failure:
+        service.invoke_with_failover(
+            config=_config(maxLocalRetries=local_retries, maxTotalAttempts=total_limit),
+            base_llm_instance=model, messages=[], tools=[object()], role="supervisor",
+            preferred_model_id=make_model_ref("p-openai-a", "primary"),
+            build_model=lambda _: pytest.fail("must not silently switch provider"),
+        )
+    assert failure.value.code == "model_output_incomplete"
+    assert model.calls == expected_calls
+
+
+def test_incomplete_tool_correction_cannot_run_past_remaining_failover_deadline(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from core.llm_exceptions import V8LLMStructuredOutputError
+
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    release, finished = Event(), Event()
+
+    class BlockingCorrection(FakeLLM):
+        def invoke(self, messages, config=None):
+            self.calls += 1
+            if self.calls == 1:
+                time.sleep(0.1)
+                raise V8LLMStructuredOutputError(code="model_output_incomplete", message="fixture", retryable=False)
+            release.wait(2)
+            finished.set()
+            return AIMessage(content="", tool_calls=[{"id": "late", "name": "write_native_file", "args": {"content": "late"}}])
+
+    model = BlockingCorrection()
+    started = time.monotonic()
+    try:
+        with pytest.raises(V8LLMError) as error:
+            service.invoke_with_failover(
+                config=_config(maxLocalRetries=3, maxTotalAttempts=5, maxFailoverSeconds=1),
+                base_llm_instance=model, messages=[], tools=[object()], role="supervisor",
+                preferred_model_id=make_model_ref("p-openai-a", "primary"),
+                build_model=lambda _: pytest.fail("a timed-out correction must not start another provider"),
+            )
+        assert time.monotonic() - started < 1.5
+        assert model.calls == 2
+        assert error.value.details["capsExhaustedReason"] == "tool_argument_correction_deadline_exceeded"
+        diagnostic = error.value.details["attempts"][-1]["diagnostic"]
+        assert diagnostic["timeoutStage"] == "tool_argument_correction"
+        assert diagnostic["transportCancellation"] == "not_guaranteed"
+        assert not finished.is_set(), "caller timeout must not pretend the blocked transport already stopped"
+    finally:
+        release.set()
+        assert finished.wait(1), "release the isolated test transport after the caller has stopped"
+
+
 @pytest.mark.parametrize("local_retries", [0, 1, 3])
 def test_response_contract_violation_retries_with_next_candidate(monkeypatch: pytest.MonkeyPatch, local_retries: int):
     service = ModelFailoverService()

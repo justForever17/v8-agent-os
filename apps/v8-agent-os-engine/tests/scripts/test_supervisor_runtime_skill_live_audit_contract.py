@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
+from copy import deepcopy
 import urllib.error
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -11,6 +14,347 @@ import core.database as database_module
 from core.tools.research_quality import research_acceptance_metrics
 from tests.runtime_core.test_runtime_episode_runner import _accepted_research_payload
 from tests.scripts import run_supervisor_runtime_skill_live_audit as audit
+
+
+def test_saved_verification_requires_current_worker_proof_not_only_ready_or_parent_prose(monkeypatch):
+    sources = [{"citationKey": f"S{i}", "url": f"https://example.org/source/{i}"} for i in range(1, 6)]
+    bundle = {"evidenceBundleId": "research_fixture", "claimTable": [
+        {"claimId": f"S{i}:R{i}", "supportingSources": [source]} for i, source in enumerate(sources, 1)
+    ], "researchEvidenceBank": {"sources": [{**source, "text": "Body"} for source in sources]}}
+    monkeypatch.setattr("core.tools.research_quality.research_selected_sources", lambda _: sources)
+    spec = audit._saved_research_case("rxp_fixture", "research_fixture")
+    result = audit.LiveCaseResult(spec, status="completed", episodes=[{"kind": "delegation", "state": "completed"}])
+    result.web_activity_audit = {"performed": True, "parity": {"runtimeCards": True, "subagentCards": True}, "errors": []}
+    result.final_text = "ACCEPT\n" + "\n".join(source["url"] for source in sources)
+    worker = {"kind": "subagent_result", "status": "ready", "payload": {"toolsUsed": ["research_broker"], "resultText": "BLOCKED: no source can be read"}}
+    result.handoffs = [worker, {"kind": "subagent_acceptance", "status": "accepted"}]
+    assert not audit._audit_saved_research_verification(result, bundle)["checks"]["workerExactBindings"]
+    worker["payload"]["resultText"] = "| claimId | 引用 | URL | 核验结论 |\n|---|---|---|---|\n" + "\n".join(
+        f"| S{i}:R{i} | [S{i}] | {source['url']} | 支持 |" for i, source in enumerate(sources, 1)
+    )
+    assert not audit._audit_saved_research_verification(result, bundle)["checks"]["workerReadEvidence"]
+    result.saved_source_reads = [{**source, "evidenceBundleId": "research_fixture",
+                                  "contentSha256": hashlib.sha256(b"Body").hexdigest()} for source in sources]
+    assert all(audit._audit_saved_research_verification(result, bundle)["checks"].values())
+    result.saved_source_reads[0]["contentSha256"] = "wrong-snapshot"
+    assert not audit._audit_saved_research_verification(result, bundle)["checks"]["workerReadEvidence"]
+    result.saved_source_reads[0]["contentSha256"] = hashlib.sha256(b"Body").hexdigest()
+    result.handoffs[1]["status"] = "ignored"
+    assert not audit._audit_saved_research_verification(result, bundle)["checks"]["parentAcceptedVerification"]
+    result.episodes.append({"kind": "research", "state": "completed"})
+    assert not audit._audit_saved_research_verification(result, bundle)["checks"]["noFreshResearchOrEngineering"]
+
+
+def test_saved_source_receipts_require_successful_worker_body_return():
+    body = {"kind": "research_source_page", "ok": True, "text": "Original body", "citationKey": "S4",
+            "url": "https://example.org/original", "evidenceBundleId": "saved", "contentSha256": "hash"}
+    def event(topic, **updates):
+        return {"topic": topic, "payload": {"tool": {"toolName": "research_broker", "result": {**body, **updates}}}}
+    assert audit._collect_saved_source_reads([event("subagent.tool.started"), event("tool.finished"),
+        event("subagent.tool.finished", ok=False), event("subagent.tool.finished", text=""),
+        event("subagent.tool.finished", kind="research_answer_page")]) == []
+    receipts = audit._collect_saved_source_reads([event("subagent.tool.finished")])
+    assert len(receipts) == 1 and receipts[0]["citationKey"] == "S4"
+    assert "text" not in receipts[0]
+
+
+def test_saved_verification_cannot_start_without_live_or_saved_ids(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("must reject before network or model")
+    monkeypatch.setattr(audit, "_submit_case", forbidden)
+    monkeypatch.setattr(audit.urllib.request, "urlopen", forbidden)
+    assert audit.main(["--case", audit.SAVED_RESEARCH_VERIFICATION_CASE_ID]) == 2
+    assert audit.main(["--case", audit.SAVED_RESEARCH_VERIFICATION_CASE_ID, "--live"]) == 2
+
+
+def test_final_wait_claim_after_reused_route_is_not_a_passing_delivery():
+    result = audit.LiveCaseResult(audit.LiveCaseSpec("delivery_truth", "delivery truth", "verify"))
+    result.episodes = [{"id": "engineering-done", "state": "completed"}]
+    result.final_runtime_dispatch = {"dispatched": False, "reason": "engineering_episode_already_completed"}
+    result.final_text = "我已针对该单项发起一次有界修复，等待子代理完成后再做最终只读复核。"
+    assert audit._unbacked_pending_delivery_claim(result)
+    assert any("最后路由未派发" in finding.summary for finding in audit._case_findings(result))
+    result.final_text = "此次复用了已有结果，没有启动新修复。无需等待子代理完成。"
+    assert not audit._unbacked_pending_delivery_claim(result)
+    result.final_text = "等待子代理完成后再做最终复核。"
+    result.episodes.append({"id": "real-repair", "state": "active"})
+    assert not audit._unbacked_pending_delivery_claim(result)
+
+
+def test_last_dispatch_preserves_false_and_excludes_another_run():
+    def event(seq, run_id, dispatched):
+        return {"seq": seq, "run_id": run_id, "payload": {"tool": {"toolName": "runtime_broker", "result": {
+            "runtimeDispatchStatus": {"dispatched": dispatched, "episodeCount": int(dispatched)},
+        }}}}
+    assert audit._last_runtime_dispatch([event(3, "other", True), event(2, "current", False), event(1, "current", True)],
+                                        run_id="current") == {"dispatched": False, "episodeCount": 0, "seq": 2}
+
+
+@pytest.mark.parametrize("case_id", [audit.ENGINEERING_LONG_WRITE_CASE_ID, audit.ENGINEERING_PARENT_REPAIR_CASE_ID])
+@pytest.mark.parametrize("flags", [[], ["--live"], ["--allow-side-effects"]])
+def test_engineering_live_requires_both_flags_before_any_io(monkeypatch, flags, case_id):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("no model, network, workspace, or database mutation without both flags")
+    monkeypatch.setattr(audit.urllib.request, "urlopen", unexpected)
+    monkeypatch.setattr(audit, "_submit_case", unexpected)
+    monkeypatch.setattr(audit, "_prepare_engineering_live_workspace", unexpected)
+    assert audit.main(["--case", case_id, *flags]) == 2
+
+
+def test_parent_repair_live_proof_needs_real_file_current_reference_and_single_repair(tmp_path):
+    spec = audit._case_specs(audit.ENGINEERING_PARENT_REPAIR_CASE_ID)[0]
+    result = audit.LiveCaseResult(spec)
+    result.episodes = [
+        {"id": "original", "kind": "engineering", "state": "completed", "result_ref": "current-handoff"},
+        {"id": "repair", "kind": "engineering", "state": "completed", "inputs": {
+            "parentAcceptance": {"episodeId": "original", "handoffRefId": "current-handoff"},
+            "engineeringRepair": {"finalRepairAttempt": True},
+            "repairLineage": {"priorWriteSet": ["acceptance-note.txt"], "replacementWriteSet": ["acceptance-note.txt"]},
+        }},
+    ]
+    result.web_activity_audit = {"performed": True, "errors": [], "liveSubagentIds": ["worker"],
+                                 "parity": {"runtimeCards": True, "subagentCards": True, "renderedNarratives": True}}
+    target = tmp_path / "acceptance-note.txt"
+    target.write_text("draft", encoding="utf-8")
+    proof = audit._audit_engineering_parent_repair(result, str(tmp_path))
+    assert proof["checks"]["actualFinalContent"] is False
+    target.write_text("approved", encoding="utf-8")
+    assert all(audit._audit_engineering_parent_repair(result, str(tmp_path))["checks"].values())
+    result.episodes[1]["inputs"]["parentAcceptance"]["handoffRefId"] = "old-handoff"
+    assert audit._audit_engineering_parent_repair(result, str(tmp_path))["checks"]["currentHandoffBound"] is False
+    result.episodes.append(deepcopy(result.episodes[1]))
+    assert audit._audit_engineering_parent_repair(result, str(tmp_path))["checks"]["oneExplicitParentRepair"] is False
+
+
+def _engineering_proof_fixture():
+    data = [{"id": f"task-{i}", "title": f"示例事项{i}", "description": f"第{i}项需要记录进度并核对执行结果以方便后续复盘和跟进。",
+             "category": ["工作", "学习", "生活"][i % 3], "completed": False} for i in range(120)]
+    initial = ('<!doctype html><html><head><style>:root { --accent: #7c3aed; }</style></head><body>'
+               '<h1 id="board-title">任务看板</h1><script id="seed-data" type="application/json">'
+               + json.dumps(data, ensure_ascii=False) + '</script><!-- V8OS-LONG-WRITE-END --></body></html>')
+    second = initial.replace('id="board-title">任务看板', 'id="board-title">我的任务看板')
+    final = second.replace("#7c3aed", "#0f766e")
+    versions = ["sha256:" + hashlib.sha256(html.encode()).hexdigest() for html in (initial, second, final)]
+    arguments = [
+        {"path": audit.ENGINEERING_BOARD_FILE, "content": initial},
+        {"path": audit.ENGINEERING_BOARD_FILE, "content": '<h1 id="board-title">我的任务看板</h1>',
+         "expected_old_text": '<h1 id="board-title">任务看板</h1>', "expected_version": versions[0]},
+        {"path": audit.ENGINEERING_BOARD_FILE, "content": "--accent: #0f766e;",
+         "expected_old_text": "--accent: #7c3aed;", "expected_version": versions[1]},
+    ]
+    events = []
+    for index, args in enumerate(arguments):
+        common = {"ownerAgentId": "worker", "ownerAgentKind": "subagent", "ownerRuntimeId": "engineering"}
+        events += [
+            {"seq": index * 2 + 1, "event_ts": "2026-09-08T01:00:01Z", "topic": "engineering.tool.started",
+             "payload": {**common, "tool": {"toolName": "write_native_file", "toolCallId": f"write-{index}", "args": args}}},
+            {"seq": index * 2 + 2, "topic": "engineering.tool.finished",
+             "payload": {**common, "tool": {"toolName": "write_native_file", "toolCallId": f"write-{index}",
+                         "resultStatus": "completed", "agentVisibleResult": json.dumps({"ok": True, "contentVersion": versions[index]})}}},
+        ]
+    models = [{"id": "fixture-invocation", "status": "completed", "role": "agent:worker", "output_tokens": 8000,
+               "finished_at": "2026-09-08T01:00:00Z", "metadata": {"usageReported": True, "usageSource": "usage_metadata",
+                   "toolCallingMode": "native", "toolCallCount": 1, "promptCache": {"outputTokenBudget": {"mode": "auto", "maxTokens": None}}}}]
+    return events, models, final
+
+
+def test_engineering_version_chain_checks_full_data_hash_and_reported_usage():
+    events, models, html = _engineering_proof_fixture()
+    proof = audit._engineering_long_write_proof(events, models, html)
+    assert proof["checks"] and all(proof["checks"].values())
+    assert proof["unverified"] == []
+    assert proof["seedCount"] == 120
+    assert proof["writeModel"]["output_tokens"] == 8000
+
+
+def _engineering_range_fixture():
+    events, models, _ = _engineering_proof_fixture()
+    initial = events[0]["payload"]["tool"]["args"]["content"].replace("><", ">\n<")
+    versions = [initial, initial.replace('id="board-title">任务看板', 'id="board-title">我的任务看板')]
+    versions.append(versions[1].replace("#7c3aed", "#0f766e"))
+    for index in range(3):
+        args = events[index * 2]["payload"]["tool"]["args"]
+        if index == 0:
+            args["content"] = initial[:80] + "…"
+            events[0]["payload"]["tool"]["data"] = {
+                "inputContentChars": len(initial), "inputContentSha256": hashlib.sha256(initial.encode()).hexdigest(),
+            }
+        else:
+            old = args.pop("expected_old_text")
+            line = versions[index-1][:versions[index-1].index(old)].count("\n") + 1
+            args.update(line_start=line, line_end=line, content=versions[index].splitlines()[line-1],
+                        expected_version="sha256:" + hashlib.sha256(versions[index-1].encode()).hexdigest())
+        events[index*2+1]["payload"]["tool"]["agentVisibleResult"] = json.dumps({
+            "ok": True, "contentVersion": "sha256:" + hashlib.sha256(versions[index].encode()).hexdigest(),
+        })
+    return events, models, versions
+
+
+def test_line_range_proof_requires_actual_first_file_capture_not_a_guessed_preimage(tmp_path):
+    events, models, versions = _engineering_range_fixture()
+    result = audit.LiveCaseResult(spec=audit._case_specs(audit.ENGINEERING_LONG_WRITE_CASE_ID)[0], run_id="r",
+                                 engineering_workspace_path=str(tmp_path))
+    target = tmp_path / audit.ENGINEERING_BOARD_FILE
+    target.write_bytes(versions[0].encode())
+    event = {**events[0], "run_id": "r"}
+    audit._sample_engineering_initial_file(result, event)
+    assert result.engineering_initial_content == versions[0]
+    proof = audit._engineering_long_write_proof(events, models, versions[-1], initial_content=result.engineering_initial_content)
+    assert all(proof["checks"].values()) and not proof["unverified"]
+    missing = audit._engineering_long_write_proof(events, models, versions[-1])
+    assert missing["checks"]["initialVersionMatchesArguments"] is None
+    assert missing["checks"]["inputHashMatchesReceipt"] is True
+    assert missing["unverified"] == ["initial_content_reverse_patch_unverified"]
+    changed = audit._engineering_long_write_proof(events, models, versions[-1].replace("示例事项0", "被改的数据"),
+                                                 initial_content=result.engineering_initial_content)
+    assert changed["checks"]["originalDataPreserved"] is False
+    assert changed["checks"]["finalVersionMatchesFile"] is False
+
+
+@pytest.mark.parametrize("wrong_run", [False, True])
+def test_first_file_capture_rejects_later_version_and_cross_run_events(tmp_path, wrong_run):
+    events, _, versions = _engineering_range_fixture()
+    result = audit.LiveCaseResult(spec=audit._case_specs(audit.ENGINEERING_LONG_WRITE_CASE_ID)[0], run_id="r",
+                                 engineering_workspace_path=str(tmp_path))
+    (tmp_path / audit.ENGINEERING_BOARD_FILE).write_bytes(versions[0 if wrong_run else -1].encode())
+    audit._sample_engineering_initial_file(result, {**events[0], "run_id": "other" if wrong_run else "r"})
+    assert result.engineering_initial_content is None
+
+
+def test_engineering_progress_contract_and_clipped_args_are_verified_by_full_hash():
+    events, models, html = _engineering_proof_fixture()
+    for event in events:
+        tool = event["payload"]["tool"]
+        initial = str((tool.get("args") or {}).get("content") or "")
+        if len(initial) > 2400:
+            tool["data"] = {"inputContentChars": len(initial), "inputContentSha256": hashlib.sha256(initial.encode()).hexdigest()}
+            tool["args"]["content"] = initial[:2399] + "…"
+        if event["topic"].endswith("finished"):
+            raw = tool.get("result") or tool.get("agentVisibleResult") or ""
+            version = re.search(r"sha256:[a-f0-9]{64}", str(raw))
+            assert version
+            tool.pop("result", None)
+            tool.pop("resultStatus", None)
+            tool["agentVisibleResult"] = f"write native file result\nContent version: {version[0]}; reuse as expected_version.\nKind: scoped_file_patch"
+        event["payload"] = {"progress": {"agentId": "worker", "delegationId": "worker-delegation", "status": "running",
+            "timelineNode": {**tool, "topic": event["topic"], "executionType": "tool_call" if event["topic"].endswith("started") else "tool_result"}}}
+        event["topic"] = "runtime.episode.progress"
+    proof = audit._engineering_long_write_proof(events, models, html)
+    assert all(proof["checks"].values()) and not proof["unverified"], proof
+    events[0]["payload"]["progress"]["timelineNode"]["data"]["inputContentSha256"] = "f" * 64
+    assert audit._engineering_long_write_proof(events, models, html)["checks"]["inputHashMatchesReceipt"] is False
+
+
+@pytest.mark.parametrize("mutation,check", [
+    ("estimated_usage", "providerReportedLongGeneration"),
+    ("short_generation", "providerReportedLongGeneration"),
+    ("fixed_cap", "autoRequestBudgetObserved"),
+    ("other_actor", "sameImplementationActor"),
+    ("stale_version", "versionReuse"),
+    ("whole_rewrite", "localPatchesOnly"),
+    ("data_changed", "originalDataPreserved"),
+    ("missing_tail", "completeHtmlTail"),
+    ("forged_proof", "finalVersionMatchesFile"),
+])
+def test_engineering_harness_rejects_real_failure_mutants(mutation, check):
+    events, models, html = _engineering_proof_fixture()
+    if mutation == "estimated_usage":
+        models[0]["metadata"]["usageReported"] = False
+    elif mutation == "short_generation":
+        models[0]["output_tokens"] = 4096
+    elif mutation == "fixed_cap":
+        models[0]["metadata"]["promptCache"]["outputTokenBudget"] = {"mode": "fixed", "maxTokens": 4096}
+    elif mutation == "other_actor":
+        events[2]["payload"]["ownerAgentId"] = "second-worker"
+    elif mutation == "stale_version":
+        events[4]["payload"]["tool"]["args"]["expected_version"] = "stale"
+    elif mutation == "whole_rewrite":
+        events[2]["payload"]["tool"]["args"].update(allow_full_replace=True, content=html)
+    elif mutation == "data_changed":
+        html = html.replace("示例事项0", "丢失原始事项")
+    elif mutation == "missing_tail":
+        html = html.replace(audit.ENGINEERING_TAIL_CANARY, "")
+    elif mutation == "forged_proof":
+        events[5]["payload"]["tool"]["agentVisibleResult"] = json.dumps({"ok": True, "contentVersion": "sha256:" + "0" * 64})
+    assert audit._engineering_long_write_proof(events, models, html)["checks"][check] is False
+
+
+def test_engineering_missing_telemetry_is_unverified_not_pass_or_token_estimate():
+    events, _, html = _engineering_proof_fixture()
+    proof = audit._engineering_long_write_proof(events, [], html)
+    assert "write_model_usage_or_request_budget_not_bound" in proof["unverified"]
+    assert proof["checks"]["providerReportedLongGeneration"] is False
+
+
+def test_engineering_repeated_read_and_failed_tool_result_cannot_prove_receipt_reuse():
+    events, models, html = _engineering_proof_fixture()
+    for row in events[2:]:
+        row["seq"] += 1
+    events.append({"seq": 3, "topic": "engineering.tool.started", "payload": {"ownerAgentId": "worker", "tool": {
+        "toolCallId": "reread", "toolName": "read_native_file", "args": {"path": audit.ENGINEERING_BOARD_FILE}}}})
+    assert audit._engineering_long_write_proof(events, models, html)["checks"]["noRedundantReadsBetweenWrites"] is False
+    events[3]["payload"]["tool"]["resultStatus"] = "failed"
+    assert audit._engineering_long_write_proof(events, models, html)["checks"]["threeSuccessfulWrites"] is False
+
+
+def test_engineering_preflight_failure_stops_before_billable_submit(monkeypatch):
+    class Reachable:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+    monkeypatch.setattr(audit.urllib.request, "urlopen", lambda *_args, **_kwargs: Reachable())
+    monkeypatch.setattr(audit, "_wait_for_engine", lambda *_args, **_kwargs: (True, None))
+    def preflight(*_args, **_kwargs):
+        raise RuntimeError("browser unavailable or trust readback failed")
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("must not submit live when preflight failed")
+    monkeypatch.setattr(audit, "_prepare_engineering_live_workspace", preflight)
+    monkeypatch.setattr(audit, "_submit_case", unexpected)
+    assert audit.main(["--live", "--allow-side-effects", "--case", audit.ENGINEERING_LONG_WRITE_CASE_ID,
+                       "--web-url", "http://127.0.0.1:9527", "--model-profile", "fixture"]) == 2
+
+
+def test_engineering_telemetry_reads_only_its_run_without_mutating_the_database(monkeypatch, tmp_path):
+    import sqlite3
+    from core import v8_agent_os_paths
+    path = tmp_path / "observability.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE model_invocation_logs (id TEXT, provider_id TEXT, model_id TEXT, role TEXT, status TEXT, "
+                           "output_tokens INTEGER, metadata_json TEXT, started_at TEXT, finished_at TEXT, session_id TEXT, run_id TEXT)")
+        for run in ("target", "another"):
+            connection.execute("INSERT INTO model_invocation_logs VALUES (?, 'fixture', 'model', 'agent:worker', 'completed', 9000, '{}', '', '', 'session', ?)", (run, run))
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(v8_agent_os_paths, "OBSERVABILITY_DB_PATH", path)
+    result = audit.LiveCaseResult(spec=audit.LiveCaseSpec(case_id="fixture", title="fixture", prompt="fixture"), session_id="session", run_id="target")
+    rows, error = audit._engineering_model_observations(result)
+    assert error is None and [row["id"] for row in rows] == ["target"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+def test_engineering_long_case_is_opt_in_and_requests_inline_data_not_generated_shortcuts():
+    assert audit.ENGINEERING_LONG_WRITE_CASE_ID not in {case.case_id for case in audit._case_specs("all")}
+    spec = audit._case_specs(audit.ENGINEERING_LONG_WRITE_CASE_ID)[0]
+    assert "120" in spec.prompt and "不用Array.from" in spec.prompt
+    assert "通用下限" in spec.prompt and "expected_version" in spec.prompt
+
+
+def test_engineering_case_does_not_pass_without_real_browser_and_live_web_parity():
+    events, models, html = _engineering_proof_fixture()
+    proof = audit._engineering_long_write_proof(events, models, html)
+    result = audit.LiveCaseResult(spec=audit._case_specs(audit.ENGINEERING_LONG_WRITE_CASE_ID)[0], status="completed",
+                                 actual_tools=["runtime_broker", "write_native_file"],
+                                 episodes=[{"kind": "engineering"}, {"kind": "delegation"}],
+                                 engineering_long_write_audit=deepcopy(proof), final_text="任务看板已交付。")
+    assert audit._case_findings(result)
+    result.engineering_long_write_audit["browser"] = {"performed": True, "checks": {
+        key: True for key in ["initialRows", "titleMicroEdit", "colorMicroEdit", "filter", "add", "saveReload", "offlineSingleFile"]}, "errors": []}
+    result.web_activity_audit = {"performed": True, "liveRuntimeIds": ["engineering"], "liveSubagentIds": ["worker"],
+                                 "parity": {"runtimeCards": True, "subagentCards": True}, "errors": []}
+    assert not audit._case_findings(result)
+    result.engineering_long_write_audit["browser"]["checks"].pop("saveReload")
+    assert audit._case_findings(result)
 
 
 def test_reviewed_partial_terminal_is_observable_but_unreviewed_degraded_is_not():
@@ -142,6 +486,8 @@ def test_pure_research_submit_uses_research_mode_without_engineering_lane(monkey
     )
 
     assert result.status == "submitted"
+    assert captured["data"]["auditProfile"] == "configured"
+    assert "modelProfile" not in captured["data"]
     assert captured["data"]["supervisorWorkMode"] == "daily"
     assert captured["data"]["supervisorRuntimeMode"] == "research"
     assert captured["data"]["engineeringMode"] == "off"
@@ -171,6 +517,19 @@ def test_delegated_research_submit_uses_research_mode_and_requires_verifier(monk
     assert captured["data"]["engineeringMode"] == "off"
     assert case.expected_episode_kinds == ["research", "delegation"]
     assert "Verification Engineer" in case.prompt
+
+
+def test_engineering_long_write_explicitly_selects_the_runtime_it_asserts(monkeypatch):
+    captured = {}
+    def request(_url, *, method, payload, timeout):
+        captured.update(payload)
+        return {"session_id": payload["session_id"], "run_id": "run-engineering"}
+    monkeypatch.setattr(audit, "_json_request", request)
+    case = audit._case_specs(audit.ENGINEERING_LONG_WRITE_CASE_ID)[0]
+    result = audit._submit_case("http://localhost:9530", case=case, model_profile="configured", timestamp="fixture", workspace="temporary")
+    assert result.status == "submitted"
+    assert captured["data"]["supervisorRuntimeMode"] == "engineering"
+    assert "max_tokens" not in captured["data"]
 
 
 def test_delegated_research_diagnostic_requires_sequential_durable_truth(monkeypatch):
@@ -279,24 +638,138 @@ def test_web_activity_audit_waits_for_authoritative_reload_evidence(monkeypatch)
     from tests.scripts import live_web_activity_audit as web_audit
 
     observer = web_audit.WebActivityAuditObserver(web_url="http://localhost", session_id="test")
+    monkeypatch.setattr(observer, "_terminal_runtime_details", lambda _snapshot: [])
     observer._page = SimpleNamespace(
         reload=lambda **_kwargs: None,
         locator=lambda _selector: SimpleNamespace(wait_for=lambda **_kwargs: None),
     )
     terminal = {
+        "pageReady": True,
+        "narratives": [{"chars": 10, "sha256": "stable-content", "turnId": "initial"}],
         "runtimeCards": [{"runtimeId": "research", "status": "recent", "eventCount": 2}],
         "subagentCards": [],
         "researchEvents": [{"eventSeq": 113, "topic": "runtime.episode.completed"}],
     }
-    provisional = {**terminal, "researchEvents": []}
-    snapshots = iter([terminal, provisional, terminal])
-    monkeypatch.setattr(observer, "_snapshot", lambda *_args, **_kwargs: next(snapshots))
-    monkeypatch.setattr(web_audit.time, "sleep", lambda _seconds: None)
+    provisional = {**terminal, "researchEvents": [], "narratives": []}
+    phases = []
+    def snapshot(phase, **_kwargs):
+        phases.append(phase)
+        if phase == "terminal_reload" and phases.count(phase) == 1:
+            return provisional
+        return {**terminal, "narratives": [{**terminal["narratives"][0], "turnId": "" if phase == "terminal_reload" else "initial"}]}
+    clock = [0.0]
+    monkeypatch.setattr(observer, "_snapshot", snapshot)
+    monkeypatch.setattr(web_audit.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(web_audit.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
 
     result = observer.finish()
 
     assert result["errors"] == []
     assert all(result["parity"].values())
+    assert phases.count("terminal_live") >= 5 and phases.count("terminal_reload") >= 6
+
+
+@pytest.mark.parametrize("flash_content,wrong_page", [(False, False), (True, False), (False, True)])
+def test_web_activity_audit_empty_or_wrong_page_never_passes_parity_or_measurement(monkeypatch, flash_content, wrong_page):
+    from tests.scripts import live_web_activity_audit as web_audit
+    observer = web_audit.WebActivityAuditObserver(web_url="http://localhost", session_id="test")
+    monkeypatch.setattr(observer, "_terminal_runtime_details", lambda _snapshot: [])
+    observer._page = SimpleNamespace(reload=lambda **_kwargs: None,
+                                     locator=lambda _selector: SimpleNamespace(wait_for=lambda **_kwargs: None))
+    counts = {}
+    def snapshot(phase, **_kwargs):
+        counts[phase] = counts.get(phase, 0) + 1
+        return {"pageReady": not wrong_page, "runtimeCards": [], "subagentCards": [], "researchEvents": [],
+                "narratives": [{"chars": 20, "sha256": "content"}] if wrong_page or (flash_content and counts[phase] == 1) else []}
+    clock = [0.0]
+    monkeypatch.setattr(observer, "_snapshot", snapshot)
+    monkeypatch.setattr(web_audit.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(web_audit.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    result = observer.finish()
+    assert result["errors"]
+    assert not any(result["parity"].values())
+    assert result["narrativeMeasurement"]["status"] == "unverified"
+
+
+def test_terminal_runtime_details_record_all_rows_without_leaking_text_or_live_tab_churn(monkeypatch):
+    from tests.scripts import live_web_activity_audit as web_audit
+
+    observer = web_audit.WebActivityAuditObserver(web_url="http://localhost", session_id="test")
+    selected, clicks = [], []
+    monkeypatch.setattr(observer, "_overview", lambda: None)
+    def locator(selector):
+        if selector.startswith('[data-runtime-activity-runtime='):
+            runtime_id = selector.split('"')[1]
+            return SimpleNamespace(first=SimpleNamespace(click=lambda **_: (selected.append(runtime_id), clicks.append(runtime_id))))
+        return SimpleNamespace(wait_for=lambda **_: None, locator=lambda rows: SimpleNamespace(evaluate_all=lambda _: [
+            {"position": 0, "eventSeq": 11 if selected[-1] == "engineering" else 12, "topic": "runtime.episode.completed", "summary": "private text"},
+            {"position": 1, "eventSeq": 0, "topic": "", "summary": "private artifact"},
+        ]))
+    observer._page = SimpleNamespace(locator=locator)
+    snapshot = {"runtimeCards": [{"runtimeId": item, "eventCount": 2} for item in ["engineering", "extensions"]]}
+    monkeypatch.setattr(observer, "_snapshot", lambda *_args, **_kwargs: snapshot)
+    observer.sample_live()
+    assert clicks == []
+    observed = observer._terminal_runtime_details(snapshot)
+    assert clicks == ["engineering", "extensions"]
+    assert all(item["observedEntryCount"] == item["overviewEventCount"] == 2 for item in observed)
+    assert [item["entries"][0]["eventSeq"] for item in observed] == [11, 12]
+    assert all(item["entries"][1]["identitySource"] == "dom_position_and_summary_hash" for item in observed)
+    assert "private" not in json.dumps(observed)
+    assert observed[0]["entries"][0]["summarySha256"] == hashlib.sha256(b"private text").hexdigest()
+
+
+def test_terminal_details_cannot_turn_real_live_reload_count_mismatch_into_success(monkeypatch):
+    from tests.scripts import live_web_activity_audit as web_audit
+
+    observer = web_audit.WebActivityAuditObserver(web_url="http://localhost", session_id="test")
+    observer._page = SimpleNamespace(reload=lambda **_: None, locator=lambda _: SimpleNamespace(wait_for=lambda **_: None))
+    collected = []
+    def details(snapshot):
+        collected.append(snapshot["phase"])
+        return [{"runtimeId": "engineering", "entries": [{"eventSeq": 11}]}]
+    monkeypatch.setattr(observer, "_terminal_runtime_details", details)
+    monkeypatch.setattr(observer, "_snapshot", lambda phase, **_: {
+        "phase": phase, "pageReady": True, "narratives": [{"chars": 10, "sha256": "same", "turnId": ""}],
+        "runtimeCards": [{"runtimeId": "engineering", "eventCount": 12 if phase == "terminal_live" else 16}],
+    })
+    clock = [0.0]
+    monkeypatch.setattr(web_audit.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(web_audit.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    result = observer.finish()
+    assert collected == ["terminal_live", "terminal_reload"]
+    assert result["errors"] and result["parity"]["runtimeCards"] is False
+    assert result["terminalLive"]["runtimeDetails"] and result["terminalReload"]["runtimeDetails"]
+    assert result["narrativeMeasurement"]["status"] == "unverified"
+
+
+def test_web_activity_audit_selector_handles_missing_turn_id_and_excludes_non_chat_regions():
+    from tests.scripts import live_web_activity_audit as web_audit
+    observer = web_audit.WebActivityAuditObserver(web_url="http://localhost", session_id="test")
+    seen = []
+    def locator(selector):
+        seen.append(selector)
+        # The hydrated message still renders without the optional turnId.
+        return SimpleNamespace(evaluate_all=lambda _script: [{"turnId": "", "position": 0, "texts": ["Actual answer\nNext line"]}]
+                               if selector == '.v8-chat-viewport-surface [aria-live="polite"]' else [])
+    observer._page = SimpleNamespace(locator=locator)
+    rows = observer._narrative_snapshot()
+    assert rows[0]["chars"] == len("Actual answer\nNext line")
+    assert rows[0]["sha256"] == hashlib.sha256(b"Actual answer\nNext line").hexdigest()
+    assert seen == ['.v8-chat-viewport-surface [aria-live="polite"]']
+
+
+@pytest.mark.parametrize("url,visible,ready", [
+    ("http://localhost/chat?id=test", True, True),
+    ("http://localhost/chat?id=other", True, False),
+    ("http://localhost/login", True, False),
+    ("http://localhost/chat?id=test", False, False),
+])
+def test_web_activity_audit_requires_requested_session_and_chat_viewport(url, visible, ready):
+    from tests.scripts import live_web_activity_audit as web_audit
+    observer = web_audit.WebActivityAuditObserver(web_url="http://localhost", session_id="test")
+    observer._page = SimpleNamespace(url=url, locator=lambda _selector: SimpleNamespace(is_visible=lambda: visible))
+    assert observer._page_ready() is ready
 
 
 def test_final_text_does_not_hide_a_later_completed_message_based_on_length():
@@ -366,6 +839,74 @@ def test_final_text_never_substitutes_streaming_or_another_run_for_delivery():
     assert audit._extract_final_text([old], preferred_run_id="current") == ""
     failed = {**running, "state": "failed", "finalized_at": "2026-09-04T00:00:00Z"}
     assert audit._extract_final_text([failed], preferred_run_id="current") == ""
+
+
+def test_final_text_selects_last_model_narrative_and_keeps_prior_turns_auditable():
+    nodes = [{"id": str(index), "kind": "narrative", "ownerAgentKind": "supervisor",
+              "content": content, "finalized": True, "partial": False,
+              "ownerStreamKey": f"chat:supervisor:text:{'prior' if index == 0 else 'final'}:segment:{index}"}
+             for index, content in enumerate(["正在安排调研。", "最终核验", "答案。"])]
+    nodes.insert(1, {"kind": "reasoning", "content": "not a final answer"})
+    message = {"role": "assistant", "run_id": "current", "state": "completed",
+               "content_text": "正在安排调研。最终核验答案。", "nodes_json": json.dumps(nodes)}
+    delivery = audit._extract_final_delivery([message], preferred_run_id="current")
+    assert delivery["text"] == "最终核验答案。"
+    assert delivery["source"] == "finalized_model_narrative"
+    assert len(delivery["selectedNarrativeSegments"]) == 2
+    assert [part["preview"] for part in delivery["excludedNarrativeSegments"]] == ["正在安排调研。"]
+    assert "not a final answer" not in json.dumps(delivery)
+
+
+def test_final_text_does_not_hide_uncorrected_fragments_from_the_final_model():
+    message = {"role": "assistant", "run_id": "current", "state": "completed", "nodes": [
+        {"id": str(index), "kind": "narrative", "ownerStreamKey": f"chat:supervisor:text:final:segment:{index}",
+         "finalized": True, "content": text} for index, text in enumerate(["旧片段", "完整答案"])
+    ]}
+    assert audit._extract_final_text([message], preferred_run_id="current") == "旧片段完整答案"
+
+
+@pytest.mark.parametrize("node", [
+    {"kind": "reasoning", "content": "private reasoning", "finalized": True},
+    {"kind": "narrative", "content": "partial answer", "partial": True, "finalized": True},
+    {"kind": "narrative", "content": "pending answer", "finalized": False},
+])
+def test_final_text_does_not_replace_missing_narrative_with_old_progress_or_reasoning(node):
+    old = {"role": "assistant", "run_id": "current", "state": "completed", "ordinal": 1, "content_text": "旧的过程说明"}
+    current = {"role": "assistant", "run_id": "current", "state": "completed", "ordinal": 2,
+               "nodes": [node], "content_text": "旧的过程说明", "reasoning_text": "private reasoning"}
+    assert audit._extract_final_text([old, current], preferred_run_id="current") == ""
+    assert audit._extract_message_text({"reasoning_text": "private reasoning", "metadata": {"summary": "not delivery"}}) == ""
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("用户原始提问中的 GB 45440 为笔误，应为 GB 45438-2025。", True),
+    ("你输入的 GB45440 是错误编号。", True),
+    ("Supervisor 派生 brief 的 GB 45440 是笔误，已改成 GB 45438。", False),
+    ("GB 45440 是派生 brief 的错误，用户并未提供这个编号。", False),
+    ("GB 45440 的笔误并非用户引入。", False),
+])
+def test_known_research_fixture_does_not_blame_user_for_derived_brief_number(text, expected):
+    result = audit.LiveCaseResult(spec=audit._case_specs(audit.RESEARCH_DELEGATED_VERIFICATION_CASE_ID)[0], final_text=text)
+    assert bool(audit._research_fixture_user_attribution_errors(result)) is expected
+    findings = audit._delegated_research_verification_findings(result)
+    assert any(item.severity == "P2" and "笔误" in item.summary for item in findings) is expected
+
+
+def test_attribution_oracle_is_fixture_scoped_and_respects_actual_user_prompt():
+    spec = deepcopy(audit._case_specs(audit.RESEARCH_DELEGATED_VERIFICATION_CASE_ID)[0])
+    result = audit.LiveCaseResult(spec=spec, final_text="用户原始提问中的 GB 45440 为笔误。")
+    spec.prompt += "我说的是 GB 45440。"
+    assert audit._research_fixture_user_attribution_errors(result) == []
+    spec.case_id = "unrelated_case"
+    spec.prompt = "other task"
+    assert audit._research_fixture_user_attribution_errors(result) == []
+
+
+def test_attribution_oracle_checks_research_handoff_even_when_supervisor_corrects_it(monkeypatch):
+    result = audit.LiveCaseResult(spec=audit._case_specs(audit.RESEARCH_DELEGATED_VERIFICATION_CASE_ID)[0], final_text="编号由 Supervisor 引入。")
+    monkeypatch.setattr(audit, "_research_handoff_payloads", lambda _: [{"answer": "用户原始提问中的 GB 45440 为笔误。"}])
+    monkeypatch.setattr(audit, "_research_handoff_answer", lambda payload: payload["answer"])
+    assert audit._research_fixture_user_attribution_errors(result)[0]["surface"] == "research_handoff"
 
 
 def test_delegated_research_does_not_accept_provider_tool_markup_as_final_delivery():

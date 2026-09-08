@@ -133,6 +133,7 @@ def test_read_only_multi_runtime_plan_does_not_ask_user_because_workspace_is_dir
             skillStage1Entries=[{"id": str(i)} for i in range(9)],
         ),
         state={
+            "execution_intent": {"readOnly": True},
             "task_shape_hint": {
                 "writingRoute": {"present": True, "requiresArtifact": False},
                 "boundaryDecision": {
@@ -154,6 +155,23 @@ def test_read_only_multi_runtime_plan_does_not_ask_user_because_workspace_is_dir
     assert decision.diagnostics["readOnlyExecutionIntent"] is True
     assert "engineering_workset_risk_not_applicable_to_read_only" in decision.reasons
     assert "engineering_workset_risk" not in decision.reasons
+
+
+def test_mixed_write_then_read_only_verification_cannot_be_reclassified_by_reflex():
+    query = "创建完整任务看板，然后连续局部修改标题和颜色，最后可以只读验证并报告。"
+    options = dict(user_query=query, scope="workspace:test", scope_chain=[], session_id=None,
+                   route_bundle=_route_bundle(), state={"engineeringMode": "force"})
+    reflex = RuntimeReflexService().evaluate(**options)
+    gate = RuntimePreflightGate().evaluate(**options)
+    assert "engineering_read_only_contract" not in reflex.matchedReflexes
+    assert gate.diagnostics["readOnlyExecutionIntent"] is False
+    assert "writeSet=[]" not in reflex.promptPatch
+    # A typed current-task restriction remains authoritative, independent of
+    # the wording. A child verification restriction never becomes global.
+    options["state"]["execution_intent"] = {"readOnly": True}
+    assert RuntimePreflightGate().evaluate(**options).diagnostics["readOnlyExecutionIntent"] is True
+    options["state"] = {"engineeringMode": "force", "tasks": [{"readOnly": True}]}
+    assert RuntimePreflightGate().evaluate(**options).diagnostics["readOnlyExecutionIntent"] is False
 
 
 def test_other_project_scope_boundary_does_not_become_global_read_only_intent():

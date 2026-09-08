@@ -87,6 +87,7 @@ export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "chat.lifecycle", topicPattern: "chat.", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card"], explicit: true },
   { key: "memory.lifecycle", topicPattern: "memory.", runtimeId: "memory", scope: "active_run", visibility: "hidden", targets: ["runtime_card"], explicit: true },
   { key: "automation.lifecycle", topicPattern: "automation.", runtimeId: "automation", scope: "active_run", visibility: "visible", targets: ["runtime_card", "hud", "process"], explicit: true },
+  { key: "chat.model_response_diagnostic", topicPattern: "extension.execution.completed", runtimeId: "chat", scope: "active_run", visibility: "excluded", targets: [], explicit: true },
   { key: "extensions.lifecycle", topicPattern: "extension.", runtimeId: "extensions", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card", "artifact"], explicit: true },
   { key: "creative_canvas.graph_run_state", topicPattern: "canvas.graph.run.state", eventType: "custom_event", runtimeId: "creative_media", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "process"], explicit: true },
   { key: "creative_media.lifecycle", topicPattern: "creative_media.", runtimeId: "creative_media", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "artifact", "process"], explicit: true },

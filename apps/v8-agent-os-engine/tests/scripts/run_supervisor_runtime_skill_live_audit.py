@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +27,12 @@ TOKEN_RE = re.compile(
 )
 PURE_RESEARCH_CASE_ID = "pure_research_delivery"
 RESEARCH_DELEGATED_VERIFICATION_CASE_ID = "research_delegated_verification"
+SAVED_RESEARCH_VERIFICATION_CASE_ID = "saved_research_verification"
+ENGINEERING_LONG_WRITE_CASE_ID = "engineering_long_write"
+ENGINEERING_PARENT_REPAIR_CASE_ID = "engineering_parent_acceptance_repair"
+ENGINEERING_LIVE_CASE_IDS = {ENGINEERING_LONG_WRITE_CASE_ID, ENGINEERING_PARENT_REPAIR_CASE_ID}
+ENGINEERING_BOARD_FILE = "task-board.html"
+ENGINEERING_TAIL_CANARY = "V8OS-LONG-WRITE-END"
 PURE_RESEARCH_MIN_EFFECTIVE_CHARS = 3_000
 PURE_RESEARCH_MIN_SOURCE_COUNT = 5
 PURE_RESEARCH_TARGET_EFFECTIVE_CHARS = 5_000
@@ -84,8 +92,16 @@ class LiveCaseResult:
     episodes: list[dict[str, Any]] = field(default_factory=list)
     handoffs: list[dict[str, Any]] = field(default_factory=list)
     tool_invocations: list[dict[str, Any]] = field(default_factory=list)
+    saved_source_reads: list[dict[str, Any]] = field(default_factory=list)
+    final_runtime_dispatch: dict[str, Any] = field(default_factory=dict)
     research_completed_seq: int | None = None
     web_activity_audit: dict[str, Any] | None = None
+    engineering_long_write_audit: dict[str, Any] | None = None
+    engineering_parent_repair_audit: dict[str, Any] | None = None
+    saved_research_verification_audit: dict[str, Any] | None = None
+    engineering_workspace_path: str = ""
+    engineering_first_input_hash: str = ""
+    engineering_initial_content: str | None = None
 
 
 def _redact(value: Any) -> str:
@@ -100,6 +116,60 @@ def _redact(value: Any) -> str:
         path_text = str(raw_path)
         text = text.replace(path_text, replacement).replace(path_text.replace("\\", "\\\\"), replacement)
     return text
+
+
+def _saved_research_case(experience_id: str, evidence_id: str) -> LiveCaseSpec:
+    return LiveCaseSpec(
+        case_id=SAVED_RESEARCH_VERIFICATION_CASE_ID, title="成熟答案跨会话读取、委派核验与交付",
+        prompt=(
+            f"请复用已审阅的答案 {experience_id}，当前证据包 {evidence_id}。不重新调研、不写文件、不调用工程模式。"
+            "先通过研究读取工具恢复答案、原始引用和限制，再请委派注册的 Verification Engineer 做一次独立只读复核，"
+            "不允许它再委派。实读原始证据，至少复核3个关键结论；用表格列出原始claimId、[S#]、完整实际URL、"
+            "来源载体身份、正式或草案状态、核验结论。不要重编号或替换转载URL。"
+            "收到回流后明确ACCEPT或具体缺口，按这份保存答案的原题用中文交付具体答案，保留关键日期、适用条件、"
+            "限制和至少5个实际来源。正文回答问题，不仅仅描述过程，不照抄内部JSON。"
+        ),
+        expected_all_tools=["research_broker", "delegation_broker"],
+        expected_episode_kinds=["delegation"], source_required=True,
+    )
+
+
+def _audit_saved_research_verification(result: LiveCaseResult, bundle: dict[str, Any]) -> dict[str, Any]:
+    workers = [_handoff_payload(item) for item in result.handoffs if item.get("kind") == "subagent_result"]
+    text = "\n".join(str(item.get("resultText") or "") for item in workers)
+    binding = _verification_binding_audit(text, [bundle])
+    from core.research_verification_bindings import research_evidence_bindings
+    from core.tools.research_quality import research_claims
+    source_hashes = {
+        (str(item.get("citationKey") or ""), str(item.get("url") or "")):
+        hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest()
+        for item in (bundle.get("researchEvidenceBank") or {}).get("sources") or [] if isinstance(item, dict)
+    }
+    actual_reads = {(item["citationKey"], item["url"]) for item in result.saved_source_reads
+                    if item.get("evidenceBundleId") == bundle.get("evidenceBundleId")
+                    and item.get("contentSha256") == source_hashes.get((item.get("citationKey"), item.get("url")))}
+    verified_ids = set(binding.get("verifiedClaimIds") or [])
+    verified_sources = {(row["citationKey"], row["url"])
+                        for row in research_evidence_bindings({"claimTable": research_claims(bundle)})
+                        if row["claimId"] in verified_ids}
+    from core.tools.research_quality import research_selected_sources
+    source_urls = {str(item.get("url") or item.get("sourceUrl") or "") for item in research_selected_sources(bundle)}
+    retained = sorted(set(_visible_source_urls(result.final_text)) & source_urls)
+    web = result.web_activity_audit or {}
+    checks = {
+        "completedRun": result.status == "completed",
+        "workerReadEvidence": bool(verified_sources) and verified_sources.issubset(actual_reads),
+        "workerExactBindings": bool(binding.get("passed")),
+        "fiveOriginalSourcesInDelivery": len(retained) >= min(5, len(source_urls)) and bool(source_urls),
+        "noFreshResearchOrEngineering": not any(item.get("kind") in {"research", "engineering"} for item in result.episodes),
+        "webParity": bool(web.get("performed") and web.get("parity")) and all(web.get("parity", {}).values()) and not web.get("errors"),
+        "parentAcceptedVerification": any(
+            item.get("kind") == "subagent_acceptance" and item.get("status") == "accepted"
+            for item in result.handoffs
+        ),
+    }
+    return {"checks": checks, "bindingAudit": binding, "sourceReads": result.saved_source_reads, "retainedSourceUrls": retained,
+            "referenceBundleId": bundle.get("evidenceBundleId"), "semanticTruthAssessed": False}
 
 
 def _json_request(
@@ -333,7 +403,8 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
                 case_id=RESEARCH_DELEGATED_VERIFICATION_CASE_ID,
                 title="深度调研证据应经独立子代理复核后由 Supervisor 交付",
                 prompt=(
-                    "这是一次真实深度调研与独立复核验收，不写文件、不执行工程修改。请先交给深度调研，"
+                    "这是一次真实深度调研与独立复核验收，不写文件、不执行工程修改。"
+                    "本轮需要重新获取证据，Research inputs 中设置 forceRefresh=true，不复用已保存的答案。请先交给深度调研，"
                     "核查截至 2026 年 9 月 3 日，中国面向公众提供生成式人工智能服务时，"
                     "《生成式人工智能服务管理暂行办法》《互联网信息服务深度合成管理规定》"
                     "《人工智能生成合成内容标识办法》及配套强制性国家标准之间的适用关系、关键日期、"
@@ -354,6 +425,50 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
                 source_required=True,
             )
         ]
+    if selected_case == ENGINEERING_PARENT_REPAIR_CASE_ID:
+        return [LiveCaseSpec(
+            case_id=ENGINEERING_PARENT_REPAIR_CASE_ID,
+            title="父级验收后以精确引用进行一次真实修复",
+            prompt=(
+                "这是父级验收恢复的开发验证，只操作当前专用空白工作区里的 acceptance-note.txt。"
+                "按两阶段执行，不调研、不写其他文件、Supervisor不要代写。第一阶段交给编程模式中的"
+                "Implementation Engineer，用原生写工具创建文件，内容只为 draft；这一阶段不要提前改成 approved。"
+                "待第一阶段执行完成并回流后，Supervisor只读核对文件，把 draft 明确判为本次最终验收缺口："
+                "最终内容必须是 approved。此时才用 runtime_broker 的 parentAcceptance，精确引用刚完成的"
+                "episodeId 与当前 handoffRefId，说明该缺口，发起一次同写集修复，将 draft 局部改为 approved。"
+                "不能把两阶段预排成普通依赖任务，不能把旧结果复用当作已经派发修复，也不能增加第二次修复。"
+                "修复回流后再次只读检查实际文件，再交付最终内容和验收结论。这个刻意的阶段差异用于验证"
+                "父级验收与执行完成的边界，不是普通用户任务必须遵守的工作流程。"
+            ),
+            expected_all_tools=["runtime_broker", "write_native_file", "read_native_file"],
+            expected_episode_kinds=["engineering", "delegation"],
+        )]
+    if selected_case == ENGINEERING_LONG_WRITE_CASE_ID:
+        return [LiveCaseSpec(
+            case_id=ENGINEERING_LONG_WRITE_CASE_ID,
+            title="工程子代理完整长文件与同一版本连续微调",
+            prompt=(
+                "帮我做个可以本地直接打开的单文件任务看板，交给编程模式中的 Implementation Engineer 实际完成，"
+                "Supervisor 负责验收，不要自己代写，也不要调研。当前工作区是专门的空白临时目录，只写 task-board.html。"
+                "预置120条不同的示例事项，每条包含唯一id、中文标题、约30字中文描述、分类category和completed=false；"
+                "分工作、学习、生活三类。支持分类筛选、添加事项、勾选完成、保存到localStorage并在刷新后恢复。"
+                "筛选与新增分类用原生select，选项文字为工作、学习、生活。"
+                "样例数据必须逐条写在 type=application/json、id=seed-data 的script数组中，不用Array.from、循环生成或远程加载。"
+                "这是本次特意构造的长工具参数验收要求，不是产品生成篇幅的通用下限。"
+                "页面事项行标 data-task-id；筛选框、标题输入、描述输入、添加分类选择、添加按钮、保存按钮分别用"
+                "data-testid=category-filter/new-title/new-description/new-category/add-task/save-tasks，筛选全部选项value=all，"
+                "事项完成用checkbox。这些是本次交付的可访问交互验收锚点。"
+                "初版必须是完整HTML，包含 <h1 id=\"board-title\">任务看板</h1>，在:root设置唯一CSS变量 --accent: #7c3aed;，"
+                "结束body前放注释 V8OS-LONG-WRITE-END，最后完整闭合html；无外部依赖。"
+                "然后由同一实施子代理连续完成两次独立的局部微调：先把该h1改为“我的任务看板”，再把accent改为#0f766e。"
+                "每次用write_native_file真实写入；小改使用expected_old_text或行范围并传上次返回的expected_version，"
+                "保留120条原始数据，不要全量重写，也不通过shell写入。成功写入返回的同actor版本凭据可继续使用，"
+                "凭据有效且文件未改变时无需再次read。最后可以只读验证并报告实际文件与验证结果。"
+                "使用实际ModelHub自动输出政策，不指定猜测的max_tokens；不得为了测试抬高人工fixed配置。"
+            ),
+            expected_all_tools=["runtime_broker", "write_native_file"],
+            expected_episode_kinds=["engineering", "delegation"],
+        )]
     if selected_case == "joint_research_delivery":
         return [
             LiveCaseSpec(
@@ -384,6 +499,8 @@ def _submit_case(
     existing_session_id: str | None = None,
 ) -> LiveCaseResult:
     result = LiveCaseResult(spec=case)
+    if case.case_id in ENGINEERING_LIVE_CASE_IDS:
+        result.engineering_workspace_path = workspace
     session_id = existing_session_id or f"supervisor-runtime-skill-live-{timestamp}-{case.case_id}"
     if not session_id.startswith("supervisor-runtime-skill-live-"):
         raise ValueError("Only harness-owned sessions may be continued by this audit")
@@ -399,7 +516,7 @@ def _submit_case(
             "conversationId": session_id,
             "clientMessageId": client_message_id,
             "supervisorRuntimeSkillLiveAudit": True,
-            "modelProfile": model_profile,
+            "auditProfile": model_profile,
             "skillReferences": case.skill_references or None,
             "contextMentions": case.context_mentions or None,
         },
@@ -412,6 +529,11 @@ def _submit_case(
                 "engineeringMode": "off",
             }
         )
+    elif case.case_id in ENGINEERING_LIVE_CASE_IDS:
+        # This acceptance targets the selected Engineering runtime, just as
+        # research cases select Research. Auto/manual delegation is a separate
+        # valid route and cannot prove this episode-specific acceptance.
+        payload["data"].update({"supervisorWorkMode": "engineering", "supervisorRuntimeMode": "engineering"})
     started = time.perf_counter()
     try:
         response = _json_request(f"{_engine_api_base(engine_url)}/chat/submit", method="POST", payload=payload, timeout=30)
@@ -511,6 +633,25 @@ def _collect_tool_invocations(events: list[dict[str, Any]]) -> list[dict[str, An
         seen.add(identity)
         invocations.append(invocation)
     return invocations
+
+
+def _collect_saved_source_reads(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Record actual worker body returns; a planned call or answer read is no proof."""
+    reads = []
+    for event in events:
+        if _event_topic(event) != "subagent.tool.finished":
+            continue
+        payload = _event_payload(event)
+        tool = payload.get("tool") or {}
+        result = tool.get("result") or {}
+        if (tool.get("toolName") != "research_broker" or not isinstance(result, dict)
+                or result.get("kind") != "research_source_page" or result.get("ok") is not True
+                or not str(result.get("text") or "").strip()):
+            continue
+        reads.append({key: result.get(key) for key in (
+            "evidenceBundleId", "citationKey", "url", "contentSha256", "start", "end", "contentChars",
+        )})
+    return reads
 
 
 def _research_completion_seq(events: list[dict[str, Any]], research_episode_ids: set[str]) -> int | None:
@@ -840,6 +981,7 @@ def _poll_case(
             if topic:
                 _append_unique(result.observed_topics, [topic])
             payload = _event_payload(event)
+            _sample_engineering_initial_file(result, event)
             if _event_carries_tool_result(topic):
                 _append_unique(result.actual_tools, sorted(_collect_tool_names(payload)))
             if topic in {
@@ -904,6 +1046,8 @@ def _poll_case(
         if _event_carries_tool_result(topic):
             _append_unique(result.actual_tools, sorted(_collect_tool_names(_event_payload(event))))
     result.tool_invocations = _collect_tool_invocations(durable_events)
+    result.saved_source_reads = _collect_saved_source_reads(durable_events)
+    result.final_runtime_dispatch = _last_runtime_dispatch(durable_events, run_id=result.run_id)
     episodes, handoffs, episode_error = _load_durable_episode_facts(result)
     if episode_error:
         result.key_events.append(_redact({"durableEpisodesError": episode_error}))
@@ -989,11 +1133,46 @@ def _collect_handoff_tool_names(handoffs: list[dict[str, Any]]) -> list[str]:
     return sorted(names)
 
 
-def _extract_message_text(message: dict[str, Any]) -> str:
-    for key in ("content_text", "content", "text", "reasoning_text"):
+def _message_delivery(message: dict[str, Any]) -> dict[str, Any]:
+    # One canonical bubble can contain several model turns. Its content_text is
+    # their concatenation, so it is not itself proof of a terminal answer.
+    nodes = message.get("nodes", message.get("nodes_json"))
+    if isinstance(nodes, str):
+        try:
+            nodes = json.loads(nodes)
+        except json.JSONDecodeError:
+            return {"text": "", "source": "invalid_nodes"}
+    if isinstance(nodes, list) and nodes:
+        narratives = [node for node in nodes if isinstance(node, dict)
+                      and node.get("kind") == "narrative"
+                      and str(node.get("ownerAgentKind") or "").lower() in {"", "supervisor"}]
+        if not narratives:
+            return {"text": "", "source": "no_supervisor_narrative"}
+        final = narratives[-1]
+        final_stream = str(final.get("ownerStreamKey") or "").rsplit(":segment:", 1)[0]
+        selected = [node for node in narratives if final_stream and
+                    str(node.get("ownerStreamKey") or "").rsplit(":segment:", 1)[0] == final_stream] or [final]
+        message_complete = str(message.get("state") or "").lower() in {"completed", "complete", "final", "finalized"}
+        complete = all((node.get("finalized") is True or ("finalized" not in node and message_complete))
+                       and not node.get("partial") for node in selected)
+        return {
+            "text": "".join(str(node.get("content") or "") for node in selected).strip() if complete else "",
+            "source": "finalized_model_narrative" if complete else "incomplete_narrative",
+            "selectedNodeId": final.get("id"),
+            "selectedOwnerStreamKey": final.get("ownerStreamKey"),
+            "selectedNarrativeSegments": [{"nodeId": node.get("id"), "chars": len(str(node.get("content") or ""))} for node in selected],
+            # Preserve excluded prose for diagnosis rather than hiding observed
+            # fragments behind a cleaner report. Never export reasoning here.
+            "excludedNarrativeSegments": [{
+                "nodeId": node.get("id"), "ownerStreamKey": node.get("ownerStreamKey"),
+                "chars": len(str(node.get("content") or "")),
+                "preview": _redact(str(node.get("content") or "")[:160]),
+            } for node in narratives if node not in selected],
+        }
+    for key in ("content_text", "content", "text"):
         value = message.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return {"text": value.strip(), "source": f"legacy_{key}"}
     raw = message.get("metadata_json") or message.get("metadata")
     if isinstance(raw, str):
         try:
@@ -1001,39 +1180,41 @@ def _extract_message_text(message: dict[str, Any]) -> str:
         except json.JSONDecodeError:
             raw = {}
     if isinstance(raw, dict):
-        for key in ("content", "text", "summary"):
+        for key in ("content", "text"):
             value = raw.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
-    return ""
+                return {"text": value.strip(), "source": f"legacy_metadata_{key}"}
+    return {"text": "", "source": "no_delivery"}
 
 
-def _extract_final_text(
+def _extract_message_text(message: dict[str, Any]) -> str:
+    return _message_delivery(message)["text"]
+
+
+def _extract_final_delivery(
     messages: list[dict[str, Any]],
     *,
     preferred_run_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
         role = str(message.get("role") or message.get("source") or "").lower()
         if role in {"assistant", "ai", "supervisor"}:
-            text = _extract_message_text(message)
-            if text:
-                try:
-                    ordinal = int(message.get("ordinal") or index)
-                except (TypeError, ValueError):
-                    ordinal = index
-                candidates.append(
-                    {
-                        "text": text,
-                        "ordinal": ordinal,
-                        "runId": str(message.get("run_id") or message.get("runId") or "").strip(),
-                        "state": str(message.get("state") or "").strip().lower(),
-                        "finalized": bool(message.get("finalized_at") or message.get("finalizedAt")),
-                    }
-                )
+            try:
+                ordinal = int(message.get("ordinal") or index)
+            except (TypeError, ValueError):
+                ordinal = index
+            candidates.append(
+                {
+                    **_message_delivery(message),
+                    "ordinal": ordinal,
+                    "runId": str(message.get("run_id") or message.get("runId") or "").strip(),
+                    "state": str(message.get("state") or "").strip().lower(),
+                    "finalized": bool(message.get("finalized_at") or message.get("finalizedAt")),
+                }
+            )
     if not candidates:
-        return ""
+        return {"text": "", "source": "no_assistant_message"}
     normalized_run_id = str(preferred_run_id or "").strip()
     if normalized_run_id:
         candidates = [item for item in candidates if item["runId"] == normalized_run_id]
@@ -1047,11 +1228,14 @@ def _extract_final_text(
         candidates = completed
     elif normalized_run_id or any(item["state"] for item in candidates):
         # Preserve running/failed messages in the trace, not as final delivery.
-        return ""
+        return {"text": "", "source": "no_completed_message"}
     if not candidates:
-        return ""
-    selected = max(candidates, key=lambda item: int(item["ordinal"]))
-    return str(selected["text"])
+        return {"text": "", "source": "no_matching_run"}
+    return max(candidates, key=lambda item: int(item["ordinal"]))
+
+
+def _extract_final_text(messages: list[dict[str, Any]], *, preferred_run_id: str | None = None) -> str:
+    return str(_extract_final_delivery(messages, preferred_run_id=preferred_run_id)["text"])
 
 
 def _mentions_source(text: str) -> bool:
@@ -2023,6 +2207,29 @@ def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[
     }
 
 
+def _research_fixture_user_attribution_errors(result: LiveCaseResult) -> list[dict[str, str]]:
+    # A known live-fixture regression, not a product-wide semantic gate: the
+    # Supervisor introduced 45440 in its brief; the original user did not.
+    if result.spec.case_id != RESEARCH_DELEGATED_VERIFICATION_CASE_ID:
+        return []
+    number = r"GB\s*45440(?:\s*[-—]\s*2025)?"
+    if re.search(number, result.spec.prompt, re.I):
+        return []
+    surfaces = [("supervisor_final", result.final_text)] + [
+        ("research_handoff", _research_handoff_answer(payload))
+        for payload in _research_handoff_payloads(result)
+    ]
+    errors = []
+    for surface, text in surfaces:
+        for sentence in re.split(r"[。！？\n]", text):
+            if (re.search(number, sentence, re.I)
+                    and re.search(r"用户|原始提问|你(?:的)?(?:问题|输入)", sentence)
+                    and re.search(r"笔误|误写|写错|错误|误记", sentence)
+                    and not re.search(r"(?:并非|不是|不属于)用户|用户.{0,6}(?:未|没有)|未.{0,12}(?:用户|原始提问)", sentence)):
+                errors.append({"surface": surface, "excerpt": _redact(sentence.strip()[:400])})
+    return errors
+
+
 def _delegated_research_verification_findings(result: LiveCaseResult) -> list[AuditFinding]:
     diagnostic = _delegated_research_verification_diagnostic(result)
     regression = (
@@ -2063,7 +2270,7 @@ def _delegated_research_verification_findings(result: LiveCaseResult) -> list[Au
                 (diagnostic["webResearchCompletionVisibleReload"], "Engine Research 完成事件未在 Web 刷新后恢复。"),
             ]
         )
-    return [
+    findings = [
         AuditFinding(
             severity="P0",
             case_id=result.spec.case_id,
@@ -2082,11 +2289,429 @@ def _delegated_research_verification_findings(result: LiveCaseResult) -> list[Au
         for passed, summary in checks
         if not passed
     ]
+    attribution_errors = _research_fixture_user_attribution_errors(result)
+    if attribution_errors:
+        findings.append(AuditFinding(
+            severity="P2", case_id=result.spec.case_id, title=result.spec.title,
+            summary="派生任务中的 GB 45440 被错误归因为用户原始提问的笔误。",
+            evidence=_redact({"originalPromptContains45440": False, "surfaces": attribution_errors}),
+            modules=["core/tools/research_broker.py", "graph/supervisor_turn.py"],
+            recommended_fix="区分原始用户消息与 Supervisor 派生 brief 的事实来源；修正资料中的编号时保留正确归因。",
+            regression_test=regression,
+        ))
+    return findings
+
+
+def _engineering_seed_records(html: str) -> list[dict[str, Any]]:
+    from html.parser import HTMLParser
+
+    class SeedParser(HTMLParser):
+        reading = False
+        pieces: list[str]
+        def __init__(self):
+            super().__init__()
+            self.pieces = []
+        def handle_starttag(self, tag, attrs):
+            self.reading = tag == "script" and dict(attrs).get("id") == "seed-data"
+        def handle_endtag(self, tag):
+            if tag == "script":
+                self.reading = False
+        def handle_data(self, data):
+            if self.reading:
+                self.pieces.append(data)
+
+    parser = SeedParser()
+    parser.feed(html)
+    value = json.loads("".join(parser.pieces))
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("seed-data must be an explicit JSON array of records")
+    return value
+
+
+def _engineering_model_observations(result: LiveCaseResult) -> tuple[list[dict[str, Any]], str | None]:
+    """Read only this run's actual telemetry; never open the mutating DB manager."""
+    from core.v8_agent_os_paths import OBSERVABILITY_DB_PATH
+    try:
+        with sqlite3.connect(Path(OBSERVABILITY_DB_PATH).resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT id, provider_id, model_id, role, status, output_tokens, metadata_json, started_at, finished_at "
+                "FROM model_invocation_logs WHERE session_id = ? AND run_id = ? ORDER BY started_at",
+                (result.session_id, result.run_id),
+            ).fetchall()
+        return [{**dict(row), "metadata": json.loads(row["metadata_json"] or "{}")} for row in rows], None
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        return [], f"model_telemetry_unverified:{type(exc).__name__}"
+
+
+def _sample_engineering_initial_file(result: LiveCaseResult, event: dict[str, Any]) -> None:
+    """Capture the first committed file only if its full argument hash matches.
+
+    Line-range edits need no old-text argument, so final-file reverse patches
+    alone cannot recover their preimage. This observer never writes artifacts.
+    """
+    if result.spec.case_id != ENGINEERING_LONG_WRITE_CASE_ID or result.engineering_initial_content is not None:
+        return
+    if result.run_id and str(event.get("run_id") or event.get("runId") or "") != result.run_id:
+        return
+    payload = _event_payload(event)
+    node = (payload.get("progress") or {}).get("timelineNode") or payload.get("tool") or {}
+    if not result.engineering_first_input_hash and node.get("toolName") == "write_native_file":
+        args = node.get("args") or {}
+        path = str(args.get("path") or "").replace("\\", "/")
+        if path == ENGINEERING_BOARD_FILE or path.endswith("/" + ENGINEERING_BOARD_FILE):
+            result.engineering_first_input_hash = str((node.get("data") or {}).get("inputContentSha256") or "")
+    if not result.engineering_first_input_hash or not result.engineering_workspace_path:
+        return
+    try:
+        root = Path(result.engineering_workspace_path).resolve()
+        target = (root / ENGINEERING_BOARD_FILE).resolve()
+        if not target.is_relative_to(root) or target.stat().st_size > 2_000_000:
+            return
+        content = target.read_bytes()
+        if hashlib.sha256(content).hexdigest() == result.engineering_first_input_hash:
+            result.engineering_initial_content = content.decode("utf-8")
+    except (OSError, UnicodeError):
+        return
+
+
+def _engineering_long_write_proof(events: list[dict[str, Any]], models: list[dict[str, Any]], html: str, *, initial_content: str | None = None) -> dict[str, Any]:
+    starts: dict[str, dict[str, Any]] = {}
+    writes = []
+    reads = []
+    for event in sorted(events, key=lambda item: int(item.get("seq") or 0)):
+        payload = _event_payload(event)
+        if not isinstance(payload, dict):
+            continue
+        tool = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+        topic = _event_topic(event)
+        progress = payload.get("progress") or {}
+        node = progress.get("timelineNode") or {}
+        if not tool and topic == "runtime.episode.progress" and node.get("executionType") in {"tool_call", "tool_result"}:
+            tool = {**node, "resultStatus": node.get("resultStatus") or progress.get("status")}
+            topic = str(node.get("topic") or "")
+            payload = {**payload, "ownerAgentId": progress.get("agentId"), "ownerAgentKind": "subagent",
+                       "ownerDelegationId": progress.get("delegationId")}
+        call_id = str(tool.get("toolCallId") or "")
+        if not call_id:
+            continue
+        if topic.endswith("tool.started"):
+            args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+            row = {"seq": int(event.get("seq") or 0), "args": args, "tool": tool.get("toolName"),
+                   "actor": str(payload.get("ownerAgentId") or ""),
+                   "ownerKind": str(payload.get("ownerAgentKind") or ""),
+                   "delegation": str(payload.get("ownerDelegationId") or payload.get("delegationId") or ""),
+                   "inputProof": tool.get("data") or {},
+                   "startedAt": event.get("event_ts") or event.get("created_at"), "callId": call_id}
+            starts[call_id] = row
+            if row["tool"] == "read_native_file" and str(args.get("path") or "").replace("\\", "/").endswith(ENGINEERING_BOARD_FILE):
+                reads.append(row)
+        elif topic.endswith("tool.finished") and call_id in starts:
+            row = starts[call_id]
+            if row["tool"] != "write_native_file" or not str(row["args"].get("path") or "").replace("\\", "/").endswith(ENGINEERING_BOARD_FILE):
+                continue
+            body = tool.get("result") or tool.get("agentVisibleResult") or ""
+            text = body if isinstance(body, str) else json.dumps(body)
+            successful = str(tool.get("resultStatus") or "").lower() in {"completed", "succeeded", "success", "ok"}
+            try:
+                successful = successful or json.loads(text).get("ok") is True
+            except (ValueError, AttributeError):
+                successful = successful or text.startswith("Successfully ")
+            # Older progress events carried only the canonical native receipt,
+            # while progress.status describes the worker, not its finished tool.
+            if text.startswith("write native file result\n"):
+                successful = successful or bool(re.search(r"(?m)^Content version: sha256:[a-f0-9]{64}\b", text))
+            if re.search(r"(?im)^Status:\s*(failed|blocked|error|cancelled)\b", text):
+                successful = False
+            if successful and str(tool.get("resultStatus") or "").lower() not in {"failed", "error", "cancelled"} and not text.startswith("Error ") and not any(row["callId"] == call_id for row in writes):
+                versions = re.findall(r"sha256:[a-f0-9]{64}", text)
+                writes.append({**row, "version": versions[0] if versions else "", "finishedSeq": int(event.get("seq") or 0)})
+
+    checks: dict[str, Any] = {"threeSuccessfulWrites": len(writes) == 3,
+                              "completeHtmlTail": bool(re.search(r"</html>\s*$", html, re.I)) and ENGINEERING_TAIL_CANARY in html[-512:]}
+    unverified = []
+    data = []
+    try:
+        data = _engineering_seed_records(html)
+        checks["seedDataComplete"] = (len(data) == 120 and len({str(row.get("id")) for row in data}) == 120
+            and len({str(row.get("title")) for row in data}) == 120
+            and all(row.get("title") and row.get("description") and row.get("category") and row.get("completed") is False for row in data))
+    except (ValueError, TypeError):
+        checks["seedDataComplete"] = False
+    file_version = "sha256:" + hashlib.sha256(html.encode("utf-8")).hexdigest()
+    if len(writes) == 3:
+        first, *patches = writes
+        actor = first["actor"]
+        checks["sameImplementationActor"] = bool(actor) and actor != "supervisor" and all(
+            row["actor"] == actor and row["ownerKind"] and row["ownerKind"] != "supervisor"
+            and row["delegation"] == first["delegation"] for row in writes)
+        checks["localPatchesOnly"] = all(
+            not row["args"].get("allow_full_replace") and not row["args"].get("append")
+            and (row["args"].get("expected_old_text") or row["args"].get("line_start"))
+            and len(str(row["args"].get("content") or "")) < 256 for row in patches)
+        checks["versionReuse"] = all(writes[index]["version"] and row["args"].get("expected_version") == writes[index]["version"]
+                                    for index, row in enumerate(patches))
+        checks["noRedundantReadsBetweenWrites"] = not any(first["seq"] < row["seq"] < patches[-1]["seq"] and row["actor"] == actor for row in reads)
+        checks["finalVersionMatchesFile"] = writes[-1]["version"] == file_version
+        initial = initial_content if initial_content is not None else str(first["args"].get("content") or "")
+        input_proof = first.get("inputProof") or {}
+        # Runtime activity args are deliberately previews. Reconstruct the
+        # original from the final file and exact reverse patches, then match
+        # the full argument hash recorded before preview redaction/clipping.
+        initial_recovered = True
+        if initial_content is None and input_proof.get("inputContentChars", 0) > len(initial):
+            initial = html
+            for patch in reversed(patches):
+                replacement = str(patch["args"].get("content") or "")
+                old = str(patch["args"].get("expected_old_text") or "")
+                if not replacement or not old or initial.count(replacement) != 1:
+                    unverified.append("initial_content_reverse_patch_unverified")
+                    initial_recovered = False
+                    break
+                initial = initial.replace(replacement, old, 1)
+        try:
+            checks["originalDataPreserved"] = bool(data) and _engineering_seed_records(initial) == data if initial_recovered else None
+        except (ValueError, TypeError):
+            checks["originalDataPreserved"] = None
+            unverified.append("initial_tool_arguments_missing_or_incomplete")
+        checks["initialVersionMatchesArguments"] = first["version"] == "sha256:" + hashlib.sha256(initial.encode("utf-8")).hexdigest() if initial_recovered else None
+        if input_proof:
+            checks["inputHashMatchesReceipt"] = first["version"] == "sha256:" + str(input_proof.get("inputContentSha256"))
+            if initial_recovered:
+                checks["inputHashMatchesReceipt"] = checks["inputHashMatchesReceipt"] and input_proof.get("inputContentChars") == len(initial)
+
+        def instant(value):
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+        candidates = []
+        for row in models:
+            try:
+                if row.get("status") == "completed" and row.get("role") == f"agent:{actor}" and 0 <= instant(first["startedAt"]) - instant(row.get("finished_at")) < 30:
+                    candidates.append(row)
+            except ValueError:
+                continue
+        model = max(candidates, key=lambda row: instant(row.get("finished_at")), default=None)
+        metadata = (model or {}).get("metadata") or {}
+        budget = (metadata.get("promptCache") or {}).get("outputTokenBudget") or {}
+        checks["providerReportedLongGeneration"] = bool(model and metadata.get("usageReported") is True and int(model.get("output_tokens") or 0) > 4096)
+        checks["nativeToolModeObserved"] = metadata.get("toolCallingMode") == "native" and int(metadata.get("toolCallCount") or 0) > 0
+        checks["autoRequestBudgetObserved"] = budget.get("mode") == "auto" and "maxTokens" in budget and budget["maxTokens"] is None
+        if not model or not metadata.get("usageReported") or not budget:
+            unverified.append("write_model_usage_or_request_budget_not_bound")
+    else:
+        model = None
+        unverified.append("three_write_version_chain_not_observed")
+    return {"checks": checks, "unverified": unverified, "fileVersion": file_version, "seedCount": len(data),
+            "descriptionChars": [len(str(row.get("description") or "")) for row in data],
+            "writes": [{key: value for key, value in row.items() if key != "args"} for row in writes],
+            "writeModel": ({key: model.get(key) for key in ("id", "provider_id", "model_id", "role", "output_tokens", "metadata")} if model else None),
+            "usageBinding": "same_actor_latest_model_finished_before_initial_write; token_count_is_provider_reported_not_character_estimate"}
+
+
+def _engineering_browser_check(target: Path, *, browser_executable: str | None, headless: bool) -> dict[str, Any]:
+    from playwright.sync_api import sync_playwright
+    from tests.scripts.live_web_activity_audit import _browser_executable
+    checks = {}
+    errors = []
+    external_requests = []
+    with sync_playwright() as playwright:
+        options: dict[str, Any] = {"headless": headless}
+        if executable := _browser_executable(browser_executable):
+            options["executable_path"] = executable
+        browser = playwright.chromium.launch(**options)
+        try:
+            page = browser.new_page()
+            def offline(route):
+                if route.request.url.startswith(("http://", "https://")):
+                    external_requests.append(route.request.url)
+                    route.abort()
+                else:
+                    route.continue_()
+            page.route("**/*", offline)
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.goto(target.as_uri(), wait_until="load")
+            page.locator("[data-task-id]").first.wait_for()
+            checks["initialRows"] = page.locator("[data-task-id]").count() == 120
+            checks["titleMicroEdit"] = page.locator("#board-title").inner_text() == "我的任务看板"
+            checks["colorMicroEdit"] = page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim().toLowerCase()") == "#0f766e"
+            category = page.get_by_test_id("category-filter")
+            category.select_option(label="工作")
+            checks["filter"] = 0 < page.locator("[data-task-id]").count() < 120
+            category.select_option("all")
+            page.get_by_test_id("new-title").fill("LIVE-ADDED-CANARY")
+            page.get_by_test_id("new-description").fill("通过真实浏览器添加并保存的验收事项")
+            page.get_by_test_id("new-category").select_option(label="工作")
+            page.get_by_test_id("add-task").click()
+            added = page.locator("[data-task-id]").filter(has_text="LIVE-ADDED-CANARY")
+            added.wait_for()
+            checks["add"] = page.locator("[data-task-id]").count() == 121 and added.count() == 1
+            added.locator('input[type="checkbox"]').check()
+            page.get_by_test_id("save-tasks").click()
+            page.reload(wait_until="load")
+            page.get_by_test_id("category-filter").select_option("all")
+            restored = page.locator("[data-task-id]").filter(has_text="LIVE-ADDED-CANARY")
+            restored.wait_for()
+            checks["saveReload"] = page.locator("[data-task-id]").count() == 121 and restored.count() == 1 and restored.locator('input[type="checkbox"]').is_checked()
+            checks["offlineSingleFile"] = not external_requests
+        finally:
+            browser.close()
+    return {"performed": True, "checks": checks, "errors": errors, "externalRequestCount": len(external_requests)}
+
+
+def _audit_engineering_long_write(result: LiveCaseResult, workspace: str, *, browser_executable: str | None, headless: bool) -> dict[str, Any]:
+    from core.v8_agent_os_paths import STATE_DB_PATH
+    events, event_error = [], None
+    try:
+        with sqlite3.connect(Path(STATE_DB_PATH).resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT seq, topic, event_ts, payload_json FROM runtime_events WHERE session_id = ? AND run_id = ? ORDER BY seq",
+                (result.session_id, result.run_id),
+            ).fetchall()
+        events = [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        event_error = f"tool_events_unverified:{type(exc).__name__}"
+    models, model_error = _engineering_model_observations(result)
+    target = Path(workspace) / ENGINEERING_BOARD_FILE
+    if not target.resolve().is_relative_to(Path(workspace).resolve()):
+        return {"checks": {"artifactInsideWorkspace": False}, "unverified": ["artifact_resolves_outside_disposable_workspace"]}
+    try:
+        html = target.read_bytes().decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        return {"checks": {"artifactReadable": False}, "unverified": [f"artifact_unavailable:{type(exc).__name__}"]}
+    diagnostic = _engineering_long_write_proof(events, models, html, initial_content=result.engineering_initial_content)
+    diagnostic["initialFileCapturedDuringLive"] = result.engineering_initial_content is not None
+    for kind in ("engineering", "delegation"):
+        diagnostic["checks"][f"{kind}EpisodeCompleted"] = any(
+            (episode.get("kind") or episode.get("runtimeKind")) == kind
+            and (episode.get("state") or episode.get("status")) in {"completed", "succeeded"}
+            for episode in result.episodes)
+    diagnostic["artifactPath"] = str(target)
+    diagnostic["purpose"] = "intentional_long_argument_fixture_not_a_general_product_length_requirement"
+    diagnostic["unverified"].extend(error for error in [event_error, model_error] if error)
+    try:
+        diagnostic["browser"] = _engineering_browser_check(target.resolve(), browser_executable=browser_executable, headless=headless)
+    except Exception as exc:
+        diagnostic["browser"] = {"performed": False, "errors": [f"browser_unverified:{type(exc).__name__}:{exc}"]}
+    return diagnostic
+
+
+def _prepare_engineering_live_workspace(engine_url: str, *, browser_executable: str | None) -> str:
+    from playwright.sync_api import sync_playwright
+    from tests.scripts.live_web_activity_audit import _browser_executable
+    # Launch the actual browser before any billable run, not just import its SDK.
+    with sync_playwright() as playwright:
+        options: dict[str, Any] = {"headless": True}
+        if executable := _browser_executable(browser_executable):
+            options["executable_path"] = executable
+        browser = playwright.chromium.launch(**options)
+        browser.close()
+    workspace = Path(tempfile.mkdtemp(prefix="v8os-engineering-live-"))
+    project = _json_request(f"{_engine_api_base(engine_url)}/projects", method="POST", payload={
+        "name": "Engineering live fixture", "workspacePath": str(workspace),
+        "workspaceTrustState": "trusted", "workspaceTrustSource": "user_confirmed_live_harness",
+        "tags": ["live_harness", "engineering"],
+    })
+    project_id = project.get("id") or project.get("projectId")
+    if not project_id:
+        raise RuntimeError("disposable_workspace_registration_unverified")
+    effective = _json_request(f"{_engine_api_base(engine_url)}/projects/{project_id}")
+    if effective.get("workspaceTrustState") != "trusted" or Path(str(effective.get("workspacePath") or "")).resolve() != workspace.resolve():
+        raise RuntimeError("disposable_workspace_trust_readback_failed")
+    return str(workspace)
+
+
+def _audit_engineering_parent_repair(result: LiveCaseResult, workspace: str) -> dict[str, Any]:
+    episodes = [item for item in result.episodes if item.get("kind") == "engineering"]
+    repairs = [item for item in episodes if (item.get("inputs") or {}).get("parentAcceptance")]
+    checks = {"twoCompletedEpisodes": len(episodes) == 2 and all(item.get("state") == "completed" for item in episodes),
+              "oneExplicitParentRepair": len(repairs) == 1}
+    repair = repairs[0] if repairs else {}
+    inputs = repair.get("inputs") or {}
+    acceptance = inputs.get("parentAcceptance") or {}
+    prior = next((item for item in episodes if (item.get("id") or item.get("episodeId")) == acceptance.get("episodeId")), {})
+    lineage = inputs.get("repairLineage") or {}
+    checks["currentHandoffBound"] = bool(prior) and acceptance.get("handoffRefId") == (prior.get("resultRef") or prior.get("result_ref"))
+    checks["oneRepairBudgetConsumed"] = (inputs.get("engineeringRepair") or {}).get("finalRepairAttempt") is True
+    checks["sameWriteScope"] = lineage.get("priorWriteSet") == lineage.get("replacementWriteSet") == ["acceptance-note.txt"]
+    target = Path(workspace) / "acceptance-note.txt"
+    try:
+        checks["actualFinalContent"] = target.resolve().is_relative_to(Path(workspace).resolve()) and target.read_text(encoding="utf-8").strip() == "approved"
+    except (OSError, UnicodeError):
+        checks["actualFinalContent"] = False
+    activity = result.web_activity_audit or {}
+    checks["webLiveReloadParity"] = bool(activity.get("performed") and not activity.get("errors")
+        and activity.get("liveSubagentIds") and all((activity.get("parity") or {}).get(key) is True
+        for key in ("runtimeCards", "subagentCards", "renderedNarratives")))
+    return {"checks": checks, "parentAcceptance": acceptance, "lineage": lineage,
+            "purpose": "explicit_parent_repair_protocol_live_not_uncoached_agent_benchmark"}
+
+
+def _last_runtime_dispatch(events: list[dict[str, Any]], *, run_id: str | None) -> dict[str, Any]:
+    for event in sorted(events, key=lambda item: int(item.get("seq") or 0), reverse=True):
+        if run_id and str(event.get("run_id") or event.get("runId") or "") != run_id:
+            continue
+        tool = _event_payload(event).get("tool") or {}
+        response = tool.get("result") or {}
+        if tool.get("toolName") != "runtime_broker" or not isinstance(response, dict):
+            continue
+        status = response.get("runtimeDispatchStatus")
+        if isinstance(status, dict):
+            return {**status, "seq": int(event.get("seq") or 0)}
+    return {}
+
+
+def _unbacked_pending_delivery_claim(result: LiveCaseResult) -> bool:
+    # A narrow observed contradiction detector, not a general semantic judge.
+    # Keep the final text and dispatch facts in the report for human review.
+    if result.final_runtime_dispatch.get("dispatched") is not False or not result.episodes:
+        return False
+    terminal = {"completed", "failed", "cancelled", "canceled", "interrupted", "degraded", "merged"}
+    if any(str(item.get("state") or item.get("status") or "").lower() not in terminal for item in result.episodes):
+        return False
+    return bool(re.search(
+        r"(?<!无需)(?<!不必)(?<!不再)等待[^。！？\n]{0,48}(?:子代理|协作|修复)[^。！？\n]{0,24}(?:完成|返回)",
+        result.final_text,
+    ))
 
 
 def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
     spec = result.spec
     findings: list[AuditFinding] = []
+    if spec.case_id == ENGINEERING_PARENT_REPAIR_CASE_ID:
+        proof = result.engineering_parent_repair_audit or {}
+        if not proof.get("checks") or not all(proof["checks"].values()):
+            findings.append(AuditFinding(severity="P1", case_id=spec.case_id, title=spec.title,
+                summary="父级验收后的单次修复、精确引用、实际文件或 Web 一致性未通过。",
+                evidence=_redact(proof), modules=["core/tools/native/runtime.py"],
+                recommended_fix="核对当前handoff与派发事实，不能用旧结果复用或模型自报替代实际修复。"))
+    if _unbacked_pending_delivery_claim(result):
+        findings.append(AuditFinding(
+            severity="P1", case_id=spec.case_id, title=spec.title,
+            summary="终态声称仍在等待协作，但最后路由未派发且没有活动 episode；必须复核交付真相。",
+            evidence=_redact({"finalDispatch": result.final_runtime_dispatch, "finalText": result.final_text}),
+            modules=["core/tools/native/runtime.py", "graph/supervisor_turn.py"],
+            recommended_fix="核对是否复用了旧结果、是否需要有界修复；不能把命令已返回当作新任务已启动。",
+        ))
+    if spec.case_id == ENGINEERING_LONG_WRITE_CASE_ID:
+        proof = result.engineering_long_write_audit or {}
+        browser = proof.get("browser") or {}
+        required_browser_checks = {"initialRows", "titleMicroEdit", "colorMicroEdit", "filter", "add", "saveReload", "offlineSingleFile"}
+        browser_verified = browser.get("performed") and not browser.get("errors") and all(
+            (browser.get("checks") or {}).get(key) is True for key in required_browser_checks)
+        activity = result.web_activity_audit or {}
+        activity_verified = (activity.get("performed") and not activity.get("errors")
+                             and "engineering" in (activity.get("liveRuntimeIds") or []) and activity.get("liveSubagentIds")
+                             and (activity.get("parity") or {}).get("runtimeCards") is True
+                             and (activity.get("parity") or {}).get("subagentCards") is True)
+        if (not proof.get("checks") or not all(proof["checks"].values()) or proof.get("unverified")
+                or not browser_verified or not activity_verified):
+            findings.append(AuditFinding(
+                severity="P1", case_id=spec.case_id, title=spec.title,
+                summary="工程长写入、同actor版本续写或浏览器交互未完整证明。",
+                evidence=_redact({**proof, "webActivityVerified": bool(activity_verified)}), modules=["graph/agent_factories.py", "core/tools/native/workspace_file.py"],
+                recommended_fix="逐项区分真实失败与unverified，读取实际provider usage和工具证据，不能用字符数或模型自报替代。",
+            ))
     tool_set = set(result.actual_tools)
     episode_kinds = {
         str(item.get("kind") or item.get("runtimeKind") or item.get("episodeKind") or "").strip().lower()
@@ -2233,6 +2858,17 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
         findings.extend(_pure_research_findings(result))
     if spec.case_id == RESEARCH_DELEGATED_VERIFICATION_CASE_ID:
         findings.extend(_delegated_research_verification_findings(result))
+    if spec.case_id == SAVED_RESEARCH_VERIFICATION_CASE_ID:
+        proof = result.saved_research_verification_audit or {}
+        failed = [name for name, passed in proof.get("checks", {}).items() if not passed]
+        if not proof.get("checks") or failed:
+            findings.append(AuditFinding(
+                severity="P1", case_id=spec.case_id, title=spec.title,
+                summary="成熟答案复用链未闭环：" + ", ".join(failed or ["missing_audit"]),
+                evidence=_redact(proof), modules=["core/runtime_tool_access.py", "core/tools/native/delegation.py"],
+                recommended_fix="核对实际可见读取工具、原始证据引用、子任务回流及父级验收，不能以执行结束替代核验成功。",
+                regression_test="run_supervisor_runtime_skill_live_audit.py --case saved_research_verification --live",
+            ))
     if result.final_text and _looks_like_handoff_leak(result.final_text):
         findings.append(
             AuditFinding(
@@ -2444,11 +3080,20 @@ def _write_report(
                         "tools": result.actual_tools,
                         "topics": result.observed_topics,
                         "finalText": _redact(result.final_text),
+                        "finalNarrativeAudit": {
+                            key: value for key, value in _extract_final_delivery(
+                                result.canonical_messages, preferred_run_id=result.run_id,
+                            ).items() if key != "text"
+                        },
                         "episodes": result.episodes,
                         "handoffs": result.handoffs,
                         "toolInvocations": result.tool_invocations,
+                        "finalRuntimeDispatch": result.final_runtime_dispatch,
                         "researchCompletedSeq": result.research_completed_seq,
                         "webActivityAudit": result.web_activity_audit,
+                        "engineeringLongWriteAudit": result.engineering_long_write_audit,
+                        "engineeringParentRepairAudit": result.engineering_parent_repair_audit,
+                        "savedResearchVerificationAudit": result.saved_research_verification_audit,
                         "pureResearchDiagnostic": (
                             _pure_research_diagnostic(result)
                             if result.spec.case_id == PURE_RESEARCH_CASE_ID
@@ -2486,6 +3131,9 @@ def main(argv: list[str] | None = None) -> int:
             "source_write",
             PURE_RESEARCH_CASE_ID,
             RESEARCH_DELEGATED_VERIFICATION_CASE_ID,
+            SAVED_RESEARCH_VERIFICATION_CASE_ID,
+            ENGINEERING_LONG_WRITE_CASE_ID,
+            ENGINEERING_PARENT_REPAIR_CASE_ID,
             "joint_research_delivery",
             "all",
         ],
@@ -2505,6 +3153,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--session-id", default=None, help="Continue a harness-owned session and its scoped evidence; never a normal user conversation.")
+    parser.add_argument("--saved-experience-id", default=None, help="Existing accepted pack for saved_research_verification; never creates/revises it.")
+    parser.add_argument("--saved-evidence-id", default=None, help="Exact current bundle ID of that saved pack.")
     parser.add_argument("--allow-side-effects", action="store_true", help="Allow the explicit disposable workspace used by side-effect live cases.")
     parser.add_argument(
         "--strict",
@@ -2516,12 +3166,28 @@ def main(argv: list[str] | None = None) -> int:
     if not args.live:
         print("Refusing to call live Engine/model without --live.", file=sys.stderr)
         return 2
+    reference_bundle = None
+    if args.case == SAVED_RESEARCH_VERIFICATION_CASE_ID:
+        if not args.saved_experience_id or not args.saved_evidence_id or args.session_id:
+            print("Saved verification requires both saved IDs and a fresh harness session.", file=sys.stderr)
+            return 2
+        from core.tools.research_ledger import get_evidence_bundle, get_experience_pack
+        from core.tools.research_quality import research_answer_is_usable
+        pack = get_experience_pack(args.saved_experience_id)
+        reference_bundle = get_evidence_bundle(args.saved_evidence_id)
+        if (not pack or pack.get("createdFromBundleId") != args.saved_evidence_id
+                or not reference_bundle or not research_answer_is_usable(reference_bundle)):
+            print("Saved pack must be active, accepted, and point to the supplied current bundle.", file=sys.stderr)
+            return 2
+    if args.case in ENGINEERING_LIVE_CASE_IDS and (not args.allow_side_effects or args.session_id):
+        print(f"{args.case} requires --allow-side-effects and a fresh harness session.", file=sys.stderr)
+        return 2
     if args.session_id and not args.session_id.startswith("supervisor-runtime-skill-live-"):
         print("--session-id must identify a harness-owned session.", file=sys.stderr)
         return 2
-    if args.case == RESEARCH_DELEGATED_VERIFICATION_CASE_ID and not args.web_url:
+    if args.case in {RESEARCH_DELEGATED_VERIFICATION_CASE_ID, SAVED_RESEARCH_VERIFICATION_CASE_ID, *ENGINEERING_LIVE_CASE_IDS} and not args.web_url:
         print(
-            f"{RESEARCH_DELEGATED_VERIFICATION_CASE_ID} requires --web-url so live/reload activity parity cannot be skipped.",
+            f"{args.case} requires --web-url so live/reload activity parity cannot be skipped.",
             file=sys.stderr,
         )
         return 2
@@ -2578,8 +3244,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if args.case in ENGINEERING_LIVE_CASE_IDS:
+        try:
+            args.workspace = _prepare_engineering_live_workspace(args.engine_url, browser_executable=args.browser_executable)
+        except Exception as exc:
+            print(f"Engineering preflight failed before billable submit: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(f"[live-audit] fresh disposable workspace (retained for inspection): {args.workspace}")
     results: list[LiveCaseResult] = []
-    for case in _case_specs(args.case):
+    cases = ([_saved_research_case(args.saved_experience_id, args.saved_evidence_id)]
+             if args.case == SAVED_RESEARCH_VERIFICATION_CASE_ID else _case_specs(args.case))
+    for case in cases:
         print(f"[live-audit] submit {case.case_id}: {case.title}")
         result = _submit_case(
             args.engine_url,
@@ -2611,6 +3286,7 @@ def main(argv: list[str] | None = None) -> int:
             max_wait = 1200.0 if case.case_id in {
                 PURE_RESEARCH_CASE_ID,
                 RESEARCH_DELEGATED_VERIFICATION_CASE_ID,
+                ENGINEERING_LONG_WRITE_CASE_ID,
             } else 420.0
         result = _poll_case(
             args.engine_url,
@@ -2628,6 +3304,14 @@ def main(argv: list[str] | None = None) -> int:
             # Capture live/reload parity before cancellation changes the UI.
             # A timed-out test must not leave a billable run unattended.
             _cancel_timed_out_case(args.engine_url, result)
+        if case.case_id == ENGINEERING_LONG_WRITE_CASE_ID:
+            result.engineering_long_write_audit = _audit_engineering_long_write(
+                result, args.workspace, browser_executable=args.browser_executable, headless=not args.show_browser,
+            )
+        elif case.case_id == ENGINEERING_PARENT_REPAIR_CASE_ID:
+            result.engineering_parent_repair_audit = _audit_engineering_parent_repair(result, args.workspace)
+        elif case.case_id == SAVED_RESEARCH_VERIFICATION_CASE_ID:
+            result.saved_research_verification_audit = _audit_saved_research_verification(result, reference_bundle)
         results.append(result)
         print(
             f"[live-audit] {case.case_id}: status={result.status} run={result.run_id or '-'} "
@@ -2655,7 +3339,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Live audit found {p0_count} P0 issue(s).", file=sys.stderr)
         return 1
     strict_findings = args.strict or any(
-        result.spec.case_id in {PURE_RESEARCH_CASE_ID, RESEARCH_DELEGATED_VERIFICATION_CASE_ID}
+        result.spec.case_id in {PURE_RESEARCH_CASE_ID, RESEARCH_DELEGATED_VERIFICATION_CASE_ID, SAVED_RESEARCH_VERIFICATION_CASE_ID, ENGINEERING_LONG_WRITE_CASE_ID}
         for result in results
     )
     if strict_findings and findings:

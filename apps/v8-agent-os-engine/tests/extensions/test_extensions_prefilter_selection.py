@@ -61,6 +61,116 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         llm_tree_prefilter._PREFILTER_CACHE.clear()
 
+    def test_explicit_negated_actions_do_not_become_positive_extension_intents(self):
+        module = extensions_runtime_module
+        for query in (
+            "请读取已保存的调研答案并核对官方来源，不做编程。",
+            "不写代码，只核对已存答案。",
+            "不写后端代码，只核对已存答案。",
+            "不要生成图片，只核对已存答案。",
+        ):
+            with self.subTest(query=query):
+                tokens, profile, *_ = module._analyze_extensions_query(query)
+                self.assertNotIn("code", profile["artifactIntents"])
+                self.assertNotIn("image", profile["artifactIntents"])
+                self.assertNotIn("create", profile["operationIntents"])
+                self.assertNotIn("engineering_ai", profile["primaryThemeIntents"])
+                self.assertNotIn("coding", tokens)
+                cached_tokens, cached_profile, cache_hit, *_ = module._analyze_extensions_query(query)
+                self.assertTrue(cache_hit)
+                self.assertEqual(cached_tokens, tokens)
+                self.assertEqual(cached_profile, profile)
+
+    def test_negation_does_not_erase_positive_reminders_or_separate_positive_actions(self):
+        module = extensions_runtime_module
+        for query in (
+            "使用gsap-scrolltrigger实现滚动动画。",
+            "不要忘记使用gsap-scrolltrigger实现滚动动画。",
+            "别忘了使用gsap-scrolltrigger实现滚动动画。",
+            "不写后端代码，只使用gsap-scrolltrigger实现滚动动画。",
+        ):
+            with self.subTest(query=query):
+                tokens, profile, *_ = module._analyze_extensions_query(query)
+                score = module._score_skill_entry(query_text=query, query_tokens=tokens, query_profile=profile,
+                    skill={"name": "gsap-scrolltrigger", "description": "Scroll animation using GSAP ScrollTrigger."})[0]
+                self.assertGreater(score, 0)
+        for query in ("不要忘记写代码", "不是不写代码", "不得不写代码", "不只是写代码"):
+            with self.subTest(query=query):
+                _, profile, *_ = module._analyze_extensions_query(query)
+                self.assertIn("code", profile["artifactIntents"])
+
+    def test_saved_answer_negative_programming_query_does_not_select_code_skills_or_context7(self):
+        service = ExtensionsRuntimeService()
+        extensions_runtime_module._clear_query_analysis_cache()
+        query = "请读取已保存的调研答案并核对官方来源，不做编程。"
+        skills = [{"name": name, "folder": name, "description": "Create frontend code and generative art with programming.",
+                   "capabilityProfile": {"primaryArtifactTypes": ["code"], "primaryOperations": ["create"],
+                                         "skillClass": "artifact_generator", "capabilityConfidence": 1.0},
+                   "themeProfile": {"primaryThemes": ["engineering_ai"], "themeConfidence": 1.0}}
+                  for name in ("algorithmic-art", "frontend-design")]
+        tools = [_FakeTool("query-docs", "Retrieves documentation and code examples for programming libraries.", "context7")]
+        policy = {"enabled": True, "available": True, "mode": "two_stage", "modelId": "fixture", "role": "extensions_prefilter", "reason": "",
+                  "skills": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 5},
+                  "mcp": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2}}
+        with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+            service, "_resolve_skill_inventory", return_value={"items": skills, "rootDescriptors": []}), patch.object(
+            service, "_infer_dynamic_family_profile_with_llm", side_effect=AssertionError("no model query classification")):
+            result = service.build_contextual_route(user_query=query, available_tools=tools)
+            cached = service.build_contextual_route(user_query=query, available_tools=tools)
+        for current in (result, cached):
+            self.assertEqual(current.selected_skill_names, [])
+            self.assertEqual(current.exposed_mcp_tool_names, [])
+            self.assertIsNone(current.candidate_summary["artifactIntent"])
+        self.assertFalse(result.candidate_summary["queryAnalysisCacheHit"])
+        self.assertTrue(cached.candidate_summary["queryAnalysisCacheHit"])
+
+    def test_negative_match_projection_does_not_rewrite_reranker_user_query(self):
+        service = ExtensionsRuntimeService()
+        extensions_runtime_module._clear_query_analysis_cache()
+        query = "不写后端代码，但使用gsap-scrolltrigger实现滚动动画，不要忘记键盘操作。"
+        positive_query = "使用gsap-scrolltrigger实现滚动动画。"
+        captured = []
+
+        def select(**kwargs):
+            captured.append(kwargs["user_query"])
+            self.assertEqual(kwargs["families"][0]["key"], "gsap-scrolltrigger")
+            return [kwargs["families"][0]["key"]], {"mode": "llm_tree", "timedOut": False}
+
+        skills = [{"name": name, "folder": name, "description": "GSAP ScrollTrigger animation.",
+                   "capabilityProfile": {"primaryArtifactTypes": ["animation"], "primaryOperations": ["create"],
+                                         "skillClass": "artifact_generator", "capabilityConfidence": 1.0}}
+                  for name in ("gsap-scrolltrigger", "gsap-animation")]
+        policy = {"enabled": True, "available": True, "mode": "two_stage", "modelId": "fixture", "role": "extensions_prefilter", "reason": "",
+                  "skills": {"stage1TopK": 10, "llmEnabled": True, "stage2TopK": 1},
+                  "mcp": {"stage1TopK": 10, "llmEnabled": False, "stage2TopK": 2}}
+        with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+            service, "_resolve_skill_inventory", return_value={"items": skills, "rootDescriptors": []}), patch.object(
+            extensions_runtime_module, "_get_family_selector", return_value=select):
+            positive_result = service.build_contextual_route(user_query=positive_query, available_tools=[])
+            result = service.build_contextual_route(user_query=query, available_tools=[])
+        self.assertEqual(captured, [positive_query, query])
+        self.assertEqual(positive_result.selected_skill_names, ["gsap-scrolltrigger"])
+        self.assertFalse(positive_result.candidate_summary["queryAnalysisCacheHit"])
+        self.assertEqual(result.selected_skill_names, ["gsap-scrolltrigger"])
+
+    def test_operations_and_embedded_latin_fragments_are_not_relevance(self):
+        module = extensions_runtime_module
+        self.assertEqual(module._score_text(query_tokens=["ai"], title="email", description="explain details"), 0)
+        self.assertGreater(module._score_text(query_tokens=["ai"], title="AI research", description=""), 0)
+        self.assertGreater(module._score_text(query_tokens=["vue"], title="vue-router", description=""), 0)
+        module._ensure_extension_lexicon_state()
+        skill = {"name": "motion-review", "description": "Review animated spring transitions.",
+                 "capabilityProfile": {"primaryArtifactTypes": ["animation"], "primaryOperations": ["review"],
+                                       "skillClass": "artifact_editor_or_analyzer", "capabilityConfidence": 1.0}}
+        profile = {"operationIntents": ["review"], "topicTokens": ["regulation"]}
+        self.assertEqual(module._score_skill_entry(query_text="review regulation", query_tokens=["review", "regulation"],
+                                                   query_profile=profile, skill=skill)[0], 0)
+        self.assertGreater(module._score_skill_entry(query_text="review animated spring transitions",
+                            query_tokens=["review", "animated", "spring", "transitions"],
+                            query_profile={**profile, "topicTokens": ["animated", "spring", "transitions"]}, skill=skill)[0], 0)
+        self.assertGreater(module._score_skill_entry(query_text="use motion-review", query_tokens=["motion-review"],
+                            query_profile={}, skill=skill)[0], 0)
+
     def test_mcp_family_profiles_are_primed_without_route_time_model_inference(self):
         service = ExtensionsRuntimeService()
         tools = [
@@ -84,6 +194,27 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             allow_llm=False,
         )
         self.assertIn("search", list(context_profile.get("primaryOperations") or []))
+
+    def test_mcp_operations_do_not_match_unrelated_subjects(self):
+        module = extensions_runtime_module
+        service = ExtensionsRuntimeService()
+        tools = [
+            _FakeTool("query-docs", "Retrieves and queries up-to-date documentation and code examples from Context7 for any programming library or framework.", "context7"),
+            _FakeTool("resolve-library-id", "Resolves a package/product name to a Context7-compatible library ID and returns matching libraries.", "context7"),
+        ]
+        profile = service._get_mcp_server_profile(server_name="context7", items=tools, allow_llm=False)
+
+        def score(query):
+            tokens, query_profile, *_ = module._analyze_extensions_query(query)
+            return module._score_mcp_server_entry(query_text=query, query_tokens=tokens, query_profile=query_profile,
+                                                   server_name="context7", items=tools, profile=profile)
+
+        self.assertEqual(score("复用已保存的调研答案，核对原始引用和政策生效日期。"), 0)
+        self.assertGreater(score("查阅 Python 文档"), 0)
+        self.assertGreater(score("use context7"), 0)
+        self.assertEqual(module._score_dynamic_family_entry(query_text="review regulation", query_tokens=["review", "regulation"],
+            query_profile={"operationIntents": ["review"], "topicTokens": ["review", "regulation"]},
+            family_name="owned-animation", description="Review animated springs", profile={"primaryOperations": ["review"]}), 0)
 
     def test_contextual_route_never_uses_provider_to_classify_mcp_families(self):
         service = ExtensionsRuntimeService()
@@ -4061,7 +4192,7 @@ description: 三月七视角 skill。
         self.assertEqual(result.get("excludeRootPaths"), set())
         refresh_mock.assert_not_called()
 
-    def test_guarded_inventory_timeout_fail_closes_dirty_visible_roots(self):
+    def test_agent_inventory_excludes_dirty_roots_without_waiting_or_refreshing(self):
         service = ExtensionsRuntimeService()
         root_path = SkillLoader._normalize_path(r"E:\Projects\test1\.agents\skills")
         visible_descriptors = [
@@ -4092,7 +4223,7 @@ description: 三月七视角 skill。
             return_value={
                 "startupState": "ready",
                 "snapshotFreshness": "live",
-                "backgroundRefreshInProgress": False,
+                "backgroundRefreshInProgress": True,
                 "skillCount": 37,
             },
         ), patch.object(
@@ -4116,15 +4247,13 @@ description: 三月七视角 skill。
             )
 
         self.assertTrue(result.get("inventoryBarrierApplied"))
-        self.assertTrue(result.get("inventoryBarrierTimedOut"))
+        self.assertFalse(result.get("inventoryBarrierTimedOut"))
+        self.assertTrue(result.get("inventoryRefreshPending"))
         self.assertEqual(result.get("dirtyVisibleRoots"), [root_path])
         self.assertEqual(result.get("excludeRootPaths"), {root_path})
-        self.assertEqual(result.get("waitBudgetMs"), 800)
-        self.assertGreater(result.get("inventoryBarrierWaitMs") or 0, 0)
-        refresh_mock.assert_called_once()
-        refresh_kwargs = refresh_mock.call_args.kwargs
-        self.assertEqual(refresh_kwargs.get("compare_existing"), False)
-        self.assertGreater(int(refresh_kwargs.get("timeout_ms") or 0), 0)
+        self.assertEqual(result.get("waitBudgetMs"), 0)
+        self.assertEqual(result.get("inventoryBarrierWaitMs"), 0.0)
+        refresh_mock.assert_not_called()
 
     def test_skill_loader_visible_inventory_cache_hits_on_repeat_scoped_inventory(self):
         original_registry = SkillLoader._skills_registry
@@ -4533,7 +4662,7 @@ description: 三月七视角 skill。
             ), patch.object(
                 SkillLoader,
                 "_scan_single_root_descriptor",
-                side_effect=lambda descriptor: (
+                side_effect=lambda descriptor, **_kwargs: (
                     {"global:wechat-studio": dict(SkillLoader._skills_registry["global:wechat-studio"])}
                     if SkillLoader._normalize_path(descriptor.get("rootPath")) == global_root_path
                     else {"scoped:wechat-account-articles": dict(SkillLoader._skills_registry["scoped:wechat-account-articles"])}

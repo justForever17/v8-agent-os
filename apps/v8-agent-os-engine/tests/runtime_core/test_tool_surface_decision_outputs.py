@@ -32,6 +32,63 @@ def _assert_not_json_wrapper(text: str) -> None:
     assert "recommendedNextAction" not in text
 
 
+def test_blocked_engineering_command_keeps_actionable_recovery_in_agent_surface():
+    from core.tools.native.command import _engineering_command_scope_block
+
+    payload = _engineering_command_scope_block(
+        {"runtime_kind": "subagent", "engineering_capsule_mode": "write"},
+        operation="run_system_command",
+        command="if (Test-Path '.') { Get-ChildItem '.' }",
+    )
+    assert payload and payload["ok"] is False
+    assert payload["kind"] == "git_parallel_isolation_required"
+    visible = _visible("run_system_command", payload, budget=1400)
+    _assert_not_json_wrapper(visible)
+    assert "命令未执行" in visible
+    assert "不代表文件或目录不存在" in visible
+    assert "读取文件使用 read_native_file" in visible
+    assert "目录检查用当前 shell 的简单只读命令" in visible
+    assert "write_native_file" in visible
+    assert "复杂只读验证交给已有验证子任务" in visible
+    assert "exit code: 0" not in visible.lower()
+
+
+def test_saved_experience_actual_agent_surface_retains_preview_limits_and_durable_locator(monkeypatch, tmp_path):
+    from core.tools import research_broker as broker
+    from tests.core.research_scope_fixture import research_sessions
+    from erc.runtime_context import bind_runtime_context
+
+    _, create, _ = research_sessions(monkeypatch, tmp_path)
+
+    bundle_id = "research-" + "a" * 64
+    pack_id = "experience-" + "b" * 64
+    pack = {"experiencePackId": pack_id, "createdFromBundleId": bundle_id, "version": 3,
+            "status": "active", "deliveryScope": "partial", "qualityAccepted": True,
+            "limitations": ["Migration behavior remains unverified."], "researchResult": "PREVIEW_CANARY\n" + "supported text " * 800}
+    monkeypatch.setattr(broker, "get_experience_pack", lambda *_, **__: pack)
+    with bind_runtime_context(**create("surface-test-session")):
+        raw = json.loads(broker.research_broker.func(mode="get_experience", experiencePackId=pack_id))
+    for budget in (1400, 6000):
+        visible = _visible("research_broker", raw, budget=budget)
+        _assert_not_json_wrapper(visible)
+        assert len(visible) <= budget
+        assert pack_id in visible
+        assert "active" in visible and "partial" in visible
+        assert "Migration behavior remains unverified." in visible
+        assert "PREVIEW_CANARY\n" in visible
+        assert "preview" in visible.lower()
+        assert str(raw["item"]["answerChars"]) in visible
+        assert raw["detailTool"] in visible
+
+
+def test_missing_saved_experience_surface_never_claims_a_saved_answer():
+    visible = _visible("research_broker", {"ok": False, "mode": "get_experience", "kind": "research_experience_pack",
+                                            "summary": "Experience pack not found.", "recommendedNextAction": "search_experience"})
+    assert "not found" in visible.lower()
+    assert "search_experience" in visible
+    assert "Review accepted: yes" not in visible
+
+
 def _bind_accepted_research_consensus(payload: dict) -> dict:
     reviews = []
     for index, mode in enumerate(("semantic", "adversarial"), start=1):
@@ -198,6 +255,19 @@ def test_runtime_broker_default_is_decision_summary():
     assert "Runtime route menu" in visible
     assert "Run-scoped tool groups (not execution routes)" in visible
     _assert_not_json_wrapper(visible)
+
+
+def test_denied_research_surface_cannot_reopen_ledger_by_id(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("failed tool result must not rehydrate private evidence")
+    monkeypatch.setattr("core.tools.research_ledger.get_evidence_bundle", forbidden)
+    for kind in ("research_access_denied", "research_evidence_bundle"):
+        visible = _visible("research_broker", {
+            "ok": False, "kind": kind, "evidenceBundleId": "other-user-bundle",
+        }, budget=1200)
+        assert "Research answer\n" not in visible
+        if kind == "research_access_denied":
+            assert "access denied" in visible and "other-user-bundle" not in visible
 
 
 def test_research_plan_hides_shard_defaults():

@@ -1591,6 +1591,40 @@ def test_runtime_recoverable_failure_final_response_is_deterministic():
     assert "失败 episode 数：1" in str(response.content)
 
 
+@pytest.mark.parametrize("model_text", ["已经完成并交付。", "工程执行失败，请重新启动。"])
+def test_wait_timeout_with_active_episode_preserves_unfinished_truth(model_text):
+    state = {"runtime_dispatch_status": {
+        "mode": "runtime_episode", "nextAction": "recoverable_failure",
+        "state": "episode_stalled", "reason": "episode_stalled",
+        "activeEpisodeIds": ["still-active"], "episodeCount": 1,
+    }}
+    guidance = str(_runtime_recoverable_failure_message(state).content)
+    assert "still active, not terminal" in guidance
+    assert "Do not start duplicate work" in guidance
+    response = _coerce_recoverable_failure_response(AIMessage(content=model_text), state)
+    assert response.content == _runtime_recoverable_failure_final_text(state)
+    assert "等待运行进展超时" in response.content
+    assert "尚未进入终态" in response.content
+    assert "确认停止后再恢复" in response.content
+    assert "已失败" not in response.content
+    assert "失败 episode 数" not in response.content
+    read = AIMessage(content="核对原执行状态。", tool_calls=[{
+        "id": "inspect", "name": "runtime_broker", "args": {"mode": "status"},
+    }])
+    assert _coerce_recoverable_failure_response(read, state) is read
+
+
+@pytest.mark.parametrize("reason", ["episode_failed", "runner_unavailable"])
+def test_real_runtime_failure_is_not_relabelled_wait_timeout(reason):
+    state = {"runtime_dispatch_status": {
+        "mode": "runtime_episode", "nextAction": "recoverable_failure",
+        "state": reason, "reason": reason, "activeEpisodeIds": ["other-active"],
+        "failedEpisodeCount": 1,
+    }}
+    assert "已失败" in _runtime_recoverable_failure_final_text(state)
+    assert "failed or produced a failed handoff" in str(_runtime_recoverable_failure_message(state).content)
+
+
 def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_success():
     state = {
         "runtime_dispatch_status": {
@@ -1606,9 +1640,17 @@ def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_succe
     assert "artifact_acceptance_failed" in coerced.content
 
 
-@pytest.mark.parametrize("research_retry,evidence_read", [(False, None), (True, None), (False, "research_broker"), (False, "tool_observation_detail")])
-def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch, research_retry, evidence_read):
+@pytest.mark.parametrize("research_retry,evidence_read,repair_completed", [
+    (False, None, False), (True, None, False),
+    (False, "research_broker", False), (False, "tool_observation_detail", False),
+    (True, None, True),
+])
+def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch, research_retry, evidence_read, repair_completed):
     calls = []
+    preparation_records = []
+    diagnostics = []
+    clock = [100.0]
+    monkeypatch.setattr(supervisor_turn_module, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
     decision = SimpleNamespace(as_dict=lambda: {})
     route_bundle = SimpleNamespace(
         filtered_tools=[],
@@ -1621,7 +1663,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
         bind_execution_context=lambda **_kwargs: "token",
         reset_execution_context=lambda _token: None,
         emit_route_selected=lambda **_kwargs: None,
-        emit_supervisor_diagnostics=lambda _payload: None,
+        emit_supervisor_diagnostics=lambda payload: diagnostics.append(payload),
         emit_response_tool_calls=lambda _response: None,
         emit_execution_completed=lambda **_kwargs: None,
     )
@@ -1649,11 +1691,12 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
     monkeypatch.setattr(supervisor_turn_module, "runtime_preflight_gate", SimpleNamespace(evaluate=lambda **_kwargs: decision))
     monkeypatch.setattr(supervisor_turn_module, "render_reflex_prompt_addition", lambda _decision: "")
     monkeypatch.setattr(supervisor_turn_module, "render_gate_prompt_addition", lambda _decision: "")
-    monkeypatch.setattr(
-        supervisor_turn_module,
-        "build_supervisor_system_content",
-        lambda **_kwargs: {"system_content": "system", "v8_prompt_segments": []},
-    )
+    def build_context(**_kwargs):
+        clock[0] += 2.5
+        return {"system_content": "system", "v8_prompt_segments": [],
+                "context_preparation_ms": {"hostLoad": 200.0, "engineeringKernel": 2000.0}}
+
+    monkeypatch.setattr(supervisor_turn_module, "build_supervisor_system_content", build_context)
     monkeypatch.setattr(supervisor_turn_module, "_last_memory_session_context_diagnostics", lambda: {})
     monkeypatch.setattr(supervisor_turn_module, "log_memory_observation", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(supervisor_turn_module, "_estimate_memory_context_chars", lambda _value: 0)
@@ -1668,7 +1711,11 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
         "_last_human_memory_rag_diagnostics",
         lambda _messages: {"injection_allowed": False, "reject_reason": "test"},
     )
-    monkeypatch.setattr(supervisor_turn_module, "prepare_supervisor_messages", lambda **kwargs: list(kwargs["messages"]))
+    def prepare_messages(**kwargs):
+        clock[0] += 0.25
+        return list(kwargs["messages"])
+
+    monkeypatch.setattr(supervisor_turn_module, "prepare_supervisor_messages", prepare_messages)
     monkeypatch.setattr(supervisor_turn_module, "_should_force_memory_broker_first", lambda **_kwargs: False)
     monkeypatch.setattr(supervisor_turn_module, "_spec_mode_stage_guidance", lambda **_kwargs: None)
     monkeypatch.setattr(supervisor_turn_module, "debug_supervisor_messages", lambda _messages: None)
@@ -1676,7 +1723,23 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
     monkeypatch.setattr(supervisor_turn_module, "apply_no_progress_breaker", lambda _messages, response: (response, None))
 
     def robust_invoke(*_args, **_kwargs):
+        from erc.runtime_context import get_runtime_context
+
         calls.append("invoked")
+        preparation_records.append(dict(get_runtime_context()["context_preparation_ms"]))
+        assert "context_preparation_ms" not in _kwargs
+        if repair_completed:
+            assert "delegation_broker" in {tool.name for tool in _args[2]}
+            assert _kwargs["tool_choice"] in {"required", "delegation_broker"}
+            assert not any("[Managed Research Gap" in str(message.content) for message in _args[1])
+            return AIMessage(content="调研补充已完成，交给验证工程师核对。", tool_calls=[{
+                "id": "verify-repair", "name": "delegation_broker",
+                "args": {"mode": "dispatch", "tasks": [{
+                    "targetAgentName": "Verification Engineer", "taskBriefId": "verify",
+                    "goal": "核对调研结论与原始证据", "readOnly": True,
+                    "expectedOutputs": ["验证结论"], "acceptanceContract": "逐项核对来源和限制",
+                }]},
+            }])
         if evidence_read:
             assert _kwargs["tool_choice"] == "required"
             assert {tool.name for tool in _args[2]} == {"delegation_broker", "research_broker", "tool_observation_detail"}
@@ -1724,6 +1787,27 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
                 "taskBriefResults": [{"taskBriefId": "law", "status": "degraded"}],
             }],
         }
+        if repair_completed:
+            original = state["current_route_context"]["handoffRefs"][0]
+            original["createdAt"] = "2026-09-07T21:40:00Z"
+            aliases = ["law", "dates", "obligations", "labels", "checklist"]
+            original["missingTaskBriefIds"] = aliases
+            original["taskBriefResults"][0]["taskBriefIds"] = aliases
+            repaired = {
+                "kind": "research_evidence_bundle", "producerEpisodeId": "research-repair",
+                "created_at": "2026-09-08T05:42:00+08:00", "status": "ready",
+                "coveredTaskBriefIds": aliases, "missingTaskBriefIds": [],
+                "taskBriefResults": [{"taskBriefId": "law", "taskBriefIds": aliases, "status": "ready"}],
+            }
+            # Match DB reconciliation order: newest delivery is projected first.
+            state["current_route_context"]["handoffRefs"] = [repaired, original]
+            state["current_route_context"]["effectiveHandoffRefs"] = [repaired, original]
+            state["current_route_context"]["capabilityEpisodes"].append({
+                "episodeId": "research-repair", "kind": "research", "runId": "run-repair", "state": "completed",
+            })
+            state["runtime_dispatch_status"] = {
+                "mode": "runtime_episode", "nextAction": "resume_supervisor", "state": "handoff_ready",
+            }
         if evidence_read:
             route_bundle.filtered_tools.extend([
                 SimpleNamespace(name="research_broker"), SimpleNamespace(name="tool_observation_detail"),
@@ -1754,10 +1838,17 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
     )
 
     assert calls == ["invoked"]
-    assert response.tool_calls[0]["name"] == (evidence_read or "runtime_broker")
+    assert response.tool_calls[0]["name"] == ("delegation_broker" if repair_completed else evidence_read or "runtime_broker")
+    assert preparation_records[0] == diagnostics[-1]["contextPreparationMs"]
+    assert preparation_records[0]["hostLoad"] == 200.0
+    assert preparation_records[0]["engineeringKernel"] == 2000.0
+    assert preparation_records[0]["messagePreparation"] == 250.0
+    assert preparation_records[0]["total"] == 2750.0
+    assert diagnostics[-1]["systemContentBuildMs"] == 2500.0
 
 
-def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocation(monkeypatch):
+@pytest.mark.parametrize("request_budget", [None, 512])
+def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_cap(monkeypatch, request_budget):
     emitted: list[tuple[str, object]] = []
     model_calls: list[list[object]] = []
     model_creations: list[tuple[str, dict]] = []
@@ -1891,10 +1982,10 @@ def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocati
         robust_invoke=compiler_model_call,
         supervisor_base_llm=object(),
         sup_model_name="test-model",
-        caller_kwargs={},
+        caller_kwargs={"max_tokens": request_budget} if request_budget else {},
         llm_factory=SimpleNamespace(
             create_chat_model=create_chat_model,
-            get_model_max_output_tokens=lambda _model_id: 4096,
+            get_model_max_output_tokens=lambda _model_id: None,
         ),
         sanitize_response_tool_calls=lambda response: response,
     )
@@ -1909,7 +2000,7 @@ def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocati
             {
                 "streaming": True,
                 "_role": "supervisor",
-                "max_tokens": 1024,
+                **({"max_tokens": request_budget} if request_budget else {}),
                 "_reasoning_effort": "minimal",
             },
         )

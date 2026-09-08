@@ -1227,6 +1227,17 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       finalized: eventData.finalized === true || eventData.isFinal === true,
       partial: eventData.partial === true,
     };
+    const replaceStreamRunKey = String(eventData.replaceStreamRunKey || "");
+    if (replaceStreamRunKey && snapshot !== undefined && narrativeLifecycle.finalized
+      && !narrativeLifecycle.partial
+      && String(ownerFields.ownerStreamKey || "").startsWith(`${replaceStreamRunKey}:segment:`)) {
+      current.nodes = (current.nodes || []).filter((node) => !(node.kind === "narrative"
+        && String(node.ownerStreamKey || "").startsWith(`${replaceStreamRunKey}:segment:`)
+        && node.ownerAgentId === ownerFields.ownerAgentId
+        && node.ownerAgentKind === ownerFields.ownerAgentKind
+        && node.ownerRuntimeId === ownerFields.ownerRuntimeId));
+      current.content = deriveNarrativeContentFromNodes(current);
+    }
     const explicitNode = event.node_id
       ? (Array.isArray(current.nodes)
         ? current.nodes.find((node): node is SessionStreamNarrativeNode =>

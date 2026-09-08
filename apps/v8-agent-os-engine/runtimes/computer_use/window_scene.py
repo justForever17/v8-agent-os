@@ -67,7 +67,19 @@ def is_shell_surface_window(window: Dict[str, Any] | None, *, platform: str = "w
     if platform != "windows":
         return False
     class_name = normalize_window_text(payload.get("className"))
-    return any(token in class_name for token in WINDOWS_SHELL_CLASS_TOKENS)
+    return any(token in class_name for token in WINDOWS_SHELL_CLASS_TOKENS) or is_passive_overlay_window(payload, platform=platform)
+
+
+def is_passive_overlay_window(window: Dict[str, Any] | None, *, platform: str = "windows") -> bool:
+    payload = normalize_window_payload(window)
+    # Explorer's activation watermark is a visible top-level Worker Window,
+    # not an application or the interactive desktop. Small app dialogs are
+    # valid targets, so size alone is not a reason to exclude a window.
+    return (
+        platform == "windows"
+        and normalize_window_text(payload.get("className")) == "worker window"
+        and normalize_window_text(payload.get("processName")) in {"explorer", "explorer.exe"}
+    )
 
 
 def is_probable_dialog_window(window: Dict[str, Any] | None, *, platform: str = "windows") -> bool:
@@ -201,7 +213,7 @@ def choose_best_window_candidate(
     ranked: List[tuple[int, Dict[str, Any]]] = []
     for item in list(candidates or []):
         payload = normalize_window_payload(item)
-        if not payload:
+        if not payload or is_passive_overlay_window(payload, platform=platform):
             continue
         ranked.append(
             (

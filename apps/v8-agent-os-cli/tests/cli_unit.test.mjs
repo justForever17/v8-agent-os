@@ -5,7 +5,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import desktopPetPlatform from "../src/desktop_pet_platform.cjs";
@@ -83,6 +83,10 @@ const {
 const currentFile = fileURLToPath(import.meta.url);
 const cliRoot = path.resolve(path.dirname(currentFile), "..");
 const repoRoot = path.resolve(cliRoot, "..", "..");
+
+// Status/stop probes may load a developer's persisted fallback ports. Every
+// independent fixture starts at the default; fallback tests opt in explicitly.
+beforeEach(() => configureComponentRuntimePorts(DEFAULT_PORTS));
 
 function runWindowsCommand(command, args, options = {}) {
   return spawnSync(command, args, {

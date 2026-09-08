@@ -2118,6 +2118,7 @@ class ComputerUseRuntime:
             "actionType": action_type,
             "appId": app_id,
             "reason": "window_context_rebound",
+            "requestedWindow": dict(current_window),
             "replacedShellSurface": is_shell_surface_window(current_window, platform=self.driver.platform),
             "window": dict(best_candidate),
         }
@@ -8792,6 +8793,7 @@ class ComputerUseRuntime:
         invocation_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._ensure_runtime_ready()
+        requested_target = {"appId": app_id, "windowTitle": window_title, "windowHandle": window_handle}
         invocation = self._classify_invocation(invocation_metadata, default_trigger_source="computer_use_api")
         binding_decision = self._resolve_app_binding(
             explicit_app_id=app_id,
@@ -8837,7 +8839,7 @@ class ComputerUseRuntime:
             )
 
         with bind_runtime_context(**self._run_context(run_handle=run_handle)):
-            prepared_payload, binding_block = self._prepare_action_window_context(
+            prepared_payload, window_context_patch = self._prepare_action_window_context(
                 run_handle=run_handle,
                 action_type="observe",
                 action_payload={
@@ -8849,6 +8851,7 @@ class ComputerUseRuntime:
                     "environment_probe_mode": environment_probe_mode,
                 },
             )
+            binding_block = prepared_payload.get("_window_binding_block")
             prepared_payload = self._attach_binding_to_payload(prepared_payload, binding_decision)
             window_title = prepared_payload.get("window_title")
             window_handle = prepared_payload.get("window_handle")
@@ -8873,9 +8876,9 @@ class ComputerUseRuntime:
                 metadata["profileId"] = resolved_app_id
                 payload["metadata"] = metadata
                 observation.metadata["profileId"] = resolved_app_id
-            catalog_entry = dict(observed_binding.catalog_entry or {}) if observed_binding.catalog_entry else None
+            catalog_entry = dict(binding_decision.catalog_entry or {}) if binding_decision.catalog_entry else None
             expected_titles: List[str] = []
-            explicit_window_title = str(window_title or "").strip()
+            explicit_window_title = str(requested_target["windowTitle"] or "").strip()
             if explicit_window_title:
                 expected_titles.append(explicit_window_title)
             for item in list((catalog_entry or {}).get("titlePatterns") or []):
@@ -8904,13 +8907,22 @@ class ComputerUseRuntime:
                 expected_titles=expected_titles,
                 expected_classes=list((catalog_entry or {}).get("classNames") or []),
                 expected_process_names=list((catalog_entry or {}).get("processNames") or []),
-                preferred_handle=window_handle,
+                preferred_handle=requested_target["windowHandle"],
                 app_id=resolved_app_id,
                 platform=self.driver.platform,
             )
             metadata["pageIdentity"] = page_identity_hint.get("pageIdentity")
             metadata["pageIdentityConfidence"] = page_identity_hint.get("confidence")
             metadata["bindingAssessment"] = binding_assessment
+            metadata["requestedTarget"] = requested_target
+            metadata["requestedBinding"] = binding_decision.as_dict()
+            metadata["observedTarget"] = {
+                "appId": resolved_app_id,
+                "windowTitle": payload.get("windowTitle"),
+                "windowHandle": metadata.get("windowHandle"),
+            }
+            if window_context_patch:
+                metadata["windowContextPatch"] = dict(window_context_patch)
             metadata.update(build_action_policy_metadata(binding_decision=observed_binding, invocation=invocation))
             browser_decision = self._browser_lane_decision(
                 action_type="observe",
@@ -8952,6 +8964,9 @@ class ComputerUseRuntime:
             observation.metadata["pageIdentity"] = page_identity_hint.get("pageIdentity")
             observation.metadata["pageIdentityConfidence"] = page_identity_hint.get("confidence")
             observation.metadata["bindingAssessment"] = binding_assessment
+            observation.metadata.update({key: metadata[key] for key in ("requestedTarget", "requestedBinding", "observedTarget")})
+            if window_context_patch:
+                observation.metadata["windowContextPatch"] = dict(window_context_patch)
             if binding_block:
                 metadata["bindingBlock"] = dict(binding_block)
                 payload["metadata"] = metadata
@@ -8999,8 +9014,8 @@ class ComputerUseRuntime:
                 artifact = self._record_observation_screenshot(
                     run_handle=run_handle,
                     workspace_path=workspace_path,
-                    window_title=window_title,
-                    window_handle=window_handle,
+                    window_title=payload.get("windowTitle"),
+                    window_handle=metadata.get("windowHandle"),
                 )
                 observation.screenshot_artifact = artifact
                 payload["screenshotArtifact"] = artifact
@@ -12535,11 +12550,13 @@ class ComputerUseRuntime:
         window_handle: int | None = None,
         max_steps: int = 5,
         include_screenshot: bool = False,
+        task_loop: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         if not goal.strip():
             raise DesktopDriverError("planner 目标不能为空。")
 
-        task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
+        if task_loop is None:
+            task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
         if self.playbook_executor_registry.can_handle(task_loop):
             return {
                 "sessionId": session_id,
@@ -12611,7 +12628,7 @@ class ComputerUseRuntime:
         include_screenshot: bool = False,
         playbook_inputs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        task_loop = self.prepare_task_loop(goal=goal, app_id=app_id)
+        task_loop = self.prepare_task_loop(goal=goal, app_id=app_id, playbook_inputs=playbook_inputs)
         if self.playbook_executor_registry.can_handle(task_loop):
             execution = self.execute_selected_playbook(
                 goal=goal,
@@ -12646,6 +12663,7 @@ class ComputerUseRuntime:
             window_handle=window_handle,
             max_steps=max_steps,
             include_screenshot=include_screenshot,
+            task_loop=task_loop,
         )
         execution = self.execute_plan(
             session_id=planning.get("sessionId"),
@@ -12682,7 +12700,7 @@ class ComputerUseRuntime:
         invocation_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._ensure_runtime_ready()
-        prepared = dict(task_loop or self.prepare_task_loop(goal=goal, app_id="browser_checkout"))
+        prepared = dict(task_loop or self.prepare_task_loop(goal=goal, playbook_inputs=playbook_inputs))
         context = PlaybookExecutionContext(
             runtime=self,
             task_loop=prepared,
@@ -12796,20 +12814,46 @@ class ComputerUseRuntime:
         *,
         goal: str,
         app_id: str | None = None,
+        app_name: str | None = None,
+        target_url: str | None = None,
+        playbook_inputs: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        self.browser_automation.configure(self._computer_use_config())
-        browser_decision = self._browser_lane_decision(
-            action_type="type_text",
-            action_payload={
-                "app_id": app_id or "browser_checkout",
-                "app_name": "browser",
-                "text": "https://github.com/",
-            },
-            app_id=app_id or "browser_checkout",
-        )
+        binding = self._resolve_app_binding(
+            explicit_app_id=app_id, app_name=app_name, include_running=False,
+        ) if app_id or app_name else None
+        catalog_entry = dict(binding.catalog_entry or {}) if binding else {}
+        resolved_app_id = (binding.resolved_app_id if binding else None) or app_id
+        app_name = str(catalog_entry.get("displayName") or app_name or "").strip() or None
+        process_names = list(catalog_entry.get("processNames") or [])
+        process_name = process_names[0] if process_names else None
+        control_class = self._control_class_for_action(binding_decision=binding)
+        browser_target = None
+        if resolved_app_id or app_name:
+            browser_target = (
+                control_class == "browser_host_app" if control_class else
+                self.browser_automation.infer_family(
+                    app_id=resolved_app_id, app_name=app_name, process_name=process_name,
+                ) == "chromium"
+            )
+
+        def browser_decision() -> Dict[str, Any]:
+            # Called only after a web target and the executor's inputs match.
+            # An unbound URL task uses the governed Agent Browser; native app
+            # tasks never trigger browser discovery or managed browser launch.
+            browser_app_id = resolved_app_id or "agent_browser"
+            return self._browser_lane_decision(
+                action_type="observe",
+                action_payload={"app_id": browser_app_id, "app_name": app_name},
+                app_id=browser_app_id,
+                process_name=process_name,
+            ).as_dict()
+
         return prepare_task_loop(
             goal,
-            browser_decision=browser_decision.as_dict(),
+            browser_decision=browser_decision,
+            browser_target=browser_target,
+            target_url=target_url,
+            playbook_inputs=playbook_inputs,
             web_searcher=self._task_loop_web_searcher,
         ).as_dict()
 

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -271,6 +272,12 @@ class _FakeBrowser:
 def _runtime_with_fake_browser(fake_browser: _FakeBrowser, monkeypatch):
     runtime = ComputerUseRuntime.__new__(ComputerUseRuntime)
     runtime.browser_automation = fake_browser
+    # The runtime now verifies the target's app binding before considering a
+    # web playbook. Keep catalog lookup fake; exercise the real binding policy.
+    runtime.app_profiles = SimpleNamespace()
+    runtime.app_catalog = SimpleNamespace(resolve_app=lambda **_kwargs: {
+        "appId": "browser_checkout", "displayName": "Agent Browser", "controlClass": "browser_host_app",
+    })
     runtime._ensure_runtime_ready = lambda: None
     runtime._computer_use_config = lambda: {}
     runtime._resource_leases = {}

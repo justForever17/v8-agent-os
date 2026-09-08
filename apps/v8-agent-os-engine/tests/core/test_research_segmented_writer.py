@@ -46,39 +46,6 @@ class _DualInvocationCandidate(_Candidate):
         return AIMessage(content="async")
 
 
-def test_segmented_writer_profile_prefers_one_answer_with_a_normal_output_budget() -> None:
-    low = research_module._architect_segmented_writer_profile(
-        (_Candidate(max_tokens=4096, model_ref="fixture::low"), "fixture::low", "summary")
-    )
-    high = research_module._architect_segmented_writer_profile(
-        (
-            _Candidate(
-                max_tokens=32_768,
-                model_ref="fixture::high",
-                supports_no_think=True,
-            ),
-            "fixture::high",
-            "summary",
-        )
-    )
-    unknown = research_module._architect_segmented_writer_profile(
-        (type("UnknownCandidate", (), {"_meta": {"model_ref": "fixture::unknown"}})(), "fixture::unknown", "summary")
-    )
-
-    assert low == {
-        "enabled": False,
-        "configuredMaxTokens": 4096,
-        "sectionCount": 4,
-        "sectionMaxTokens": research_module._RESEARCH_ARCHITECT_SECTION_MAX_TOKENS,
-        "targetMinChars": 1625,
-        "targetMaxChars": 2750,
-    }
-    assert high["configuredMaxTokens"] == 32_768
-    assert high["enabled"] is False
-    assert unknown["configuredMaxTokens"] is None
-    assert unknown["enabled"] is True
-
-
 def test_architect_parallel_workers_use_sync_client_instead_of_cross_loop_async_client() -> None:
     llm = _DualInvocationCandidate()
     candidate = (llm, "fixture::dual", "summary")

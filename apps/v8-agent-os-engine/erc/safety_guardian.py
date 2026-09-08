@@ -22,6 +22,7 @@ from core.storage import storage
 from core.database import db
 from core.safety_active_defense import DEFAULT_ACTIVE_DEFENSE_CONFIG, normalize_active_defense_config, safety_active_defense_monitor
 from core.v8_agent_os_paths import WORKSPACE_HOME, protected_runtime_paths
+from core.workspace_capability import simple_host_command_access
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
 
@@ -1714,8 +1715,8 @@ class SafetyGuardian:
             (
                 candidate
                 for candidate in policy_commands
-                if self._looks_like_read_only_enumeration_command(candidate)
-                and self._targets_sensitive_system_path_in_command(candidate)
+                if (self._looks_like_read_only_enumeration_command(candidate) or (simple_host_command_access(candidate) or ("",))[0] == "host_read")
+                and self._targets_sensitive_system_path_in_command(candidate, runtime_context=runtime_context)
             ),
             None,
         )
@@ -3833,7 +3834,7 @@ class SafetyGuardian:
         lowered = f" {str(command or '').lower()} "
         return " npx " in lowered and " skills " in lowered and " add " in lowered and " --overwrite" in lowered
 
-    def _is_sensitive_system_path(self, path: Path) -> bool:
+    def _is_sensitive_system_path(self, path: Path, *, include_application_roots: bool = True) -> bool:
         normalized = self._normalize_path(str(path))
         if normalized is None:
             return False
@@ -3846,10 +3847,13 @@ class SafetyGuardian:
             Path.home() / ".aws",
             Path.home() / ".kube",
             Path(os.environ.get("WINDIR", "C:/Windows")),
-            Path(os.environ.get("ProgramFiles", "C:/Program Files")),
-            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")),
             Path("/etc"),
         ]
+        if include_application_roots:
+            sensitive_roots.extend([
+                Path(os.environ.get("ProgramFiles", "C:/Program Files")),
+                Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")),
+            ])
         for root in sensitive_roots:
             try:
                 normalized.relative_to(root.expanduser().resolve(strict=False))
@@ -4114,7 +4118,8 @@ class SafetyGuardian:
                 analysis_payload=analysis_payload,
             )
 
-        if re.search(r"(?<![a-z0-9_-])(sudo|doas)(?![a-z0-9_-])", lower):
+        windows_elevation = self._windows_command_requests_elevation(raw)
+        if windows_elevation or re.search(r"(?<![a-z0-9_-])(sudo|doas)(?![a-z0-9_-])", lower):
             stripped = self._strip_leading_sudo(raw)
             if stripped and stripped != raw:
                 nested = self._assess_cross_platform_system_command(
@@ -4128,16 +4133,41 @@ class SafetyGuardian:
                     return nested
             return self._cross_platform_decision(
                 verdict=privilege_verdict,
-                reason="命令请求 sudo/doas 提权。提权本身不阻断，但需要远程 Safety 审批后才能继续。",
+                reason="命令请求提升系统权限，需要 Safety 审批后才能继续。",
                 risk_code="privilege_elevation_review",
                 posture=posture,
                 command=raw,
                 runtime_context=runtime_context,
                 analysis_payload=analysis_payload,
-                extra_details={"requiresSensitiveInput": True, "secretType": "sudo_password"},
+                extra_details=({"elevationMechanism": "windows_runas"} if windows_elevation else {"requiresSensitiveInput": True, "secretType": "sudo_password"}),
             )
 
         return None
+
+    def _windows_command_requests_elevation(self, command: str, *, _depth: int = 0) -> bool:
+        tokens = self._command_tokens(command)
+        for index, token in enumerate(tokens):
+            # Inspect command positions, not words within quoted application
+            # paths or text such as Write-Output "runas /user:...".
+            if index and not tokens[index - 1].endswith((";", "|", "&")):
+                continue
+            name = re.split(r"[\\/]", token.strip("\"'"))[-1]
+            if name in {"powershell", "powershell.exe", "pwsh", "pwsh.exe", "cmd", "cmd.exe"} and _depth < 4:
+                for offset in range(index + 1, len(tokens)):
+                    if tokens[offset] in {"-command", "-c", "/c"}:
+                        nested = " ".join(tokens[offset + 1:]).strip("\"'")
+                        if self._windows_command_requests_elevation(nested, _depth=_depth + 1):
+                            return True
+                        break
+            if name in {"runas", "runas.exe"}:
+                return True
+            if name != "start-process":
+                continue
+            arguments = [item.strip("\"'") for item in tokens[index + 1:]]
+            for offset, argument in enumerate(arguments):
+                if argument == "-verb:runas" or (argument == "-verb" and arguments[offset + 1:offset + 2] == ["runas"]):
+                    return True
+        return False
 
     def _assess_cross_platform_file_write(
         self,
@@ -4753,20 +4783,44 @@ class SafetyGuardian:
             cleaned.append(text)
         return cleaned[:6]
 
-    def _extract_powershell_encoded_candidates(self, command: str) -> list[str]:
-        try:
-            tokens = [token for token in shlex.split(str(command or "").strip(), posix=False) if token]
-        except Exception:
-            tokens = [token for token in re.split(r"\s+", str(command or "").strip()) if token]
-        candidates: list[str] = []
-        for index, token in enumerate(tokens):
-            normalized = token.strip("\"'").lower()
-            if normalized in {"-enc", "-encodedcommand", "/enc", "/encodedcommand"} and index + 1 < len(tokens):
-                candidates.append(tokens[index + 1].strip("\"'"))
+    def _powershell_encoded_switches(self, command: str) -> list[tuple[str, int]]:
+        # Inspect whole parameter words, including nested shell text. -Encoding
+        # is a text encoding, not a prefix of the host's -EncodedCommand switch.
+        # This is conservative inspection, not a parser that executes shell text.
+        switches: list[tuple[str, int]] = []
+        powershell_arguments = False
+        for match in re.finditer(r"[;|&(){}]|[^\s;|&(){}\"']+", str(command or "")):
+            word = match.group()
+            normalized = word.lower().replace("`", "").replace("^", "")
+            if word in ";|&(){}":
+                powershell_arguments = False
                 continue
-            match = re.match(r"(?i)^-(?:enc|encodedcommand):?(.+)$", token.strip("\"'"))
+            executable = normalized.replace("\\", "/").rsplit("/", 1)[-1]
+            if executable in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+                powershell_arguments = True
+                continue
+            if not word.startswith(("-", "/")):
+                continue
+            option = normalized.lstrip("-/").split(":", 1)[0]
+            encoded = bool(option) and ("encodedcommand".startswith(option) or option == "ec")
+            # Short -e/-ec/-en belong to the PowerShell host, not e.g. node -e
+            # inside its -Command body or arguments to a -File script.
+            if encoded and (len(option) >= 3 or powershell_arguments):
+                offset = match.start() + word.index(":") + 1 if ":" in word else match.end()
+                switches.append((option, offset))
+            if powershell_arguments and option and (
+                "command".startswith(option) or "file".startswith(option) or option in {"commandwithargs", "cwa"}
+            ):
+                powershell_arguments = False
+        return switches
+
+    def _extract_powershell_encoded_candidates(self, command: str) -> list[str]:
+        raw = str(command or "")
+        candidates: list[str] = []
+        for _, offset in self._powershell_encoded_switches(raw):
+            match = re.match(r"[\s\"']*([^\s;|&(){}\"']+)", raw[offset:])
             if match:
-                candidates.append(match.group(1).strip("\"'"))
+                candidates.append(match.group(1))
         return candidates
 
     def _extract_generic_base64_candidates(self, command: str) -> list[str]:
@@ -4807,32 +4861,11 @@ class SafetyGuardian:
         return printable / max(1, len(text)) > 0.85
 
     def _has_encoded_or_reflective_indicator(self, lower_command: str) -> bool:
-        return any(
-            token in lower_command
-            for token in [
-                "-enc",
-                "-encodedcommand",
-                "frombase64string",
-                "base64 -d",
-                "base64 --decode",
-                "eval(",
-                "exec(",
-                "iex",
-                "invoke-expression",
-                "downloadstring",
-                "reflection.assembly",
-                "add-type",
-                "mshta",
-                "rundll32",
-                "regsvr32",
-            ]
-        )
+        return bool(self._encoded_indicators(lower_command))
 
     def _encoded_indicators(self, lower_command: str) -> list[str]:
-        indicators = []
+        indicators = ["-encodedcommand"] if self._powershell_encoded_switches(lower_command) else []
         for token in [
-            "-enc",
-            "-encodedcommand",
             "frombase64string",
             "base64 -d",
             "base64 --decode",
@@ -5129,8 +5162,13 @@ class SafetyGuardian:
             return False
         return all(self._is_path_within_root(path, workspace_root) for path in target_paths)
 
-    def _targets_sensitive_system_path_in_command(self, command: str) -> bool:
-        return any(self._is_sensitive_system_path(path) for path in self._extract_explicit_paths_from_command(command))
+    def _targets_sensitive_system_path_in_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
+        simple_read = (simple_host_command_access(command) or ("",))[0] == "host_read"
+        return any(
+            self._is_sensitive_system_path(path, include_application_roots=not simple_read)
+            or (simple_read and self._is_under_protected_path(path) and not self._is_user_workspace_write_path(path, runtime_context))
+            for path in self._extract_explicit_paths_from_command(command)
+        )
 
     def _matches_command_pattern(self, command: str, pattern: str) -> bool:
         normalized_pattern = str(pattern or "").strip().lower()

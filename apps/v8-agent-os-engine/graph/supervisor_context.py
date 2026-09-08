@@ -3,6 +3,7 @@ import json
 import logging
 import platform
 import re
+import time
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
@@ -1244,12 +1245,17 @@ def build_supervisor_system_content(
             for key in list(_STABLE_SYSTEM_CONTEXT_CACHE.keys())[: len(_STABLE_SYSTEM_CONTEXT_CACHE) - _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT]:
                 _STABLE_SYSTEM_CONTEXT_CACHE.pop(key, None)
 
+    stage_started_at = time.perf_counter()
     host_alerts_line = render_host_alerts_line()
+    context_preparation_ms = {"hostAlerts": round((time.perf_counter() - stage_started_at) * 1000, 2)}
     host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
+    stage_started_at = time.perf_counter()
+    host_load_line = render_host_load_line()
+    context_preparation_ms["hostLoad"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
     env_context = (
         "<environment>\n"
         f"Current Time: {current_time}\n"
-        f"{render_host_load_line()}\n"
+        f"{host_load_line}\n"
         f"{host_alerts_context}"
         f"{cached_stable['envStaticContext']}"
         "</environment>\n"
@@ -1283,11 +1289,13 @@ def build_supervisor_system_content(
         memory_context = memory_budget.text
         memory_budget_diagnostics.append(memory_budget.diagnostic())
     workspace_rules_context, workspace_rules_diagnostics = _build_workspace_rules_context(state=state, session_id=session_id)
+    stage_started_at = time.perf_counter()
     workspace_state_context, workspace_state_diagnostics = build_engineering_kernel_context(
         state=state,
         session_id=session_id,
         actor="supervisor",
     )
+    context_preparation_ms["engineeringKernel"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
     prompt_budget_diagnostics = [
         base_prompt_budget.diagnostic(),
         *workspace_state_diagnostics,
@@ -1490,6 +1498,7 @@ def build_supervisor_system_content(
         "system_content": system_content,
         "v8_prompt_segments": build_prompt_segments_from_parts(prompt_parts),
         "memory_context": memory_context,
+        "context_preparation_ms": context_preparation_ms,
         "runtime_registry_context": runtime_registry_context,
         "task_shape_hint": task_shape_hint,
         "task_shape_context": task_shape_context,

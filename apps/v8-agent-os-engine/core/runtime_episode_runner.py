@@ -1161,55 +1161,59 @@ class RuntimeEpisodeRunner:
         assert self._stop_event is not None
         self._thread_started.set()
         active_tasks: set[asyncio.Task] = set()
-        while not self._stop_event.is_set():
-            try:
-                completed_tasks = {task for task in active_tasks if task.done()}
-                active_tasks.difference_update(completed_tasks)
-                for task in completed_tasks:
-                    try:
-                        task.result()
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        print(f"[EpisodeRunner] Episode task error: {type(exc).__name__}: {exc}")
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    completed_tasks = {task for task in active_tasks if task.done()}
+                    active_tasks.difference_update(completed_tasks)
+                    for task in completed_tasks:
+                        try:
+                            task.result()
+                        except asyncio.CancelledError:
+                            # This synchronous result belongs to the finished
+                            # episode, not to cancellation of the queue loop.
+                            logger.info("Runtime episode task cancelled: %s", task.get_name())
+                        except Exception as exc:
+                            print(f"[EpisodeRunner] Episode task error: {type(exc).__name__}: {exc}")
 
-                claimed_any = False
-                while len(active_tasks) < self._max_concurrent:
-                    try:
-                        episode = db.claim_runtime_episode(
-                            worker_id=self.worker_id,
-                            lease_seconds=self._lease_seconds,
-                            require_bound_run=True,
+                    claimed_any = False
+                    while len(active_tasks) < self._max_concurrent:
+                        try:
+                            episode = db.claim_runtime_episode(
+                                worker_id=self.worker_id,
+                                lease_seconds=self._lease_seconds,
+                                require_bound_run=True,
+                            )
+                        except Exception as exc:
+                            self._record_queue_poll_failure(exc)
+                            if not self._has_successful_queue_poll:
+                                raise
+                            print(f"[EpisodeRunner] Queue poll error: {type(exc).__name__}")
+                            await asyncio.sleep(self._poll_error_seconds)
+                            break
+                        self._record_successful_queue_poll()
+                        if not episode:
+                            break
+                        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+                        task = asyncio.create_task(
+                            self._execute_episode(episode),
+                            name=f"runtime-episode:{episode_id or 'unknown'}",
                         )
-                    except Exception as exc:
-                        self._record_queue_poll_failure(exc)
-                        if not self._has_successful_queue_poll:
-                            raise
-                        print(f"[EpisodeRunner] Queue poll error: {type(exc).__name__}")
-                        await asyncio.sleep(self._poll_error_seconds)
-                        break
-                    self._record_successful_queue_poll()
-                    if not episode:
-                        break
-                    episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
-                    task = asyncio.create_task(
-                        self._execute_episode(episode),
-                        name=f"runtime-episode:{episode_id or 'unknown'}",
-                    )
-                    active_tasks.add(task)
-                    claimed_any = True
-                if not claimed_any:
-                    await asyncio.sleep(self._poll_seconds)
-                    continue
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                print(f"[EpisodeRunner] Loop error: {type(exc).__name__}: {exc}")
-                await asyncio.sleep(1.0)
-        for task in active_tasks:
-            task.cancel()
-        if active_tasks:
-            await asyncio.gather(*active_tasks, return_exceptions=True)
+                        active_tasks.add(task)
+                        claimed_any = True
+                    if not claimed_any:
+                        await asyncio.sleep(self._poll_seconds)
+                        continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[EpisodeRunner] Loop error: {type(exc).__name__}: {exc}")
+                    await asyncio.sleep(1.0)
+        finally:
+            for task in active_tasks:
+                task.cancel()
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
 
     def _complete_corrupted_episode_contract(
         self,
@@ -1728,6 +1732,11 @@ class RuntimeEpisodeRunner:
                     await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
                 except asyncio.TimeoutError:
                     continue
+        except RuntimeEpisodeLeaseLost:
+            # A stale owner must stop its in-flight executor, not merely stop
+            # waiting for it. Keep the lease failure visible to the caller.
+            await self._stop_awaitable_task(task, episode_id=episode_id)
+            raise
         except asyncio.CancelledError:
             await self._stop_awaitable_task(task, episode_id=episode_id)
             raise
@@ -2574,6 +2583,8 @@ class RuntimeEpisodeRunner:
             },
             **({"run_id": run_id, "runId": run_id} if run_id else {}),
             **({"session_id": session_id, "sessionId": session_id} if session_id else {}),
+            "runtime_episode_id": str(episode.get("episodeId") or episode.get("id") or ""),
+            "research_original_user_request": str(inputs.get("originalUserRequest") or ""),
         }
         from core.native_tools import research_broker
         run_mode = str(inputs.get("mode") or need.get("mode") or "").strip().lower()
@@ -2709,6 +2720,9 @@ class RuntimeEpisodeRunner:
                 force_refresh_value is True
                 or str(force_refresh_value or "").strip().lower() in {"1", "true", "yes", "on"}
             )
+            revision_pack_id = str(
+                _research_brief_option(brief, inputs, need, "experiencePackId") or ""
+            ).strip()
             bundled_briefs = task_briefs if single_bundle_mode and len(unique_queries) > 1 else [brief]
             seed_urls = _research_seed_urls(
                 *[
@@ -2783,6 +2797,7 @@ class RuntimeEpisodeRunner:
                     seedUrls=seed_urls,
                     allowedDomains=allowed_domains,
                     forceRefresh=force_refresh,
+                    experiencePackId=revision_pack_id,
                     state=state,
                     tool_call_id=f"episode:{episode_id}:brief:{index}:research_run",
                 )
@@ -2905,8 +2920,8 @@ class RuntimeEpisodeRunner:
                     "claimCount": int(quality_metrics.get("claimCount") or len(claim_items)),
                     "sourceUrls": source_urls[:8],
                     "candidateAnswerSha256": answer_sha256 or None,
-                    "candidateAnswerChars": len(answer) if answer else 0,
-                    "accepted": ready,
+                    "candidateAnswerChars": len(answer) if answer else None,
+                    "accepted": ready or usable,
                 }.items()
                 if value not in (None, "", [], {})
             }
@@ -3017,9 +3032,11 @@ class RuntimeEpisodeRunner:
                 f"[{item['taskBriefId']}] {_preview(item.get('answer'), limit=240)}"
                 if item.get("answer")
                 else (
-                    f"[{item['taskBriefId']}] Research read {int(item.get('sourceCount') or 0)} "
-                    f"candidate source(s) and formed {int(item.get('claimCount') or 0)} candidate "
-                    "claim(s), but the answer did not pass independent review."
+                    f"[{item['taskBriefId']}] Research fetched "
+                    f"{int((item.get('sourceAcquisition') or {}).get('readableSourceCount') or 0)} readable source(s); "
+                    f"{int(item.get('sourceCount') or 0)} candidate source(s) and "
+                    f"{int(item.get('claimCount') or 0)} candidate claim(s) were selected. "
+                    "The candidate answer did not pass independent review. Inspect acquisition/review diagnostics; fetched evidence is not an accepted answer."
                 )
             )
             for item in unit_results
@@ -3391,6 +3408,32 @@ class RuntimeEpisodeRunner:
             )
         return handoff
 
+    @staticmethod
+    def _prepare_engineering_context(
+        *, inputs: dict[str, Any], need: dict[str, Any], session_id: str | None,
+        run_id: str | None, workspace_path: str | None,
+    ) -> tuple[str, str]:
+        """Read-only preparation; subprocess discovery must not block leases."""
+        digest_text, _digest_refs = build_engineering_kernel_context(
+            state={"run_id": run_id, "workspace_path": workspace_path}, session_id=session_id,
+        )
+        try:
+            from runtimes.engineering.service import engineering_lane_service
+
+            pack = engineering_lane_service.build_context_pack(
+                user_query=str(inputs.get("task") or need.get("reason") or "engineering episode"),
+                mode=str(inputs.get("mode") or "force"), session_id=session_id, run_id=run_id,
+                workspace_path=workspace_path,
+                task_brief=inputs.get("taskBrief") if isinstance(inputs.get("taskBrief"), dict) else None,
+            )
+            trigger = dict(pack.get("trigger") or {})
+            repo = dict(pack.get("repo") or pack.get("repoBrief") or {})
+            summary = (f"Engineering context ready: active={trigger.get('active')} "
+                       f"workspaceMode={trigger.get('workspaceMode')} repoDetected={repo.get('repoDetected')}")
+        except Exception as exc:
+            summary = f"Engineering context initialized with workspace digest; context pack warning: {type(exc).__name__}: {exc}"
+        return digest_text, summary
+
     async def _execute_engineering(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "engineering: workspace digest")
         need = dict(episode.get("need") or {})
@@ -3508,33 +3551,21 @@ class RuntimeEpisodeRunner:
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
         workspace_path = inputs.get("workspacePath") or need.get("workspacePath")
-        digest_text, _digest_refs = build_engineering_kernel_context(
-            state={
-                "run_id": run_id,
-                "workspace_path": str(workspace_path) if workspace_path else None,
-            },
-            session_id=session_id,
+        context_node_id = f"{episode.get('episodeId') or episode.get('id')}:workspace-context"
+        self._publish_episode_progress(episode, {"stage": "workspace_context", "status": "active",
+            "nodeId": context_node_id, "summary": "正在读取工作区上下文"})
+        digest_text, context_summary = await asyncio.to_thread(
+            self._prepare_engineering_context, inputs=inputs, need=need, session_id=session_id,
+            run_id=run_id, workspace_path=str(workspace_path) if workspace_path else None,
         )
-        context_summary = ""
-        try:
-            from runtimes.engineering.service import engineering_lane_service
-
-            pack = engineering_lane_service.build_context_pack(
-                user_query=str(inputs.get("task") or need.get("reason") or "engineering episode"),
-                mode=str(inputs.get("mode") or "force"),
-                session_id=session_id,
-                run_id=run_id,
-                workspace_path=str(workspace_path) if workspace_path else None,
-                task_brief=inputs.get("taskBrief") if isinstance(inputs.get("taskBrief"), dict) else None,
-            )
-            trigger = dict(pack.get("trigger") or {})
-            repo = dict((pack.get("repo") or pack.get("repoBrief") or {}))
-            context_summary = (
-                f"Engineering context ready: active={trigger.get('active')} "
-                f"workspaceMode={trigger.get('workspaceMode')} repoDetected={repo.get('repoDetected')}"
-            )
-        except Exception as exc:
-            context_summary = f"Engineering context initialized with workspace digest; context pack warning: {type(exc).__name__}: {exc}"
+        # Cancellation cannot kill a read-only subprocess already in flight.
+        # Never use its late result to dispatch work after cancellation or a
+        # lease-generation change; the ordinary executor heartbeat runs while
+        # preparation is off-thread and this fenced heartbeat checks again.
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "")
+        self._raise_if_episode_cancelled(episode_id, run_id=run_id)
+        self._publish_episode_progress(episode, {"stage": "workspace_context", "status": "completed",
+            "nodeId": context_node_id, "summary": "工作区上下文已读取"})
         worker_briefs = normalize_task_briefs(
             inputs.get("workerBriefs")
             or inputs.get("worker_briefs")

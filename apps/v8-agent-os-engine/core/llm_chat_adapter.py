@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from copy import deepcopy
 from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Sequence
@@ -743,7 +744,10 @@ class V8ChatModelAdapter(BaseChatModel):
             content="",
             tool_calls=langchain_tool_calls,
             additional_kwargs={"tool_emulated": True},
+            response_metadata=dict(getattr(message, "response_metadata", None) or {}),
+            usage_metadata=getattr(message, "usage_metadata", None),
         )
+        self._validate_complete_tool_response(ai_message)
         return self._decorate_message(ai_message, tool_mode="prompt_emulated")
 
     def _required_bound_tool_name(self) -> str:
@@ -782,6 +786,7 @@ class V8ChatModelAdapter(BaseChatModel):
         )
 
     def _coerce_ai_message(self, response: Any, *, force_prompt_emulated_tools: bool = False) -> AIMessage:
+        self._validate_complete_tool_response(response)
         if isinstance(response, AIMessage):
             return self._apply_prompt_emulated_tool_calls(
                 self._decorate_message(
@@ -820,12 +825,73 @@ class V8ChatModelAdapter(BaseChatModel):
             force=force_prompt_emulated_tools,
         )
 
+    def _validate_complete_tool_response(self, response: Any) -> None:
+        """Check completed responses only, before SDK-repaired args authorize actions.
+
+        Streaming chunks remain available for progress. Their partial tool_calls
+        are previews; original assembled JSON must be complete at stream end.
+        """
+        metadata = dict(getattr(response, "response_metadata", None) or {})
+        finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or metadata.get("status") or "").lower().rsplit(".", 1)[-1]
+        chunks = list(getattr(response, "tool_call_chunks", None) or [])
+        calls = list(getattr(response, "tool_calls", None) or [])
+        invalid_calls = list(getattr(response, "invalid_tool_calls", None) or [])
+        extra = dict(getattr(response, "additional_kwargs", None) or {})
+        raw_calls = list(extra.get("tool_calls") or [])
+        if isinstance(extra.get("function_call"), Mapping):
+            raw_calls.append(extra["function_call"])
+        if not (chunks or calls or invalid_calls or raw_calls):
+            return
+
+        reason = "output_limit" if finish in {"length", "max_tokens", "max_output_tokens", "incomplete"} else ""
+        if invalid_calls:
+            reason = reason or "invalid_tool_arguments"
+        arguments = [("tool_call_chunks", call.get("args")) for call in chunks if isinstance(call, Mapping)]
+        for call in raw_calls:
+            if not isinstance(call, Mapping):
+                continue
+            function = call.get("function") if isinstance(call.get("function"), Mapping) else call
+            if "arguments" in function:
+                arguments.append(("raw_tool_calls", function["arguments"]))
+            elif "args" in function:
+                arguments.append(("raw_tool_calls", function["args"]))
+        argument_diagnostic = {}
+        for argument_source, value in arguments:
+            try:
+                parsed = json.loads(value) if isinstance(value, str) else value
+            except (TypeError, ValueError) as exc:
+                reason = reason or "incomplete_tool_arguments"
+                if isinstance(value, str):
+                    argument_diagnostic = {"argumentsChars": len(value),
+                                           "argumentSource": argument_source,
+                                           "argumentSha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                                           "jsonErrorOffset": getattr(exc, "pos", None)}
+                break
+            if not isinstance(parsed, Mapping):
+                reason = reason or "invalid_tool_arguments"
+                break
+        if reason:
+            raise V8LLMStructuredOutputError(
+                code="model_output_incomplete",
+                message="模型未完整返回工具参数，已阻止执行该响应中的工具。",
+                provider=self.provider_standard, model=self.model_id, retryable=False,
+                user_action="保留已完成工作，按当前预算重新提交完整工具请求；不要补全半截 JSON 后执行。",
+                details={"reason": reason, "finishReason": finish, "toolCallCount": len(calls), **argument_diagnostic},
+            )
+
     def _coerce_chunk(self, chunk: Any, *, include_identity_metadata: bool = True) -> AIMessageChunk:
         if isinstance(chunk, AIMessageChunk):
+            # Raw native deltas still need their index/name/argument fragments
+            # for SDK aggregation. Canonicalizing this field per chunk loses
+            # its index and can leave a false incomplete first fragment.
+            raw_tool_fields = {key: deepcopy(chunk.additional_kwargs[key])
+                               for key in ("tool_calls", "function_call") if key in chunk.additional_kwargs}
             normalized = self._decorate_message(
                 chunk,
                 include_identity_metadata=include_identity_metadata,
             )
+            if isinstance(normalized, AIMessageChunk) and raw_tool_fields:
+                normalized.additional_kwargs = {**normalized.additional_kwargs, **raw_tool_fields}
             return normalized if isinstance(normalized, AIMessageChunk) else AIMessageChunk(content=_stringify_content(getattr(normalized, "content", "")))
         if isinstance(chunk, AIMessage):
             normalized = self._decorate_message(

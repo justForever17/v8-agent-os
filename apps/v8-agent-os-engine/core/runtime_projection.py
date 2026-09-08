@@ -1985,19 +1985,10 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 metadata={"toolNames": tool_names[:12]},
             )
         elif topic == "extension.execution.completed":
-            tool_names = [str(item).strip() for item in list(payload.get("toolNames") or []) if str(item).strip()]
-            if tool_names:
-                summary = f"扩展执行完成，调用了 {', '.join(tool_names[:3])}"
-            else:
-                summary = "扩展候选执行完成"
-            entry = _runtime_timeline_entry(
-                event,
-                runtime_id="extensions",
-                kind="progress",
-                summary=summary,
-                status="completed",
-                metadata={"toolNames": tool_names[:12], "hasToolCalls": bool(tool_names)},
-            )
+            # The producer records a model response, before requested tools run.
+            # Keep that diagnostic in the ledger; it proves no extension use or
+            # completion. Actual Skill/MCP lifecycle and tool results own cards.
+            continue
         elif topic == "chat.command_preset.applied":
             preset_name = str(payload.get("name") or "未命名命令").strip() or "未命名命令"
             entry = _runtime_timeline_entry(

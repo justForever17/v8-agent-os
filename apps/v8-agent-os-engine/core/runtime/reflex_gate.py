@@ -23,14 +23,6 @@ _CODE_INTENT_RE = re.compile(
 _VOICE_INTENT_RE = re.compile(r"(语音|朗读|播报|tts|voice|speak|发语音)", re.IGNORECASE)
 _ROUTE_INTENT_RE = re.compile(r"(skill|工具|插件|mcp|公众号|微信|文档|视频|图片|财报|会议纪要|代码审查)", re.IGNORECASE)
 _EXPLICIT_EXTENSION_DEPENDENCY_RE = re.compile(r"(?:\bskill\b|插件|\bplugin\b|\bmcp\b)", re.IGNORECASE)
-_READ_ONLY_EXECUTION_RE = re.compile(
-    r"(只读(?:审查|检查|分析|任务)?|仅规划|仅方案)"
-    r"|(?:不要|不需要|禁止|无需|不真实).{0,8}(?:写入|写|修改|改动|变更|落盘)"
-    r".{0,8}(?:任何|当前|这个|本)?(?:项目|源码|文件|工作区|workspace|repo)"
-    r"|(?:不写|不落盘|不修改|不改动)(?:任何|当前|这个|本)?(?:项目|源码|文件|工作区|workspace|repo)"
-    r"|without\s+(?:actually\s+)?(?:writing|modifying|changing)|read[- ]only",
-    re.IGNORECASE,
-)
 
 
 @dataclass(slots=True)
@@ -138,16 +130,13 @@ def _engineering_active(state: dict[str, Any], user_query: str) -> bool:
     return bool(_CODE_INTENT_RE.search(str(user_query or "")))
 
 
-def _read_only_execution_intent(user_query: str, state: dict[str, Any]) -> bool:
-    query = str(user_query or "")
+def _read_only_execution_intent(state: dict[str, Any]) -> bool:
     explicit_state = state.get("execution_intent") if isinstance(state.get("execution_intent"), dict) else {}
-    if explicit_state.get("readOnly") is True or explicit_state.get("read_only") is True:
-        return True
-    # Scope boundaries such as "do not modify other projects" authorize work
-    # inside the bound workspace; they must not be reclassified as a global
-    # read-only instruction.  Only an unambiguous read-only phrase (or a typed
-    # execution intent above) may suppress writes.
-    return bool(_READ_ONLY_EXECUTION_RE.search(query))
+    # Preserve the explicit current-task compatibility input. Natural-language
+    # scope belongs to Supervisor; a read-only verification step cannot turn
+    # a preceding implementation into a global writeSet=[]. Actual authority
+    # is still enforced by each actor's typed capsule/native tool preflight.
+    return explicit_state.get("readOnly") is True or explicit_state.get("read_only") is True
 
 
 def _scope_conflict_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -186,12 +175,12 @@ class RuntimeReflexService:
 
         if _engineering_active(state, query):
             confidence = max(confidence, 0.68)
-            if _read_only_execution_intent(query, state):
+            if _read_only_execution_intent(state):
                 matched.append("engineering_read_only_contract")
                 patch_lines.append("这是显式只读工程任务：保持 readSet 纪律，writeSet=[]，只产出 typed handoff，不要写入或修改工作区。")
             else:
                 matched.append("engineering_read_before_write")
-                patch_lines.append("工程任务先读关键文件与既有诊断，再写；保持 readSet/writeSet 纪律，验证是否执行仍由 supervisor 决策。")
+                patch_lines.append("遵守当前任务的 readSet/writeSet。已有文件首次修改需有效读凭据，新建文件不需预读；成功写入的同 actor 版本可续用，外部改动或过期才重读。验证范围由 Supervisor 决策。")
 
         selected_skills = _selected_skill_names(route_bundle)
         if 0 < len(selected_skills) <= 3:
@@ -301,7 +290,7 @@ class RuntimePreflightGate:
         }
         blocked = False
         clarify = False
-        read_only_execution = _read_only_execution_intent(user_query, state)
+        read_only_execution = _read_only_execution_intent(state)
         diagnostics["readOnlyExecutionIntent"] = read_only_execution
         extension_inventory_required = bool(
             _EXPLICIT_EXTENSION_DEPENDENCY_RE.search(str(user_query or ""))

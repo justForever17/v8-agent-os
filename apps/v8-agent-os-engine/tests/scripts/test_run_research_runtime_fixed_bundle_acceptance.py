@@ -3,10 +3,37 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import nullcontext
 
 import pytest
 
 from tests.scripts import run_research_runtime_fixed_bundle_acceptance as audit
+
+
+@pytest.mark.parametrize("argv", [[], ["--bundle", "private-evidence.json", "--attempt-log", "private-attempts.jsonl"]])
+def test_main_without_live_does_not_read_inputs_config_or_acquire_lock(monkeypatch, capsys, argv):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("no --live must stop before file/config/lock/model work")
+
+    for name in ("load_fixed_bundle", "build_binding_snapshot", "attempt_log_lock", "run_attempt", "_execute_main"):
+        monkeypatch.setattr(audit, name, forbidden)
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    assert audit.main(argv) == 2
+    assert "without --live" in capsys.readouterr().err
+
+
+def test_main_with_live_preserves_existing_execution_arguments(monkeypatch, tmp_path):
+    captured = {}
+    def execute(args, *, result_dir):
+        captured.update(live=args.live, bundle=args.bundle, result_dir=result_dir, required_streak=args.required_streak)
+        return 3
+
+    monkeypatch.setattr(audit, "attempt_log_lock", lambda _path: nullcontext())
+    monkeypatch.setattr(audit, "_execute_main", execute)
+    bundle = tmp_path / "fixed.json"
+    log = tmp_path / "attempts.jsonl"
+    assert audit.main(["--live", "--bundle", str(bundle), "--attempt-log", str(log), "--required-streak", "4"]) == 3
+    assert captured == {"live": True, "bundle": bundle, "result_dir": tmp_path / "attempts", "required_streak": 4}
 
 
 def _bundle() -> dict:

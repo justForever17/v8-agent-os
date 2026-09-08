@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.actor_identity import resolve_collaboration_actor
 from core.engineering_sandbox.contracts import SandboxPolicy
 from core.workspace_authority import workspace_authority_service
 from core.workspace_resolution import workspace_resolution_service
@@ -276,28 +277,112 @@ def resolve_workspace_tool_path(
 
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:])([A-Za-z]:[\\/][^\s\"'<>|;&]+)")
 _POSIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w])(/(?:[^\s\"'<>|;&]+))")
+_UNC_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:\\])((?:\\\\|//)[^\\/\s]+[\\/][^\s\"'<>|;&]+)")
+_COMMAND_WORD_RE = re.compile(r'''"([^"]*)"|'([^']*)'|([^\s"']+)''')
+_COMMAND_ENV_RE = re.compile(r"(?i)%([a-z_][a-z0-9_()]*)%|\$env:([a-z_][a-z0-9_]*)|\$\{env:([a-z_][a-z0-9_()]*)\}")
+
+
+def _expand_command_path_variables(text: str) -> str:
+    environment = {name.casefold(): value for name, value in os.environ.items()}
+    environment.setdefault("userprofile", str(Path.home()))
+    return _COMMAND_ENV_RE.sub(
+        lambda match: environment.get(next(group for group in match.groups() if group).casefold(), match.group(0)),
+        text,
+    )
+
+
+def _is_absolute_command_path(text: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z]:[\\/]", text) or text.startswith("\\\\") or (os.name != "nt" and text.startswith("/")))
 
 
 def extract_absolute_paths_from_command(command: str) -> list[str]:
-    text = str(command or "")
-    userprofile = str(os.environ.get("USERPROFILE") or Path.home())
-    expanded_text = os.path.expandvars(
-        text.replace("%USERPROFILE%", userprofile)
-        .replace("$env:USERPROFILE", userprofile)
-        .replace("${env:USERPROFILE}", userprofile)
-    )
     paths: list[str] = []
-    patterns = [_WINDOWS_ABSOLUTE_PATH_RE]
+    patterns = [_WINDOWS_ABSOLUTE_PATH_RE, _UNC_ABSOLUTE_PATH_RE]
     if os.name != "nt":
         patterns.append(_POSIX_ABSOLUTE_PATH_RE)
-    for source_text in (text, expanded_text):
-        tilde_expanded = source_text.replace("~/", f"{Path.home()}/").replace("~\\", f"{Path.home()}\\")
-        for pattern in patterns:
-            for match in pattern.finditer(tilde_expanded):
-                value = str(match.group(1) or "").rstrip(".,)")
-                if value and value not in paths:
-                    paths.append(value)
+    # Expand each word after retaining its quote boundary: an environment value
+    # containing spaces is one path, not a new command token named C:\Program.
+    for word in _COMMAND_WORD_RE.finditer(str(command or "")):
+        text = next(group for group in word.groups() if group is not None)
+        expanded = _expand_command_path_variables(text)
+        expanded = expanded.replace("~/", f"{Path.home()}/").replace("~\\", f"{Path.home()}\\")
+        if _is_absolute_command_path(expanded):
+            candidates = [expanded] if word.group(3) is None or text != expanded else []
+        else:
+            candidates = []
+        if not candidates:
+            candidates = [match.group(1).rstrip(".,)") for pattern in patterns for match in pattern.finditer(expanded)]
+        for value in candidates:
+            if value and value not in paths:
+                paths.append(value)
     return paths
+
+
+def simple_host_command_access(command: str) -> tuple[str, str] | None:
+    """Recognize a single literal read or argument-free app launch, never a script.
+
+    This is workspace routing evidence, not a Safety approval. Other grammar,
+    remote paths, interpreters, arguments and dynamic expressions stay scoped.
+    """
+    raw = str(command or "").strip()
+    if not raw or "\n" in raw or "\r" in raw:
+        return None
+    tokens: list[str] = []
+    end = 0
+    for match in _COMMAND_WORD_RE.finditer(raw):
+        if (tokens and match.start() == end) or raw[end:match.start()].strip():
+            return None
+        word = next(group for group in match.groups() if group is not None)
+        expanded = _expand_command_path_variables(word)
+        if match.group(3) is not None and word == expanded and re.search(r"[(){}]", word):
+            return None
+        if re.search(r"[;$`|<>\r\n{}]", expanded) or ("&" in expanded and not (not tokens and expanded == "&")):
+            return None
+        tokens.append(expanded)
+        end = match.end()
+    if raw[end:].strip() or not tokens:
+        return None
+    name = tokens.pop(0).lower()
+    action = "host_read"
+    if name in {"get-childitem", "get-item", "test-path", "get-content"}:
+        flags = {"-force", "-name", "-file", "-directory", "-raw", "-recurse"}
+        path_options = {"-path", "-literalpath"}
+        target = ""
+        while tokens:
+            token = tokens.pop(0)
+            if token.lower() in flags:
+                continue
+            if token.lower() == "-encoding" and name == "get-content":
+                if not tokens or tokens.pop(0).lower() not in {"utf8", "utf8bom", "utf8nobom", "unicode", "ascii", "default"}:
+                    return None
+                continue
+            if token.lower() in path_options:
+                if not tokens:
+                    return None
+                token = tokens.pop(0)
+            if target or not _is_absolute_command_path(token):
+                return None
+            target = token
+    else:
+        action = "host_local_launch"
+        if name == "start-process":
+            if tokens and tokens[0].lower() == "-filepath":
+                tokens.pop(0)
+            target = tokens.pop(0) if tokens else ""
+        elif name == "&":
+            target = tokens.pop(0) if tokens else ""
+        else:
+            target = name
+        if tokens or not target.lower().endswith(".exe"):
+            return None
+        if re.split(r"[\\/]", target)[-1].lower() in {
+            "cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe",
+            "rundll32.exe", "regsvr32.exe", "python.exe", "pythonw.exe", "node.exe", "bash.exe", "sh.exe", "wsl.exe",
+        }:
+            return None
+    if not _is_absolute_command_path(target) or target.startswith(("\\\\", "//")) or re.search(r"[*?\[\]]", target):
+        return None
+    return action, target
 
 
 def preflight_command_workspace(
@@ -323,6 +408,26 @@ def preflight_command_workspace(
         }
 
     violations: list[dict[str, str]] = []
+    context = dict(runtime_context or {})
+    host_access = simple_host_command_access(command)
+    root_host_access = bool(
+        host_access
+        and resolve_collaboration_actor(runtime_context=context).is_supervisor
+        and str(runtime_kind or context.get("runtime_kind") or context.get("runtimeKind") or "").lower() in {"chat", "supervisor"}
+        and not binding.managed_execution
+        and not (context.get("sandbox_policy") or context.get("sandboxPolicy"))
+        and not (context.get("engineering_task_capsule") or context.get("engineeringTaskCapsule"))
+        and str(context.get("engineering_capsule_mode") or context.get("engineeringCapsuleMode") or "none").lower() == "none"
+        and not (context.get("delegation_id") or context.get("delegationId"))
+    )
+    expanded_command = _expand_command_path_variables(str(command or ""))
+    if any(expanded_command[match.end():match.end() + 1] in {"\\", "/"} for match in _COMMAND_ENV_RE.finditer(expanded_command)):
+        return {
+            "ok": False,
+            "error": "workspace_command_unresolved_path",
+            "summary": "命令中的环境路径无法解析，请使用可核验的完整路径。",
+            "binding": binding.as_dict(),
+        }
     for raw_path in extract_absolute_paths_from_command(command):
         result = resolve_workspace_tool_path(raw_path, runtime_context=runtime_context, runtime_kind=runtime_kind)
         if not result.get("ok"):
@@ -336,6 +441,8 @@ def preflight_command_workspace(
                             "relation": "global_skill_read_execute_only",
                         }
                     )
+                continue
+            if root_host_access:
                 continue
             violations.append(
                 {
@@ -365,4 +472,5 @@ def preflight_command_workspace(
         "ok": True,
         "cwd": str(cwd_result.get("resolvedPath") or binding.active_workspace_root),
         "binding": binding.as_dict(),
+        **({"hostAccess": {"action": host_access[0], "safetyAssessmentRequired": True}} if root_host_access else {}),
     }

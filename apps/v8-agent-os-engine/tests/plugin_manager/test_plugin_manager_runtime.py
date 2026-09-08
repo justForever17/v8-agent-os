@@ -698,6 +698,29 @@ def test_godot_setup_selects_scenario_skills_and_gates_install_on_live_mcp(
     assert [item["id"] for item in plan["steps"]["mcp"]] == ["godot-ai-mcp"]
 
 
+def test_godot_setup_change_reprojects_cached_grant_without_changing_its_id(runtime, monkeypatch):
+    service, test_db, _storage = runtime
+    monkeypatch.setattr(service_module, "evaluate_godot_setup", _godot_setup_projection)
+    monkeypatch.setattr(service, "readiness_status", lambda _id: {"ready": True})
+    service.update_plugin_setup("godot", {"scenario": "2.5d"})
+    components = ["godot-scene-core-skills", "godot-scene-3d-skills"]
+    service._upsert_installation(service._manifest("godot"), state="installed", health={"online": True}, external=True)
+    for component in components:
+        service._register_component("godot", component, "skill", ownership="external")
+    grant = service.create_grant(plugin_id="godot", scope="session", session_id="s1", run_id="r1", component_ids=components)
+    first = service.active_grants(session_id="s1", run_id="r1")
+    assert set(first[0]["componentIds"]) == set(components)
+    service.update_plugin_setup("godot", {"scenario": "2d"})
+    narrowed = service.active_grants(session_id="s1", run_id="r1")
+    assert narrowed[0]["grantId"] == grant["grantId"]
+    assert narrowed[0]["componentIds"] == ["godot-scene-core-skills"]
+    with test_db.get_connection() as conn:
+        stored = conn.execute("SELECT component_ids_json FROM plugin_grants WHERE id=?", (grant["grantId"],)).fetchone()
+    assert set(json.loads(stored["component_ids_json"])) == set(components)
+    service.revoke_grant(grant["grantId"])
+    assert service.active_grants(session_id="s1", run_id="r1") == []
+
+
 def test_godot_capability_sync_uses_managed_gda_binary(
     runtime,
     tmp_path: Path,

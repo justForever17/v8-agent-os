@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -12,6 +13,10 @@ from typing import Any
 
 
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
+if "--owned-window-probe" in sys.argv:
+    configured_state = Path(os.environ.get("V8_AGENT_OS_HOME") or Path.home() / ".v8-agent-os").resolve()
+    if configured_state == (Path.home() / ".v8-agent-os").resolve():
+        raise SystemExit("--owned-window-probe requires an isolated V8_AGENT_OS_HOME before runtime imports")
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -341,12 +346,23 @@ def main() -> int:
     parser.add_argument("--allow-input", action="store_true", help="Allow real input probes. Without this, input checks stay blocked.")
     parser.add_argument("--write-latest", action="store_true", help="Write the result to the ComputerUse runtime latest matrix store.")
     parser.add_argument("--output", help="Optional output JSON path.")
+    parser.add_argument("--owned-window-probe", action="store_true", help="Windows: verify only uniquely titled temporary windows owned by this test; requires --real-host --allow-input and an isolated V8_AGENT_OS_HOME.")
     args = parser.parse_args()
 
     if args.allow_input and not args.real_host:
         parser.error("--allow-input requires --real-host")
+    if args.owned_window_probe and not (args.real_host and args.allow_input):
+        parser.error("--owned-window-probe requires --real-host --allow-input")
 
     runtime = computer_use_runtime
+    if args.owned_window_probe:
+        from computer_use_owned_window_probe import run_owned_window_probe
+
+        target = Path(args.output).resolve() if args.output else Path(tempfile.mkdtemp(prefix="v8-cu-owned-")) / "result.json"
+        result = run_owned_window_probe(runtime, output_directory=target.parent)
+        target.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({"ok": result["ok"], "path": str(target), "failedStage": result.get("failedStage"), "cleanup": result.get("cleanup")}, ensure_ascii=False))
+        return 0 if result["ok"] else 1
     probe_results = _collect_safe_probe_results(allow_input=bool(args.allow_input)) if args.real_host else {}
     payload = build_real_host_matrix_payload(
         runtime=runtime,

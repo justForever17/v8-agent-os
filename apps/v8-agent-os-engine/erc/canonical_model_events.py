@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from langchain_core.messages import BaseMessageChunk
+
 from core.chat_output_extractor import extract_text_and_reasoning
 from core.reasoning_surface_contract import evaluate_reasoning_payload, normalize_reasoning_surface
 from core.response_normalizer import extract_reasoning_summary, extract_typed_thinking_text
@@ -292,6 +294,14 @@ class LangChainCanonicalModelEventAdapter:
                     raw_text,
                     emitted_text=emitted_text,
                 )
+            elif isinstance(payload, BaseMessageChunk):
+                # LangChain chunks are additive, including repeated tokens.
+                # Inferring snapshots from token overlap silently loses text.
+                run_key = normalized_model_run_id(model_run_id)
+                text_delta = raw_text
+                text_snapshot = text_snapshots.get(run_key, "") + raw_text
+                text_snapshots[run_key] = text_snapshot
+                text_diagnostics = {"textStreamMode": "delta"}
             else:
                 text_delta, text_snapshot = consume_canonical_stream_value(
                     text_snapshots,
@@ -430,14 +440,8 @@ class LangChainCanonicalModelEventAdapter:
         if current_value.startswith(previous_value):
             snapshots[run_key] = current_value
             return current_value[len(previous_value):], current_value, {}
-        if previous_value.endswith(current_value) or current_value in previous_value:
-            return "", previous_value, {}
-
-        overlap = longest_overlap_suffix_prefix(previous_value, current_value)
-        if overlap > 0:
-            snapshots[run_key] = current_value
-            return current_value[overlap:], current_value, {}
-
+        # A completed response is authoritative even when shorter or partly
+        # overlapping; appending a suffix cannot express a text correction.
         snapshots[run_key] = current_value
         return current_value, current_value, {
             "terminalTextCorrection": True,

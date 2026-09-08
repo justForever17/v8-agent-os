@@ -13,6 +13,7 @@ BASELINE_SYSTEM_TOOL_NAME_ORDER = (
     "send_background_input",
     "terminate_background_command",
     "web_broker",
+    "research_broker",
     "http_request",
     "download_media_for_vision",
     "vision_media_analyzer",
@@ -57,6 +58,10 @@ def build_baseline_system_tool_descriptors() -> list[dict[str, str]]:
         description = ""
         if native_tools_module is not None:
             tool_ref = getattr(native_tools_module, name, None)
+            if name == "research_broker":
+                from runtimes.research.tool_access import saved_research_reader
+
+                tool_ref = saved_research_reader
             description = str(getattr(tool_ref, "description", "") or "").strip()
         descriptors.append(
             {

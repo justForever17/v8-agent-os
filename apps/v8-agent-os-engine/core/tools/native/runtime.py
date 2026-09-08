@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,7 +15,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticCustomError
 
-from core.database import db
+from core.database import RuntimeEpisodeIdempotencyConflict, db
 from core.delegation_broker import (
     normalize_task_brief,
     normalize_task_briefs,
@@ -27,6 +28,7 @@ from core.runtime_episodes import (
     emit_runtime_episode_event,
     enqueue_runtime_episode,
     normalize_capability_kind,
+    resolve_runtime_episode_current_handoff,
     upsert_runtime_episode,
 )
 from core.runtime_tool_access import (
@@ -309,6 +311,23 @@ class RuntimeRouteTaskBrief(BaseModel):
         return normalized
 
 
+class EngineeringParentAcceptance(BaseModel):
+    """Supervisor's explicit acceptance decision, not a worker success flag."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["retry"]
+    episodeId: str = Field(min_length=1, description="Exact completed Engineering episode in the current run.")
+    handoffRefId: str = Field(min_length=1, description="That episode's current durable resultRef.")
+    gap: str = Field(min_length=1, description="Specific unmet user requirement/acceptance item and observed evidence. The Supervisor evaluates this; code does not judge prose quality.")
+
+    @field_validator("episodeId", "handoffRefId", "gap")
+    @classmethod
+    def _nonempty_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("parentAcceptance fields must not be blank")
+        return value.strip()
+
+
 class RuntimeRouteInputs(BaseModel):
     # extra="allow" intentionally keeps workerBriefs/tasks readable for old
     # persisted calls while the public schema advertises the two current
@@ -324,6 +343,8 @@ class RuntimeRouteInputs(BaseModel):
         default=False,
         description="Research only: bypass durable experience reuse and collect fresh evidence for this episode.",
     )
+    parentAcceptance: EngineeringParentAcceptance | None = None
+    experiencePackId: str | None = None
     researchBriefs: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -435,6 +456,10 @@ class RuntimeRouteNeed(BaseModel):
             raise ValueError("researchBriefs is only valid for Research routes")
         if self.kind != "research" and self.inputs.forceRefresh:
             raise ValueError("forceRefresh is only valid for Research routes")
+        if self.kind != "research" and self.inputs.experiencePackId:
+            raise ValueError("experiencePackId is only valid for Research routes")
+        if self.kind != "engineering" and self.inputs.parentAcceptance is not None:
+            raise ValueError("parentAcceptance is only valid for Engineering routes")
         legacy_inputs = dict(self.inputs.model_extra or {})
         has_legacy_briefs = any(
             isinstance(legacy_inputs.get(key), list) and legacy_inputs.get(key)
@@ -536,6 +561,10 @@ class RuntimeBrokerArgs(BaseModel):
         default=None,
         description="Research route only: set true only when the user explicitly requires fresh evidence.",
     )
+    experiencePackId: str | None = Field(
+        default=None,
+        description="Research route only: exact saved answer ID to review/update using its existing evidence. Omit for a new question; a wording revision does not require forceRefresh. This must be a typed field, not only prose in a brief.",
+    )
     researchBriefIds: list[str] = Field(
         default_factory=list,
         description=(
@@ -570,6 +599,10 @@ class RuntimeBrokerArgs(BaseModel):
     proofExpectations: list[str] = Field(
         default_factory=list,
         description="For mode=route: compact evidence outcomes the terminal handoff must return.",
+    )
+    parentAcceptance: EngineeringParentAcceptance | None = Field(
+        default=None,
+        description="Engineering only: explicitly request the one bounded repair after parent acceptance finds a gap in a completed current-run handoff. Omit for ordinary dispatch/reuse.",
     )
     need: SkipJsonSchema[RuntimeRoutePublicNeed | None] = Field(
         default=None,
@@ -626,10 +659,12 @@ def _model_payload(value: Any) -> Any:
 _PUBLIC_ROUTE_INPUT_FIELDS = (
     "workspacePath",
     "forceRefresh",
+    "experiencePackId",
     "researchBriefs",
     "researchBriefContexts",
     "taskBriefs",
     "proofExpectations",
+    "parentAcceptance",
 )
 
 
@@ -666,11 +701,13 @@ def _route_need_from_public_transport(
     route_reason: Any = None,
     workspace_path: Any = None,
     force_refresh: Any = None,
+    experience_pack_id: Any = None,
     research_brief_ids: Any = None,
     research_brief_goals: Any = None,
     research_brief_contexts: Any = None,
     task_briefs: Any = None,
     proof_expectations: Any = None,
+    parent_acceptance: Any = None,
 ) -> Any:
     """Restore the provider-safe root transport to the canonical route need."""
 
@@ -680,11 +717,13 @@ def _route_need_from_public_transport(
         route_reason,
         workspace_path,
         force_refresh,
+        experience_pack_id,
         research_brief_ids,
         research_brief_goals,
         research_brief_contexts,
         task_briefs,
         proof_expectations,
+        parent_acceptance,
     ]
     has_root_transport = any(item not in (None, "", [], {}) for item in root_values)
     if isinstance(legacy, dict):
@@ -720,6 +759,8 @@ def _route_need_from_public_transport(
         inputs["researchExecutionMode"] = "single_bundle"
     if force_refresh is not None:
         inputs["forceRefresh"] = bool(force_refresh)
+    if experience_pack_id is not None:
+        inputs["experiencePackId"] = experience_pack_id
     if brief_ids and len(brief_ids) == len(brief_goals) and not transport_errors:
         inputs["researchBriefs"] = dict(zip(brief_ids, brief_goals))
         if brief_contexts:
@@ -732,6 +773,8 @@ def _route_need_from_public_transport(
         inputs["taskBriefs"] = list(task_briefs or [])
     if list(proof_expectations or []):
         inputs["proofExpectations"] = list(proof_expectations or [])
+    if parent_acceptance is not None:
+        inputs["parentAcceptance"] = _model_payload(parent_acceptance)
     payload: dict[str, Any] = {
         "kind": route_kind,
         "reason": route_reason,
@@ -1030,6 +1073,9 @@ def _latest_user_content_from_route_state(state: dict[str, Any] | None) -> str:
             "human",
             "user",
         }:
+            metadata = message.get("additional_kwargs") if isinstance(message.get("additional_kwargs"), dict) else {}
+            if str(metadata.get("v8_governance_type") or "").strip():
+                continue
             value = str(message.get("content") or "").strip()
             if value:
                 return value
@@ -1654,6 +1700,7 @@ def _engineering_route_retry_state(
             pass
 
     prior_failed_attempts = 0
+    final_repair_seen = False
     in_flight_episode_ids: list[str] = []
     completed_episode_ids: list[str] = []
     for episode in [*episode_by_id.values(), *anonymous_episodes]:
@@ -1669,12 +1716,21 @@ def _engineering_route_retry_state(
             candidate_inputs = episode["need"].get("inputs")
             inputs = candidate_inputs if isinstance(candidate_inputs, dict) else {}
         episode_tasks = _explicit_task_briefs_from_inputs(inputs)
+        episode_state = str(episode.get("state") or "").strip().lower()
+        repair = inputs.get("engineeringRepair") if isinstance(inputs.get("engineeringRepair"), dict) else {}
+        lineage = inputs.get("repairLineage") if isinstance(inputs.get("repairLineage"), dict) else {}
         if write_scope:
-            if _normalized_engineering_write_scope(episode_tasks) != write_scope:
+            prior_scope = set(_normalized_engineering_write_scope(episode_tasks))
+            original_scope = set(lineage.get("priorWriteSet") or prior_scope)
+            same_or_completed_subset = prior_scope == set(write_scope) or (
+                episode_state == "completed" and set(write_scope).issubset(prior_scope)
+            )
+            bounded_repair_overlap = bool(repair.get("finalRepairAttempt") and original_scope.intersection(write_scope))
+            if not same_or_completed_subset and not bounded_repair_overlap:
                 continue
         elif _normalized_engineering_read_only_scope(episode_tasks) != read_only_scope:
             continue
-        episode_state = str(episode.get("state") or "").strip().lower()
+        final_repair_seen = final_repair_seen or bool(repair.get("finalRepairAttempt"))
         episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
         if episode_state in _ENGINEERING_REPAIR_FAILURE_STATES:
             prior_failed_attempts += 1
@@ -1687,7 +1743,7 @@ def _engineering_route_retry_state(
         "priorFailedAttempts": prior_failed_attempts,
         "repairBudget": _ENGINEERING_REPAIR_BUDGET,
         "repairAttempt": min(prior_failed_attempts, _ENGINEERING_REPAIR_BUDGET),
-        "exhausted": prior_failed_attempts > _ENGINEERING_REPAIR_BUDGET,
+        "exhausted": final_repair_seen or prior_failed_attempts > _ENGINEERING_REPAIR_BUDGET,
     }
     if in_flight_episode_ids:
         result["inFlightEpisodeIds"] = sorted(set(in_flight_episode_ids))
@@ -1802,6 +1858,81 @@ def _engineering_repair_lineage(
             ][:24],
         }
     return {}
+
+
+def _engineering_parent_acceptance_repair(*, inputs: dict[str, Any], state: dict[str, Any] | None, route_context: dict[str, Any]) -> dict[str, Any]:
+    """Validate explicit parent retry authority against the durable delivery.
+
+    The Supervisor judges the stated gap. This boundary checks references,
+    scope and the existing one-repair budget; completion is not acceptance.
+    """
+    raw = inputs.get("parentAcceptance")
+    if raw is None:
+        return {}
+
+    def blocked(reason: str, message: str) -> dict[str, Any]:
+        return {"blocking": True, "status": "blocked", "reason": reason, "message": message}
+
+    try:
+        acceptance = EngineeringParentAcceptance.model_validate(_model_payload(raw)).model_dump()
+    except ValidationError:
+        return blocked("engineering_parent_acceptance_invalid", "parentAcceptance requires decision='retry', exact episodeId/handoffRefId, and a non-empty observed acceptance gap.")
+    layers = [dict(get_runtime_context() or {}), dict(state or {}), dict(route_context or {})]
+    context = {**layers[2], **layers[1], **{key: value for key, value in layers[0].items() if value is not None}}
+    run_id = next((str(layer.get("run_id") or layer.get("runId") or "").strip() for layer in layers if layer.get("run_id") or layer.get("runId")), "")
+    session_id = next((str(layer.get("session_id") or layer.get("sessionId") or "").strip() for layer in layers if layer.get("session_id") or layer.get("sessionId")), "")
+    episode_id = acceptance["episodeId"]
+    try:
+        prior = db.get_runtime_episode(episode_id) or {}
+        if (not run_id or not session_id
+                or str(prior.get("run_id") or prior.get("runId") or "") != run_id
+                or str(prior.get("session_id") or prior.get("sessionId") or "") != session_id):
+            return blocked("engineering_parent_acceptance_scope_mismatch", "Parent acceptance may retry only a durable episode in this current session and run.")
+        if prior.get("kind") != "engineering" or prior.get("state") != "completed":
+            return blocked("engineering_parent_acceptance_not_completed", "Use parentAcceptance only for a completed Engineering delivery; active or failed work retains its existing recovery flow.")
+        result_ref = str(prior.get("resultRef") or prior.get("result_ref") or "").strip()
+        handoff, _diagnostic = resolve_runtime_episode_current_handoff(prior, db.list_runtime_episode_handoffs(episode_id))
+        if not result_ref or result_ref != acceptance["handoffRefId"] or handoff is None:
+            return blocked("engineering_parent_acceptance_handoff_mismatch", "handoffRefId must match the current durable resultRef; historical, missing or invalid handoffs cannot authorize a repair.")
+        prior_inputs = dict(prior.get("inputs") or {})
+        if (dict(prior_inputs.get("engineeringRepair") or {}).get("finalRepairAttempt")
+                or dict(prior_inputs.get("repairLineage") or {}).get("repairOfEpisodeIds")):
+            return blocked("engineering_retry_exhausted", "This episode is already a bounded repair; accepting or rejecting it does not grant a second repair.")
+        prior_tasks = _explicit_task_briefs_from_inputs(prior_inputs)
+        replacement_tasks = _explicit_task_briefs_from_inputs(inputs)
+        prior_write_set = set(_normalized_engineering_write_scope(prior_tasks))
+        replacement_write_set = set(_normalized_engineering_write_scope(replacement_tasks))
+        if not replacement_write_set.issubset(prior_write_set):
+            return blocked("engineering_parent_acceptance_write_scope_expansion", "A parent acceptance repair cannot add write paths or turn a read-only delivery into a writing task.")
+        prior_workspace = str(prior_inputs.get("originalWorkspacePath") or prior_inputs.get("workspacePath") or "").strip()
+        replacement_workspace = str(inputs.get("workspacePath") or context.get("workspace_path") or context.get("workspacePath") or "").strip()
+        if prior_workspace and replacement_workspace and Path(prior_workspace).resolve() != Path(replacement_workspace).resolve():
+            return blocked("engineering_parent_acceptance_workspace_mismatch", "The repair must keep the original bound workspace.")
+        # Count every durable repair of this producer, including completed,
+        # cancelled and renamed tasks. No state-based reset of the same budget.
+        with db.get_connection() as conn:
+            repair = conn.execute(
+                "SELECT id FROM runtime_episodes WHERE run_id=? AND kind='engineering' "
+                "AND EXISTS (SELECT 1 FROM json_each(inputs_json, '$.repairLineage.repairOfEpisodeIds') WHERE value=?) LIMIT 1",
+                (run_id, episode_id),
+            ).fetchone()
+        if repair is not None:
+            return blocked("engineering_retry_exhausted", "The original Engineering episode already used its one bounded repair, regardless of that repair's outcome.")
+    except Exception as exc:
+        return blocked("engineering_parent_acceptance_unverified", f"Could not verify the durable parent acceptance boundary ({type(exc).__name__}); no repair was queued.")
+    repair_id = "episode_repair_" + hashlib.sha256(f"{run_id}|{episode_id}".encode()).hexdigest()[:24]
+    return {
+        "episodeId": repair_id,
+        "idempotencyKey": f"engineering-parent-repair:{episode_id}",
+        "lineage": {
+            "schemaVersion": "v8.engineering_repair.v1", "source": "supervisor_parent_acceptance",
+            "repairOfEpisodeIds": [episode_id], "repairOfHandoffRefs": [result_ref],
+            "priorWriteSet": sorted(prior_write_set), "replacementWriteSet": sorted(replacement_write_set),
+            "overlappingWriteSet": sorted(replacement_write_set),
+            "replacementTaskBriefIds": [str(task.get("taskBriefId") or "") for task in replacement_tasks],
+        },
+        "repairState": {"repairBudget": _ENGINEERING_REPAIR_BUDGET, "repairAttempt": 1, "finalRepairAttempt": True},
+    }
 
 
 def _engineering_route_execution_intent_conflict(
@@ -4227,6 +4358,8 @@ def _append_runtime_episode(
     )
     persisted = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=int(need.get("priority") or 0))
     merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "sessionId", "run_id", "runId", "state", "lastHeartbeatAt"}}}
+    if persisted.get("admissionReused"):
+        merged_episode = {**episode, **persisted}
     if session_id:
         merged_episode.setdefault("sessionId", session_id)
         merged_episode.setdefault("session_id", session_id)
@@ -4269,6 +4402,10 @@ def runtime_broker(
         Optional[bool],
         "Research only: true bypasses durable reuse and requires fresh evidence for this episode.",
     ] = None,
+    experiencePackId: Annotated[
+        Optional[str],
+        "Research only: exact saved answer ID for review/update with inherited evidence; not a prose hint.",
+    ] = None,
     researchBriefIds: Annotated[
         Optional[list[str]],
         "Research only: complete ordered stable-ID list. Enumerate every known domain before optional detail.",
@@ -4288,6 +4425,10 @@ def runtime_broker(
     proofExpectations: Annotated[
         Optional[list[str]],
         "Compact evidence outcomes the terminal handoff must return.",
+    ] = None,
+    parentAcceptance: Annotated[
+        EngineeringParentAcceptance | None,
+        "Engineering only: decision=retry plus exact completed episodeId/current handoffRefId/gap. One repair within the original writeSet.",
     ] = None,
     need: Annotated[
         RuntimeRouteNeed | None,
@@ -4328,8 +4469,12 @@ def runtime_broker(
     Every write brief declares writeRequired=true, an exhaustive bounded writeSet including command side effects,
     final expectedArtifacts covered by that writeSet, expectedOutputs, and acceptanceContract. Repair only an exact
     reported contract or execution gap once; delegation is not an alternate spelling for an Engineering episode.
+    Completed execution is not parent acceptance. If the completed handoff misses a requirement, route one repair with
+    parentAcceptance={"decision":"retry","episodeId":"exact prior episode","handoffRefId":"its current resultRef","gap":"unmet item and observation"}
+    and taskBriefs whose writeSet is equal to or a subset of the original grant. A reused route dispatches nothing: do not say a worker is running or wait for a new result.
 
     Research shape: `{"mode":"route","routeKind":"research","routeReason":"verify known domains","forceRefresh":true,"researchBriefIds":["domain-a","domain-b"],"researchBriefGoals":["verify A","verify B"]}`. Omit forceRefresh unless the user requires fresh evidence.
+    To revise a saved answer, set root experiencePackId to its exact ID and put the requested revision in the brief goals; preserve existing evidence and search only real gaps. Do not bury the ID in researchBriefContexts.
     Engineering shape: `{"mode":"route","routeKind":"engineering","routeReason":"implement and verify","taskBriefs":[{"taskBriefId":"implementation","goal":"implement the bounded change","writeRequired":true,"writeSet":["src/feature.py"],"expectedArtifacts":["src/feature.py"],"expectedOutputs":["working implementation"],"acceptanceContract":["the requirement is implemented"]},{"taskBriefId":"verification","goal":"persist proof","writeRequired":true,"writeSet":["reports/verification.json"],"expectedArtifacts":["reports/verification.json"],"expectedOutputs":["verification report"],"acceptanceContract":["checks pass and the report records them"],"dependencies":["implementation"]}]}`.
 
     New Research calls use researchBriefIds + researchBriefGoals; other routes use taskBriefs. Preserve JSON array/object types. Use `list` only for a compact catalog and `grant`
@@ -4344,11 +4489,13 @@ def runtime_broker(
         route_reason=routeReason,
         workspace_path=workspacePath,
         force_refresh=forceRefresh,
+        experience_pack_id=experiencePackId,
         research_brief_ids=researchBriefIds,
         research_brief_goals=researchBriefGoals,
         research_brief_contexts=researchBriefContexts,
         task_briefs=taskBriefs,
         proof_expectations=proofExpectations,
+        parent_acceptance=parentAcceptance,
     )
     route_context = dict((state or {}).get("current_route_context") or {})
     if normalized_mode == "resume":
@@ -4837,7 +4984,30 @@ def runtime_broker(
             )
         need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
         route_inputs = dict(need_payload.get("inputs") or {}) if isinstance(need_payload.get("inputs"), dict) else {}
+        if route_kind == "research":
+            route_inputs.pop("originalUserRequest", None)
+            original_user_request = _latest_user_content_from_route_state(state)
+            if original_user_request:
+                route_inputs["originalUserRequest"] = original_user_request
+            need_payload["inputs"] = route_inputs
         route_brief_quality = route_inputs.get("routeBriefQuality") if isinstance(route_inputs.get("routeBriefQuality"), dict) else {}
+        acceptance_repair: dict[str, Any] = {}
+        if route_kind == "engineering":
+            # These are derived authority, never caller-supplied budget/lineage.
+            route_inputs.pop("repairLineage", None)
+            route_inputs.pop("engineeringRepair", None)
+            need_payload["inputs"] = route_inputs
+            if not route_brief_quality.get("blocking"):
+                acceptance_repair = _engineering_parent_acceptance_repair(
+                    inputs=route_inputs, state=state, route_context=route_context,
+                )
+                if acceptance_repair.get("blocking"):
+                    route_brief_quality = acceptance_repair
+                elif acceptance_repair:
+                    route_inputs["repairLineage"] = acceptance_repair["lineage"]
+                    route_inputs["engineeringRepair"] = acceptance_repair["repairState"]
+                    need_payload["episodeId"] = acceptance_repair["episodeId"]
+                    need_payload["idempotencyKey"] = acceptance_repair["idempotencyKey"]
         if bool(route_brief_quality.get("blocking")):
             blocking_reason = str(route_brief_quality.get("reason") or "task_brief_required").strip()
             public_error = blocking_reason
@@ -4880,7 +5050,7 @@ def runtime_broker(
                     },
                 },
             )
-        if route_kind == "engineering":
+        if route_kind == "engineering" and not acceptance_repair:
             repair_lineage = _engineering_repair_lineage(
                 need=need_payload,
                 route_context=route_context,
@@ -4979,8 +5149,16 @@ def runtime_broker(
                     },
                 )
             completed_episode_ids = list(repair_state.get("completedEpisodeIds") or [])
-            if completed_episode_ids:
+            if completed_episode_ids and not acceptance_repair:
                 completed_episode_id = str(completed_episode_ids[-1])
+                completed = db.get_runtime_episode(completed_episode_id) or {}
+                current_result_ref = str(completed.get("resultRef") or completed.get("result_ref") or "")
+                repair_shape = {
+                    "mode": "route", "routeKind": "engineering", "routeReason": "repair the observed acceptance gap",
+                    "parentAcceptance": {"decision": "retry", "episodeId": completed_episode_id,
+                                         "handoffRefId": current_result_ref or "<current durable resultRef>",
+                                         "gap": "<specific unmet requirement and observation>"},
+                }
                 return Command(
                     goto="supervisor",
                     update={
@@ -4989,7 +5167,7 @@ def runtime_broker(
                                 content=_runtime_broker_payload(
                                     mode=normalized_mode,
                                     ok=True,
-                                    summary="The same Engineering write scope already completed in this run; its typed handoff must be accepted instead of creating a duplicate episode.",
+                                    summary="The same Engineering scope already completed. dispatched=false: no new task was queued and no new worker is waiting. The Supervisor still owns acceptance of that result.",
                                     detail_level=detail_level,
                                     detail_ref=f"runtime_episode:{completed_episode_id}",
                                     route_brief_quality={
@@ -4997,8 +5175,10 @@ def runtime_broker(
                                         "reason": "same_run_completed_engineering_scope",
                                         "blocking": False,
                                         **repair_state,
+                                        "dispatched": False,
+                                        "currentHandoffRefId": current_result_ref or None,
                                     },
-                                    next_action="Use the existing typed handoff and record the Supervisor acceptance decision.",
+                                    next_action="Review the existing handoff. For one observed gap, keep the complete current taskBriefs with a focused repair goal and no larger writeSet; add these public route fields: " + json.dumps(repair_shape, ensure_ascii=False),
                                 ),
                                 tool_call_id=tool_call_id,
                             )
@@ -5011,7 +5191,7 @@ def runtime_broker(
                             "reason": "engineering_episode_already_completed",
                             "episodeKind": route_kind,
                             "episodeCount": 0,
-                            "nextAction": "accept_existing_handoff",
+                            "nextAction": "review_existing_handoff",
                         },
                     },
                 )
@@ -5056,7 +5236,7 @@ def runtime_broker(
                         },
                     },
                 )
-            if int(repair_state.get("priorFailedAttempts") or 0) == 1:
+            if int(repair_state.get("priorFailedAttempts") or 0) == 1 and not acceptance_repair:
                 route_inputs = dict(route_inputs)
                 route_inputs["engineeringRepair"] = {
                     **repair_state,
@@ -5220,15 +5400,34 @@ def runtime_broker(
                 requested_groups,
                 reason=str(reason or need_payload.get("reason") or "capability_route").strip(),
             )
-        updated_context, episode = _append_runtime_episode(
-            updated_context,
-            need=need_payload,
-            kind=route_kind,
-            groups=grants,
-            allow_direct_fallback=allow_direct_fallback,
-        )
-        _emit_runtime_episode_event("capability.need.detected", {"episode": episode})
-        _emit_runtime_episode_event("runtime.episode.queued", {"episode": episode})
+        try:
+            updated_context, episode = _append_runtime_episode(
+                updated_context, need=need_payload, kind=route_kind, groups=grants,
+                allow_direct_fallback=allow_direct_fallback,
+            )
+        except RuntimeEpisodeIdempotencyConflict:
+            if not acceptance_repair:
+                raise
+            existing_repair = db.get_runtime_episode(acceptance_repair["episodeId"])
+            conflict_context = upsert_runtime_episode(route_context, existing_repair) if existing_repair else route_context
+            conflict_next_action = "wait_episode" if existing_repair and existing_repair.get("state") in ACTIVE_EPISODE_STATES else "review_existing_handoff"
+            return Command(goto="supervisor", update={
+                "messages": [ToolMessage(content=_runtime_broker_payload(
+                    mode=normalized_mode, ok=False,
+                    summary="A repair of this original episode was already admitted with a different immutable contract. No replacement or additional worker was dispatched.",
+                    error="engineering_parent_acceptance_conflict", detail_level=detail_level,
+                    detail_ref=f"runtime_episode:{acceptance_repair['episodeId']}",
+                    next_action="Inspect the already admitted repair and its typed handoff; do not rename or overwrite the running task.",
+                ), tool_call_id=tool_call_id)],
+                "current_route_context": conflict_context,
+                "runtime_dispatch_status": {"mode": "runtime_broker_route", "dispatched": False, "blocked": True,
+                    "reason": "engineering_parent_acceptance_conflict", "episodeId": acceptance_repair["episodeId"],
+                    "episodeKind": route_kind, "episodeCount": 0, "nextAction": conflict_next_action},
+            })
+        admission_reused = bool(episode.get("admissionReused"))
+        if not admission_reused:
+            _emit_runtime_episode_event("capability.need.detected", {"episode": episode})
+            _emit_runtime_episode_event("runtime.episode.queued", {"episode": episode})
         if route_kind in {"engineering", "delegation"}:
             next_action = "wait_episode"
         elif route_kind == "research":
@@ -5247,14 +5446,16 @@ def runtime_broker(
                         content=_runtime_broker_payload(
                             mode=normalized_mode,
                             ok=not rejected,
-                            summary=f"Routed capability need to {route_kind}.",
+                            summary=("The existing runtime episode was reused; no new task or worker was dispatched."
+                                     if admission_reused else f"Routed capability need to {route_kind}."),
                             grants=grants,
                             rejected=rejected,
                             error="unknown_tool_group" if rejected else None,
                             detail_level=detail_level,
                             changed=grants,
                             episode=episode,
-                            next_action="Runtime episode queued. The graph now owns waiting and will inject the typed handoff; do not poll.",
+                            next_action=("The graph retains the original episode and will resolve its typed handoff; no new episode was queued."
+                                         if admission_reused else "Runtime episode queued. The graph now owns waiting and will inject the typed handoff; do not poll."),
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -5262,12 +5463,12 @@ def runtime_broker(
                 "current_route_context": updated_context,
                 "runtime_dispatch_status": {
                     "mode": "runtime_broker_route",
-                    "dispatched": True,
+                    "dispatched": not admission_reused,
                     "blocked": False,
-                    "reason": "runtime_episode_queued",
+                    "reason": "runtime_episode_reused" if admission_reused else "runtime_episode_queued",
                     "episodeId": str(episode.get("episodeId") or ""),
                     "episodeKind": route_kind,
-                    "episodeCount": 1,
+                    "episodeCount": 0 if admission_reused else 1,
                     "nextAction": "wait_episode",
                 },
             },

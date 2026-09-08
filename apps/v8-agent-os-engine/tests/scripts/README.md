@@ -55,14 +55,24 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | --- | --- | --- |
 | `run_agent_quality_live_audit.py` | Agent Quality Matrix live 深度审计。 | `--live --matrix all --write-report` |
 | `run_boundary_fast_response_live_audit.py` | 任务边界和 Supervisor 快速首轮响应 live 验收。 | `--live` |
-| `run_supervisor_runtime_skill_live_audit.py` | Supervisor / Runtime / Skill 真实断点审计。 | `--live --case ...` |
+| `run_supervisor_runtime_skill_live_audit.py` | Supervisor / Runtime / Skill 真实断点审计；`engineering_long_write` 验证临时工作区长原生参数、同 worker 版本续写、浏览器交互与 Web live/reload；`engineering_parent_acceptance_repair` 验证工程完成后父级发现缺口、以精确 handoff 引用派发一次修复并核对最终文件；`research_delegated_verification` 核对来源、原始引用、独立复核和最终呈现。保留失败 run，不以 completed 代替子项通过。 | `--live --case ...`；工程另需 `--allow-side-effects`，浏览器不可用须报告未验证。 |
 | `run_engineering_continuation_live_audit.py` | 同 session 工程续接与 debug 路由 live 验收。 | `--live --allow-side-effects` 视 case 而定 |
 | `run_engineering_sandbox_live_audit.py` | 真实验证工作区 → Git 基线 → Supervisor/子/孙 Agent 独立 worktree → 沙箱租约 → 验收交付闭环。只接受空白专用工作区。 | `--live --allow-side-effects --workspace ...` |
 | `run_huashu_nuwa_skill_live_audit.py` | huashu-nuwa skill 生成、续读、写入和复用 live 验收。 | `--live --allow-side-effects --workspace ...` |
 | `run_spec_mode_project_live_audit.py` | Spec Mode 简易真实闭环验收：requirements → design → tasks 审批 → runtime 执行 → index/README 交付；默认先建空 Spec shell 与 clarification evidence，不预写阶段文档；自动回答 Spec 澄清 `ask_user`，并显式报告 workspace binding/trust/side-effect 阻断。 | `--live --workspace ... --write-report`；默认不传 `modelProfile`，使用 Admin 已配置 supervisor 模型；默认 `--safety-approval-mode reduced`；默认等待窗口 480 秒，`--no-bootstrap-spec-shell` 可复现纯 `/spec new` 路径。 |
-| `run_research_runtime_deep_live_audit.py` | Research 联网审计；`--case semantic_review_contrast` / `semantic_review_version_contrast` / `semantic_review_metadata_contrast` 为真实配置模型对合成证据的正反例审查；`--fixed-bundle` 为禁止重新获取证据的生成回放，接受完整单次或分节写作，仍要求来源、引用与独立复核达标。后二者不是联网端到端证明。 | `--live --write-report` |
+| `run_research_runtime_deep_live_audit.py` | Research 分层审计；语义/版本/载体/请求归因对照使用合成证据。`--fixed-bundle` 禁止重新获取证据，用保存来源重放；`--review-only` 只重审已有候选稿或已接受正文及读取记录，不调用 writer。`--agent-question` 使用实际获取和配置模型；答案生命周期另核验保存答案及来源的公开恢复、查改复用、归档/恢复/删除，只操作本次样本。各层边界见下文。 | 所有真实模型模式均需 `--live`；报告用 `--write-report`。仅 review-only 可带 `--original-request-file`、`--expect-review-decision`。 |
+| `run_research_runtime_fixed_bundle_acceptance.py` | 固定证据的追加式验收记录与连续通过判据；使用配置中的真实 writer/reviewer，不重新抓取来源。 | 必须显式 `--live`；无该开关，在读取证据/配置或获取记录锁之前退出。命令：`python tests/scripts/run_research_runtime_fixed_bundle_acceptance.py --live --bundle <ledger.json> --bundle-id <id> --attempt-log <attempts.jsonl>`。冻结证据和实际报告不要提交仓库。 |
 | `run_web_source_router_live_audit.py` | Source Router / web read / extract live smoke。 | `--live` |
 | `run_tool_surface_live_audit.py` | 工具表面和 detail/ref 输出 live 审计。 | `--live` |
+
+调研验收按证据层级分别记录，不能互相替代：
+
+- **固定证据真实 reviewer**：`--live --fixed-bundle <ledger.json> --bundle-id <id> --review-only` 优先重放保存的 `candidateDraft`；没有候选稿时使用已接受答案的完整正文、coverage 和 limitations，不把旧 accept 当新审阅结果。来源与候选内容冻结，禁止补搜和重写。仅协议成功说明得到有效审阅结论，不自动证明语义正确。
+- **已知正反例判别**：在上述命令追加 `--expect-review-decision revise` 或 `accept`；预期必须来自事先核实的该样本判据，不能事后改成模型实际返回值。结论不符则报告失败；固定证据与合成证据对照都不能证明当前网络可用。
+- **原始请求归因**：仅在 review-only 中用 `--original-request-file <original.txt>` 提供实际原始用户消息（UTF-8，可有 BOM）。它与 bundle 的派生研究 question 分开传入；未提供时保持来源未知，不拿派生问题补作用户原话。报告记录原请求 hash；原文文件和冻结私有证据不得提交仓库。缺少 `--live` 会在读取输入文件或调用模型前退出。
+- **新鲜网络与完整产品链**：`--live --agent-question <问题> --seed-url <已知正文URL>` 验证 Research 获取、实际模型审阅与保存；需要强制刷新既有题目时使用明确带 `force_refresh` 的 case 并核对获取 receipts。还须以 Supervisor 的 `research_delegated_verification` 联测验证委派、最终交付和 Web live/reload 一致性，不能用固定 reviewer 回放或单个 Research 调用代替这条端到端链。
+
+`engineering_parent_acceptance_repair` 是小文件恢复验收，需 `--live --allow-side-effects --case engineering_parent_acceptance_repair`，使用新建专用会话和临时工作区：先让工程 worker 写入 `acceptance-note.txt=draft` 并结束，再由 Supervisor 按最终 `approved` 要求，以当前 producer episode 和 handoff 的精确引用提交 `parentAcceptance`。验收核对原 episode 完成、唯一修复 lineage、原写集、修复完成、实际文件内容（当前允许首尾空白）和 Web live/reload 一致性；复用旧 completed、仅说“已发起等待”、错误引用或文件仍为 draft 都不能通过。该小样本不替代长参数/连续写入/浏览器交互验收。
 
 ## Creative Media Live / Smoke
 
@@ -114,3 +124,10 @@ Computer Use 联合验收使用 V8OS 专用 Agent 浏览器 profile；未登录�
 - 脚本输出路径默认使用 `~/.v8-agent-os/reports/...` 或临时目录。
 - 任何会真实写文件、安装依赖、启动进程、点击桌面、调用 provider、联网调研的脚本，都必须在参数名和帮助文本中显式暴露风险。
 - 如果脚本中出现真实账号、token、cookie、私有日志、完整用户聊天内容，应改成 redacted evidence 或 fixture。
+## 已保存 Research 答案的跨会话核验
+
+`run_supervisor_runtime_skill_live_audit.py --case saved_research_verification --live --saved-experience-id <active-pack-id> --saved-evidence-id <current-bundle-id> --web-url <running-Web-url> --write-report --output-dir <audit-directory>`
+
+此入口只使用指定的已接受答案，以新会话验证读取、独立子任务、原始 claimId/引用键/URL 与父级接受、Web live/reload 一致性，不重复触发 Research 获取或工程写入。缺 ID、包已归档、版本引用不符或未启用 `--live` 均在提交前拒绝。报告中的 `savedResearchVerificationAudit` 不能用 `ready`、自报 ACCEPT 或父级自己写的核验表替代子任务原始证明；语义质量仍须逐条对照来源人工核查。
+
+`workerReadEvidence` 只承认当前子任务成功返回的来源正文快照，并核对保存的内容哈希；读过答案正文、列出 URL、发起但失败的读取均不算独立来源核验。答案追加的原始读取索引只用于定位，`read_` 前缀及原始 URL 不得由验收器自动补全或改写。UI 工具预览的分页范围可能小于实际模型输入，截断定位需对照模型调用的消息哈希，不能只看卡片预览推断模型漏读。

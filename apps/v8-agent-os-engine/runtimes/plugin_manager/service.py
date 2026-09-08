@@ -1425,6 +1425,7 @@ class PluginManagerService:
             )
             conn.commit()
         self._invalidate_machine_discovery_cache(manifest.id)
+        self._invalidate_grant_cache()
         self._event(manifest.id, "setup_updated", "ok", details={"fields": sorted(values)})
         return self.plugin_setup(manifest.id, probe=False)
 

@@ -96,6 +96,30 @@ def test_episode_idempotency_ledger_returns_original_and_rejects_payload_reuse(t
     assert row["episode_id"] == "episode-a"
 
 
+def test_repeated_explicit_admission_cannot_requeue_same_claimed_episode(tmp_path):
+    database = DatabaseManager(tmp_path / "same-id-admission.db")
+    _create_binding(database, session_id="admission-session", run_id="admission-run")
+    episode = _episode(episode_id="same-id", key="engineering-parent-repair:original")
+    database.upsert_runtime_episode_record(episode, session_id="admission-session", run_id="admission-run", enqueue=True)
+    claimed = database.claim_runtime_episode(worker_id="first-owner", lease_seconds=30)
+    assert claimed is not None and claimed["state"] == "active"
+    replayed = database.upsert_runtime_episode_record(episode, session_id="admission-session", run_id="admission-run", enqueue=True)
+    assert replayed["state"] == "active"
+    assert replayed["worker_id"] == "first-owner"
+    assert replayed["leaseGeneration"] == claimed["leaseGeneration"]
+    assert replayed["inputs"] == claimed["inputs"]
+    assert replayed["admissionReused"] is True
+    with database.get_connection() as conn:
+        assert conn.execute("SELECT state FROM runtime_episode_queue WHERE episode_id='same-id'").fetchone()[0] == "leased"
+    with pytest.raises(RuntimeEpisodeIdempotencyConflict):
+        database.upsert_runtime_episode_record(
+            _episode(episode_id="same-id", key="engineering-parent-repair:original", reason="changed contract"),
+            session_id="admission-session", run_id="admission-run", enqueue=True,
+        )
+    assert database.get_runtime_episode("same-id")["inputs"] == claimed["inputs"]
+    assert database.get_runtime_episode("same-id")["reason"] == claimed["reason"]
+
+
 def test_episode_idempotency_key_is_session_scoped(tmp_path):
     database = DatabaseManager(tmp_path / "episode-idempotency-scope.db")
     _create_binding(database, session_id="session-a", run_id="run-a")

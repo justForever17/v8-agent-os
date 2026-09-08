@@ -148,3 +148,78 @@ def test_runner_degrades_after_bounded_poll_failures_and_recovers(
     assert recovered["consecutivePollFailures"] == 0
     assert recovered["lastPollFailureType"] == ""
     asyncio.run(runner.stop())
+
+
+def test_cancelled_episode_does_not_kill_runner_or_block_next_claim(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    runner._max_concurrent = 1
+    runner._poll_seconds = 0.005
+    first_started, cancel_first = threading.Event(), threading.Event()
+    next_started, next_stopped = threading.Event(), threading.Event()
+    queued = iter([{"id": "cancelled-task"}, {"id": "next-task"}])
+    monkeypatch.setattr("core.runtime_episode_runner.db.claim_runtime_episode", lambda **_kwargs: next(queued, None))
+
+    async def execute(episode):
+        if episode["id"] == "cancelled-task":
+            first_started.set()
+            while not cancel_first.is_set():
+                await asyncio.sleep(0.005)
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        else:
+            next_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                next_stopped.set()
+
+    monkeypatch.setattr(runner, "_execute_episode", execute)
+    try:
+        asyncio.run(runner.start())
+        assert first_started.wait(1)
+        cancel_first.set()
+        assert next_started.wait(1), "a cancelled child must not end the queue loop"
+        assert runner.readiness_status()["ready"] is True
+        assert runner.readiness_status()["failureType"] == ""
+    finally:
+        cancel_first.set()
+        asyncio.run(runner.stop())
+    assert next_stopped.is_set(), "service shutdown must cancel remaining children"
+    assert runner.readiness_status()["ready"] is False
+
+
+def test_cancelling_runner_loop_still_exits_and_drains_active_episode(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    runner._stop_event = threading.Event()
+    runner._max_concurrent = 1
+    runner._poll_seconds = 0.005
+    queued = iter([{"id": "active-task"}])
+    monkeypatch.setattr("core.runtime_episode_runner.db.claim_runtime_episode", lambda **_kwargs: next(queued, None))
+
+    async def scenario():
+        started, stopped = asyncio.Event(), asyncio.Event()
+        children = []
+
+        async def execute(_episode):
+            children.append(asyncio.current_task())
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        monkeypatch.setattr(runner, "_execute_episode", execute)
+        service = asyncio.create_task(runner._run_loop())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            service.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(service, timeout=1)
+            assert stopped.is_set(), "service cancellation must drain its child before exit"
+        finally:
+            service.cancel()
+            for child in children:
+                child.cancel()
+            await asyncio.gather(service, *children, return_exceptions=True)
+
+    asyncio.run(scenario())

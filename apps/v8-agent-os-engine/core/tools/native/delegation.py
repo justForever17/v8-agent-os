@@ -395,7 +395,7 @@ def _delegation_task_replaces_managed_research(task: dict[str, Any]) -> bool:
         for value in list(task.get("runtimeAccess") or task.get("runtime_access") or [])
         if str(value or "").strip()
     }
-    if any(value == "research" or value.startswith("research.") for value in runtime_access):
+    if any(value == "research" or (value.startswith("research.") and value != "research.read") for value in runtime_access):
         return True
     tool_policy = task.get("toolPolicy") if isinstance(task.get("toolPolicy"), dict) else {}
     allowed_tools = {
@@ -403,7 +403,9 @@ def _delegation_task_replaces_managed_research(task: dict[str, Any]) -> bool:
         for value in list(tool_policy.get("allowedTools") or task.get("allowedTools") or [])
         if str(value or "").strip()
     }
-    return bool(allowed_tools.intersection({"research_broker", "web_broker"}))
+    # The baseline research_broker exposes saved reads only. Its name in an
+    # allowlist cannot itself authorize fresh research or mean a replacement.
+    return "web_broker" in allowed_tools
 
 
 def _managed_research_delegation_block_command(
@@ -590,7 +592,7 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
             recoverable_tools = [
                 name
                 for name in recovery_requirements["toolNames"]
-                if name == "tool_observation_detail" and name not in forbidden_tools
+                if name in {"tool_observation_detail", "research_broker"} and name not in forbidden_tools
             ]
             if recoverable_tools:
                 item["toolPolicy"] = {
@@ -2316,7 +2318,7 @@ def delegation_broker(
     """Dispatch or control real collaboration work, including a typed direct-subagent input pause.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
-    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"default"}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. `toolPolicy: {mode: 'default'}` keeps the role's public toolbox so the Agent can choose the smallest relevant subset. Use `mode: 'none'` only when all necessary evidence is actually supplied and no tool work is needed. Research handoffs inject compact navigation summaries, not full claims/excerpts/answers: independent verification normally needs their exact evidenceRefs and `toolPolicy: {mode: 'allowlist', allowedTools: ['tool_observation_detail']}` to read the registered rawRef. Read-only is not no-tools; set `readOnly=true, writeRequired=false, writeSet=[], allowChildDelegation=false` as typed fields when requested, not only prose constraints. An acceptance contract is not itself a reason to narrow tools.
+    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"default"}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. `toolPolicy: {mode: 'default'}` keeps the role's public toolbox so the Agent can choose the smallest relevant subset. Use `mode: 'none'` only when all necessary evidence is actually supplied and no tool work is needed. Research handoffs inject navigation summaries, not full evidence: use research_broker(get_experience/get_evidence) for saved pack/bundle IDs, or tool_observation_detail for an actual toolobs:// rawRef. A research:// URI is not a toolobs:// ref. A narrow verification allowlist may include both research_broker and tool_observation_detail; the baseline Research reader cannot start new research or modify saved answers. Read-only is not no-tools; set `readOnly=true, writeRequired=false, writeSet=[], allowChildDelegation=false` as typed fields when requested, not only prose constraints. An acceptance contract is not itself a reason to narrow tools.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set task `requireChildDelegation=true` when the must-level acceptance contract itself requires that verifier; set `allow_child_delegation=false` to forbid the path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
     A direct subagent that discovers a genuinely missing irreversible choice must call `mode='request_input'` with typed `required_inputs`; never encode a pause marker in prose. The same runtime episode will resume after strict answer validation.

@@ -448,6 +448,7 @@ class SkillLoader:
     _last_check_at: float = 0.0
     _check_interval_seconds: float = 0.75
     _background_refresh_timeout_ms: int = 1500
+    _background_refresh_next_root: str | None = None
     _dirty_root_paths: set[str] = set()
     _startup_state: str = "cold"
     _snapshot_freshness: str = "cold"
@@ -2540,6 +2541,7 @@ class SkillLoader:
             content=content,
             summarize_structure=summarize_structure,
             allow_llm_profile_inference=allow_llm_profile_inference,
+            precomputed_manifest_hash=str(manifest_item.get("manifestHash") or ""),
         )
         if entry is None:
             return None
@@ -2836,6 +2838,7 @@ class SkillLoader:
         content: str,
         summarize_structure: bool = True,
         allow_llm_profile_inference: bool = True,
+        precomputed_manifest_hash: str | None = None,
     ) -> dict[str, Any] | None:
         if not content.startswith("---"):
             return None
@@ -2920,7 +2923,13 @@ class SkillLoader:
         )
         manifest_key = normalized_instruction_path
         content_hash = hashlib.sha1(content.encode("utf-8")).hexdigest()
-        manifest_hash = cls._skill_directory_manifest_hash(skill_root, file_path)
+        # Descriptor scans already computed this value (full or routing-only)
+        # and replace the entry with it below. Do not hash every asset a second
+        # time merely to discard that result. Direct full scans keep their hash.
+        manifest_hash = (
+            precomputed_manifest_hash if precomputed_manifest_hash is not None
+            else cls._skill_directory_manifest_hash(skill_root, file_path)
+        )
         entry = {
             "skillId": cls._stable_skill_id(
                 source_type=source_type,
@@ -3208,14 +3217,26 @@ class SkillLoader:
         changed_root_paths: set[str] = set()
         timed_out_root_paths: set[str] = set()
 
-        for index, descriptor in enumerate(normalized_descriptors):
+        scan_descriptors = normalized_descriptors
+        if compare_existing and timeout_ms is not None:
+            # Continue the bounded watcher sweep where it stopped. Starting at
+            # the first large root every time can leave later roots dirty forever.
+            root_order = [cls._descriptor_cache_key(item) for item in normalized_descriptors]
+            if cls._background_refresh_next_root in root_order:
+                offset = root_order.index(cls._background_refresh_next_root)
+                scan_descriptors = normalized_descriptors[offset:] + normalized_descriptors[:offset]
+            cls._background_refresh_next_root = None
+
+        for index, descriptor in enumerate(scan_descriptors):
             root_path = cls._descriptor_cache_key(descriptor)
             if not root_path:
                 continue
-            if timeout_ms is not None and ((time.perf_counter() - started_at) * 1000) >= timeout_ms:
+            if index > 0 and timeout_ms is not None and ((time.perf_counter() - started_at) * 1000) >= timeout_ms:
                 timed_out_root_paths.add(root_path)
                 dirty_root_paths.add(root_path)
-                for remaining_descriptor in normalized_descriptors[index + 1 :]:
+                if compare_existing:
+                    cls._background_refresh_next_root = root_path
+                for remaining_descriptor in scan_descriptors[index + 1 :]:
                     remaining_root_path = cls._descriptor_cache_key(remaining_descriptor)
                     if remaining_root_path:
                         timed_out_root_paths.add(remaining_root_path)
@@ -3236,7 +3257,7 @@ class SkillLoader:
             if not changed:
                 dirty_root_paths.discard(root_path)
                 continue
-            registry = cls._scan_single_root_descriptor(descriptor)
+            registry = cls._scan_single_root_descriptor(descriptor, manifest=manifest)
             next_states[root_path] = {
                 "descriptor": dict(descriptor),
                 "descriptorSignature": descriptor_signature,
@@ -3350,6 +3371,7 @@ class SkillLoader:
         cls,
         *,
         force_refresh: bool = True,
+        allow_blocking_refresh: bool = True,
         include_scoped: bool = True,
         runtime_kind: str | None = None,
         session_id: str | None = None,
@@ -3365,7 +3387,7 @@ class SkillLoader:
         )
         if force_refresh:
             cls.ensure_fresh()
-        elif not cls._skills_registry:
+        elif not cls._skills_registry and allow_blocking_refresh:
             cls.prime_startup_cache()
             if not cls._skills_registry and not background_refresh_pending:
                 cls.ensure_fresh()
@@ -3407,7 +3429,7 @@ class SkillLoader:
         for descriptor in normalized_visible_descriptors:
             root_path = cls._descriptor_cache_key(descriptor)
             state = cls._root_inventory_states.get(root_path) or {}
-            if not root_path or not state.get("scopedOverlay"):
+            if not root_path or root_path in excluded_root_paths or not state.get("scopedOverlay"):
                 continue
             routing_stamp = cls._root_routing_stamp(descriptor)
             descriptor_signature = cls._root_descriptors_signature([descriptor])

@@ -2,6 +2,7 @@ import sqlite3
 import json
 import hashlib
 import logging
+import os
 import threading
 import time
 import uuid
@@ -9638,6 +9639,23 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return [self._hydrate_session_source_row(dict(row)) for row in cursor.fetchall()]
+
+    def find_session_local_media_refs(self, *, session_id: str, path: str) -> List[Dict[str, Any]]:
+        """Find exact declared file references; callers must still apply resource authority."""
+        if not session_id or not path:
+            return []
+        def expression(column: str) -> str:
+            return f"replace({column}, char(92), '/') COLLATE NOCASE" if os.name == "nt" else column
+        target = path.replace("\\", "/") if os.name == "nt" else path
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                f"""SELECT 'source' AS kind, id FROM session_sources
+                    WHERE session_id = ? AND {expression('workspace_path')} = ?
+                    UNION ALL
+                    SELECT 'artifact' AS kind, id FROM runtime_artifacts
+                    WHERE session_id = ? AND {expression('source_path')} = ?""",
+                (session_id, target, session_id, target),
+            ).fetchall()]
 
     def get_session_source(self, *, session_id: str, source_id: str) -> Optional[Dict[str, Any]]:
         normalized_session_id = str(session_id or "").strip()

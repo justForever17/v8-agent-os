@@ -257,6 +257,38 @@ class CreativeMediaResourceAuthorityService:
             record=normalized,
         )
 
+    def resolve_session_file_reference(
+        self, *, session_id: str, path: Path, workspace_path: str,
+    ) -> AuthorizedCreativeMediaResource:
+        """Read one registered session input/proof, including legacy external storage.
+
+        This grants the exact ledger file, never its directory. New source
+        imports and general workspace/media operations retain their own gates.
+        """
+        scope = self.resolve_scope(session_id=session_id, workspace_path=workspace_path, runtime_kind="chat")
+        target = path.resolve(strict=False)
+        for ref in self._database.find_session_local_media_refs(session_id=scope.session_id, path=str(target)):
+            if ref["kind"] == "artifact":
+                try:
+                    resource = self.resolve_artifact(session_id=scope.session_id, artifact_id=ref["id"],
+                                                     workspace_path=str(scope.workspace_root), require_local=True)
+                except CreativeMediaResourceAuthorityError:
+                    continue
+                if resource.path == target:
+                    return resource
+            else:
+                source = self._database.get_session_source(session_id=scope.session_id, source_id=ref["id"])
+                if not source or not self._record_scope_matches(source, scope=scope):
+                    continue
+                declared = str(source.get("workspacePath") or "").strip()
+                if not self.path_is_absolute(declared):
+                    continue
+                resolved = self.resolve_path_value(declared)
+                if resolved == target and target.is_file():
+                    return AuthorizedCreativeMediaResource(resource_kind="source", resource_id=ref["id"],
+                                                          scope=scope, path=target, record=source)
+        raise CreativeMediaResourceAuthorityError()
+
     @staticmethod
     def _record_scope_matches(record: dict[str, Any], *, scope: CreativeMediaAuthorityScope) -> bool:
         metadata = _record_json(record.get("metadata") or record.get("metadata_json"))

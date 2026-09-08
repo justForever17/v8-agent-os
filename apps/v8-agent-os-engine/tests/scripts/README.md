@@ -51,6 +51,12 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 
 ## Agent / Runtime / Skill Live Audit
 
+有序多图识别：`run_vision_images_live_audit.py --live --isolated-root <新目录>` 只读当前 ModelHub，
+在隔离状态根生成三张测试图片，调用真实 `vision_media_analyzer` 做正向、逆序、重复图对照。
+检查同次请求图片数、实际发送 hash、逐图识别与序号；报告保存在该隔离目录。未带 `--live`
+时不读配置、不建目录、不调用模型。它证明工具与 provider 的联合识别，不代替 Supervisor
+自主选工具、真实桌面事件因果或 Web/Phone UI 验收。
+
 | 脚本 | 用途 | 关键开关 |
 | --- | --- | --- |
 | `run_agent_quality_live_audit.py` | Agent Quality Matrix live 深度审计。 | `--live --matrix all --write-report` |

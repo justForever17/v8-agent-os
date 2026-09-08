@@ -5,8 +5,8 @@ import math
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict, Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
 from PIL import Image
@@ -235,17 +235,40 @@ def build_inline_image_data_from_file(file_path: str | Path) -> Dict[str, Any]:
     return build_inline_image_data_from_bytes(path.read_bytes())
 
 
-def download_remote_image_bytes(url: str, *, max_bytes: int = LOCAL_REMOTE_IMAGE_MAX_BYTES, timeout: float = 20.0) -> bytes:
-    with requests.get(url, stream=True, timeout=timeout) as response:
-        response.raise_for_status()
-        content_type = str(response.headers.get("Content-Type") or "").strip().lower()
-        if content_type and not content_type.startswith("image/"):
-            raise ValueError(f"远程资源不是图片：{content_type}")
-        collected = bytearray()
-        for chunk in response.iter_content(chunk_size=1024 * 256):
-            if not chunk:
+def _read_remote_image_response(response: Any, max_bytes: int) -> bytes:
+    response.raise_for_status()
+    content_type = str(response.headers.get("Content-Type") or "").strip().lower()
+    if content_type and not content_type.startswith("image/"):
+        raise ValueError(f"远程资源不是图片：{content_type}")
+    collected = bytearray()
+    for chunk in response.iter_content(chunk_size=1024 * 256):
+        if not chunk:
+            continue
+        if len(collected) + len(chunk) > max_bytes:
+            raise ValueError("远程图片超过本地视觉接入上限。")
+        collected.extend(chunk)
+    return bytes(collected)
+
+
+def download_remote_image_bytes(
+    url: str, *, max_bytes: int = LOCAL_REMOTE_IMAGE_MAX_BYTES, timeout: float = 20.0,
+    url_guard: Callable[[str], None] | None = None,
+) -> bytes:
+    if url_guard is None:
+        with requests.get(url, stream=True, timeout=timeout) as response:
+            return _read_remote_image_response(response, max_bytes)
+    current_url = url
+    for _ in range(6):
+        parsed = urlparse(current_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("远程图片目标必须为不含嵌入凭据的 HTTP(S) URL。")
+        url_guard(current_url)
+        with requests.get(current_url, stream=True, timeout=timeout, allow_redirects=False) as response:
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = str(response.headers.get("Location") or "").strip()
+                if not location:
+                    raise ValueError("远程图片重定向缺少目标。")
+                current_url = urljoin(current_url, location)
                 continue
-            collected.extend(chunk)
-            if len(collected) > max_bytes:
-                raise ValueError("远程图片超过本地视觉接入上限。")
-        return bytes(collected)
+            return _read_remote_image_response(response, max_bytes)
+    raise ValueError("远程图片重定向次数超过请求上限。")

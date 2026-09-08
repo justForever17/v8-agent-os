@@ -12,6 +12,7 @@ import requests
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import interrupt
+from pydantic import Field
 
 from core.artifact_store import artifact_store
 from core.background_model_output import sanitize_background_model_output
@@ -39,6 +40,9 @@ from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 from core.system_base import get_engine_origin
 from core.workspace_guard import ensure_workspace_auto_create_allowed
+from core.tools.vision_image_inputs import (
+    MAX_VISION_IMAGES, VisionImageInput, VisionImageInputError, ordered_image_content, prepare_ordered_images,
+)
 
 _LARGE_MEDIA_S3_THRESHOLD = 25 * 1024 * 1024
 _MAX_INLINE_AUDIO_BYTES = 10 * 1024 * 1024
@@ -421,6 +425,71 @@ def _prepare_audio_payload_from_url(url: str, mime_type: str) -> tuple[str, int,
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _analyze_ordered_images(images, *, prompt: str, tool_call_id: str) -> str:
+    context = get_runtime_context()
+
+    def guard_url(url: str) -> None:
+        allowed, _error = _enforce_remote_media_guard(url, tool_call_id=tool_call_id)
+        if not allowed:
+            raise VisionImageInputError("image_remote_access_denied")
+
+    prepared = prepare_ordered_images(images, runtime_context=context, remote_guard=guard_url)
+    role = str(context.get("vision_role_override") or "vision").strip() or "vision"
+    resolution = model_control_plane.resolve_model_for_role(role)
+    provider = dict(resolution.get("resolvedProvider") or {})
+    model = dict(resolution.get("resolvedModel") or {})
+    model_id = str(resolution.get("resolvedModelId") or "")
+    provider_id = str(resolution.get("resolvedProviderId") or "")
+    api_standard = str(provider.get("api_standard") or "openai")
+    if is_local_provider(provider):
+        probe = probe_local_multimodal_capability(
+            model_id=model_id, provider_type=str(provider.get("type") or "LOCAL"),
+            base_url=str(provider.get("base_url") or ""), api_key=str(provider.get("api_key") or ""),
+        )
+        if probe.get("status") == "unsupported":
+            raise VisionImageInputError("vision_model_image_input_unsupported")
+    model_budget_service.enforce_or_raise(
+        config=model_control_plane.get_config(), run_id=context.get("run_id"), project_id=context.get("project_id"),
+        role=role, capability_class=str(model.get("capabilityClass") or "vision_multimodal"), model_id=model_id,
+    )
+    sources = [item["source"] for item in prepared]
+    metadata = {
+        "source": "vision_media_analyzer", "mediaKind": "image", "imageCount": len(sources),
+        "images": sources, "transportMode": "inline_base64_image", "role": role,
+        "apiStandard": api_standard, "providerId": provider_id, "modelId": model_id,
+        "byteSize": sum(item["inputBytes"] for item in sources),
+        "sourceByteSize": sum(item["sourceBytes"] for item in sources),
+        "payloadShape": "image:ordered_inline_set", "orderedInput": True,
+    }
+    content = ordered_image_content(prepared, prompt=prompt, api_standard=api_standard,
+                                    provider_id=provider_id, model_id=model_id)
+    vision_llm = llm_factory.create_for_role(role, temperature=0.1)
+    response = vision_llm.invoke([HumanMessage(content=content)], {"metadata": metadata})
+    sanitized = sanitize_background_model_output(response)
+    if not sanitized.text:
+        return _vision_failure_markdown(media_kind="image", reason="background_output_no_visible_text", tool_call_id=tool_call_id)
+    source_lines = []
+    for item in sources:
+        label = str(item.get("label") or "").replace("\r", " ").replace("\n", " ").strip()
+        title = f"{item['imageId']}（{label}）" if label else item["imageId"]
+        source_line = f"- {title}: {item['sourceRef']}"
+        if item["resized"]:
+            source_line += (f"（分析尺寸 {item['inputWidth']}×{item['inputHeight']}，"
+                            f"原图 {item['sourceWidth']}×{item['sourceHeight']}）")
+        source_lines.append(source_line)
+    result = ("--- Vision Analysis Complete ---\n"
+              f"Images: {len(sources)}（按输入顺序；标签是用户语境，不代表已验证的时间或因果）\n"
+              + "\n".join(source_lines) + f"\n\n{sanitized.text}")
+    from core.tool_surface import record_raw_observation
+
+    raw_ref = record_raw_observation(
+        tool_name="vision_media_analyzer", tool_call_id=tool_call_id or None,
+        runtime_kind=str(context.get("runtime_kind") or "chat"), surface="ordered_image_analysis",
+        raw_content=result, metadata={**metadata, "sessionId": context.get("session_id"), "runId": context.get("run_id")},
+    )
+    return result + (f"\n\ndetailRef: {raw_ref}\nDetail: tool_observation_detail(raw_ref='{raw_ref}')" if raw_ref else "")
+
+
 @tool
 def vision_media_analyzer(
     file_path: str = "",
@@ -428,6 +497,10 @@ def vision_media_analyzer(
     mime_type_hint: str = "",
     prompt: str = "详细描述这个文件里的内容。如果包含文字请提取出来。如果是视频，请总结视频的剧情和关键帧变化。",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    images: Annotated[list[VisionImageInput] | None, Field(
+        min_length=1, max_length=MAX_VISION_IMAGES,
+        description="Ordered still images analyzed in ONE request. Each item has file_path OR source_url and optional label. Do not mix with single-source parameters. Limits: 8 images, 32 MiB source bytes, 40 million source pixels; these are request resources, not model/output-token limits.",
+    )] = None,
 ) -> str:
     """Analyze images, videos, and audio directly using a multimodal LLM.
     
@@ -436,6 +509,11 @@ def vision_media_analyzer(
     
     Extract that local path, and pass it immediately to this tool along with your analytical requirements in `prompt`.
     This tool returns textual analysis which you can incorporate into your reasoning.
+    For cross-image comparison use images=[{file_path: ..., label: ...}, {source_url: ..., label: ...}].
+    The list order is authoritative: the same model request receives image_1, image_2, etc. with each actual image.
+    Any invalid, unauthorized or oversized image rejects the entire set; there is no silent dropping or renumbering.
+    Before/during/after labels describe user context, not automatically verified cause or chronology.
+    Do not combine images with file_path, source_url or mime_type_hint. Legacy single-image/video/audio parameters remain supported.
     
     Arguments:
         file_path (str): The absolute local filesystem path to the uploaded image, video, or audio file. Non-MP3 audio is converted to MP3 before model input.
@@ -444,6 +522,11 @@ def vision_media_analyzer(
         prompt (str): Your specific instructions to the Vision LLM (e.g., "Extract the error code from this screenshot").
     """
     try:
+        if images is not None:
+            media_kind = "image"
+            if file_path or source_url or mime_type_hint:
+                raise VisionImageInputError("images_cannot_mix_single_source_parameters")
+            return _analyze_ordered_images(images, prompt=prompt, tool_call_id=tool_call_id)
         resolved_url = str(source_url or "").strip()
         local_path_value = str(file_path or "").strip()
         path: Path | None = None
@@ -715,6 +798,10 @@ def vision_media_analyzer(
             )
         return f"--- Vision Analysis Complete ---\nSource: {display_source}\n{sanitized.text}"
         
+    except VisionImageInputError as exc:
+        return ("结果：多图分析未执行\n"
+                f"原因：{exc}\n整组图片未发送给视觉模型；没有丢图或重新编号。\n"
+                "下一步：核对报错图片的输入、读取授权或整组 bytes/pixels/count 请求上限后重试。")
     except ModelGovernanceInterventionRequired:
         raise
     except Exception as e:

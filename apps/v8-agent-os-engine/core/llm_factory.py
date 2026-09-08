@@ -1139,6 +1139,14 @@ class LLMFactory:
     @classmethod
     def _build_anthropic_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         kwargs, budget = prepare_output_token_kwargs(meta, kwargs, requires_value=True)
+        if (budget["mode"] == "auto" and budget["source"] in {
+                "protocol_required_verified_capacity", "required_parameter_default"}
+                and dict(meta.get("capabilities") or {}).get("supportsStreaming") is not False
+                and dict(meta.get("capabilities") or {}).get("streaming") is not False):
+            # Anthropic's SDK rejects potentially long non-streaming requests
+            # at its default timeout. Stream automatic long output instead of
+            # shrinking the budget; explicit transport choices still win.
+            kwargs.setdefault("streaming", True)
         credential = str(meta.get("api_key") or "")
         auth_headers, auth_query = _credential_transport(
             credential,
@@ -1178,7 +1186,7 @@ class LLMFactory:
             if global_temperature is not None:
                 final_kwargs["temperature"] = global_temperature
 
-        max_tokens = resolve_output_token_budget(meta, kwargs.get("max_tokens"), requires_value=True)["maxTokens"]
+        max_tokens = budget["maxTokens"]
         if max_tokens:
             final_kwargs["max_tokens_to_sample"] = int(max_tokens)
 
@@ -1341,12 +1349,12 @@ class LLMFactory:
     @classmethod
     def create_chat_model(cls, model_id: str, **kwargs) -> Any:
         """
-        Creates a ChatOpenAI / ChatAnthropic instance.
-        
-        Priority of configs:
-        1. **kwargs explicitly passed bycaller (e.g. Agent's own specific temperature/streaming override)
-        2. Global models.json `temperature` / `maxTokens`
-        3. Fallback to `api_key="sk-dummy"` if missing so as not to immediately crash initialization.
+        Create the configured provider adapter with its native message contract.
+
+        Explicit temperature/transport options override configured defaults.
+        Output budgets use model_token_policy: user fixed caps remain bounds,
+        explicit short requests remain short, and auto omits optional caps.
+        Missing, ambiguous or disabled ModelHub identities are rejected.
         """
         # The compatibility patch imports the provider-specific LangChain
         # adapters. Keep startup lean, but make every direct factory caller

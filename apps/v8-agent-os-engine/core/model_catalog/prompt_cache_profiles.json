@@ -114,12 +114,14 @@
       "notes": "V8 enables prefix cache metadata but does not chain previous_response_id automatically."
     },
     {
-      "id": "minimax_cache_control",
+      "id": "minimax_implicit_prompt_cache",
       "providerIds": [
-        "minimax"
+        "minimax",
+        "minimax-cn",
+        "minimax-global"
       ],
-      "strategy": "hybrid",
-      "requestStyle": "anthropic_content_blocks",
+      "strategy": "implicit",
+      "requestStyle": "observe_only",
       "minInputTokens": 512,
       "maxBreakpoints": 4,
       "ttlOptions": [
@@ -127,9 +129,13 @@
       ],
       "supportsResponseUsage": true,
       "usageFields": [
-        "prompt_tokens_details.cached_tokens"
+        "prompt_tokens_details.cached_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
       ],
-      "notes": "MiniMax active caching follows cache_control-style content blocks."
+      "notes": "Automatic prefix caching needs no request mutation. Active cache_control support differs by model; provider identity alone does not authorize it.",
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/text-prompt-caching",
+      "lastCheckedAt": "2026-09-08"
     },
     {
       "id": "zhipu_implicit_prompt_cache",

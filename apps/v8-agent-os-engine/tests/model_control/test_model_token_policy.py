@@ -77,6 +77,86 @@ def test_auto_omits_optional_budget_and_does_not_erase_old_value():
     assert meta == before
 
 
+@pytest.mark.parametrize("capacity", [8192, 65536, 131072])
+@pytest.mark.parametrize("source", ["official_docs", "online_provider_metadata"])
+def test_required_protocol_uses_verified_per_model_capacity_only(capacity, source):
+    from core.llm_factory import LLMFactory
+    meta = {"model_record": model(outputTokenMode="auto", maxTokens=capacity,
+        factProvenance={"maxTokens": {"source": source, "confidence": "authoritative"}})}
+    before = deepcopy(meta)
+    budget = resolve_output_token_budget(meta, requires_value=True)
+    assert budget == {"mode": "auto", "maxTokens": capacity, "source": "protocol_required_verified_capacity"}
+    assert resolve_output_token_budget(meta)["maxTokens"] is None
+    assert resolve_output_token_budget(meta, 128, requires_value=True)["maxTokens"] == 128
+    assert LLMFactory._build_anthropic_kwargs("fixture", meta)["max_tokens_to_sample"] == capacity
+    assert meta == before
+
+
+@pytest.mark.parametrize("source,confidence", [("user_confirmed", "authoritative"), ("official_docs", "estimated"),
+                                             ("provider_catalog", "unverified"), ("", "")])
+def test_auto_does_not_reuse_old_user_cap_or_estimate_as_verified_capacity(source, confidence):
+    meta = {"model_record": model(outputTokenMode="auto", maxTokens=4096,
+        factProvenance={"maxTokens": {"source": source, "confidence": confidence}})}
+    assert resolve_output_token_budget(meta, requires_value=True)["source"] == "required_parameter_default"
+
+
+def test_provider_models_api_limits_flow_into_verified_required_budget():
+    from core.model_provider_catalog import model_provider_catalog
+    record = model_provider_catalog.normalize_model({"id": "fixture", "kind": "llm", "models": []}, "fixture-model",
+        online_metadata={"max_input_tokens": 200000, "max_tokens": 65536})
+    assert record["contextWindow"] == 200000
+    assert record["maxTokens"] == 65536
+    assert record["factProvenance"]["maxTokens"] == {"source": "online_provider_metadata", "confidence": "authoritative"}
+    record["outputTokenMode"] = "auto"
+    assert resolve_output_token_budget({"model_record": record}, requires_value=True)["maxTokens"] == 65536
+
+
+@pytest.mark.parametrize("capacity", [8192, 65536])
+def test_anthropic_sdk_wire_receives_verified_capacity_without_catalog_writeback(capacity):
+    import anthropic
+    import httpx
+    import json
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import HumanMessage
+    from core.llm_factory import LLMFactory
+
+    requests = []
+    def transport(request):
+        requests.append(json.loads(request.content))
+        events = [
+            {"type": "message_start", "message": {"id": "fixture", "type": "message", "role": "assistant", "model": "fixture",
+                "content": [], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 0}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "verified"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 2}},
+            {"type": "message_stop"},
+        ]
+        return httpx.Response(200, text="".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events),
+                              headers={"content-type": "text/event-stream"})
+    meta = {"api_key": "fixture-only", "model_record": model(outputTokenMode="auto", maxTokens=capacity,
+        factProvenance={"maxTokens": {"source": "online_provider_metadata", "confidence": "authoritative"}})}
+    original = deepcopy(meta)
+    native = ChatAnthropic(**LLMFactory._build_anthropic_kwargs("fixture", meta))
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        native.__dict__["_client"] = anthropic.Anthropic(api_key="fixture-only", http_client=client)
+        result = native.invoke([HumanMessage(content="Return verified")])
+    assert result.content == "verified"
+    assert requests[0]["max_tokens"] == capacity
+    assert requests[0]["stream"] is True
+    assert "max_tokens_to_sample" not in requests[0]
+    assert meta == original
+
+
+def test_required_auto_transport_defaults_do_not_override_explicit_choices():
+    from core.llm_factory import LLMFactory
+    meta = {"model_record": model(outputTokenMode="auto")}
+    assert LLMFactory._build_anthropic_kwargs("fixture", meta)["streaming"] is True
+    assert LLMFactory._build_anthropic_kwargs("fixture", meta, streaming=False, timeout=30)["streaming"] is False
+    assert "streaming" not in LLMFactory._build_anthropic_kwargs("fixture", meta, max_tokens=128)
+    assert "streaming" not in LLMFactory._build_anthropic_kwargs("fixture", {**meta, "capabilities": {"supportsStreaming": False}})
+
+
 def test_resubmitting_unchanged_budget_does_not_invent_manual_provenance():
     previous = model()
     patch = _fact_provenance_for_patch({"maxTokens": 4096, "outputTokenMode": "fixed", "contextWindow": 1000000}, "manual", previous)

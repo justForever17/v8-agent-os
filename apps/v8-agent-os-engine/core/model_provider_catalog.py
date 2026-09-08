@@ -2557,11 +2557,13 @@ class ModelProviderCatalog:
             online_metadata.get("inputTokenLimit")
             or online_metadata.get("input_token_limit")
             or online_metadata.get("context_length")
+            or online_metadata.get("max_input_tokens")
         )
         online_max_tokens = (
             online_metadata.get("outputTokenLimit")
             or online_metadata.get("output_token_limit")
             or online_metadata.get("max_output_tokens")
+            or online_metadata.get("max_tokens")
         )
         if online_context_window:
             context_window = online_context_window

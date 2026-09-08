@@ -8,7 +8,7 @@ from unittest.mock import patch
 from core.delegation_broker import normalize_task_brief, task_brief_query_text, task_brief_route_query_text
 from graph.agent_factories import (
     _apply_task_tool_policy,
-    _bounded_delegated_task_messages,
+    _delegated_task_messages,
     _build_agent_system_content,
     _delegated_result_text,
     _delegated_tool_names,
@@ -190,7 +190,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
             name="write_native_file",
         )
 
-        selected = _bounded_delegated_task_messages(
+        selected = _delegated_task_messages(
             [parent, delegated, tool_call, tool_result],
             {"taskBriefId": "task-1", "goal": "只输出 AUTHORITY_OK"},
         )
@@ -220,7 +220,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
             name="read_native_file",
         )
 
-        selected = _bounded_delegated_task_messages(
+        selected = _delegated_task_messages(
             [stale_instruction, stale_result, current_instruction, current_call, current_result],
             {"taskBriefId": "task-2", "goal": "当前任务"},
         )
@@ -653,7 +653,9 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Child tasks must contain a real goal", content)
         self.assertIn("read_native_file` is the default way to read a known text", content)
         self.assertIn("Do not use `run_system_command`, Python one-liners, `type`, `Get-Content`, `cat`", content)
-        self.assertIn("existing files require `read_native_file` first", content)
+        self.assertIn("an existing file needs an initial read by this actor in this run", content)
+        self.assertIn("reuse the returned version for the next edit without another read", content)
+        self.assertNotIn("another fresh read after each successful write", content)
         self.assertIn("same purpose fails twice", content)
         self.assertIn("Runtime-owned typed execution contracts are executable facts", content)
         self.assertIn("execution_intent_conflict", content)

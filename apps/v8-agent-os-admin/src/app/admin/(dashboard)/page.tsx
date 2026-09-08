@@ -12,6 +12,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { RuntimeDashboardCards } from "@/components/runtime/RuntimeDashboardCards";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@/lib/useDebugMode";
+import { ModelCacheUsage, ModelCacheWindowSummary, type ModelCacheUsageData, type ProviderCacheWindow } from "@/components/models/ModelCacheUsage";
 
 const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#7C3AED", "#F43F5E", "#14B8A6", "#F97316"];
 const DASHBOARD_WINDOW_DAYS = 7;
@@ -36,6 +37,7 @@ type PromptCacheInvocationSummary = {
 };
 
 type PromptCacheDashboardStats = {
+    providerUsage?: ProviderCacheWindow;
     rates?: {
         providerPatchRate?: number | null;
         staticPrefixReuseRate?: number | null;
@@ -99,6 +101,7 @@ type DashboardData = {
         started_at?: string;
         role?: string;
         promptCache?: PromptCacheInvocationSummary;
+        cacheUsage?: ModelCacheUsageData;
     }>;
     promptCache?: PromptCacheDashboardStats;
 };
@@ -406,6 +409,8 @@ export default function DashboardPage() {
                                 <div className="mt-2 text-2xl font-semibold">{data.stats.recentWindowEstimatedCost.toFixed(4)}</div>
                             </div>
                         </div>
+                        <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.page.cacheUsage.costEstimate")}</p>
+                        <ModelCacheWindowSummary usage={data.promptCache?.providerUsage} t={t} />
                         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                             {data.recentInvocations.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
@@ -441,6 +446,7 @@ export default function DashboardPage() {
                                             </div>
                                         </div>
                                     </div>
+                                    <ModelCacheUsage usage={item.cacheUsage} t={t} />
                                 </div>
                             ))}
                         </div>

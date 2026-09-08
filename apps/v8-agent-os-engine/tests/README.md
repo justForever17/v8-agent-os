@@ -59,6 +59,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改 Memory 抽取、注入、scope、视觉增强 | `tests/memory/` + `tests/evals/` 中相关 memory eval |
 | 改全局身份、偏好审计或显式知识修订 | `tests/memory/test_memory_runtime_durable_policy.py` + `test_knowledge_lineage_p0.py` + `test_memory_lifecycle_p1.py` + `tests/supervisor/test_supervisor_identity_contract.py` |
 | 改 ModelHub、provider、reasoning、embedding/rerank | `tests/model_control/` |
+| 改 Agent 指导、提示前缀、关键上下文与缓存用量 | [PROMPT_CONTEXT_CACHE_TEST_MATRIX.md](PROMPT_CONTEXT_CACHE_TEST_MATRIX.md) |
 | 改 Skill / MCP / Plugin Manager | `tests/extensions/` + `tests/plugin_manager/` |
 | 改 Research / Web source / evidence pack | `tests/core/test_research_broker.py`、`tests/core/test_research_ledger_experience_pack_lifecycle.py`、`tests/scripts/run_research_runtime_deep_live_audit.py` |
 | 改 Research Agent 检索/实读/审核 | `test_research_agent.py`、`test_research_model_call.py`、`test_research_review_retirement.py`；固定证据与实际 reviewer 对照先行，再做真实联网链 |

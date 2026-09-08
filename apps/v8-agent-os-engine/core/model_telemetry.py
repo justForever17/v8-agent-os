@@ -11,6 +11,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
 from core.database import db
+from core.model_usage import cache_token_counts, normalize_usage_mapping
 from core.response_normalizer import extract_text_and_reasoning
 from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
@@ -60,35 +61,19 @@ def _context_preparation_timings(value: Any) -> Dict[str, float]:
 
 
 def _extract_usage_from_mapping(payload: Mapping[str, Any]) -> Dict[str, int]:
-    input_tokens = 0
-    output_tokens = 0
-    total_tokens = 0
-
-    for key in ("prompt_tokens", "input_tokens", "inputTokenCount", "prompt_token_count"):
-        input_tokens = max(input_tokens, _safe_int(payload.get(key)))
-    for key in ("completion_tokens", "output_tokens", "candidates_token_count", "outputTokenCount"):
-        output_tokens = max(output_tokens, _safe_int(payload.get(key)))
-    for key in ("total_tokens", "totalTokenCount", "total_token_count"):
-        total_tokens = max(total_tokens, _safe_int(payload.get(key)))
-
-    if not total_tokens:
-        total_tokens = input_tokens + output_tokens
-
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-    }
+    return normalize_usage_mapping(payload)
 
 
 _USAGE_FIELD_KEYS = {
     "prompt_tokens",
     "input_tokens",
     "inputTokenCount",
+    "promptTokenCount",
     "prompt_token_count",
     "completion_tokens",
     "output_tokens",
     "candidates_token_count",
+    "candidatesTokenCount",
     "outputTokenCount",
     "total_tokens",
     "totalTokenCount",
@@ -125,17 +110,17 @@ def _usage_from_mapping_tree(
     return best, best_source, reported
 
 
-def extract_token_usage_details(response: Any) -> tuple[Dict[str, int], str, bool]:
-    candidates: list[tuple[Dict[str, int], str, bool]] = []
+def _response_usage_mappings(response: Any) -> list[tuple[Mapping[str, Any], str]]:
+    candidates: list[tuple[Mapping[str, Any], str]] = []
     llm_output = getattr(response, "llm_output", None)
     if isinstance(llm_output, Mapping):
-        candidates.append(_usage_from_mapping_tree(llm_output, source="llm_output"))
+        candidates.append((llm_output, "llm_output"))
     for label, candidate in (
         ("response.usage_metadata", getattr(response, "usage_metadata", None)),
         ("response.response_metadata", getattr(response, "response_metadata", None)),
     ):
         if isinstance(candidate, Mapping):
-            candidates.append(_usage_from_mapping_tree(candidate, source=label))
+            candidates.append((candidate, label))
 
     generations = getattr(response, "generations", None) or []
     for group_index, generation_group in enumerate(generations):
@@ -149,12 +134,12 @@ def extract_token_usage_details(response: Any) -> tuple[Dict[str, int], str, boo
                 ("generation.generation_info", getattr(generation, "generation_info", None)),
             ):
                 if isinstance(candidate, Mapping):
-                    candidates.append(
-                        _usage_from_mapping_tree(
-                            candidate,
-                            source=f"generations[{group_index}][{generation_index}].{label}",
-                        )
-                    )
+                    candidates.append((candidate, f"generations[{group_index}][{generation_index}].{label}"))
+    return candidates
+
+
+def extract_token_usage_details(response: Any) -> tuple[Dict[str, int], str, bool]:
+    candidates = [_usage_from_mapping_tree(value, source=source) for value, source in _response_usage_mappings(response)]
 
     if not candidates:
         return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "", False
@@ -162,6 +147,26 @@ def extract_token_usage_details(response: Any) -> tuple[Dict[str, int], str, boo
     if not source:
         source = next((item[1] for item in candidates if item[2] and item[1]), "")
     return usage, source, any(item[2] for item in candidates)
+
+
+def extract_cache_usage(response: Any) -> Dict[str, Any]:
+    candidates = []
+    for value, source in _response_usage_mappings(response):
+        counts = cache_token_counts(value)
+        if any(count is not None for count in counts.values()):
+            usage, _, _ = _usage_from_mapping_tree(value, source=source)
+            candidates.append((usage["total_tokens"], source.endswith("usage_metadata"), counts, source))
+    counts: Dict[str, int | None] = {"readTokens": None, "writeTokens": None}
+    sources = []
+    for key in counts:
+        reported = [item for item in candidates if item[2][key] is not None]
+        if reported:
+            _, _, selected, source = max(reported, key=lambda item: item[:2])
+            counts[key] = selected[key]
+            if source not in sources:
+                sources.append(source)
+    return {**counts, "readReported": counts["readTokens"] is not None,
+            "writeReported": counts["writeTokens"] is not None, "source": "; ".join(sources)}
 
 
 def extract_token_usage(response: Any) -> Dict[str, int]:
@@ -236,34 +241,8 @@ def _segment_token_summary(segments: Any) -> Dict[str, Any]:
     }
 
 
-_CACHED_TOKEN_KEYS = {
-    "cached_tokens",
-    "cachedTokens",
-    "cached_input_tokens",
-    "cachedInputTokens",
-    "cache_read_input_tokens",
-    "cacheReadInputTokens",
-    "prompt_cache_hit_tokens",
-    "promptCacheHitTokens",
-}
-
-
 def _find_cached_input_tokens(value: Any, *, depth: int = 0) -> int | None:
-    if depth > 4:
-        return None
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            if str(key) in _CACHED_TOKEN_KEYS:
-                return _safe_int(item)
-            found = _find_cached_input_tokens(item, depth=depth + 1)
-            if found is not None:
-                return found
-    if isinstance(value, list):
-        for item in value:
-            found = _find_cached_input_tokens(item, depth=depth + 1)
-            if found is not None:
-                return found
-    return None
+    return cache_token_counts(value)["readTokens"]
 
 
 def _public_prompt_cache_summary(metadata: Mapping[str, Any] | None, *, prefix_use_counts: Mapping[str, int], input_tokens: int) -> Dict[str, Any] | None:
@@ -286,7 +265,8 @@ def _public_prompt_cache_summary(metadata: Mapping[str, Any] | None, *, prefix_u
         "segments": _segment_token_summary(prompt_cache.get("segments")),
         "providerCachedTokensReported": cached_tokens is not None,
         "providerCachedInputTokens": cached_tokens,
-        "cachedInputTokenRate": round(float(cached_tokens) / float(input_tokens), 4) if cached_tokens is not None and input_tokens > 0 else None,
+        "cachedInputTokenRate": round(float(cached_tokens) / float(input_tokens), 4)
+            if cached_tokens is not None and input_tokens > 0 and cached_tokens <= input_tokens else None,
     }
 
 
@@ -305,6 +285,16 @@ def _public_invocation_record(item: Mapping[str, Any], *, prefix_use_counts: Map
         "role": item.get("role"),
     }
     metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
+    cache_usage = cache_token_counts(metadata)
+    public["cacheUsage"] = {**cache_usage,
+        "readReported": cache_usage["readTokens"] is not None,
+        "writeReported": cache_usage["writeTokens"] is not None,
+        "inputTokens": input_tokens,
+        "readRate": round(cache_usage["readTokens"] / input_tokens, 4)
+                    if cache_usage["readTokens"] is not None and input_tokens > 0 and cache_usage["readTokens"] <= input_tokens else None}
+    public["estimatedCost"] = _safe_float(item.get("cost_total"))
+    public["costEstimate"] = {"isProviderBill": False, "cacheAdjustmentApplied": False,
+                              "basis": "configured_standard_rates"}
     telemetry_keys = (
         "timeToFirstChunkMs",
         "timeToFirstContentChunkMs",
@@ -580,6 +570,14 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             # service tier; retain stream-only diagnostics alongside it.
             _merge_runtime_diagnostics(merged_diagnostics, runtime_diagnostics)
             runtime_diagnostics = merged_diagnostics
+        cache_usage = extract_cache_usage(response)
+        if (runtime_diagnostics.get("promptCache") or {}).get("responseCacheDecision") == "hit":
+            # A local response replay can carry the original response's usage.
+            # Those tokens were not consumed by this invocation's provider.
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            usage_source, usage_reported = "v8_response_cache", False
+            cache_usage = {"readTokens": None, "writeTokens": None,
+                           "readReported": False, "writeReported": False, "source": "v8_response_cache"}
         finished_at = time.perf_counter()
         latency_ms = (finished_at - start.started_at) * 1000 if start else 0.0
         cost_input = _estimate_cost(usage["input_tokens"], self.cost_per_input)
@@ -611,6 +609,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "serviceTier": runtime_diagnostics.get("serviceTier") or "",
                 "usageReported": usage_reported,
                 "usageSource": usage_source,
+                "cacheUsage": cache_usage,
                 "requestedMaxTokens": self.requested_max_tokens,
                 "streamUsageRequested": self.stream_usage_requested,
                 **self._stream_timing_metadata(start, finished_at),

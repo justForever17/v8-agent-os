@@ -188,6 +188,42 @@ class AnthropicSurface(BaseProviderSurface):
         if len(system_messages) == 1:
             return [system_messages[0], *non_system_messages]
 
+        if all(isinstance(message.content, str) for message in system_messages):
+            # Preserve Engine segment offsets when consolidating system turns.
+            # Missing metadata is dynamic; stale hashes remain detectable by
+            # the gateway rather than being relabelled as trusted static text.
+            texts: list[str] = []
+            segments: list[dict[str, Any]] = []
+            offset = 0
+            from core.prompt_cache_segments import build_prompt_segments_from_parts
+
+            for index, message in enumerate(system_messages):
+                if index:
+                    texts.append("\n\n")
+                    segments.append({"type": "dynamic", "source": f"system.{index}.separator", "startOffset": offset, "endOffset": offset + 2})
+                    offset += 2
+                text = message.content
+                metadata = message.additional_kwargs.get("v8_prompt_segments")
+                if (not isinstance(metadata, list) or any(
+                    not isinstance(segment, dict)
+                    or not isinstance(segment.get("startOffset"), int)
+                    or not isinstance(segment.get("endOffset"), int)
+                    for segment in metadata
+                )):
+                    metadata = []
+                if not metadata:
+                    metadata = build_prompt_segments_from_parts([{"type": "dynamic", "source": f"system.{index}", "text": text}])
+                for segment in metadata:
+                    segments.append({**segment,
+                        "startOffset": int(segment.get("startOffset") or 0) + offset,
+                        "endOffset": int(segment.get("endOffset") or 0) + offset})
+                texts.append(text)
+                offset += len(text)
+            merged_system = SystemMessage(content="".join(texts), additional_kwargs={
+                "v8_system_message_count": len(system_messages), "v8_prompt_segments": segments,
+            })
+            return [merged_system, *non_system_messages]
+
         content_blocks: list[Any] = []
         for message in system_messages:
             content = message.content

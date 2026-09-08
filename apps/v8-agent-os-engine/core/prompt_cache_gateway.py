@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from core.database import db
+from core.observability_db import redact_observability_text
 from core.prompt_cache_segments import PROMPT_CACHE_SEGMENT_TYPES, hash_prompt_segment
 from core.time_truth import utc_now_iso
 
@@ -207,6 +208,7 @@ class PromptCacheGateway:
             return []
         text = _safe_text(getattr(message, "content", ""))
         segments: list[PromptSegment] = []
+        cursor = 0
         for raw in raw_segments:
             if not isinstance(raw, Mapping):
                 continue
@@ -223,15 +225,19 @@ class PromptCacheGateway:
             except Exception:
                 start_offset = None
                 end_offset = None
-            if start_offset is not None and end_offset is not None and end_offset >= start_offset:
+            if (start_offset == cursor and end_offset is not None
+                    and start_offset is not None and start_offset < end_offset <= len(text)):
                 segment_text = text[start_offset:end_offset]
                 char_count = len(segment_text)
-                content_hash = str(raw.get("hash") or raw.get("content_hash") or hash_prompt_segment(segment_text))
+                content_hash = hash_prompt_segment(segment_text)
+                declared_hash = raw.get("hash") or raw.get("content_hash")
+                if declared_hash and declared_hash != content_hash:
+                    return []
+                if redact_observability_text(segment_text) != segment_text:
+                    segment_type = "unsafe"
+                cursor = end_offset
             else:
-                char_count = int(raw.get("charCount") or raw.get("char_count") or 0)
-                content_hash = str(raw.get("hash") or raw.get("content_hash") or "")
-                if not content_hash:
-                    continue
+                return []
             segments.append(
                 PromptSegment(
                     segment_type,
@@ -243,7 +249,7 @@ class PromptCacheGateway:
                     scope=str(raw.get("scope") or ""),
                 )
             )
-        return segments
+        return segments if cursor == len(text) else []
 
     def _segment_messages(self, messages: Sequence[BaseMessage]) -> list[PromptSegment]:
         segments: list[PromptSegment] = []
@@ -254,14 +260,21 @@ class PromptCacheGateway:
             if isinstance(message, ToolMessage):
                 segments.append(PromptSegment("unsafe", f"{index}:{role}", _hash_text(text), len(text)))
                 continue
-            if any(marker in text.lower() for marker in _UNSAFE_CACHE_MARKERS):
+            structured_segments = self._structured_segments_for_message(message, index=index, role=role)
+            # Engine-owned, verified segments distinguish stable instructions
+            # about credentials from actual secret values. The conservative
+            # whole-response cache exclusion remains independent below.
+            if structured_segments and isinstance(message, SystemMessage):
+                segments.extend(structured_segments)
+                seen_system = True
+                continue
+            declared = dict(getattr(message, "additional_kwargs", {}) or {})
+            if (any(marker in text.lower() for marker in _UNSAFE_CACHE_MARKERS)
+                    or redact_observability_text(text) != text):
                 segments.append(PromptSegment("unsafe", f"{index}:{role}", _hash_text(text), len(text)))
                 continue
-            structured_segments = self._structured_segments_for_message(message, index=index, role=role)
-            if structured_segments:
-                segments.extend(structured_segments)
-                if isinstance(message, SystemMessage):
-                    seen_system = True
+            if "v8_prompt_segments" in declared or "prompt_cache_segments" in declared:
+                segments.append(PromptSegment("dynamic", f"{index}:{role}:invalid_segments", _hash_text(text), len(text)))
                 continue
             if isinstance(message, SystemMessage):
                 lowered = text.lower()
@@ -381,6 +394,15 @@ class PromptCacheGateway:
         cursor = 0
         breakpoints = 0
         max_breakpoints = max(1, min(int(profile.get("maxBreakpoints") or 4), 4))
+        reusable = []
+        for segment in segments:
+            if segment.segment_type == "unsafe":
+                break
+            if segment.segment_type in {"stable_static", "scoped_static"}:
+                reusable.append(segment)
+        # A breakpoint caches the prefix before it. Mark its latest stable end,
+        # not the first four fragments while omitting the long stable tail.
+        cache_ends = {segment.end_offset for segment in reusable[-max_breakpoints:]}
         for segment in segments:
             start = max(0, int(segment.start_offset or 0))
             end = max(start, int(segment.end_offset or start))
@@ -389,7 +411,7 @@ class PromptCacheGateway:
             segment_text = text[start:end]
             if segment_text:
                 block: dict[str, Any] = {"type": "text", "text": segment_text}
-                if segment.segment_type in {"stable_static", "scoped_static"} and breakpoints < max_breakpoints:
+                if segment.end_offset in cache_ends:
                     block["cache_control"] = {"type": "ephemeral"}
                     breakpoints += 1
                 blocks.append(block)
@@ -487,10 +509,18 @@ class PromptCacheGateway:
                         content=structured_blocks,
                         additional_kwargs=dict(getattr(message, "additional_kwargs", {}) or {}),
                     )
-                    patch["cache_control"] = {"breakpoints": structured_breakpoints, "scope": f"messages[{index}].structured_segments"}
+                    if structured_breakpoints:
+                        patch["cache_control"] = {"breakpoints": structured_breakpoints, "scope": f"messages[{index}].structured_segments"}
                     break
                 text = _safe_text(message.content)
                 if not text or isinstance(message.content, list):
+                    break
+                declared = dict(getattr(message, "additional_kwargs", {}) or {})
+                if ("v8_prompt_segments" in declared or "prompt_cache_segments" in declared
+                        or redact_observability_text(text) != text
+                        or any(marker in text.lower() for marker in _UNSAFE_CACHE_MARKERS)):
+                    # Invalid segment metadata must not reopen the legacy whole
+                    # system cache path; preserve text without active caching.
                     break
                 lowered = text.lower()
                 marker_positions = [lowered.find(marker) for marker in _DYNAMIC_MARKERS if lowered.find(marker) >= 0]

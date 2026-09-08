@@ -50,9 +50,21 @@ def resolve_output_token_budget(meta: Mapping[str, Any], requested: Any = None, 
     value = min(configured, requested_count) if configured and requested_count else configured or requested_count
     source = "user_or_legacy_fixed" if configured and value == configured else "request_budget" if value else "provider_default"
     if value is None and requires_value:
-        # Anthropic requires a number. This is an application request budget,
-        # not a discovered capability; it is never written into ModelHub facts.
-        value, source = 32768, "required_parameter_default"
+        # Reuse a per-model verified fact only at a protocol's mandatory field.
+        # Auto on protocols with an optional field still omits it. An old user
+        # cap or catalog estimate is not evidence of provider capacity.
+        provenance = dict(record.get("factProvenance") or {}).get("maxTokens") or {}
+        confirmed = (isinstance(provenance, Mapping)
+                     and provenance.get("source") in {"online_provider_metadata", "official_docs"}
+                     and provenance.get("confidence") == "authoritative")
+        value = positive_token_count(record.get("maxTokens")) if confirmed else None
+        if value is not None:
+            source = "protocol_required_verified_capacity"
+        else:
+            # Compatibility endpoints may omit model limits entirely. Preserve
+            # a usable request, explicitly marked as a fallback (not a model
+            # fact); do not derive output capacity from the input window.
+            value, source = 32768, "required_parameter_default"
     return {"mode": mode, "maxTokens": value, "source": source}
 
 

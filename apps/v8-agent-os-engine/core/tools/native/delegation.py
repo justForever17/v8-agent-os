@@ -5,7 +5,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 
 from typing_extensions import Required, TypedDict
@@ -2288,11 +2288,11 @@ def _grandchild_write_contract_block_payload(
 
 @tool
 def delegation_broker(
-    mode: str = "observe",
+    mode: Literal["dispatch", "observe", "resume", "request_input"] = "observe",
     family: str = "",
     tasks: Annotated[
         list[DelegationTaskInput] | dict[str, Any] | str | None,
-        "Flat task briefs. Minimal dispatch form: tasks=[{taskBriefId, goal, expectedOutputs, acceptanceContract, toolPolicy}]. Never pass tasks={} and never wrap an item inside taskBrief.",
+        "Flat task briefs. Manual Supervisor local dispatch requires tasks=[{taskBriefId, targetAgentName, goal, expectedOutputs, acceptanceContract, toolPolicy}]. Direct subagent mirror shards inherit their actor; omit unused optional fields rather than null strings. Never pass tasks={} or taskBrief wrappers.",
     ] = None,
     target_count: int | None = None,
     worker_briefs: Annotated[

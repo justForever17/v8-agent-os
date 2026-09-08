@@ -7,6 +7,35 @@ from typing import Any, Iterable
 PROMPT_CACHE_SEGMENT_TYPES = {"stable_static", "scoped_static", "dynamic", "unsafe"}
 
 
+def static_prompt_parts_first(parts: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stable partition of complete blocks; callers must not split tag boundaries."""
+    parts = list(parts)
+    reusable = {"stable_static", "scoped_static"}
+    return ([part for part in parts if part.get("type") in reusable]
+            + [part for part in parts if part.get("type") not in reusable])
+
+
+def split_environment_prompt_parts(text: str, *, source_prefix: str) -> list[dict[str, str]]:
+    """Keep the environment wrapper intact; volatile measurements have their own block."""
+    prefixes = {"Current Time:": "current_time", "Host Load:": "host_load", "Host Alerts:": "host_alerts"}
+    stable: list[str] = []
+    dynamic: list[dict[str, str]] = []
+    for line in str(text or "").splitlines(keepends=True):
+        name = next((name for prefix, name in prefixes.items() if line.strip().startswith(prefix)), "")
+        if name:
+            dynamic.append({"source": f"{source_prefix}.{name}", "type": "dynamic", "text": line, "scope": "environment"})
+        else:
+            stable.append(line)
+    parts = ([{"source": f"{source_prefix}.static", "type": "scoped_static", "text": "".join(stable), "scope": "environment"}] if stable else [])
+    if dynamic:
+        parts.extend([
+            {"source": f"{source_prefix}.updates_open", "type": "dynamic", "text": "\n<environment_updates>\n", "scope": "environment"},
+            *dynamic,
+            {"source": f"{source_prefix}.updates_close", "type": "dynamic", "text": "\n</environment_updates>\n", "scope": "environment"},
+        ])
+    return parts
+
+
 def hash_prompt_segment(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 

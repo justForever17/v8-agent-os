@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -88,7 +90,8 @@ def _build_live_messages(target_id: str) -> list[Any]:
         {
             "source": "live_matrix.base",
             "type": "stable_static",
-            "text": "You are validating V8 prompt cache streaming telemetry.\n",
+            "text": "You are validating V8 prompt cache streaming telemetry.\n"
+                    + "Preserve exact source references, tool boundaries, user language, and file versions. Never disclose credentials.\n" * 40,
             "scope": "test_base",
         },
         {
@@ -123,7 +126,7 @@ def _chunk_text(chunk: Any) -> str:
 def _event_row(event_id: str) -> dict[str, Any] | None:
     if not event_id:
         return None
-    with db.get_connection() as conn:
+    with db.observability_db.get_connection() as conn:
         row = conn.execute("SELECT * FROM prompt_cache_events WHERE id = ?", (event_id,)).fetchone()
         if not row:
             return None
@@ -136,7 +139,7 @@ def _event_row(event_id: str) -> dict[str, Any] | None:
 def _response_cache_count(response_cache_key: str) -> int:
     if not response_cache_key:
         return 0
-    with db.get_connection() as conn:
+    with db.observability_db.get_connection() as conn:
         row = conn.execute("SELECT COUNT(*) AS count FROM llm_response_cache WHERE response_cache_key = ?", (response_cache_key,)).fetchone()
         return int(row["count"] or 0) if row else 0
 
@@ -214,7 +217,7 @@ def _run_provider_cell(target: dict[str, Any], model: dict[str, Any]) -> dict[st
     event = _event_row(str(prompt_cache.get("eventId") or ""))
     response_cache_count = _response_cache_count(str(prompt_cache.get("responseCacheKey") or ""))
     checks = {
-        "responseNonEmpty": bool(response_text),
+        "responseMatchesExpected": response_text == "OK",
         "telemetryCompleted": invocation.get("status") == "completed",
         "isStreaming": bool(invocation.get("is_streaming")),
         "promptCachePresent": bool(prompt_cache),
@@ -222,6 +225,7 @@ def _run_provider_cell(target: dict[str, Any], model: dict[str, Any]) -> dict[st
         "eventRecorded": bool(event),
         "eventSkipped": bool(event and event.get("decision") == "skipped"),
         "responseCacheNotWritten": response_cache_count == 0,
+        "cacheUsageRecorded": isinstance(telemetry_metadata.get("cacheUsage"), dict),
     }
     failed_checks = [key for key, ok in checks.items() if not ok]
     return {
@@ -236,6 +240,10 @@ def _run_provider_cell(target: dict[str, Any], model: dict[str, Any]) -> dict[st
         "skipReason": str(prompt_cache.get("skipReason") or ""),
         "responsePreview": response_text[:40],
         "latencyMs": round((time.perf_counter() - started) * 1000, 2),
+        "usage": {key: invocation.get(key) for key in ("input_tokens", "output_tokens", "total_tokens")},
+        "cacheUsage": telemetry_metadata.get("cacheUsage"),
+        "outputTokenBudget": prompt_cache.get("outputTokenBudget"),
+        "timeToFirstContentChunkMs": telemetry_metadata.get("timeToFirstContentChunkMs"),
         "checks": checks,
     }
 
@@ -245,15 +253,36 @@ def main() -> int:
     parser.add_argument("--live", action="store_true", help="Actually call configured providers.")
     parser.add_argument("--require-all", action="store_true", help="Return non-zero when any target provider is missing or failed.")
     parser.add_argument("--output", default="", help="Optional JSON output path.")
+    parser.add_argument("--provider", action="append", choices=[target["id"] for target in TARGET_PROVIDERS], help="Limit paid calls to these configured providers.")
+    parser.add_argument("--repeat", type=int, choices=range(1, 4), default=1, help="Repeat each provider 1-3 times to observe real cache usage.")
+    parser.add_argument("--isolated-db-root", required=True, help="New directory for this harness's state and observation databases; credentials stay in configured ModelHub.")
     args = parser.parse_args()
 
     if not args.live:
         print("Refusing to run provider calls without --live.")
         return 2
 
+    isolated_root = Path(args.isolated_db_root).resolve()
+    if isolated_root.exists():
+        parser.error("--isolated-db-root must be a new directory")
+    isolated_root.mkdir(parents=True)
+    from core.database import DatabaseManager
+    import core.model_telemetry as telemetry
+    import core.prompt_cache_gateway as cache_gateway
+
+    isolated_db = DatabaseManager(isolated_root / "state.db")
+    with ExitStack() as stack:
+        stack.enter_context(patch.dict(globals(), db=isolated_db))
+        stack.enter_context(patch.object(telemetry, "db", isolated_db))
+        stack.enter_context(patch.object(cache_gateway, "db", isolated_db))
+        return _run_matrix(args)
+
+
+def _run_matrix(args: argparse.Namespace) -> int:
     models = model_control_plane.list_models()
     cells: list[dict[str, Any]] = []
-    for target in TARGET_PROVIDERS:
+    targets = [target for target in TARGET_PROVIDERS if not args.provider or target["id"] in args.provider]
+    for target in targets * args.repeat:
         model, missing_reason = _find_model_for_target(target, models)
         if model is None:
             cells.append({"targetProvider": target["id"], "status": "failed", "reason": missing_reason})
@@ -268,7 +297,7 @@ def main() -> int:
     failed = [cell for cell in cells if cell.get("status") != "succeeded"]
     payload = {
         "matrix": "prompt_cache_streaming_live",
-        "requiredProviders": [item["id"] for item in TARGET_PROVIDERS],
+        "requiredProviders": [item["id"] for item in targets],
         "summary": {"total": len(cells), "succeeded": len(cells) - len(failed), "failed": len(failed)},
         "cells": cells,
     }

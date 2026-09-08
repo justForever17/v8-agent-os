@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from core.v8_agent_os_paths import OBSERVABILITY_DB_PATH
+from core.model_usage import cache_token_counts
 
 
 def utc_now_iso() -> str:
@@ -870,7 +871,13 @@ class ObservabilityDatabaseManager:
                 """
                 SELECT
                     COUNT(*) AS total_events,
-                    SUM(CASE WHEN COALESCE(provider_patch_json, '') NOT IN ('', '{}', 'null') THEN 1 ELSE 0 END) AS provider_patch_events,
+                    SUM(CASE WHEN json_valid(provider_patch_json) = 0 THEN 0
+                             WHEN json_extract(provider_patch_json, '$.observeOnly') = 1 THEN 0
+                             WHEN json_extract(provider_patch_json, '$.prompt_cache_key') IS NOT NULL
+                               OR json_extract(provider_patch_json, '$.cache_control') IS NOT NULL
+                               OR json_extract(provider_patch_json, '$.extra_body.caching') IS NOT NULL
+                               OR json_extract(provider_patch_json, '$.extra_headers.x-grok-conv-id') IS NOT NULL
+                             THEN 1 ELSE 0 END) AS provider_patch_events,
                     SUM(CASE WHEN decision = 'hit' THEN 1 ELSE 0 END) AS response_hits,
                     SUM(CASE WHEN decision = 'miss' THEN 1 ELSE 0 END) AS response_misses,
                     SUM(CASE WHEN decision = 'skipped' THEN 1 ELSE 0 END) AS response_skipped
@@ -929,6 +936,47 @@ class ObservabilityDatabaseManager:
                 item["providerPatch"] = json.loads(item["provider_patch_json"]) if item.get("provider_patch_json") else {}
                 item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
                 recent.append(item)
+            cache_read_total = cache_write_total = cache_read_input_total = 0
+            cache_read_reported = cache_write_reported = usage_invocations = cache_read_rate_rows = 0
+            for row in conn.execute(
+                """
+                SELECT input_tokens,
+                       CASE WHEN json_type(metadata_json, '$.cacheUsage') = 'object'
+                            THEN json_extract(metadata_json, '$.cacheUsage') END AS cache_usage,
+                       CASE WHEN json_type(metadata_json, '$.usage') = 'object'
+                            THEN json_extract(metadata_json, '$.usage') END AS legacy_usage,
+                       CASE WHEN json_type(metadata_json, '$.usage_metadata') = 'object'
+                            THEN json_extract(metadata_json, '$.usage_metadata') END AS legacy_sdk_usage,
+                       CASE WHEN json_type(metadata_json, '$.token_usage') = 'object'
+                            THEN json_extract(metadata_json, '$.token_usage') END AS legacy_token_usage,
+                       CASE WHEN json_type(metadata_json, '$.response_metadata') = 'object'
+                            THEN json_extract(metadata_json, '$.response_metadata') END AS legacy_response_metadata,
+                       json_extract(metadata_json, '$.cached_input_tokens') AS cached_input_tokens,
+                       json_extract(metadata_json, '$.cache_read_input_tokens') AS cache_read_input_tokens,
+                       json_extract(metadata_json, '$.cache_creation_input_tokens') AS cache_creation_input_tokens,
+                       json_extract(metadata_json, '$.prompt_cache_hit_tokens') AS prompt_cache_hit_tokens
+                FROM model_invocation_logs WHERE datetime(started_at) >= datetime(?)
+                """,
+                (threshold,),
+            ):
+                usage_invocations += 1
+                metadata = {"cacheUsage": json.loads(row["cache_usage"])} if row["cache_usage"] else {}
+                if not metadata:
+                    for key in ("legacy_usage", "legacy_sdk_usage", "legacy_token_usage", "legacy_response_metadata"):
+                        if row[key]:
+                            metadata[key] = json.loads(row[key])
+                    for key in ("cached_input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "prompt_cache_hit_tokens"):
+                        metadata[key] = row[key]
+                counts = cache_token_counts(metadata)
+                if counts["readTokens"] is not None:
+                    cache_read_reported += 1
+                    cache_read_total += counts["readTokens"]
+                    if 0 <= counts["readTokens"] <= int(row["input_tokens"] or 0):
+                        cache_read_input_total += int(row["input_tokens"] or 0)
+                        cache_read_rate_rows += 1
+                if counts["writeTokens"] is not None:
+                    cache_write_reported += 1
+                    cache_write_total += counts["writeTokens"]
             return {
                 "window": {"days": max(1, min(int(days or 1), 30)), "since": threshold},
                 "totals": {
@@ -954,9 +1002,21 @@ class ObservabilityDatabaseManager:
                     for row in segment_rows
                 },
                 "providerUsage": {
-                    "cachedInputTokensReported": False,
-                    "cachedInputTokenRate": None,
-                    "note": "provider usage did not report cached input token fields",
+                    "recordBasis": "retained_invocation_logs",
+                    "invocations": usage_invocations,
+                    "cachedInputTokensReported": cache_read_reported > 0,
+                    "cacheWriteTokensReported": cache_write_reported > 0,
+                    "cachedInputTokens": cache_read_total if cache_read_reported else None,
+                    "cacheWriteInputTokens": cache_write_total if cache_write_reported else None,
+                    "cacheReadReportedInvocations": cache_read_reported,
+                    "cacheWriteReportedInvocations": cache_write_reported,
+                    "cacheReadUnknownInvocations": usage_invocations - cache_read_reported,
+                    "cacheWriteUnknownInvocations": usage_invocations - cache_write_reported,
+                    "inputTokensWithCacheReadReport": cache_read_input_total,
+                    "cachedInputTokenRate": _rate(cache_read_total, cache_read_input_total)
+                        if cache_read_rate_rows == cache_read_reported else None,
+                    "rateBasis": "reported_invocations_only",
+                    "cacheAdjustmentAppliedToEstimatedCost": False,
                 },
                 "eventsByDecision": by_decision,
                 "eventsBySkipReason": by_skip_reason,

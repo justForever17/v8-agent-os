@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from api.models import EngineConfig
 from core.llm_factory import LLMFactory
 from graph.agent_factories import (
-    _bounded_delegated_task_messages,
+    _delegated_task_messages,
     _delegated_tool_call_dicts,
     _delegated_tool_loop_observation,
     _delegated_write_tool_observation,
@@ -68,7 +68,7 @@ def _owned_tool_call(name: str, call_id: str, args: dict) -> AIMessage:
     )
 
 
-def test_delegated_context_window_keeps_instruction_and_tool_pair_boundary():
+def test_delegated_context_preserves_early_evidence_until_token_compaction():
     instruction = HumanMessage(
         content="delegated",
         additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
@@ -80,10 +80,11 @@ def test_delegated_context_window_keeps_instruction_and_tool_pair_boundary():
             ToolMessage(content=f"file-{index}", name="read_native_file", tool_call_id=f"read-{index}"),
         ])
 
-    bounded = _bounded_delegated_task_messages(messages, {"goal": "Inspect files"})
+    bounded = _delegated_task_messages(messages, {"goal": "Inspect files"})
 
     assert bounded[0] is instruction
-    assert len(bounded) <= 28
+    assert bounded == messages
+    assert bounded[2].content == "file-0"
     assert not isinstance(bounded[1], ToolMessage)
 
 
@@ -241,7 +242,7 @@ def test_real_file_progress_does_not_expand_total_48_call_budget():
     assert result["reason"] == "delegated_tool_call_budget_exhausted"
 
 
-def test_delegated_tool_budget_counts_full_history_not_bounded_prompt_window():
+def test_delegated_context_retention_does_not_reset_tool_call_budget():
     instruction = HumanMessage(
         content="delegated",
         additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
@@ -263,7 +264,7 @@ def test_delegated_tool_budget_counts_full_history_not_bounded_prompt_window():
             ]
         )
 
-    bounded = _bounded_delegated_task_messages(messages, {"goal": "Inspect evidence"})
+    bounded = _delegated_task_messages(messages, {"goal": "Inspect evidence"})
     full_observation = _delegated_tool_loop_observation(
         messages,
         agent_id="worker",
@@ -275,11 +276,11 @@ def test_delegated_tool_budget_counts_full_history_not_bounded_prompt_window():
         current_message=messages[-2],
     )
 
-    assert len(bounded) <= 28
+    assert bounded == messages
     assert full_observation["toolCallCount"] == 48
     assert full_observation["blocked"] is True
     assert full_observation["reason"] == "delegated_tool_call_budget_exhausted"
-    assert bounded_observation["toolCallCount"] < 48
+    assert bounded_observation == full_observation
 
 
 def test_ownerless_branch_write_receipt_still_stops_required_tool_choice():

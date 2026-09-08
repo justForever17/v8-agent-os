@@ -24,10 +24,10 @@ from core.engineering_capsule import effective_engineering_capsule, engineering_
 from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
-from core.delegated_agent_charter import DELEGATED_AGENT_OPERATING_CHARTER
+from core.delegated_agent_charter import delegated_agent_operating_charter
 from core.host_load import render_host_load_line
 from core.safety_active_defense import render_host_alerts_line
-from core.prompt_cache_segments import build_prompt_segments_from_parts
+from core.prompt_cache_segments import build_prompt_segments_from_parts, split_environment_prompt_parts, static_prompt_parts_first
 from core.runtime.extensions_runtime import ExtensionRouteBundle, extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content, extract_text_and_reasoning
@@ -47,7 +47,6 @@ from .tool_routing import create_routed_tool_node
 from .route_context import merge_route_context
 
 
-_MAX_DELEGATED_CONTEXT_MESSAGES = 28
 _MAX_DELEGATED_TOOL_CALLS = 48
 _MAX_DELEGATED_EXACT_TOOL_REPEATS = 3
 
@@ -392,7 +391,7 @@ def _delegated_visible_result_text(response: Any) -> str:
     return (raw_content if isinstance(raw_content, str) else str(raw_content)).strip()
 
 
-def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, Any] | None) -> list[Any]:
+def _delegated_task_messages(messages: list[Any], task_brief: dict[str, Any] | None) -> list[Any]:
     if not isinstance(task_brief, dict) or not task_brief:
         return list(messages or [])
     source_messages = list(messages or [])
@@ -404,18 +403,10 @@ def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, 
         if str(additional_kwargs.get("v8_governance_type") or "").strip() == "delegated_task_instruction":
             marked_index = index
     if marked_index >= 0:
-        branch = source_messages[marked_index:]
-        if len(branch) <= _MAX_DELEGATED_CONTEXT_MESSAGES:
-            return branch
-        # Keep the delegated instruction and the most recent tool pairs. Older
-        # transcript turns are durable in Runtime Surface and do not justify
-        # rebuilding a 30k+ character prompt on every tool loop.
-        tail_budget = max(1, _MAX_DELEGATED_CONTEXT_MESSAGES - 2)
-        tail_start = max(1, len(branch) - tail_budget)
-        if isinstance(branch[tail_start], ToolMessage) and tail_start > 1:
-            tail_start -= 1
-        tail = branch[tail_start:]
-        return [branch[0], *tail]
+        # Isolate this branch, then let ContextOrchestrator perform token-based
+        # compaction with its durable summary. Dropping an arbitrary message
+        # count here loses read receipts, evidence and task corrections first.
+        return source_messages[marked_index:]
     query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
     return [
         HumanMessage(
@@ -1740,7 +1731,6 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
 
 _INTERACTIVE_CLI_RULE = (
     "[Interactive CLI Rule]\n"
-    "Use `run_system_command` only for short synchronous commands.\n"
     "Use `run_system_command(mode=auto)` as the default shell entry; it returns compact final results for short commands and starts a recoverable command session for long-running commands, interactive CLIs/REPLs, and dev servers.\n"
     "Use the Engineering Kernel's Active Workspace Root and detected shell dialect; do not spend a tool call rediscovering the bound workspace.\n"
     "When a command prompt waits for confirmation, `command_session_broker(mode=\"input\", input_text=\"y\")` submits Enter by default; use `submit=false` only for TUI raw typing.\n"
@@ -1754,41 +1744,6 @@ def _agent_prompt_part(source: str, segment_type: str, text: str, *, scope: str 
     return {"source": source, "type": segment_type, "text": text or "", "scope": scope}
 
 
-def _split_agent_env_context_parts(env_context: str) -> list[dict[str, str]]:
-    text = str(env_context or "")
-    if not text:
-        return []
-    dynamic_prefixes = {
-        "Current Time:": "current_time",
-        "Host Load:": "host_load",
-        "Host Alerts:": "host_alerts",
-    }
-    parts: list[dict[str, str]] = []
-    static_buffer: list[str] = []
-
-    def _flush_static() -> None:
-        if not static_buffer:
-            return
-        parts.append(
-            _agent_prompt_part(
-                "subagent.environment.static",
-                "scoped_static",
-                "".join(static_buffer),
-                scope="environment",
-            )
-        )
-        static_buffer.clear()
-
-    for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        dynamic_name = next((name for prefix, name in dynamic_prefixes.items() if stripped.startswith(prefix)), "")
-        if dynamic_name:
-            _flush_static()
-            parts.append(_agent_prompt_part(f"subagent.environment.{dynamic_name}", "dynamic", line, scope="environment"))
-        else:
-            static_buffer.append(line)
-    _flush_static()
-    return parts
 
 
 def _build_agent_system_bundle(
@@ -1800,12 +1755,13 @@ def _build_agent_system_bundle(
     delegated_plan_context: str = "",
     collaboration_identity_context: str = "",
     route_prompt_addition: str = "",
+    available_tool_names: list[str] | None = None,
 ) -> dict[str, object]:
     parts: list[dict[str, str]] = [
         _agent_prompt_part(
             "subagent.delegated_agent_operating_charter",
             "stable_static",
-            DELEGATED_AGENT_OPERATING_CHARTER,
+            delegated_agent_operating_charter(available_tool_names or []),
             scope="delegation_charter",
         ),
         _agent_prompt_part(
@@ -1820,13 +1776,14 @@ def _build_agent_system_bundle(
             collaboration_identity_context,
             scope="collaboration_identity",
         ),
-        *_split_agent_env_context_parts(env_context),
+        *split_environment_prompt_parts(env_context, source_prefix="subagent.environment"),
         _agent_prompt_part("subagent.active_todos", "dynamic", active_plan_context, scope="todos"),
         _agent_prompt_part("subagent.delegated_task_brief", "dynamic", delegated_plan_context, scope="task_brief"),
         _agent_prompt_part("subagent.route_additions", "dynamic", route_prompt_addition, scope="extensions"),
         _agent_prompt_part("subagent.separator", "dynamic", "\n\n", scope="separator"),
         _agent_prompt_part("subagent.interactive_cli_rule", "stable_static", _INTERACTIVE_CLI_RULE, scope="execution_hints"),
     ]
+    parts = static_prompt_parts_first(parts)
     return {
         "content": "".join(part.get("text") or "" for part in parts),
         "segments": build_prompt_segments_from_parts(parts),
@@ -2136,7 +2093,7 @@ def build_agent_node(
             extensions_route_query = task_brief_route_query_text(delegated_task_brief)
             delegated_query = full_task_brief_query or inherited_query
             extensions_route_query = extensions_route_query or delegated_query
-            task_messages = _bounded_delegated_task_messages(messages, delegated_task_brief)
+            task_messages = _delegated_task_messages(messages, delegated_task_brief)
             actor_route_context = {
                 **dict(inherited_route_context or {}),
                 "taskBrief": delegated_task_brief or {},
@@ -2327,6 +2284,7 @@ def build_agent_node(
                 delegated_plan_context=delegated_plan_context,
                 collaboration_identity_context=collaboration_identity_context,
                 route_prompt_addition=route_bundle.prompt_addition,
+                available_tool_names=[str(getattr(tool_ref, "name", "")) for tool_ref in combined_tools],
             )
             sys_msg = SystemMessage(
                 content=str(system_bundle["content"]),

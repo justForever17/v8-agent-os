@@ -540,7 +540,11 @@ def filter_visible_tools_for_actor(
                 visible.append(tool_ref)
             continue
         if name == "delegation_broker":
-            if actor_identity.is_supervisor or actor_identity.is_direct_subagent:
+            if actor_identity.is_supervisor:
+                from core.tools.native.delegation_surface import supervisor_delegation_broker
+
+                visible.append(supervisor_delegation_broker)
+            elif actor_identity.is_direct_subagent:
                 visible.append(tool_ref)
             continue
         if name == "agent_broker":

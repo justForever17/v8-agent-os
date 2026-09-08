@@ -15,7 +15,7 @@ from core.prompt_budget import (
     DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
     enforce_prompt_budget,
 )
-from core.prompt_cache_segments import build_prompt_segments_from_parts
+from core.prompt_cache_segments import build_prompt_segments_from_parts, split_environment_prompt_parts, static_prompt_parts_first
 from core.storage import storage
 from core.task_boundary_resolver import build_supervisor_task_context, render_task_boundary_hint
 from core.host_load import render_host_load_line
@@ -153,41 +153,6 @@ def render_supervisor_direct_tool_registry(supervisor_tools: list) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _split_env_context_prompt_parts(env_context: str, *, source_prefix: str = "environment") -> list[dict[str, str]]:
-    text = str(env_context or "")
-    if not text:
-        return []
-    dynamic_prefixes = {
-        "Current Time:": "current_time",
-        "Host Load:": "host_load",
-        "Host Alerts:": "host_alerts",
-    }
-    parts: list[dict[str, str]] = []
-    static_buffer: list[str] = []
-
-    def _flush_static() -> None:
-        if not static_buffer:
-            return
-        parts.append(
-            _prompt_part(
-                f"{source_prefix}.static",
-                "scoped_static",
-                "".join(static_buffer),
-                scope="environment",
-            )
-        )
-        static_buffer.clear()
-
-    for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        dynamic_name = next((name for prefix, name in dynamic_prefixes.items() if stripped.startswith(prefix)), "")
-        if dynamic_name:
-            _flush_static()
-            parts.append(_prompt_part(f"{source_prefix}.{dynamic_name}", "dynamic", line, scope="environment"))
-        else:
-            static_buffer.append(line)
-    _flush_static()
-    return parts
 
 
 def _split_runtime_registry_prompt_parts(runtime_registry_context: str) -> list[dict[str, str]]:
@@ -234,7 +199,17 @@ def _split_runtime_registry_prompt_parts(runtime_registry_context: str) -> list[
                 scope="capability_registry",
             )
         )
-    return parts
+    if descriptor_start < 0:
+        # Unknown registry layout: preserve it as one block instead of moving
+        # an opening/closing tag away from its content.
+        return [_prompt_part("capability_registry", "dynamic", text, scope="capability_registry")]
+    stable_text = "".join(part["text"] for part in parts if part["type"] != "dynamic")
+    recommendation = "".join(part["text"] for part in parts if part["type"] == "dynamic")
+    return [
+        _prompt_part("capability_registry.descriptors", "scoped_static", stable_text, scope="capability_registry"),
+        _prompt_part("capability_registry.recommended_routes", "dynamic",
+                     f"\n<runtime_recommendations>\n{recommendation}\n</runtime_recommendations>\n", scope="capability_registry"),
+    ]
 
 
 def _resolved_workspace_binding_for_state(state, session_id: str | None) -> WorkspaceBinding:
@@ -1483,7 +1458,7 @@ def build_supervisor_system_content(
         _prompt_part("todos", "dynamic", todos_context, scope="todos"),
         _prompt_part("memory.session_context", "dynamic", f"{memory_context}\n\n", scope="memory"),
         _prompt_part("workspace.agents_rules", "scoped_static", workspace_rules_context, scope="workspace_rules"),
-        *_split_env_context_prompt_parts(env_context, source_prefix="environment"),
+        *split_environment_prompt_parts(env_context, source_prefix="environment"),
         _prompt_part("execution_hints", "stable_static", f"{runtime_guidance}\n", scope="execution_hints"),
         _prompt_part("runtime_reflex", "dynamic", reflex_prompt_addition, scope="runtime_reflex"),
         _prompt_part("runtime_gate", "dynamic", gate_prompt_addition, scope="runtime_gate"),
@@ -1492,6 +1467,7 @@ def build_supervisor_system_content(
         _prompt_part("extensions.candidate_status", "dynamic", extension_prompt_addition, scope="extensions"),
         _prompt_part("group_moderation", "dynamic", group_moderation_directive, scope="group_moderation"),
     ]
+    prompt_parts = static_prompt_parts_first(prompt_parts)
     system_content = "".join(part.get("text") or "" for part in prompt_parts)
 
     return {

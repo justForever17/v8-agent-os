@@ -38,8 +38,9 @@ def saved_research_reader(
     saved answer or evidence that a new verification task has executed.
     Pass exact evidence refs and runtimeAccess=['research.read'] to a delegated
     verifier that needs these reads; this grants no new research or mutation.
-    For authorized answer updates route through runtime_broker(kind='research',
-    experiencePackId=<saved id>); this read surface never starts a model or search.
+    For an answer update, return the saved experiencePackId and required change
+    to the Supervisor, who owns Research routing. This read surface never starts
+    a model or search and does not grant a worker permission to route a runtime.
     """
     from core.tools.research_broker import research_broker
 

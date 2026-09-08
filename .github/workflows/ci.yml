@@ -34,6 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           node --test scripts/release/*.test.mjs
+          node --test scripts/desktop/build-macos-dmg-with-retry.test.mjs
           node scripts/release/verify-release-manifest.mjs \
             --manifest release-manifest.json \
             --json

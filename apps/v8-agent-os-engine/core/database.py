@@ -9724,6 +9724,26 @@ class DatabaseManager:
             data["metadata"] = json.loads(data["metadata"]) if data.get("metadata") else {}
             return data
 
+    def get_latest_run_status_records(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+        """Read compact run truth for cached navigation rows, without loading prompts/metadata."""
+        ids = list(dict.fromkeys(str(value).strip() for value in session_ids if str(value).strip()))
+        records: List[Dict[str, Any]] = []
+        if not ids:
+            return records
+        with self.get_connection() as conn:
+            for offset in range(0, len(ids), 900):
+                batch = ids[offset:offset + 900]
+                placeholders = ','.join('?' for _ in batch)
+                records.extend(dict(row) for row in conn.execute(
+                    f'''SELECT id, session_id, status, started_at, finished_at FROM (
+                        SELECT id, session_id, status, started_at, finished_at,
+                            ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY started_at DESC, id DESC) AS position
+                        FROM run_records WHERE session_id IN ({placeholders})
+                    ) WHERE position = 1''',
+                    batch,
+                ).fetchall())
+        return records
+
     def list_run_records(
         self,
         *,

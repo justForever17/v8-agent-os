@@ -505,7 +505,8 @@ def test_episode_completion_accepts_verified_playback_shortcut(tmp_path) -> None
     ]
 
     verification = agent._validate_completion()
-    assert verification["passed"] is True
+    assert verification["machineConstraintsPassed"] is True
+    assert verification["passed"] is False
     assert "play_action_not_identified" not in verification["missing"]
 
 

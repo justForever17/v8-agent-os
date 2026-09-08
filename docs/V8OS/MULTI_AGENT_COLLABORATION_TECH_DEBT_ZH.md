@@ -75,3 +75,10 @@
 - 本轮修复：目录由原后台 owner 刷新，前台脏项明确 pending 并排除；任务只在已有目录上筛选。结果缓存无时间到期强制重筛，但键涵盖工具 schema/描述、session 对象身份、授权内容及任务上下文。MCP `tools/list_changed` 合并通知、仅发布当前 session 的完整工具表；失败保留上次完整表并标记 stale，退出取消并等待刷新任务。普通诊断不再投影成扩展运行卡。
 - 回归入口：`tests/extensions/test_extensions_route_cache.py`、`test_mcp_client_version_projection.py`、`test_skill_loader_startup_lightweight.py` 和插件授权投影测试；覆盖通知突发、旧 session 晚到、撤销、schema 变化与扫描预算公平性。
 - 剩余边界：Skill 外部目录变更仍依赖有界后台轮询，不是零文件 IO。实测 128 个 Skill、2,048 个引用文件完整 hash 约 1 秒，但没有堵住事件循环；若实机磁盘负荷仍显著，下一轮按实际观测评估现有 watcher 的增量扫描，禁止直接引入第二套全局目录服务。真实第三方 MCP 通知兼容性尚未逐产品验收。
+
+## TD-ORCH-008：桌面完成证明与窄构建兼容的后续复核
+
+- 登记日期：2026-09-08；基准 `4d2378cd` 后续修复；owner 分别为 Computer Use episode 和 Desktop release。
+- P2：现有 Computer Use 部分任务专用机器检查及点击瞬时语义判据仍可能漏覆盖或误报。本轮移除“空检查即全目标成功”的权威、复用当前观察，并保持 Agent 判断与机器约束分开；下一迭代用新任务回放检查静态特例，不能再把专用歌曲/网站规则扩写成通用完成判据，也不能把截图存在当语义证明。
+- P2：DMG 工具链临时卸载 `Resource busy` 使用至多一次重建作为窄兼容。入口 `scripts/desktop/build-macos-dmg-with-retry.mjs`，触发/再次失败在 CI 日志可见；所有其他错误不重试，不强制卸载宿主磁盘。下一发布周期核查 upstream dmg-builder 修复与原生复现；确认升级消除故障后移除此 helper 和 workflow 接入，保留等价失败反例。
+- 物理待核：Ubuntu 9.7.1 缺 Shell 退出日志，旧 CPU 冷导入仍达约 17 秒；已有 120 秒 readiness 与 zombie 修复不能冒充托盘物理验收。拿到同一次 Shell/Engine 时间线或目标机后复核，不用 Windows timing 推导 Linux 改善。

@@ -88,11 +88,13 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 脚本 | 用途 | 关键开关 |
 | --- | --- | --- |
 | `run_computer_use_real_host_matrix.py` | Computer Use 真机/宿主矩阵。 | `--real-host`；需要真实输入探针时显式增加 `--allow-input`。 |
-| `run_computer_use_joint_live_audit.py` | Computer Use 联合验收：Agent 浏览器秘塔图片下载、QQ音乐自绘界面动作，以及 Supervisor → Computer Use episode/handoff 闭环。 | `--live --phase direct|supervisor|all --case metaso|qqmusic|all`；真实测试环境可显式加 `--cleanup-test-processes`。 |
+| `run_computer_use_joint_live_audit.py` | Computer Use 联合验收：Agent 浏览器秘塔图片下载、QQ音乐自绘界面动作，以及 Supervisor → Computer Use episode/handoff 闭环。 | `--live --phase direct|supervisor|all --case metaso|qqmusic|all`；真实测试环境可显式加 `--cleanup-test-processes`。自有专用窗口可用 `--live --phase direct --case custom --task-brief-file <JSON> --workspace <临时目录> --max-rounds 8`，禁止全局清理。 |
 | `run_phone_long_task_perf_live_audit.py` | Phone 长任务卡顿 / APK / SSE / projection live audit。 | `--live`；支持 manual phone 观察。 |
 | `test_phone_long_task_perf_live_audit.py` | Phone perf audit 脚本 parser/fixture 自测。 | pytest 可跑。 |
 
 Computer Use 联合验收使用 V8OS 专用 Agent 浏览器 profile；未登录或遇到 CAPTCHA 时必须报告 blocked，不得绕过或假装成功。
+
+自定义 direct case 的 JSON 必须含 `taskBriefId`、`goal`、显式 `writeSet`（可为空）和非空 `acceptanceContract` 字符串数组；只在 `--live` 后读取。该入口为截图产物建立专属 session/run，不调用秘塔、QQMusic 或任何浏览器/进程全局清理。运行前自行创建并确认测试窗口归属，结束后只清理自己创建的进程。报告通过仅表示 runtime 完成协议通过，仍须对照窗口实际状态与截图产物读取验收；Windows 实测不能代替 Ubuntu 物理验收。
 
 ## Benchmark / Eval
 

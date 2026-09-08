@@ -332,7 +332,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           MACOSX_DEPLOYMENT_TARGET: "12.3"
-        run: npm --prefix apps/v8-agent-os-shell run dist:mac:preview -- --${{ matrix.arch }}
+        run: node scripts/desktop/build-macos-dmg-with-retry.mjs ${{ matrix.arch }}
 
       - name: Build unsigned Linux desktop preview
         if: matrix.os == 'linux'

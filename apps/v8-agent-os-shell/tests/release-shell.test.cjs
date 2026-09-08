@@ -639,7 +639,7 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(workflow, /npm exec -- tsc --version/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:win:preview/);
   assert.match(workflow, /--\$\{\{ matrix\.arch \}\}/);
-  assert.match(workflow, /apps\/v8-agent-os-shell run dist:mac:preview/);
+  assert.match(workflow, /scripts\/desktop\/build-macos-dmg-with-retry\.mjs/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:linux:preview/);
   assert.match(workflow, /prepare-posix-python-runtime\.mjs/);
   assert.match(workflow, /resolve-desktop-build-matrix\.mjs/);

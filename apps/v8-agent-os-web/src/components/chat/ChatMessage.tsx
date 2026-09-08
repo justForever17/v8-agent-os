@@ -687,7 +687,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         const flushChunk = () => {
             if (traceChunk.length === 0) return;
             const grouped = groupTimelineNodes(traceChunk, resultNodesByToolCallId);
-            segments.push(...grouped.map((segment) => ({
+            segments.push(...grouped.filter((segment) => segment.kind !== "node"
+                || isRenderableTimelineNode(segment.node, Boolean(isLoading && isLast))).map((segment) => ({
                 ...segment,
                 id: `chunk-${chunkIndex}:${segment.id}`,
             })));
@@ -710,7 +711,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             if (hasToolCallId(node) && node.executionType === "tool_result" && toolCallIds.has(node.toolCallId.trim())) {
                 return;
             }
-            if (!isRenderableTimelineNode(node, Boolean(isLoading && isLast))) {
+            // Whitespace can carry Markdown structure between identified stream
+            // fragments. Coalesce first; isolated/anonymous blank nodes stay hidden.
+            if (node.kind !== "narrative" && !isRenderableTimelineNode(node, Boolean(isLoading && isLast))) {
                 return;
             }
             traceChunk.push(node);

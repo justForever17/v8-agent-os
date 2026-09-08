@@ -78,16 +78,24 @@ function getConversationSessionId(item: Pick<Conversation, "id" | "sessionId">):
 export function ConversationProvider({ children }: { children: ReactNode }) {
     const { data: session, status } = useSession();
     const [conversations, setConversations] = useState<Conversation[]>([]);
+    const [conversationsOwnerKey, setConversationsOwnerKey] = useState("");
     const [isLoading, setIsLoading] = useState(true);
     const authenticatedRef = useRef(false);
     const hasLoadedRef = useRef(false);
     const refreshInFlightRef = useRef<Promise<void> | null>(null);
+    const refreshRequestedRef = useRef(false);
+    const refreshEpochRef = useRef(0);
+    const refreshAbortRef = useRef<AbortController | null>(null);
     const sessionIndexHydratedRef = useRef(false);
     const lastOwnerKeyRef = useRef("");
     const ownerKey = String(session?.user?.id || session?.user?.email || "").trim().toLowerCase();
 
     const fetchConversations = useCallback((): Promise<void> => {
+        if (!authenticatedRef.current || !lastOwnerKeyRef.current) {
+            return Promise.resolve();
+        }
         if (refreshInFlightRef.current) {
+            refreshRequestedRef.current = true;
             return refreshInFlightRef.current;
         }
 
@@ -96,25 +104,51 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             setIsLoading(true);
         }
 
+        const requestOwner = lastOwnerKeyRef.current;
+        const requestEpoch = refreshEpochRef.current;
+        const controller = new AbortController();
+        refreshAbortRef.current = controller;
+        const ownerStillCurrent = () => authenticatedRef.current
+            && requestEpoch === refreshEpochRef.current && requestOwner === lastOwnerKeyRef.current;
         const request = (async () => {
             try {
-                const res = await fetch(`/api/conversations`, { cache: "no-store" });
-                if (res.ok && authenticatedRef.current) {
-                    const data = await res.json();
-                    const sessionList = Array.isArray(data) ? data : (data.sessions || []);
-                    const normalized = normalizeSessionHistoryList(sessionList);
-                    setConversations((prev) => {
-                        const reconciled = preserveLiveSessionTitles(prev, normalized);
-                        return isSameConversationList(prev, reconciled) ? prev : reconciled;
-                    });
-                }
-            } catch (error) {
-                console.error("Failed to fetch conversations", error);
+                let failedReconciliationUsed = false;
+                do {
+                    refreshRequestedRef.current = false;
+                    let failed = false;
+                    try {
+                        const res = await fetch(`/api/conversations`, { cache: "no-store", signal: controller.signal });
+                        if (!ownerStillCurrent()) break;
+                        failed = !res.ok;
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (!ownerStillCurrent()) break;
+                            const sessionList = Array.isArray(data) ? data : (data.sessions || []);
+                            const normalized = normalizeSessionHistoryList(sessionList);
+                            setConversations((prev) => {
+                                if (!ownerStillCurrent()) return prev;
+                                const reconciled = preserveLiveSessionTitles(prev, normalized);
+                                return isSameConversationList(prev, reconciled) ? prev : reconciled;
+                            });
+                        }
+                    } catch (error) {
+                        if (!ownerStillCurrent() || controller.signal.aborted) break;
+                        console.error("Failed to fetch conversations", error);
+                        failed = true;
+                    }
+                    // Honor an invalidation already received during a failed fetch,
+                    // but do not turn repeated transport failure into an endless retry.
+                    if (failed) {
+                        if (failedReconciliationUsed) break;
+                        failedReconciliationUsed = true;
+                    }
+                } while (refreshRequestedRef.current && ownerStillCurrent());
             } finally {
-                hasLoadedRef.current = true;
-                refreshInFlightRef.current = null;
-                if (authenticatedRef.current) {
-                    setIsLoading(false);
+                if (requestEpoch === refreshEpochRef.current) {
+                    hasLoadedRef.current = true;
+                    refreshInFlightRef.current = null;
+                    refreshAbortRef.current = null;
+                    if (ownerStillCurrent()) setIsLoading(false);
                 }
             }
         })();
@@ -229,6 +263,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
 
     useEffect(() => {
         authenticatedRef.current = status === "authenticated";
+        const nextOwner = status === "authenticated" ? ownerKey : "";
+        if (status !== "loading" && lastOwnerKeyRef.current !== nextOwner) {
+            refreshEpochRef.current += 1;
+            refreshAbortRef.current?.abort();
+            refreshAbortRef.current = null;
+            refreshInFlightRef.current = null;
+            refreshRequestedRef.current = false;
+        }
         if (status === "unauthenticated") {
             if (lastOwnerKeyRef.current) {
                 clearWebSessionIndexCache(lastOwnerKeyRef.current);
@@ -237,6 +279,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             sessionIndexHydratedRef.current = false;
             hasLoadedRef.current = false;
             setConversations([]);
+            setConversationsOwnerKey("");
             setIsLoading(false);
             return;
         }
@@ -244,20 +287,20 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             const cached = normalizeSessionHistoryList(readWebSessionIndexCache<Conversation>(ownerKey));
             lastOwnerKeyRef.current = ownerKey;
             sessionIndexHydratedRef.current = true;
-            if (cached.length > 0) {
-                hasLoadedRef.current = true;
-                setConversations(cached);
-                setIsLoading(false);
-            }
+            hasLoadedRef.current = cached.length > 0;
+            setConversations(cached);
+            setConversationsOwnerKey(ownerKey);
+            setIsLoading(cached.length === 0);
         }
     }, [ownerKey, status]);
 
     useEffect(() => {
-        if (status !== "authenticated" || !ownerKey || !sessionIndexHydratedRef.current) {
+        if (status !== "authenticated" || !ownerKey || conversationsOwnerKey !== ownerKey
+            || !sessionIndexHydratedRef.current) {
             return;
         }
         writeWebSessionIndexCache(ownerKey, conversations);
-    }, [conversations, ownerKey, status]);
+    }, [conversations, conversationsOwnerKey, ownerKey, status]);
 
     useEffect(() => {
         if (status !== "authenticated") {
@@ -324,7 +367,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             window.removeEventListener("focus", refreshWhenVisible);
             document.removeEventListener("visibilitychange", refreshWhenVisible);
         };
-    }, [fetchConversations, status]);
+    }, [fetchConversations, ownerKey, status]);
 
     const contextValue = useMemo(() => ({
         conversations,

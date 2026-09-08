@@ -6846,9 +6846,9 @@ class RuntimeEpisodeRunner:
                 kind="computer_use",
                 compact_summary=_preview(summary),
                 status="ready" if completed else "failed",
-                confidence="high" if completed else "medium",
+                confidence="medium",
                 consumer_hint=(
-                    "Use artifactRefs and verificationResults as the Computer Use completion proof."
+                    "Inspect the Agent goal assessment and its current observation proof in verificationResults/artifactRefs; machine constraints alone do not establish every semantic goal."
                     if completed
                     else "Inspect verificationResults and retry only the missing Computer Use acceptance items."
                 ),

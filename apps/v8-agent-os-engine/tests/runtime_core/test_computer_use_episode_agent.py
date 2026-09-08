@@ -74,11 +74,12 @@ def test_episode_agent_accepts_only_declared_workspace_outputs(tmp_path: Path) -
     with pytest.raises(RuntimeError, match="writeSet"):
         agent._resolve_browser_output("proof/other.jpg")
     verification = agent._validate_completion()
-    assert verification["passed"] is True
+    assert verification["machineConstraintsPassed"] is True
+    assert verification["passed"] is False  # File checks are not semantic goal acceptance.
     assert verification["files"][0]["magic"].startswith("FFD8FF")
 
 
-def test_episode_agent_narrows_tools_to_cleanup_then_finish(tmp_path: Path) -> None:
+def test_episode_agent_keeps_action_tools_when_only_known_cleanup_checks_remain(tmp_path: Path) -> None:
     output = tmp_path / "proof" / "result.jpg"
     output.parent.mkdir(parents=True)
     output.write_bytes(b"\xff\xd8\xffpayload")
@@ -103,9 +104,10 @@ def test_episode_agent_narrows_tools_to_cleanup_then_finish(tmp_path: Path) -> N
         {"tool": "browser_download_image", "args": {"image_index": 1}, "ok": True},
     ]
 
-    assert [item.name for item in agent._tools_for_next_round()] == ["browser_close"]
+    assert {item.name for item in agent._tools_for_next_round()} >= {"browser_close", "browser_open", "finish_task"}
     agent.browser_closed = True
-    assert [item.name for item in agent._tools_for_next_round()] == ["finish_task"]
+    assert {item.name for item in agent._tools_for_next_round()} >= {"browser_close", "browser_open", "finish_task"}
+    assert agent._validate_completion()["passed"] is False
 
 
 def test_episode_agent_recognizes_supervisor_rewritten_agent_browser_cleanup(tmp_path: Path) -> None:
@@ -213,7 +215,7 @@ def test_episode_agent_keeps_bottom_player_click_available_before_desktop_cleanu
     )
     verification = agent._validate_completion()
     assert "play_action_not_identified" not in verification["missing"]
-    assert [item.name for item in agent._tools_for_next_round()] == ["desktop_close"]
+    assert {item.name for item in agent._tools_for_next_round()} >= {"desktop_close", "desktop_click", "finish_task"}
 
 
 def test_episode_preserves_song_identity_when_compact_result_is_truncated(tmp_path: Path) -> None:
@@ -269,7 +271,7 @@ def test_episode_preserves_song_identity_when_compact_result_is_truncated(tmp_pa
 
     assert "afterWindowTitle" not in str(click["result"])
     assert agent._decode_action_result(click)["afterWindowTitle"] == "晴天 - 周杰伦"
-    assert agent._validate_completion()["passed"] is True
+    assert agent._validate_completion()["machineConstraintsPassed"] is True
 
 
 def test_episode_blocks_liked_list_during_verified_search_result_stage(
@@ -463,7 +465,7 @@ def test_episode_agent_accepts_explicit_blocked_finish_without_false_success(tmp
     assert agent._validate_completion()["passed"] is False
 
 
-def test_episode_agent_rejects_blocked_summary_after_acceptance_passes(tmp_path: Path) -> None:
+def test_episode_agent_allows_blocked_report_when_machine_checks_do_not_cover_the_goal(tmp_path: Path) -> None:
     agent = ComputerUseEpisodeAgent(
         episode_id="episode_completed",
         session_id="session_test",
@@ -478,9 +480,10 @@ def test_episode_agent_rejects_blocked_summary_after_acceptance_passes(tmp_path:
 
     result = agent._dispatch("finish_task", {"summary": "BLOCKED — only finish_task is available"})
 
-    assert result["accepted"] is False
-    assert result["verification"]["passed"] is True
-    assert agent._finished_summary is None
+    assert result["accepted"] is True
+    assert result["verification"]["machineConstraintsPassed"] is True
+    assert result["verification"]["passed"] is False
+    assert agent._finished_blocked is True
 
 
 def test_episode_desktop_input_uses_application_surface_focus_and_journals_result(
@@ -983,7 +986,7 @@ def test_episode_music_playback_requires_search_result_play_and_no_remaining_pro
         {"index": 5, "tool": "desktop_close", "args": {"terminate_process": True}, "ok": True, "result": "{}"},
     ]
 
-    assert agent._validate_completion()["passed"] is True
+    assert agent._validate_completion()["machineConstraintsPassed"] is True
     monkeypatch.setattr(agent, "_process_snapshot", lambda _names: {123})
     blocked = agent._validate_completion()
     assert blocked["passed"] is False
@@ -1037,7 +1040,7 @@ def test_episode_music_accepts_verified_recovery_path_after_early_wrong_play(tmp
     ]
 
     verification = agent._validate_completion()
-    assert verification["passed"] is True
+    assert verification["machineConstraintsPassed"] is True
     assert "desktop_action_sequence_invalid" not in verification["missing"]
 
 

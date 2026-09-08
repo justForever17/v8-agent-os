@@ -257,6 +257,15 @@ def _qqmusic_shortcut_replay_evidence(*, run_id: str, actions: list[dict[str, An
     }
 
 
+def _bind_direct_probe(*, session_id: str, run_id: str, workspace: Path, binding: dict[str, str]) -> None:
+    from runtimes.memory.scope_resolution import scope_resolution_service
+
+    scope_resolution_service.resolve(
+        session_id=session_id, run_id=run_id, user_id="local-owner", scope_mode="explicit",
+        workspace_path=str(workspace), workspace_id=binding["workspaceId"], project_id=binding["projectId"],
+    )
+
+
 def _run_direct_case(
     *,
     runtime: Any,
@@ -265,28 +274,61 @@ def _run_direct_case(
     binding: dict[str, str],
     case_id: str,
     stamp: str,
+    db: Any,
+    custom_brief: dict[str, Any] | None = None,
+    max_rounds: int = 30,
 ) -> dict[str, Any]:
     if case_id == "metaso":
         output_relative = "computer-use-acceptance/runtime-metaso-image.jpg"
         brief = _metaso_brief(stamp, output_relative)
-    else:
+    elif case_id == "qqmusic":
         output_relative = ""
         brief = _qqmusic_brief(stamp)
+    elif case_id == "custom" and custom_brief is not None:
+        output_relative = ""
+        brief = custom_brief
+    else:
+        raise ValueError("unsupported_direct_case_or_missing_custom_brief")
     run_id = f"run-computer-use-direct-{case_id}-{stamp}"
-    result = execute_task(
-        episode_id=f"episode_direct_{case_id}_{stamp}",
-        session_id=f"computer-use-direct-{case_id}-{stamp}",
-        run_id=run_id,
-        user_id="local-owner",
-        project_id=binding["projectId"],
-        workspace_id=binding["workspaceId"],
-        workspace_path=str(workspace),
-        task_brief=brief,
-        max_rounds=30,
+    session_id = f"computer-use-direct-{case_id}-{stamp}"
+    episode_id = f"episode_direct_{case_id}_{stamp}"
+    if db.get_session(session_id) or db.get_run_record(run_id):
+        raise ValueError("direct_probe_identity_already_exists")
+    metadata = {"runtime": "computer_use", "internalProbe": True,
+                "hiddenFromHistory": True, "ephemeral": True, "case": case_id}
+    db.create_or_update_session(session_id, f"Computer Use direct probe: {case_id}",
+                                user_id="local-owner", metadata=metadata)
+    db.create_run_record(run_id, session_id, user_id="local-owner", metadata=metadata)
+    try:
+        _bind_direct_probe(session_id=session_id, run_id=run_id, workspace=workspace, binding=binding)
+        from erc.runtime_context import bind_runtime_context
+
+        with bind_runtime_context(runtime_kind="computer_use", run_id=run_id, session_id=session_id,
+                                  user_id="local-owner", workspace_path=str(workspace)):
+            result = execute_task(
+                episode_id=episode_id,
+                session_id=session_id,
+                run_id=run_id,
+                user_id="local-owner",
+                project_id=binding["projectId"],
+                workspace_id=binding["workspaceId"],
+                workspace_path=str(workspace),
+                task_brief=brief,
+                max_rounds=max_rounds,
+            )
+    except Exception as exc:
+        db.update_run_record(run_id, status="failed", metadata={**metadata, "failureType": type(exc).__name__})
+        raise
+    db.update_run_record(
+        run_id,
+        status="completed" if result.get("ok") and result.get("status") == "completed"
+        and bool((result.get("verification") or {}).get("passed")) else "failed",
+        metadata={**metadata, "computerUseStatus": result.get("status")},
     )
     evidence = _image_evidence(workspace / output_relative) if output_relative else None
     process_state = _qqmusic_processes() if case_id == "qqmusic" else []
-    passed = bool(result.get("ok")) and bool((result.get("verification") or {}).get("passed"))
+    passed = (bool(result.get("ok")) and result.get("status") == "completed"
+              and bool((result.get("verification") or {}).get("passed")))
     if evidence is not None:
         passed = passed and bool(evidence.get("ok"))
     if case_id == "qqmusic":
@@ -300,6 +342,9 @@ def _run_direct_case(
     return {
         "case": case_id,
         "mode": "direct_runtime",
+        "sessionId": session_id,
+        "runId": run_id,
+        "episodeId": episode_id,
         "passed": passed,
         "status": result.get("status"),
         "summary": result.get("summary"),
@@ -307,7 +352,7 @@ def _run_direct_case(
         "artifactRefs": result.get("artifactRefs"),
         "proofRefs": result.get("proofRefs"),
         "actionCount": len(result.get("actions") or []),
-        "actionJournal": str(workspace / ".v8-agent-os" / "artifacts" / "computer-use-episode" / f"episode_direct_{case_id}_{stamp}" / "actions.jsonl"),
+        "actionJournal": str(workspace / ".v8-agent-os" / "artifacts" / "computer-use-episode" / episode_id / "actions.jsonl"),
         "imageEvidence": evidence,
         "remainingQQMusic": process_state,
         "shortcutReplayEvidence": shortcut_replay,
@@ -326,8 +371,10 @@ def _submit_supervisor_case(
     if case_id == "metaso":
         output_relative = "computer-use-acceptance/supervisor-metaso-image.jpg"
         brief = _metaso_brief(stamp, output_relative)
-    else:
+    elif case_id == "qqmusic":
         brief = _qqmusic_brief(stamp)
+    else:
+        raise ValueError("unsupported_supervisor_case")
     prompt = (
         "这是明确要求通过桌面操作 runtime 执行的真实 live 验收。你是 Supervisor："
         "请根据以下完整合同调用 runtime_broker 路由 computer_use episode，等待真实 handoff 后再验收；"
@@ -483,11 +530,28 @@ def _wait_supervisor_case(
     }
 
 
+def _load_custom_task_brief(path: str) -> dict[str, Any]:
+    brief = json.loads(Path(path).expanduser().read_text(encoding="utf-8-sig"))
+    if not isinstance(brief, dict) or any(
+        not isinstance(brief.get(key), str) or not brief[key].strip() for key in ("taskBriefId", "goal")
+    ):
+        raise ValueError("custom_task_brief_requires_taskBriefId_and_goal")
+    for key in ("writeSet", "acceptanceContract"):
+        value = brief.get(key)
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError(f"custom_task_brief_requires_{key}_string_list")
+    if not brief["acceptanceContract"]:
+        raise ValueError("custom_task_brief_requires_explicit_acceptance")
+    return brief
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="V8OS Computer Use direct runtime and Supervisor live acceptance.")
     parser.add_argument("--live", action="store_true", help="Required: this harness performs real desktop side effects.")
     parser.add_argument("--phase", choices=["direct", "supervisor", "all"], default="all")
-    parser.add_argument("--case", choices=["metaso", "qqmusic", "all"], default="all")
+    parser.add_argument("--case", choices=["metaso", "qqmusic", "custom", "all"], default="all")
+    parser.add_argument("--task-brief-file", default="", help="Explicit JSON TaskBrief for --phase direct --case custom only.")
+    parser.add_argument("--max-rounds", type=int, default=30)
     parser.add_argument("--workspace", required=True, help="Explicit trusted workspace used by the live side effects.")
     parser.add_argument("--engine-url", default=DEFAULT_ENGINE_URL)
     parser.add_argument("--max-wait", type=float, default=900.0)
@@ -497,6 +561,19 @@ def main() -> int:
     if not args.live:
         print("Refusing to run without --live; this harness controls real browser and desktop applications.")
         return 2
+    if args.max_rounds <= 0:
+        parser.error("--max-rounds must be positive")
+    if args.case == "custom":
+        if args.phase != "direct" or not args.task_brief_file or args.cleanup_test_processes:
+            parser.error("custom requires --phase direct --task-brief-file and forbids --cleanup-test-processes")
+        try:
+            custom_brief = _load_custom_task_brief(args.task_brief_file)
+        except (OSError, ValueError) as exc:
+            parser.error(f"invalid custom TaskBrief: {type(exc).__name__}")
+    else:
+        if args.task_brief_file:
+            parser.error("--task-brief-file requires --case custom")
+        custom_brief = None
 
     import sys
 
@@ -520,7 +597,8 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     cases = ["metaso", "qqmusic"] if args.case == "all" else [args.case]
     results: list[dict[str, Any]] = []
-    _progress("cleaning prior Agent Browser and QQMusic processes")
+    if args.cleanup_test_processes:
+        _progress("cleaning prior Agent Browser and QQMusic processes")
     initial_cleanup = _clean_test_processes(computer_use_runtime) if args.cleanup_test_processes else {}
     _progress(f"initial cleanup complete: remainingQQMusic={len(initial_cleanup.get('remainingQQMusic') or [])}")
 
@@ -540,6 +618,9 @@ def main() -> int:
                             binding=binding,
                             case_id=case_id,
                             stamp=stamp,
+                            db=db,
+                            custom_brief=custom_brief,
+                            max_rounds=args.max_rounds,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 - live audit must preserve the real failure.
@@ -584,7 +665,8 @@ def main() -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                     })
     finally:
-        _progress("performing final process cleanup")
+        if args.cleanup_test_processes:
+            _progress("performing final process cleanup")
         final_cleanup = _clean_test_processes(computer_use_runtime) if args.cleanup_test_processes else {}
 
     report_root = (

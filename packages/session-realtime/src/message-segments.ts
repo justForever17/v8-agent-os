@@ -48,6 +48,43 @@ function nodeKey(node: TimelineSegmentNode, index: number) {
   return String(node.id || `node-${index}`).trim() || `node-${index}`;
 }
 
+/** Present contiguous transport fragments as one Markdown document, without
+ * rewriting the durable nodes or crossing a model/tool/actor boundary. */
+type NarrativeFragment = {
+  kind?: string; role?: unknown; content?: unknown; ownerStreamKey?: unknown;
+  ownerRuntimeId?: unknown; ownerAgentKind?: unknown; ownerAgentId?: unknown;
+  displayInMessage?: unknown; runId?: unknown; finalized?: boolean; partial?: boolean;
+};
+
+export function coalesceNarrativeFragments<TNode extends NarrativeFragment>(nodes: TNode[]): TNode[] {
+  const result: TNode[] = [];
+  let previousSource: TNode | undefined;
+  const fragment = (node: NarrativeFragment | undefined) => {
+    if (node?.kind !== "narrative" || node.role !== "assistant") return null;
+    return /^(.*):segment:(\d+)$/.exec(String(node.ownerStreamKey || ""));
+  };
+  for (const node of nodes) {
+    const current = fragment(node);
+    const previous = fragment(previousSource);
+    const sameOwner = previousSource && (["ownerRuntimeId", "ownerAgentKind", "ownerAgentId", "displayInMessage", "runId"] as const)
+      .every((key) => previousSource?.[key] === node[key]);
+    if (current && previous && current[1] === previous[1]
+        && Number(current[2]) === Number(previous[2]) + 1 && sameOwner
+        && typeof node.content === "string" && typeof result[result.length - 1]?.content === "string") {
+      const last = result[result.length - 1];
+      result[result.length - 1] = {
+        ...last, content: String(last.content) + node.content,
+        finalized: last.finalized === true && node.finalized === true,
+        partial: last.partial === true || node.partial === true,
+      };
+    } else {
+      result.push(node);
+    }
+    previousSource = node;
+  }
+  return result;
+}
+
 export function isTraceTimelineNode(node: TimelineSegmentNode | null | undefined) {
   const toolCallId = String(node?.toolCallId || "").trim();
   if (toolCallId.startsWith(ATTACHMENT_PREFLIGHT_CALL_PREFIX)) {
@@ -76,6 +113,7 @@ export function buildMessageTimelineSegments<TNode extends TimelineSegmentNode>(
   if (!Array.isArray(nodes) || nodes.length === 0) {
     return [];
   }
+  nodes = coalesceNarrativeFragments(nodes);
 
   const segments: MessageTimelineSegment<TNode>[] = [];
   let traceBuffer: TNode[] = [];

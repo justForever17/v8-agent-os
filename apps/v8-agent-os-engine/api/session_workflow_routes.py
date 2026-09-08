@@ -564,8 +564,14 @@ def _overlay_active_run_status(payload: dict) -> dict:
         if current is None or str(run_record.get("started_at") or "") >= str(current.get("started_at") or ""):
             active_by_session[session_id] = run_record
 
-    if not active_by_session:
-        return payload
+    # A fast run can start and finish between index reads, or resume from a
+    # cached failure. Read compact latest truth by session, not the cached ID.
+    active_statuses = {"running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"}
+    session_ids = [
+        str(record.get("sessionId") or record.get("id") or "").strip()
+        for record in payload["sessions"] if isinstance(record, dict)
+    ]
+    latest_runs = {record["session_id"]: record for record in db.get_latest_run_status_records(session_ids)} if session_ids else {}
 
     sessions: list[dict] = []
     for record in payload.get("sessions") or []:
@@ -574,12 +580,16 @@ def _overlay_active_run_status(payload: dict) -> dict:
         session_id = str(record.get("sessionId") or record.get("id") or "").strip()
         run_record = active_by_session.get(session_id)
         if not run_record:
+            run_record = latest_runs.get(session_id)
+        if not run_record:
             sessions.append(record)
             continue
 
         run_status = str(run_record.get("status") or "running").strip().lower() or "running"
         run_id = str(run_record.get("id") or "").strip() or None
         run_started_at = run_record.get("started_at")
+        run_finished_at = run_record.get("finished_at")
+        is_terminal = run_status not in active_statuses
         workflow_summary = dict(record.get("workflowSummary") or {})
         workflow_summary["workflowStatus"] = run_status
         sessions.append(
@@ -587,13 +597,15 @@ def _overlay_active_run_status(payload: dict) -> dict:
                 **record,
                 "status": run_status,
                 "workflowStatus": run_status,
+                "stepStatus": run_status,
                 "currentRunId": run_id,
                 "lastRunId": run_id,
                 "startedAt": run_started_at or record.get("startedAt"),
-                "endedAt": None,
-                "lastActivityAt": latest_utc_iso(record.get("lastActivityAt"), run_started_at),
+                "endedAt": run_finished_at if is_terminal else None,
+                "lastActivityAt": latest_utc_iso(record.get("lastActivityAt"), run_finished_at or run_started_at),
                 "recoverable": run_status in {"waiting_input", "waiting_approval", "waiting_external_tool", "paused"},
-                "hasPendingApproval": bool(record.get("hasPendingApproval")) or run_status == "waiting_approval",
+                "hasPendingApproval": not is_terminal and (bool(record.get("hasPendingApproval")) or run_status == "waiting_approval"),
+                "pendingApprovalCount": 0 if is_terminal else record.get("pendingApprovalCount", 0),
                 "workflowSummary": workflow_summary,
             }
         )

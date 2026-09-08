@@ -1,4 +1,5 @@
 import { UiTimelineNode, UiExecutionNode } from "@/store/chat-types";
+import { coalesceNarrativeFragments } from "@v8/session-realtime/message-segments";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value)
@@ -179,7 +180,7 @@ export function groupTimelineNodes(
         traceBuffer = [];
     };
 
-    nodes.forEach((node, index) => {
+    coalesceNarrativeFragments(nodes).forEach((node, index) => {
         if (isCollapsibleTraceNode(node)) {
             traceBuffer.push(node);
         } else {

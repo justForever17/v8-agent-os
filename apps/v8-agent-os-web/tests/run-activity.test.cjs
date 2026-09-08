@@ -40,6 +40,83 @@ const identityLedgerCompiled = ts.transpileModule(fs.readFileSync(identityLedger
 const identityLedgerModule = { exports: {} };
 new Function("require", "module", "exports", identityLedgerCompiled)(require, identityLedgerModule, identityLedgerModule.exports);
 const { BoundedRuntimeEventIdentityLedger } = identityLedgerModule.exports;
+const detectorModule = { exports: {} };
+new Function("module", "exports", ts.transpileModule(fs.readFileSync(path.join(root, "src/lib/chat/content-detector.ts"), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(detectorModule, detectorModule.exports);
+
+test("Web parses provider fragments as one code block followed by ordinary Markdown", () => {
+  const chunks = ["## Result\n\n```text\n", "approved", "\n```\n\n- Path: `", "note.txt`\n- Size: **8**"];
+  const nodes = chunks.map((content, index) => ({
+    id: `fragment-${index}`, kind: "narrative", role: "assistant", content,
+    ownerStreamKey: `chat:supervisor:text:model:segment:${index + 1}`, finalized: true,
+  }));
+  const segments = timelineGrouperModule.exports.groupTimelineNodes(nodes, new Map());
+  assert.equal(segments.length, 1);
+  const blocks = detectorModule.exports.parseContentToBlocks(segments[0].node.content, false, 0, false);
+  assert.deepEqual(blocks.map(block => block.type), ["text", "code", "text"]);
+  assert.equal(blocks[1].content, "approved\n");
+  assert.equal(blocks[2].content, "\n\n- Path: `note.txt`\n- Size: **8**");
+});
+
+function runActualChatMessageTimeline(nodes) {
+  const sourceFile = ts.createSourceFile("ChatMessage.tsx", chatMessageSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const helperNames = new Set(["isExecutionNode", "hasToolCallId", "getExecutionTopic", "getExecutionToolName",
+    "isMicroStageSupersededTimelineNode", "isRenderableTimelineNode"]);
+  const helpers = sourceFile.statements.filter(node => ts.isFunctionDeclaration(node) && helperNames.has(node.name?.text));
+  assert.equal(helpers.length, helperNames.size);
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(sourceFile) === "timelineSegments") {
+      callback = node.initializer.arguments[0];
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  assert.ok(callback, "test must execute the actual caller's memo including visibility filtering");
+  const compiledCaller = ts.transpileModule([
+    ...helpers.map(node => node.getText(sourceFile)),
+    `const evaluate = ${callback.getText(sourceFile)}; exports.evaluate = evaluate;`,
+  ].join("\n"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText;
+  const target = {exports: {}};
+  new Function("exports", "groupTimelineNodes", "resultNodesByToolCallId", "message", "toolCallIds",
+    "isLoading", "isLast", "microStageVisible", "microStageAnchorIndex", "messageBoundMicroStagePlacement", compiledCaller)(
+    target.exports, timelineGrouperModule.exports.groupTimelineNodes, new Map(), {id: "message", nodes}, new Set(),
+    false, true, false, -1, undefined,
+  );
+  return target.exports.evaluate();
+}
+
+test("ChatMessage caller preserves whitespace-only transport fragments before Markdown filtering", () => {
+  const chunks = ["第一段", "\n\n", "```text", "\n", "approved", "\n", "```", "\n\n", "第二段"];
+  const nodes = chunks.map((content, index) => ({
+    id: `fragment-${index}`, kind: "narrative", role: "assistant", content, runId: "run-current",
+    ownerStreamKey: `chat:supervisor:text:model:segment:${index + 1}`, finalized: true,
+  }));
+  const result = runActualChatMessageTimeline(nodes);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].node.content, chunks.join(""));
+  const blocks = detectorModule.exports.parseContentToBlocks(result[0].node.content, false, 0, false);
+  assert.deepEqual(blocks.map(block => block.type), ["text", "code", "text"]);
+  assert.equal(blocks[1].content, "approved\n");
+});
+
+test("ChatMessage keeps blank-only messages hidden and does not merge across unknown, run or tool boundaries", () => {
+  const fragment = (content, seq, extra = {}) => ({id: `f-${seq}`, kind: "narrative", role: "assistant", content,
+    runId: "run-current", ownerStreamKey: `chat:supervisor:text:model:segment:${seq}`, ...extra});
+  assert.deepEqual(runActualChatMessageTimeline([fragment("\n", 1), fragment("\n", 2)]), []);
+  assert.deepEqual(runActualChatMessageTimeline([{id: "empty", kind: "narrative", role: "assistant", content: "\n"}]), []);
+  const splitByUnknown = runActualChatMessageTimeline([
+    fragment("one", 1), fragment("\n\n", 2, {ownerStreamKey: undefined}), fragment("two", 3),
+  ]);
+  assert.deepEqual(splitByUnknown.map(segment => segment.node.content), ["one", "two"]);
+  const splitByRun = runActualChatMessageTimeline([fragment("one", 1), fragment("two", 2, {runId: "run-other"})]);
+  assert.equal(splitByRun.length, 2);
+  const splitByTool = runActualChatMessageTimeline([fragment("one", 1),
+    {id: "tool", kind: "execution", executionType: "tool_call", toolName: "read_native_file", toolCallId: "call"},
+    fragment("two", 2)]);
+  assert.deepEqual(splitByTool.map(segment => segment.kind), ["node", "trace_group", "node"]);
+});
 const {
   deriveComposerRunActivity,
   deriveInterruptibleRunId,

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const ts = require("typescript");
 
 const {
   deriveAuthoritativeRunControl,
@@ -25,6 +26,15 @@ const runtimeStageSource = fs.readFileSync(
   path.join(phoneRoot, "src", "lib", "runtime-stage.ts"),
   "utf8",
 );
+const runtimeStageModule = { exports: {} };
+new Function("require", "module", "exports", ts.transpileModule(runtimeStageSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(
+  (name) => name === "@/src/lib/locale" ? { createTranslator: () => (key) => key } : require(name),
+  runtimeStageModule,
+  runtimeStageModule.exports,
+);
+const { buildPhoneRuntimeStageModel } = runtimeStageModule.exports;
 const contentDispatcherSource = fs.readFileSync(
   path.join(phoneRoot, "src", "components", "chat", "ContentDispatcher.tsx"),
   "utf8",
@@ -109,7 +119,22 @@ test("Phone composer and runtime stage share the complete active and terminal vo
   assert.equal(isTerminalRunStatus("degraded"), true);
   assert.match(chatScreenSource, /isActiveRunStatus\(activeConversationStatus\)/);
   assert.match(chatScreenSource, /isTerminalRunStatus\(activeConversationStatus\)/);
-  assert.match(runtimeStageSource, /const isBusy = isActiveRunStatus\(runtimeStatus\)/);
+  for (const status of ["running", "waiting_external_tool"]) {
+    const model = buildPhoneRuntimeStageModel([], { ownerRuntime: "engineering", status });
+    assert.equal(model.items.find((item) => item.id === "engineering")?.status, "active", status);
+  }
+  for (const status of ["paused", "interrupted", "cancelled", "completed", "degraded"]) {
+    const model = buildPhoneRuntimeStageModel([], { ownerRuntime: "engineering", status });
+    assert.equal(model.items.some((item) => item.status === "active"), false, status);
+  }
+  const paused = deriveAuthoritativeRunControl({
+    authoritativeStatus: "paused",
+    activeRunId: "run-phone-paused",
+    controlCanResume: true,
+  });
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.runId, "run-phone-paused");
+  assert.equal(paused.canResume, true);
 });
 
 test("Phone command surfaces stop polling every governed terminal state", () => {

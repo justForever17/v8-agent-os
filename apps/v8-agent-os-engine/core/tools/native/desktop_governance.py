@@ -204,6 +204,16 @@ def _desktop_route_gate(
         return True, None, None
 
     current_route_context = dict(state.get("current_route_context") or {})
+    if tool_name in _DESKTOP_ROUTE_COMPUTER_USE_MUTATING_TOOLS:
+        from core.runtime_tool_access import runtime_access_for_actor
+        from core.actor_identity import resolve_collaboration_actor
+        from erc.runtime_context import get_runtime_context
+
+        # A direct tool grant is an execution choice. The per-action Safety,
+        # app/window binding and verification below the tool remain mandatory.
+        actor = resolve_collaboration_actor(route_context=current_route_context, runtime_context=get_runtime_context())
+        if "computer_use.direct" in runtime_access_for_actor(actor=actor.role, route_context=current_route_context):
+            return True, None, {"recommendedMode": "direct", "executionReadyMode": "direct_mode"}
     desktop_route = dict(current_route_context.get("desktopRoute") or {})
     if not desktop_route:
         return (

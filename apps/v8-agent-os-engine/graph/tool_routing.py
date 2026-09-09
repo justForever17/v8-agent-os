@@ -753,23 +753,12 @@ def _supervisor_direct_scope_approved(run_id: str, operation_fingerprint: str) -
 
 def _supervisor_direct_scope_requires_engineering_route(state_mapping: dict[str, Any]) -> bool:
     route_context = dict(state_mapping.get("current_route_context") or {})
-    task_shape = dict(state_mapping.get("task_shape_hint") or route_context.get("taskShapeHint") or {})
-    boundary = task_shape.get("boundaryDecision") if isinstance(task_shape.get("boundaryDecision"), dict) else {}
-    primary = str(task_shape.get("primaryTaskShape") or "").strip()
-    secondary = {
-        str(item or "").strip()
-        for item in list(task_shape.get("secondaryTaskShapes") or [])
-        if str(item or "").strip()
-    }
-    engineering_trigger = dict(route_context.get("engineeringTriggerDecision") or {})
+    # Topic/size hints advise the Supervisor; only an owned execution contract
+    # or explicit mode requires an Engineering episode before other execution.
     return bool(
         route_context.get("explicitEngineeringRequested")
         or route_context.get("engineeringRequired")
         or str(route_context.get("engineeringMode") or "").strip() == "force"
-        or str(boundary.get("primaryRuntime") or "").strip() == "engineering"
-        or primary == "project_coding"
-        or ("research" in secondary and primary in {"creative_media", "automation"})
-        or bool(engineering_trigger.get("active"))
     )
 
 
@@ -813,7 +802,7 @@ def _supervisor_direct_scope_hard_block_message(
     tool_name = str(tool_call.get("name") or "").strip()
     if not tool_name or tool_name in SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS:
         return None
-    is_gated_tool = tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_", "rpa_"))
+    is_gated_tool = tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_", "rpa_")) or tool_name == "browser_broker"
     if not is_gated_tool:
         return None
 
@@ -847,6 +836,10 @@ def _supervisor_direct_scope_hard_block_message(
                 "recommendedNextAction": "synthesize_existing_evidence_or_ask_user",
             },
         )
+    from core.runtime_tool_access import READONLY_CAPABILITY_TOOL_NAMES
+
+    if tool_name in READONLY_CAPABILITY_TOOL_NAMES:
+        return None
     from erc.runtime_context import get_runtime_context
 
     runtime_context = get_runtime_context()
@@ -902,21 +895,7 @@ def _supervisor_direct_scope_hard_block_message(
             hard_reasons.append("planning_mutation_not_allowed")
         else:
             hard_reasons.append("planning_execution_not_allowed")
-    boundary = _task_boundary_from_state(state_mapping)
-    forbidden_routes = {
-        str(item or "").strip()
-        for item in list(boundary.get("forbiddenRoutes") or [])
-        if str(item or "").strip()
-    }
-    boundary_primary = str(boundary.get("primaryRuntime") or "").strip()
-    if tool_name.startswith("computer_use_") and "computer_use_for_literal_terminal_only" in forbidden_routes:
-        hard_reasons.append("task_boundary_route_correction")
-    if (
-        tool_name.startswith("creative_media_")
-        and boundary_primary == "engineering"
-        and "creative_media_as_primary_unless_provider_named" in forbidden_routes
-    ):
-        hard_reasons.append("task_boundary_route_correction")
+    # Task-shape recommendations are not tool permission or route authority.
     if _spec_mode_active(state_mapping) and _spec_runtime_execution_allowed(state_mapping):
         hard_reasons.append("spec_runtime_execution_requires_runtime_episode")
     if bool(runtime_dispatch_status.get("blocked")):

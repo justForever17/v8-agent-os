@@ -119,7 +119,7 @@
       "latencyTier": "fast",
       "requiresProxy": false,
       "outputFormats": ["search_results"],
-      "implemented": false,
+      "implemented": true,
       "enabledByDefault": true,
       "credentialHelp": {
         "label": "Get Bocha API key",

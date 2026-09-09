@@ -40,6 +40,7 @@ from core.runtime_tool_access import (
     runtime_kind_available,
     runtime_tool_names_for_groups,
     runtime_tool_groups_catalog,
+    runtime_tool_guidance,
 )
 from core.runtime_route_contract import runtime_route_parameter_guidance
 from core.runtime_continuation import (
@@ -830,6 +831,7 @@ def _runtime_broker_payload(
     route_brief_quality: dict[str, Any] | None = None,
     detail_ref: str | None = None,
     parameter_guidance: dict[str, Any] | None = None,
+    capability_guidance: str = "",
 ) -> str:
     normalized_detail = str(detail_level or "summary").strip().lower()
     expanded_detail = normalized_detail in {"catalog", "detail", "full"}
@@ -844,7 +846,7 @@ def _runtime_broker_payload(
             }
             for item in group_items
             if isinstance(item, dict)
-        ][:6]
+        ]
     else:
         original_group_count = len(group_items)
     payload = {
@@ -896,6 +898,8 @@ def _runtime_broker_payload(
         payload["routeBriefQuality"] = dict(route_brief_quality)
     if parameter_guidance:
         payload["parameterGuidance"] = dict(parameter_guidance)
+    if capability_guidance:
+        payload["capabilityGuidance"] = capability_guidance
     if not expanded_detail and groups:
         omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
         payload["omitted"] = {
@@ -4379,7 +4383,7 @@ def _emit_runtime_episode_event(topic: str, payload: dict[str, Any]) -> None:
 def runtime_broker(
     mode: Annotated[
         str,
-        "Operation. Use route for execution, list for the compact catalog, and grant/revoke only for explicit run-scoped tool groups.",
+        "Operation: list discovers capability groups; grant loads their tools for your direct execution in this run; revoke unloads them. Route starts a separate managed execution episode only when needed.",
     ] = "list",
     runtime_kind: Annotated[
         Optional[str],
@@ -4453,7 +4457,13 @@ def runtime_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """L3 managed runtime entry: route specialist lifecycle/recovery/proof and receive a typed handoff; never use it as a web reader or polling API.
+    """Discover/load capabilities for direct work, or route a separate managed execution and receive its typed handoff.
+
+    Use mode='list' to discover groups, then mode='grant' with tool_group for your own execution (for example,
+    browser.control for web page DOM/forms, computer_use.direct for native applications, or creative_media.core for media). A grant loads tools and guidance; it does not start another Agent,
+    approve side effects or satisfy a user request for delegation. Use revoke to unload. Keep requested delegation
+    count, roles and independence; never silently replace the user's requested workers with your own work.
+    Runtime internals keep execution/proof even on the direct path. This broker is not a web reader or polling API.
 
     `mode='route'` uses root routeKind/routeReason fields. Research submits parallel primitive arrays
     researchBriefIds/researchBriefGoals; other runtimes submit taskBriefs. The Engine restores and strictly validates
@@ -5549,6 +5559,7 @@ def runtime_broker(
                             error="unknown_tool_group" if rejected else None,
                             detail_level=detail_level,
                             changed=grants,
+                            capability_guidance=runtime_tool_guidance(requested_groups),
                             next_action="Next step can use the granted tools.",
                         ),
                         tool_call_id=tool_call_id,
@@ -5559,9 +5570,19 @@ def runtime_broker(
         )
 
     if normalized_mode == "revoke":
+        rejected = [str(item) for item in raw_requested_groups if not normalize_runtime_access([item], runtime_kind=runtime_kind)]
+        if rejected:
+            return Command(goto="supervisor", update={
+                "messages": [ToolMessage(content=_runtime_broker_payload(
+                    mode=normalized_mode, ok=False, summary="Unknown tool groups; no grants were changed.",
+                    grants=[{"group": group} for group in runtime_access_from_route_context(route_context)],
+                    rejected=rejected, error="unknown_tool_group", detail_level=detail_level,
+                ), tool_call_id=tool_call_id)],
+                "current_route_context": route_context,
+            })
         updated_context, grants = revoke_runtime_tool_groups(
             route_context,
-            requested_groups if requested_groups else None,
+            requested_groups if tool_group is not None or tool_groups is not None else None,
         )
         return Command(
             goto="supervisor",

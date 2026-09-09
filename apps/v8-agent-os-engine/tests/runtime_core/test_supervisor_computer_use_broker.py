@@ -71,7 +71,7 @@ class _Tool:
 
 
 class SupervisorComputerUseBrokerTests(unittest.TestCase):
-    def test_supervisor_computer_use_surface_is_route_first_and_brokered(self):
+    def test_supervisor_computer_use_discovery_does_not_eagerly_load_actions(self):
         selected = select_supervisor_native_tools(
             filtered_native_tools=[
                 _Tool("computer_use_list_apps"),
@@ -101,6 +101,7 @@ class SupervisorComputerUseBrokerTests(unittest.TestCase):
         self.assertEqual(
             [tool.name for tool in selected],
             [
+                "computer_use_list_apps",
                 "computer_use_desktop_capabilities",
                 "computer_use_observe_scene",
                 "computer_use_execute_task",

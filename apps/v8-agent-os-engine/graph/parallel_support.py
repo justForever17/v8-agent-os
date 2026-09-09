@@ -1043,6 +1043,25 @@ def _available_tool_surface(agent_data: dict[str, Any] | None) -> list[str]:
     return sorted(names)
 
 
+def _reported_bound_tool_surface(messages: list[Any], branch: dict[str, Any]) -> list[str]:
+    """Read the worker's final binding receipt, never its pre-policy tool pool."""
+    for message in reversed(messages):
+        metadata = dict(getattr(message, "additional_kwargs", {}) or {})
+        if metadata.get("v8_governance_type") != "delegation_result":
+            continue
+        if str(metadata.get("v8_owner_agent_id") or "") != str(branch.get("agentId") or ""):
+            continue
+        if str(metadata.get("v8_owner_delegation_id") or "") != str(branch.get("delegationId") or ""):
+            continue
+        surface = metadata.get("v8_tool_surface")
+        if isinstance(surface, list):
+            return sorted({name for item in surface if isinstance(item, str)
+                           and (name := _normalized_tool_surface_name(item))})
+    # Old/custom runners may not report the binding. Their candidate pool is
+    # not evidence that any tool was actually exposed to this task.
+    return []
+
+
 def _required_artifact_write_status(
     *,
     branch: dict[str, Any],
@@ -3735,7 +3754,7 @@ async def _run_parallel_agent_branch(
         "todoDeltaCount": len(delta_todos),
         "toolMode": agent_data.get("tool_mode"),
         "toolsUsed": _extract_tool_names(delta_messages),
-        "availableTools": _available_tool_surface(agent_data),
+        "availableTools": _reported_bound_tool_surface(delta_messages, branch),
         **(
             {
                 "requiredTool": artifact_status.get("requiredTool"),

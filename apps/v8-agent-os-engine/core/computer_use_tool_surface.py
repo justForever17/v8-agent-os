@@ -3,7 +3,7 @@ from __future__ import annotations
 from core.system_tools.baseline import is_baseline_system_tool_name
 
 DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
-    "creative_media_capabilities",
+    "browser_broker",
     "creative_media_plan",
     "creative_media_assets",
     "creative_media_jobs",
@@ -23,7 +23,6 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
     "computer_use_hotkey",
     "computer_use_input_text",
     "computer_use_launch_app",
-    "computer_use_list_apps",
     "computer_use_list_muscle_memories",
     "computer_use_list_primitives",
     "computer_use_list_windows",
@@ -68,6 +67,7 @@ DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
 }
 
 SUPERVISOR_HIGH_LEVEL_COMPUTER_USE_TOOLS = {
+    "computer_use_list_apps",
     "computer_use_desktop_capabilities",
     "computer_use_observe_scene",
     "computer_use_execute_task",

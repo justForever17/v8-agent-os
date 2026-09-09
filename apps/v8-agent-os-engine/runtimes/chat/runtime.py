@@ -6022,7 +6022,15 @@ class ChatRuntime:
                 owner_runtime_id = normalized_runtime_kind
                 owner_kind = "runtime"
 
-        if normalized_tool:
+        from core.runtime_tool_access import READONLY_CAPABILITY_TOOL_NAMES, RUNTIME_TOOL_GROUPS
+        direct_capability_tools = READONLY_CAPABILITY_TOOL_NAMES | {
+            name for group in ("computer_use.direct", "browser.control", "creative_media.core")
+            for name in RUNTIME_TOOL_GROUPS[group]["toolNames"]
+        }
+        direct_supervisor_action = (
+            owner_kind == "supervisor" and owner_runtime_id == "chat" and normalized_tool in direct_capability_tools
+        )
+        if normalized_tool and not direct_supervisor_action:
             if normalized_tool == "research_broker" or normalized_tool.startswith("research_"):
                 if owner_kind != "subagent":
                     owner_runtime_id = "research"
@@ -8785,6 +8793,12 @@ class ChatRuntime:
         data = event.get("data", {})
         metadata = event.get("metadata") or {}
 
+        if kind in {"on_tool_start", "on_tool_end", "on_tool_error"} and metadata.get("v8_internal_facade_handler"):
+            # The public facade has one invocation and carries the complete result
+            # (including failures/detailRef). Its internal implementation is not
+            # a second Agent action or a second UI lifecycle.
+            return emitted_events
+
         if kind == "on_tool_error":
             # LangChain emits error instead of end. Reuse the same terminal
             # projection/cleanup so a failed call cannot suppress every later
@@ -11178,17 +11192,52 @@ class ChatRuntime:
             normalized["userAction"] = "命令或流式执行后端异常，当前运行已失败并完成清理；请修复后端后重新发起任务。"
         if isinstance(exc, GraphRecursionError):
             normalized["message"] = (
-                "长任务已接近图执行框架的安全边界，当前 checkpoint 已保留，"
-                "系统不会通过重开一轮来重复消耗工具调用。"
+                "当前任务尚未完成，已在本段执行的安全步数边界暂停；现有进展保留，"
+                "最后提出但尚未执行的工具请求不算已完成。"
             )
             normalized["failureClass"] = "graph_progress_ceiling"
             normalized["code"] = "graph_progress_ceiling"
             normalized["recoverable"] = True
             normalized["retryable"] = True
             normalized["userAction"] = (
-                "可从已保存状态继续，并缩小下一步范围；复杂长任务应转入 Engineering/delegation，"
-                "不要原样重放整轮。"
+                "可手动继续并缩小下一步范围；先核对现有结果与仍在运行的任务，不要原样重放整轮。"
             )
+            if chat_run is not None:
+                recovery = {
+                    "failureClass": "graph_progress_ceiling", "recoverable": True,
+                    "checkpointPreserved": True, "automaticGraphRestart": False,
+                    "executionProgressGuard": dict(getattr(exc, "execution_progress_guard", {}) or {}),
+                }
+                # Reuse governed pause/resume. A failed/completed run would
+                # cancel active episodes even though their progress is retained.
+                transition = run_service.transition_run_if_status(
+                    chat_run.active_run_id, expected_statuses={"running", "queued"}, status="paused", metadata=recovery,
+                )
+                if not transition.get("updated"):
+                    current = transition.get("run_record") or db.get_run_record(chat_run.active_run_id) or {}
+                    chat_run.run_handle.refresh_chat_snapshot()
+                    return [{"type": "done", "status": str(current.get("status") or "interrupted"),
+                             "run_id": chat_run.active_run_id}]
+                chat_run.emit_runtime_event(
+                    "run.state.changed", {"from_status": transition.get("previousStatus"), "to_status": "paused", "reason": "graph_progress_ceiling"},
+                    agent_id=None, node="run_manager",
+                )
+                chat_run.emit_runtime_event("run.paused", {"run_id": chat_run.active_run_id, "reason": "graph_progress_ceiling"},
+                                            agent_id=None, node="run_manager")
+                if stream_state is not None:
+                    self.persist_final_assistant_message(
+                        chat_run, stream_state, state="paused",
+                        terminal_metadata={**recovery, "terminalReason": "graph_progress_ceiling",
+                                           "recoveryMessage": normalized["message"], "userAction": normalized["userAction"]},
+                    )
+                chat_run.run_handle.refresh_chat_snapshot()
+                return [
+                    self.build_legacy_control_event({
+                        "command": "pause", "reason": normalized["message"],
+                        "payload": {**recovery, "userAction": normalized["userAction"]},
+                    }),
+                    {"type": "done", "status": "paused", "reason": "graph_progress_ceiling", "run_id": chat_run.active_run_id},
+                ]
         if chat_run and normalized.get("code") == "context_window_overflow":
             try:
                 context_config = storage.get_context_config() or {}
@@ -11279,16 +11328,6 @@ class ChatRuntime:
                             "watchdogPhase": normalized.get("watchdogPhase"),
                         },
                     )
-                elif isinstance(exc, GraphRecursionError):
-                    run_service.update_metadata(
-                        chat_run.active_run_id,
-                        {
-                            "failureClass": "graph_progress_ceiling",
-                            "recoverable": True,
-                            "checkpointPreserved": True,
-                            "automaticGraphRestart": False,
-                        },
-                    )
             except Exception as fail_exc:
                 logging.getLogger("v8chat.chat_runtime").exception(
                     "Failed to persist failed run state for run '%s' during error finalization",
@@ -11356,6 +11395,9 @@ class ChatRuntime:
                 run_id,
                 str(exc.approval_kind or "interaction"),
             )
+            return
+        if isinstance(exc, GraphRecursionError):
+            logger.info("Chat run '%s' paused at the graph progress boundary", run_id)
             return
         logger.exception("Chat run '%s' failed during stream execution", run_id)
 

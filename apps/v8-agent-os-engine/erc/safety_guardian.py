@@ -2523,6 +2523,44 @@ class SafetyGuardian:
         action_type_lower = (action_type or "").strip().lower()
         target_values = self._flatten_text_values(target or {})
 
+        # Clipboard file payloads expose file contents to another application.
+        # The same source paths must remain visible at the native and runtime gates.
+        file_paths = (target or {}).get("file_paths")
+        if action_type_lower == "type_text" and file_paths:
+            if not isinstance(file_paths, list) or any(not isinstance(item, str) for item in file_paths):
+                return self._decision(verdict="block", reason="文件粘贴路径格式无效。",
+                                      risk_code="computer_use_file_payload_invalid", governance_target="system_integrity",
+                                      posture=posture, allow_override=False)
+            for index, raw_path in enumerate(file_paths, 1):
+                path = self._normalize_path(raw_path)
+                sensitive = path is None or self._matches_path_patterns(path, config["fileRules"]["blockedPathPatterns"])
+                if path is not None:
+                    sensitive = sensitive or self._is_sensitive_system_path(path, include_application_roots=False)
+                    protected = self._is_under_protected_path(path)
+                    in_workspace = self._is_user_workspace_write_path(path, runtime_context)
+                    sensitive = sensitive or (protected and not in_workspace and path.suffix.lower() in set(config["fileRules"]["protectedFileExtensions"]))
+                    if protected and not sensitive and not in_workspace:
+                        # A registered screenshot/upload grants one exact file, never
+                        # the surrounding protected state directory or its database.
+                        from core.creative_media_resource_authority import (
+                            CreativeMediaResourceAuthorityError, creative_media_resource_authority,
+                        )
+                        try:
+                            creative_media_resource_authority.resolve_session_file_reference(
+                                session_id=str(runtime_context.get("session_id") or runtime_context.get("sessionId") or ""),
+                                path=path,
+                                workspace_path=str(runtime_context.get("workspace_path") or runtime_context.get("workspacePath") or ""),
+                            )
+                        except CreativeMediaResourceAuthorityError:
+                            sensitive = True
+                if sensitive:
+                    return self._decision(
+                        verdict="block", reason="文件粘贴会暴露受保护的认证、secret 或运行状态文件，已阻止整组粘贴。",
+                        risk_code="computer_use_sensitive_file_payload", governance_target="system_integrity",
+                        posture=posture, details={"fileIndex": index, "runtime_context": runtime_context},
+                        allow_override=False,
+                    )
+
         blocked_keywords = ["付款", "支付", "转账", "删除账号", "恢复出厂", "格式化磁盘"]
 
         if any(keyword.lower() in target_values for keyword in blocked_keywords):

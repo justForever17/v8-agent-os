@@ -110,6 +110,8 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "web_research",
         (
+            "browser_capabilities",
+            "browser_broker",
             "web_broker",
             "web_fetch",
             "web_read",

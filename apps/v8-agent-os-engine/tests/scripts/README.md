@@ -24,6 +24,8 @@
 | `export_spec_runtime_distribution_dry_run.py` | 导出已审批 Spec → runtime/subagent 任务分发空运行矩阵，验证 Kiro-style requirements/design/tasks 可追踪到 agent 可见片段、frameworkDigest、detailRef 和 compact tool surface。 | 可写 `docs/chatruntime/runtime_deep_observation_reports/`；不调用模型、不写 DB、不改持久工作区。 |
 | `export_supervisor_first_contract_dry_run.py` | 导出 Supervisor First / Runtime Grounded 系统提示词和关键工具说明空运行门禁。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `explain_safety_command_dry_run.py` | 解释 SafetyRuntime 对命令的规范化、解码、路径面和 verdict；不执行命令。 | 无真实命令副作用。 |
+| `run_bocha_provider_live_audit.py --live --config <existing-config.json>` | 只读指定配置的 Bocha 域，以内存凭据向官方 Web Search API 查一个公开技术问题；输出 HTTP 状态、结果数量、耗时和错误类别。 | 显式联网并可能计费；无 `--live` 不读配置、不导入 provider。不会写回配置、复制密钥、输出响应正文或请求头；403 不直接认定为无效 key。 |
+| `run_context7_source_live_audit.py --live --isolated-root <new-directory>` | 从既有 `mcp.json` 仅选择 Context7，复用真实 MCP manager 和 Research 文档入口，最多 resolve/query 两次调用；报告正文 SHA-256、官方来源链接、示例相关性与耗时。 | 显式联网，可能消耗 Context7 配额；不调用模型、不启动其他 MCP、不修改源配置。独立临时连接使用现有凭据，仅默认配置访问在内存投影；不保存密钥或原始文档。 |
 | `probe_memory_durable_thresholds.py` | 探测 durable memory 阈值与写入判定。 | 仅诊断；确认参数后再运行。 |
 | `replay_memory_session.py` | 按 fixture 回放 memory session。 | 依赖 fixture。 |
 | `verify_text_reasoning_timeline.py` | 验证文本 reasoning timeline 展示/契约。 | 无真实 provider 必要时才跑。 |
@@ -61,6 +63,8 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | --- | --- | --- |
 | `run_agent_quality_live_audit.py` | Agent Quality Matrix live 深度审计。 | `--live --matrix all --write-report` |
 | `run_boundary_fast_response_live_audit.py` | 任务边界和 Supervisor 快速首轮响应 live 验收。 | `--live` |
+| `run_browser_broker_live_audit.py` | 真实本地托管浏览器：自有表单动作、原 context 登录读取、旧观察/歧义/用户接管反例；`--video` 加多播放器候选及真实红绿蓝帧/时间/字幕校验。隔离 profile/端口/状态，不调用模型，不清理用户浏览器。 | `--live --isolated-root <新目录>`；缺 `--live` 不读配置、不创建状态、不启动浏览器。视频 fixture 需 FFmpeg。 |
+| `run_supervisor_capabilities_live.py` | 真实配置 Supervisor 的应用/媒体发现、专用 GUI、浏览器表单、单张生成、指定两子代理、授权视频网站任务；记录实际回执/产物、模型时间及 Web live/reload。工具失败、没有关页、视觉仅被调用均不能算完整成功，内容仍须人工核实。 | `--live --case ... --web-url ... --output-dir <新目录>`；GUI/网页/媒体/视频另须 `--allow-side-effects`，视频须明确授权 URL；desktop 需解锁，只操作自建窗口。`--resume-report` 仅复用本 harness 的 media/video 会话。 |
 | `run_supervisor_runtime_skill_live_audit.py` | Supervisor / Runtime / Skill 真实断点审计；`engineering_long_write` 验证临时工作区长原生参数、同 worker 版本续写、浏览器交互与 Web live/reload；`engineering_parent_acceptance_repair` 验证工程完成后父级发现缺口、以精确 handoff 引用派发一次修复并核对最终文件；`research_delegated_verification` 核对来源、原始引用、独立复核和最终呈现。保留失败 run，不以 completed 代替子项通过。 | `--live --case ...`；工程另需 `--allow-side-effects`，浏览器不可用须报告未验证。 |
 | `run_engineering_continuation_live_audit.py` | 同 session 工程续接与 debug 路由 live 验收。 | `--live --allow-side-effects` 视 case 而定 |
 | `run_engineering_sandbox_live_audit.py` | 真实验证工作区 → Git 基线 → Supervisor/子/孙 Agent 独立 worktree → 沙箱租约 → 验收交付闭环。只接受空白专用工作区。 | `--live --allow-side-effects --workspace ...` |

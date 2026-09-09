@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -1582,11 +1583,15 @@ class BrowserAutomationProvider:
         params: Dict[str, Any] | None = None,
         body: str | Dict[str, Any] | None = None,
         control_actor: str = "agent",
+        timeout_seconds: float | None = None,
     ) -> Any:
         normalized_actor = str(control_actor or "agent").strip().lower() or "agent"
         normalized_path = str(path or "").strip()
         target_id = str((params or {}).get("target") or "").strip()
         if normalized_actor == "agent" and target_id and normalized_path in {
+            "/agent/action",
+            "/agent/close",
+            "/agent/media",
             "/bringToFront",
             "/maximize",
             "/navigate",
@@ -1613,15 +1618,86 @@ class BrowserAutomationProvider:
             params=params,
             data=payload,
             headers=headers,
-            timeout=max(1.0, self._connect_timeout_ms / 1000.0) + 10.0,
+            timeout=timeout_seconds if timeout_seconds is not None else max(1.0, self._connect_timeout_ms / 1000.0) + 10.0,
         )
         response.raise_for_status()
         result = response.json() if response.text else {}
-        if normalized_actor == "agent" and target_id and normalized_path == "/info":
+        if normalized_actor == "agent" and target_id and normalized_path in {"/info", "/agent/observe"}:
             from runtimes.computer_use.browser_session_service import browser_session_service
 
             browser_session_service.note_agent_observation(target_id)
         return result
+
+    def agent_request_json(
+        self, method: str, path: str, *, target_port: int,
+        params: Dict[str, Any] | None = None, body: Dict[str, Any] | None = None,
+    ) -> Any:
+        """Scoped callers retain Agent control checks; never borrow Workbench user authority."""
+        if path not in {"/agent/new", "/agent/observe", "/agent/action", "/agent/close", "/agent/media"}:
+            raise ValueError("unsupported_agent_browser_endpoint")
+        self._ensure_proxy(target_port=target_port)
+        try:
+            return self._request_json(method, path, params=params, body=body, control_actor="agent",
+                                      **({"timeout_seconds": 20.0} if path == "/agent/media" else {}))
+        except requests.HTTPError as exc:
+            from runtimes.computer_use.browser_session_service import BrowserSessionError
+
+            try:
+                message = str(exc.response.json().get("error") or "browser_proxy_error")[:600]
+            except (AttributeError, ValueError):
+                message = "browser_proxy_error"
+            raise BrowserSessionError("browser_proxy_error", message, status_code=503) from exc
+
+    def open_agent_page(self, *, url: str) -> Dict[str, Any]:
+        prepared = self.prepare_workbench_browser()
+        opened = self.agent_request_json("POST", "/agent/new", target_port=int(prepared["targetPort"]), body={"url": url})
+        return {**prepared, **dict(opened or {})}
+
+    def profile_access_summary(self, *, launch: bool = False) -> Dict[str, Any]:
+        """Read domain hints only from the verified V8OS profile, never a user browser."""
+        if not self._profile_root().exists():
+            return {"available": False, "sites": [], "reason": "agent_browser_profile_not_created"}
+        if launch:
+            self.ensure_agent_browser_background()
+        kind = self._browser_kind_from_debug_port(self._target_port)
+        if not kind or not debug_port_owned_by_profile(port=self._target_port, profile_dir=self._dedicated_user_data_dir(kind)):
+            return {"available": False, "sites": [], "reason": "agent_browser_profile_not_running"}
+        self._ensure_proxy(target_port=self._target_port)
+        self._assert_profile_proxy_target()
+        summary = self._request_json("GET", "/agent/sites")
+        return {"available": True, **dict(summary or {})}
+
+    def read_profile_page(self, *, url: str, timeout_seconds: float, wait_ms: int = 0) -> Dict[str, Any]:
+        """Caller has checked profile ownership and URL authority; create only a read tab."""
+        self._ensure_proxy(target_port=self._target_port)
+        self._assert_profile_proxy_target()
+        try:
+            return dict(self._request_json("POST", "/agent/read", body={
+                "url": url, "timeoutMs": max(1000, min(45000, int(timeout_seconds * 1000))),
+                "waitMs": max(0, min(5000, wait_ms)),
+            }, timeout_seconds=max(1.0, timeout_seconds) + 1) or {})
+        except requests.HTTPError as exc:
+            # The proxy exposes stage/authority codes. Preserve those instead
+            # of a generic 503, but never forward Playwright URLs or page data.
+            try:
+                code = str(exc.response.json().get("error") or "")
+            except (AttributeError, TypeError, ValueError):
+                code = ""
+            if not re.fullmatch(
+                r"agent_browser_profile_(?:read_[a-z_]+|context_missing|redirect_requires_authorization:[a-zA-Z0-9.\[\]:-]+)", code
+            ):
+                code = "agent_browser_profile_read_proxy_failed"
+            raise RuntimeError(code) from None
+
+    def _assert_profile_proxy_target(self) -> None:
+        from urllib.parse import urlparse
+
+        health = self._health(timeout_seconds=1)
+        endpoint = urlparse(str(health.get("targetEndpoint") or ""))
+        if (int(health.get("targetPort") or 0) != self._target_port
+                or endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}
+                or endpoint.port != self._target_port):
+            raise RuntimeError("agent_browser_profile_proxy_target_mismatch")
 
     def workbench_request_json(
         self,

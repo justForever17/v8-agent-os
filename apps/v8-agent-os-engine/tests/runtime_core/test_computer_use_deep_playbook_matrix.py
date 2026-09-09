@@ -62,6 +62,10 @@ class _FakeBrowser:
 
 
 class _FakeRuntime:
+    def finish_operation(self, handle, **kwargs):
+        from runtimes.computer_use.runtime import ComputerUseRuntime
+        return ComputerUseRuntime.finish_operation(self, handle, **kwargs)
+
     def __init__(self):
         self.browser_automation = _FakeBrowser()
         self._resource_leases = {}

@@ -169,14 +169,14 @@ def production_pack_markdown(pack: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def rank_candidates_markdown(
+def rank_model_candidates(
     candidates: list[dict[str, Any]],
     *,
     modality: str | None = None,
     operation_kind: str | None = None,
-    goal: str | None = None,
     limit: int = 8,
-) -> str:
+) -> tuple[list[dict[str, Any]], int]:
+    """One ordering owner for structured discovery and its Markdown view."""
     filtered: list[dict[str, Any]] = []
     modality_norm = str(modality or "").strip()
     operation_norm = str(operation_kind or "").strip()
@@ -195,8 +195,21 @@ def rank_candidates_markdown(
         priority = int(item.get("priority") or 999)
         return (-configured, -enabled, -available, -executable, priority, str(item.get("candidateId") or item.get("modelId") or ""))
 
-    ranked = sorted(filtered, key=_score)[: max(1, min(int(limit or 8), 20))]
-    lines = ["## Creative Media 模型选择", f"结果：找到 {len(filtered)} 个候选，展示前 {len(ranked)} 个。"]
+    return sorted(filtered, key=_score)[: max(1, min(int(limit or 8), 20))], len(filtered)
+
+
+def rank_candidates_markdown(
+    candidates: list[dict[str, Any]],
+    *,
+    modality: str | None = None,
+    operation_kind: str | None = None,
+    goal: str | None = None,
+    limit: int = 8,
+) -> str:
+    ranked, count = rank_model_candidates(candidates, modality=modality, operation_kind=operation_kind, limit=limit)
+    modality_norm = str(modality or "").strip()
+    operation_norm = str(operation_kind or "").strip()
+    lines = ["## Creative Media 模型选择", f"结果：找到 {count} 个候选，展示前 {len(ranked)} 个。"]
     if goal:
         lines.append(f"目标：{_text(goal, limit=220)}")
     lines.append("")

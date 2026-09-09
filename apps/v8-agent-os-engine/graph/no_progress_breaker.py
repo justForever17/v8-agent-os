@@ -263,16 +263,19 @@ def apply_remaining_steps_guard(response, remaining_steps: int | None) -> tuple[
         "remaining_steps": remaining,
         "minimum_steps": MIN_REMAINING_STEPS_FOR_TOOL_ROUND,
         "suppressed_tool_names": tool_names,
+        "suppressed_tool_call_ids": [str(call["id"]) for call in tool_calls if isinstance(call, dict) and call.get("id")],
+        "suppressed_tools_executed": False,
         "checkpoint_preserved": True,
     }
     return AIMessage(
         content=(
-            "当前长任务已接近本段图执行的安全边界。系统已保留 checkpoint，"
-            "并停止开启新的工具回合，以免重复调用和重复计费。"
-            "请从当前已完成状态继续，或把剩余工作交给持久化的 Engineering/delegation Runtime。"
+            "当前任务尚未完成，本段执行已到安全步数边界，停止开启新的工具回合。"
+            "本次提出的工具请求没有执行，现有进展保留。"
+            "可手动继续并缩小下一步范围；不要把未执行的请求当成已完成结果。"
         ),
         additional_kwargs={
-            **dict(getattr(response, "additional_kwargs", {}) or {}),
+            **{key: value for key, value in dict(getattr(response, "additional_kwargs", {}) or {}).items()
+               if key not in {"tool_calls", "function_call"}},
             "execution_progress_guard": guard,
         },
     ), guard

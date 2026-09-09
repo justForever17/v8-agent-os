@@ -337,7 +337,7 @@ def _spec(
 
 CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = {
     "capabilities": {
-        "describe": _spec("capabilities", "describe", "contract", "describe"),
+        "describe": _spec("capabilities", "describe", "contract", "describe", allowed={"facade", "action"}),
         "status": _spec("capabilities", "status", "plugin_manager", "status"),
         "catalog": _spec(
             "capabilities",
@@ -359,8 +359,8 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
             "resolutions",
             "creative",
             "creative_media_resolutions",
-            allowed={"detailLevel"},
-            args=(("detail_level", "detailLevel", "summary"),),
+            allowed={"detailLevel", "modelRef"},
+            args=(("detail_level", "detailLevel", "summary"), ("model_ref", "modelRef", None)),
         ),
         "rank_models": _spec(
             "capabilities",
@@ -373,6 +373,7 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
                 ("operation_kind", "operationKind", None),
                 ("goal", "goal", None),
                 ("limit", "limit", 8),
+                ("structured", "_structured", True),
             ),
         ),
     },
@@ -674,6 +675,9 @@ def creative_media_action_contract() -> dict[str, Any]:
                 "anyOfFields": [sorted(group) for group in spec.any_of_fields],
                 "mutating": spec.mutating,
                 "outputKind": spec.output_kind,
+                "fieldTypes": {name: _field_type(name) for name in sorted(spec.allowed_fields)},
+                "defaults": {source: default for _target, source, default in spec.argument_map
+                             if source in spec.allowed_fields and default is not _MISSING},
                 **(
                     {
                         "requiresPluginGrantWhen": "providerAdapterId is set",
@@ -687,6 +691,14 @@ def creative_media_action_contract() -> dict[str, Any]:
         }
         for facade, actions in CREATIVE_MEDIA_ACTION_REGISTRY.items()
     }
+
+
+def _field_type(name: str) -> str:
+    for names, kind in ((_ID_FIELDS, "string"), (_LIST_FIELDS, "array"), (_DICT_FIELDS, "object"),
+                        (_BOOL_FIELDS, "boolean"), (_INT_FIELDS, "integer"), (_FLOAT_FIELDS, "number")):
+        if name in names:
+            return kind
+    return "action-specific"
 
 
 def _is_empty(value: Any) -> bool:
@@ -703,6 +715,7 @@ def _validation_error(spec: CreativeMediaActionSpec, code: str, message: str) ->
             "summary": message,
             "refs": [],
             "error": {"code": code, "message": message},
+            "nextAction": f"creative_media_capabilities(action='describe', request={{'facade':'{spec.facade}','action':'{spec.action}'}}); correct the parameters and finish the requested work.",
         },
         ensure_ascii=False,
     )
@@ -753,6 +766,14 @@ def _validate_request(spec: CreativeMediaActionSpec, request: Any) -> tuple[dict
             "unknown_fields",
             f"unsupported request fields for {spec.facade}.{spec.action}: {', '.join(unknown)}",
         )
+    if spec.handler_module == "contract":
+        target = payload.get("facade")
+        action = payload.get("action")
+        if target is not None and (not isinstance(target, str) or target not in CREATIVE_MEDIA_ACTION_REGISTRY):
+            return None, _validation_error(spec, "unknown_facade", "facade must be one of: " + ", ".join(CREATIVE_MEDIA_ACTION_REGISTRY))
+        if action is not None and (not isinstance(action, str) or not target or action not in CREATIVE_MEDIA_ACTION_REGISTRY[target]):
+            choices = ", ".join(CREATIVE_MEDIA_ACTION_REGISTRY.get(str(target), {}))
+            return None, _validation_error(spec, "unknown_action", "request.action requires a known request.facade and action. " + (f"Available for {target}: {choices}" if choices else "List facades with an empty describe request."))
     missing = sorted(field for field in spec.required_fields if _is_empty(payload.get(field)))
     if missing:
         return None, _validation_error(
@@ -966,6 +987,12 @@ def _envelope(spec: CreativeMediaActionSpec, raw: str) -> str:
     parsed = _parse_raw(raw)
     lower = str(raw or "").strip().lower()
     explicit_error: Any = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(parsed, dict) and not explicit_error:
+        for key in ("job", "render", "qualityJob"):
+            record = parsed.get(key)
+            if isinstance(record, dict) and record.get("error"):
+                explicit_error = record["error"]
+                break
     ok = not (
         (isinstance(parsed, dict) and parsed.get("ok") is False)
         or explicit_error not in (None, "", {}, [])
@@ -992,12 +1019,37 @@ def _envelope(spec: CreativeMediaActionSpec, raw: str) -> str:
         "action": spec.action,
         "status": status,
         "summary": _summary_from_raw(spec, raw, parsed),
-        "refs": _collect_refs(parsed),
+        "refs": [] if spec.facade == "capabilities" and isinstance(parsed, dict) and "modelCandidates" in parsed else _collect_refs(parsed),
     }
     if detail_ref:
         payload["detailRef"] = detail_ref
     if next_action:
         payload["nextAction"] = str(next_action)[:600]
+    if ok and isinstance(parsed, dict) and spec.facade in {"jobs", "assets"}:
+        job = parsed.get("job") if isinstance(parsed.get("job"), dict) else {}
+        artifacts = parsed.get("artifacts") or job.get("artifacts") or []
+        if isinstance(artifacts, list) and artifacts:
+            payload["artifacts"] = [
+                {key: item[key] for key in ("artifactId", "kind", "mimeType", "title", "sourcePath", "contentUrl", "sizeBytes") if item.get(key) is not None}
+                for item in artifacts[:8] if isinstance(item, dict)
+            ]
+            payload["artifactCount"] = parsed.get("artifactCount") or job.get("artifactCount") or len(artifacts)
+            payload["nextAction"] = (
+                "Inspect the delivered files. For images use vision_media_analyzer(file_path=<exact sourcePath>, prompt=<requested checks>); "
+                "job success proves generation, not visual quality. Finish requested checks before final delivery."
+            )
+    if ok and spec.facade == "capabilities" and isinstance(parsed, dict):
+        for key in ("contract", "contractFocus", "facades", "modelCandidates", "candidateCount", "hasMoreCandidates",
+                    "readinessBasis", "ratios", "imagePresets", "videoPresets", "presetAuthority"):
+            if key in parsed:
+                payload[key] = parsed[key]
+        # Full resolution matrices use the same presets owner, not inferred model limits.
+        if spec.action == "resolutions":
+            for kind in ("image", "video"):
+                if isinstance(parsed.get(kind), dict) and "presets" in parsed[kind]:
+                    payload[kind + "Presets"] = parsed[kind]["presets"]
+    if ok and parsed is None and spec.facade in {"plan", "quality"}:
+        payload["content"] = str(raw or "").strip()
     if not ok:
         if isinstance(explicit_error, dict):
             code = str(explicit_error.get("code") or "creative_media_action_failed")
@@ -1009,16 +1061,26 @@ def _envelope(spec: CreativeMediaActionSpec, raw: str) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _contract_result() -> str:
+def _contract_result(request: dict[str, Any] | None = None) -> str:
     contract = creative_media_action_contract()
+    target = (request or {}).get("facade")
+    action = (request or {}).get("action")
+    if target and action:
+        return json.dumps({
+            "ok": True,
+            "summary": f"creative_media_{target}(action='{action}', request=...) 的当前参数合同；执行仍需当前角色授权。",
+            "contractFocus": {"facade": target, "action": action},
+            "contract": contract[target][action],
+        }, ensure_ascii=False)
+    facades = {name: list(actions) for name, actions in contract.items() if not target or name == target}
     return json.dumps(
         {
             "ok": True,
             "runtime": "creative_media",
-            "summary": "Creative Media exposes six facade tools; choose an action and pass only its declared request fields.",
-            "contract": contract,
-            "facadeCount": len(contract),
-            "actionCount": sum(len(actions) for actions in contract.values()),
+            "summary": "只读动作索引；用 describe 的 request.facade/action 读取单个动作参数，再经现有授权直接调用该门面。无需另建 Director。",
+            "facades": facades,
+            "facadeCount": len(facades),
+            "actionCount": sum(len(actions) for actions in facades.values()),
         },
         ensure_ascii=False,
     )
@@ -1143,11 +1205,12 @@ def _execute_sync(facade: str, action: str, request: Any) -> str:
         return error
     try:
         if spec.handler_module == "contract":
-            raw = _contract_result()
+            raw = _contract_result(payload) if request else _contract_result()
         elif spec.handler_module == "plugin_manager":
             raw = _plugin_status_result()
         else:
-            raw = str(_resolve_handler(spec).invoke(_handler_arguments(spec, payload or {})))
+            raw = str(_resolve_handler(spec).invoke(_handler_arguments(spec, payload or {}),
+                       config={"metadata": {"v8_internal_facade_handler": f"{facade}.{action}"}}))
         return _envelope(spec, raw)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
@@ -1182,7 +1245,8 @@ async def _execute_async(facade: str, action: str, request: Any) -> str:
             return _envelope(spec, str(adapter_raw))
         handler = _resolve_handler(spec)
         arguments = _handler_arguments(spec, payload or {})
-        raw = str(await handler.ainvoke(arguments)) if spec.async_handler else str(handler.invoke(arguments))
+        config = {"metadata": {"v8_internal_facade_handler": f"{facade}.{action}"}}
+        raw = str(await handler.ainvoke(arguments, config=config)) if spec.async_handler else str(handler.invoke(arguments, config=config))
         return _envelope(spec, raw)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
@@ -1207,7 +1271,12 @@ def creative_media_capabilities(
 ) -> str:
     """Inspect the 多媒体创作 six-facade action contract, base scope, model catalog, and optional plugin status.
 
-    Call action='describe' when the required action or fields are unfamiliar. Request fields are action-specific;
+    Read configured modelRefs/readiness with action='rank_models', request={'modality':'image','operationKind':'image.generate'}.
+    If creative_media_jobs/assets/quality is not visible, Supervisor loads it with runtime_broker(mode='grant', tool_group='creative_media.core').
+    This is a run-scoped toolbox choice, not a config change or delegation. A previous turn's grant must be loaded again.
+    Discover one action with action='describe', request={'facade':'jobs','action':'create'}; empty request lists action names.
+    Resolution presets are convenience defaults, not authoritative model limits. Discovery is read-only and never grants execution.
+    Request fields are action-specific;
     undeclared fields, including caller-supplied session/run/workspace ids, are rejected.
     """
     return _execute_sync("capabilities", action, request)
@@ -1225,7 +1294,11 @@ def creative_media_plan(
     ] = "compile_recipe",
     request: dict[str, Any] | None = None,
 ) -> str:
-    """Plan governed 多媒体创作 production through recipes, work orders, provider locks, sample approval, artifact proof, and QA."""
+    """Compile governed 多媒体创作 recipes/work orders and track provider locks, sample approval, artifact proof and QA.
+
+    Recipe/work-order compilation is deterministic; it does not require another Director/Agent.
+    Ask creative_media_capabilities(action='describe', request={'facade':'plan','action':...}) for a focused request contract.
+    """
     return _execute_sync("plan", action, request)
 
 
@@ -1264,6 +1337,8 @@ async def creative_media_jobs(
     indices. Poll with action='get'
     and obtain deliverable artifact refs with action='artifacts'; provider raw JSON is never the deliverable.
     For image.edit, pass sourceId and optional maskSourceId from the current session source ledger; never pass paths.
+    An authorized Supervisor may call this directly; no Director is required. Use the exact configured modelRef to preserve
+    the chosen provider/model. A queued/running job is not a finished image; retain errors and validate returned artifacts.
     """
     return await _execute_async("jobs", action, request)
 

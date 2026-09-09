@@ -357,8 +357,8 @@ class ComputerUseRuntime:
             "supportsRepair": True,
             "visibility": "specialized",
             "promptHints": [
-                "用法入口：涉及本机 GUI、窗口、文件对话框、真人登录态浏览器或社交通讯应用时，通过 runtime_broker(mode='route', need={'kind':'computer_use', ...}) 创建 episode；输入 goal、app/window 线索、allowedActions、安全/登录态边界。",
-                "执行流程：Computer Use 自己 observe -> plan -> act -> verify，高风险动作配合视觉保底；Supervisor 不猜坐标、不编造桌面状态、不把原始视觉网格当事实。",
+                "用法入口：主管直接操作时 runtime_broker(mode='grant', tool_group='computer_use.direct') 加载观察、窗口绑定和动作；需要独立执行循环时才用 mode='route', routeKind='computer_use', routeReason 和 taskBriefs。",
+                "执行流程：直接路径由 Supervisor observe -> act -> verify，托管循环复用相同执行 owner、目标绑定与 Safety。用户禁止委派时不调用 autonomous execute_task；浏览器交互可加载 browser.control 观察当前 DOM/AX。",
                 "边界：只有用户明确要求真实桌面终端、GUI 终端、桌面登录态或必须操作真实窗口时才交给 ComputerUseRuntime；可复用流程、模板、对象库和回放应转 RPA 固化。",
                 "回流要求：typed handoff 必须给 observedState/actionsTaken/verification/screenshotOrTraceRef/humanAttention/limitations/detailRef；driver trace、坐标候选和 OCR raw 只进 Runtime Surface。",
                 "当不存在可复用肌肉记忆时进入学习模式，而不是继续脚本式盲操。",
@@ -1297,6 +1297,17 @@ class ComputerUseRuntime:
     def attach_run(self, run_id: str):
         return erc_kernel.attach_run(run_id, component="computer_use_runtime", node="run_manager")
 
+    def finish_operation(self, run_handle, *, status: str, reason: str):
+        """A borrowed chat/episode run belongs to its caller, not a desktop step."""
+        owner = str(getattr(getattr(run_handle, "descriptor", None), "runtime_kind", ""))
+        if owner != "computer_use":
+            return run_handle.emit(f"computer_use.operation.{status}", {
+                "status": status, "reason": reason, "parentRunPreserved": True,
+            })
+        if status == "failed":
+            return run_handle.fail(reason, node="computer_use_runtime")
+        return run_handle.transition(status, reason=reason, node="computer_use_runtime")
+
     def begin_or_attach_run(
         self,
         *,
@@ -1754,6 +1765,8 @@ class ComputerUseRuntime:
         *,
         action_type: str,
         scene_assessment: Dict[str, Any] | None,
+        action_payload: Dict[str, Any] | None = None,
+        before_observation: Dict[str, Any] | None = None,
     ) -> bool:
         if not isinstance(scene_assessment, dict):
             return False
@@ -1761,7 +1774,24 @@ class ComputerUseRuntime:
             return False
         if str(scene_assessment.get("transitionState") or "").strip().lower() != "already_in_target_state":
             return False
-        return action_type in {"open_app", "focus_window", "wait_for_element"}
+        # A targeted UIA snapshot proves that a window exists, not that it is
+        # foreground. Skipping focus left the next ambient observation on an
+        # unrelated application despite an "already complete" receipt.
+        if action_type == "focus_window":
+            payload = dict(action_payload or {})
+            if (payload.get("target_path") or payload.get("require_visual_guard") is not False
+                    or scene_assessment.get("blockerState") != "none"):
+                return False  # Explorer focus may also include directory navigation.
+            try:
+                target_handle = int(payload.get("window_handle") or 0)
+                observed_handle = int(dict((before_observation or {}).get("metadata") or {}).get("windowHandle") or 0)
+                if target_handle <= 0 or observed_handle != target_handle:
+                    return False
+                foreground = self.driver.foreground_window()
+                return isinstance(foreground, dict) and int(foreground.get("handle") or 0) == target_handle
+            except (AttributeError, TypeError, ValueError, DesktopDriverError):
+                return False
+        return action_type in {"open_app", "wait_for_element"}
 
     def _should_block_for_pre_action_scene(
         self,
@@ -2029,16 +2059,19 @@ class ComputerUseRuntime:
         if not app_id:
             return dict(action_payload), None
         prepared_payload = dict(action_payload)
+        # For control actions class_name identifies the child control. The
+        # enclosing window's class must not replace or constrain that selector.
+        window_class = prepared_payload.get("class_name") if action_type == "focus_window" else None
         current_process_names = list(prepared_payload.get("process_names") or [])
         current_window = {
             "handle": prepared_payload.get("window_handle"),
             "title": prepared_payload.get("window_title"),
-            "className": prepared_payload.get("class_name"),
+            "className": window_class,
             "processName": prepared_payload.get("process_name") or (current_process_names[0] if current_process_names else None),
         }
         candidates, binding_candidates = self._collect_runtime_window_candidates(
             app_id=app_id,
-            payload=prepared_payload,
+            payload={**prepared_payload, "class_name": window_class},
         )
         strict_binding_required = requires_strict_window_binding(
             expected_titles=binding_candidates["titles"],
@@ -2110,7 +2143,7 @@ class ComputerUseRuntime:
             return prepared_payload, None
         prepared_payload["window_handle"] = best_candidate.get("handle")
         prepared_payload["window_title"] = best_candidate.get("title") or prepared_payload.get("window_title")
-        if best_candidate.get("className"):
+        if action_type == "focus_window" and best_candidate.get("className"):
             prepared_payload["class_name"] = best_candidate.get("className")
         if binding_candidates["processNames"]:
             prepared_payload["process_names"] = list(binding_candidates["processNames"])
@@ -8359,7 +8392,7 @@ class ComputerUseRuntime:
         if not self._should_abort_on_major_deviation(action=action, step=step):
             return
         reason = str(update_request.get("reason") or "检测到页面结构变化，需要更新步骤。")
-        run_handle.fail(reason, node="computer_use_runtime")
+        self.finish_operation(run_handle, status="failed", reason=reason)
         raise DesktopDriverError(reason)
 
     def _extract_plan_payload(self, raw_text: str) -> List[Dict[str, Any]]:
@@ -8688,6 +8721,7 @@ class ComputerUseRuntime:
             target["shortcut_preconditions"] = dict(shortcut_resolution.get("preconditionEvidence") or {})
         if str(action_type or "").strip().lower() == "type_text":
             target["text_preview"] = str(payload.get("text") or "")[:80]
+            target["file_paths"] = normalize_clipboard_payload(payload=payload)["file_paths"]
         return {key: value for key, value in target.items() if value not in (None, "", [])}
 
     def _assess_runtime_action_safety(
@@ -9075,7 +9109,6 @@ class ComputerUseRuntime:
         force_refresh: bool = False,
         include_learned: bool = True,
     ) -> Dict[str, Any]:
-        self._ensure_runtime_ready()
         payload = self.app_catalog.list_apps(
             query=query,
             limit=max(1, min(limit, 100)),
@@ -10230,6 +10263,8 @@ class ComputerUseRuntime:
                     if self._should_skip_for_already_in_target_state(
                         action_type=action_type,
                         scene_assessment=pre_action_scene,
+                        action_payload=normalized_payload,
+                        before_observation=before_observation,
                     ):
                         reason = "当前界面已处于目标状态，跳过重复动作。"
                         result = self._build_pre_action_scene_result(
@@ -12079,13 +12114,14 @@ class ComputerUseRuntime:
         goal: str | None = None,
         continue_on_error: bool = False,
         max_steps: int = 5,
+        invocation_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._ensure_runtime_ready()
         if not steps:
             raise DesktopDriverError("执行计划不能为空。")
         if len(steps) > max_steps:
             raise DesktopDriverError(f"单次短视距执行计划最多支持 {max_steps} 步。")
-        invocation = self._classify_invocation(default_trigger_source="computer_use_api")
+        invocation = self._classify_invocation(invocation_metadata, default_trigger_source="computer_use_api")
 
         run_handle = self.begin_or_attach_run(
             session_id=session_id,
@@ -12465,7 +12501,7 @@ class ComputerUseRuntime:
                     step_results.append(step_result)
                     run_handle.emit("computer_use.step.failed", step_result)
                     if not continue_on_error:
-                        run_handle.fail(str(exc), node="computer_use_runtime")
+                        self.finish_operation(run_handle, status="failed", reason=str(exc))
                         raise
                     continue
 
@@ -12519,8 +12555,7 @@ class ComputerUseRuntime:
                 steps=step_results,
             )
 
-        run_handle.transition("completed", reason="computer_use_plan_complete", node="computer_use_runtime")
-        run_service.transition_run(run_handle.run_id, status="completed")
+        self.finish_operation(run_handle, status="completed", reason="computer_use_plan_complete")
         resource_lease = self._cleanup_resource_lease(
             run_handle=run_handle,
             status="succeeded",
@@ -12979,8 +13014,7 @@ class ComputerUseRuntime:
                 "computer_use.task_loop.human_attention",
                 {"reason": "canonical_repo_url_not_resolved"},
             )
-            run_handle.transition("completed", reason="computer_use_fact_resolution_required", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason="computer_use_fact_resolution_required")
             return {
                 "status": "needs_human_attention",
                 "reason": "canonical_repo_url_not_resolved",
@@ -13005,8 +13039,7 @@ class ComputerUseRuntime:
                 "computer_use.task_loop.human_attention",
                 {"reason": decision.reason or "browser_lane_unavailable"},
             )
-            run_handle.transition("completed", reason="computer_use_browser_lane_unavailable", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason="computer_use_browser_lane_unavailable")
             return {
                 "status": "needs_human_attention",
                 "reason": decision.reason or "browser_lane_unavailable",
@@ -13069,8 +13102,7 @@ class ComputerUseRuntime:
                 target_url=target_url,
                 browser_target=opened,
             )
-            run_handle.transition("completed", reason="computer_use_needs_human_login", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason="computer_use_needs_human_login")
             resource_lease = self._cleanup_resource_lease(
                 run_handle=run_handle,
                 status="needs_human_login",
@@ -13093,8 +13125,7 @@ class ComputerUseRuntime:
         if pre_dom.get("state") == normalized_desired_state:
             already_reason = "already_starred" if normalized_desired_state == "starred" else "already_unstarred"
             run_handle.emit("computer_use.github_star.verified", {"state": already_reason, "preState": pre_state, "strictDom": pre_dom, "desiredState": normalized_desired_state})
-            run_handle.transition("completed", reason=f"computer_use_github_star_{already_reason}", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason=f"computer_use_github_star_{already_reason}")
             resource_lease = self._cleanup_resource_lease(
                 run_handle=run_handle,
                 status="succeeded",
@@ -13118,8 +13149,7 @@ class ComputerUseRuntime:
         opposite_state = "not_starred" if normalized_desired_state == "starred" else "starred"
         if pre_dom.get("state") != opposite_state:
             run_handle.emit("computer_use.task_loop.human_attention", {"reason": pre_dom.get("reason") or "strict_dom_state_ambiguous", "preState": pre_state, "strictDom": pre_dom})
-            run_handle.transition("completed", reason="computer_use_github_star_strict_dom_ambiguous", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason="computer_use_github_star_strict_dom_ambiguous")
             resource_lease = self._cleanup_resource_lease(
                 run_handle=run_handle,
                 status="needs_human_attention",
@@ -13142,8 +13172,7 @@ class ComputerUseRuntime:
             }
         if not allow_real_click:
             run_handle.emit("computer_use.task_loop.human_attention", {"reason": "real_click_not_allowed", "preState": pre_state})
-            run_handle.transition("completed", reason="computer_use_real_click_not_allowed", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason="computer_use_real_click_not_allowed")
             resource_lease = self._cleanup_resource_lease(
                 run_handle=run_handle,
                 status="needs_human_attention",
@@ -13189,8 +13218,7 @@ class ComputerUseRuntime:
         )
         run_handle.emit("computer_use.github_star.post_state", post_state)
         if post_dom.get("state") == normalized_desired_state:
-            run_handle.transition("completed", reason="computer_use_github_star_completed", node="computer_use_runtime")
-            run_service.transition_run(run_handle.run_id, status="completed")
+            self.finish_operation(run_handle, status="completed", reason="computer_use_github_star_completed")
             resource_lease = self._cleanup_resource_lease(
                 run_handle=run_handle,
                 status="succeeded",
@@ -13213,7 +13241,7 @@ class ComputerUseRuntime:
                 "sessionId": run_handle.session_id,
             }
         run_handle.emit("computer_use.task_loop.human_attention", {"reason": "post_state_not_strictly_starred", "postState": post_state, "strictDom": post_dom})
-        run_handle.fail("GitHub Star 状态未进入严格 Starred DOM 状态。", node="computer_use_runtime")
+        self.finish_operation(run_handle, status="failed", reason="GitHub Star 状态未进入严格 Starred DOM 状态。")
         resource_lease = self._cleanup_resource_lease(
             run_handle=run_handle,
             status="needs_human_attention",

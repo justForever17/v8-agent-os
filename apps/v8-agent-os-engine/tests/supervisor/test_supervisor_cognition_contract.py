@@ -56,7 +56,8 @@ def test_research_web_and_managed_episode_descriptions_form_a_clear_ladder():
     assert "exactly one focused question" in research_broker.description
     assert "put every known domain" in research_broker.description
     assert "initial researchBriefIds/researchBriefGoals arrays" in research_broker.description
-    assert runtime_broker.description.startswith("L3 managed runtime entry")
+    assert runtime_broker.description.startswith("Discover/load capabilities for direct work")
+    assert "grant" in runtime_broker.description
     assert "initial parallel arrays contain every currently known domain" in runtime_broker.description
     assert "one bounded managed repair" in runtime_broker.description
     assert '"researchBriefIds":["domain-a","domain-b"]' in runtime_broker.description
@@ -149,10 +150,11 @@ def test_supervisor_authority_map_balances_direct_engineering_and_runtime_routes
     )
     assert "Engineering Kernel" in text
     assert "bounded self-contained file/command work may be implemented directly" in text
-    assert "dependent outputs, isolation, parallelism, execution proof, recovery, or durable handoff" in text
+    assert "including multiple dependent outputs" in text
     assert "Follow the single `<research_path_ladder>`" in text
     assert "one bounded repair" in text
-    assert "full Research, Creative Media, Computer Use, or RPA workflows" in text
+    assert "Load the smallest capability group" in text
+    assert "Honor the user's explicit delegation count" in text
     assert "grandchildren an explicitly narrower subset" in text
     assert "terminal handoff" in text
     assert "Never poll for a phantom handoff" in text
@@ -187,7 +189,7 @@ def test_supervisor_tool_projection_keeps_delegation_stable_and_specialist_facad
     assert "run_system_command" in baseline_names
     assert "read_native_file" in baseline_names
     assert "write_native_file" in baseline_names
-    assert not [name for name in baseline_names if name.startswith("creative_media_")]
+    assert {name for name in baseline_names if name.startswith("creative_media_")} == {"creative_media_capabilities"}
 
     route_context, grants, rejected = grant_runtime_tool_groups(
         {},

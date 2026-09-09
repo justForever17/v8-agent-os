@@ -32,6 +32,62 @@ def _facet(implemented: bool, available: bool, validation_level: str = "fixture_
     }
 
 
+def test_existing_background_window_still_requires_the_requested_focus_action():
+    runtime = ComputerUseRuntime.__new__(ComputerUseRuntime)
+    scene = {"blockerState": "none", "transitionState": "already_in_target_state",
+             "windowTitle": "Owned background window"}
+    assert runtime._should_skip_for_already_in_target_state(action_type="open_app", scene_assessment=scene)
+    assert not runtime._should_skip_for_already_in_target_state(action_type="focus_window", scene_assessment=scene)
+
+
+def test_installed_webview_helper_does_not_replace_the_edge_browser_profile():
+    from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
+    catalog = ComputerUseAppCatalog.__new__(ComputerUseAppCatalog)
+    catalog.app_profiles = ComputerUseAppProfiles()
+    helper = {"displayName": "Microsoft Edge WebView2 Runtime", "processNames": ["msedgewebview2.exe"],
+              "sources": ["windows_registry_uninstall"]}
+    assert catalog._infer_profile_id(helper) is None
+    assert catalog._infer_profile_id({**helper, "displayName": "Microsoft Edge", "processNames": ["msedge.exe"]}) == "edge"
+
+
+def test_selector_history_cannot_promote_a_control_rejected_by_the_current_request(monkeypatch):
+    driver = WindowsUIADriver()
+
+    def wrapper(identity, role, children=()):
+        return SimpleNamespace(element_info=SimpleNamespace(handle=identity, name=identity,
+                               automation_id=identity, control_type=role, class_name=role),
+                               window_text=lambda: identity, children=lambda: list(children),
+                               is_visible=lambda: True, is_enabled=lambda: True)
+
+    old_input, button = wrapper("OwnedInput", "Edit"), wrapper("OwnedSubmit", "Button")
+    root = wrapper("Root", "Window", [old_input, button])
+    monkeypatch.setattr(driver, "_get_selector_hints", lambda _: [SimpleNamespace(selector={"automation_id": "OwnedInput"}, weight=90)])
+    monkeypatch.setattr(driver, "_query_wrappers_direct", lambda *_a, **_k: {})
+    monkeypatch.setattr(driver, "_wrapper_signature", lambda item: item.element_info.automation_id)
+    selected = driver._query_wrappers_fast(root, automation_id="OwnedSubmit", control_type="Button")
+    assert selected == [button]  # The old traversal also returned the historical Edit.
+
+
+def test_window_rebinding_does_not_replace_a_child_control_class(monkeypatch):
+    import importlib
+    module = importlib.import_module("runtimes.computer_use.runtime")
+    runtime = ComputerUseRuntime.__new__(ComputerUseRuntime)
+    runtime.driver = SimpleNamespace(platform="windows")
+    monkeypatch.setattr(runtime, "_infer_app_id_from_payloads", lambda **_: "owned-app")
+    seen = []
+    bindings = {"titles": ["Owned"], "classes": [], "processNames": []}
+    window = {"handle": 123, "title": "Owned", "className": "TopLevelWindow"}
+    monkeypatch.setattr(runtime, "_collect_runtime_window_candidates", lambda **kw: seen.append(kw["payload"]) or ([window], bindings))
+    monkeypatch.setattr(module, "requires_strict_window_binding", lambda **_: False)
+    monkeypatch.setattr(module, "window_satisfies_binding", lambda *_a, **_k: True)
+    monkeypatch.setattr(module, "choose_best_window_candidate", lambda *_a, **_k: window)
+    monkeypatch.setattr(module, "should_replace_window_context", lambda *_a, **_k: True)
+    payload, _ = runtime._prepare_action_window_context(run_handle=SimpleNamespace(emit=lambda *_: None),
+        action_type="click", action_payload={"automation_id": "OwnedSubmit", "control_type": "Button", "class_name": "ChildButton"})
+    assert seen[0]["class_name"] is None
+    assert payload["class_name"] == "ChildButton" and payload["automation_id"] == "OwnedSubmit"
+
+
 def test_capability_truth_keeps_non_host_platforms_theory_or_fixture_backed():
     matrix = {
         "currentPlatform": "windows",
@@ -210,6 +266,23 @@ def test_running_app_catalog_does_not_rewrite_unchanged_snapshot(monkeypatch):
     catalog._ensure_running(force=False)
 
     assert saves == []
+
+
+def test_app_query_does_not_return_unrelated_running_launchable_profiles():
+    catalog = ComputerUseAppCatalog.__new__(ComputerUseAppCatalog)
+    assert catalog._match_score({"displayName": "Unrelated editor", "isRunning": True, "launchable": True, "profileBound": True}, "Chrome") == 0
+    assert catalog._match_score({"displayName": "Google Chrome", "isRunning": False}, "Chrome") > 0
+
+
+def test_builtin_app_profile_is_not_installation_evidence():
+    catalog = ComputerUseAppCatalog.__new__(ComputerUseAppCatalog)
+    catalog.app_profiles = SimpleNamespace(get=lambda _: None, infer=lambda **_: None)
+    catalog.app_adapters = None
+    profile = {"appId": "sample", "profileId": "sample", "displayName": "Sample", "launchCommands": [["sample"]], "sources": ["app_profile"]}
+    normalized = catalog._normalize_entry(profile)
+    assert not normalized["installed"] and normalized["discoveryState"] == "unverified_profile"
+    observed = catalog._normalize_entry({**profile, "sources": ["app_profile", "windows_registry_uninstall"]})
+    assert observed["installed"] and observed["discoveryState"] == "observed_installed"
 
 
 def test_running_app_catalog_coalesces_concurrent_refreshes(monkeypatch):

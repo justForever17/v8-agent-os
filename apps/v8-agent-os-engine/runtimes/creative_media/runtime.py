@@ -1042,8 +1042,8 @@ class CreativeMediaRuntime:
             "supportsRepair": False,
             "visibility": "internal",
             "promptHints": [
-                "用法入口：通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，不要让 Supervisor 直接拼 provider raw request。",
-                "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；绑定 Agent 只使用 capabilities/plan/assets/jobs/edit/quality 六个 facade，不猜测旧工具名或 supplier 私有工具。",
+                "用法入口：creative_media_capabilities 查询模型；主管自己创作时 runtime_broker(mode='grant', tool_group='creative_media.core') 加载六个 facade。需要独立创作规划时才用 mode='route', routeKind='creative_media', routeReason 和 taskBriefs；不拼 provider raw request。",
+                "执行流程：Supervisor 或获授权子代理都可直接使用 capabilities/plan/assets/jobs/edit/quality；现有服务负责 recipe、provider lock、job、artifact 与质量/安全证明。用 describe 的 facade/action 获取参数，不为调用服务再启动 Director。",
                 "边界：科普/课程/产品介绍等可编辑代码视频由 Engineering 主导；Creative Media 只提供素材和媒体 provider 子能力。",
                 "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
                 "支撑能力与边界：Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐、3D 道具或关键帧素材时，Creative Media 作为 CreativeAssetRequest 素材支持 runtime；AI 生成拼接长视频可由 Creative Media 产出各类素材，由 Engineering 组装可编辑页面/时间线。",

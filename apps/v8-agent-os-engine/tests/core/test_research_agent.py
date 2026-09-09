@@ -75,6 +75,83 @@ def test_single_source_complete_answer_needs_no_planner_or_second_adversarial_pa
                    for request, _, _ in transport.requests for message in request)
 
 
+def test_reusable_body_guidance_reaches_actual_writer_and_both_submission_tools():
+    from runtimes.research.agent import ANSWER_BODY_CONTRACT
+
+    limitation = "The source establishes the format only; migration tooling remains unverified."
+    instance, transport = agent([
+        read(), call("save_research_answer_section", sectionId="finding", text=ANSWER),
+        call("submit_research_answer", sectionIds=["finding"], coverage="partial", limitations=[limitation]),
+    ], [approve("partial", [limitation])])
+    result = instance.run(question="Explain the format and migration tooling.")
+    messages, tools, _ = transport.requests[0]
+    assert ANSWER_BODY_CONTRACT in messages[0].content
+    assert "lead with supported findings" in messages[0].content
+    assert "unless specifically requested or necessary to interpret evidence" in messages[0].content
+    assert "do not repeat a full limitations block in the body" in messages[0].content
+    for name in ("save_research_answer_section", "submit_research_answer"):
+        actual = next(item["function"] for item in tools if item["function"]["name"] == name)
+        assert ANSWER_BODY_CONTRACT in actual["description"]
+    reviewer_messages = next(messages for messages, _, reviewer in transport.requests if reviewer)
+    assert "在 assessment 给精简建议" in reviewer_messages[0].content
+    assert "不设正文占比或字数门槛" in reviewer_messages[0].content
+    assert "不能把错误改称一般知识外推" in reviewer_messages[0].content
+    assert "不能把观察范围扩张为排他因果或普遍必要条件" in reviewer_messages[0].content
+    review_tools = next(tools for _, tools, reviewer in transport.requests if reviewer)
+    review_contract = next(item["function"] for item in review_tools if item["function"]["name"] == "review_research_answer")
+    assert "Unsupported substantive mechanism claims require a local correction" in review_contract["description"]
+    assert "not acceptance with a caveat" in review_contract["parameters"]["properties"]["limitations"]["description"]
+    assert result["answer"] == ANSWER
+    assert result["deliveryScope"] == "partial"
+    assert result["limitations"] == [limitation]
+    assert len([item for item in transport.requests if item[2]]) == 1
+    assert instance.searches == 0
+
+
+def test_body_guidance_is_not_a_lexical_filter_or_another_acceptance_pass():
+    # Synthetic methodology question: words like "timeout" may be the requested
+    # subject. Preserve reviewer-accepted prose and restrictions byte for byte.
+    method = "## Method and limits\n\nA timeout leaves the old format intact. [S1]"
+    limitation = "No claim is made about retry safety."
+    instance, transport = agent([read(), submit(answer=method, coverage="partial", limitations=[limitation])],
+                                [approve("partial", [limitation])])
+    instance.store = EvidenceStore()
+    instance.store.add([source("A timeout leaves the old format intact.")])
+    result = instance.run(question="Describe the observed timeout behavior and its limits.")
+    assert result["answer"] == method
+    assert result["researchResult"] == method
+    assert result["deliveryScope"] == "partial"
+    assert result["limitations"] == [limitation]
+    assert result["reviewDecision"] == "accept"
+    assert len(transport.requests) == 3
+    assert instance.searches == 0
+
+
+def test_explicit_factual_correction_cannot_be_accepted_by_adding_a_limitation():
+    wrong = "Every failed write deletes the old file. [S1]"
+    evidence = "A failed write leaves the old file unchanged."
+    finding = {"kind": "fact", "answerQuote": "Every failed write deletes the old file.",
+               "reason": "The claimed failure mechanism contradicts the observed behavior.",
+               "sourceKey": "S1", "evidenceQuote": evidence}
+    contradictory = call("review_research_answer", decision="accept", coverage="partial", corrections=[finding],
+                         limitations=["The deletion mechanism is a general extrapolation."])
+    revise = call("review_research_answer", decision="revise", coverage="partial", corrections=[finding],
+                  limitations=["Other storage backends were not examined."])
+    instance, transport = agent([read(), submit(answer=wrong)], [contradictory, revise], max_revisions=0)
+    instance.store = EvidenceStore()
+    instance.store.add([source(evidence)])
+    result = instance.run(question="What happens to the old file after a failed write?")
+    review_requests = [messages for messages, _, reviewer in transport.requests if reviewer]
+    errors = [json.loads(message.content).get("error", "") for message in review_requests[-1]
+              if isinstance(message, ToolMessage)]
+    assert "accept_requires_supported_answer_without_unresolved_errors" in errors
+    assert result["reviewDecision"] == "retry"
+    assert result["answer"] == ""
+    assert result["candidateDraft"]["answer"] == wrong
+    assert result["modelSynthesis"]["fallbackReason"] == "research_revision_budget_exhausted"
+    assert any(item.get("decision") == "revise" for item in result["modelSynthesis"]["trace"])
+
+
 def test_writer_and_reviewer_receive_original_request_separate_from_derived_question():
     original = "Please identify the applicable content-labeling standard."
     derived = "Verify standard GB 00000-2025 and its effective date."

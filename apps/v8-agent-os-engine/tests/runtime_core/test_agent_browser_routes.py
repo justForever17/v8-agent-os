@@ -26,6 +26,7 @@ def test_agent_browser_profile_root_follows_v8_agent_os_home_in_fresh_process(tm
     output = subprocess.check_output(
         [
             sys.executable,
+            "-X", "utf8",
             "-c",
             (
                 "from core.agent_browser_profile import default_agent_browser_profile_root; "
@@ -35,6 +36,7 @@ def test_agent_browser_profile_root_follows_v8_agent_os_home_in_fresh_process(tm
         cwd=engine_root,
         env=env,
         text=True,
+        encoding="utf-8",
     ).strip()
 
     assert Path(output) == tmp_path / "browser-profiles" / "computer_use"

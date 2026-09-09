@@ -38,6 +38,9 @@ from core.runtime_tool_access import (
     normalize_runtime_access,
     resolve_subagent_runtime_access,
     runtime_tool_names_for_groups,
+    runtime_tool_guidance,
+    READONLY_CAPABILITY_TOOL_NAMES,
+    preserve_loaded_capability_tools,
 )
 from core.time_truth import utc_now_iso
 from core.user_language import infer_preferred_language, normalize_preferred_language
@@ -487,7 +490,7 @@ def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtim
     collaboration_tools = [
         tool_ref
         for tool_ref in list(filtered_native_tools or [])
-        if str(getattr(tool_ref, "name", "") or "").strip() in {"delegation_broker", "plugin_broker"}
+        if str(getattr(tool_ref, "name", "") or "").strip() in {"delegation_broker", "plugin_broker", *READONLY_CAPABILITY_TOOL_NAMES}
     ]
     granted_runtime_tool_names = runtime_tool_names_for_groups(runtime_access)
     granted_runtime_tools = [
@@ -1757,6 +1760,8 @@ def _build_agent_system_bundle(
     route_prompt_addition: str = "",
     available_tool_names: list[str] | None = None,
 ) -> dict[str, object]:
+    from core.agent_browser_access import render_access_context
+
     parts: list[dict[str, str]] = [
         _agent_prompt_part(
             "subagent.delegated_agent_operating_charter",
@@ -1777,6 +1782,7 @@ def _build_agent_system_bundle(
             scope="collaboration_identity",
         ),
         *split_environment_prompt_parts(env_context, source_prefix="subagent.environment"),
+        _agent_prompt_part("subagent.browser_access", "dynamic", render_access_context(discovery_tool="browser_capabilities" in (available_tool_names or [])) + "\n", scope="browser_access"),
         _agent_prompt_part("subagent.active_todos", "dynamic", active_plan_context, scope="todos"),
         _agent_prompt_part("subagent.delegated_task_brief", "dynamic", delegated_plan_context, scope="task_brief"),
         _agent_prompt_part("subagent.route_additions", "dynamic", route_prompt_addition, scope="extensions"),
@@ -2218,7 +2224,7 @@ def build_agent_node(
                         mcp_limit=6,
                     )
                     combined_tools = _apply_task_tool_policy(
-                        route_bundle.filtered_tools,
+                        preserve_loaded_capability_tools(route_bundle.filtered_tools, available_tools, delegated_runtime_access),
                         delegated_task_brief,
                     )
                     combined_tools = _restore_required_artifact_tools(
@@ -2282,7 +2288,7 @@ def build_agent_node(
                 env_context=env_context,
                 active_plan_context=active_plan_context,
                 delegated_plan_context=delegated_plan_context,
-                collaboration_identity_context=collaboration_identity_context,
+                collaboration_identity_context=collaboration_identity_context + "\n" + runtime_tool_guidance(delegated_runtime_access),
                 route_prompt_addition=route_bundle.prompt_addition,
                 available_tool_names=[str(getattr(tool_ref, "name", "")) for tool_ref in combined_tools],
             )

@@ -41,13 +41,14 @@ def test_creative_media_agent_surface_is_exactly_six_facades() -> None:
     assert all(native_tool_family_for_name(name) == "creative_media" for name in EXPECTED)
 
 
-def test_supervisor_does_not_receive_creative_media_facades_by_default() -> None:
+def test_supervisor_receives_only_readonly_media_discovery_by_default() -> None:
     assert _RUNTIME_ROUTE_DEFAULT_GROUPS["creative_media"] == []
     default_names = {
         item["name"]
         for item in build_supervisor_tool_policy_snapshot(None)["lockedNativeTools"]
     }
-    assert not (default_names & EXPECTED)
+    assert default_names & EXPECTED == {"creative_media_capabilities"}
+    assert "browser_broker" not in default_names
 
 
 def test_creative_runtime_tool_matrix_is_bound_agent_only() -> None:
@@ -79,8 +80,8 @@ def test_creative_runtime_tool_matrix_is_bound_agent_only() -> None:
     }
 
     assert creative_child == EXPECTED | {"read_native_file"}
-    assert research_child == {"read_native_file"}
-    assert unbound_grandchild == {"read_native_file"}
+    assert research_child == {"read_native_file", "creative_media_capabilities"}
+    assert unbound_grandchild == {"read_native_file", "creative_media_capabilities"}
 
 
 def test_every_facade_action_has_a_strict_contract() -> None:
@@ -105,10 +106,10 @@ def test_every_facade_action_has_a_strict_contract() -> None:
 
 def test_every_facade_action_dispatches_through_the_registry(monkeypatch) -> None:
     class FakeHandler:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
             return json.dumps({"ok": True, "status": "succeeded", "summary": "registry dispatch ok", "artifactId": "artifact-fixture"})
 
-        async def ainvoke(self, _payload):
+        async def ainvoke(self, _payload, config=None):
             return self.invoke(_payload)
 
     tools = {
@@ -297,7 +298,7 @@ def test_owner_scoped_facades_pass_canonical_session_and_workspace_claims(monkey
 
 def test_facade_normalizes_internal_output_and_keeps_raw_detail_out_of_agent_surface(monkeypatch) -> None:
     class FakeHandler:
-        async def ainvoke(self, _payload):
+        async def ainvoke(self, _payload, config=None):
             return json.dumps(
                 {
                     "ok": True,
@@ -344,7 +345,7 @@ def test_facade_normalizes_internal_output_and_keeps_raw_detail_out_of_agent_sur
 
 def test_facade_normalizes_internal_failure(monkeypatch) -> None:
     class FakeHandler:
-        async def ainvoke(self, _payload):
+        async def ainvoke(self, _payload, config=None):
             return json.dumps(
                 {
                     "ok": False,

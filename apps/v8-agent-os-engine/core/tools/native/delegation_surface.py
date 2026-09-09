@@ -51,6 +51,16 @@ def supervisor_delegation_broker(
     verifier. Provide exact saved Research refs for evidence reads. Runtime tools
     follow the Agent's binding; no extra runtime activation grants are needed.
 
+    For read-only inventories, workers can use creative_media_capabilities
+    (rank_models/catalog) for configured media models, computer_use_list_apps
+    for applications, and browser_capabilities for the managed browser. These
+    discovery tools do not generate media, launch apps or change configuration;
+    no execution-group grant is needed. Preserve explicit forbiddenTools and
+    allowlists, but do not translate "no generation" into a discovery ban.
+    config_broker is Supervisor-only and cannot be granted to workers. Never
+    assign its modes or invent config_broker_* tool names for a child; provide
+    authorized evidence or assign the appropriate visible read-only discovery.
+
     Local results arrive through graph handoffs; do not poll. Observe/resume are
     for an explicit external delegation_id or a terminal diagnostic read.
     The Supervisor must inspect evidence and accept/retry/ignore the result.

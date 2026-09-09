@@ -91,6 +91,8 @@ UNSAFE_REASONS: dict[str, str] = {
     "write_native_file": "would write to the filesystem",
     "download_media_for_vision": "may download media and write artifacts",
     "web_broker": "may perform external network access",
+    "browser_broker": "requires an owned live browser page; may navigate, capture or mutate a real page",
+    "browser_capabilities": "reads current private Agent Browser session domains; requires an owned live conversation",
     "web_fetch": "performs external network access",
     "web_read": "performs external network access",
     "web_extract": "performs external network access",

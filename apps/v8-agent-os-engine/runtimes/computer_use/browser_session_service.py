@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from core.workbench_events import emit_workbench_document_event
@@ -51,6 +51,7 @@ class _BrowserSession:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     unavailable_reason: str = ""
+    agent_operation_lock: Any = field(default_factory=threading.RLock, repr=False)
 
 
 @dataclass(slots=True)
@@ -407,7 +408,7 @@ class BrowserSessionService:
         normalized_client_id = str(client_id or "").strip()
         if not normalized_client_id:
             raise BrowserSessionError("invalid_client", "clientId is required")
-        with self._lock:
+        with item.agent_operation_lock, self._lock:
             self._expire_lease(item)
             if item.controller_client_id and item.controller_client_id != normalized_client_id:
                 raise BrowserSessionError("control_busy", "Another Workbench client controls this browser", status_code=409)
@@ -415,6 +416,51 @@ class BrowserSessionService:
             item.lease_expires_at = time.monotonic() + CONTROL_LEASE_TTL_SECONDS
             item.updated_at = time.time()
         return self.public_status(browser_session_id, refresh=False)
+
+    def agent_target(self, *, session_id: str, browser_session_id: str, page_id: str = "") -> tuple[_BrowserSession, str]:
+        """Workbench page listings do not confer Agent ownership of every CDP tab."""
+        item = self._session(browser_session_id)
+        with self._lock:
+            if not session_id or item.session_id != session_id:
+                raise BrowserSessionError("browser_session_scope_mismatch", "Browser session does not belong to the current conversation", status_code=403)
+            target_id = self._target_for_page(item, page_id)
+            if target_id != item.target_id or any(
+                other.target_id == target_id and other.session_id != session_id and other.status != "unavailable"
+                for other in self._sessions.values()
+            ):
+                raise BrowserSessionError("browser_page_scope_mismatch", "This page is not owned by the current Agent browser session", status_code=403)
+            return item, target_id
+
+    def agent_request(
+        self, *, session_id: str, browser_session_id: str, page_id: str = "", action: str,
+        body: dict[str, Any] | None = None, check_cancelled: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        item, target_id = self.agent_target(session_id=session_id, browser_session_id=browser_session_id, page_id=page_id)
+
+        def request() -> dict[str, Any]:
+            self.agent_target(session_id=session_id, browser_session_id=browser_session_id, page_id=page_id)
+            if check_cancelled:
+                check_cancelled()
+            if action != "observe":
+                self.assert_agent_control_available_for_target(target_id)
+            path = {"observe": "/agent/observe", "close": "/agent/close", "media": "/agent/media"}.get(action, "/agent/action")
+            result = _record(item.provider.agent_request_json(
+                "POST", path, target_port=item.target_port, params={"target": target_id}, body=body,
+            ))
+            result.pop("targetId", None)
+            result.update({"browserSessionId": browser_session_id, "pageId": item.page_ids.get(target_id)})
+            if action == "observe":
+                self.note_agent_observation(target_id)
+            elif action == "close" and result.get("closed"):
+                self.mark_unavailable(browser_session_id, "Agent closed its browser page")
+            return result
+
+        if action == "observe":
+            return request()
+        # Only the target session waits for a bounded input operation; unrelated
+        # sessions and observations do not hold the global service lock over I/O.
+        with item.agent_operation_lock:
+            return request()
 
     def heartbeat(self, browser_session_id: str, client_id: str) -> dict[str, Any]:
         item = self._session(browser_session_id)

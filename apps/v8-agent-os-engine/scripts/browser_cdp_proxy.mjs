@@ -1,6 +1,11 @@
 import http from "node:http";
 import { createRequire } from "node:module";
 import { URL } from "node:url";
+import { actOnAgentPage, closeAgentPage, observeAgentPage, trackAgentPage } from "./browser_agent_surface.mjs";
+import { profileAccessSummary } from "./browser_profile_access.mjs";
+import { readProfilePage } from "./browser_profile_read.mjs";
+import { observeAgentMedia } from "./browser_media_observation.mjs";
+import { invalidateAgentObservation } from "./browser_agent_surface.mjs";
 
 const require = createRequire(import.meta.url);
 const proxyPort = Number.parseInt(process.env.CDP_PROXY_PORT || "3456", 10);
@@ -365,8 +370,51 @@ async function route(req, res) {
       });
     }
 
+    if (url.pathname === "/agent/sites" && req.method === "GET") {
+      return sendJson(res, 200, await profileAccessSummary(await ensureBrowser()));
+    }
+
+    if (url.pathname === "/agent/read" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req) || "{}");
+      return sendJson(res, 200, await readProfilePage(await ensureBrowser(), body));
+    }
+
     if (url.pathname === "/targets" && req.method === "GET") {
-      return sendJson(res, 200, { targets: await listPages() });
+        return sendJson(res, 200, { targets: await listPages() });
+    }
+
+    if (url.pathname === "/agent/new" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req) || "{}");
+      const nextUrl = String(body.url || "about:blank");
+      if (nextUrl !== "about:blank" && !["http:", "https:"].includes(new URL(nextUrl).protocol)) throw new Error("unsupported_agent_url");
+      const connected = await ensureBrowser();
+      const context = connected.contexts()[0] || await connected.newContext();
+      // Agent ownership must never be established by taking somebody else's blank tab.
+      const page = await context.newPage();
+      trackAgentPage(page);
+      try {
+        const id = await pageId(page);
+        if (nextUrl !== "about:blank") await page.goto(nextUrl, { waitUntil: "domcontentloaded", timeout: 10000 });
+        return sendJson(res, 200, { targetId: id, url: page.url(), title: await page.title() });
+      } catch (error) {
+        await page.close().catch(() => {});
+        throw error;
+      }
+    }
+
+    if (["/agent/observe", "/agent/action", "/agent/close", "/agent/media"].includes(url.pathname) && req.method === "POST") {
+      const targetId = String(url.searchParams.get("target") || "").trim();
+      if (!targetId) throw new Error("explicit_agent_target_required");
+      const page = await getPage(targetId);
+      const body = JSON.parse(await readBody(req) || "{}");
+      if (url.pathname === "/agent/media") {
+        await actOnAgentPage(page, { ...body, action: "inspect" });
+        try { return sendJson(res, 200, { targetId, ...await observeAgentMedia(page, body) }); }
+        finally { await invalidateAgentObservation(page); }
+      }
+      const result = url.pathname === "/agent/observe" ? await observeAgentPage(page, body)
+        : url.pathname === "/agent/close" ? await closeAgentPage(page, body) : await actOnAgentPage(page, body);
+      return sendJson(res, 200, { targetId, ...result });
     }
 
     if (url.pathname === "/new" && req.method === "GET") {

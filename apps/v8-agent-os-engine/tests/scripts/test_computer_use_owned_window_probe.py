@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from PIL import Image, ImageDraw
 
 
@@ -48,3 +50,12 @@ def test_owned_probe_rejects_real_state_root_before_runtime_imports():
 
     assert result.returncode != 0
     assert "before runtime imports" in result.stderr
+
+
+def test_native_cli_requires_live_before_creating_state_or_windows(tmp_path, monkeypatch):
+    target = tmp_path / "must-not-exist"
+    monkeypatch.setattr(probe, "run_owned_window_probe", lambda *_a, **_k: pytest.fail("No window without --live"))
+    with pytest.raises(SystemExit) as stopped:
+        probe.main(["--isolated-root", str(target)])
+    assert stopped.value.code == 2
+    assert not target.exists()

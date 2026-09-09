@@ -726,15 +726,15 @@ def test_static_fetch_does_not_restart_tls_attempt_after_budget_is_exhausted(mon
 
 def test_agent_browser_profile_gets_the_full_provider_navigation_budget(monkeypatch) -> None:
     timeouts: list[int] = []
-
-    class _FailingBrowserFetcher:
-        @staticmethod
-        def fetch(_url: str, **kwargs: object) -> object:
-            timeouts.append(int(kwargs["timeout"]))
-            raise TimeoutError("simulated browser navigation timeout")
-
-    monkeypatch.setattr(web_fetcher, "_try_import_dynamic_fetcher", lambda: (_FailingBrowserFetcher, None))
-    monkeypatch.setattr(web_fetcher, "_try_import_stealth_fetcher", lambda: (_FailingBrowserFetcher, None))
+    from core import agent_browser_access
+    read_outcomes: list[tuple[str, str]] = []
+    monkeypatch.setattr(agent_browser_access, "record_profile_read", lambda url, status: read_outcomes.append((url, status)))
+    from runtimes.computer_use.browser_automation import agent_browser_automation
+    def fail_profile(**kwargs):
+        timeouts.append(int(kwargs["timeout_seconds"] * 1000))
+        raise TimeoutError("simulated browser navigation timeout")
+    monkeypatch.setattr(agent_browser_automation, "read_profile_page", fail_profile)
+    monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
     monkeypatch.setattr(
         web_fetcher,
         "get_web_fetch_config",
@@ -759,6 +759,7 @@ def test_agent_browser_profile_gets_the_full_provider_navigation_budget(monkeypa
 
     assert timeouts
     assert timeouts[0] >= 7_500
+    assert read_outcomes == [("https://metaso.cn/?q=langchain", "failed")]
 
 
 def test_allowlisted_auto_fetch_prioritizes_headless_profile_before_public_static(monkeypatch) -> None:
@@ -809,6 +810,12 @@ def test_allowlisted_auto_fetch_prioritizes_headless_profile_before_public_stati
     monkeypatch.setattr(web_fetcher, "_try_import_static_fetcher", lambda: (_UnexpectedStaticFetcher, None))
     monkeypatch.setattr(web_fetcher, "_try_import_dynamic_fetcher", lambda: (_DynamicFetcher, None))
     monkeypatch.setattr(web_fetcher, "_try_import_stealth_fetcher", lambda: (None, "stealth not needed"))
+    from runtimes.computer_use.browser_automation import agent_browser_automation
+    def read_profile(**kwargs):
+        response = _DynamicFetcher.fetch(kwargs["url"], timeout_seconds=kwargs["timeout_seconds"])
+        return {"contextReused": True, "html": response.html_content, "status": response.status, "url": response.url}
+    monkeypatch.setattr(agent_browser_automation, "read_profile_page", read_profile)
+    monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
 
     payload = web_fetcher._fetch_with_scrapling_internal(
         "https://metaso.cn/?q=langchain",
@@ -820,7 +827,7 @@ def test_allowlisted_auto_fetch_prioritizes_headless_profile_before_public_stati
     assert payload.agent_browser_profile_used is True
     assert payload.fetch_mode == "dynamic"
     assert [name for name, _kwargs in calls] == ["dynamic"]
-    assert calls[0][1]["cdp_url"] == "ws://127.0.0.1/devtools/browser/test"
+    assert calls[0][1]["timeout_seconds"] > 7
 
 
 def test_missing_scrapling_fetcher_dependency_is_terminal_and_actionable() -> None:

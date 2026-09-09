@@ -29,6 +29,23 @@ test("local stream is only used before an authoritative state exists", () => {
   assert.equal(deriveAuthoritativeRunActivity({ localStreamActive: false }), false);
 });
 
+test("paused owns a resumable run without keeping its transport spinner active", () => {
+  assert.equal(isActiveRunStatus("paused"), true);
+  assert.equal(runStatusAllowsInterrupt("paused"), true);
+  assert.equal(deriveAuthoritativeRunActivity({ localStreamActive: true, localRunId: "r1",
+    runtimeStatus: "paused", runtimeRunId: "r1", workflowStatus: "running", workflowRunId: "r1" }), false);
+  assert.equal(deriveAuthoritativeRunActivity({ localStreamActive: false,
+    runtimeStatus: "paused", runtimeRunId: "r1" }), false);
+  assert.equal(deriveAuthoritativeRunActivity({ localStreamActive: true, localRunId: "r2",
+    runtimeStatus: "paused", runtimeRunId: "r1" }), true);
+  assert.equal(deriveAuthoritativeRunActivity({ localStreamActive: false,
+    runtimeStatus: "running", runtimeRunId: "r1" }), true);
+  assert.equal(deriveAuthoritativeRunActivity({ runtimeStatus: "waiting_approval", runtimeRunId: "r1" }), true);
+  const controls = deriveAuthoritativeRunControl({ authoritativeStatus: "paused", activeRunId: "r1", controlCanResume: true });
+  assert.equal(controls.status, "paused");
+  assert.equal(controls.canResume, true);
+});
+
 test("a stale terminal snapshot from another run cannot settle the current stream", () => {
   assert.equal(deriveAuthoritativeRunActivity({
     localStreamActive: true,

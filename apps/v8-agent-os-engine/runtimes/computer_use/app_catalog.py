@@ -220,6 +220,7 @@ class ComputerUseAppCatalog:
         return {
             "query": str(query or "").strip() or None,
             "apps": [payload for _score, payload in ranked[: max(1, min(int(limit), 100))]],
+            "matchedCount": len(ranked),
             "summary": self._summary(entries),
         }
 
@@ -545,7 +546,12 @@ class ComputerUseAppCatalog:
         normalized["launchable"] = bool(normalized["launchCommands"])
         normalized["isRunning"] = bool(normalized["runningWindows"])
         normalized["profileBound"] = bool(normalized["profileId"])
-        normalized["installed"] = bool(normalized["launchCommands"] or normalized["profileBound"])
+        normalized["installed"] = normalized["isRunning"] or bool(set(normalized["sources"]) & {
+            "windows_app_paths", "windows_registry_uninstall", "mac_application_bundle", "linux_desktop_entry",
+        })
+        normalized["discoveryState"] = (
+            "running" if normalized["isRunning"] else "observed_installed" if normalized["installed"] else "unverified_profile"
+        )
         normalized["controlClass"] = self._infer_control_class(normalized)
         normalized["appAdapterId"] = self._infer_app_adapter_id(normalized)
         return normalized
@@ -604,13 +610,26 @@ class ComputerUseAppCatalog:
         window_title = next((item for item in title_patterns if str(item or "").strip()), None) or entry.get("displayName")
         class_name = next((item for item in list(entry.get("classNames") or []) if str(item or "").strip()), None)
         process_name = next((item for item in list(entry.get("processNames") or []) if str(item or "").strip()), None)
-        return self.app_profiles.infer(
+        inferred = self.app_profiles.infer(
             explicit_app_id=None,
             window_title=window_title,
             class_name=class_name,
             app_name=app_name,
             process_name=process_name,
         )
+        profile = self.app_profiles.get(inferred) if inferred else None
+        if profile and set(entry.get("sources") or []) & {
+            "windows_registry_uninstall", "windows_app_paths", "mac_application_bundle", "linux_desktop_entry",
+        }:
+            # An installed helper whose title contains a browser name is not
+            # that browser (e.g. Edge WebView2). Don't merge its executables or
+            # display name into a native app profile using substring inference.
+            processes = {_stem(item).casefold() for item in entry.get("processNames") or []}
+            profile_processes = {_stem(item).casefold() for item in profile.process_names}
+            exact_names = {_normalize(item) for item in [profile.display_name, *profile.app_names] if item}
+            if not processes.intersection(profile_processes) and _normalize(str(entry.get("displayName") or "")) not in exact_names:
+                return None
+        return inferred
 
     def _fallback_app_id(self, entry: Dict[str, Any]) -> str:
         candidates = [
@@ -812,6 +831,8 @@ class ComputerUseAppCatalog:
             str(entry.get("appId") or ""),
             str(entry.get("profileId") or ""),
             str(entry.get("displayName") or ""),
+            str(entry.get("controlClass") or ""),
+            "浏览器 browser" if entry.get("controlClass") == "browser_host_app" else "",
             *list(entry.get("aliases") or []),
             *list(entry.get("processNames") or []),
             *list(entry.get("titlePatterns") or []),
@@ -826,6 +847,8 @@ class ComputerUseAppCatalog:
                 score = max(score, 90 + min(len(field), 24))
             elif normalized_query in field:
                 score = max(score, 70 + min(len(normalized_query), 20))
+        if score == 0:
+            return 0  # Running/launchable priority cannot make an unrelated app match a query.
         score += 18 if entry.get("isRunning") else 0
         score += 12 if entry.get("launchable") else 0
         score += 8 if entry.get("profileBound") else 0

@@ -21,6 +21,12 @@ for (const [label, file, builder] of [
   ["Phone", "apps/v8-agent-os-phone/src/lib/runtime-stage.ts", "buildPhoneRuntimeStageModel"],
 ]) {
   const build = load(file)[builder];
+  test(`${label} paused owner is not actively executing and can become active on resume`, () => {
+    const paused = build([], { ownerRuntime: "engineering", status: "paused", recoverable: true });
+    assert.equal(paused.items.some((item) => item.status === "active"), false);
+    const resumed = build([], { ownerRuntime: "engineering", status: "running" });
+    assert.equal(resumed.items.find((item) => item.id === "engineering").status, "active");
+  });
   const entry = (seq, topic, state = "active") => ({
     id: `event-${seq}`, seq, timestamp: seq * 1000, runId: "run-live", runtimeId: "research", topic,
     kind: "progress", summary: `Operation ${seq}`, status: state,
@@ -40,6 +46,13 @@ for (const [label, file, builder] of [
 }
 
 const webStage = load("apps/v8-agent-os-web/src/lib/runtime-stage.ts");
+test("Web paused runtime needs attention but never renders an active card", () => {
+  const paused = webStage.buildRuntimeStageModel([], { ownerRuntime: "engineering", status: "paused", recoverable: true });
+  assert.equal(paused.items.find((item) => item.id === "engineering").status, "attention");
+  assert.equal(paused.items.some((item) => item.status === "active"), false);
+  const resumed = webStage.buildRuntimeStageModel([], { ownerRuntime: "engineering", status: "running" });
+  assert.equal(resumed.items.find((item) => item.id === "engineering").status, "active");
+});
 const event = (seq, summary = `Operation ${seq}`) => ({
   id: `event-${seq}`, seq, timestamp: seq * 1000, runId: "run-window", runtimeId: "engineering",
   topic: "runtime.episode.completed", kind: "progress", summary, status: "completed",

@@ -210,6 +210,34 @@ def _normalize_ocr_query(locator: str) -> str | None:
     return query or None
 
 
+def visual_locator_dependency_status(
+    locator: str, availability: Dict[str, Any], *, captured_image: bool = False, read_text: bool = False,
+) -> Dict[str, Any]:
+    """Check the dependencies of the requested path without resolving or acting."""
+    scheme = str(locator or "").split(":", 1)[0].strip().lower()
+    ocr = scheme in {"ocr", "text"} and bool(_normalize_ocr_query(locator))
+    missing: List[str] = []
+    # Captured-image OCR uses our Tesseract reader, not RPA.Desktop. A named
+    # locator or an uncaptured desktop read still uses the RPA resolver.
+    if not (captured_image and (ocr or scheme == "image")) and not availability.get("runtimeAvailable"):
+        missing.append("RPA.Desktop")
+    if (scheme == "image" or (ocr and not captured_image)) and not availability.get("recognitionAvailable"):
+        missing.append("RPA.recognition")
+    if (ocr or read_text) and not availability.get("tesseractAvailable"):
+        missing.append("Tesseract")
+    return {"ok": not missing, "status": "ready" if not missing else "missing_dependency",
+            "missingDependencies": missing, "recoverable": bool(missing)}
+
+
+def _optional_module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        # find_spec of a submodule imports its parent and may raise when that
+        # optional top-level package is absent or has no usable spec.
+        return False
+
+
 def _compact_ocr_text(value: Any) -> str:
     return "".join(str(value or "").strip().lower().split())
 
@@ -717,7 +745,7 @@ class RPADesktopVisualLocatorRuntime:
         return desktop_cls
 
     def _recognition_templates_module(self):
-        if importlib.util.find_spec("RPA.recognition") is None:
+        if not _optional_module_available("RPA.recognition"):
             return None
         return importlib.import_module("RPA.recognition.templates")
 
@@ -725,7 +753,7 @@ class RPADesktopVisualLocatorRuntime:
         notes: List[str] = []
         status = "ready"
         runtime_available = False
-        recognition_available = bool(importlib.util.find_spec("RPA.recognition"))
+        recognition_available = _optional_module_available("RPA.recognition")
         tesseract_available = bool(_resolve_tesseract_executable())
         ocr_languages = _available_tesseract_languages() if tesseract_available else []
         try:
@@ -738,7 +766,7 @@ class RPADesktopVisualLocatorRuntime:
         supports_ocr_locator = tesseract_available
         if runtime_available and not recognition_available:
             status = "partial_ready"
-            notes.append("未检测到 RPA.recognition；image/ocr 定位不可用，但 point/region 仍可使用。")
+            notes.append("未检测到 RPA.recognition；图片定位不可用，独立截图 OCR 取决于 Tesseract，point/region 仍可使用。")
         elif runtime_available and recognition_available and not tesseract_available:
             notes.append("未检测到系统 Tesseract；image locator 可用，但 OCR/read_text 暂不可用。")
         elif tesseract_available and "chi_sim" not in ocr_languages:

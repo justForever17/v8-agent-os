@@ -810,7 +810,7 @@ export function buildPhoneRuntimeStageModel(
         : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
     const runtimeActivitiesById = new Map<PhoneRuntimeId, PhoneRuntimeStageActivity[]>();
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
-    const isBusy = isActiveRunStatus(runtimeStatus);
+    const isBusy = runtimeStatus !== "paused" && isActiveRunStatus(runtimeStatus);
     const activeEpisodeRuntimes = new Set(buildRuntimeEpisodeGraph(messageActivities.map((activity) => ({
         id: activity.id, topic: activity.topic, timestamp: activity.timestamp,
         data: activity.node.kind === "execution" ? activity.node.data as Record<string, unknown> : undefined,

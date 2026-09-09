@@ -546,7 +546,9 @@ def test_computer_use_list_apps_limits_aliases_and_windows():
     assert "vscode" in visible
     assert "VS Code" in visible
     assert "visual studio code" not in visible
-    assert "windows" not in visible
+    # Human guidance may describe windows; raw driver window objects stay out.
+    assert '"windows":' not in visible and '"handle":' not in visible
+    assert "does not mean no browser process" in visible
     _assert_not_json_wrapper(visible)
 
 

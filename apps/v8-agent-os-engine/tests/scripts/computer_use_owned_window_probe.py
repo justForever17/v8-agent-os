@@ -69,7 +69,7 @@ def _read_json_when_ready(path: Path, process: subprocess.Popen, timeout: float 
     raise TimeoutError(f"owned_probe_file_not_ready:{path.name}")
 
 
-def run_owned_window_probe(runtime: Any, *, output_directory: Path) -> dict[str, Any]:
+def run_owned_window_probe(runtime: Any, *, output_directory: Path, native_actions: bool = False) -> dict[str, Any]:
     """Exercise production UIA/capture against only a child process we own."""
     if platform.system() != "Windows":
         return {"ok": False, "status": "unsupported", "reason": "owned_window_probe_requires_windows"}
@@ -178,27 +178,34 @@ def run_owned_window_probe(runtime: Any, *, output_directory: Path) -> dict[str,
             if payload["checks"]["smallDialogCapture"]["imageSize"][0] >= payload["checks"]["mainCapture"]["imageSize"][0] / 2:
                 raise RuntimeError("small_dialog_fixture_not_small")
 
-            stage = "native_task_route"
-            binding = runtime._resolve_app_binding(window_title=title, include_running=True)
-            loop = runtime.prepare_task_loop(
-                goal="在本地应用输入测试文本并提交，随后截图。", app_id=binding.resolved_app_id, app_name=title,
-            )
-            if (loop.get("domain") or {}).get("selectedPlaybook") is not None or loop.get("status") != "generic_planner":
-                raise RuntimeError("native_input_task_was_routed_to_web_playbook")
-            payload["checks"]["nativeTaskRoute"] = {
-                "status": "real_host_passed", "appId": binding.resolved_app_id,
-                "controlClass": (binding.catalog_entry or {}).get("controlClass"),
-                "selectedPlaybook": (loop.get("domain") or {}).get("selectedPlaybook"), "routeStatus": loop.get("status"),
-            }
+            if not native_actions:
+                stage = "native_task_route"
+                binding = runtime._resolve_app_binding(window_title=title, include_running=True)
+                loop = runtime.prepare_task_loop(
+                    goal="在本地应用输入测试文本并提交，随后截图。", app_id=binding.resolved_app_id, app_name=title,
+                )
+                if (loop.get("domain") or {}).get("selectedPlaybook") is not None or loop.get("status") != "generic_planner":
+                    raise RuntimeError("native_input_task_was_routed_to_web_playbook")
+                payload["checks"]["nativeTaskRoute"] = {
+                    "status": "real_host_passed", "appId": binding.resolved_app_id,
+                    "controlClass": (binding.catalog_entry or {}).get("controlClass"),
+                    "selectedPlaybook": (loop.get("domain") or {}).get("selectedPlaybook"), "routeStatus": loop.get("status"),
+                }
 
             stage = "owned_native_input_and_submit"
             if not input_desktop_status()["available"]:
                 raise RuntimeError("input_desktop_changed_before_input")
             marker = f"owned-input-{uuid.uuid4().hex[:8]}"
             assert_owned(main_handle)
-            driver.type_text(window_handle=main_handle, automation_id="OwnedInput", control_type="Edit", text=marker, clear_first=True)
-            assert_owned(main_handle)
-            driver.click_element(window_handle=main_handle, automation_id="OwnedSubmit", control_type="Button")
+            if native_actions:
+                payload["checks"]["nativeActions"] = _run_native_actions(
+                    runtime, title=title, handle=main_handle, output_directory=output_directory,
+                    process=process, assert_owned=assert_owned, marker=marker,
+                )
+            else:
+                driver.type_text(window_handle=main_handle, automation_id="OwnedInput", control_type="Edit", text=marker, clear_first=True)
+                assert_owned(main_handle)
+                driver.click_element(window_handle=main_handle, automation_id="OwnedSubmit", control_type="Button")
             submitted = _read_json_when_ready(output_directory / "submitted.json", process, timeout=5)
             if submitted.get("submittedText") != marker or int(submitted.get("pid") or 0) != process.pid:
                 raise RuntimeError("native_input_submission_not_observed")
@@ -223,3 +230,139 @@ def run_owned_window_probe(runtime: Any, *, output_directory: Path) -> dict[str,
             if remaining or (process is not None and process.poll() is None):
                 payload["ok"] = False
     return payload
+
+
+def _run_native_actions(runtime, *, title, handle, output_directory, process, assert_owned, marker):
+    """Real native tools, real isolated runtime, no model or replacement driver."""
+    from core.database import db
+    from core.tools.native import computer_use as native
+    from erc.command_service import command_service
+    from erc.runtime_context import bind_runtime_context
+
+    if native._get_computer_use_runtime() is not runtime:
+        raise RuntimeError("native_probe_runtime_is_not_the_isolated_instance")
+    session = f"owned-native-{uuid.uuid4().hex[:10]}"
+    workspace = output_directory / "workspace"
+    workspace.mkdir()
+    db.create_or_update_session(session, title=session, user_id="owned-native-audit")
+    run_id = f"run-{session}"
+    context = dict(session_id=session, run_id=run_id, workspace_path=str(workspace),
+                   user_id="owned-native-audit", actor_role="supervisor", agent_id="supervisor", runtime_kind="chat",
+                   goal=f"Only operate the owned temporary test window {title}; type synthetic text and submit.")
+    timings = []
+
+    def invoke(name, arguments):
+        assert_owned(handle)
+        if not input_desktop_status()["available"]:
+            raise RuntimeError("input_desktop_changed_before_native_action")
+        started = time.perf_counter()
+        with bind_runtime_context(**context):
+            message = getattr(native, name).invoke({"type": "tool_call", "id": f"owned-{uuid.uuid4().hex}",
+                "name": name, "args": {"window_title": title, "window_handle": handle, **arguments}})
+        result = json.loads(message.content)
+        elapsed = round((time.perf_counter() - started) * 1000, 2)
+        timings.append({"tool": name, "elapsedMs": elapsed, "ok": result.get("ok"),
+                        "status": result.get("status"), "verification": result.get("verification"),
+                        "planStep": result.get("planStep"), "summary": result.get("summary")})
+        (output_directory / "native-progress.json").write_text(json.dumps(timings, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not result.get("ok"):
+            raise RuntimeError(f"native_action_failed:{name}:{result.get('summary')}")
+        return result
+
+    # Two continuous UIA rounds: the second must retain the exact selector and
+    # use the already-foreground focus evidence rather than a focus cache.
+    for value in (marker + "-first", marker):
+        invoke("computer_use_input_text", {"automation_id": "OwnedInput", "control_type": "Edit",
+               "text": value, "clear_first": True, "submit": False})
+        invoke("computer_use_click_target", {"automation_id": "OwnedSubmit", "control_type": "Button"})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            submitted = _read_json_when_ready(output_directory / "submitted.json", process, timeout=1)
+            if submitted.get("submittedText") == value and int(submitted.get("pid") or 0) == process.pid:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("native_tool_submission_not_observed")
+
+    # A real control signal produces a failed focus receipt. No injected fake
+    # focus response and no attempt to target another app or an invalid HWND.
+    before = (output_directory / "submitted.json").read_bytes()
+    command_service.cancel_run(run_id, reason="owned fixture cancellation counterexample")
+    with bind_runtime_context(**context):
+        denied = native.computer_use_input_text.invoke({"type": "tool_call", "id": "owned-cancelled-input",
+            "name": "computer_use_input_text", "args": {"window_title": title, "window_handle": handle,
+            "automation_id": "OwnedInput", "control_type": "Edit", "text": "MUST-NOT-BE-TYPED"}})
+    denied_payload = json.loads(denied.content)
+    actual_input = runtime.driver._resolve_target(window_handle=handle, automation_id="OwnedInput", control_type="Edit")[0]
+    input_value = actual_input.get_value()
+    failed_focus_safe = not denied_payload.get("ok") and input_value == marker and (output_directory / "submitted.json").read_bytes() == before
+    return {"status": "real_host_passed" if failed_focus_safe else "failed", "timings": timings,
+            "cancelledFocusZeroSideEffects": failed_focus_safe, "cancelledStatus": denied_payload.get("status")}
+
+
+def main(argv=None):
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Real native desktop actions against only an owned temporary window.")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--isolated-root", required=True)
+    args = parser.parse_args(argv)
+    if not args.live:
+        parser.error("--live is required before reading configuration or creating a window")
+    isolated = Path(args.isolated_root).resolve()
+    if isolated.exists() or isolated == (Path.home() / ".v8-agent-os").resolve():
+        parser.error("isolated root must be a fresh directory")
+    isolated.mkdir(parents=True)
+    os.environ["V8_AGENT_OS_HOME"] = str(isolated)
+    engine = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(engine))
+    from core.runtime.startup_profile import get_runtime_registry_state
+    get_runtime_registry_state()
+    from runtimes.computer_use.runtime import computer_use_runtime
+    from core.llm_factory import llm_factory
+    from unittest.mock import patch
+    model_attempts = []
+    focus_probes = []
+    original_skip = computer_use_runtime._should_skip_for_already_in_target_state
+
+    def observe_skip(**kwargs):
+        if kwargs.get("action_type") != "focus_window":
+            return original_skip(**kwargs)
+        started = time.perf_counter()
+        foreground = computer_use_runtime.driver.foreground_window() or {}
+        probe_ms = round((time.perf_counter() - started) * 1000, 2)
+        skipped = original_skip(**kwargs)
+        payload = kwargs.get("action_payload") or {}
+        before = kwargs.get("before_observation") or {}
+        focus_probes.append({"targetHandle": payload.get("window_handle"),
+            "observedHandle": (before.get("metadata") or {}).get("windowHandle"),
+            "foregroundBeforeHandle": foreground.get("handle"), "requireVisualGuard": payload.get("require_visual_guard"),
+            "targetPathPresent": bool(payload.get("target_path")), "scene": kwargs.get("scene_assessment"),
+            "skipped": skipped, "additionalReadProbeMs": probe_ms})
+        return skipped
+
+    def reject_model(*_args, **_kwargs):
+        model_attempts.append("unexpected_model_request")
+        raise RuntimeError("owned_native_probe_forbids_model_calls")
+
+    # This fixture validates deterministic primitives. A model fallback makes
+    # the case fail before provider access; desktop/runtime methods stay real.
+    with patch.object(llm_factory, "create_for_role", side_effect=reject_model), patch.object(llm_factory, "create_chat_model", side_effect=reject_model), \
+            patch.object(computer_use_runtime, "_should_skip_for_already_in_target_state", side_effect=observe_skip):
+        result = run_owned_window_probe(computer_use_runtime, output_directory=isolated / "probe", native_actions=True)
+    result["modelAttempts"] = len(model_attempts)
+    result["focusProbes"] = focus_probes
+    result["focusReuseAudit"] = {"status": "observed" if any(item["skipped"] for item in focus_probes) else "unverified",
+        "skipCount": sum(bool(item["skipped"]) for item in focus_probes),
+        "note": "Functional input/submit success does not prove that foreground focus reuse was exercised."}
+    result["ok"] = bool(result.get("ok")) and not model_attempts
+    target = isolated / "result.json"
+    target.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"ok": result.get("ok"), "status": result.get("status"), "failedStage": result.get("failedStage"),
+                      "path": str(target), "cleanup": result.get("cleanup"), "modelAttempts": len(model_attempts)}, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

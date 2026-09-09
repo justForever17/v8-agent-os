@@ -14,6 +14,11 @@ from langgraph.types import Command
 
 from erc.checkpoint_store import checkpoint_store
 
+# Framework node executions, not a model output/token budget. The SDK default
+# of 25 stops ordinary observe/act/verify tasks after roughly ten tool rounds.
+# No-progress detection, caller limits, cancellation and monetary budgets remain.
+SUPERVISOR_GRAPH_STEP_LIMIT = 100
+
 
 @dataclass(slots=True)
 class SupervisorExecutionBundle:
@@ -157,7 +162,7 @@ class SupervisorAgentRunner:
         return state
 
     def build_graph_config(self, session_id: str) -> dict:
-        return {"configurable": {"thread_id": session_id}}
+        return {"configurable": {"thread_id": session_id}, "recursion_limit": SUPERVISOR_GRAPH_STEP_LIMIT}
 
     @staticmethod
     def _message_id(message: Any) -> str:

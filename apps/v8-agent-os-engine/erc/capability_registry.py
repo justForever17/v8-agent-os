@@ -42,8 +42,8 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责图片、视频、语音、音乐与未来 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：复杂媒体创作或 provider 生成任务通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入应是 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，而不是 provider raw request。",
-            "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；绑定 Agent 只使用 capabilities/plan/assets/jobs/edit/quality 六个 facade，不猜测旧工具名或 supplier 私有工具；Supervisor 不直接拼图像/视频/音频 API 请求。",
+            "用法入口：creative_media_capabilities 查询已接入模型；主管自己创作时 runtime_broker(mode='grant', tool_group='creative_media.core') 按需加载六个 facade。需要独立创作规划/恢复时再用 mode='route', routeKind='creative_media', routeReason 和 taskBriefs 建立 episode；不拼 provider raw request。",
+            "执行流程：Supervisor 或获授权子代理都可直接使用 capabilities/plan/assets/jobs/edit/quality；现有服务负责 recipe、provider lock、job、artifact 与质量/安全证明。用 describe 的 facade/action 请求精确参数；不要为调用这些服务再启动一个 Director。",
             "边界：明确 Seedance/Sora/图生视频/参考视频/首尾帧/参考音频/音乐时可主导；简单背景图、图标、封面、角色图、配音、音乐、关键帧可作为其他 runtime 的 CreativeAssetRequest 支撑能力；科普/课程/产品介绍等可编辑代码视频由 Engineering 主导。",
             "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
             "科普、课程、产品介绍、讲解类视频若需要可编辑时间线或代码合成，默认由 Engineering 走代码视频链路，Creative Media 只做素材/provider 子能力。",
@@ -82,8 +82,8 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责桌面观察、窗口交互、结构化执行与视觉保底。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：真实 GUI/桌面登录态任务通过 runtime_broker(mode='route', need={'kind':'computer_use', ...}) 进入受控 episode；输入应是 goal、app/window 线索、allowedActions、安全/登录态边界。",
-            "执行流程：Computer Use 自己 observe -> plan -> act -> verify，高风险动作配合视觉保底；Supervisor 不猜坐标、不编造桌面状态、不把原始视觉网格当事实。",
+            "用法入口：computer_use_list_apps 查询应用；主管直接操作时 runtime_broker(mode='grant', tool_group='computer_use.direct') 加载观察、窗口绑定和动作。要委托独立桌面执行循环时才用 mode='route', routeKind='computer_use', routeReason 和 taskBriefs。",
+            "执行流程：直接路径由 Supervisor observe -> act -> verify；托管路径由 Computer Use 执行同样闭环。两者复用目标绑定、Safety 和执行证明，不猜坐标、不编造状态。用户禁止委派时不调用 autonomous execute_task。交互网页可按需加载 browser.control，复用现有 Agent 浏览器的当前 DOM/AX。",
             "边界：只有用户明确要求真实桌面终端、GUI 终端、桌面登录态或必须操作真实窗口时才交给 Computer Use；可复用流程、模板、对象库和回放交给 RPA。",
             "回流要求：typed handoff 必须给 observedState/actionsTaken/verification/screenshotOrTraceRef/humanAttention/limitations/detailRef；driver trace、坐标候选和 OCR raw 只进 Runtime Surface。",
         ],
@@ -93,7 +93,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责 trace 编译、流程固化、.robot 导出、执行与失败回退。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：可复用桌面流程通过 runtime_broker(mode='route', need={'kind':'rpa', ...}) 或 RPA 工具组执行；探索和不确定窗口先给 Computer Use。",
+            "用法入口：可复用桌面流程可加载 rpa.run 执行，或 runtime_broker(mode='route', routeKind='rpa', routeReason=..., taskBriefs=[...]) 委托托管执行；需要探索时使用当前桌面观察。",
             "可复用、可验证、可修复的桌面/浏览器流程应进入 RPA Runtime，例如模板、对象库、定时执行、导出脚本或稳定回放。",
             "一次性探索或不确定目标窗口的临时桌面观察优先 Computer Use；探索结果需要固化时再转为 RPA。",
         ],
@@ -108,7 +108,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责工程任务的 ContextPack、写集治理、Proof Ledger、工作区观测、验证与 worker 分发；它强化工程交付边界，不替代 Supervisor 与用户沟通。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：项目开发、修复、依赖安装、脚手架、验证闭环或已批准 Spec 执行，通过 runtime_broker(mode='route', need={'kind':'engineering', ...}) 创建 Engineering episode。",
+            "用法入口：主管可直接完成已绑定工作区的开发与验证。用户选择编程模式、已批准 Spec 或确需并行/隔离/托管恢复时，通过 runtime_broker(mode='route', routeKind='engineering', routeReason=..., taskBriefs=[...]) 创建 Engineering episode。",
             "职责边界：Engineering episode 持有多输出写入、Proof Ledger、恢复和最终 typed handoff；delegation_broker 只提供独立角色或并行 worker。两者可以组合，但 delegation.recursive 或一个带 Engineering Capsule 的实现子 Agent 不能替代应由 Engineering episode 持有的交付链。route 合同报错时只修提示的字段/路径并重试一次，不要改走 delegation 绕过合同。",
             "brief 粒度：一个 Engineering taskBrief 是一个相干、可独立执行并可独立验收的工作单元，不是整项工程的文件清单。实现、机器可读结果/文档、最终验证若能分别交付或失败，应拆成多个 taskBrief，用 dependencies 表达先后；紧密耦合且必须一起修改的少量文件可以留在同一 brief。不要把大量互不相干的 writeSet、生成结果和验证工作塞给一个 worker，也不要把同一个过宽 brief 原样改名后当作 repair。",
             "writeSet 只写原始绑定工作区的相对路径，handoff 里的托管 worktree 绝对路径只是血缘，不能复制为新授权。动态文件名必须改为确定名称，或全部收进一个已声明输出目录；报告、缓存和版本变体不能溢出。",
@@ -127,7 +127,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
             "首次 route 先列全当前已知事实域：researchBriefIds 与 researchBriefGoals 按位置一一对应；Engine 会合并为只读内部 brief，宁可省略可选上下文也不能漏掉已知域。",
             "进入受管 Research 的 brief 由本层持续负责。只对明确 missing brief 做一次有界补查；仍 degraded 就保留 evidenceGaps，禁止降级到 web_broker、research_broker 或本地探测来覆盖结论。",
             "terminal ResearchAnswerPack 已直接携带每个 brief 的 answer、来源、limitations 和 evidence status；snippet、footer、captcha、过程日志不能当最终答案，过期或冲突经验标记 refresh_required/degraded evidence。research:// 只是血缘，仅按 handoff 明示的 get_evidence 参数展开。Research 不写文件、不执行系统副作用。",
-            "事实要进入多文件实现、执行证明或可恢复交付时，先消费 Research handoff，再建立 Engineering episode；可逆的本地实现可携带非关键 evidenceGaps 继续并用本地 proof 收口。",
+            "事实用于实现前先消费 Research handoff；Supervisor 可直接实施多文件交付，需要用户指定的工程执行、隔离、并行或托管恢复时再建立 Engineering episode。非关键 evidenceGaps 可明确保留，用实际实现和验证收口。",
         ],
     },
 }
@@ -429,6 +429,9 @@ class CapabilityRegistry:
                 else runtime_tool_available(tool_name)
             )
             if not tool_available:
+                continue
+            if tool_name in {"computer_use_list_apps", "computer_use_desktop_capabilities"}:
+                filtered.append(tool_ref)
                 continue
             if is_baseline_system_tool_name(tool_name):
                 filtered.append(tool_ref)

@@ -44,6 +44,17 @@ from runtimes.computer_use.verification_contract import (
 )
 from runtimes.rpa.promotion_gate import draft_environment_signal_summary, draft_timing_signal_summary
 
+VisualLocatorInput = Annotated[Optional[str], (
+    "Optional visual locator: ocr:<visible text>, image:<authorized template path>, or an existing configured RPA locator name. "
+    "This is NOT a UIA automation_id; use automation_id/control_type for ordinary UIA actions and omit this field. "
+    "Visual locating requires its optional dependencies."
+)]
+PostActionVisualLocatorInput = Annotated[Optional[str], (
+    "Optional additional post-action visual verification: ocr:<visible text>, image:<authorized template path>, "
+    "or an existing configured RPA locator name. NOT a UIA automation_id. Omit for normal UIA verification. "
+    "If explicitly requested, missing dependencies block the action before execution; verification is not silently skipped."
+)]
+
 __all__ = [
     "_COMPUTER_USE_APP_RESOLUTION_CACHE_TTL_MS",
     "_COMPUTER_USE_POINT_TAG_PATTERN",
@@ -632,6 +643,12 @@ def _computer_use_prebind_window(
         )
     except Exception as exc:
         return resolved_app, normalized_title, window_handle, f"Error ensuring desktop window: {exc}"
+    focus_response = _computer_use_compact_response(
+        action="focus_window", raw_result=raw_result, app_hint=app_query, resolved_app=resolved_app,
+        expected_window_title=normalized_title, strict_expected_window_title=bool(normalized_title),
+    )
+    if not json.loads(focus_response).get("ok"):
+        return resolved_app, normalized_title, window_handle, focus_response
     updated_app = _computer_use_update_resolved_app_from_raw_result(
         app_query=app_query,
         resolved_app=resolved_app,
@@ -652,14 +669,6 @@ def _computer_use_prebind_window(
         or metadata.get("windowHandle")
         or window_handle
     )
-    if bound_handle not in (None, "") or bound_title:
-        try:
-            _get_computer_use_runtime().driver.focus_window(
-                window_title=bound_title or None,
-                window_handle=int(bound_handle) if bound_handle not in (None, "") else None,
-            )
-        except Exception:
-            pass
     return updated_app, bound_title or None, int(bound_handle) if bound_handle not in (None, "") else None, None
 
 
@@ -947,6 +956,26 @@ def _computer_use_compact_response(
     expected_window_title: str | None = None,
     strict_expected_window_title: bool = False,
 ) -> str:
+    control = raw_result.get("control") if isinstance(raw_result, dict) else None
+    controlled_status = str(raw_result.get("status") or "").strip() if isinstance(raw_result, dict) else ""
+    if (isinstance(control, dict) and control
+            and controlled_status in {"cancelled", "paused", "interrupted", "blocked"}
+            and str(control.get("status") or "").strip() == controlled_status):
+        summary = {"cancelled": "执行已取消，后续桌面动作已停止。", "paused": "执行已暂停，等待明确恢复。",
+                   "interrupted": "执行已中断，后续桌面动作已停止。", "blocked": "执行已被阻断，未继续后续桌面动作。"}[controlled_status]
+        reason = str(control.get("reason") or "").strip()
+        if reason:
+            summary += f" 原因：{reason}"
+        return json.dumps({
+            "ok": False, "kind": "computer_use_controlled", "action": action, "status": controlled_status,
+            "blocked": controlled_status == "blocked", "summary": summary,
+            "control": {key: control.get(key) for key in ("command", "reason", "status")},
+            "verification": {"passed": False, "status": controlled_status,
+                             "reason": "控制回执不是动作完成或副作用不存在的证明。", "level": "unverified"},
+            "priorStepCount": len(raw_result.get("steps") or []) if isinstance(raw_result.get("steps"), list) else 0,
+            "recommendedNextAction": "await_explicit_resume" if controlled_status == "paused" else "stop_execution",
+            "sessionId": raw_result.get("sessionId"), "runId": raw_result.get("runId"),
+        }, ensure_ascii=False, indent=2)
     primary_result, primary_step = _computer_use_primary_action(raw_result)
     if not isinstance(primary_result, dict):
         return json.dumps(
@@ -1168,6 +1197,8 @@ def _computer_use_compact_observation(
     raw_result: dict[str, Any],
     app_hint: str | None = None,
     resolved_app: dict[str, Any] | None = None,
+    element_limit: int = 12,
+    element_query: str | None = None,
 ) -> str:
     observation = dict(raw_result.get("observation") or {})
     metadata = dict(observation.get("metadata") or {})
@@ -1182,14 +1213,21 @@ def _computer_use_compact_observation(
         },
     )
     elements = []
-    total_elements = len(list(observation.get("elements") or []))
-    for item in list(observation.get("elements") or [])[:12]:
+    candidates = list(observation.get("elements") or [])
+    query = str(element_query or "").strip().casefold()
+    if query:
+        candidates = [item for item in candidates if isinstance(item, dict) and query in " ".join(
+            str(item.get(key) or "") for key in ("name", "elementId", "role")
+        ).casefold()]
+    total_elements = len(candidates)
+    for item in candidates[:max(1, min(element_limit, 120))]:
         if not isinstance(item, dict):
             continue
         elements.append(
             _agent_compact_dict(
                 {
                     "elementId": item.get("elementId"),
+                    "automationId": item.get("automationId"),
                     "role": item.get("role"),
                     "name": _agent_preview_text(item.get("name"), limit=120),
                     "actions": _agent_limited_list(item.get("actions"), limit=4),
@@ -1198,9 +1236,10 @@ def _computer_use_compact_observation(
             )
         )
     payload = {
-        "ok": True,
+        "ok": bool(observation) and raw_result.get("ok") is not False,
         "action": "observe_scene",
-        "summary": "已完成当前窗口观察。",
+        "summary": "已完成当前窗口观察。" if observation and raw_result.get("ok") is not False else "未获得当前窗口的有效观察。",
+        "error": raw_result.get("error") or ("observation_missing" if not observation else None),
         "app": {
             "requested": app_hint,
             "resolved": (resolved_app or {}).get("displayName") or (resolved_app or {}).get("appId"),
@@ -1231,9 +1270,11 @@ def _computer_use_compact_observation(
         },
         "environmentSignalFlags": _agent_signal_flags(environment_signal_summary),
         "elements": elements,
+        "screenshot": _computer_use_artifacts_from_result({"observation": observation}),
+        "observedAt": observation.get("observedAt") or observation.get("timestamp") or metadata.get("capturedAt"),
         "omittedElementCount": max(0, total_elements - len(elements)),
-        "recommendedNextAction": "Use the visible elementId/name for click/type tools, or request detail/rawRef if the target is missing.",
-        "detailTool": "computer_use_observe_scene(..., depth_limit=..., element_limit=...) plus tool_observation_detail(rawRef)",
+        "recommendedNextAction": "Use observed automation_id and control_type for click/input, or a unique visible name. Re-observe if the target is missing; do not guess a control.",
+        "detailTool": "computer_use_observe_scene(..., depth_limit=..., element_limit=..., element_query=...); use vision_media_analyzer for screenshot filePath refs",
     }
     browser_automation = dict(metadata.get("browserAutomation") or {})
     browser_session_mode = str(browser_automation.get("profilePersistenceMode") or "").strip() or None
@@ -2199,7 +2240,30 @@ def _computer_use_execute_single_step(
     step: dict[str, Any],
     goal: str,
 ) -> dict[str, Any]:
-    return _get_computer_use_runtime().execute_plan(
+    locator_fields = [key for key, value in step.items() if value and (
+        key.endswith("visual_locator") or key.endswith("visual_locator_scope")
+    )]
+    runtime = _get_computer_use_runtime()
+    if locator_fields:
+        from runtimes.computer_use.visual_locator_runtime import visual_locator_dependency_status
+
+        availability = runtime.visual_locator_runtime.availability_summary()
+        for key in locator_fields:
+            prefix = key.removesuffix("visual_locator").removesuffix("visual_locator_scope")
+            read_text = bool(step.get(f"{prefix}visual_locator_read_text"))
+            if prefix == "post_action_":
+                read_text = read_text or bool(step.get("post_action_expect_text") or step.get("post_action_expect_texts"))
+            check = visual_locator_dependency_status(str(step[key]), availability, read_text=read_text)
+            if not check["ok"]:
+                reason = (f"{key} 缺少依赖：{', '.join(check['missingDependencies'])}。动作尚未执行。"
+                          "automation_id 是 UIA 控件标识，不是视觉 locator；普通 UIA 操作可省略视觉定位参数。"
+                          "若确实要求额外视觉验证，须先补齐对应依赖后重试，不能跳过验证。")
+                return {"result": {"actionType": action, "status": "blocked", "message": reason,
+                    "verification": {"passed": False, "status": "missing_dependency", "reason": reason,
+                                     "level": "review_required", "recoverable": True},
+                    "metadata": {"dependencyPreflight": {**check, "field": key},
+                                 "recommendedNextAction": "correct_visual_locator_or_enable_dependency"}}}
+    return runtime.execute_plan(
         **_computer_use_runtime_kwargs(goal),
         steps=[step],
         continue_on_error=False,
@@ -2978,6 +3042,10 @@ def computer_use_list_apps(
     """List desktop applications in a Supervisor-friendly way.
 
     Prefer this before launch/focus when you only know an approximate app name.
+    discoveryState distinguishes observed installations/running apps from unverified
+    built-in profiles. A launch candidate alone does not prove installation.
+    isRunning/running counts describe observed app windows, not all OS processes;
+    headless/background browsers may be absent. Use browser_capabilities for the Agent Browser session.
     """
     try:
         payload = _get_computer_use_runtime().list_apps(
@@ -3009,6 +3077,8 @@ def computer_use_list_apps(
             app_payload = {
                 "appId": item.get("appId"),
                 "displayName": item.get("displayName"),
+                "discoveryState": item.get("discoveryState") or "unknown",
+                "controlClass": item.get("controlClass"),
                 "isRunning": item.get("isRunning"),
                 "launchable": item.get("launchable"),
                 "topWindowTitle": top_window.get("title"),
@@ -3029,7 +3099,10 @@ def computer_use_list_apps(
                 "ok": True,
                 "query": str(app_query or "").strip() or None,
                 "apps": apps,
+                "count": payload.get("matchedCount", len(apps)),
+                "omittedCount": max(0, int(payload.get("matchedCount") or len(apps)) - len(apps)),
                 "summary": payload.get("summary"),
+                "runningStateMeaning": "Observed app windows only; no observed window does not prove no process is running. Agent Browser/headless sessions use browser_capabilities.",
                 "platform": payload.get("platform"),
                 "backend": payload.get("backend"),
                 "detailTool": "computer_use_list_apps(detail_level='detail')",
@@ -3612,6 +3685,7 @@ def computer_use_observe_scene(
     include_screenshot: bool = True,
     depth_limit: int = 4,
     element_limit: int = 60,
+    element_query: Optional[str] = None,
     observe_notifications: bool = False,
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
@@ -3620,6 +3694,9 @@ def computer_use_observe_scene(
 
     Use before action planning or recovery to understand the current window,
     controls, screenshot, and target hints without exposing raw driver traces.
+    Use element_query to narrow returned controls by visible name, role or elementId.
+    For a named-window task always pass window_title, including after ensure_window; without it this reads the current foreground.
+    Screenshots are references; call vision_media_analyzer when their pixels are needed.
     """
     app_query = str(app or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
@@ -3639,7 +3716,7 @@ def computer_use_observe_scene(
             window_title=inferred_title,
             include_screenshot=include_screenshot,
             depth_limit=max(1, min(depth_limit, 8)),
-            element_limit=max(1, min(element_limit, 120)),
+            element_limit=120 if element_query else max(1, min(element_limit, 120)),
             observe_notifications=observe_notifications,
             observe_sound=observe_sound,
             environment_probe_mode=environment_probe_mode,
@@ -3653,6 +3730,8 @@ def computer_use_observe_scene(
             raw_result=raw_result,
             app_hint=app_query,
             resolved_app=resolved_app,
+            element_limit=element_limit,
+            element_query=element_query,
         )
     except Exception as e:
         return f"Error observing desktop scene: {e}"
@@ -3666,15 +3745,17 @@ def computer_use_click_target(
     target: Optional[str] = None,
     window_title: Optional[str] = None,
     window_handle: Optional[int] = None,
+    automation_id: Optional[str] = None,
+    control_type: Optional[str] = None,
     target_text: Optional[str] = None,
     double: bool = False,
-    visual_locator: Optional[str] = None,
+    visual_locator: VisualLocatorInput = None,
     visual_locator_scope: Optional[str] = None,
     visual_locator_scope_padding: Optional[list[int]] = None,
     visual_locator_scope_seed_strategy: Optional[str] = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
-    post_action_visual_locator: Optional[str] = None,
+    post_action_visual_locator: PostActionVisualLocatorInput = None,
     post_action_visual_locator_confidence: Optional[float] = None,
     post_action_visual_locator_timeout_ms: int = 2500,
     post_action_visual_locator_read_text: bool = False,
@@ -3686,7 +3767,8 @@ def computer_use_click_target(
 ) -> str:
     """Click a semantic desktop target with built-in verification and blocking.
 
-    Prefer short semantic hints such as 'primary_input', 'address_bar', 'confirm_action', or a visible element name.
+    Prefer automation_id and control_type from the current observation, or a unique visible element name.
+    Use semantic hints such as primary_input/address_bar only when the app's returned profile defines them.
     The runtime will decide whether to use structured lookup, anchor targeting, or a guarded fallback path.
     """
     app_query = str(app or "").strip() or None
@@ -3717,6 +3799,8 @@ def computer_use_click_target(
         "window_title": effective_window_title,
         "window_handle": window_handle,
         "target_text": target_text,
+        "automation_id": automation_id,
+        "control_type": control_type,
         "double": bool(double),
     }
     point_hint = _computer_use_parse_point_tag(target_hint) or _computer_use_parse_point_tag(target_text)
@@ -3752,7 +3836,7 @@ def computer_use_click_target(
     if point_hint:
         step["point"] = list(point_hint)
         step["coordinate_source"] = "vision_point_tag"
-    elif target_hint:
+    elif target_hint and not automation_id:
         if (resolved_app or {}).get("appId"):
             step["selector_key"] = target_hint
             step["profile_action"] = target_hint
@@ -3760,6 +3844,10 @@ def computer_use_click_target(
             step["name"] = target_hint
     if target_text:
         step["target_text"] = target_text
+    if automation_id:
+        step["automation_id"] = automation_id
+    if control_type:
+        step["control_type"] = control_type
     step["require_visual_guard"] = False
     step["prefer_fast_path"] = True
     step["post_action_settle_timeout_ms"] = 220
@@ -3821,15 +3909,17 @@ def computer_use_input_text(
     target: Optional[str] = None,
     window_title: Optional[str] = None,
     window_handle: Optional[int] = None,
+    automation_id: Optional[str] = None,
+    control_type: Optional[str] = None,
     clear_first: bool = True,
     submit: bool = False,
-    visual_locator: Optional[str] = None,
+    visual_locator: VisualLocatorInput = None,
     visual_locator_scope: Optional[str] = None,
     visual_locator_scope_padding: Optional[list[int]] = None,
     visual_locator_scope_seed_strategy: Optional[str] = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
-    post_action_visual_locator: Optional[str] = None,
+    post_action_visual_locator: PostActionVisualLocatorInput = None,
     post_action_visual_locator_confidence: Optional[float] = None,
     post_action_visual_locator_timeout_ms: int = 2500,
     post_action_visual_locator_read_text: bool = False,
@@ -3841,7 +3931,8 @@ def computer_use_input_text(
 ) -> str:
     """Input text into a desktop target using the simplest possible interface.
 
-    If `target` is provided, it is treated as a semantic target hint. If `target` is omitted, the tool falls back to
+    Prefer automation_id and control_type from the current observation; they distinguish inputs with identical names.
+    If `target` is provided, it is a semantic hint. When both target and automation_id are omitted, the tool uses
     window-level typing and blocks when editable focus cannot be confirmed.
     """
     app_query = str(app or "").strip() or None
@@ -3872,6 +3963,8 @@ def computer_use_input_text(
         "window_title": effective_window_title,
         "window_handle": window_handle,
         "text_preview": text[:80],
+        "automation_id": automation_id,
+        "control_type": control_type,
         "clear_first": bool(clear_first),
         "submit": bool(submit),
     }
@@ -3911,14 +4004,18 @@ def computer_use_input_text(
     if point_hint:
         step["point"] = list(point_hint)
         step["coordinate_source"] = "vision_point_tag"
-    elif target_hint:
+    elif target_hint and not automation_id:
         if (resolved_app or {}).get("appId"):
             step["selector_key"] = target_hint
             step["profile_action"] = target_hint
         else:
             step["name"] = target_hint
-    else:
+    elif not automation_id:
         step["window_typing"] = True
+    if automation_id:
+        step["automation_id"] = automation_id
+    if control_type:
+        step["control_type"] = control_type
     _computer_use_apply_visual_locator_step(
         step,
         visual_locator=visual_locator,
@@ -3977,13 +4074,13 @@ def computer_use_paste_text(
     window_handle: Optional[int] = None,
     clear_first: bool = False,
     submit: bool = False,
-    visual_locator: Optional[str] = None,
+    visual_locator: VisualLocatorInput = None,
     visual_locator_scope: Optional[str] = None,
     visual_locator_scope_padding: Optional[list[int]] = None,
     visual_locator_scope_seed_strategy: Optional[str] = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
-    post_action_visual_locator: Optional[str] = None,
+    post_action_visual_locator: PostActionVisualLocatorInput = None,
     post_action_visual_locator_confidence: Optional[float] = None,
     post_action_visual_locator_timeout_ms: int = 2500,
     post_action_visual_locator_read_text: bool = False,
@@ -4127,13 +4224,13 @@ def computer_use_paste_files(
     window_handle: Optional[int] = None,
     text: Optional[str] = None,
     submit: bool = False,
-    visual_locator: Optional[str] = None,
+    visual_locator: VisualLocatorInput = None,
     visual_locator_scope: Optional[str] = None,
     visual_locator_scope_padding: Optional[list[int]] = None,
     visual_locator_scope_seed_strategy: Optional[str] = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
-    post_action_visual_locator: Optional[str] = None,
+    post_action_visual_locator: PostActionVisualLocatorInput = None,
     post_action_visual_locator_confidence: Optional[float] = None,
     post_action_visual_locator_timeout_ms: int = 2500,
     post_action_visual_locator_read_text: bool = False,
@@ -4143,7 +4240,7 @@ def computer_use_paste_files(
     environment_probe_mode: Optional[str] = None,
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """Paste files into a desktop target via clipboard file payload, optionally with accompanying text."""
+    """Paste authorized workspace files or exact current-session sources/artifacts. All paths are checked before binding a window or changing the clipboard; a rejected item cancels the whole set."""
     try:
         raw_paths = json.loads(paths_json)
     except Exception as e:
@@ -4151,11 +4248,39 @@ def computer_use_paste_files(
     if isinstance(raw_paths, str):
         file_paths = [raw_paths]
     elif isinstance(raw_paths, list):
-        file_paths = [str(item) for item in raw_paths if str(item).strip()]
+        file_paths = raw_paths
     else:
         return "Error: paths_json 必须是 JSON 数组或字符串。"
     if not file_paths:
         return "Error: 至少需要一个文件路径。"
+    if any(not isinstance(item, str) or not item.strip() for item in file_paths):
+        return "Error: 每个文件路径必须是非空字符串；未执行任何粘贴。"
+    from core.workspace_capability import resolve_workspace_tool_path
+    from core.creative_media_resource_authority import (
+        CreativeMediaResourceAuthorityError, creative_media_resource_authority,
+    )
+
+    context = get_runtime_context()
+    normalized_paths: list[str] = []
+    for index, raw_path in enumerate(file_paths, 1):
+        preflight = resolve_workspace_tool_path(raw_path, runtime_context=context)
+        candidate = Path(str(preflight.get("resolvedPath") or raw_path))
+        if not preflight.get("ok"):
+            try:
+                resource = creative_media_resource_authority.resolve_session_file_reference(
+                    session_id=str(context.get("session_id") or context.get("sessionId") or ""),
+                    path=candidate,
+                    workspace_path=str((preflight.get("binding") or {}).get("activeWorkspaceRoot") or ""),
+                )
+                candidate = resource.path
+            except CreativeMediaResourceAuthorityError:
+                return json.dumps({"ok": False, "status": "failed", "reasonCode": "workspace_boundary_block",
+                                   "fileIndex": index, "summary": "文件未获得当前工作区或会话的读取授权；整组未执行粘贴。"}, ensure_ascii=False)
+        if candidate is None or not candidate.is_file():
+            return json.dumps({"ok": False, "status": "failed", "reasonCode": "paste_file_unavailable",
+                               "fileIndex": index, "summary": "目标不是可用文件；整组未执行粘贴。"}, ensure_ascii=False)
+        normalized_paths.append(str(candidate))
+    file_paths = normalized_paths
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
@@ -4177,16 +4302,6 @@ def computer_use_paste_files(
         or str(target_override.get("expected_window_title") or "").strip()
         or _computer_use_effective_window_title(None, resolved_app)
     )
-    resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
-        action_name="paste_files_prebind",
-        app_query=app_query,
-        resolved_app=resolved_app,
-        window_title=effective_window_title,
-        window_handle=window_handle,
-        target_path=str(target_override.get("resolved_target_path") or "").strip() or None,
-    )
-    if prebind_error:
-        return prebind_error
     guard_target = {
         "app": app_query,
         "resolved_app_id": (resolved_app or {}).get("appId"),
@@ -4195,6 +4310,7 @@ def computer_use_paste_files(
         "window_title": effective_window_title,
         "window_handle": window_handle,
         "file_count": len(file_paths),
+        "file_paths": file_paths,
         "text_preview": str(text or "")[:80] or None,
         "mode": "paste_files",
     }
@@ -4216,6 +4332,16 @@ def computer_use_paste_files(
             desktop_route=desktop_route,
             route_gate_applied=isinstance(state, dict),
         )
+    resolved_app, effective_window_title, window_handle, prebind_error = _computer_use_prebind_window(
+        action_name="paste_files_prebind",
+        app_query=app_query,
+        resolved_app=resolved_app,
+        window_title=effective_window_title,
+        window_handle=window_handle,
+        target_path=str(target_override.get("resolved_target_path") or "").strip() or None,
+    )
+    if prebind_error:
+        return prebind_error
     step: dict[str, Any] = {
         "action": "type_text",
         "text": str(text or ""),
@@ -4296,13 +4422,13 @@ def computer_use_right_click_target(
     window_title: Optional[str] = None,
     window_handle: Optional[int] = None,
     target_text: Optional[str] = None,
-    visual_locator: Optional[str] = None,
+    visual_locator: VisualLocatorInput = None,
     visual_locator_scope: Optional[str] = None,
     visual_locator_scope_padding: Optional[list[int]] = None,
     visual_locator_scope_seed_strategy: Optional[str] = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
-    post_action_visual_locator: Optional[str] = None,
+    post_action_visual_locator: PostActionVisualLocatorInput = None,
     post_action_visual_locator_confidence: Optional[float] = None,
     post_action_visual_locator_timeout_ms: int = 2500,
     post_action_visual_locator_read_text: bool = False,
@@ -4436,13 +4562,13 @@ def computer_use_hover_target(
     window_title: Optional[str] = None,
     window_handle: Optional[int] = None,
     target_text: Optional[str] = None,
-    visual_locator: Optional[str] = None,
+    visual_locator: VisualLocatorInput = None,
     visual_locator_scope: Optional[str] = None,
     visual_locator_scope_padding: Optional[list[int]] = None,
     visual_locator_scope_seed_strategy: Optional[str] = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
-    post_action_visual_locator: Optional[str] = None,
+    post_action_visual_locator: PostActionVisualLocatorInput = None,
     post_action_visual_locator_confidence: Optional[float] = None,
     post_action_visual_locator_timeout_ms: int = 2500,
     post_action_visual_locator_read_text: bool = False,
@@ -4759,8 +4885,8 @@ def computer_use_drag_pointer(
     app: Optional[str] = None,
     window_title: Optional[str] = None,
     steps: int = 12,
-    start_visual_locator: Optional[str] = None,
-    end_visual_locator: Optional[str] = None,
+    start_visual_locator: VisualLocatorInput = None,
+    end_visual_locator: VisualLocatorInput = None,
     visual_locator_confidence: Optional[float] = None,
     visual_locator_timeout_ms: int = 2500,
     observe_notifications: bool = False,

@@ -25,7 +25,7 @@ from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.memory_observability import log_memory_observation
 from core.prompt_cache_segments import hash_prompt_segment
 from core.runtime.extensions_runtime import extensions_runtime_service
-from core.runtime_tool_access import filter_visible_tools_for_actor
+from core.runtime_tool_access import filter_visible_tools_for_actor, runtime_access_from_route_context, preserve_loaded_capability_tools
 from core.runtime_route_contract import ENGINEERING_TASK_UNIT_DISCIPLINE, render_runtime_route_contract
 from core.runtime_contract_errors import SupervisorRuntimeRouteContractError
 from core.runtime.reflex_gate import (
@@ -434,7 +434,8 @@ _EXPLICIT_RUNTIME_SELECTION_DENY_RE = re.compile(
 )
 _DIRECT_EXECUTION_TOOL_RE = re.compile(
     r"(?:`?(?:web_broker|web_read|web_search|write_native_file|read_native_file|run_system_command)`?"
-    r"|写入工具|网页工具|原生文件工具)",
+    r"|computer_use(?:_[a-z_]+)?|creative_media(?:_[a-z_]+)?|browser_broker"
+    r"|写入工具|网页工具|原生文件工具|桌面工具|桌面操作|多媒体创作)",
     re.IGNORECASE,
 )
 _DIRECT_EXECUTION_BOUNDARY_RE = re.compile(
@@ -3599,6 +3600,12 @@ def execute_supervisor_turn(
         if not include_extensions_prefilter_prompt:
             route_bundle = _suppress_extensions_prefilter_prompt(route_bundle)
         filtered_supervisor_tools = route_bundle.filtered_tools
+        # Optional extension selection cannot discard the tools the Supervisor
+        # just loaded. Reuse only tools already allowed by the role/grant owner.
+        filtered_supervisor_tools = preserve_loaded_capability_tools(
+            filtered_supervisor_tools, visible_supervisor_tools,
+            runtime_access_from_route_context(state.get("current_route_context")),
+        )
         filtered_supervisor_tools = _filter_spec_tools_for_mode(filtered_supervisor_tools, state)
         filtered_supervisor_tools = _filter_completion_truth_correction_tools(
             filtered_supervisor_tools,
@@ -4273,6 +4280,13 @@ def execute_supervisor_turn(
             selected_tools=filtered_supervisor_tools,
         )
         response, progress_guard = apply_remaining_steps_guard(response, remaining_steps)
+        if progress_guard is not None:
+            from langgraph.errors import GraphRecursionError
+
+            print(f"[ExecutionProgressGuard] Paused with {progress_guard['remaining_steps']} managed steps remaining")
+            boundary = GraphRecursionError(str(response.content))
+            boundary.execution_progress_guard = dict(progress_guard)
+            raise boundary
         extensions_runtime_service.emit_response_tool_calls(response)
         response, loop_breaker = apply_no_progress_breaker(prepared_messages, response)
         extensions_runtime_service.emit_execution_completed(response=response)
@@ -4283,11 +4297,6 @@ def execute_supervisor_turn(
         print(
             f"[LoopBreaker] Short-circuited repeated tool cycle ({tool_list}) "
             f"x{loop_breaker['count']} with identical observation fingerprint"
-        )
-    if progress_guard is not None:
-        print(
-            "[ExecutionProgressGuard] Suppressed a new tool round with "
-            f"{progress_guard['remaining_steps']} managed steps remaining"
         )
     if state_compaction_updates:
         object.__setattr__(response, "_v8_state_compaction_updates", tuple(state_compaction_updates))

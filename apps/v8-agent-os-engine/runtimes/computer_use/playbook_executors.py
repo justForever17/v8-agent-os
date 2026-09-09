@@ -457,18 +457,9 @@ def _finish_run(context: PlaybookExecutionContext, run_handle: Any, *, status: s
     if run_handle is None:
         return None
     if status in {"succeeded", "needs_human_login", "needs_human_attention", "review_required"}:
-        run_handle.transition("completed", reason=reason, node="computer_use_runtime")
-        try:
-            from erc.run_service import run_service
-
-            run_service.transition_run(run_handle.run_id, status="completed")
-        except Exception:
-            pass
+        context.runtime.finish_operation(run_handle, status="completed", reason=reason)
     else:
-        try:
-            run_handle.fail(reason, node="computer_use_runtime")
-        except Exception:
-            pass
+        context.runtime.finish_operation(run_handle, status="failed", reason=reason)
     return context.runtime._cleanup_resource_lease(run_handle=run_handle, status=status, reason=reason)
 
 

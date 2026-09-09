@@ -403,6 +403,35 @@ def _creative_media_safety_event_summary(event: Any) -> dict[str, Any]:
     )
 
 
+def _creative_media_model_discovery(
+    *, modality: str | None = None, operation_kind: str | None = None,
+    model_ref: str | None = None, limit: int = 8,
+) -> dict[str, Any]:
+    from runtimes.creative_media.production_pack import rank_model_candidates
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    candidates = list(creative_media_runtime.get_model_preferences().get("connectedOptions") or [])
+    if model_ref:
+        candidates = [item for item in candidates if item.get("modelRef") == model_ref]
+    ranked, count = rank_model_candidates(candidates, modality=modality, operation_kind=operation_kind, limit=limit)
+    return {
+        "modelCandidates": [
+            {
+                **{key: item.get(key) for key in (
+                    "candidateId", "modelRef", "providerId", "modelId", "modality", "operationKind",
+                    "enabled", "available", "briefOnly",
+                )},
+                "readiness": {key: dict(item.get("readiness") or {}).get(key)
+                              for key in ("executable", "planningOnly", "reasonCodes")},
+            }
+            for item in ranked
+        ],
+        "candidateCount": count,
+        "hasMoreCandidates": count > len(ranked),
+        "readinessBasis": "configuration_and_adapter_not_live_probe",
+    }
+
+
 @tool
 def creative_media_catalog(
     modality: Optional[str] = None,
@@ -430,13 +459,15 @@ def creative_media_catalog(
             limit=limit,
             cursor=cursor,
         )
+        payload.update(_creative_media_model_discovery(modality=modality, operation_kind=operation_kind, limit=limit))
+        payload["summary"] = "已接入模型候选及配置就绪性；注册表条目只作参考，不证明已接入或已授权。"
         return json.dumps(payload, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error reading CreativeMedia catalog: {str(e)}"
 
 
 @tool
-def creative_media_resolutions(detail_level: str = "summary") -> str:
+def creative_media_resolutions(detail_level: str = "summary", model_ref: Optional[str] = None) -> str:
     """Return 多媒体创作 resolution presets for image and video generation."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
@@ -465,6 +496,9 @@ def creative_media_resolutions(detail_level: str = "summary") -> str:
             }
         else:
             payload["detailLevel"] = normalized_detail
+        payload["presetAuthority"] = "convenience_defaults_not_model_limits"
+        if model_ref:
+            payload.update(_creative_media_model_discovery(model_ref=model_ref))
         return json.dumps(_agent_compact_dict(payload), ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error reading CreativeMedia resolutions: {str(e)}"
@@ -495,6 +529,7 @@ def creative_media_rank_models(
     operation_kind: Optional[str] = None,
     goal: Optional[str] = None,
     limit: int = 8,
+    structured: bool = False,
 ) -> str:
     """Return a clean Markdown ranking of 多媒体创作 model candidates.
 
@@ -503,6 +538,9 @@ def creative_media_rank_models(
     or provider JSON.
     """
     try:
+        if structured:
+            payload = _creative_media_model_discovery(modality=modality, operation_kind=operation_kind, limit=limit)
+            return json.dumps({"ok": True, "summary": "已接入模型候选；配置就绪性不代表本轮网络健康或执行授权。", **payload}, ensure_ascii=False)
         from runtimes.creative_media.production_pack import rank_candidates_markdown
         from runtimes.creative_media.runtime import creative_media_runtime
 
@@ -685,7 +723,7 @@ def creative_media_job_artifacts(job_id: str, session_id: str) -> str:
         return json.dumps(
             {
                 "artifacts": [
-                    _creative_media_artifact_summary(item)
+                    _creative_media_artifact_summary(item, detail=True)
                     for item in creative_media_runtime.authorized_job_artifacts(
                         job_id,
                         session_id=session_id,

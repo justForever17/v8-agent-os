@@ -2144,13 +2144,25 @@ class WindowsUIADriver:
     def _resolve_target(self, *, element_id: str | None = None, **query: Any):
         if element_id:
             cached = self._element_cache.get(element_id)
-            if cached:
-                merged = dict(cached.query)
-                merged.update({key: value for key, value in query.items() if value is not None})
-                query = merged
-                query.setdefault("preferred_backend", cached.backend)
+            if cached is None:
+                raise WindowsUIADriverError("目标元素已失效，请重新观察界面。")
+            merged = dict(cached.query)
+            merged.update({key: value for key, value in query.items() if value is not None})
+            query = merged
+            query.setdefault("preferred_backend", cached.backend)
             query["element_id"] = element_id
         wrapper, element = self._resolve_target_with_recovery(**query)
+        # Recovery returns a live wrapper, but its cached element may describe
+        # old bounds or a control replaced since observation. Recheck the actual
+        # request and pass fresh metadata to coordinate fallbacks.
+        backend_name = "win32" if element.backend.endswith("win32") else "uia"
+        element = self._build_element(wrapper, backend_name=backend_name)
+        selector = {key: query.get(key) for key in (
+            "name", "name_contains", "target_text", "automation_id", "control_type", "class_name"
+        )}
+        if ((query.get("window_handle") is not None and element.window_handle != int(query["window_handle"]))
+                or self._score_cached_element(element, **selector) <= 0):
+            raise WindowsUIADriverError("目标控件与当前选择条件不一致，请重新观察界面。")
         if element_id and element.element_id != element_id:
             self._element_cache.pop(element_id, None)
         return wrapper, element
@@ -2303,12 +2315,7 @@ class WindowsUIADriver:
         candidates = [
             item
             for item in observation.elements
-            if (
-                item.automation_id
-                and element.automation_id
-                and item.automation_id == element.automation_id
-            )
-            or (item.name == element.name and item.role == element.role)
+            if self._wrapper_candidate_matches(item, element)
         ]
         for candidate in candidates:
             candidate_selector = self._selector_from_element(candidate, backend_name=backend_name)
@@ -2321,7 +2328,7 @@ class WindowsUIADriver:
                 class_name=candidate_selector.get("class_name"),
                 limit=6,
             )
-            best = self._pick_best_wrapper(wrappers, expected=candidate, backend_name=backend_name)
+            best = self._pick_best_wrapper(wrappers, expected=element, backend_name=backend_name)
             if best is not None:
                 return best
         if backend_name == "uia":
@@ -2369,6 +2376,18 @@ class WindowsUIADriver:
         return None
 
     def _wrapper_candidate_matches(self, candidate: ComputerUseElement, expected: ComputerUseElement) -> bool:
+        # Handles and cached IDs can outlive a control. Validate pinned identity
+        # before any recovery shortcut or fuzzy/name-based comparison.
+        if expected.window_handle is not None and candidate.window_handle != expected.window_handle:
+            return False
+        if expected.automation_id and candidate.automation_id != expected.automation_id:
+            return False
+        candidate_role = self._normalize_control_type(candidate.role, candidate.class_name)
+        expected_role = self._normalize_control_type(expected.role, expected.class_name)
+        if expected_role and candidate_role != expected_role:
+            return False
+        if expected.class_name and candidate.class_name.lower() != expected.class_name.lower():
+            return False
         if candidate.element_id == expected.element_id:
             return True
         candidate_handle = (candidate.metadata or {}).get("handle")
@@ -2378,12 +2397,6 @@ class WindowsUIADriver:
         if candidate.automation_id and expected.automation_id and candidate.automation_id == expected.automation_id:
             if candidate.class_name.lower() == expected.class_name.lower():
                 return True
-        candidate_role = self._normalize_control_type(candidate.role, candidate.class_name)
-        expected_role = self._normalize_control_type(expected.role, expected.class_name)
-        if candidate_role != expected_role:
-            return False
-        if candidate.class_name.lower() != expected.class_name.lower():
-            return False
         if expected.name and candidate.name != expected.name:
             return False
         return candidate.window_handle == expected.window_handle
@@ -2665,6 +2678,9 @@ class WindowsUIADriver:
             top = wrapper.top_level_parent()
             top_handle = getattr(top.element_info, "handle", None)
             if expected.window_handle is not None and top_handle not in (None, int(expected.window_handle)):
+                return None
+            candidate = self._build_element(wrapper, backend_name=backend_name)
+            if not self._wrapper_candidate_matches(candidate, expected):
                 return None
         except Exception:
             return None
@@ -3236,8 +3252,10 @@ class WindowsUIADriver:
             for child in children:
                 scanned += 1
                 score = self._score_wrapper_for_selector(child, selector)
-                score += self._score_wrapper_against_hints(child, selector_hints)
                 if score > 0:
+                    # History may rank matching controls, never turn a rejected
+                    # selector into a match (e.g. a previous Edit vs this Button).
+                    score += self._score_wrapper_against_hints(child, selector_hints)
                     _remember(child, score, depth + 1)
                 if depth + 1 < search_depth:
                     queue.append((child, depth + 1))
@@ -3276,8 +3294,11 @@ class WindowsUIADriver:
                 candidate = self._build_element(wrapper, backend_name=backend_name)
             except Exception:
                 continue
+            if not self._wrapper_candidate_matches(candidate, expected):
+                continue
             score = 0
-            if (candidate.metadata or {}).get("handle") == (expected.metadata or {}).get("handle"):
+            expected_handle = (expected.metadata or {}).get("handle")
+            if expected_handle not in (None, 0) and (candidate.metadata or {}).get("handle") == expected_handle:
                 score += 12
             if candidate.automation_id and candidate.automation_id == expected.automation_id:
                 score += 8

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -1848,7 +1849,9 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
 
 @pytest.mark.parametrize("request_budget", [None, 512])
-def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_cap(monkeypatch, request_budget):
+@pytest.mark.parametrize("remaining_steps", [None, 6])
+def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_cap(monkeypatch, request_budget, remaining_steps):
+    from langgraph.errors import GraphRecursionError
     emitted: list[tuple[str, object]] = []
     model_calls: list[list[object]] = []
     model_creations: list[tuple[str, dict]] = []
@@ -1912,6 +1915,7 @@ def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_
 
     state = {
         "run_id": "run-read-only-live",
+        "remaining_steps": remaining_steps,
         "workspace_path": "E:/workspace",
         "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
         "current_route_context": {
@@ -1968,27 +1972,36 @@ def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_
         model_creations.append((model_id, dict(kwargs)))
         return object()
 
-    response = execute_supervisor_turn(
-        state=state,
-        config={},
-        messages=[HumanMessage(content="只读检查 README.md 第一行，不要修改任何文件。")],
-        loaded_agents=[],
-        supervisor_tools=[SimpleNamespace(name="runtime_broker")],
-        memory_runtime=None,
-        scope_resolution_service=None,
-        ensure_reasoning_content=lambda message: message,
-        sanitize_message_chain=lambda messages, **_kwargs: messages,
-        context_orchestrator=context_orchestrator,
-        robust_invoke=compiler_model_call,
-        supervisor_base_llm=object(),
-        sup_model_name="test-model",
-        caller_kwargs={"max_tokens": request_budget} if request_budget else {},
-        llm_factory=SimpleNamespace(
-            create_chat_model=create_chat_model,
-            get_model_max_output_tokens=lambda _model_id: None,
-        ),
-        sanitize_response_tool_calls=lambda response: response,
-    )
+    with (pytest.raises(GraphRecursionError) if remaining_steps is not None else nullcontext()) as boundary:
+        response = execute_supervisor_turn(
+            state=state,
+            config={},
+            messages=[HumanMessage(content="只读检查 README.md 第一行，不要修改任何文件。")],
+            loaded_agents=[],
+            supervisor_tools=[SimpleNamespace(name="runtime_broker")],
+            memory_runtime=None,
+            scope_resolution_service=None,
+            ensure_reasoning_content=lambda message: message,
+            sanitize_message_chain=lambda messages, **_kwargs: messages,
+            context_orchestrator=context_orchestrator,
+            robust_invoke=compiler_model_call,
+            supervisor_base_llm=object(),
+            sup_model_name="test-model",
+            caller_kwargs={"max_tokens": request_budget} if request_budget else {},
+            llm_factory=SimpleNamespace(
+                create_chat_model=create_chat_model,
+                get_model_max_output_tokens=lambda _model_id: None,
+            ),
+            sanitize_response_tool_calls=lambda response: response,
+        )
+
+    if remaining_steps is not None:
+        assert boundary.value.execution_progress_guard["suppressed_tool_call_ids"] == ["call-compiler-engineering"]
+        assert boundary.value.execution_progress_guard["suppressed_tools_executed"] is False
+        assert len(model_calls) == 1
+        assert not any(topic in {"tool_calls", "completed"} for topic, _ in emitted)
+        assert emitted[-1] == ("reset", "token")
+        return
 
     assert response.tool_calls[0]["name"] == "runtime_broker"
     assert response.content == ""

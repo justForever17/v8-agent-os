@@ -370,6 +370,15 @@ test("Windows process ownership probes pass the governed cold-start timeout to t
   assert.equal(calls[0][2].timeoutMs, WINDOWS_PROCESS_PROBE_TIMEOUT_MS);
 });
 
+test("Admin capability installer uses the same Python environment as its Engine", () => {
+  const engine = COMPONENTS.engine.command({ mode: "start" });
+  const admin = COMPONENTS.admin.command({ mode: "start" });
+  const expected = path.basename(engine.command).toLowerCase() === "pythonw.exe"
+    ? path.join(path.dirname(engine.command), "python.exe") : engine.command;
+  assert.equal(admin.env.V8_ENGINE_PYTHON, expected);
+  assert.equal(admin.env.V8_ENGINE_DIR, engine.cwd);
+});
+
 test("managed process identity rejects reused PIDs for every preview component", () => {
   const components = ["engine", "admin", "web", "shell", "desktop-pet"];
   for (const [index, id] of components.entries()) {

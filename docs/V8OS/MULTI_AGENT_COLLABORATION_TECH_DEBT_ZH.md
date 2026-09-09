@@ -82,3 +82,12 @@
 - P2：现有 Computer Use 部分任务专用机器检查及点击瞬时语义判据仍可能漏覆盖或误报。本轮移除“空检查即全目标成功”的权威、复用当前观察，并保持 Agent 判断与机器约束分开；下一迭代用新任务回放检查静态特例，不能再把专用歌曲/网站规则扩写成通用完成判据，也不能把截图存在当语义证明。
 - P2：DMG 工具链临时卸载 `Resource busy` 使用至多一次重建作为窄兼容。入口 `scripts/desktop/build-macos-dmg-with-retry.mjs`，触发/再次失败在 CI 日志可见；所有其他错误不重试，不强制卸载宿主磁盘。下一发布周期核查 upstream dmg-builder 修复与原生复现；确认升级消除故障后移除此 helper 和 workflow 接入，保留等价失败反例。
 - 物理待核：Ubuntu 9.7.1 缺 Shell 退出日志，旧 CPU 冷导入仍达约 17 秒；已有 120 秒 readiness 与 zombie 修复不能冒充托盘物理验收。拿到同一次 Shell/Engine 时间线或目标机后复核，不用 Windows timing 推导 Linux 改善。
+
+## TD-ORCH-009：直接能力执行与当前观察边界
+
+- 登记日期：2026-09-09，来源 `ceb1e905` 后续候选树；主责 action-kernel / supervisor-capabilities。分层结果见 `VALIDATION_2026_09_09_SUPERVISOR_CAPABILITIES.md`。
+- 已修 P0/P1：原语提前完成父 run、UIA 历史 hint 覆盖精确控件、窗口/子控件类混用、旧 HWND 目标替换；图边界从错误完成改可恢复暂停，共享投影区分 paused 和 busy。未新增并行 Planner/状态库，原直接/委派执行 owner 保留。
+- 已复验：指定两个只读子任务实际取目录、两份 handoff 与父级验收通过；handoff 工具清单取真实绑定。原生 automation ID 与可选视觉定位分开，缺视觉依赖在动作前暴露；应用 helper 不再冒充主应用。取消 producer/native/Agent 状态一致，旧成功步骤不能覆盖后来的取消。
+- 残余 P1/P2：长上下文仍曾收到不完整模型工具参数，保持整批拒绝并留去敏诊断，禁止补齐执行。无模型的原生输入仍约 14–15 秒，须在原观察/执行 owner 内定位，不能借提速放宽焦点和目标验证。Research reviewer 漏掉正文事实错误与 Metaso SPA 正文获取继续单独取证。
+- 浏览器边界：profile 观察 cache 是提示，不是授权或全站认证证明。百度后轮实际跳转验证域被挡，现保留具体域错误且不无限重试，不能宣称登录永不过期或通过放开所有子域解决。
+- 下一迭代退出条件：窄错误反例、实际 GUI/网页回执和恢复后实时投影一致；故障定位与时间按首次偏离记录。不为一项已识别的依赖/合同错误重复支付完整大任务。不再添加新的同类恢复 owner；具备真实调用证据后才能退休旧入口。

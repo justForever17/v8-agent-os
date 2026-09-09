@@ -32,6 +32,7 @@ from core.agent_browser_profile import (
     debug_port_owned_by_profile,
 )
 from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
+from core.tools.bocha_provider import bocha_search
 from core.system_base import get_web_fetch_config
 from core.tools.native.tool_governance import log_safety_review_auto_approved, should_auto_approve_safety_review
 from core.storage import storage
@@ -1603,6 +1604,7 @@ IMPLEMENTED_SEARCH_PROVIDERS = (
     "bing",
     "bing_cn",
     "baidu",
+    "bocha",
     "yahoo",
     "searxng",
 )
@@ -1682,7 +1684,7 @@ SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "latencyTier": "fast",
         "requiresProxy": False,
         "outputFormats": ["search_results"],
-        "implemented": False,
+        "implemented": True,
     },
     "metaso": {
         "region": "cn",
@@ -1957,6 +1959,15 @@ def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
     if blocked:
         return "blocked_by_safety"
     lowered = _safe_text(error).lower()
+    # Typed owner failures precede free-text network matching: even the
+    # redirected host can contain 'timeout', without any network timeout.
+    if "agent_browser_profile_not_allowed" in lowered or "agent_browser_profile_redirect_requires_authorization:" in lowered:
+        return "agent_browser_profile_not_allowed"
+    if any(code in lowered for code in (
+        "agent_browser_profile_mismatch", "agent_browser_profile_proxy_target_mismatch",
+        "agent_browser_profile_context_not_reused",
+    )):
+        return "agent_browser_profile_mismatch"
     timeout_needles = (
         "timeout",
         "timed_out",
@@ -1977,10 +1988,6 @@ def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
         return "runtime_dependency_missing"
     if "no active session available" in lowered:
         return "tool_context_unavailable"
-    if "agent_browser_profile_not_allowed" in lowered:
-        return "agent_browser_profile_not_allowed"
-    if "agent_browser_profile_mismatch" in lowered:
-        return "agent_browser_profile_mismatch"
     if "agent_browser_not_open" in lowered or "agent_browser_cdp_unavailable" in lowered:
         return "agent_browser_not_open"
     if "needs_login" in lowered or "login_required" in lowered or "auth_required" in lowered:
@@ -2062,6 +2069,11 @@ def _searxng_base_url() -> str:
 
 
 def _provider_search_url(provider: str, query: str) -> str:
+    if provider == "bocha":
+        # API providers still need a governed URL identity for the common
+        # Safety/attempt ledger; the adapter performs the POST request.
+        from core.tools.bocha_provider import BOCHA_WEB_SEARCH_ENDPOINT
+        return BOCHA_WEB_SEARCH_ENDPOINT
     if provider == "yahoo":
         # Yahoo intermittently returns HTTP 500 for caret exponent syntax
         # (for example 10^25). Scientific notation preserves the query intent.
@@ -2150,8 +2162,8 @@ def _configured_source_provider_order(locale: str) -> list[str]:
 def _prioritize_governed_browser_providers(candidates: list[str]) -> tuple[list[str], list[str]]:
     """Prefer explicitly enabled login-profile routes before proxy-bound public search.
 
-    A user who enabled the Agent Browser profile and allowlisted a search host
-    has supplied a stronger routing signal than the locale heuristic.  Keeping
+    An enabled Agent Browser profile with an observed session domain or a
+    configured domain supplies a stronger routing signal than locale. Keeping
     those providers behind several 10-second public-provider timeouts can
     exhaust the total search budget before the governed route is attempted.
     """
@@ -2397,7 +2409,13 @@ def _agent_browser_profile_allowed(url: str) -> tuple[bool, str | None]:
     config = get_web_fetch_config()
     if not bool(config.get("useAgentBrowserProfile")):
         return False, None
-    return agent_browser_profile_allowed_for_url(url, config.get("agentBrowserProfileAllowlist") or [])
+    allowed, host = agent_browser_profile_allowed_for_url(url, config.get("agentBrowserProfileAllowlist") or [])
+    if allowed:
+        return allowed, host
+    from core.agent_browser_access import observed_profile_host
+
+    host = observed_profile_host(url)
+    return bool(host), host
 
 
 def _auto_agent_browser_profile_allowed(url: str, mode: str) -> tuple[bool, str | None]:
@@ -2499,7 +2517,7 @@ def _agent_browser_profile_search_skip(provider: str, search_url: str) -> dict[s
         "matchedHost": matched_host,
         "recommendedNextAction": (
             "在 Admin / 深度调研打开 Agent 浏览器登录该站点，"
-            "并启用 systemBase.webFetch.useAgentBrowserProfile 与域名 allowlist；否则使用其他公开搜索源。"
+            "并启用 Agent 浏览器会话复用；已观测的会话域名或配置授权域会自动复用，否则使用其他公开搜索源。"
         ),
     }
 
@@ -2814,6 +2832,8 @@ def _fetch_with_scrapling_internal(
             )
 
     def _fetch_dynamic() -> WebPagePayload:
+        if effective_agent_browser_profile:
+            return _fetch_profile()
         fetcher, error = _try_import_dynamic_fetcher()
         if fetcher is None:
             raise RuntimeError(error or "动态 Fetcher 不可用。")
@@ -2838,6 +2858,8 @@ def _fetch_with_scrapling_internal(
         )
 
     def _fetch_stealth() -> WebPagePayload:
+        if effective_agent_browser_profile:
+            return _fetch_profile()
         fetcher, error = _try_import_stealth_fetcher()
         if fetcher is None:
             raise RuntimeError(error or "Stealth Fetcher 不可用。")
@@ -2919,23 +2941,45 @@ def _fetch_with_scrapling_internal(
             raise RuntimeError(
                 "agent_browser_profile_not_allowed:"
                 " useAgentBrowserProfile=true requires systemBase.webFetch.useAgentBrowserProfile=true"
-                " and a matching agentBrowserProfileAllowlist domain."
+                " and an observed session domain or matching agentBrowserProfileAllowlist domain."
             )
         agent_browser_profile_host = matched_host or auto_matched_host or ""
     per_mode_timeout = max(
         1.0,
         total_timeout if effective_agent_browser_profile else total_timeout / max(len(plans), 1),
     )
-    def _effective_browser_fetch_options() -> dict[str, Any]:
+    def _fetch_profile() -> WebPagePayload:
+        from types import SimpleNamespace
+        from runtimes.computer_use.browser_automation import agent_browser_automation
+
         nonlocal agent_browser_profile_dir, agent_browser_kind
+        context = _active_agent_browser_cdp_context()
+        agent_browser_profile_dir = context["profileDir"]
+        agent_browser_kind = context["browserKind"]
+        agent_browser_automation.configure(dict(storage.get_computer_use_config() or {}))
+        raw = agent_browser_automation.read_profile_page(url=url, timeout_seconds=_remaining_fetch_timeout(), wait_ms=browser_wait_ms)
+        if raw.get("contextReused") is not True:
+            raise RuntimeError("agent_browser_profile_context_not_reused")
+        if raw.get("htmlTruncated"):
+            warnings.append("Authenticated page HTML exceeded the bounded capture; inspect the omitted section in the browser if needed.")
+        return _build_payload(
+            response=SimpleNamespace(html_content=raw.get("html", ""), url=raw.get("url") or url, status=raw.get("status")),
+            requested_url=url, requested_mode=mode, referer_mode=referer_mode, referer_url=referer_url,
+            fetch_mode="dynamic", attempted_modes=list(attempted_modes), available_modes=available_modes,
+            tls_strategy="browser_managed", ca_bundle_path="", proxy_bypass_used=False, warnings=list(warnings),
+            agent_browser_profile_used=True, agent_browser_profile_host=agent_browser_profile_host,
+            agent_browser_profile_dir=agent_browser_profile_dir, agent_browser_kind=agent_browser_kind,
+        )
+
+    # The shared authenticated context has one owner/path. Trying the same
+    # profile a second time under a 'stealth' label cannot restore lost cookies.
+    if effective_agent_browser_profile:
+        plans = [(label, runner) for label, runner in plans if label not in {"dynamic", "stealth"}]
+        plans.insert(0, ("dynamic", _fetch_profile))
+
+    def _effective_browser_fetch_options() -> dict[str, Any]:
         _static_fetch_options, browser_fetch_options = _current_fetch_options()
         options = dict(browser_fetch_options)
-        if effective_agent_browser_profile:
-            context = _active_agent_browser_cdp_context()
-            agent_browser_profile_dir = context["profileDir"]
-            agent_browser_kind = context["browserKind"]
-            options["cdp_url"] = context["cdpUrl"]
-            options.pop("user_data_dir", None)
         if browser_wait_ms > 0:
             options["wait"] = max(0, min(int(browser_wait_ms), 5_000))
         return options
@@ -2967,6 +3011,16 @@ def _fetch_with_scrapling_internal(
             return page
         except Exception as exc:
             errors[label] = str(exc)
+            if effective_agent_browser_profile and runner is _fetch_profile:
+                from core.agent_browser_access import record_profile_read
+
+                record_profile_read(url, "failed")
+                if _classify_web_fetch_failure(str(exc)) in {
+                    "agent_browser_profile_not_allowed", "agent_browser_profile_mismatch",
+                }:
+                    # An authority rejection must not fall through to a public
+                    # client/third-party reader or be obscured by its errors.
+                    break
 
     if auto_degraded_pages:
         _label, page, _reason = max(auto_degraded_pages, key=lambda item: len(str(item[1].text or "")))
@@ -3387,6 +3441,12 @@ def _ui_snapshot(node: BeautifulSoup, *, limit: int = 80) -> list[dict[str, Any]
 
 
 def _page_quality_fields(page: WebPagePayload, *, text: str = "", html: str = "", mode: str = "read") -> dict[str, Any]:
+    if page.agent_browser_profile_used:
+        from core.agent_browser_access import record_profile_read
+
+        failure = _page_access_failure(page)
+        read_status = "challenge" if failure == "verification_or_anti_crawl" else "needs_login" if _detect_login_wall(page) else "failed" if failure or not text.strip() or not 200 <= int(page.status or 0) < 400 else "readable"
+        record_profile_read(page.final_url or page.url, read_status)
     content_chars = len(str(text or ""))
     html_chars = len(str(html or page.html or ""))
     missing_reason = ""
@@ -3404,7 +3464,7 @@ def _page_quality_fields(page: WebPagePayload, *, text: str = "", html: str = ""
     }
 
 
-def _auto_fetch_reject_reason(page: WebPagePayload) -> str:
+def _page_access_failure(page: WebPagePayload) -> str:
     login_wall = _detect_login_wall(page)
     if login_wall:
         return _safe_text(login_wall.get("reason")) or "login_wall_detected"
@@ -3434,6 +3494,14 @@ def _auto_fetch_reject_reason(page: WebPagePayload) -> str:
     )
     if any(needle in haystack for needle in verification_needles):
         return "verification_or_anti_crawl"
+
+    return ""
+
+
+def _auto_fetch_reject_reason(page: WebPagePayload) -> str:
+    failure = _page_access_failure(page)
+    if failure:
+        return failure
 
     quality = _page_quality_fields(page, text=page.text, html=page.html, mode="read")
     missing_reason = _safe_text(quality.get("missingContentReason"))
@@ -4263,13 +4331,15 @@ def _render_error_payload(
             "recommendedNextAction": (
                 "该 URL 当前不可达；不要等待 watchdog。请换可访问来源、改用 research_broker 多源调研，或把失败源标记为 unavailable。"
                 if failure_class == "network_timeout"
-                else "目标可能需要登录。请在 Admin / 深度调研打开 Agent 浏览器完成登录；Admin 开启 Agent profile 且目标域名命中 allowlist 后，web/research 的浏览器读取路径会自动复用该登录态。"
+                else "目标可能需要登录。先查看 Agent 浏览器该站点的会话状态；开启会话复用后，已观测的会话域名或配置授权域可自动复用。已有登录仍失败时，核查登录过期或验证挑战，不要反复要求重新登录。"
                 if failure_class == "needs_login"
                 else "受治理的后台 Agent 浏览器未能启动。请检查兼容浏览器、profile 占用和安装依赖；需要登录时再从 Admin / 深度调研打开可见窗口。"
                 if failure_class == "agent_browser_not_open"
                 else "Agent 浏览器调试端口被其他浏览器占用。请关闭该调试浏览器或更换端口后重新打开 Agent 浏览器；V8OS 不会读取用户日常 profile。"
                 if failure_class == "agent_browser_profile_mismatch"
-                else "Agent 浏览器 profile 未启用或目标域名未命中 allowlist；请在 Admin / System Base 配置 useAgentBrowserProfile 与 allowlist，或改用无登录公开来源。"
+                else "页面跳转到未授权的站点。请在 Agent 浏览器打开原页面核查登录或验证挑战；不要重复当前读取或自行扩大域授权。"
+                if "agent_browser_profile_redirect_requires_authorization:" in normalized_error
+                else "Agent 浏览器会话复用未启用，或目标没有已观测会话/配置授权域。请检查 Admin / System Base 的会话复用设置与 Agent 浏览器站点状态，或改用公开来源。"
                 if failure_class == "agent_browser_profile_not_allowed"
                 else "当前安装缺少 Research 网页抓取依赖。请修复或重新安装 V8OS 后开始新的 Research run；重复当前搜索不会恢复依赖。"
                 if failure_class == "runtime_dependency_missing"
@@ -4283,6 +4353,10 @@ def _render_error_payload(
 
 
 def _render_needs_login_payload(*, page: WebPagePayload, use_agent_browser_profile: bool) -> str:
+    if page.agent_browser_profile_used:
+        from core.agent_browser_access import record_profile_read
+
+        record_profile_read(page.final_url or page.url, "needs_login")
     login_wall = _detect_login_wall(page) or {"failureClass": "needs_login", "reason": "login_required"}
     text_preview = "" if page.agent_browser_profile_used else _safe_text(page.text)[:500]
     return json.dumps(
@@ -4575,7 +4649,7 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
         if failure_class == "needs_login":
             summary = "目标页面需要登录；请在 Admin 打开 Agent 专用浏览器完成登录后重试。"
         elif failure_class == "agent_browser_profile_not_allowed":
-            summary = "Agent 浏览器 profile 未启用或目标域名未命中 allowlist。"
+            summary = "Agent 浏览器会话复用未启用，或目标没有已观测会话/配置授权域。"
         elif failure_class == "network_timeout":
             summary = "目标网络请求超时；请换源或稍后重试。"
         else:
@@ -5447,6 +5521,8 @@ def _exa_search_public(query: str, *, limit: int, timeout_seconds: float) -> dic
 
 
 def _api_search_public(provider: str, query: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
+    if provider == "bocha":
+        return bocha_search(query, api_key=_provider_api_key("bocha"), limit=limit, timeout_seconds=timeout_seconds)
     if provider == "brave":
         return _brave_search_public(query, limit=limit, timeout_seconds=timeout_seconds)
     if provider == "tavily":
@@ -5886,7 +5962,7 @@ def web_extract(
     - raw_html: 返回用于 DOM/UI/选择器分析的 HTML 片段；普通阅读不要使用
     - ui_snapshot: 返回轻量结构快照，适合参考页面 UI/表单/按钮结构
 
-    useAgentBrowserProfile 同 web_read：allowlist 命中时浏览器模式会自动复用 Agent 专用浏览器登录态；显式 true 会直接使用该 profile。
+    useAgentBrowserProfile 同 web_read：开启会话复用且目标有已观测会话/配置授权域时自动使用 Agent 浏览器；显式 true 优先尝试此路径，仍接受域授权检查。
     """
     allowed, error_message = _guard_url(url, tool_call_id=tool_call_id)
     if not allowed:
@@ -6027,7 +6103,7 @@ def web_search(
     - academic: 学术
     - image/video/podcast: 图片/视频/播客
 
-    useAgentBrowserProfile 仅用于需要登录态的 browser-backed 搜索/读取路径；allowlist 命中时会自动复用 Agent 浏览器 profile。
+    useAgentBrowserProfile 仅用于需要登录态的 browser-backed 搜索/读取路径；开启会话复用且目标有已观测会话/配置授权域时自动复用 Agent 浏览器。
     """
     requested_provider = str(search_engine or "auto").strip().lower()
     requested_vertical = _normalize_search_vertical(str(search_vertical or "all"))
@@ -6332,9 +6408,10 @@ def web_search(
                 indent=2,
             )
 
+        profile_attempted = False
         try:
             provider_timeout = max(1.0, min(WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS, remaining))
-            if provider in {"brave", "tavily", "exa"}:
+            if provider in {"brave", "tavily", "exa", "bocha"}:
                 api_result = _api_search_public(provider, query, limit=limit, timeout_seconds=provider_timeout)
                 if not bool(api_result.get("ok")):
                     attempted_providers.append(
@@ -6783,6 +6860,7 @@ def web_search(
                 )
                 continue
             browser_timeout = min(provider_timeout, browser_remaining)
+            profile_attempted = effective_use_agent_browser_profile
             payload = _fetch_with_scrapling_internal(
                 search_url,
                 mode=mode,
@@ -6892,6 +6970,7 @@ def web_search(
                 "failureClass": failure_class,
                 "reason": error[:1000],
                 "elapsedMs": _error_elapsed_ms(error),
+                "profileAttempted": profile_attempted,
             })
 
     if relaxed_site_fallback is not None:
@@ -6942,6 +7021,12 @@ def web_search(
         aggregate_failure = "provider_challenge"
     elif operational_attempts and all(item.get("failureClass") == "no_results" for item in operational_attempts):
         aggregate_failure = "no_results"
+    elif operational_attempts and all(item.get("failureClass") in {"agent_browser_profile_not_allowed", "agent_browser_profile_mismatch"} for item in operational_attempts):
+        aggregate_failure = (
+            "agent_browser_profile_mismatch"
+            if any(item.get("failureClass") == "agent_browser_profile_mismatch" for item in operational_attempts)
+            else "agent_browser_profile_not_allowed"
+        )
     elif any(item.get("status") == "blocked" for item in attempted_providers):
         aggregate_failure = "blocked_by_safety"
 
@@ -6960,6 +7045,10 @@ def web_search(
                 if aggregate_failure in {"network_timeout", "search_failed", "provider_challenge", "no_results"}
                 else "当前安装缺少 Research 网页抓取依赖。请修复或重新安装 V8OS 后开始新的 Research run；重复当前搜索不会恢复依赖。"
                 if aggregate_failure == "runtime_dependency_missing"
+                else "浏览器来源或跳转站点未授权。请在 Agent 浏览器打开原页面核查登录/验证挑战及会话复用设置；不要反复重试或自行扩大域授权。"
+                if aggregate_failure == "agent_browser_profile_not_allowed"
+                else "Agent 浏览器连接与专用 profile 身份不一致。请检查浏览器调试端口与会话归属；不要切换到其他 profile 或公开 reader 绕过。"
+                if aggregate_failure == "agent_browser_profile_mismatch"
                 else "检查工具配置/安全审批上下文；不要继续盲等 watchdog。"
             ),
             "error": last_error or "No search provider returned usable results.",
@@ -7119,7 +7208,7 @@ def web_fetch(
     - extract: 返回结构化内容；UI/DOM 参考用 raw_html 或 ui_snapshot
     - search: 通过 Source Router 选择国内/海外 provider，并返回清洗后的搜索结果
 
-    useAgentBrowserProfile 显式为 true 时会直接使用 Agent 浏览器 profile；未显式设置但目标域名命中 Admin/System Base allowlist 时，浏览器读取路径也会自动复用。
+    useAgentBrowserProfile 显式为 true 时优先使用 Agent 浏览器；未显式设置时，开启会话复用且目标有已观测会话/配置授权域也会自动复用。显式请求不会绕过域授权。
     """
     normalized_intent = str(intent or "auto").strip().lower()
     if normalized_intent == "auto":
@@ -7204,7 +7293,7 @@ def web_broker(
     use mode=extract with extract=raw_html or ui_snapshot.
 
     debug=false keeps the Agent result compact; true adds transport/TLS/fallback/selector diagnostics.
-    useAgentBrowserProfile=true skips public/static attempts and uses the allowlisted Agent browser profile.
+    useAgentBrowserProfile=true skips public/static attempts and uses the Agent browser within an observed session domain or configured domain authorization.
     """
     normalized_mode = str(mode or "fetch").strip().lower()
     if normalized_mode not in {"fetch", "read", "extract", "search"}:
@@ -7220,13 +7309,19 @@ def web_broker(
         )
 
     intent = "auto" if normalized_mode == "fetch" else normalized_mode
+    # A login profile is meaningful only on a browser-backed fetch.  Keep the
+    # explicit static default for public reads, but avoid a deterministic
+    # profile/static contradiction when the caller opted into the governed
+    # profile.  The downstream allowlist and CDP checks remain authoritative.
+    eligible_profile = bool(useAgentBrowserProfile) or (target.startswith(("https://", "http://")) and _agent_browser_profile_allowed(target)[0])
+    effective_fetch_mode = "auto" if eligible_profile and fetch_mode == "static" else fetch_mode
     raw_result = web_fetch.func(
         target=target,
         intent=intent,
         extract=extract,
         search_engine=search_engine,
         search_vertical=search_vertical,
-        mode=fetch_mode,
+        mode=effective_fetch_mode,
         headless=headless,
         referer_mode=referer_mode,
         referer_url=referer_url,

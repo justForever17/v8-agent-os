@@ -3,3 +3,5 @@ pywinauto==0.6.9; sys_platform == "win32"
 pycaw==20251023; sys_platform == "win32"
 av==17.1.0
 aiortc==1.15.0
+# Shared with the Engine's Playwright/Patchright 1.61 browser adapters.
+pyee>=13,<14

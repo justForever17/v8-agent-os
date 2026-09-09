@@ -317,7 +317,7 @@ class RuntimePreflightGate:
         final_entries = _safe_list(summary.get("skillEntries")) or _safe_list(summary.get("finalEntries"))
         if extension_inventory_required and len(stage1_entries) >= 8 and len(selected_skills) >= 3:
             reasons.append("route_candidate_spread")
-        if not selected_skills and not selected_mcp and _ROUTE_INTENT_RE.search(str(user_query or "")):
+        if extension_inventory_required and not selected_skills and not selected_mcp and _ROUTE_INTENT_RE.search(str(user_query or "")):
             reasons.append("route_no_candidate_for_tool_like_query")
             clarify = True
         if final_entries:

@@ -705,10 +705,14 @@ def test_runtime_broker_default_list_is_compact_and_catalog_is_explicit():
     assert len(rendered) < 1500
     assert payload["detailMode"] == "summary"
     assert payload["availableGroups"]
-    assert len(payload["availableGroups"]) <= 6
+    from core.runtime_tool_access import runtime_tool_groups_catalog
+    assert {item["group"] for item in payload["availableGroups"]} == {
+        item["group"] for item in runtime_tool_groups_catalog()
+    }
+    assert "creative_media.core" in rendered
     assert all("toolNames" not in item for item in payload["availableGroups"])
     assert payload["omitted"]["toolNames"] > 0
-    assert payload["omitted"]["availableGroups"] >= 0
+    assert payload["omitted"]["availableGroups"] == 0
     assert "mode='route'" in payload["recommendedNextAction"]
 
     catalog = runtime_broker.func(
@@ -5027,14 +5031,16 @@ def test_internal_orchestration_runtime_cards_explain_flow_boundary_and_handoff(
     assert "refresh_required/degraded evidence" in summary
 
     assert "kind=creative_media" in summary
-    assert "brief、modality、assetRole、referenceAssetIds" in summary
+    assert "tool_group='creative_media.core'" in summary
+    assert "describe" in summary
     assert "可编辑代码视频由 Engineering 主导" in summary
     assert "artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus" in summary
     assert "provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface" in summary
 
     assert "kind=computer_use" in summary
-    assert "goal、app/window 线索、allowedActions" in summary
-    assert "observe -> plan -> act -> verify" in summary
+    assert "tool_group='computer_use.direct'" in summary
+    assert "Supervisor observe -> act -> verify" in summary
+    assert "need={'kind'" not in summary
     assert "observedState/actionsTaken/verification/screenshotOrTraceRef" in summary
 
     assert "Research 不写文件、不执行系统副作用" in summary
@@ -5100,6 +5106,7 @@ def test_engineering_config_disabled_hides_runtime_boundary_hints():
 
 def test_creative_media_tools_can_call_runtime_facade(monkeypatch):
     fake_runtime = SimpleNamespace(catalog=lambda: {"version": 1, "modalities": {"image": []}})
+    fake_runtime.get_model_preferences = lambda: {"connectedOptions": []}
 
     async def _create_job(request):
         return {"jobId": "cm_fake", "status": "succeeded", "request": request}

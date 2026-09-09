@@ -135,6 +135,8 @@ export function deriveAuthoritativeRunActivity(input: AuthoritativeRunActivityIn
     if (!status) continue;
     const runId = String(candidateRunId || "").trim();
     if (localStreamActive && localRunId && runId !== localRunId) continue;
+    // Paused still owns a resumable run, but it is not executing or streaming.
+    if (status === "paused") return false;
     if (ACTIVE_RUN_STATUSES.has(status)) return true;
     if (TERMINAL_RUN_STATUSES.has(status)) return false;
   }

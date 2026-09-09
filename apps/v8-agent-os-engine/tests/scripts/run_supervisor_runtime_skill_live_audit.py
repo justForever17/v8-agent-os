@@ -105,7 +105,25 @@ class LiveCaseResult:
 
 
 def _redact(value: Any) -> str:
-    text = json.dumps(value, ensure_ascii=False, default=str) if not isinstance(value, str) else value
+    if not isinstance(value, str):
+        def scrub(item):
+            if isinstance(item, dict):
+                return {key: ("[REDACTED]" if child is not None and re.search(
+                    r"(?i)(?:api[_-]?key|authorization|cookie|token)$", str(key)) else scrub(child))
+                    for key, child in item.items()}
+            if isinstance(item, (list, tuple)):
+                return [scrub(child) for child in item]
+            if isinstance(item, str):
+                # Serialized payload_json remains parseable after redaction.
+                if item.lstrip().startswith(("{", "[")):
+                    try:
+                        return json.dumps(scrub(json.loads(item)), ensure_ascii=False, default=str)
+                    except (TypeError, ValueError):
+                        pass
+                return _redact(item)
+            return item
+        return json.dumps(scrub(value), ensure_ascii=False, default=str)
+    text = value
     text = TOKEN_RE.sub(lambda match: f"{match.group(1) or match.group(2)}[REDACTED]", text)
     for raw_path, replacement in (
         (Path.home(), "~"),

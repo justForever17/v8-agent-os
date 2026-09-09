@@ -1025,6 +1025,24 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitted[0]["ownerRuntimeId"], "subagent_swarm")
         self.assertEqual(emitted[0]["ownerAgentId"], "implementation-engineer")
 
+    async def test_direct_media_action_stays_in_supervisor_message_and_internal_facade_is_not_duplicated(self):
+        with bind_runtime_context(runtime_kind="chat", agent_id="supervisor"):
+            await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                "event": "on_tool_start", "run_id": "outer", "name": "creative_media_jobs",
+                "data": {"input": {"action": "create", "request": {"modality": "image"}}},
+            })
+            before = len(self.chat_run.events)
+            for event in ("on_tool_start", "on_tool_end", "on_tool_error"):
+                emitted = await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
+                    "event": event, "run_id": "inner", "name": "creative_media_create_job",
+                    "metadata": {"v8_internal_facade_handler": "jobs.create"}, "data": {},
+                })
+                self.assertEqual(emitted, [])
+            self.assertEqual(len(self.chat_run.events), before)
+            payload = self.chat_run.events[-1]["payload"]
+            self.assertEqual(payload["ownerAgentKind"], "supervisor")
+            self.assertTrue(payload["displayInMessage"])
+
     async def test_tool_error_closes_only_its_call_and_preserves_later_supervisor_delivery(self):
         await self.runtime.handle_stream_event(self.chat_run, self.stream_state, {
             "event": "on_tool_start", "run_id": "failed-callback", "name": "delegation_broker",

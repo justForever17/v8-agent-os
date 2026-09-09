@@ -907,6 +907,28 @@ class V8ChatModelAdapter(BaseChatModel):
                 reason = reason or "invalid_tool_arguments"
                 break
         if reason:
+            # Record structure only, never private argument values. This lets a
+            # failed multi-tool stream distinguish abandoned/misindexed chunks
+            # from valid raw calls without relaxing whole-response validation.
+            layout = []
+            for source, entries in (("chunks", chunks), ("raw", raw_calls)):
+                for position, call in enumerate(entries[:12]):
+                    if not isinstance(call, Mapping):
+                        continue
+                    function = call.get("function") if isinstance(call.get("function"), Mapping) else call
+                    value = function.get("arguments", function.get("args"))
+                    valid = False
+                    if isinstance(value, str):
+                        try:
+                            valid = isinstance(json.loads(value), Mapping)
+                        except (ValueError, TypeError):
+                            pass
+                    layout.append({"source": source, "position": position, "index": call.get("index"),
+                                   "name": str(function.get("name") or "")[:100],
+                                   "chars": len(value) if isinstance(value, str) else None,
+                                   "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest() if isinstance(value, str) else None,
+                                   "completeObject": valid})
+            argument_diagnostic["toolArgumentLayout"] = json.dumps(layout, ensure_ascii=False, separators=(",", ":"))
             raise V8LLMStructuredOutputError(
                 code="model_output_incomplete",
                 message="模型未完整返回工具参数，已阻止执行该响应中的工具。",

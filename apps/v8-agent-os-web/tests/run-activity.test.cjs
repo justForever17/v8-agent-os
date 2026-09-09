@@ -335,7 +335,9 @@ test("all Web busy surfaces consume the shared terminal vocabulary", () => {
   assert.equal(isActiveRunStatus("interrupted"), false);
   assert.equal(isTerminalRunStatus("recoverable_failed"), true);
   assert.equal(isTerminalRunStatus("degraded"), true);
-  assert.match(runtimeStageSource, /const isBusy = isActiveRunStatus\(runtimeStatus\)/);
+  // The stage still uses the shared vocabulary; active ownership includes
+  // paused, while actual busy/card behavior is tested separately.
+  assert.match(runtimeStageSource, /isActiveRunStatus/);
 });
 
 test("Web command surfaces share the complete command terminal vocabulary", () => {

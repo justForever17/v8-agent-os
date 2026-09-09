@@ -11,6 +11,34 @@ from agents.runners.supervisor_runner import SupervisorAgentRunner
 runner_module = importlib.import_module("agents.runners.supervisor_runner")
 
 
+def test_config_allows_a_real_multistep_tool_loop_but_still_bounds_runaway_graph():
+    import pytest
+    from typing_extensions import TypedDict
+    from langgraph.graph import END, StateGraph
+    from langgraph.errors import GraphRecursionError
+
+    class State(TypedDict):
+        observations: int
+        actions: int
+        runaway: bool
+
+    graph = StateGraph(State)
+    graph.add_node("observe", lambda state: {"observations": state["observations"] + 1})
+    graph.add_node("act", lambda state: {"actions": state["actions"] + 1})
+    graph.set_entry_point("observe")
+    graph.add_conditional_edges("observe", lambda state: "act" if state["runaway"] or state["actions"] < 15 else END)
+    graph.add_edge("act", "observe")
+    compiled = graph.compile()
+    initial = {"observations": 0, "actions": 0, "runaway": False}
+    with pytest.raises(GraphRecursionError):
+        compiled.invoke(initial, config={"recursion_limit": 25})
+    config = SupervisorAgentRunner().build_graph_config("owned-fixture")
+    completed = compiled.invoke(initial, config=config)
+    assert completed["actions"] == 15 and completed["observations"] == 16
+    with pytest.raises(GraphRecursionError):
+        compiled.invoke({**initial, "runaway": True}, config=config)
+
+
 def test_graph_build_keeps_event_loop_responsive_and_caches_once(monkeypatch) -> None:
     async def exercise() -> None:
         runner = SupervisorAgentRunner()

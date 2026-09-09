@@ -119,6 +119,15 @@ def test_read_only_reviewer_without_write_set_is_safe():
     assert decision.status in {"clean", "watch"}
 
 
+def test_native_media_request_does_not_need_an_extension_candidate():
+    decision = RuntimePreflightGate().evaluate(
+        user_query="请生成一张猫的图片", scope="workspace:main", scope_chain=["global"],
+        session_id="s1", route_bundle=_route_bundle(), state={},
+    )
+    assert decision.status == "clean"
+    assert not decision.reasons
+
+
 def test_read_only_multi_runtime_plan_does_not_ask_user_because_workspace_is_dirty():
     decision = RuntimePreflightGate().evaluate(
         user_query=(

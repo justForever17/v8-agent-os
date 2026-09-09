@@ -376,6 +376,75 @@ def test_complete_sdk_chunks_do_not_hide_incomplete_original_raw_arguments(tmp_p
     assert not target.exists()
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("with_raw_delta", [False, True])
+@pytest.mark.parametrize("truncated_tool", [None, 0, 1])
+def test_interleaved_two_tool_sdk_stream_survives_factory_patch_and_bound_surface(asynchronous, with_raw_delta, truncated_tool):
+    from copy import deepcopy
+    from core.provider_compatibility import install_provider_compatibility_patches
+    import langchain_openai.chat_models.base as openai_base
+
+    # This is the same SDK patch installed by LLMFactory, before creating its
+    # ChatOpenAI backend. Both tool indexes must survive normalization.
+    install_provider_compatibility_patches()
+    first = json.dumps({"mode": "dispatch", "tasks": [{"title": "只读验证", "paths": ["a.json", "b.json"]}]},
+                       ensure_ascii=False, separators=(",", ":"))
+    second = json.dumps({"action": "observe", "target": "owned-page"}, separators=(",", ":"))
+    if truncated_tool == 0:
+        first = first[:18]
+    elif truncated_tool == 1:
+        second = second[:-1]
+    fragments = [(0, first[:18]), (1, second[:12]), (0, first[18:33]), (1, second[12:]), (0, first[33:])]
+    tool_names = ["delegation_broker", "browser_broker"]
+    seen = set()
+    deltas = []
+    for index, fragment in fragments:
+        raw = {"index": index, "function": {"arguments": fragment}}
+        if index not in seen:
+            raw.update(id=f"provider-tool-{index}", type="function")
+            raw["function"]["name"] = tool_names[index]
+            seen.add(index)
+        deltas.append({"role": "assistant", "tool_calls": [raw]})
+
+    class InterleavedSdkModel:
+        def bind_tools(self, tools, **_kwargs):
+            assert {tool["function"]["name"] for tool in tools} == set(tool_names)
+            return self
+
+        def stream(self, _messages, **_kwargs):
+            for delta in deltas:
+                chunk = openai_base._convert_delta_to_message_chunk(deepcopy(delta), AIMessageChunk)
+                if with_raw_delta:
+                    chunk.additional_kwargs["tool_calls"] = deepcopy(delta["tool_calls"])
+                yield chunk
+            yield AIMessageChunk(content="", response_metadata={"finish_reason": "tool_calls"})
+
+        async def astream(self, messages, **kwargs):
+            for chunk in self.stream(messages, **kwargs):
+                yield chunk
+
+    tools = [{"type": "function", "function": {"name": name, "description": "Fixture only; never execute.",
+              "parameters": {"type": "object", "properties": {}}}} for name in tool_names]
+    adapter = V8ChatModelAdapter(model_id="fixture-model", provider_standard="openai", role="supervisor",
+        meta={"model_record": {"outputTokenMode": "auto"}, "capabilityClass": "chat_tool_calling",
+              "capabilities": {"supportsTools": True, "supportsStreaming": True}},
+        model_kwargs={}, builder=InterleavedSdkModel).bind_tools(tools)
+    if truncated_tool is not None:
+        with pytest.raises(V8LLMError) as failure:
+            _collect_file_response(adapter, asynchronous=asynchronous, streaming=True)
+        assert failure.value.code == "model_output_incomplete"
+        assert failure.value.details["argumentSource"] == "tool_call_chunks"
+        assert failure.value.details["argumentSha256"] == hashlib.sha256((first if truncated_tool == 0 else second).encode()).hexdigest()
+        if truncated_tool == 0:
+            assert failure.value.details["argumentsChars"] == 18
+            assert failure.value.details["argumentSha256"] == "ff1b37e176f211c0f73bf01032925c4578c55a269449469e6b34da7d53979a37"
+    else:
+        response = _collect_file_response(adapter, asynchronous=asynchronous, streaming=True)
+        assert [(call["name"], call["args"]) for call in response.tool_calls] == [
+            (tool_names[0], json.loads(first)), (tool_names[1], json.loads(second)),
+        ]
+
+
 @pytest.mark.parametrize("finish_key,finish", [("finish_reason", "MAX_TOKENS"), ("stop_reason", "max_tokens"), ("status", "incomplete")])
 def test_provider_output_limit_blocks_complete_looking_tool_arguments(tmp_path, finish_key, finish):
     adapter, _tool = _file_response_adapter(object(), tmp_path / "result.txt")
@@ -397,6 +466,20 @@ def test_complete_first_tool_does_not_hide_truncated_second_tool(tmp_path):
     with pytest.raises(V8LLMError) as failure:
         adapter._coerce_ai_message(response)
     assert failure.value.details["reason"] == "incomplete_tool_arguments"
+
+
+def test_incomplete_stream_layout_records_indexes_without_private_argument_values(tmp_path):
+    adapter, _tool = _file_response_adapter(object(), tmp_path / "unused.txt")
+    response = AIMessageChunk(content="", tool_call_chunks=[
+        {"index": 0, "id": "old", "name": "write_result", "args": '{"content":"PRIVATE-CANARY'},
+        {"index": 1, "id": "new", "name": "write_result", "args": '{"content":"complete"}'},
+    ])
+    with pytest.raises(V8LLMError) as failure:
+        adapter._validate_complete_tool_response(response)
+    layout = json.loads(failure.value.details["toolArgumentLayout"])
+    assert [(item["index"], item["completeObject"]) for item in layout] == [(0, False), (1, True)]
+    assert "PRIVATE-CANARY" not in str(failure.value.details)
+    assert not (tmp_path / "unused.txt").exists()
 
 
 def test_prompt_emulated_tool_does_not_erase_output_limit_metadata(tmp_path):

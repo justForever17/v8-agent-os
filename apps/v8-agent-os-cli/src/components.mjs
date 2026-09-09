@@ -57,6 +57,13 @@ function nodeRuntime(extraEnv = {}) {
   };
 }
 
+function engineInstallerPython() {
+  const executable = enginePython();
+  const consolePeer = path.join(path.dirname(executable), "python.exe");
+  return path.basename(executable).toLowerCase() === "pythonw.exe" && fs.existsSync(consolePeer)
+    ? consolePeer : executable;
+}
+
 export const COMPONENTS = {
   engine: {
     id: "engine",
@@ -97,6 +104,8 @@ export const COMPONENTS = {
         cwd: REPO_ROOT,
         env: {
           ...runtime.env,
+          V8_ENGINE_PYTHON: engineInstallerPython(),
+          V8_ENGINE_DIR: ENGINE_DIR,
           V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
           V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
           V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,

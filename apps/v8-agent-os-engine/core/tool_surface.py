@@ -641,8 +641,12 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
         lines.append("Active grants: none")
     groups = payload.get("availableGroups") or payload.get("groups") or []
     if isinstance(groups, list) and groups:
+        lines.insert(1, "Available groups: " + ", ".join(
+            str(group.get("group") or group.get("name") or "") if isinstance(group, dict) else str(group)
+            for group in groups
+        ))
         lines.append("Run-scoped tool groups (not execution routes):")
-        for group in groups[:10]:
+        for group in groups:
             if isinstance(group, dict):
                 name = group.get("group") or group.get("name")
                 kind = group.get("kind") or group.get("runtimeKind")
@@ -652,8 +656,6 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
                 lines.append(f"- {_short_text(name, 80)}{suffix}{desc}")
             else:
                 lines.append(f"- {_short_text(group, 100)}")
-        if len(groups) > 10:
-            lines.append(f"- … {len(groups) - 10} more; use catalog detail")
         if any(
             str((group.get("group") or group.get("name")) if isinstance(group, dict) else group).strip()
             == "delegation.recursive"
@@ -669,6 +671,8 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
     changed = payload.get("changed") or payload.get("grant") or payload.get("revoked")
     if changed:
         lines.append(f"Change: {_short_text(changed, 160)}")
+    if payload.get("capabilityGuidance"):
+        lines.append(str(payload["capabilityGuidance"]))
     quality = payload.get("routeBriefQuality")
     if isinstance(quality, dict):
         validation_errors = quality.get("validationErrors")
@@ -1503,6 +1507,16 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str, *, bu
 
 
 def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    control = payload.get("control")
+    if (payload.get("kind") == "computer_use_controlled" and payload.get("ok") is False
+            and payload.get("status") in {"cancelled", "paused", "interrupted", "blocked"}
+            and isinstance(control, dict) and control.get("status") == payload.get("status")):
+        lines = ["Computer Use control", f"Status: {payload['status']}", _short_text(payload.get("summary"), 700),
+                 "This is a control receipt, not proof of task completion or absence of earlier side effects."]
+        if payload.get("recommendedNextAction"):
+            lines.append(f"Next: {_short_text(payload['recommendedNextAction'], 100)}")
+        lines.extend(_surface_ref_lines(raw_ref, include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
     if tool_name == "computer_use_resolve_execution_route":
         lines = ["Computer Use route"]
         route = payload.get("recommendedMode") or payload.get("executionReadyMode")
@@ -1551,18 +1565,25 @@ def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_re
         if not isinstance(apps, list):
             return None
         lines = [f"Computer Use apps (showing {min(len(apps), 6)} of {payload.get('count') or len(apps)})"]
+        lines.append("Search matches and inferred app classes, not an exhaustive installed-app inventory. Unverified profiles and helper components are not proof of an installed browser.")
+        lines.append("Running state observes app windows only. No observed window does not mean no browser process; Agent Browser/headless sessions are described by browser_capabilities.")
         for app in apps[:6]:
             if not isinstance(app, dict):
                 continue
             aliases = app.get("aliases") if isinstance(app.get("aliases"), list) else []
             alias_text = ", ".join(_short_text(alias, 28) for alias in aliases[:2])
             state = []
+            if app.get("discoveryState"):
+                state.append(str(app["discoveryState"]))
             if app.get("isRunning"):
-                state.append("running")
+                if "running" not in state:
+                    state.append("running")
             if app.get("launchable"):
-                state.append("launchable")
+                state.append("launch candidate")
             title = app.get("topWindowTitle") or app.get("displayName")
             suffix = f" | aliases: {alias_text}" if alias_text else ""
+            if app.get("controlClass"):
+                suffix += f" | controlClass: {app['controlClass']}"
             lines.append(f"- {_short_text(app.get('appId'), 48)}: {_short_text(title, 100)} ({', '.join(state) or 'unknown'}){suffix}")
         if len(apps) > 6:
             lines.append(f"- … {len(apps) - 6} more; use detail for full windows/aliases")
@@ -1666,13 +1687,27 @@ def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_re
 
     if tool_name in {"computer_use_observe", "computer_use_observe_scene", "computer_use_list_windows", "computer_use_find_element"}:
         lines = [f"Computer Use observation: {tool_name.replace('computer_use_', '')}"]
+        window = payload.get("window") or {}
+        if isinstance(window, dict) and window:
+            lines.append(f"Window: {_short_text(window.get('title'), 140)} | handle={window.get('handle')}")
+        for screenshot in list(payload.get("screenshot") or []):
+            if isinstance(screenshot, dict):
+                path = screenshot.get("filePath") or screenshot.get("sourcePath")
+                if path:
+                    lines.append(f"Screenshot for vision_media_analyzer: {path}")
+        if payload.get("observedAt"):
+            lines.append(f"Observed: {payload['observedAt']}")
         for key in ("summary", "status", "state", "error"):
             if payload.get(key):
                 lines.append(f"{key}: {_short_text(payload.get(key), 180)}")
         candidates = payload.get("candidates") or payload.get("elements") or payload.get("windows") or []
         if isinstance(candidates, list) and candidates:
             candidate_lines: list[str] = []
-            for item in candidates[:5]:
+            # observe_scene has already applied the caller's bounded element limit.
+            # A second top-five/name-only projection hid Edit/Button controls and
+            # made identically named controls impossible to address precisely.
+            candidate_limit = 120 if tool_name == "computer_use_observe_scene" else 5
+            for item in candidates[:candidate_limit]:
                 if isinstance(item, dict):
                     role_label = item.get("role")
                     if isinstance(role_label, str) and role_label.strip().lower() in {
@@ -1698,14 +1733,22 @@ def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_re
                         continue
                     confidence = item.get("confidence") or item.get("score")
                     suffix = f" confidence={confidence}" if confidence not in (None, "") else ""
+                    if tool_name == "computer_use_observe_scene":
+                        suffix += f"; control_type={item.get('role') or 'unknown'}"
+                        if item.get("automationId"):
+                            suffix += f"; automation_id={item['automationId']}"
+                        if item.get("elementId"):
+                            suffix += f"; elementId={item['elementId']}"
                     candidate_lines.append(f"- {_short_text(label, 120)}{suffix}")
                 else:
                     rendered = _short_text(item, 140)
                     if rendered:
                         candidate_lines.append(f"- {rendered}")
             if candidate_lines:
-                lines.append("Top candidates:")
+                lines.append(f"Top candidates ({min(candidate_limit, len(candidates))}/{len(candidates)}):")
                 lines.extend(candidate_lines)
+                if len(candidates) > candidate_limit or payload.get("omittedElementCount"):
+                    lines.append("Narrow with element_query or read the observation detail for other controls.")
             else:
                 lines.append("Top candidates: none with actionable labels; use detail/rawRef if visual context is required.")
         next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
@@ -1716,7 +1759,20 @@ def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_re
     return None
 
 
-def _render_creative_media_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+def _focused_creative_media_contract(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Only the exact current local action schema gets lossless rendering."""
+    if payload.get("ok") is not True or payload.get("facade") != "capabilities" or payload.get("action") != "describe":
+        return None
+    focus = payload.get("contractFocus")
+    if not isinstance(focus, dict) or not isinstance(focus.get("facade"), str) or not isinstance(focus.get("action"), str):
+        return None
+    from core.tools.native.creative_media_facade import creative_media_action_contract
+
+    expected = creative_media_action_contract().get(focus["facade"], {}).get(focus["action"])
+    return expected if expected is not None and payload.get("contract") == expected else None
+
+
+def _render_creative_media_surface(tool_name: str, payload: dict[str, Any], raw_ref: str, *, budget: int = 4000) -> str | None:
     if tool_name in {
         "creative_media_capabilities",
         "creative_media_plan",
@@ -1734,6 +1790,85 @@ def _render_creative_media_surface(tool_name: str, payload: dict[str, Any], raw_
         summary = _short_text(payload.get("summary"), 500)
         if summary:
             lines.append(f"Summary: {summary}")
+        contract = _focused_creative_media_contract(payload) if tool_name == "creative_media_capabilities" else None
+        if contract is not None:
+            focus = payload["contractFocus"]
+            lines.append(f"Tool: creative_media_{focus['facade']}(action='{focus['action']}', request={{...}})")
+            lines.append("Required: " + (", ".join(contract["requiredFields"]) or "none"))
+            for group in contract["anyOfFields"]:
+                lines.append("Require at least one: " + ", ".join(group))
+            lines.append("Allowed request fields: " + ", ".join(contract["allowedFields"]))
+            for kind in ("string", "array", "object", "boolean", "integer", "number"):
+                fields = [name for name, value in contract["fieldTypes"].items() if value == kind]
+                if fields:
+                    lines.append(f"{kind}: " + ", ".join(fields))
+            if contract["defaults"]:
+                lines.append("Defaults: " + json.dumps(contract["defaults"], ensure_ascii=False))
+            lines.append(f"Mutating: {contract['mutating']}; output: {contract['outputKind']}. Scope comes from runtime; do not supply session/run/workspace ids.")
+            if contract.get("facade") != "capabilities":
+                lines.append("If this tool is not currently visible, Supervisor calls runtime_broker(mode='grant', tool_group='creative_media.core') first. Loading tools is neither a configuration change nor delegation; earlier turns' grants have expired.")
+            if contract.get("requiresPluginGrantWhen"):
+                lines.append("Plugin grant required when " + contract["requiresPluginGrantWhen"])
+            detail_ref = _short_text(payload.get("detailRef"), 220)
+            detail_tool = f"tool_observation_detail(raw_ref='{detail_ref}')" if detail_ref else None
+            lines.extend(_surface_ref_lines(raw_ref, detail_tool, include_raw=True))
+            # Never let unrelated handler content borrow the local-schema exception.
+            return "\n".join(lines).strip()
+        elif isinstance(payload.get("facades"), dict):
+            for name, actions in payload["facades"].items():
+                if isinstance(actions, list):
+                    if len(payload["facades"]) > 1:
+                        lines.append(f"- creative_media_{name}: {len(actions)} actions; describe request={{'facade':'{name}'}}")
+                    else:
+                        lines.append(f"- creative_media_{name}: " + ", ".join(str(item) for item in actions))
+            lines.append("Next: creative_media_capabilities(action='describe', request={'facade':'jobs','action':'create'})")
+        candidates = payload.get("modelCandidates")
+        if isinstance(candidates, list):
+            lines.append("Configured candidates (readiness is configuration/adapter evidence, not live health or a grant):")
+            shown = 0
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                ready = item.get("readiness") if isinstance(item.get("readiness"), dict) else {}
+                def state(value: Any) -> str:
+                    return "true" if value is True else "false" if value is False else "unknown"
+                block = (f"- modelRef: {item.get('modelRef') or '(not provided)'}; "
+                         f"operation: {item.get('operationKind') or 'unknown'}; modality: {item.get('modality') or 'unknown'}\n"
+                         f"  enabled={state(item.get('enabled'))}; available={state(item.get('available'))}; "
+                         f"executable={state(ready.get('executable'))}; briefOnly={state(item.get('briefOnly'))}")
+                if ready.get("reasonCodes"):
+                    block += "; reasons=" + ", ".join(str(code) for code in ready["reasonCodes"])
+                if len("\n".join(lines)) + len(block) > max(0, budget - 650):
+                    break
+                lines.append(block)
+                shown += 1
+            total = payload.get("candidateCount", len(candidates))
+            lines.append(f"Showing {shown} of {total} configured candidates.")
+            if shown < len(candidates) or payload.get("hasMoreCandidates"):
+                lines.append("More candidates available: narrow modality/operationKind with rank_models, or read detailRef; candidate identities were not shortened.")
+            if not candidates:
+                lines.append("No matching configured candidate; catalog entries do not authorize generation.")
+        if payload.get("presetAuthority"):
+            lines.append("Resolution presets are convenience defaults, not model capability limits.")
+            for kind in ("image", "video"):
+                presets = payload.get(kind + "Presets")
+                if isinstance(presets, dict):
+                    for name, dimensions in presets.items():
+                        lines.append(f"- {kind} {name}: " + json.dumps(dimensions, ensure_ascii=False))
+        content = payload.get("content")
+        if isinstance(content, str) and contract is None:
+            lines.append(content)
+        artifacts = payload.get("artifacts")
+        if isinstance(artifacts, list):
+            for artifact in artifacts:
+                if not isinstance(artifact, dict):
+                    continue
+                lines.append(f"Artifact: {artifact.get('artifactId')}; {artifact.get('mimeType') or artifact.get('kind')}")
+                if artifact.get("sourcePath"):
+                    lines.append(f"Readable file_path: {artifact['sourcePath']}")
+                elif artifact.get("contentUrl"):
+                    lines.append(f"Content: {artifact['contentUrl']}")
+            lines.append(f"Showing {len(artifacts)} of {payload.get('artifactCount', len(artifacts))} artifacts; additional refs are in detail.")
         refs = payload.get("refs")
         if isinstance(refs, list) and refs:
             lines.append("Refs:")
@@ -2575,7 +2710,7 @@ def _decision_agent_visible_surface(
     elif tool_name.startswith("computer_use_"):
         renderer_result = _render_computer_use_surface(tool_name, payload, raw_ref)
     elif tool_name.startswith("creative_media_"):
-        renderer_result = _render_creative_media_surface(tool_name, payload, raw_ref)
+        renderer_result = _render_creative_media_surface(tool_name, payload, raw_ref, budget=budget)
     elif tool_name.startswith("rpa_"):
         renderer_result = _render_rpa_surface(tool_name, payload, raw_ref)
     elif tool_name in {"read_native_file", "grep_search"}:
@@ -2587,7 +2722,8 @@ def _decision_agent_visible_surface(
     if renderer_result is None:
         return None
     preserve_full_research = tool_name == "research_broker" and renderer_result.startswith("Research answer\n")
-    if len(renderer_result) > budget and not preserve_full_research:
+    preserve_focused_media_contract = tool_name == "creative_media_capabilities" and _focused_creative_media_contract(payload) is not None
+    if len(renderer_result) > budget and not (preserve_full_research or preserve_focused_media_contract):
         return _head_tail_truncate_text(renderer_result, budget, f"decision surface truncated; rawRef={raw_ref}")
     return renderer_result
 

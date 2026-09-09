@@ -645,7 +645,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "exception_type": error.__class__.__name__,
                 "structuredOutputDiagnostic": {
                     key: value for key, value in dict(getattr(error, "details", None) or {}).items()
-                    if key in {"reason", "finishReason", "toolCallCount", "argumentsChars", "argumentSha256", "jsonErrorOffset"}
+                    if key in {"reason", "finishReason", "toolCallCount", "argumentsChars", "argumentSource", "argumentSha256", "jsonErrorOffset", "toolArgumentLayout"}
                     and isinstance(value, (str, int, bool))
                 },
                 "message_batches": start.message_batches if start else 0,

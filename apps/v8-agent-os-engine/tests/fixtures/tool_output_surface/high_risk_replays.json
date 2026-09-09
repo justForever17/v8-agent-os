@@ -11,6 +11,18 @@
   ],
   "groups": [
     {
+      "name": "browser_scoped_observation",
+      "tools": ["browser_broker"],
+      "payload": {
+        "ok": true,
+        "status": "observed",
+        "summary": "Current owned browser page observed. Input values are omitted; labels and control states are retained.\nAccessibility tree:\n- main:\n  - heading Fixture\n  - button Save",
+        "url": "https://example.test/fixture",
+        "recommendedNextAction": "Use the current observation and one unique selector or exact role/name; a later action requires a fresh observation.",
+        "runtimeOnly": {"marker": "RUNTIME_ONLY_DO_NOT_EXPOSE", "driverTrace": "DRIVER_TRACE_DO_NOT_EXPOSE", "sessionId": "SESSION_PRIVATE_DO_NOT_EXPOSE"}
+      }
+    },
+    {
       "name": "rpa_execution",
       "tools": ["rpa_run_draft", "rpa_run_existing_flow"],
       "payload": {

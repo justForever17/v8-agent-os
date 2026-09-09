@@ -37,11 +37,27 @@ def test_remaining_steps_guard_stops_new_tool_round_without_resetting_graph() ->
         "remaining_steps": MIN_REMAINING_STEPS_FOR_TOOL_ROUND,
         "minimum_steps": MIN_REMAINING_STEPS_FOR_TOOL_ROUND,
         "suppressed_tool_names": ["run_system_command"],
+        "suppressed_tool_call_ids": ["call_1"],
+        "suppressed_tools_executed": False,
         "checkpoint_preserved": True,
     }
     assert guarded.additional_kwargs["execution_progress_guard"] == diagnostics
     assert "不会" not in str(guarded.content)
     assert "停止开启新的工具回合" in str(guarded.content)
+    assert "任务尚未完成" in str(guarded.content)
+
+
+def test_guard_cannot_rehydrate_suppressed_tool_calls_from_provider_raw_fields():
+    response = _tool_response()
+    response.additional_kwargs.update(tool_calls=[{
+        "id": "call_1", "type": "function", "function": {"name": "run_system_command", "arguments": '{"command":"pwd"}'},
+    }], function_call={"name": "run_system_command", "arguments": '{"command":"pwd"}'})
+    guarded, diagnostics = apply_remaining_steps_guard(response, 1)
+    assert guarded.tool_calls == []
+    assert "tool_calls" not in guarded.additional_kwargs
+    assert "function_call" not in guarded.additional_kwargs
+    assert diagnostics["suppressed_tool_call_ids"] == ["call_1"]
+    assert diagnostics["suppressed_tools_executed"] is False
 
 
 def test_remaining_steps_guard_does_not_replace_final_response() -> None:

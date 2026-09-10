@@ -11,6 +11,7 @@
 - Research Agent 评质量/时效，代码证明实际读取/引用/持久化；禁止通用字数/来源数硬接收门槛。partial、review、接受和入库不得混称成功。
 - Engine 是执行真相；`packages/session-realtime` 统一实时和历史投影。UI/刷新、handoff 与产物需同源；共享包改动重新 pack 并同步消费者 lock/integrity。
 - 测试入口 `apps/v8-agent-os-engine/tests/README.md`；联网/真实 provider 测试显式 `--live`。P0/P1 用能击败旧错误的反例；mock、构建、Preview、安装包和物理机分层陈述。
+- 链路故障造成 Agent 降级输出、异常中断、无法继续或伪成功属于 P0；修复必须真实 live 验证原任务、恢复与受影响客户端一致性。用户已授权此类修复主动提交推送，待该提交 CI 通过后打新统一 tag；其他细节优化可只本地提交，不得拖延事故修复发布。
 - CLI/Shell/Web/Admin/桌宠与打包变更按影响验证生产构建、`v8os preview --rebuild` 和真实启动；原生登录/提权组件验证取消、重复、秘密不外泄和卸载恢复。请求送达不是操作成功。
 - 手工改动使用 patch；不回滚他人改动，不提交 token、cookie、原始日志或状态库。故障 SQLite 只读；测试用隔离状态。禁止 destructive git。
 - 同时最多一个 Codex 子代理，不继续派生。后台隔离桌面设想已搁置。

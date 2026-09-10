@@ -275,6 +275,14 @@ const requiredFiles = [
   ["desktopPet.serverBundle", path.join(petRoot, "dist", "server.cjs")],
 ];
 if (process.platform === "win32") {
+  const nativeArch = process.arch === "arm64" ? "arm64" : "x64";
+  for (const [component, files] of [
+    ["v8-session-unlock", ["v8-session-unlock.exe", "V8SessionUnlock.dll"]],
+    ["v8-system-operations", ["v8-system-operations.exe"]],
+  ]) {
+    requiredFiles.push([`${component}.installer`, path.join(engineRoot, "native", component, "install.ps1")]);
+    for (const file of files) requiredFiles.push([`${component}.${file}`, path.join(engineRoot, "native", component, "build", nativeArch, file)]);
+  }
   requiredFiles.splice(1, 0,
     ["engine.portablePythonw", pythonwExe],
     ["engine.portablePythonPathConfig", walkFor(portablePythonRoot, (_fullPath, fileName) => /^python.*\._pth$/i.test(fileName), 1)],
@@ -377,9 +385,10 @@ pushOptionalCheck(checks, degraded, "agentBrowser.compatibleBrowser", Boolean(ch
 });
 
 const gitResult = commandExists("git");
-pushCheck(checks, "external.git", gitResult.ok, {
-  requiredFor: "managed engineering workspaces",
-  preview: gitResult.preview || "Git is required but was not found on PATH",
+pushOptionalCheck(checks, degraded, "external.git", gitResult.ok, {
+  requiredFor: "optional Git parallel isolation and Git-backed installation sources",
+  preview: gitResult.preview || "Git was not found on PATH",
+  reason: "Git-dependent operations are unavailable; ordinary serial engineering does not require Git.",
 });
 if (process.platform === "linux") {
   const xdotoolResult = commandExists("xdotool");
@@ -421,7 +430,7 @@ const payload = {
   degraded,
   checks,
   notes: [
-    `Git is a required managed-engineering dependency; FFmpeg and FFprobe ${minimumFfmpegVersionText}+ remain degraded external capabilities until bundled by the installer.`,
+    `Git enables optional parallel isolation and Git-backed installs; FFmpeg and FFprobe ${minimumFfmpegVersionText}+ are checked separately for media capabilities.`,
     "Hard checks cover portable Engine Python, the native sandbox host, production bundles, desktop pet bundle, and the slim preview Python runtime.",
     "Agent Browser uses an installed Edge, Chrome, or Chromium through CDP; no browser download is triggered at runtime.",
     "Linux X11 assistive tools are declared by the DEB but remain host dependencies for AppImage; Wayland, TCC, and window-manager behavior require a real GUI host.",

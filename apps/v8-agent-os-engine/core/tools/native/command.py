@@ -799,7 +799,7 @@ def execute_system_command(
             )
         resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
         allowed, error_message = _enforce_safety_decision(
-            safety_guardian.assess_system_command(command, runtime_context=runtime_context),
+            safety_guardian.assess_system_command(command, runtime_context={**runtime_context, "command_cwd": resolved_cwd}),
             tool_call_id=tool_call_id,
             question=f"Safety Guardian 检测到系统命令存在风险，是否继续执行？\n\n命令：{command}",
         )
@@ -1064,7 +1064,7 @@ def _launch_background_command(
         )
     resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
     allowed, error_message = _enforce_safety_decision(
-        safety_guardian.assess_background_command(command, runtime_context=runtime_context),
+        safety_guardian.assess_background_command(command, runtime_context={**runtime_context, "command_cwd": resolved_cwd}),
         tool_call_id=tool_call_id,
         question=f"Safety Guardian 检测到后台命令需要确认，是否继续？\n\n命令：{command}",
     )

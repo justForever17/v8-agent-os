@@ -21,7 +21,7 @@ from core.background_model_output import sanitize_background_model_output
 from core.storage import storage
 from core.database import db
 from core.safety_active_defense import DEFAULT_ACTIVE_DEFENSE_CONFIG, normalize_active_defense_config, safety_active_defense_monitor
-from core.v8_agent_os_paths import WORKSPACE_HOME, protected_runtime_paths
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME, WORKSPACE_HOME, protected_runtime_paths
 from core.workspace_capability import simple_host_command_access
 from erc.event_bus import event_bus
 from erc.models import RuntimeSource
@@ -52,7 +52,6 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
                 "mkfs",
                 "format ",
                 "rm -rf /",
-                "remove-item",
             ],
         },
         {
@@ -61,6 +60,7 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
             "verdict": "review",
             "description": "命中后进入 pending approval。",
             "patterns": [
+                "remove-item",
                 "taskkill",
                 "pkill",
                 "kill",
@@ -75,7 +75,7 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
         },
     ],
     "fileRules": {
-        "protectedPaths": [*protected_runtime_paths(include_home=True), str(Path.home() / ".ssh")],
+        "protectedPaths": [*protected_runtime_paths(), str(Path.home() / ".ssh")],
         "blockedPathPatterns": [".ssh", ".aws", ".kube"],
         "reviewPathPatterns": [".v8chat", "projects.json", "hooks_config.json", "cron_config.json"],
         "protectedFileExtensions": [".db", ".sqlite", ".sqlite3"],
@@ -1211,6 +1211,18 @@ class SafetyGuardian:
                 },
             ]
 
+        # Retire only the exact old generated rule, not a user-created/edited
+        # deny containing the same verb. Concrete protected targets are checked
+        # independently before any review or minimal-mode auto approval.
+        old_default_block = {*(pattern.strip() for pattern in DEFAULT_SAFETY_GUARDIAN_CONFIG["commandRules"][0]["patterns"]), "remove-item"}
+        migrated_remove = False
+        for rule in merged["commandRules"]:
+            if rule["id"] == "command_block" and rule["verdict"] == "block" and set(rule["patterns"]) == old_default_block:
+                rule["patterns"] = [pattern for pattern in rule["patterns"] if pattern != "remove-item"]
+                migrated_remove = True
+        if migrated_remove and not any(rule["verdict"] == "review" and "remove-item" in rule["patterns"] for rule in merged["commandRules"]):
+            merged["commandRules"].append({"id": "ordinary_item_removal", "label": "普通文件删除", "verdict": "review", "description": "按当前审批模式确认具体删除目标。", "patterns": ["remove-item"]})
+
         file_rules = dict(raw.get("fileRules") or {})
         merged["fileRules"] = {
             "protectedPaths": legacy_protected_paths or [str(item).strip() for item in file_rules.get("protectedPaths", []) if str(item).strip()] or merged["fileRules"]["protectedPaths"],
@@ -1673,6 +1685,54 @@ class SafetyGuardian:
         policy_commands = analysis.policy_commands
         self._remember_recent_downloads(analysis, runtime_context)
 
+        # A preliminary review/allow must never hide a concrete deny elsewhere
+        # in the same command (including a decoded payload).
+        protected_path_command = next((candidate for candidate in policy_commands if self._touches_protected_path_in_command(candidate, runtime_context)), None)
+        if protected_path_command:
+            return self._decision(
+                verdict=config["systemIntegrityRules"]["destructiveCommandVerdict"],
+                reason="命令试图删除、覆盖或移动 V8 核心目录/受保护路径。",
+                risk_code="protected_path_command",
+                governance_target="v8_integrity",
+                posture=posture,
+                details={"command": command, "matched_command": protected_path_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+                allow_override=False,
+            )
+        protected_process_command = next((candidate for candidate in policy_commands if self._targets_protected_process(candidate)), None)
+        if protected_process_command:
+            return self._decision(
+                verdict=config["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
+                reason="命令疑似试图结束 V8 主程序或关键守护进程。",
+                risk_code="protected_process_command",
+                governance_target="v8_integrity",
+                posture=posture,
+                details={"command": command, "matched_command": protected_process_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+                allow_override=False,
+            )
+        for rule in config["commandRules"]:
+            if rule["verdict"] != "block":
+                continue
+            for pattern in rule["patterns"]:
+                matched = next((candidate for candidate in policy_commands if self._matches_command_pattern(candidate, pattern)), None)
+                if matched:
+                    return self._decision(
+                        verdict="block", reason=f"命令命中了{rule['label']}：{pattern}",
+                        risk_code="blocked_command_pattern", governance_target="system_integrity", posture=posture,
+                        details={"command": command, "matched_command": matched, "pattern": pattern, "rule": rule, "runtime_context": runtime_context, "analysis": analysis_payload},
+                        allow_override=False,
+                    )
+
+        platform_decisions = []
+        for assess in (self._assess_windows_profile_command, self._assess_cross_platform_system_command):
+            for candidate in policy_commands:
+                decision = assess(candidate, config=config, posture=posture, runtime_context=runtime_context, analysis_payload=analysis_payload)
+                if decision is not None:
+                    if decision.is_block() or not decision.allow_override:
+                        return decision
+                    platform_decisions.append(decision)
+        if platform_decisions:
+            return platform_decisions[0]
+
         if any(self._is_workspace_read_only_enumeration_command(candidate, runtime_context) for candidate in policy_commands):
             return self._decision(
                 verdict="allow",
@@ -1682,34 +1742,6 @@ class SafetyGuardian:
                 posture=posture,
                 details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
-
-        windows_profile_decision = None
-        for candidate in policy_commands:
-            windows_profile_decision = self._assess_windows_profile_command(
-                candidate,
-                config=config,
-                posture=posture,
-                runtime_context=runtime_context,
-                analysis_payload=analysis_payload,
-            )
-            if windows_profile_decision is not None:
-                break
-        if windows_profile_decision is not None:
-            return windows_profile_decision
-
-        cross_platform_decision = None
-        for candidate in policy_commands:
-            cross_platform_decision = self._assess_cross_platform_system_command(
-                candidate,
-                config=config,
-                posture=posture,
-                runtime_context=runtime_context,
-                analysis_payload=analysis_payload,
-            )
-            if cross_platform_decision is not None:
-                break
-        if cross_platform_decision is not None:
-            return cross_platform_decision
 
         sensitive_read_command = next(
             (
@@ -1730,42 +1762,17 @@ class SafetyGuardian:
                 details={"command": command, "matched_command": sensitive_read_command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
 
-        protected_path_command = next((candidate for candidate in policy_commands if self._touches_protected_path_in_command(candidate)), None)
-        if protected_path_command:
-            return self._decision(
-                verdict=config["systemIntegrityRules"]["destructiveCommandVerdict"],
-                reason="命令试图删除、覆盖或移动 v8chat 核心目录/受保护路径。",
-                risk_code="protected_path_command",
-                governance_target="v8_integrity",
-                posture=posture,
-                details={"command": command, "matched_command": protected_path_command, "runtime_context": runtime_context, "analysis": analysis_payload},
-                allow_override=False,
-            )
-
-        protected_process_command = next((candidate for candidate in policy_commands if self._targets_protected_process(candidate)), None)
-        if protected_process_command:
-            return self._decision(
-                verdict=config["v8IntegrityRules"]["protectedRuntimeProcessVerdict"],
-                reason="命令疑似试图结束 v8chat 主程序或关键守护进程。",
-                risk_code="protected_process_command",
-                governance_target="v8_integrity",
-                posture=posture,
-                details={"command": command, "matched_command": protected_process_command, "runtime_context": runtime_context, "analysis": analysis_payload},
-                allow_override=False,
-            )
-
         skill_root_command = next((candidate for candidate in policy_commands if self._command_touches_skill_root(candidate, runtime_context)), None)
         if skill_root_command:
-            mutation_level = self._skill_root_command_mutation_level(skill_root_command)
+            mutation_level = self._skill_root_command_mutation_level(skill_root_command, runtime_context)
             if mutation_level == "destructive":
                 return self._decision(
-                    verdict="block",
-                    reason="命令疑似会清空或删除 Skill 根目录。此类高危批量写删已被阻断。",
-                    risk_code="protected_skill_root_destructive_command",
+                    verdict="review",
+                    reason="命令涉及整个 Skill 目录或批量删除，按当前审批模式确认具体范围。",
+                    risk_code="bulk_skill_mutation",
                     governance_target="extensions_integrity",
                     posture=posture,
                     details={"command": command, "matched_command": skill_root_command, "runtime_context": runtime_context, "analysis": analysis_payload},
-                    allow_override=False,
                 )
             if mutation_level == "mutation":
                 if self._command_targets_workspace_skill_artifact_root(skill_root_command, runtime_context):
@@ -1790,7 +1797,7 @@ class SafetyGuardian:
         if skills_overwrite_command:
             return self._decision(
                 verdict="review",
-                reason="命令会覆盖已有 Skill。Skill 删除只能通过 Admin Extensions 的手动删除按钮完成；覆盖更新需要人工确认。",
+                reason="命令会覆盖已有 Skill，按当前审批模式确认该变更。",
                 risk_code="skill_install_overwrite_command",
                 governance_target="extensions_integrity",
                 posture=posture,
@@ -1948,7 +1955,7 @@ class SafetyGuardian:
                 allow_override=False,
             )
 
-        if self._is_under_workspace_skill_root(normalized, runtime_context):
+        if self._is_under_workspace_skill_root(normalized, runtime_context) and not self._is_under_protected_path(normalized):
             return self._decision(
                 verdict="allow",
                 reason="workspace_skill_artifact_write_allowed",
@@ -1961,7 +1968,7 @@ class SafetyGuardian:
         if self._is_under_skill_root(normalized, runtime_context):
             return self._decision(
                 verdict="review",
-                reason="当前写入目标位于 Skill 根目录。Skill 扫描器只读，任何写入、清空或删除 Skill 文件都需要人工确认。",
+                reason="当前写入会修改 Skill 内容，按当前审批模式确认；扫描器本身仍只读。",
                 risk_code="protected_skill_root_write",
                 governance_target="extensions_integrity",
                 posture=posture,
@@ -3746,7 +3753,18 @@ class SafetyGuardian:
             return None
 
     def _protected_paths(self) -> list[Path]:
-        return [path for item in self._config()["fileRules"]["protectedPaths"] if (path := self._normalize_path(item)) is not None]
+        paths: list[Path] = []
+        container_roots = {self._normalize_path(str(V8_AGENT_OS_HOME)), self._normalize_path(str(Path.home() / ".v8-agent-os"))}
+        for item in self._config()["fileRules"]["protectedPaths"]:
+            path = self._normalize_path(item)
+            if path in container_roots:
+                paths.extend(Path(item).resolve(strict=False) for item in protected_runtime_paths())
+            elif path is not None:
+                # The old generated tmp protection covered screenshots and tool
+                # output, not execution state. Exact user rules elsewhere remain.
+                if path != self._normalize_path(str(V8_AGENT_OS_HOME / "tmp")):
+                    paths.append(path)
+        return list(dict.fromkeys(paths))
 
     def _is_under_protected_path(self, path: Path) -> bool:
         normalized = self._normalize_path(str(path))
@@ -3839,7 +3857,7 @@ class SafetyGuardian:
                 return False
         return True
 
-    def _skill_root_command_mutation_level(self, command: str) -> str:
+    def _skill_root_command_mutation_level(self, command: str, runtime_context: Optional[Dict[str, Any]] = None) -> str:
         lowered = f" {str(command or '').lower()} "
         destructive_markers = (
             " remove-item ",
@@ -3863,6 +3881,19 @@ class SafetyGuardian:
             ">>",
         )
         if any(marker in lowered for marker in destructive_markers):
+            targets = self._command_mutation_paths(command, runtime_context)
+            roots = self._skill_root_paths(runtime_context)
+            # A concrete child item is not the whole skill container. Keep bulk
+            # deletion visible for approval, without claiming it is OS/V8 core.
+            if targets and all(
+                not any(
+                    self._mutation_path_overlaps(target, root)
+                    and (len(target.parts) <= len(root.parts) or any(char in target.parts[len(root.parts)] for char in "*?["))
+                    for root in roots
+                )
+                for target in targets
+            ):
+                return "mutation"
             return "destructive"
         if any(marker in lowered for marker in mutation_markers):
             return "mutation"
@@ -5050,14 +5081,25 @@ class SafetyGuardian:
         first = self._normalize_path(tokens[0].strip("\"'"))
         return first is not None and str(first).lower() == str(target).lower()
 
-    def _touches_protected_path_in_command(self, command: str) -> bool:
-        lower = (command or "").lower()
-        destructive_hint = any(token in lower for token in ["rm ", "del ", "remove-item", "rmdir", "move ", "mv ", "rename ", "ren "])
-        if not destructive_hint:
-            return False
-        for protected in self._protected_paths():
-            if str(protected).lower() in lower:
-                return True
+    def _command_mutation_paths(self, command: str, runtime_context: Optional[Dict[str, Any]] = None) -> list[Path]:
+        from erc.command_mutation_targets import command_mutation_paths
+        return command_mutation_paths(command, runtime_context, self._normalize_path, self._expand_path_text)
+
+    @staticmethod
+    def _mutation_path_overlaps(target: Path, protected: Path) -> bool:
+        # Component matching handles a glob without enumerating the filesystem
+        # or promoting '*.log' into a mutation of every child of its directory.
+        from fnmatch import fnmatchcase
+        return all(
+            fnmatchcase(os.path.normcase(actual), os.path.normcase(pattern))
+            for pattern, actual in zip(target.parts, protected.parts)
+        )
+
+    def _touches_protected_path_in_command(self, command: str, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
+        for target in self._command_mutation_paths(command, runtime_context):
+            for protected in self._protected_paths():
+                if self._mutation_path_overlaps(target, protected):
+                    return True
         return False
 
     def _matches_process_patterns(self, value: str, patterns: list[str]) -> bool:
@@ -5163,7 +5205,7 @@ class SafetyGuardian:
             return False
 
     def _is_user_workspace_write_path(self, path: Path, runtime_context: Optional[Dict[str, Any]]) -> bool:
-        return any(self._is_path_within_root(path, root) for root in self._workspace_roots_from_context(runtime_context))
+        return not self._is_under_protected_path(path) and any(self._is_path_within_root(path, root) for root in self._workspace_roots_from_context(runtime_context))
 
     def _is_process_control_command(self, command: str) -> bool:
         lower = str(command or "").strip().lower()
@@ -5198,7 +5240,7 @@ class SafetyGuardian:
         target_paths = self._extract_explicit_paths_from_command(command)
         if not target_paths:
             return False
-        return all(self._is_path_within_root(path, workspace_root) for path in target_paths)
+        return all(self._is_path_within_root(path, workspace_root) and not self._is_under_protected_path(path) for path in target_paths)
 
     def _targets_sensitive_system_path_in_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
         simple_read = (simple_host_command_access(command) or ("",))[0] == "host_read"
@@ -5223,6 +5265,9 @@ class SafetyGuardian:
                     return True
 
         if " " in normalized_pattern:
+            if normalized_pattern == "rm -rf /":
+                # A root target is not a prefix match for /tmp/ordinary-item.
+                return re.search(r"(?<!\S)rm\s+-rf\s+['\"]?/['\"]?(?=\s|[;&|]|$)", normalized_command) is not None
             return normalized_pattern in normalized_command
 
         boundary_pattern = rf"(?<![a-z0-9_./-]){re.escape(normalized_pattern)}(?![a-z0-9_./-])"

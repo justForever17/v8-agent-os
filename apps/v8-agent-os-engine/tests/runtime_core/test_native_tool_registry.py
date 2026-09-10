@@ -36,7 +36,7 @@ def test_registry_builds_current_native_tools_in_order() -> None:
         "config_broker",
         "plugin_broker",
     ]
-    assert exported_names[-4:] == ["ask_user", "write_todos", "update_todo", "vision_media_analyzer"]
+    assert exported_names[-5:] == ["ask_user", "write_todos", "update_todo", "vision_media_analyzer", "system_operations"]
     assert build_native_tools(vars(native_tools)) == native_tools.NATIVE_TOOLS
 
 

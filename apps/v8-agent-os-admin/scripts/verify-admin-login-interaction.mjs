@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { verifySystemOperationsCard } from "./verify-system-operations-card.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
@@ -121,6 +122,8 @@ try {
     await page.locator('button[type="submit"]').click();
     await page.waitForURL(/\/admin(?:\?.*)?$/, { timeout: 20_000 });
     assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
+    await verifySystemOperationsCard(page, baseUrl);
+    assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
 
     console.log(JSON.stringify({
         ok: true,
@@ -131,6 +134,7 @@ try {
             "stale_owner_conflict_switches_to_login",
             "existing_owner_credentials_sign_in",
             "no_browser_page_errors",
+            "system_operations_card_fake_os_boundary_identity_validation_password_clear_and_reload",
         ],
     }, null, 2));
 } finally {

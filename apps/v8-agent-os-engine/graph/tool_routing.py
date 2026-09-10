@@ -1223,6 +1223,17 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
 def create_routed_tool_node(tools, name, fallback_goto):
     """Return a ToolNode wrapper that always routes explicitly via Command."""
     async def _wrapped_tool_call(request, execute):
+        if request.tool is not None and request.tool_call.get("id"):
+            # BaseTool's start callback contains args, not the ToolCall envelope.
+            # Attach the actual invocation identity to this per-call copy so
+            # approval replay and concurrent calls do not create new UI identities.
+            request = request.override(tool=request.tool.model_copy(update={
+                "metadata": {
+                    **(request.tool.metadata or {}),
+                    "v8_invocation_tool_name": request.tool_call["name"],
+                    "v8_invocation_tool_call_id": request.tool_call["id"],
+                },
+            }))
         return await async_tool_call_wrapper(request, execute, tool_node_name=name)
 
     base_node = ToolNode(

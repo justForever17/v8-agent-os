@@ -1,0 +1,4 @@
+LIBRARY V8SessionUnlock
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

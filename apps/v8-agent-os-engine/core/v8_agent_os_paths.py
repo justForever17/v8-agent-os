@@ -93,11 +93,25 @@ def workspace_artifact_item_root(
     ) / _safe_path_segment(artifact_id, fallback="artifact")
 
 
-def protected_runtime_paths(*, include_home: bool = True) -> list[str]:
-    paths: list[str] = []
-    if include_home:
-        paths.append(str(V8_AGENT_OS_HOME))
-    paths.append(str(STATE_DB_PATH))
-    paths.append(str(CHECKPOINT_DB_PATH))
-    paths.append(str(V8_AGENT_OS_TMP_PATH))
+def protected_runtime_paths() -> list[str]:
+    """Live control/authentication state, not the entire user data container.
+
+    Workspaces, logs, screenshots and skill documents are ordinary resources.
+    Keep this list shared by defaults and legacy-root normalization so an old
+    blanket home entry cannot silently reinstate the old boundary.
+    """
+    paths = [str(path) for path in (
+        V8_AGENT_OS_CORE_PATH,
+        STATE_DB_PATH, CHECKPOINT_DB_PATH, OBSERVABILITY_DB_PATH,
+        CONFIG_JSON_PATH, MCP_JSON_PATH, NETWORK_SUPERVISOR_SECRETS_PATH,
+        V8_AGENT_OS_HOME / "users.json",
+    )]
+    for database_path in (STATE_DB_PATH, CHECKPOINT_DB_PATH, OBSERVABILITY_DB_PATH):
+        paths.extend(str(database_path) + suffix for suffix in ("-wal", "-shm", "-journal"))
+    engine = Path(__file__).resolve().parents[1]
+    paths.extend(str(engine / name) for name in ("core", "erc", "runtimes", "api", "main.py"))
+    paths.extend(str(engine / "native" / name) for name in ("v8-session-unlock", "v8-system-operations", "v8-native-common"))
+    if os.name == "nt":
+        installed = Path(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or "C:/Program Files") / "V8AgentOS"
+        paths.extend(str(installed / name) for name in ("SessionUnlock", "SystemOperations"))
     return paths

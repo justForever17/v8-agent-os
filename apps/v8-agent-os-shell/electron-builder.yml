@@ -33,6 +33,10 @@ extraResources:
       - "!tmp/**"
       - "!reports/**"
       - "!native/**/target/**"
+      - "!native/**/build/**/*.obj"
+      - "!native/**/build/**/*.lib"
+      - "!native/**/build/**/*.exp"
+      - "!native/**/build/**/*-tests.exe"
       - "!*.db"
       - "!*.log"
   - from: ./node_modules/npm

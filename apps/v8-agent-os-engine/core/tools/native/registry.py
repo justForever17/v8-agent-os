@@ -166,6 +166,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("vision", ("vision_media_analyzer",)),
+    ("system_session", ("system_operations",)),
 )
 
 

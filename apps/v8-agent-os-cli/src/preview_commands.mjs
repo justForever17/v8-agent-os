@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { ADMIN_DIR, DEFAULT_PORTS, LOG_DIR, REPO_ROOT, STATE_ROOT, WEB_DIR } from "./paths.mjs";
@@ -199,6 +200,9 @@ export function runSandboxHostBuild(options = {}) {
 }
 
 export async function commandPreview(args = {}) {
+  // Desktop-only dependency stays lazy: CLI/TUI commands must still load when
+  // a server distribution intentionally has no Electron Shell resources.
+  const { default: readiness } = await import(pathToFileURL(path.join(REPO_ROOT, "apps", "v8-agent-os-shell", "lib", "readiness-probe.cjs")).href);
   const rebuild = Boolean(args.rebuild);
   const noBuild = Boolean(args.noBuild);
   const buildPlan = planPreviewBuilds({ rebuild });
@@ -243,7 +247,7 @@ export async function commandPreview(args = {}) {
     const shellControlDescriptor = await waitForShellControlDescriptor({
       notBeforeMs: shellWasStarted ? shellStartedAtMs : 0,
       expectedPid: alreadyRunningShellPid,
-      timeoutMs: 30_000,
+      timeoutMs: readiness.SHELL_STARTUP_TIMEOUT_MS,
     });
     if (!shellControlDescriptor) {
       throw new Error("Shell startup failed: a fresh, live control descriptor was not published.");

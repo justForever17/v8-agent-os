@@ -32,7 +32,7 @@ class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
         )
         self.assertEqual(decision.verdict, "allow")
 
-    def test_host_command_runas_remains_hard_review_in_minimal_mode(self):
+    def test_host_command_runas_is_reviewed_but_not_a_kernel_target_by_itself(self):
         from core.tools.native.tool_governance import safety_review_is_hard_stop
 
         for command in (
@@ -47,7 +47,7 @@ class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
                 decision = safety_guardian.assess_system_command(command, runtime_context=RUNTIME_CONTEXT)
                 self.assertEqual(decision.verdict, "review")
                 self.assertEqual(decision.risk_code, "privilege_elevation_review")
-                self.assertTrue(safety_review_is_hard_stop(decision))
+                self.assertFalse(safety_review_is_hard_stop(decision))
 
     def test_host_command_elevation_words_in_data_do_not_request_privileges(self):
         for command in (
@@ -134,23 +134,23 @@ class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
         self.assertEqual(decision.verdict, "allow")
         self.assertEqual(decision.risk_code, "workspace_skill_artifact_command_allowed")
 
-    def test_skill_root_destructive_command_is_blocked(self):
+    def test_skill_root_destructive_command_requires_scope_review(self):
         target = Path.home() / ".agents" / "skills"
         decision = safety_guardian.assess_system_command(
             f'Remove-Item -LiteralPath "{target}" -Recurse -Force',
             runtime_context=RUNTIME_CONTEXT,
         )
-        self.assertEqual(decision.verdict, "block")
-        self.assertEqual(decision.risk_code, "protected_skill_root_destructive_command")
+        self.assertEqual(decision.verdict, "review")
+        self.assertEqual(decision.risk_code, "bulk_skill_mutation")
 
-    def test_workspace_skill_artifact_destructive_command_is_blocked(self):
+    def test_individual_workspace_skill_removal_uses_workspace_policy(self):
         target = Path(TEST7_WORKSPACE_PATH) / ".agents" / "skills" / "demo-skill"
         decision = safety_guardian.assess_system_command(
             f'Remove-Item -LiteralPath "{target}" -Recurse -Force',
             runtime_context=TEST7_RUNTIME_CONTEXT,
         )
-        self.assertEqual(decision.verdict, "block")
-        self.assertEqual(decision.risk_code, "protected_skill_root_destructive_command")
+        self.assertEqual(decision.verdict, "allow")
+        self.assertEqual(decision.risk_code, "workspace_skill_artifact_command_allowed")
 
     def test_skill_overwrite_install_command_requires_review(self):
         decision = safety_guardian.assess_system_command(

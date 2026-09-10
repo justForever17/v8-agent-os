@@ -9,6 +9,14 @@
 - 报告默认写到 `~/.v8-agent-os/reports/...`；不要把私有 live 报告提交进 Git。
 - 如果脚本被 Admin、cron、runtime 或部署流程正式调用，应迁移到 `apps/v8-agent-os-engine/scripts/` 并补稳定调用契约。
 
+## 受控系统操作
+
+`run_system_operations_windows_live.py --help` 给出分阶段入口。`status --live` 只显示组件和凭据是否配置；`privilege` / `unlock` 另需 `--allow-side-effects`，使用用户已在 Admin 配置的凭据，只打印去敏结果。`unlock` 会真实锁定当前会话再核验解锁，须提前告知用户；不自动重试认证。`lifecycle` 会请求 Windows UAC，移除并恢复两个自有组件，同时核对系统原有登录 Provider 未变。`--source-unlock-client` 仅标记源码客户端候选验证，不证明默认安装副本。
+
+`system_operations_posix_fixture.py --live --allow-side-effects` 只在明确许可的隔离 Linux/WSL root 环境运行：创建唯一临时测试账户及 sudo 规则，验证认证/空应用 stdin/错误密码/非零退出/超时/长中文/关闭输出后的取消，最后移除自建账户与规则。它不读取真实用户密码，也不证明 macOS 行为。
+
+普通测试不得调用以上副作用入口。批准恢复的真实模型/Web 联测与原生认证层分开记录；具体问题反例还见 `test_chat_transcript_cleanup.py` 中审批暂停与稳定 ToolCall ID 用例。
+
 ## Dry-run / Export / 诊断报告
 
 | 脚本 | 用途 | 副作用 |

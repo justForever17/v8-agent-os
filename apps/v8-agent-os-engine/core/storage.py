@@ -789,7 +789,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             },
         ],
         "fileRules": {
-            "protectedPaths": [*protected_runtime_paths(include_home=True), str(Path.home() / ".ssh")],
+            "protectedPaths": [*protected_runtime_paths(), str(Path.home() / ".ssh")],
             "blockedPathPatterns": [".ssh", ".aws", ".kube"],
             "reviewPathPatterns": [".v8chat", "projects.json", "hooks_config.json", "cron_config.json"],
             "protectedFileExtensions": [".db", ".sqlite", ".sqlite3"],

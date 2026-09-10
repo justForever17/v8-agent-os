@@ -2701,6 +2701,9 @@ def _decision_agent_visible_surface(
         renderer_result = _render_session_context_surface(payload, raw_ref, budget=budget)
     elif tool_name == "session_message_broker":
         renderer_result = _render_session_coordination_surface(payload, raw_ref, budget=budget)
+    elif tool_name == "system_operations":
+        from core.system_operations.surface import render_system_operation
+        renderer_result = render_system_operation(payload, raw_ref)
     elif tool_name == "research_broker":
         renderer_result = _render_research_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name == "web_broker" or tool_name.startswith("web_"):

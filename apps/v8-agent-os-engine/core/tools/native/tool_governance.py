@@ -37,30 +37,19 @@ _REDUCED_AUTO_APPROVE_RISK_CODES = {
     "trusted_provider_api_http",
     "computer_use_mutation",
 }
-_HARD_REVIEW_RISK_TOKENS = (
-    "blocked",
-    "credential",
-    "database",
-    "destructive",
-    "download_execute",
-    "encoded",
-    "financial",
-    "firewall",
-    "hotkey",
-    "package_install",
-    "persistence",
-    "privilege",
-    "process",
-    "profile",
-    "protected",
-    "recent_download",
-    "secret",
-    "sensitive",
-)
+_HARD_REVIEW_RISK_CODES = frozenset({
+    "credential_exfiltration_http", "unknown_credential_host_http",
+    "encoded_command_review", "sensitive_system_read_command",
+    "windows_profile_sensitive_read", "windows_profile_registry_mutation",
+    "windows_profile_acl_mutation", "windows_profile_reparse_mutation",
+    "windows_profile_hive_mutation", "windows_profile_destructive_copy",
+    "linux_auth_store_mutation", "linux_sensitive_read",
+    "macos_account_store_mutation", "macos_keychain_sensitive_read",
+    "cross_platform_sensitive_read", "cross_platform_sensitive_system_mutation",
+})
 _HARD_REVIEW_TARGETS = {
     "private_data_exfiltration",
     "v8_integrity",
-    "extensions_integrity",
 }
 
 
@@ -117,20 +106,6 @@ def current_safety_approval_mode() -> str:
     )
 
 
-def _decision_details_text(decision: SafetyDecision) -> str:
-    details = decision.details if isinstance(decision.details, dict) else {}
-    values = [
-        decision.risk_code,
-        decision.governance_target,
-        details.get("path"),
-        details.get("command"),
-        details.get("url"),
-        details.get("target"),
-        details.get("matched_command"),
-    ]
-    return " ".join(str(value or "").lower() for value in values)
-
-
 def safety_review_is_hard_stop(decision: SafetyDecision) -> bool:
     if decision.is_block() or not decision.allow_override:
         return True
@@ -138,8 +113,9 @@ def safety_review_is_hard_stop(decision: SafetyDecision) -> bool:
     governance_target = str(decision.governance_target or "").strip().lower()
     if governance_target in _HARD_REVIEW_TARGETS:
         return True
-    text = _decision_details_text(decision)
-    return any(token in risk_code or token in text for token in _HARD_REVIEW_RISK_TOKENS)
+    # Classification belongs to the guardian. Words inside an ordinary path,
+    # URL or command (e.g. /profile or process-report.md) are not risk evidence.
+    return risk_code in _HARD_REVIEW_RISK_CODES
 
 
 def should_auto_approve_safety_review(decision: SafetyDecision, *, mode: str | None = None) -> bool:
@@ -195,6 +171,9 @@ def _safety_operation_fingerprint(
         "riskCode": decision.risk_code,
         "governanceTarget": decision.governance_target,
         "target": str(target).strip(),
+        # Controlled OS actions are never authorized by a previous command with
+        # the same text. Both replay keys bind their immutable one-shot request.
+        "operationId": str(details.get("operationId") or ""),
         "sandboxLeaseId": str(
             runtime_context.get("sandbox_lease_id") or runtime_context.get("sandboxLeaseId") or ""
         ).strip(),
@@ -274,7 +253,8 @@ def _enforce_safety_decision(
     if decision.is_block() or not decision.allow_override:
         return False, f"Safety Guardian 已阻止该操作：{decision.reason}"
 
-    allowlist_entry = safety_guardian.is_allowlisted(decision)
+    controlled_operation = bool((decision.details or {}).get("operationId"))
+    allowlist_entry = None if controlled_operation else safety_guardian.is_allowlisted(decision)
     if allowlist_entry:
         safety_guardian.log_decision_event(
             action="native_tool_safety_allowlist_reused",
@@ -318,7 +298,7 @@ def _enforce_safety_decision(
         request_payload["operationFingerprint"] = operation_fingerprint
     if operation_target_fingerprint:
         request_payload["operationTargetFingerprint"] = operation_target_fingerprint
-    request_payload["allowlistCandidate"] = safety_guardian.build_allowlist_candidate(decision)
+    request_payload["allowlistCandidate"] = None if controlled_operation else safety_guardian.build_allowlist_candidate(decision)
 
     raise ModelGovernanceInterventionRequired(
         f"Safety Guardian 检测到治理审批请求：{decision.reason}",

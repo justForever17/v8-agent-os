@@ -28,6 +28,25 @@ def _schema_version(path: Path) -> int:
     return int(row[0] if row else 0)
 
 
+def test_v2_upgrade_adds_system_operations_without_losing_existing_session(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    manager = DatabaseManager(path)
+    manager.create_or_update_session("preserved-session", "Keep this session", user_id="owner")
+    with manager.get_connection() as conn:
+        conn.execute("DROP TABLE system_operation_requests")
+        conn.execute("DROP TABLE system_operation_credentials")
+        conn.execute("PRAGMA user_version=2")
+        conn.commit()
+    upgraded = DatabaseManager(path)
+    assert upgraded.get_session("preserved-session")["title"] == "Keep this session"
+    assert _schema_version(path) == DATABASE_SCHEMA_VERSION
+    with upgraded.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM system_operation_credentials").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM system_operation_requests").fetchone()[0] == 0
+    reopened = DatabaseManager(path)
+    assert reopened.get_session("preserved-session")["title"] == "Keep this session"
+
+
 def test_new_database_is_initialized_and_versioned(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
 

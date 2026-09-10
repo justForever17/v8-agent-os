@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from .models import RunCommandPayload
 from core.database import db
@@ -105,8 +105,10 @@ async def dispatch_run_command(run_id: str, command: str, payload: RunCommandPay
 
 
 @router.post("/approvals/{approval_id}/approve")
-async def approve_pending_approval(approval_id: str, payload: RunCommandPayload):
+async def approve_pending_approval(approval_id: str, payload: RunCommandPayload, request: Request):
     try:
+        from .system_operation_routes import validate_system_operation_approval
+        validate_system_operation_approval(db.get_pending_approval(approval_id) or {}, request)
         result = runtime_command_router.dispatch_approval_command(
             RuntimeCommand(
                 topic="approval.approve",
@@ -127,8 +129,10 @@ async def approve_pending_approval(approval_id: str, payload: RunCommandPayload)
 
 
 @router.post("/approvals/{approval_id}/reject")
-async def reject_pending_approval(approval_id: str, payload: RunCommandPayload):
+async def reject_pending_approval(approval_id: str, payload: RunCommandPayload, request: Request):
     try:
+        from .system_operation_routes import validate_system_operation_approval
+        validate_system_operation_approval(db.get_pending_approval(approval_id) or {}, request)
         result = runtime_command_router.dispatch_approval_command(
             RuntimeCommand(
                 topic="approval.reject",

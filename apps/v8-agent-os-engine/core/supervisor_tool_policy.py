@@ -20,6 +20,7 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "tool_observation_detail",
     "run_system_command",
     "command_session_broker",
+    "system_operations",
     "session_context_broker",
     "session_message_broker",
     "plugin_broker",

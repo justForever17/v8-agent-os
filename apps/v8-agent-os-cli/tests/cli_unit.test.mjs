@@ -1644,7 +1644,7 @@ test("preview rebuild restarts shell and adopts verified Next/Engine port owners
   assert.match(previewSource, /assertStarted\(serviceResults, \["engine", "admin", "web"\]/);
   assert.match(previewSource, /assertStarted\(shellResults, \["shell"\]/);
   assert.match(previewSource, /waitForShellControlDescriptor\(\{/);
-  assert.match(previewSource, /timeoutMs:\s*30_000/);
+  assert.match(previewSource, /timeoutMs:\s*readiness\.SHELL_STARTUP_TIMEOUT_MS/);
   assert.match(previewSource, /stopComponents\(\[\.\.\.new Set\(startedByThisAttempt\)\]\)/);
 });
 

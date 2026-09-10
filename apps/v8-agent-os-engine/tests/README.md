@@ -66,6 +66,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改生成预算/工具参数完整性/连续写入 | `tests/model_control/test_model_token_policy.py`、`test_llm_chat_adapter_streaming.py`、`test_model_failover_service.py`、`tests/runtime_core/test_workspace_capability.py`；真实长写入用 `run_supervisor_runtime_skill_live_audit.py --live --allow-side-effects --case engineering_long_write --web-url <Web>`，只创建临时可信工作区，不把 fixture 长度要求提升为产品门槛 |
 | 改 Creative Media | `tests/creative_media/` + `tests/scripts/run_creative_media_*` |
 | 改 Safety / permissions / command gate | `tests/safety/` + `tests/runtime_core/test_runtime_tool_access.py` |
+| 改受控提权/解锁/OS 凭据 | `tests/safety/test_system_operation*.py`、`test_runtime_resource_boundary.py`，原生 `native/v8-session-unlock` / `native/v8-system-operations` 协议与 CLI 测试；真实认证、锁屏、安装/卸载仅显式 `run_system_operations_windows_live.py --live --allow-side-effects`，不能在普通 pytest 自动运行 |
 | 改 Phone/Web realtime 投影 contract | `tests/contracts/` + `tests/chat_runtime/test_session_realtime_runtime_lane_contract.py` |
 | 做真实长任务或端到端验收 | 先读 [tests/scripts/README.md](scripts/README.md)，再选择对应 `run_*_live_*` |
 

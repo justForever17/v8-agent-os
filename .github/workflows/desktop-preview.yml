@@ -277,6 +277,20 @@ jobs:
         timeout-minutes: 10
         run: node scripts/desktop/build-sandbox-host.mjs --force
 
+      - name: Build and verify controlled Windows system components
+        if: matrix.os == 'windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $nativeRoot = 'apps/v8-agent-os-engine/native'
+          foreach ($component in @('v8-session-unlock', 'v8-system-operations')) {
+            & "$nativeRoot/$component/build.ps1" -Arch '${{ matrix.arch }}'
+            & "$nativeRoot/$component/build/${{ matrix.arch }}/protocol-tests.exe"
+            if ($LASTEXITCODE -ne 0) { throw "$component protocol tests failed" }
+          }
+          & "$nativeRoot/v8-session-unlock/build/${{ matrix.arch }}/provider-tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Credential Provider behavior tests failed' }
+
       - name: Build Admin and Web production bundles
         timeout-minutes: 25
         run: |

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sys
@@ -8,9 +9,11 @@ import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Annotated
 from unittest import mock
 
 from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.tools import InjectedToolCallId
 
 import runtimes.chat.runtime as chat_runtime_module
 import erc.chat_canonical_transcript as transcript_module
@@ -1118,6 +1121,127 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitted, [])
         self.assertEqual(self.stream_state.active_tool_call_ids, {"ask-user-pending"})
         self.assertFalse(any(item["topic"] == "tool.finished" for item in self.chat_run.events))
+
+    async def test_real_tool_node_approval_resume_keeps_one_canonical_invocation(self):
+        from langchain_core.runnables import RunnableLambda
+        from langchain_core.tools import tool
+        from core.hooks_manager import hooks_manager
+        from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+        from graph.tool_routing import create_routed_tool_node
+
+        allowed = False
+        executed = []
+
+        @tool("system_operations")
+        async def controlled_fixture(action: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+            """Exercise the real tool callback boundary without any OS operation."""
+            if not allowed:
+                raise ModelGovernanceInterventionRequired(
+                    "approval required", approval_kind="safety_review", question="Allow fixture?",
+                    request_payload={"toolCallId": tool_call_id},
+                )
+            executed.append(tool_call_id)
+            return json.dumps({"ok": True, "action": action, "verified": True})
+
+        original_metadata = dict(controlled_fixture.metadata or {})
+        node = RunnableLambda(create_routed_tool_node(
+            [controlled_fixture], name="supervisor_tools", fallback_goto="supervisor",
+        ))
+        call_id = "call_v8_approval_resume_fixture"
+        state = {"messages": [AIMessage(content="", tool_calls=[{
+            "id": call_id, "name": "system_operations", "args": {"action": "fixture"},
+        }])]}
+        callback_ids = []
+
+        async def consume():
+            async for event in node.astream_events(
+                state, config={"metadata": {"langgraph_node": "supervisor_tools"}}, version="v2",
+            ):
+                if event["event"] == "on_tool_start":
+                    callback_ids.append(event["run_id"])
+                await self.runtime.handle_stream_event(self.chat_run, self.stream_state, event)
+
+        with mock.patch.object(hooks_manager, "execute_hook"):
+            with self.assertRaises(ModelGovernanceInterventionRequired):
+                await consume()
+            self.assertEqual(executed, [])
+            self.assertFalse(any(event["topic"] == "tool.finished" for event in self.chat_run.events))
+            self.assertEqual(self.stream_state.active_tool_call_ids, {call_id})
+            message_id = self.stream_state.assistant_message_id
+            # Resume reconstructs stream state; callback UUIDs must not become
+            # a new physical tool operation or a second historical UI card.
+            self.stream_state = ChatStreamState(assistant_message_id=message_id)
+            allowed = True
+            await consume()
+
+        self.assertEqual(len(set(callback_ids)), 2)
+        self.assertEqual(executed, [call_id])
+        self.assertEqual(controlled_fixture.metadata or {}, original_metadata)
+        starts = [event for event in self.chat_run.events if event["topic"] == "tool.started"]
+        finishes = [event for event in self.chat_run.events if event["topic"] == "tool.finished"]
+        self.assertEqual([event["payload"]["tool"]["toolCallId"] for event in starts], [call_id, call_id])
+        self.assertEqual(len(finishes), 1)
+        self.assertEqual(finishes[0]["payload"]["tool"]["toolCallId"], call_id)
+        self.assertEqual(finishes[0]["payload"]["tool"]["resultStatus"], "completed")
+        self.assertFalse(self.stream_state.active_tool_call_ids)
+        row = self.test_db.get_chat_canonical_message(message_id)
+        self.assertEqual(len([node for node in row["nodes"] if node.get("executionType") == "tool_call"]), 1)
+        self.assertEqual(len([node for node in row["nodes"] if node.get("executionType") == "tool_result"]), 1)
+
+    def test_tool_callback_identity_does_not_leak_into_a_different_nested_tool(self):
+        metadata = {"v8_invocation_tool_name": "system_operations",
+                    "v8_invocation_tool_call_id": "call_v8_outer_fixture"}
+        own = self.runtime._resolve_tool_call_id_for_start(
+            callback_run_id="outer-callback", raw_inputs={}, metadata=metadata,
+            tool_name="system_operations", run_id="run-fixture",
+        )
+        nested = self.runtime._resolve_tool_call_id_for_start(
+            callback_run_id="inner-callback", raw_inputs={}, metadata=metadata,
+            tool_name="read_native_file", run_id="run-fixture",
+        )
+        self.assertEqual(own, "call_v8_outer_fixture")
+        self.assertNotEqual(nested, own)
+
+    async def test_parallel_same_name_tools_keep_distinct_callback_identities(self):
+        from langchain_core.runnables import RunnableLambda
+        from langchain_core.tools import tool
+        from core.hooks_manager import hooks_manager
+        from graph.tool_routing import create_routed_tool_node
+
+        both_started = asyncio.Event()
+        executed = []
+
+        @tool("system_operations")
+        async def controlled_fixture(action: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+            """Return an invocation identity without touching the system."""
+            executed.append(tool_call_id)
+            if len(executed) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=2)
+            return json.dumps({"ok": True, "action": action, "observedCallId": tool_call_id})
+
+        controlled_fixture.metadata = {"v8_invocation_tool_name": "system_operations",
+                                       "v8_invocation_tool_call_id": "call_v8_stale_ancestor"}
+        original_metadata = dict(controlled_fixture.metadata)
+        node = RunnableLambda(create_routed_tool_node(
+            [controlled_fixture], name="supervisor_tools", fallback_goto="supervisor",
+        ))
+        call_ids = {"call_v8_parallel_one", "call_v8_parallel_two"}
+        state = {"messages": [AIMessage(content="", tool_calls=[{
+            "id": call_id, "name": "system_operations", "args": {"action": "same_arguments"},
+        } for call_id in sorted(call_ids)])]}
+        with mock.patch.object(hooks_manager, "execute_hook"):
+            async for event in node.astream_events(
+                state, config={"metadata": {"langgraph_node": "supervisor_tools"}}, version="v2",
+            ):
+                await self.runtime.handle_stream_event(self.chat_run, self.stream_state, event)
+        self.assertEqual(set(executed), call_ids)
+        self.assertEqual(controlled_fixture.metadata, original_metadata)
+        for topic in ("tool.started", "tool.finished"):
+            events = [event for event in self.chat_run.events if event["topic"] == topic]
+            self.assertEqual(len(events), 2)
+            self.assertEqual({event["payload"]["tool"]["toolCallId"] for event in events}, call_ids)
+        self.assertFalse(self.stream_state.active_tool_call_ids)
 
     async def test_ask_user_validation_error_does_not_leave_a_phantom_pending_tool(self):
         self.stream_state.tool_calls_buffer.append({"id": "ask-provider-call", "name": "ask_user", "args": {}})

@@ -22,7 +22,7 @@ from core.runtime_compatibility import (
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 
 
 class RuntimeEpisodeIdempotencyConflict(ValueError):
@@ -2071,6 +2071,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_session ON ui_action_requests (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_expires ON ui_action_requests (state, expires_at)')
             self._ensure_creative_media_store_tables(conn)
+            from core.system_operations.schema import ensure_system_operation_tables
+            ensure_system_operation_tables(conn)
             
             # Simple Schema Migration (Adding missing columns if upgrading)
             migration_succeeded = True

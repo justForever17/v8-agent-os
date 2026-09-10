@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -20,7 +20,7 @@ export async function POST(
         const payload = await req.json().catch(() => ({}));
         const response = await fetch(`${ENGINE_URL}/approvals/${id}/reject`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "x-v8-agent-os-user-email": userEmail, "x-v8-agent-os-secret": resolveInternalSecret() },
             body: JSON.stringify(payload),
         });
         const data = await response.json().catch(() => ({}));

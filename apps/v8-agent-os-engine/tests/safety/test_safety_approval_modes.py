@@ -50,8 +50,6 @@ def test_reduced_mode_auto_approves_only_low_risk_reviews() -> None:
 
 def test_reduced_and_minimal_do_not_bypass_hard_protections() -> None:
     hard_reviews = [
-        _review("download_execute_command", governance_target="system_integrity"),
-        _review("privilege_elevation_review", governance_target="system_integrity"),
         _review("protected_config_write", governance_target="v8_integrity"),
         _review("credential_exfiltration_http", governance_target="private_data_exfiltration"),
         _review("windows_profile_registry_mutation", governance_target="system_integrity"),
@@ -66,6 +64,21 @@ def test_reduced_and_minimal_do_not_bypass_hard_protections() -> None:
 def test_minimal_mode_can_auto_approve_non_hard_reviews() -> None:
     assert should_auto_approve_safety_review(_review("review_command_pattern"), mode="minimal") is True
     assert should_auto_approve_safety_review(_review("external_mutating_http"), mode="minimal") is True
+
+
+@pytest.mark.parametrize("risk", ["privilege_elevation_review", "package_install_command", "process_control_command", "computer_use_hotkey_review", "download_execute_command", "protected_skill_root_write"])
+def test_minimal_respects_explicit_authorization_for_ordinary_operations(risk: str) -> None:
+    decision = _review(risk, governance_target="extensions_integrity" if "skill" in risk else "system_integrity")
+    assert should_auto_approve_safety_review(decision, mode="minimal") is True
+    assert should_auto_approve_safety_review(decision, mode="manual") is False
+    assert should_auto_approve_safety_review(decision, mode="reduced") is False
+
+
+@pytest.mark.parametrize("word", ["credential", "process", "profile", "protected", "secret", "financial"])
+def test_names_inside_ordinary_url_are_not_security_classification(word: str) -> None:
+    decision = _review("external_mutating_http", details={"url": f"https://example.test/docs/{word}"})
+    assert should_auto_approve_safety_review(decision, mode="minimal") is True
+    assert should_auto_approve_safety_review(decision, mode="reduced") is True
 
 
 def _silence_safety_ledger(monkeypatch: pytest.MonkeyPatch) -> None:

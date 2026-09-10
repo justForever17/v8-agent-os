@@ -19,6 +19,8 @@ const {
 } = require('../lib/surface-security.cjs');
 const {
   classifyProductSurface,
+  CORE_SERVICES_READINESS_TIMEOUT_MS,
+  PRODUCT_SURFACE_READINESS_TIMEOUT_MS,
   fetchTextWithTimeout,
   initialProductSurfaceUrl,
   resolveAdminSurfaceAuthentication,
@@ -443,16 +445,16 @@ async function monitorCoreServiceLiveness(startResults, isComplete) {
 async function waitForServices(startResults) {
   let complete = false;
   const readiness = Promise.all([
-    waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: 120000, kind: 'engine', isCancelled: () => complete })
+    waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'engine', isCancelled: () => complete })
       .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'engine' })),
     waitForUrl(`${adminBaseUrl}/login`, {
-      timeoutMs: 120000,
+      timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS,
       kind: 'admin',
       expectedOrigin: new URL(adminBaseUrl).origin,
       isCancelled: () => complete,
     })
       .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'admin' })),
-    waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: 120000, kind: 'web', isCancelled: () => complete })
+    waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'web', isCancelled: () => complete })
       .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'web' })),
   ]);
   try {
@@ -1501,7 +1503,7 @@ function createMainWindow() {
       (script) => contents.executeJavaScript(script, true),
       surfaceKind,
       {
-        timeoutMs: 5000,
+        timeoutMs: PRODUCT_SURFACE_READINESS_TIMEOUT_MS,
         intervalMs: 100,
         isCancelled: () => contents.isDestroyed()
           || mainWindow?.webContents !== contents

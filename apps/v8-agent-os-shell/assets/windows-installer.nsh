@@ -17,6 +17,32 @@
   !endif
 !macroend
 
+!define V8OS_SYSTEM_COMPONENT_CLEANUP "${__FILEDIR__}\windows-uninstall-system-components.ps1"
+!macro customUnInstall
+  # electron-builder invokes this before deleting the package. Its updater also
+  # invokes the uninstaller; an upgrade must retain optional system components.
+  ${IfNot} ${isUpdated}
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File /oname=v8os-remove-system-components.ps1 "${V8OS_SYSTEM_COMPONENT_CLEANUP}"
+    StrCpy $1 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+    IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 +2
+      StrCpy $1 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+    nsExec::ExecToStack '"$1" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$PLUGINSDIR\v8os-remove-system-components.ps1" -EngineRoot "$INSTDIR\resources\v8os\apps\v8-agent-os-engine"'
+    Pop $0
+    Pop $1
+    DetailPrint "$1"
+    ${If} $0 != 0
+      ${IfNot} ${Silent}
+        MessageBox MB_OK|MB_ICONSTOP|MB_TOPMOST "V8OS system components could not be removed, or Windows elevation was cancelled.$\r$\nUninstall has stopped. Your application and credentials are preserved.$\r$\nIf a component is still in use, sign out or restart Windows and retry; otherwise repair or remove the components in Admin."
+      ${EndIf}
+      SetErrorLevel 1603
+      Abort "V8OS optional system component cleanup was not confirmed."
+    ${EndIf}
+    SetOutPath "$INSTDIR"
+  ${EndIf}
+!macroend
+
 !ifndef BUILD_UNINSTALLER
 !define V8OS_GIT_X64_INSTALLER "${__FILEDIR__}\..\.release-prerequisites\Git-2.55.0.5-64-bit.exe"
 !define V8OS_GIT_ARM64_INSTALLER "${__FILEDIR__}\..\.release-prerequisites\Git-2.55.0.5-arm64.exe"

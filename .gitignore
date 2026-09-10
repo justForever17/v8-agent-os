@@ -127,6 +127,7 @@ apps/v8-agent-os-admin/scripts/*
 !apps/v8-agent-os-admin/scripts/verify-desktop-pet-settings.mjs
 !apps/v8-agent-os-admin/scripts/verify-research-agent-browser.mjs
 !apps/v8-agent-os-admin/scripts/verify-model-token-policy.mjs
+!apps/v8-agent-os-admin/scripts/verify-system-operations-card.mjs
 apps/v8-agent-os-engine/scripts/computer_use_primitive_live_matrix.*
 apps/v8-agent-os-engine/scripts/offline_visual_*
 apps/v8-agent-os-engine/scripts/SCRIPT_MIGRATION_MAP.md

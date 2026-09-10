@@ -8589,7 +8589,13 @@ class ChatRuntime:
         tool_name: str = "",
         run_id: str = "",
     ) -> str:
+        invocation_metadata = metadata or {}
+        scoped_id = (
+            invocation_metadata.get("v8_invocation_tool_call_id")
+            if invocation_metadata.get("v8_invocation_tool_name") == tool_name else None
+        )
         for candidate in (
+            scoped_id,
             cls._extract_tool_call_id_from_value(raw_inputs),
             cls._extract_tool_call_id_from_value(metadata),
             cls._extract_tool_call_id_from_value(data),
@@ -8806,9 +8812,9 @@ class ChatRuntime:
             error = data.get("error")
             from langgraph.errors import GraphBubbleUp
 
-            if isinstance(error, (GraphBubbleUp, asyncio.CancelledError)):
+            if isinstance(error, (GraphBubbleUp, ModelGovernanceInterventionRequired, asyncio.CancelledError)):
                 # Interrupt/resume and cancellation have their own lifecycle;
-                # an expected ask_user pause is not a failed tool result.
+                # an expected approval/ask_user pause is not a failed tool result.
                 return emitted_events
             error_type = type(error).__name__ if isinstance(error, BaseException) else "ToolExecutionError"
             callback_id = str(event.get("run_id") or "")

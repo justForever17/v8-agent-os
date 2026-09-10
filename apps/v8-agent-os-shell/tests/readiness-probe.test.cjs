@@ -4,6 +4,9 @@ const vm = require('node:vm');
 
 const {
   classifyProductSurface,
+  CORE_SERVICES_READINESS_TIMEOUT_MS,
+  PRODUCT_SURFACE_READINESS_TIMEOUT_MS,
+  SHELL_STARTUP_TIMEOUT_MS,
   fetchTextWithTimeout,
   initialProductSurfaceUrl,
   isWebSurfaceReady,
@@ -14,6 +17,12 @@ const {
   verifyProductSurfaceDom,
   waitForProductSurfaceDom,
 } = require('../lib/readiness-probe.cjs');
+
+test('launcher budget contains the actual inner service and hydrated surface deadlines', () => {
+  assert.ok(CORE_SERVICES_READINESS_TIMEOUT_MS >= 120_000);
+  assert.ok(SHELL_STARTUP_TIMEOUT_MS > CORE_SERVICES_READINESS_TIMEOUT_MS + PRODUCT_SURFACE_READINESS_TIMEOUT_MS);
+  assert.ok(SHELL_STARTUP_TIMEOUT_MS < 180_000, 'startup still has a finite failure boundary');
+});
 
 test('initial Shell surface uses local Web after setup and reserves Admin login for bootstrap', () => {
   const options = {

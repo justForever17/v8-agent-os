@@ -1,3 +1,9 @@
+const CORE_SERVICES_READINESS_TIMEOUT_MS = 120_000;
+const PRODUCT_SURFACE_READINESS_TIMEOUT_MS = 5_000;
+// The outer launcher must leave time for the inner service deadline and the
+// existing navigation/authentication window, then the actual hydrated DOM.
+const SHELL_STARTUP_TIMEOUT_MS = CORE_SERVICES_READINESS_TIMEOUT_MS + 30_000 + PRODUCT_SURFACE_READINESS_TIMEOUT_MS;
+
 function validateExpectedResponseUrl(kind, response) {
   let finalUrl;
   let expectedOrigin;
@@ -182,7 +188,7 @@ async function verifyProductSurfaceDom(executeJavaScript, surfaceKind) {
 }
 
 async function waitForProductSurfaceDom(executeJavaScript, surfaceKind, options = {}) {
-  const timeoutMs = Math.max(0, Number(options.timeoutMs ?? 5000));
+  const timeoutMs = Math.max(0, Number(options.timeoutMs ?? PRODUCT_SURFACE_READINESS_TIMEOUT_MS));
   const intervalMs = Math.max(10, Number(options.intervalMs ?? 100));
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const sleep = typeof options.sleep === 'function'
@@ -215,6 +221,9 @@ async function fetchTextWithTimeout(fetchImpl, url, timeoutMs = 1500, options = 
 }
 
 module.exports = {
+  CORE_SERVICES_READINESS_TIMEOUT_MS,
+  PRODUCT_SURFACE_READINESS_TIMEOUT_MS,
+  SHELL_STARTUP_TIMEOUT_MS,
   classifyProductSurface,
   fetchTextWithTimeout,
   initialProductSurfaceUrl,

@@ -175,6 +175,7 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
 }
 
 SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
+    "system_operations",
     RUNTIME_BROKER_TOOL_NAME,
     "ask_user",
     "spec_broker",

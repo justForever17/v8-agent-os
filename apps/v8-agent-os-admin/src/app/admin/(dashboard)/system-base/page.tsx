@@ -7,6 +7,7 @@ import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdvancedSection } from "@/components/admin-shell/AdvancedSection";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
+import { SystemOperationsCard } from "@/components/admin-shell/SystemOperationsCard";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
@@ -1538,6 +1539,8 @@ export default function SystemBasePage() {
                     })}
                 </div>
             </ConfigCard>
+
+            <SystemOperationsCard />
 
             <AdvancedSection title={t("app.admin.dashboard.system.base.page.kd507ab95")} description={t("app.admin.dashboard.system.base.page.k6f194618")}>
                 <div className="grid gap-4 lg:grid-cols-3">

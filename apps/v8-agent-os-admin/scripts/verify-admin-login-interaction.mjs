@@ -12,6 +12,11 @@ const { chromium } = require("playwright");
 const adminDir = process.cwd();
 const nextBin = path.join(adminDir, "node_modules", "next", "dist", "bin", "next");
 const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8-admin-login-interaction-"));
+// Do not borrow a developer's Engine. All Engine-backed UI used by this
+// component contract must be explicitly provided by its browser fixture.
+fs.writeFileSync(path.join(stateRoot, "config.json"), JSON.stringify({
+    systemBase: { bridge: { engineBaseUrl: "http://127.0.0.1:1" } },
+}));
 const port = 21000 + crypto.randomInt(1000);
 const baseUrl = `http://127.0.0.1:${port}`;
 const password = "owner-interaction-test-password";

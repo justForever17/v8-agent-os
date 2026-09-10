@@ -582,6 +582,7 @@ jobs:
         continue-on-error: true
 
       - name: Installed Windows desktop smoke
+        id: windows-installed-smoke
         if: matrix.os == 'windows'
         shell: pwsh
         timeout-minutes: 18
@@ -660,7 +661,7 @@ jobs:
           }
 
       - name: Cleanup Windows desktop smoke processes
-        if: always() && matrix.os == 'windows'
+        if: always() && matrix.os == 'windows' && steps.windows-installed-smoke.outcome != 'skipped'
         shell: pwsh
         env:
           V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}

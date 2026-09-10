@@ -1,39 +1,32 @@
-import { useState, useEffect } from "react";
+import { useCallback, useSyncExternalStore } from "react";
+
+const debugPreferenceKey = "v8-admin-debug-mode";
+const subscribeDebugPreference = (onChange: () => void) => {
+    const handleStorage = (event: StorageEvent) => {
+        if (event.key === debugPreferenceKey) onChange();
+    };
+    const handleCustom = () => onChange();
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener("v8-debug-mode-change", handleCustom);
+    return () => {
+        window.removeEventListener("storage", handleStorage);
+        window.removeEventListener("v8-debug-mode-change", handleCustom);
+    };
+};
+const readDebugPreference = () => localStorage.getItem(debugPreferenceKey) === "true";
+const readServerDebugPreference = () => false;
 
 export function useDebugMode() {
-    // Match server HTML on the first render, then restore the browser preference.
-    const [debugMode, setDebugMode] = useState(false);
+    // Match server HTML on the first render, then subscribe to the browser preference.
+    const debugMode = useSyncExternalStore(subscribeDebugPreference, readDebugPreference, readServerDebugPreference);
 
-    useEffect(() => {
-        setDebugMode(localStorage.getItem("v8-admin-debug-mode") === "true");
-        const handleStorage = (e: StorageEvent) => {
-            if (e.key === "v8-admin-debug-mode") {
-                setDebugMode(e.newValue === "true");
-            }
-        };
-
-        const handleCustomEvent = (e: Event) => {
-            const customEvent = e as CustomEvent;
-            setDebugMode(!!customEvent.detail);
-        };
-
-        window.addEventListener("storage", handleStorage);
-        window.addEventListener("v8-debug-mode-change", handleCustomEvent as EventListener);
-        
-        return () => {
-            window.removeEventListener("storage", handleStorage);
-            window.removeEventListener("v8-debug-mode-change", handleCustomEvent as EventListener);
-        };
-    }, []);
-
-    const toggleDebugMode = (enabled: boolean) => {
+    const toggleDebugMode = useCallback((enabled: boolean) => {
         if (typeof window === "undefined") {
             return;
         }
-        localStorage.setItem("v8-admin-debug-mode", String(enabled));
-        window.dispatchEvent(new CustomEvent("v8-debug-mode-change", { detail: enabled }));
-        setDebugMode(enabled);
-    };
+        localStorage.setItem(debugPreferenceKey, String(enabled));
+        window.dispatchEvent(new Event("v8-debug-mode-change"));
+    }, []);
 
     return [debugMode, toggleDebugMode] as const;
 }

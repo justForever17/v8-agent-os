@@ -57,11 +57,29 @@ test('real 32-bit and 64-bit PowerShell see identical native component paths and
   if (!fs.existsSync(wow64)) { t.skip('32-bit PowerShell is unavailable'); return; }
   const snapshots = [];
   for (const executable of [wow64, powershell]) {
-    const source = `$ErrorActionPreference = 'Stop'; . ${quote(helper)} -EngineRoot ${quote(engineRoot)}; @{ process64 = [Environment]::Is64BitProcess; components = @(Get-V8SystemComponentPresence) } | ConvertTo-Json -Depth 4 -Compress`;
-    const snapshot = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', source], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
-    assert.equal(snapshot.error, undefined);
+    // A fresh runner may cold-start the x86 CLR under WOW64/emulation. That
+    // bootstrap is not the native registry/helper operation being measured.
+    // Keep a bounded bootstrap ceiling and the original 15s operation budget;
+    // phase receipts distinguish either timeout from a path/bitness failure.
+    const source = `$ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine('v8-probe:script-entered')
+$probeClock = [Diagnostics.Stopwatch]::StartNew()
+. ${quote(helper)} -EngineRoot ${quote(engineRoot)}
+[Console]::Error.WriteLine('v8-probe:helper-loaded')
+$components = @(Get-V8SystemComponentPresence)
+$operationMs = $probeClock.Elapsed.TotalMilliseconds
+[Console]::Error.WriteLine('v8-probe:snapshot-complete')
+@{ process64 = [Environment]::Is64BitProcess; components = $components; operationMs = $operationMs } | ConvertTo-Json -Depth 4 -Compress`;
+    const started = performance.now();
+    const snapshot = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', source], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    const wallMs = performance.now() - started;
+    assert.equal(snapshot.error, undefined, `${executable}: ${snapshot.error?.code || 'process error'}; ${snapshot.stderr || 'no script-entry receipt'}`);
     assert.equal(snapshot.status, 0, snapshot.stderr || snapshot.stdout);
-    snapshots.push(JSON.parse(snapshot.stdout.trim()));
+    const parsed = JSON.parse(snapshot.stdout.trim());
+    assert.ok(Number.isFinite(parsed.operationMs) && parsed.operationMs < 15000,
+      `native component snapshot exceeded its 15s operation budget: ${parsed.operationMs}ms`);
+    t.diagnostic(`${path.relative(process.env.SystemRoot || 'C:/Windows', executable)}: wallMs=${Math.round(wallMs)}, operationMs=${Math.round(parsed.operationMs)}, bootstrapAndSerializationMs=${Math.round(wallMs - parsed.operationMs)}`);
+    snapshots.push(parsed);
     const dryRun = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper, '-EngineRoot', engineRoot, '-DryRun'], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
     assert.equal(dryRun.error, undefined);
     assert.equal(dryRun.status, 0, dryRun.stderr || dryRun.stdout);

@@ -15,6 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-component-contract:
+    name: Windows component contract (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          architecture: ${{ matrix.arch }}
+      - name: Verify native runner and read-only component contracts
+        shell: pwsh
+        run: |
+          node -e "if (process.arch !== '${{ matrix.arch }}') throw Error('Unexpected Node architecture: ' + process.arch)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test apps/v8-agent-os-shell/tests/windows-system-components-uninstall.test.cjs
+          exit $LASTEXITCODE
+
   release-governance:
     name: Release governance
     runs-on: ubuntu-latest
@@ -176,6 +204,7 @@ jobs:
   ci-gate:
     name: CI Gate
     needs:
+      - windows-component-contract
       - release-governance
       - shared-packages
       - client-static

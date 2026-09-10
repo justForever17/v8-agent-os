@@ -17,7 +17,7 @@ test("web message headers follow the current supervisor profile instead of store
   const chatMessage = read(webRoot, "src", "components", "chat", "ChatMessage.tsx");
   const streamState = read(webRoot, "src", "lib", "chat-stream-state.ts");
 
-  assert.match(chatClient, /fetch\("\/api\/supervisor-profile", \{ cache: "no-store" \}\)/);
+  assert.match(chatClient, /fetch\("\/api\/supervisor-profile", \{ cache: "no-store", signal \}\)/);
   assert.match(chatClient, /window\.setInterval\(refresh, 2_000\)/);
   assert.match(chatClient, /supervisorProfile=\{supervisorDisplayProfile\}/);
   assert.match(chatWindow, /supervisorProfile=\{supervisorProfile\}/);

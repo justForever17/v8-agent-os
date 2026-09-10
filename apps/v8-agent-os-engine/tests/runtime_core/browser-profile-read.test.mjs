@@ -9,6 +9,7 @@ function fixture({ hops = ["https://example.test/member"], gotoError = false } =
     on: (name, fn) => { assert.equal(name, "Fetch.requestPaused"); paused = fn; },
     send: async (name, params) => {
       state.commands.push({ name, params });
+      if (name === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       if (name === "Fetch.enable") {
         assert.deepEqual(params.patterns, [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }]);
         enabled = true;

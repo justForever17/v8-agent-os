@@ -396,6 +396,51 @@ test("reasoning deltas update one node with canonical millisecond timing", () =>
   assert.equal(updated.currentAiMsg.nodes[0].content, "first second");
 });
 
+test("typed reasoning timing stays anchored across live envelopes and snapshot refresh", () => {
+  for (const envelope of [false, true]) {
+    const messages = [];
+    let current;
+    let profile = {};
+    for (const [seq, elapsed] of [[1, 3100], [2, 6200], [3, 9300]]) {
+      const payload = {
+        type: "reasoning_chunk", content: "step " + seq,
+        message_id: "assistant-timing", node_id: "reasoning-timing",
+        startTime: 1000, durationMs: elapsed,
+      };
+      const frame = { run_id: "run-timing", seq, ts: new Date(1000 + elapsed).toISOString() };
+      const event = normalizeSessionRuntimeEvent(envelope
+        ? { topic: "run.reasoning.delta", ...frame, payload }
+        : { ...payload, ...frame });
+      const result = applyRealtimeEventToMessages(event, messages, current, profile);
+      current = result.currentAiMsg;
+      profile = result.activeAgentProfile;
+      assert.equal(current.nodes.length, 1);
+      assert.equal(current.nodes[0].startTime, 1000, "a new chunk must not restart the visible timer");
+      assert.equal(current.nodes[0].time, elapsed);
+      assert.equal(current.nodes[0].data.durationMs, elapsed);
+    }
+    const reloaded = mergeTimelineNodesByIdentity(current.nodes, [{
+      ...current.nodes[0], startTime: 1000, time: 9300,
+      data: { ...current.nodes[0].data, startTime: 1000, durationMs: 9300 },
+    }]);
+    assert.deepEqual(reloaded.map(({ startTime, time }) => ({ startTime, time })), [{ startTime: 1000, time: 9300 }]);
+  }
+});
+
+test("reasoning chunks without timing preserve their existing clock and duration", () => {
+  const messages = [];
+  const base = {
+    type: "reasoning_chunk", node_id: "reasoning-clock", message_id: "assistant-clock",
+    run_id: "run-clock", runtimeId: "chat", targets: ["message"], visibility: "visible",
+  };
+  const first = applyRealtimeEventToMessages({ ...base, content: "first", ts: "1970-01-01T00:00:04Z",
+    data: { startTime: 1000, durationMs: 3000 } }, messages, undefined, {});
+  const second = applyRealtimeEventToMessages({ ...base, content: " second", ts: "1970-01-01T00:00:07Z" },
+    messages, first.currentAiMsg, first.activeAgentProfile);
+  assert.equal(second.currentAiMsg.nodes[0].startTime, 1000);
+  assert.equal(second.currentAiMsg.nodes[0].time, 3000);
+});
+
 test("terminal text correction replaces only its model stream in live and replay", () => {
   const first = "chat:supervisor:text:prior-model";
   const last = "chat:supervisor:text:final-model";

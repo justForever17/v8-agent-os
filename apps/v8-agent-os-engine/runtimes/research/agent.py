@@ -50,6 +50,7 @@ class SearchSources(StrictInput):
     urls: list[str] = Field(default_factory=list, max_length=4)
     source: Literal["web", "documentation"] = "web"
     searchEngine: WebSearchEngine = "auto"
+    fetchMode: Literal["auto", "dynamic"] = Field(default="auto", description="auto prefers a configured search API. dynamic explicitly submits through the website UI, including Metaso/ChatGPT chat; governed browser profile rules still apply.")
 
 
 class SubmitAnswer(StrictInput):
@@ -109,6 +110,8 @@ SEARCH_TOOL = tool_schema(
     "Select useful unfetched candidates with urls, then read their source keys. Explicit URL fetches do not consume search rounds. "
     "Use site:example.org in queries for a requested publication domain; a bare domain keyword does not restrict search. "
     "If a provider repeatedly returns irrelevant material, choose another searchEngine; enabled providers and profile authorization still apply. "
+    "For an explicit website-chat request use searchEngine=metaso or chatgpt and fetchMode=dynamic. "
+    "Website AI answers are secondary generated material; open and read their cited pages before treating citations as verified. "
     "Use source=documentation for the configured Context7 documentation connector, or web for normal search. "
     "Only search for missing knowledge, not to meet source, host, word or claim quotas.",
     SearchSources,
@@ -314,7 +317,7 @@ class ResearchAgent:
         urls = [u.strip() for u in request.urls if u.strip()]
         if not queries and not urls:
             raise ValueError("query_or_url_required")
-        signature = json.dumps([request.source, request.searchEngine, sorted(queries)], ensure_ascii=False)
+        signature = json.dumps([request.source, request.searchEngine, request.fetchMode, sorted(queries)], ensure_ascii=False)
         skipped_queries = []
         if signature in self.seen_searches:
             skipped_queries, queries = queries, []
@@ -328,6 +331,8 @@ class ResearchAgent:
             self.seen_searches.add(signature)
             self.searches += 1
         options = {"search_engine": request.searchEngine} if request.searchEngine != "auto" else {}
+        if request.fetchMode != "auto":
+            options["fetch_mode"] = request.fetchMode
         result = self.acquire(queries=queries, urls=urls, source=request.source, seconds=self.check_budget(), **options)
         self.check_budget()
         added = self.store.add(result.get("sources") or [])

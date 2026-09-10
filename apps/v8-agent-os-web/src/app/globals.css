@@ -456,9 +456,10 @@ html.dark[data-v8-wallpaper="active"] .v8-product-topbar {
     backdrop-filter: blur(18px) saturate(1.08);
 }
 
-/* Video decoding already consumes a compositor surface. Avoid sampling that
-   moving surface through several large blur layers on legacy Windows GPUs. */
-html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] :where(
+/* Disable nested blur as soon as video loading starts, including chat bubble
+   and responsive Tailwind blur classes. Waiting for canplay misses startup. */
+html:has(.v8-personalization-wallpaper-video[src]) :where(
+    [class*="backdrop-blur"],
     .bg-popover,
     [class*="bg-popover/"],
     .glass-panel,

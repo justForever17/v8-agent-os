@@ -1288,20 +1288,28 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const content = String(event.content || "");
     const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
     const reasoningKind = String(event.reasoningKind || eventData.reasoningKind || "").trim() || undefined;
-    const startTime = Number(eventData.startTime || eventData.start_time || timelineFields.timestamp) || timelineFields.timestamp;
-    const durationMs = Math.max(0, Number(eventData.durationMs || eventData.duration_ms || 0) || 0);
+    const eventTiming = asRecord(event);
     const explicitNode = event.node_id
       ? (Array.isArray(current.nodes)
         ? current.nodes.find((node) => String(node.id || "").trim() === event.node_id)
         : undefined)
       : undefined;
     const lastNode = explicitNode || (Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined);
-    if (
+    const sameReasoning = Boolean(
       lastNode
       && lastNode.kind === "execution"
       && lastNode.executionType === "reasoning"
       && executionStreamKeyMatches(lastNode, ownerFields)
-    ) {
+    );
+    const priorTiming = sameReasoning ? asRecord(lastNode) : {};
+    // Engine's typed NDJSON and persisted envelopes carry timing at the top
+    // level; older normalized events carry it in data. A timing-less delta must
+    // keep the existing clock instead of restarting it at every batch arrival.
+    const requestedStart = Number(eventTiming.startTime ?? eventData.startTime ?? eventData.start_time ?? priorTiming.startTime);
+    const startTime = Number.isFinite(requestedStart) && requestedStart > 0 ? requestedStart : timelineFields.timestamp;
+    const requestedDuration = Number(eventTiming.durationMs ?? eventData.durationMs ?? eventData.duration_ms ?? priorTiming.time ?? 0);
+    const durationMs = Number.isFinite(requestedDuration) ? Math.max(0, requestedDuration) : Number(priorTiming.time || 0);
+    if (sameReasoning && lastNode?.kind === "execution") {
       Object.assign(lastNode, ownerFields);
       applyEventTimelineFields(lastNode, timelineFields);
       lastNode.startTime = startTime;

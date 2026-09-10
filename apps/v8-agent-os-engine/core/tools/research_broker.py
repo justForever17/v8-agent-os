@@ -731,6 +731,10 @@ def _research_source_pack(source: dict[str, Any]) -> dict[str, Any]:
         "relevance": source.get("relevanceScore") or source.get("score"),
         "tier": source.get("tier") or source.get("authorityTier"),
         "sourceRole": source_attribution_role(source),
+        "sourceKind": source.get("sourceKind"),
+        "acquisitionState": source.get("acquisitionState"),
+        "originalContentChars": source.get("originalContentChars"),
+        "omittedChars": source.get("omittedChars"),
         "provider": source.get("provider"),
         "citationKey": source.get("citationKey"),
         "selectedForEvidence": source.get("selectedForEvidence"),
@@ -12824,6 +12828,8 @@ def _architect_review_claim_ledger(
                 "title": _safe_text(source.get("title")),
                 "url": _safe_text(source.get("url")),
                 "sourceRole": source_attribution_role(source),
+                "sourceKind": source.get("sourceKind"),
+                "acquisitionState": source.get("acquisitionState"),
                 "retrievedAt": source.get("retrievedAt"),
                 "publishedAt": source.get("publishedAt"),
                 "updatedAt": source.get("updatedAt"),
@@ -13062,13 +13068,13 @@ def _run_agent_owned_research(
     attempt_ledger = _ResearchReadAttemptLedger(question=question)
     rounds: list[dict[str, Any]] = []
 
-    def acquire(*, queries: list[str], urls: list[str], seconds: float, source: str = "web", search_engine: str = "auto") -> dict[str, Any]:
+    def acquire(*, queries: list[str], urls: list[str], seconds: float, source: str = "web", search_engine: str = "auto", fetch_mode: str = "auto") -> dict[str, Any]:
         batch_deadline = time.monotonic() + seconds
         round_index = len(rounds) + 1
         requests_to_run = [
             {"kind": "seed_url", "query": url, "seedUrl": url, "evidenceQuery": question}
             for url in urls
-        ] + [{"kind": "agent_query", "query": query, "searchEngine": search_engine} for query in queries]
+        ] + [{"kind": "agent_query", "query": query, "searchEngine": search_engine, "fetchMode": fetch_mode} for query in queries]
         # Bound concurrency without dropping explicitly chosen URLs/queries.
         for index, shard in enumerate(requests_to_run, start=1):
             shard["shardId"] = f"research_agent_{round_index}_{index}"
@@ -13956,7 +13962,8 @@ def _run_search_shard(
                 query=query,
                 limit=8,
                 search_engine=_safe_text(shard.get("searchEngine")) or "auto",
-                mode="auto" if use_agent_browser_profile else "static",
+                mode=("dynamic" if shard.get("fetchMode") == "dynamic" else
+                      "auto" if use_agent_browser_profile else "static"),
                 referer_mode="none",
                 referer_url="",
                 # The router promotes only providers whose search host is
@@ -14022,7 +14029,11 @@ def _run_search_shard(
             "toolExecution": search_payload.get("toolExecution"),
         }
     raw_results = search_payload.get("results") if isinstance(search_payload.get("results"), list) else []
-    results: list[dict[str, Any]] = []
+    from core.tools.web_chat_source import captured_chat_source
+    captured_results, captured_reads = captured_chat_source(search_payload,
+        allowed_domains=allowed_domains, blocked_domains=blocked_domains,
+        site_domains=site_domains, source_intent=source_intent)
+    results: list[dict[str, Any]] = list(captured_results)
     read_eligible_urls: set[str] = set()
     domestic_site_mirror_fallback = bool(
         site_domains
@@ -14096,10 +14107,10 @@ def _run_search_shard(
         ),
         reverse=True,
     )
-    fetched: list[dict[str, Any]] = []
+    fetched: list[dict[str, Any]] = list(captured_reads)
     circuit_open_hosts: set[str] = set()
     accepted_read_count = 0
-    accepted_evidence_count = 0
+    accepted_evidence_count = len(captured_reads)
     for result in top_results:
             if cancel_event is not None and cancel_event.is_set():
                 break
@@ -17824,8 +17835,10 @@ def research_broker(
     """L2 聚焦证据工具：一个可独立验真的多源问题；返回当前回合 evidence pack，不提供受管进度、恢复或跨阶段 handoff。
 
     Use this for exactly one focused question needing source comparison, freshness/conflict checks, or a compact
-    answer/evidence pack. Use `web_broker` for one URL or narrow lookup. Use one Research episode when there are several
-    independent fact domains, managed recovery/progress, or downstream evidence handoff; put every known domain in its
+    answer/evidence pack. Use `web_broker` for one URL or narrow lookup. Multiple websites or search-then-verification
+    steps for the same question are not separate fact domains. Load research.core to call this directly when it is not
+    yet exposed. Use a Research episode for several separately deliverable user questions, managed recovery/progress,
+    or downstream evidence handoff; put every known domain in its
     initial researchBriefIds/researchBriefGoals arrays. A brief already owned by that episode must be repaired there, not through this direct tool.
     Reuse a suitable current experience pack; refresh stale, low-confidence, or conflicting evidence.
     run + experiencePackId rechecks/updates that saved answer using its original evidence before searching gaps.

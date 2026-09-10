@@ -20,6 +20,7 @@ from core.prompt_cache_gateway import PreparedPromptCacheRequest, prompt_cache_g
 from core.provider_hosted_tools import provider_hosted_tool_schemas
 from core.provider_compatibility import normalize_provider_error
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls, sanitize_model_tool_calls
+from core.model_text_protocol import NativeToolTextGuard, has_native_tool_text
 
 
 _V8_CHUNK_IDENTITY_METADATA_KEYS = (
@@ -867,6 +868,13 @@ class V8ChatModelAdapter(BaseChatModel):
         Streaming chunks remain available for progress. Their partial tool_calls
         are previews; original assembled JSON must be complete at stream end.
         """
+        if self._bound_tools and self._provider_surface.supports_native_tools() and has_native_tool_text(_stringify_content(getattr(response, "content", ""))):
+            raise V8LLMStructuredOutputError(
+                code="model_output_incomplete", message="模型把工具协议写入正文；该伪调用没有执行。",
+                provider=self.provider_standard, model=self.model_id, retryable=False,
+                user_action="保留已完成工作，使用原生结构化工具调用；不要把正文中的伪调用当执行结果。",
+                details={"reason": "tool_protocol_in_text"},
+            )
         metadata = dict(getattr(response, "response_metadata", None) or {})
         finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or metadata.get("status") or "").lower().rsplit(".", 1)[-1]
         chunks = list(getattr(response, "tool_call_chunks", None) or [])
@@ -1296,6 +1304,7 @@ class V8ChatModelAdapter(BaseChatModel):
         try:
             include_stream_identity = True
             aggregate_chunk: AIMessageChunk | None = None
+            text_guard = NativeToolTextGuard(enabled=bool(self._bound_tools))
             for chunk in self._get_runtime_model().stream(
                 prepared.messages,
                 config=self._provider_internal_config(),
@@ -1312,11 +1321,15 @@ class V8ChatModelAdapter(BaseChatModel):
                 )
                 include_stream_identity = False
                 aggregate_chunk = ai_chunk if aggregate_chunk is None else aggregate_chunk + ai_chunk
+                ai_chunk = text_guard.chunk(ai_chunk)
                 yield ChatGenerationChunk(
                     message=ai_chunk,
                     text=_message_text(ai_chunk),
                     generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
                 )
+            tail = text_guard.feed("", final=True)
+            if tail:
+                yield ChatGenerationChunk(message=AIMessageChunk(content=tail), text=tail)
             native_message = self._coerce_ai_message(aggregate_chunk) if aggregate_chunk is not None else AIMessage(content="")
             # A second model response cannot be appended to an already public
             # stream. The caller owns bounded contract correction/failover.
@@ -1416,6 +1429,7 @@ class V8ChatModelAdapter(BaseChatModel):
         try:
             include_stream_identity = True
             aggregate_chunk: AIMessageChunk | None = None
+            text_guard = NativeToolTextGuard(enabled=bool(self._bound_tools))
             async for chunk in self._get_runtime_model().astream(
                 prepared.messages,
                 config=self._provider_internal_config(),
@@ -1432,11 +1446,15 @@ class V8ChatModelAdapter(BaseChatModel):
                 )
                 include_stream_identity = False
                 aggregate_chunk = ai_chunk if aggregate_chunk is None else aggregate_chunk + ai_chunk
+                ai_chunk = text_guard.chunk(ai_chunk)
                 yield ChatGenerationChunk(
                     message=ai_chunk,
                     text=_message_text(ai_chunk),
                     generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
                 )
+            tail = text_guard.feed("", final=True)
+            if tail:
+                yield ChatGenerationChunk(message=AIMessageChunk(content=tail), text=tail)
             native_message = self._coerce_ai_message(aggregate_chunk) if aggregate_chunk is not None else AIMessage(content="")
             # Keep async and sync streams on the same single-response contract.
             if aggregate_chunk is None and self._can_prompt_retry_required_tool(native_message):

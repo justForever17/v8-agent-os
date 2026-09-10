@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
+const { recordDesktopFault } = require('../lib/desktop-fault-log.cjs');
 const {
   createGpuRecoveryController,
   softwareRenderingRelaunchArgs,
@@ -66,14 +67,21 @@ const gpuRecovery = createGpuRecoveryController({
   softwareRendering,
   logger: console,
   onRecover() {
+    recordDesktopFault('surface-recovery', { stage: 'relaunch-requested' });
     const accepted = app.emit(
       'v8os-gpu-recovery-requested',
       softwareRenderingRelaunchArgs(process.argv),
     );
-    if (!accepted) console.error('[V8OS Desktop] GPU recovery has no governed shutdown handler.');
+    if (!accepted) {
+      recordDesktopFault('surface-recovery', { stage: 'relaunch-unhandled' });
+      console.error('[V8OS Desktop] GPU recovery has no governed shutdown handler.');
+    }
   },
 });
-app.on('child-process-gone', (_event, details) => gpuRecovery.handle(details));
+app.on('child-process-gone', (_event, details) => {
+  if (details?.type === 'GPU') recordDesktopFault('gpu-process-exited', details);
+  gpuRecovery.handle(details);
+});
 app.on('before-quit', () => gpuRecovery.disable());
 app.on('v8os-governed-shutdown-started', () => gpuRecovery.disable());
 

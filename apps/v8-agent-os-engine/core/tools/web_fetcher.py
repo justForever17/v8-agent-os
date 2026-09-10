@@ -47,6 +47,7 @@ WebFetchIntent = Literal["auto", "read", "extract", "search"]
 WebSearchEngine = Literal[
     "auto",
     "metaso",
+    "chatgpt",
     "bing",
     "bing_cn",
     "google",
@@ -1583,6 +1584,7 @@ METASO_API_SCOPES: dict[str, str] = {
 }
 SEARCH_PROVIDER_URLS: dict[str, str] = {
     "metaso": "https://metaso.cn/?q={query}",
+    "chatgpt": "https://chatgpt.com/",
     "bing": "https://www.bing.com/search?q={query}",
     "bing_cn": "https://cn.bing.com/search?q={query}",
     "google": "https://www.google.com/search?q={query}&hl=en",
@@ -1599,6 +1601,7 @@ IMPLEMENTED_SEARCH_PROVIDERS = (
     "tavily",
     "exa",
     "metaso",
+    "chatgpt",
     "duckduckgo",
     "google",
     "bing",
@@ -1609,6 +1612,11 @@ IMPLEMENTED_SEARCH_PROVIDERS = (
     "searxng",
 )
 SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "chatgpt": {
+        "region": "global", "role": "discovery", "supports": ["search", "answer", "citations"],
+        "costTier": "free_public", "latencyTier": "medium", "requiresProxy": "auto",
+        "supportsLoginProfile": True, "outputFormats": ["search_results", "ai_generated_answer"], "implemented": True,
+    },
     "brave": {
         "region": "global",
         "role": "discovery",
@@ -2962,7 +2970,7 @@ def _fetch_with_scrapling_internal(
             raise RuntimeError("agent_browser_profile_context_not_reused")
         if raw.get("htmlTruncated"):
             warnings.append("Authenticated page HTML exceeded the bounded capture; inspect the omitted section in the browser if needed.")
-        return _build_payload(
+        page = _build_payload(
             response=SimpleNamespace(html_content=raw.get("html", ""), url=raw.get("url") or url, status=raw.get("status")),
             requested_url=url, requested_mode=mode, referer_mode=referer_mode, referer_url=referer_url,
             fetch_mode="dynamic", attempted_modes=list(attempted_modes), available_modes=available_modes,
@@ -2970,6 +2978,13 @@ def _fetch_with_scrapling_internal(
             agent_browser_profile_used=True, agent_browser_profile_host=agent_browser_profile_host,
             agent_browser_profile_dir=agent_browser_profile_dir, agent_browser_kind=agent_browser_kind,
         )
+        visible = str(raw.get("visibleText") or "").strip()
+        if visible and len(page.text) < len(visible) // 3:
+            page.text = visible
+            page.metadata["extractionMethod"] = "visible_browser_text"
+            if raw.get("visibleTextTruncated"):
+                page.warnings.append("Visible browser text exceeded its capture bound; further reading is required.")
+        return page
 
     # The shared authenticated context has one owner/path. Trying the same
     # profile a second time under a 'stealth' label cannot restore lost cookies.
@@ -4591,6 +4606,14 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
                     },
                 }
             )
+            if isinstance(payload.get("webChatAnswer"), dict):
+                answer = payload["webChatAnswer"]
+                preview, truncated = _trim_broker_text(answer.get("text"), limit=6000)
+                compact.update({"summary": f"已读取 {provider} 网页回答及 {len(results)} 条来源线索。",
+                    "text": preview, "textTruncated": truncated or bool(answer.get("textTruncated")),
+                    "sourceKind": "ai_generated_answer", "completion": answer.get("completion"),
+                    "citationsVerified": False, "webChatAnswer": answer,
+                    "warnings": payload.get("warnings") or []})
         else:
             final_url = payload.get("finalUrl") or payload.get("url")
             title = _safe_text(payload.get("title"))
@@ -6532,220 +6555,75 @@ def web_search(
                     ),
                 }
                 return json.dumps(response, ensure_ascii=False, indent=2)
-            if provider == "metaso":
-                profile_route_ready = bool(_agent_browser_profile_allowed(search_url)[0])
-                use_browser_for_provider = bool(
-                    _SOURCE_ROUTER_BROWSER_FALLBACK.get()
-                    and (
-                        bool(useAgentBrowserProfile)
-                        or bool(_agent_browser_profile_allowed(search_url)[0])
-                    )
-                )
-                if use_browser_for_provider:
+            profile_chat = bool(
+                provider in {"metaso", "chatgpt"}
+                and _SOURCE_ROUTER_BROWSER_FALLBACK.get()
+                and _agent_browser_profile_allowed(search_url)[0]
+            )
+            if provider in {"metaso", "chatgpt"}:
+                # One acquisition owner: auto may use the configured API;
+                # explicit dynamic uses the website, never a bare ?q= SPA read.
+                browser_requested = provider == "chatgpt" or mode in {"dynamic", "stealth"}
+                browser_preferred = profile_chat and not _provider_api_key("metaso")
+                if provider == "metaso" and not browser_requested and not browser_preferred:
                     structured_route = "api" if _provider_api_key("metaso") else "public_sse"
-                    profile_first = structured_route == "public_sse" and profile_route_ready
-                    if profile_first:
-                        attempted_providers.append(
-                            {
-                                "provider": provider,
-                                "route": structured_route,
-                                "status": "skipped",
-                                "failureClass": "authenticated_profile_preferred",
-                                "reason": "avoid_public_sse_budget_before_authenticated_browser",
-                            }
-                        )
-                        metaso_structured = {"ok": False, "profileFirst": True}
-                    else:
-                        metaso_structured = (
-                            _metaso_api_search(
-                                query,
-                                limit=limit,
-                                vertical=requested_vertical,
-                                timeout_seconds=provider_timeout,
-                            )
-                            if structured_route == "api"
-                            else _metaso_search_public(
-                                query,
-                                limit=limit,
-                                vertical=requested_vertical,
-                                timeout_seconds=provider_timeout,
-                            )
-                        )
-                    if bool(metaso_structured.get("ok")):
-                        structured_results = (
-                            metaso_structured.get("results")
-                            if isinstance(metaso_structured.get("results"), list)
-                            else []
-                        )
-                        accepted, rejection, relevance = _assess_provider_results(
-                            provider,
-                            structured_results,
-                        )
-                        if accepted:
-                            attempted_providers.append(
-                                {
-                                    "provider": provider,
-                                    "route": structured_route,
-                                    "status": "ok",
-                                    "resultCount": len(structured_results),
-                                    "searchVertical": requested_vertical,
-                                    "relevance": relevance,
-                                }
-                            )
-                            return json.dumps(
-                                {
-                                    "ok": True,
-                                    "query": query,
-                                    "provider": provider,
-                                    "requestedProvider": requested_provider,
-                                    "searchVertical": requested_vertical,
-                                    "attemptedProviders": attempted_providers,
-                                    "searchUrl": search_url,
-                                    "resultCount": len(structured_results),
-                                    "results": structured_results,
-                                    "searchRelevance": relevance,
-                                    "metaso": {
-                                        "route": structured_route,
-                                        "engineType": metaso_structured.get("engineType"),
-                                        "scope": metaso_structured.get("scope"),
-                                        "apiEndpoint": metaso_structured.get("apiEndpoint"),
-                                        "resultId": metaso_structured.get("resultId"),
-                                        "groupId": metaso_structured.get("groupId"),
-                                        "eventsSeen": metaso_structured.get("eventsSeen"),
-                                    },
-                                    **_source_router_payload_fields(
-                                        router_plan,
-                                        selected_provider=provider,
-                                        attempted_providers=attempted_providers,
-                                    ),
-                                },
-                                ensure_ascii=False,
-                                indent=2,
-                            )
-                        if rejection:
-                            # A configured/allowlisted profile is the governed
-                            # recovery path for an empty or unusable
-                            # structured response.  Do not return the
-                            # rejection before the browser can reuse the
-                            # user's authenticated session; the generic
-                            # browser branch below records the final outcome.
-                            last_error = _safe_text(
-                                metaso_structured.get("reason")
-                                or metaso_structured.get("failureClass")
-                                or "metaso_structured_results_rejected"
-                            )
-                    elif not metaso_structured.get("profileFirst"):
-                        attempted_providers.append(
-                            {
-                                "provider": provider,
-                                "route": structured_route,
-                                "status": "error",
-                                "failureClass": metaso_structured.get("failureClass") or "search_failed",
-                                "reason": metaso_structured.get("reason") or "metaso_structured_search_failed",
-                                "eventsSeen": metaso_structured.get("eventsSeen"),
-                            }
-                        )
-                        last_error = _safe_text(
-                            metaso_structured.get("reason")
-                            or metaso_structured.get("failureClass")
-                        )
-                if not use_browser_for_provider:
-                    if _provider_api_key("metaso"):
-                        metaso_result = _metaso_api_search(
-                            query,
-                            limit=limit,
-                            vertical=requested_vertical,
-                            timeout_seconds=provider_timeout,
-                        )
-                    else:
-                        metaso_result = _metaso_search_public(
-                            query,
-                            limit=limit,
-                            vertical=requested_vertical,
-                            timeout_seconds=provider_timeout,
-                        )
-                    if not bool(metaso_result.get("ok")):
-                        attempted_providers.append(
-                            {
-                                "provider": provider,
-                                "status": "error",
-                                "failureClass": metaso_result.get("failureClass") or "search_failed",
-                                "reason": metaso_result.get("reason") or "metaso_public_search_failed",
-                                "searchVertical": requested_vertical,
-                                "eventsSeen": metaso_result.get("eventsSeen"),
-                            }
-                        )
-                        last_error = _safe_text(metaso_result.get("reason") or metaso_result.get("failureClass"))
-                        if requested_provider == "auto":
-                            continue
-                        return json.dumps(
-                            {
-                                "ok": False,
-                                "query": query,
-                                "requestedProvider": requested_provider,
-                                "searchVertical": requested_vertical,
-                                "attemptedProviders": attempted_providers,
-                                "failureClass": metaso_result.get("failureClass") or "search_failed",
-                                "elapsedMs": int((time.monotonic() - started_at) * 1000),
-                                "retryable": metaso_result.get("failureClass") in {"provider_rate_limited", "network_timeout", "deadline_exceeded", "no_results"},
-                                "recommendedNextAction": (
-                                    "当前安装缺少 Research 网页抓取依赖。请修复或重新安装 V8OS 后开始新的 Research run；重复当前搜索不会恢复依赖。"
-                                    if metaso_result.get("failureClass") == "runtime_dependency_missing"
-                                    else "MetaSo 公共搜索当前限流或无结果；请启用 Agent 浏览器登录态、稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。"
-                                ),
-                                "error": last_error,
-                                **_source_router_payload_fields(
-                                    router_plan,
-                                    selected_provider=provider,
-                                    attempted_providers=attempted_providers,
-                                ),
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                    results = metaso_result.get("results") if isinstance(metaso_result.get("results"), list) else []
-                    accepted, rejection, relevance = _assess_provider_results(provider, results)
-                    if not accepted:
+                    metaso_result = (
+                        _metaso_api_search(query, limit=limit, vertical=requested_vertical,
+                                           timeout_seconds=provider_timeout)
+                        if structured_route == "api" else
+                        _metaso_search_public(query, limit=limit, vertical=requested_vertical,
+                                              timeout_seconds=provider_timeout)
+                    )
+                    results = metaso_result.get("results") or []
+                    accepted, rejection, relevance = (False, None, {})
+                    if metaso_result.get("ok"):
+                        accepted, rejection, relevance = _assess_provider_results(provider, results)
+                    attempted_providers.append({
+                        "provider": provider, "route": structured_route,
+                        "status": "ok" if accepted else "error", "resultCount": len(results),
+                        "failureClass": None if accepted else metaso_result.get("failureClass") or "no_results",
+                        "reason": None if accepted else metaso_result.get("reason") or "metaso_structured_results_rejected",
+                        "relevance": relevance,
+                    })
+                    if accepted:
+                        return json.dumps({
+                            "ok": True, "query": query, "provider": provider,
+                            "requestedProvider": requested_provider, "searchVertical": requested_vertical,
+                            "attemptedProviders": attempted_providers, "searchUrl": search_url,
+                            "resultCount": len(results), "results": results, "searchRelevance": relevance,
+                            "metaso": {"route": structured_route, **{
+                                key: metaso_result.get(key) for key in
+                                ("engineType", "scope", "apiEndpoint", "resultId", "groupId", "eventsSeen")
+                            }},
+                            **_source_router_payload_fields(router_plan, selected_provider=provider,
+                                                           attempted_providers=attempted_providers),
+                        }, ensure_ascii=False)
+                    last_error = _safe_text(metaso_result.get("reason") or metaso_result.get("failureClass") or "metaso_no_results")
+                    if not profile_chat:
                         if rejection:
                             return rejection
                         continue
-                    attempted_providers.append(
-                        {
-                            "provider": provider,
-                            "status": "ok",
-                            "resultCount": len(results),
-                            "searchVertical": requested_vertical,
-                            "scope": metaso_result.get("scope"),
-                            "resultId": metaso_result.get("resultId"),
-                            "relevance": relevance,
-                        }
-                    )
-                    response = {
-                        "ok": True,
-                        "query": query,
-                        "provider": provider,
-                        "requestedProvider": requested_provider,
-                        "searchVertical": requested_vertical,
+                from core.tools.web_chat_source import search_chat_page
+
+                chat_remaining = total_timeout_seconds - (time.monotonic() - started_at)
+                if chat_remaining <= 0:
+                    last_error = "agent_browser_chat_deadline_exceeded"
+                    continue
+                chat_result = search_chat_page(provider=provider, query=query, limit=limit,
+                    timeout_seconds=min(30.0, chat_remaining), reuse_profile=profile_chat)
+                attempted_providers.append({"provider": provider, "route": "browser_chat",
+                    "status": "ok" if chat_result.get("ok") else "error",
+                    "failureClass": chat_result.get("failureClass"),
+                    "reason": chat_result.get("error")})
+                if chat_result.get("ok"):
+                    return json.dumps({**chat_result, "requestedProvider": requested_provider,
                         "attemptedProviders": attempted_providers,
-                        "searchUrl": search_url,
-                        "resultCount": len(results),
-                        "results": results,
-                        "searchRelevance": relevance,
-                        "metaso": {
-                            "engineType": metaso_result.get("engineType"),
-                            "scope": metaso_result.get("scope"),
-                            "apiEndpoint": metaso_result.get("apiEndpoint"),
-                            "resultId": metaso_result.get("resultId"),
-                            "groupId": metaso_result.get("groupId"),
-                            "eventsSeen": metaso_result.get("eventsSeen"),
-                        },
-                        **_source_router_payload_fields(
-                            router_plan,
-                            selected_provider=provider,
-                            attempted_providers=attempted_providers,
-                        ),
-                    }
-                    return json.dumps(response, ensure_ascii=False, indent=2)
+                        **_source_router_payload_fields(router_plan, selected_provider=provider,
+                                                       attempted_providers=attempted_providers)}, ensure_ascii=False)
+                last_error = str(chat_result.get("error") or "agent_browser_chat_no_answer")
+                if requested_provider != "auto" and chat_result.get("failureClass") == "provider_challenge":
+                    return json.dumps({**chat_result, "provider": provider, "attemptedProviders": attempted_providers}, ensure_ascii=False)
+                continue
             effective_use_agent_browser_profile = bool(
                 _SOURCE_ROUTER_BROWSER_FALLBACK.get()
                 and (
@@ -6863,7 +6741,7 @@ def web_search(
             profile_attempted = effective_use_agent_browser_profile
             payload = _fetch_with_scrapling_internal(
                 search_url,
-                mode=mode,
+                mode="auto" if effective_use_agent_browser_profile and mode == "static" else mode,
                 headless=True,
                 referer_mode=referer_mode,
                 referer_url=referer_url,
@@ -7289,11 +7167,15 @@ def web_broker(
     - extract: 抽取结构化内容，适合 article / links / metadata / media / raw_html / ui_snapshot
     - search: Source Router 公开搜索，返回清洗后的搜索结果列表和 provider/网络路由质量信号
 
-    fetch_mode: static is the default; use auto/dynamic/stealth for JS/login/challenge pages. For DOM/UI structure,
-    use mode=extract with extract=raw_html or ui_snapshot.
+    fetch_mode: static is the default; use auto/dynamic/stealth for JS/login/challenge pages.
+    For page structure use mode=extract with extract=raw_html/ui_snapshot; for interactive DOM actions use browser_broker.
+    For Metaso/ChatGPT website chat, search_engine=metaso/chatgpt plus
+    fetch_mode=dynamic submits a new query and captures its generated answer and citation links. Generated
+    material is secondary evidence; cited pages are not verified until read. Auto keeps configured API priority.
 
     debug=false keeps the Agent result compact; true adds transport/TLS/fallback/selector diagnostics.
-    useAgentBrowserProfile=true skips public/static attempts and uses the Agent browser within an observed session domain or configured domain authorization.
+    useAgentBrowserProfile=true reuses the governed profile for eligible page reads. Search auto may still prefer
+    a configured API; choose fetch_mode=dynamic explicitly for website chat. It never expands domain authorization.
     """
     normalized_mode = str(mode or "fetch").strip().lower()
     if normalized_mode not in {"fetch", "read", "extract", "search"}:

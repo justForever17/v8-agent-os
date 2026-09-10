@@ -2123,6 +2123,8 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget:
         lines.append(f"Summary: {summary}")
     if payload.get("query"):
         lines.append(f"Query: {_short_text(payload.get('query'), 220)}")
+    if payload.get("sourceKind") == "ai_generated_answer":
+        lines.append(f"Source: AI website answer ({payload.get('completion') or 'unknown'}), not an independently verified primary document. Citation links require separate reading.")
 
     if payload.get("ok") is False:
         failure = _first_text(payload, "error", "failureClass", "reason", "warning", limit=300)

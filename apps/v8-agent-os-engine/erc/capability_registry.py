@@ -603,11 +603,12 @@ class CapabilityRegistry:
 
         lines = [
             "<capability_registry>",
-            "Runtime 责任卡，不是任务分类结果。常驻工具用于边界清楚的当前回合工作；需要完整生命周期、专门上下文、恢复、证明或跨阶段 handoff 时，用 runtime_broker(mode='route') 创建对应 episode。mode='grant' 只授予明确的当前 run 工具组，不能替代 route。",
+            "Runtime 责任卡，不是任务分类结果。常驻或按需加载的工具用于边界清楚的当前回合工作；需要独立生命周期、恢复或跨阶段 handoff 时，用 runtime_broker(mode='route') 创建 episode。mode='grant' 只加载当前 run 的直接工具，不创建 episode；是否 route 取决于实际生命周期需要。",
             "<research_path_ladder>",
             "这是唯一的调研选路规则；按工作单元和所需产物选择，不把三层当成同级搜索工具。",
             "L1 web_broker｜一个已知页面或全新孤立窄事实｜只返回网页材料，不负责多源结论、进度、恢复或跨阶段 handoff｜单次调用。",
             "L2 research_broker｜一个可独立验真的多源问题｜返回当前回合 evidence pack，但不持有多个事实域的生命周期、恢复或后续交付。",
+            "事实域是可独立交付的用户问题，不是网站域名、来源个数或检索/核验步骤。用秘塔回答与官方文档交叉核验同一个问题仍是 L2；不能仅因两站或先查后验升级 L3。用户明确要求 research_broker 时，按需 grant research.core 后调用，不把缺少当前工具误解为必须 route。",
             "L3 Research episode｜多个独立事实域、需要进度/恢复，或证据要跨阶段交付｜首次 route 把全部已知域放进等长的 researchBriefIds/researchBriefGoals 数组｜返回逐 brief terminal handoff。",
             "L3 首次调用纪律：先列出完整 brief ID 数组，再按相同顺序写每个一句 goal；数组完整性高于 reason 与可选 context 的详尽程度。口头说覆盖 N 个域但任一数组少于 N 项，属于未执行完整路线。",
             "行动语义：用户已要求调研/交付且作用域足够时，L1/L2/L3 是 Supervisor 自主选择的执行路径，不是待用户批准的方案。多个事实域还要形成持久交付时，先真实 route 一个 L3，消费 handoff 后再进入 Engineering；不要停在路线说明或实现偏好提问。",

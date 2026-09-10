@@ -76,9 +76,32 @@ def test_emitted_native_stream_never_starts_hidden_prompt_retry(asynchronous, er
         with pytest.raises(V8LLMError):
             _collect_stream(adapter, asynchronous=asynchronous)
     else:
-        chunks = _collect_stream(adapter, asynchronous=asynchronous)
-        assert "<tool_call>" in "".join(str(chunk.content) for chunk in chunks)
-        assert not any(chunk.tool_calls for chunk in chunks)
+        with pytest.raises(V8LLMError) as error:
+            _collect_stream(adapter, asynchronous=asynchronous)
+        assert error.value.code == "model_output_incomplete"
+    assert native.fallback_calls == 0
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_native_protocol_fragment_never_enters_public_stream(asynchronous):
+    class BrokenNative(_RequiredToolModel):
+        def stream(self, _messages, **_kwargs):
+            text = '正常的已完成内容。]<]minimax[>[<tool_call><invoke name="lookup">PRIVATE-ARGS</invoke></tool_call>'
+            for character in text:
+                yield AIMessageChunk(content=character)
+    native, seen = BrokenNative(), []
+    adapter = _required_tool_adapter(native)
+    async def collect():
+        async for chunk in adapter.astream([HumanMessage(content="test")]):
+            seen.append(chunk.content)
+    with pytest.raises(V8LLMError) as error:
+        if asynchronous:
+            asyncio.run(collect())
+        else:
+            for chunk in adapter.stream([HumanMessage(content="test")]):
+                seen.append(chunk.content)
+    assert error.value.code == "model_output_incomplete"
+    assert ''.join(seen) == '正常的已完成内容。'
     assert native.fallback_calls == 0
 
 

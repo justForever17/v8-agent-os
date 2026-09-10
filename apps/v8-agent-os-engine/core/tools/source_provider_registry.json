@@ -7,6 +7,19 @@
     "globalPreferred": ["brave", "tavily", "exa", "bing_cn", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng"]
   },
   "providers": {
+    "chatgpt": {
+      "displayName": "ChatGPT Web",
+      "region": "global",
+      "role": "discovery",
+      "supports": ["search", "answer", "citations"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "supportsLoginProfile": true,
+      "outputFormats": ["search_results", "ai_generated_answer"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
     "brave": {
       "displayName": "Brave Search",
       "region": "global",

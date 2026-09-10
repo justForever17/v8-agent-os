@@ -48,20 +48,30 @@ def owned_window(directory: Path):
 
 
 @contextmanager
-def owned_page():
+def owned_page(*, direct_api: bool = False):
     import http.server
     import threading
     from tests.scripts.run_browser_broker_live_audit import HTML
     submitted = {}
     html = HTML.replace("document.querySelector('#status').textContent='Saved: '+document.querySelector('#title').value;",
                         "document.querySelector('#status').textContent='Saved: '+document.querySelector('#title').value; fetch('/submitted',{method:'POST',body:document.querySelector('#title').value});")
+    if direct_api:
+        html = html.replace('<h1>', '<aside><h2>应用集成接口</h2><p>本应用支持直接控制：GET /api/title 读取当前标题；POST /api/title 用 application/json 提交 {"title":"新标题"}。无需登录，只操作本测试登记条目。</p></aside><h1>')
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_): pass
         def do_GET(self):
+            if self.path == '/api/title':
+                submitted['reads'] = submitted.get('reads', 0) + 1
+                submitted.setdefault('readTitles', []).append(submitted.get('text', ''))
+                body = json.dumps({'title': submitted.get('text', '')}).encode()
+                self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
+                return
             body=html.encode('utf-8')
             self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.end_headers(); self.wfile.write(body)
         def do_POST(self):
-            submitted['text']=self.rfile.read(min(256,int(self.headers.get('Content-Length','0')))).decode()
+            body = self.rfile.read(min(256,int(self.headers.get('Content-Length','0')))).decode()
+            submitted['text'] = str(json.loads(body).get('title', '')) if self.path == '/api/title' else body
+            submitted['path'] = self.path
             self.send_response(204); self.end_headers()
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
     threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -90,6 +100,16 @@ def case_spec(kind: str, *, window_title: str = "", nonce: str = "", page_url: s
             "帮我看看这台电脑上有哪些浏览器，以及我当前真正接入、能生成图片的模型。"
             "你自己查一下再用中文简短告诉我，不启动生成，不找其他代理，不改配置。"
         ),
+        "interface": (
+            f"请你自己把测试登记应用 {page_url} 的 Title 改为 {nonce}，核对实际保存状态后简短告诉我。"
+            "只操作该测试应用，不委派、不改其他文件或系统配置。"
+        ),
+        "research_chat": (
+            "请用 research_broker 做一个小调研：Python venv 有什么作用，是否复制所有已有第三方包？"
+            "本次明确先在秘塔网页聊天里提交问题（复用 Agent 浏览器登录态，不走秘塔 API），"
+            "再实际读取其中引用的 Python 官方文档核验。最终中文简答并保留来源，区分网页AI回答和官方原文。"
+            "不需要工程任务或子代理，不改任何应用配置。"
+        ),
         "desktop": (
             f"请你自己操作已经打开的测试窗口『{window_title}』（不是带-dialog的那个小窗口）。"
             f"把输入框改成『{nonce}』，点击 Submit owned test，然后看窗口确认提交后的文字确实正确。"
@@ -117,7 +137,7 @@ def evaluate_result(result, kind: str, *, submitted: dict | None = None, nonce: 
     names = {item["toolName"] for item in result.tool_invocations}
     delegated = [item for item in result.handoffs if item.get("kind") == "subagent_result"]
     checks = {"completed": result.status == "completed", "deliveryPresent": bool(result.final_text.strip())}
-    if kind != "delegation":
+    if kind not in {"delegation", "research_chat"}:
         checks["noHiddenDelegation"] = not delegated and not result.episodes and "computer_use_execute_task" not in names
     if kind == "discovery":
         checks["actualDiscovery"] = {"computer_use_list_apps", "creative_media_capabilities"} <= names
@@ -131,6 +151,21 @@ def evaluate_result(result, kind: str, *, submitted: dict | None = None, nonce: 
         checks["directBrowserUsed"] = "browser_broker" in names
         checks["noAlternateExecution"] = not names & {"run_system_command", "http_request", "computer_use_execute_task"}
         checks["observedDelivery"] = nonce in result.final_text
+    elif kind == "interface":
+        checks["directInterfaceMutation"] = (submitted or {}).get('path') == '/api/title' and (submitted or {}).get('text') == nonce
+        checks["actualReadback"] = nonce in (submitted or {}).get('readTitles', [])
+        checks["observedDelivery"] = nonce in result.final_text
+    elif kind == "research_chat":
+        # The route compiler owns the L3 Research episode; runtime_broker is
+        # the visible parent receipt and the episode handoff is the execution
+        # proof. The child broker is intentionally not exposed as a second
+        # Supervisor planner/tool surface.
+        checks["researchRuntimeRoute"] = 'runtime_broker' in names and any(
+            str(item.get('kind')) == 'research' and str(item.get('state')) == 'completed'
+            for item in result.episodes
+        )
+        checks["noHiddenDelegation"] = not delegated
+        checks["deliveredAnswerAndSource"] = 'venv' in result.final_text.lower() and 'docs.python.org' in result.final_text
     elif kind == "media":
         checks["actualMediaJob"] = {"creative_media_capabilities", "creative_media_jobs"} <= names
         checks["visualInspection"] = "vision_media_analyzer" in names
@@ -262,7 +297,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--allow-side-effects", action="store_true")
-    parser.add_argument("--case", choices=["discovery", "desktop", "browser", "media", "delegation", "video"], required=True)
+    parser.add_argument("--case", choices=["discovery", "desktop", "browser", "interface", "research_chat", "media", "delegation", "video"], required=True)
     parser.add_argument("--video-url", default="", help="Explicitly authorized video page for the video case")
     parser.add_argument("--engine-url", default="http://127.0.0.1:9530")
     parser.add_argument("--web-url", required=True)
@@ -271,7 +306,7 @@ def main(argv=None) -> int:
     parser.add_argument("--max-wait", type=float, default=480)
     parser.add_argument("--resume-report", help="Continue only a prior media/video harness session, reusing its captured evidence.")
     args = parser.parse_args(argv)
-    if not args.live or (args.case in {"desktop", "browser", "media", "video"} and not args.allow_side_effects):
+    if not args.live or (args.case in {"desktop", "browser", "interface", "media", "video"} and not args.allow_side_effects):
         parser.error("--live is required; desktop/media also require --allow-side-effects")
     if args.case == "video" and not args.video_url.startswith(("https://", "http://")):
         parser.error("video case requires an explicitly authorized --video-url")
@@ -300,7 +335,7 @@ def main(argv=None) -> int:
         parser.error("resume requires a matching media/video harness report")
     workspace = prior["workspace"] if prior else _prepare_engineering_live_workspace(args.engine_url, browser_executable=args.browser_executable)
     nonce = "direct-" + uuid.uuid4().hex[:8]
-    fixture = owned_window(output / "window") if args.case == "desktop" else owned_page() if args.case == "browser" else nullcontext({})
+    fixture = owned_window(output / "window") if args.case == "desktop" else owned_page(direct_api=args.case == 'interface') if args.case in {"browser", "interface"} else nullcontext({})
     with fixture as window:
         spec = case_spec(args.case, window_title=window.get("title", ""), nonce=nonce, page_url=window.get("url",""), video_url=args.video_url)
         if prior:
@@ -311,7 +346,7 @@ def main(argv=None) -> int:
                               timestamp=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), workspace=workspace,
                               existing_session_id=prior["result"]["session_id"] if prior else None)
         observer = WebActivityAuditObserver(web_url=args.web_url, session_id=result.session_id,
-                                           browser_executable=args.browser_executable, headless=True)
+                                           browser_executable=args.browser_executable, headless=True, observe_timers=True)
         try:
             observer.start()
             _poll_case(args.engine_url, result, max_wait=args.max_wait, sample_web_activity=observer.sample_live)
@@ -325,7 +360,7 @@ def main(argv=None) -> int:
             _cancel_timed_out_case(args.engine_url, result)
         submitted_path = output / "window/submitted.json"
         submitted = json.loads(submitted_path.read_text(encoding="utf-8-sig")) if submitted_path.exists() else None
-        if args.case == "browser": submitted = window["submitted"]
+        if args.case in {"browser", "interface"}: submitted = window["submitted"]
         checks = evaluate_result(result, args.case, submitted=submitted, nonce=nonce)
         if prior:
             checks.pop("actualMediaJob", None)  # Existing real artifact is the target; re-creation would be a bug.

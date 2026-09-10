@@ -80,6 +80,8 @@ class EvidenceStore:
                 "updatedAt": value.get("updatedAt"),
                 "version": value.get("version"),
                 "sourceRole": value.get("sourceRole") or "unknown",
+                "sourceKind": value.get("sourceKind") or "document",
+                "acquisitionState": value.get("acquisitionState") or "captured",
                 "links": [dict(link) for link in value.get("links") or []
                           if isinstance(link, dict) and urlsplit(str(link.get("url") or "")).scheme in {"http", "https"}],
                 "selectedForEvidence": True,
@@ -97,7 +99,7 @@ class EvidenceStore:
         return [
             {key: deepcopy(row[key]) for key in (
                 "citationKey", "title", "url", "contentChars", "omittedChars",
-                "retrievedAt", "publishedAt", "updatedAt", "version", "sourceRole",
+                "retrievedAt", "publishedAt", "updatedAt", "version", "sourceRole", "sourceKind", "acquisitionState",
             )}
             for row in self.sources.values()
         ]
@@ -163,7 +165,7 @@ class EvidenceStore:
                 "claimId": f"read_{reference}", "claimType": "source_excerpt",
                 "claim": f"Read observation [{key}] ({start}:{end})",
                 "supportingSources": [{
-                    field: source[field] for field in ("sourceId", "citationKey", "url", "title", "sourceRole")
+                    field: source[field] for field in ("sourceId", "citationKey", "url", "title", "sourceRole", "sourceKind", "acquisitionState")
                 }],
                 "evidenceExcerptKey": reference, "evidenceExcerpt": excerpt,
                 "evidenceExcerptSha256": digest(normalized(excerpt).lower()),

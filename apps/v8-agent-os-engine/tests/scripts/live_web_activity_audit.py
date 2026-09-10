@@ -88,11 +88,13 @@ class WebActivityAuditObserver:
         session_id: str,
         browser_executable: str | None = None,
         headless: bool = True,
+        observe_timers: bool = False,
     ) -> None:
         self.web_url = web_url.rstrip("/")
         self.session_id = session_id
         self.browser_executable = _browser_executable(browser_executable)
         self.headless = headless
+        self.observe_timers = observe_timers
         self._playwright: Any = None
         self._browser: Any = None
         self._page: Any = None
@@ -154,6 +156,13 @@ class WebActivityAuditObserver:
     def _snapshot(self, phase: str, *, include_research_detail: bool = False) -> dict[str, Any]:
         if self._page is None:
             return {"phase": phase, "runtimeCards": [], "subagentCards": [], "researchEvents": []}
+        if self.observe_timers:
+            # The product initially collapses trace groups; a human opens this
+            # group to see the thinking timer. Do the same, without editing state.
+            traces = self._page.locator('.v8-chat-viewport-surface button').filter(has=self._page.locator('svg.lucide-orbit'))
+            for button in traces.all():
+                if not button.locator('svg.rotate-180').count():
+                    button.click(timeout=3000)
         self._overview()
         runtime_cards = self._page.locator("[data-runtime-activity-runtime]").evaluate_all(
             """elements => elements.map(element => ({
@@ -195,6 +204,18 @@ class WebActivityAuditObserver:
             "researchEvents": research_events,
             "narratives": self._narrative_snapshot(),
         }
+        if self.observe_timers:
+            snapshot['reasoningTimers'] = self._page.locator('.v8-chat-viewport-surface svg.lucide-atom').evaluate_all("""icons => {
+                window.__v8TimerNodes ||= new WeakMap(); window.__v8TimerNext ||= 1;
+                return icons.flatMap(icon => {
+                    const card = icon.closest('.group');
+                    const timer = card?.querySelector('.tabular-nums');
+                    if (!timer || !timer.classList.contains('opacity-90')) return [];
+                    if (!window.__v8TimerNodes.has(card)) window.__v8TimerNodes.set(card, window.__v8TimerNext++);
+                    const match = timer.textContent.match(/^([0-9.]+)(ms|s)$/);
+                    return match ? [{ id: window.__v8TimerNodes.get(card), elapsedMs: Number(match[1]) * (match[2] === 's' ? 1000 : 1) }] : [];
+                });
+            }""")
         if not self._narrative_changes or self._narrative_changes[-1]["narratives"] != snapshot["narratives"]:
             self._narrative_changes.append({"capturedAtMs": snapshot["capturedAtMs"], "phase": phase,
                                             "narratives": snapshot["narratives"]})
@@ -312,6 +333,8 @@ class WebActivityAuditObserver:
             "errors": self._errors,
             "narrativeChanges": self._narrative_changes,
             "narrativeSamplingSeconds": 0.75,
+            "reasoningTimerSamples": [{"atMs": sample['capturedAtMs'], "timers": sample.get('reasoningTimers', [])}
+                                       for sample in live_samples] if self.observe_timers else [],
             "narrativeMeasurement": {
                 "status": "observed" if observed and valid else "unverified",
                 "method": "DOM samples; not exact first-token latency or a performance pass",

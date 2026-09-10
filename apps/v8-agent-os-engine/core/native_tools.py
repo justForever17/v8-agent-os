@@ -270,6 +270,11 @@ def http_request(
 ) -> str:
     """Make an HTTP/HTTPS request.
 
+    Use a documented application API for a permitted task before UI automation,
+    unless the user explicitly requires UI testing. Inspect its actual contract,
+    keep the requested resource scope, and read back state after a mutation.
+    Do not guess private endpoints, export browser cookies, or bypass authorization.
+
     Arguments:
         method (str): GET, POST, PUT, DELETE, etc.
         url (str): The URL to request.

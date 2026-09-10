@@ -615,6 +615,18 @@ def test_cancel_does_not_call_the_model_or_acquire_sources():
     assert not transport.requests
 
 
+def test_explicit_website_search_is_not_deduplicated_against_the_api_attempt():
+    requests = []
+    instance = ResearchAgent(invoke=lambda *_: None, acquire=lambda **kw: requests.append(kw) or {},
+                             progress=lambda **_: None, writer_id="writer", reviewer_id="reviewer", max_searches=2)
+    instance.execute_search({"queries": ["Question"], "searchEngine": "metaso"})
+    instance.execute_search({"queries": ["Question"], "searchEngine": "metaso", "fetchMode": "dynamic"})
+    assert len(requests) == 2
+    assert "fetch_mode" not in requests[0]
+    assert requests[1]["fetch_mode"] == "dynamic"
+    assert instance.execute_search({"queries": ["Question"], "searchEngine": "metaso", "fetchMode": "dynamic"})["status"] == "search_budget_exhausted"
+
+
 def test_timeout_closes_the_same_progress_node_and_cannot_return_success():
     events = []
     def invoke(*_args, **_kwargs):

@@ -54,6 +54,9 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "computer_use_send_hotkey", "computer_use_scroll_view", "computer_use_drag_pointer",
         ],
         "guidance": (
+            "For an application task, first inspect the target's already available API/CLI or authorized Plugin/MCP action. "
+            "Prefer a direct documented interface when it can satisfy the task. If unavailable, use DOM/accessibility controls; "
+            "use screenshot coordinates only when no reliable symbolic control exists. Discovery never grants permission. "
             "For webpage forms and DOM actions use browser.control/browser_broker instead of launching an unrelated browser app. "
             "Use computer_use_list_apps only when the app identity is unknown. Launch/focus with launch_app/ensure_window, "
             "then observe_scene(window_title=...) for that window's controls and screenshot refs. Keep passing the exact "
@@ -71,6 +74,9 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
         "summary": "在会话拥有的网页读取当前 DOM/AX，定位、填写和点击；复用 Agent 浏览器，不启动桌面规划 Agent。",
         "toolNames": ["browser_broker"],
         "guidance": (
+            "For application tasks, prefer a documented API/CLI or authorized integration over UI actions when it satisfies the request. "
+            "An initial page observation may reveal that interface; inspect it before choosing fill/click. "
+            "Use http_request for a permitted documented HTTP API and verify with a readback. Do not switch away from UI when the user explicitly requests UI testing. "
             "Use browser_broker(open) to create an owned page; keep its browser_session_id and page_id. "
             "observe returns current DOM/AX and an observation_id. Reference that observation for click/fill/press/scroll, "
             "use a unique selector or exact role/name and re-observe after changes. Do not guess a target or treat "

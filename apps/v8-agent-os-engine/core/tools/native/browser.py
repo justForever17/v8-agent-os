@@ -26,7 +26,9 @@ def browser_capabilities(host: str = "", refresh: bool = False) -> str:
     """Discover Agent Browser session domains without opening pages or exposing credentials.
 
     Session presence is not verified login. Reads may still encounter expiry or
-    challenges. For live page DOM/AX, form input, clicks and media inspection,
+    challenges. For an application task, inspect its documented API/CLI or authorized integration first;
+    an available direct interface precedes UI automation unless the user requires UI testing.
+    For live page DOM/AX, form input, clicks and media inspection,
     the Supervisor loads browser.control via runtime_broker(mode="grant", tool_group="browser.control")
     then use browser_broker. For source text/search use web_broker, which reuses
     eligible Agent Browser domains automatically when profile reuse is enabled.
@@ -41,7 +43,8 @@ def browser_capabilities(host: str = "", refresh: bool = False) -> str:
     if host:
         sites = [site for site in sites if host.strip().lower() in site["host"]]
     lines = ["Agent Browser: " + ("available" if snapshot.get("available") else "not currently observed"),
-             "Page actions: load browser.control, then browser_broker(open/observe/fill/click).",
+             "Application actions: inspect documented API/CLI/integration support before UI automation. Use a ready direct interface and verify the actual result, unless the user requests UI testing.",
+             "For page observation or necessary UI actions: load browser.control, then browser_broker(open/observe/fill/click).",
              "Session presence is unverified; lastRead describes only an earlier read, not all pages."]
     for site in sites[:40]:
         lines.append(f"- {site['host']}: sessionPresent={site['sessionPresent']}; openPage={site['openPage']}; lastRead={site.get('lastRead', {}).get('status', 'not_observed')}")

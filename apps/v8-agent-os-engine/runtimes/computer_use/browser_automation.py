@@ -1689,6 +1689,25 @@ class BrowserAutomationProvider:
                 code = "agent_browser_profile_read_proxy_failed"
             raise RuntimeError(code) from None
 
+    def query_chat_page(self, *, provider: str, query: str, timeout_seconds: float, reuse_profile: bool) -> Dict[str, Any]:
+        """One owned AI-search page, using existing browser/profile lifecycle."""
+        self.ensure_agent_browser_background()
+        self._ensure_proxy(target_port=self._target_port)
+        self._assert_profile_proxy_target()
+        try:
+            return dict(self._request_json("POST", "/agent/chat", body={
+                "provider": provider, "query": query, "guest": not reuse_profile,
+                "timeoutMs": max(1000, min(45000, int(timeout_seconds * 1000))),
+            }, timeout_seconds=max(1.0, timeout_seconds) + 1) or {})
+        except requests.HTTPError as exc:
+            try:
+                code = str(exc.response.json().get("error") or "")
+            except (AttributeError, TypeError, ValueError):
+                code = ""
+            if not re.fullmatch(r"agent_browser_(?:chat_[a-z_]+|profile_(?:read_[a-z_]+|context_missing|redirect_requires_authorization:[a-zA-Z0-9.\[\]:-]+))", code):
+                code = "agent_browser_chat_proxy_failed"
+            raise RuntimeError(code) from None
+
     def _assert_profile_proxy_target(self) -> None:
         from urllib.parse import urlparse
 

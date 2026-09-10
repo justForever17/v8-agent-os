@@ -43,8 +43,9 @@ test("wallpaper uses center cropping with theme-specific light and dark surfaces
   assert.match(provider, /preload="metadata"/);
   const profileEffectStart = provider.indexOf("if (!canonicalLoaded) return;");
   const profileEffectTimerReset = provider.indexOf("if (videoReloadTimerRef.current)", profileEffectStart);
-  const appearanceRead = provider.indexOf("normalizeAppearance(profile?.appearance)", profileEffectStart);
-  assert.ok(profileEffectStart >= 0 && profileEffectTimerReset > profileEffectStart && profileEffectTimerReset < appearanceRead);
+  assert.ok(profileEffectStart >= 0 && profileEffectTimerReset > profileEffectStart);
+  assert.match(provider, /\[canonicalLoaded, appearance\]/);
+  assert.match(provider, /MediaError\.MEDIA_ERR_NETWORK/);
   assert.ok(
     provider.indexOf("video.load()") < provider.lastIndexOf("clearWallpaper(document.documentElement)"),
     "transient video errors must retry before the wallpaper is cleared",

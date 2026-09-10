@@ -7,18 +7,32 @@ import { getUserProfile, type SharedUserProfile } from "@/lib/actions/user.actio
 import { normalizeAppearance } from "@/lib/personalization";
 
 const PROFILE_UPDATED_EVENT = "v8-client-profile-updated";
-let sharedProfileRequest: Promise<SharedUserProfile | null> | null = null;
+let sharedProfileRequest: Promise<SharedUserProfile | null | undefined> | null = null;
 let sharedProfileSnapshot: SharedUserProfile | null | undefined;
 let sharedProfileFetchedAt = 0;
+let sharedProfileRevision = 0;
+
+function resetSharedProfile() {
+    sharedProfileRevision += 1;
+    sharedProfileRequest = null;
+    sharedProfileSnapshot = undefined;
+    sharedProfileFetchedAt = 0;
+}
 
 async function loadSharedProfile() {
     if (sharedProfileRequest) return sharedProfileRequest;
     if (sharedProfileSnapshot !== undefined && Date.now() - sharedProfileFetchedAt < 3_000) {
         return sharedProfileSnapshot;
     }
+    const revision = sharedProfileRevision;
     const request = (async () => {
         const result = await getUserProfile();
-        const next = result.success && result.user ? result.user : null;
+        // A file picker focus-refresh can finish after the upload saved a new
+        // background. Neither that stale reply nor a read failure clears it.
+        if (revision !== sharedProfileRevision || !result.success || !result.user) {
+            return sharedProfileSnapshot;
+        }
+        const next = result.user;
         sharedProfileSnapshot = next;
         sharedProfileFetchedAt = Date.now();
         return next;
@@ -63,6 +77,8 @@ export function resolveProfileAvatarSrc(image?: string | null) {
 
 function emitProfileUpdate(profile: SharedUserProfile | null) {
     if (typeof window === "undefined") return;
+    sharedProfileRevision += 1;
+    sharedProfileRequest = null;
     sharedProfileSnapshot = profile;
     sharedProfileFetchedAt = Date.now();
     window.dispatchEvent(new CustomEvent<SharedUserProfile | null>(PROFILE_UPDATED_EVENT, { detail: profile }));
@@ -121,6 +137,7 @@ export function useClientProfile() {
         if (!silent) setLoading(true);
         try {
             const next = await loadSharedProfile();
+            if (next === undefined) return null;
             await applyProfile(next);
             return next;
         } finally {
@@ -130,6 +147,7 @@ export function useClientProfile() {
 
     useEffect(() => {
         if (status !== "authenticated") {
+            if (status === "unauthenticated") resetSharedProfile();
             setProfile(null);
             setCanonicalLoaded(status === "unauthenticated");
             return;

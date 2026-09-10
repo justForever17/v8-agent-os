@@ -46,6 +46,15 @@ export function useBackgroundVideoAudio() {
 
 export function PersonalizationProvider({ children }: { children: React.ReactNode }) {
     const { profile, canonicalLoaded } = useClientProfile();
+    const { lightBackgroundEnabled, lightBackgroundMedia, lightBackgroundMediaType, lightBackgroundImage } = profile?.appearance || {};
+    const appearance = useMemo(() => normalizeAppearance({
+        lightBackgroundEnabled, lightBackgroundMedia, lightBackgroundMediaType, lightBackgroundImage,
+    }), [
+        lightBackgroundEnabled,
+        lightBackgroundMedia,
+        lightBackgroundMediaType,
+        lightBackgroundImage,
+    ]);
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const videoReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const videoReloadAttemptRef = useRef(0);
@@ -83,7 +92,6 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
         }
         videoReloadAttemptRef.current = 0;
         const root = document.documentElement;
-        const appearance = normalizeAppearance(profile?.appearance);
         const media = appearance.lightBackgroundMedia || appearance.lightBackgroundImage || "";
         if (!appearance.lightBackgroundEnabled || !media) {
             setVideoSrc("");
@@ -138,7 +146,7 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
             cancelled = true;
             image.onload = null;
         };
-    }, [canonicalLoaded, profile?.appearance]);
+    }, [canonicalLoaded, appearance]);
 
     const toggleMuted = useCallback(() => {
         const video = videoRef.current;
@@ -184,7 +192,6 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
                         clearTimeout(videoReloadTimerRef.current);
                         videoReloadTimerRef.current = null;
                     }
-                    videoReloadAttemptRef.current = 0;
                     const root = document.documentElement;
                     root.style.removeProperty("--v8-wallpaper-image");
                     root.dataset.v8WallpaperKind = "video";
@@ -193,21 +200,30 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
                     setVideoReady(true);
                     void event.currentTarget.play().catch(() => undefined);
                 }}
-                onError={() => {
+                onError={(event) => {
+                    if (!videoSrc) return;
                     setVideoReady(false);
+                    const failedVideo = event.currentTarget;
                     const attempt = videoReloadAttemptRef.current;
-                    if (videoSrc && attempt < VIDEO_RELOAD_DELAYS_MS.length) {
+                    // Reloading can recover a failed transfer, but cannot fix an
+                    // unsupported source or a decoder failure. Keep the retry
+                    // budget for this source even if it briefly becomes playable.
+                    if (failedVideo.error?.code === MediaError.MEDIA_ERR_NETWORK && attempt < VIDEO_RELOAD_DELAYS_MS.length) {
                         videoReloadAttemptRef.current = attempt + 1;
                         if (videoReloadTimerRef.current) clearTimeout(videoReloadTimerRef.current);
                         videoReloadTimerRef.current = setTimeout(() => {
                             videoReloadTimerRef.current = null;
                             const video = videoRef.current;
-                            if (!video || !videoSrc) return;
+                            if (!video || video.getAttribute("src") !== videoSrc) return;
                             video.load();
                             void video.play().catch(() => undefined);
                         }, VIDEO_RELOAD_DELAYS_MS[attempt]);
                         return;
                     }
+                    failedVideo.pause();
+                    failedVideo.removeAttribute("src");
+                    failedVideo.load();
+                    setVideoSrc("");
                     if (document.documentElement.dataset.v8WallpaperKind === "video") {
                         clearWallpaper(document.documentElement);
                     }

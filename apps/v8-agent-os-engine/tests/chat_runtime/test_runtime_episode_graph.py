@@ -384,7 +384,10 @@ def test_supervisor_cognition_keeps_multi_runtime_continuation_and_atomic_capabi
     assert "ordered runtime chain" in _SUPERVISOR_OPERATING_CONTRACT
     assert "does not forbid the Supervisor from continuing into another runtime" in _SUPERVISOR_OPERATING_CONTRACT
     assert "Capability overlap is usually complementary" in _SUPERVISOR_OPERATING_CONTRACT
-    assert "owning Runtime, then an authorized Plugin action, then a configured MCP tool, then a Skill" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "ready direct interface before UI automation" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "DOM/accessibility controls, then screenshot coordinates" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "Inspect only the relevant target" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "owning Runtime, then an authorized Plugin action" not in _SUPERVISOR_OPERATING_CONTRACT
 
 
 def test_selected_first_runtime_does_not_block_next_runtime_after_handoff() -> None:

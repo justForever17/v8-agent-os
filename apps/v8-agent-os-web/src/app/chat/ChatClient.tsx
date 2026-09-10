@@ -984,11 +984,11 @@ export default function ChatClient() {
         void clearLegacyWebConversationCache();
     }, []);
 
-    const loadSupervisorDisplayProfile = useCallback(async () => {
-        const response = await fetch("/api/supervisor-profile", { cache: "no-store" });
+    const loadSupervisorDisplayProfile = useCallback(async (signal: AbortSignal) => {
+        const response = await fetch("/api/supervisor-profile", { cache: "no-store", signal });
         if (!response.ok) return;
         const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
-        if (!payload) return;
+        if (!payload || signal.aborted) return;
         const next = {
             name: readString(payload.name) || "智能主管",
             roleLabel: readString(payload.roleLabel) || "主理人",
@@ -1006,9 +1006,14 @@ export default function ChatClient() {
     useEffect(() => {
         if (status !== "authenticated") return;
         let disposed = false;
+        let inFlight: AbortController | null = null;
         const refresh = () => {
-            if (disposed || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
-            void loadSupervisorDisplayProfile().catch(() => undefined);
+            if (disposed || inFlight || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+            const request = new AbortController();
+            inFlight = request;
+            void loadSupervisorDisplayProfile(request.signal).catch(() => undefined).finally(() => {
+                if (inFlight === request) inFlight = null;
+            });
         };
         refresh();
         const timer = window.setInterval(refresh, 2_000);
@@ -1016,6 +1021,7 @@ export default function ChatClient() {
         document.addEventListener("visibilitychange", refresh);
         return () => {
             disposed = true;
+            inFlight?.abort();
             window.clearInterval(timer);
             window.removeEventListener("focus", refresh);
             document.removeEventListener("visibilitychange", refresh);

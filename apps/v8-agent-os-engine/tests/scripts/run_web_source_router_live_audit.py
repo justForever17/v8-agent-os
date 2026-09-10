@@ -261,14 +261,107 @@ def _write_report(results: list[AuditCaseResult], output_dir: Path) -> Path:
     return path
 
 
+def _run_browser_chat_cases(*, provider_filter: str = "all", lane_filter: str = "all") -> list[AuditCaseResult]:
+    """Real websites and both broker acquisition paths; no ModelHub LLM call.
+
+    Only a new helper port is overridden in memory. The existing governed Agent
+    Browser profile stays owned and open; no config/cookie export or rewriting.
+    """
+    import hashlib
+    import socket
+    import uuid
+    from copy import deepcopy
+    from unittest.mock import patch
+    from core.storage import storage
+    from core.database import db
+    from core.tools import web_fetcher, research_broker as research
+    from erc.runtime_context import bind_runtime_context
+    from runtimes.computer_use.browser_automation import agent_browser_automation as browser
+    from runtimes.research.evidence import EvidenceStore
+
+    config = deepcopy(storage.get_computer_use_config())
+    for port in range(4300, 9000):
+        with socket.socket() as probe:
+            try: probe.bind(('127.0.0.1', port))
+            except OSError: continue
+        config['browserLane']['proxyPort'] = port
+        break
+    else:
+        raise RuntimeError('No isolated helper port available below the existing CDP port')
+    identifier = 'browser-chat-live-' + uuid.uuid4().hex[:12]
+    db.create_or_update_session(identifier, 'Browser chat acquisition acceptance', user_id='web-chat-live-fixture')
+    db.create_run_record(identifier, identifier, user_id='web-chat-live-fixture')
+    results = []
+    prior_proxy = browser._proxy_process
+    try:
+        with patch.object(storage, 'get_computer_use_config', return_value=config), bind_runtime_context(
+            session_id=identifier, run_id=identifier, user_id='web-chat-live-fixture', agent_id='supervisor',
+            actor_role='supervisor', safety_approval_mode='minimal'):
+            for provider in ('metaso', 'chatgpt'):
+                if provider_filter not in ('all', provider): continue
+                query = '请联网检索 Python venv 的作用，给出 Python 官方文档链接，100字以内。'
+                for lane in ('web_broker', 'research_acquisition'):
+                    if lane_filter not in ('all', lane): continue
+                    result = AuditCaseResult(case_id=f'{lane}_{provider}', title=f'{provider} 网页提交、正文与引用实读', providers=[provider])
+                    started = time.perf_counter()
+                    try:
+                        if lane == 'web_broker':
+                            payload = json.loads(web_fetcher.web_broker.func(mode='search', target=query, search_engine=provider, fetch_mode='dynamic'))
+                            answer = payload.get('webChatAnswer') or {}
+                            body = str(answer.get('text') or '')
+                            source_urls = [r.get('url') for r in payload.get('results') or []]
+                            result.evidence.append(json.dumps({'ok': payload.get('ok'), 'error': payload.get('error'),
+                                'answerPreview': body[:500], 'completion': answer.get('completion'), 'citationUrls': source_urls}, ensure_ascii=False))
+                            if not payload.get('ok') or not body: raise ValueError(payload.get('error') or 'missing_browser_answer')
+                            assert answer.get('sourceKind') == 'ai_generated_answer' and answer.get('citationsVerified') is False
+                        else:
+                            payload = research._run_search_shard({'kind': 'agent_query', 'query': query, 'searchEngine': provider, 'fetchMode': 'dynamic'},
+                                allowed_domains=[], blocked_domains=[], source_policy='mixed', max_rounds=1,
+                                use_agent_browser_profile=True, tool_call_id=f'{identifier}-{provider}',
+                                preferred_language='zh-CN', shard_deadline_at=time.monotonic()+45)
+                            store = EvidenceStore()
+                            store.add(research._research_read_observations([payload], None))
+                            rows = [r for r in store.sources.values() if r['sourceKind'] == 'ai_generated_answer']
+                            result.evidence.append(json.dumps({'ok': payload.get('ok'), 'provider': payload.get('provider'),
+                                'errors': payload.get('errors'), 'sources': store.index(),
+                                'searchDiagnostics': payload.get('searchDiagnostics')}, ensure_ascii=False))
+                            assert rows, 'research_dropped_captured_browser_answer'
+                            body = rows[0]['text']
+                            restored = EvidenceStore()
+                            restored.restore(list(store.sources.values()))
+                            assert restored.read(rows[0]['citationKey'])['text'] == body
+                            source_urls = [r.get('url') for r in rows[0]['links']]
+                        assert 'venv' in body.lower() and source_urls, 'answer_or_citations_missing'
+                        result.status = 'ok'
+                        result.evidence.append(json.dumps({'answerChars':len(body), 'answerSha256':hashlib.sha256(body.encode()).hexdigest(),
+                            'answerPreview':body[:500], 'citationUrls':source_urls, 'layer':'real_browser_acquisition_no_ModelHub_call'},ensure_ascii=False))
+                    except Exception as exc:
+                        result.status='failed'; result.failures.append(_redact(f'{type(exc).__name__}: {exc}'))
+                    result.elapsed_ms=int((time.perf_counter()-started)*1000)
+                    results.append(result)
+                    print(f'{result.case_id}: {result.status}, {result.elapsed_ms} ms', flush=True)
+    finally:
+        process=browser._proxy_process
+        if process is not None and process is not prior_proxy and process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        with db.get_connection() as conn:
+            conn.execute('UPDATE run_records SET status=?,finished_at=CURRENT_TIMESTAMP WHERE id=?',
+                         ('failed' if any(r.status=='failed' for r in results) else 'completed',identifier))
+            conn.commit()
+    return results
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run live Source Router / web read / Research Runtime audit.")
     parser.add_argument("--live", action="store_true", help="Required. Allows real model/network/engine calls.")
     parser.add_argument("--engine-url", default=DEFAULT_ENGINE_URL)
-    parser.add_argument("--case", choices=["supervisor_read", "subagent_read", "research_runtime", "continuation_read", "all"], default="all")
+    parser.add_argument("--case", choices=["supervisor_read", "subagent_read", "research_runtime", "continuation_read", "browser_chat", "all"], default="all")
     parser.add_argument("--max-wait", type=int, default=180)
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument("--chat-provider", choices=["all", "metaso", "chatgpt"], default="all")
+    parser.add_argument("--chat-lane", choices=["all", "web_broker", "research_acquisition"], default="all")
     return parser.parse_args()
 
 
@@ -280,6 +373,8 @@ def main() -> int:
 
     selected = {"supervisor_read", "subagent_read", "research_runtime", "continuation_read"} if args.case == "all" else {args.case}
     results: list[AuditCaseResult] = []
+    if 'browser_chat' in selected:
+        results.extend(_run_browser_chat_cases(provider_filter=args.chat_provider, lane_filter=args.chat_lane))
     needs_engine = bool(selected & {"supervisor_read", "subagent_read"})
     if needs_engine:
         ok, error = _wait_for_engine(args.engine_url)

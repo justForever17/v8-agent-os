@@ -4,6 +4,7 @@ import { URL } from "node:url";
 import { actOnAgentPage, closeAgentPage, observeAgentPage, trackAgentPage } from "./browser_agent_surface.mjs";
 import { profileAccessSummary } from "./browser_profile_access.mjs";
 import { readProfilePage } from "./browser_profile_read.mjs";
+import { queryBrowserChat } from "./browser_ai_chat.mjs";
 import { observeAgentMedia } from "./browser_media_observation.mjs";
 import { invalidateAgentObservation } from "./browser_agent_surface.mjs";
 
@@ -377,6 +378,17 @@ async function route(req, res) {
     if (url.pathname === "/agent/read" && req.method === "POST") {
       const body = JSON.parse(await readBody(req) || "{}");
       return sendJson(res, 200, await readProfilePage(await ensureBrowser(), body));
+    }
+
+    if (url.pathname === "/agent/chat" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req) || "{}");
+      const controller = new AbortController();
+      const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+      res.once('close', disconnected);
+      try {
+        const result = await queryBrowserChat(await ensureBrowser(), { ...body, signal: controller.signal });
+        return sendJson(res, 200, result);
+      } finally { res.removeListener('close', disconnected); }
     }
 
     if (url.pathname === "/targets" && req.method === "GET") {

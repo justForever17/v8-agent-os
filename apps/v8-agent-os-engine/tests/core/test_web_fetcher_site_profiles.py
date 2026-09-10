@@ -905,40 +905,13 @@ def test_allowlisted_metaso_profile_uses_browser_before_public_sse(monkeypatch) 
     )
     fetch_calls: list[dict[str, object]] = []
 
-    def fake_profile_fetch(url: str, **kwargs: object) -> web_fetcher.WebPagePayload:
-        fetch_calls.append({"url": url, **kwargs})
-        return web_fetcher.WebPagePayload(
-            url=url,
-            final_url=url,
-            requested_mode="auto",
-            referer_mode="none",
-            referer_url="",
-            fetch_mode="dynamic",
-            attempted_modes=["dynamic"],
-            available_modes={"dynamic": {"available": True}},
-            status=200,
-            tls_strategy="browser_managed",
-            ca_bundle_path="",
-            proxy_bypass_used=False,
-            title="MetaSo authenticated results",
-            text="LangChain current capabilities reference",
-            html=(
-                "<html><head><title>MetaSo</title></head><body><main>"
-                "<a href='https://docs.example.com/langchain'>"
-                "LangChain current capabilities reference</a>"
-                "</main></body></html>"
-            ),
-            metadata={},
-            links=[],
-            media=[],
-            warnings=[],
-            agent_browser_profile_used=True,
-            agent_browser_profile_host="metaso.cn",
-            agent_browser_profile_dir="profile",
-            agent_browser_kind="edge",
-        )
-
-    monkeypatch.setattr(web_fetcher, "_fetch_with_scrapling_internal", fake_profile_fetch)
+    from runtimes.computer_use.browser_automation import agent_browser_automation
+    def fake_profile_chat(**kwargs):
+        fetch_calls.append(kwargs)
+        return {"ok": True, "text": "LangChain current capabilities reference", "contextReused": True,
+                "url": "https://metaso.cn/chat/fixture", "querySubmitted": True, "completion": "observed_stable",
+                "references": [{"url": "https://docs.example.com/langchain", "title": "LangChain current capabilities reference"}]}
+    monkeypatch.setattr(agent_browser_automation, "query_chat_page", fake_profile_chat)
 
     payload = json.loads(
         web_fetcher.web_search.func(
@@ -949,13 +922,13 @@ def test_allowlisted_metaso_profile_uses_browser_before_public_sse(monkeypatch) 
 
     assert payload["ok"] is True
     assert payload["provider"] == "metaso"
-    assert payload["agentBrowserProfile"]["used"] is True
+    assert payload["webChatAnswer"]["contextReused"] is True
     assert fetch_calls
-    assert fetch_calls[0]["use_agent_browser_profile"] is True
-    assert int(fetch_calls[0]["browser_wait_ms"]) >= 2_000
+    assert fetch_calls[0]["reuse_profile"] is True
+    assert fetch_calls[0]["query"] == "LangChain current capabilities"
     assert any(
         item.get("provider") == "metaso"
-        and item.get("failureClass") == "authenticated_profile_preferred"
+        and item.get("route") == "browser_chat"
         for item in payload["attemptedProviders"]
     )
 

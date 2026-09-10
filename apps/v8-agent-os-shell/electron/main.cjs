@@ -9,6 +9,7 @@ const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { hasServiceEvidence, waitForServiceHandoff } = require('../lib/service-liveness.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 const { loadUrlSafely } = require('../lib/navigation-load.cjs');
+const { recordDesktopFault } = require('../lib/desktop-fault-log.cjs');
 const {
   classifyWindowOpen,
   isTrustedAdminAuthIpcSource,
@@ -690,11 +691,13 @@ function scheduleSurfaceRecovery(reason, targetUrl = '') {
   const now = Date.now();
   surfaceRecoveryTimes = surfaceRecoveryTimes.filter((timestamp) => now - timestamp < SURFACE_RECOVERY_WINDOW_MS);
   if (surfaceRecoveryTimes.length >= MAX_SURFACE_RECOVERY_ATTEMPTS) {
+    recordDesktopFault('surface-recovery', { stage: 'exhausted' });
     console.error(`[v8os-shell] surface recovery stopped: ${reason}`);
     void mainWindow.loadURL(errorDataUrl(`界面连续恢复失败（${reason}）`)).catch(() => undefined);
     return;
   }
   surfaceRecoveryTimes.push(now);
+  recordDesktopFault('surface-recovery', { stage: 'scheduled' });
   if (surfaceStabilityTimer) {
     clearTimeout(surfaceStabilityTimer);
     surfaceStabilityTimer = null;
@@ -1450,6 +1453,11 @@ function createMainWindow() {
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (details?.reason === 'clean-exit') return;
+    recordDesktopFault('renderer-process-exited', {
+      reason: details?.reason,
+      exitCode: details?.exitCode,
+      surface: classifyProductSurface({ coreServicesReady, loadedUrl: mainWindow?.webContents.getURL(), webBaseUrl, adminBaseUrl }) || 'startup',
+    });
     shellControl?.setSurfaceStatus({ surfaceReady: false });
     scheduleSurfaceRecovery(`renderer ${details?.reason || 'gone'} (${details?.exitCode ?? 'unknown'})`, mainWindow?.webContents.getURL());
   });
@@ -1538,6 +1546,7 @@ function createMainWindow() {
       scheduleAutomaticUpdateCheck();
       if (surfaceStabilityTimer) clearTimeout(surfaceStabilityTimer);
       surfaceStabilityTimer = setTimeout(() => {
+        if (surfaceRecoveryTimes.length) recordDesktopFault('surface-recovery', { stage: 'recovered', surface: surfaceKind });
         surfaceRecoveryTimes = [];
         surfaceStabilityTimer = null;
       }, 15_000);

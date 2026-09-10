@@ -56,6 +56,7 @@ def render_research_handoff_evidence(payload: dict[str, Any]) -> str:
             f"URL: {source.get('url') or ''}",
             f"Source ID: {source.get('sourceId') or ''}",
             f"Source role: {source.get('sourceRole') or 'unclassified'}; retrieval tier: {source.get('tier') or 'unknown'}; version: {source.get('version') or 'unknown'}",
+            f"Source kind: {source.get('sourceKind') or 'document'}; acquisition: {source.get('acquisitionState') or 'unspecified'}; uncaptured characters: {source.get('omittedChars') or 0}",
             f"Published: {source.get('publishedAt') or source.get('sourceDate') or 'unknown'}; retrieved: {source.get('retrievedAt') or ''}",
             f"Read verified: {read.get('verified', False)}; content SHA256: {read.get('contentSha256') or ''}",
         ])

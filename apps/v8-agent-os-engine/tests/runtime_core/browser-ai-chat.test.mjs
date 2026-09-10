@@ -72,6 +72,20 @@ test('a stalled generation returns captured partial content without pretending c
   });
 });
 
+test('a submitted page with no readable answer is retained and never re-submits on retry', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<main><textarea id="mobile-composer-prompt"></textarea><button data-testid="StopButton">Stop</button></main>' }));
+    const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 3000 });
+    assert.equal(first.failureClass, 'answer_pending');
+    assert.equal(first.querySubmitted, true);
+    const second = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 3000 });
+    assert.equal(second.failureClass, 'answer_pending');
+    assert.equal(second.verificationTargetId, first.verificationTargetId);
+    assert.equal(context.pages().length, 2);
+    assert.ok(context.pages().includes(userPage));
+  });
+});
+
 test('old answers and old done controls cannot complete a new query', { skip: !available }, async () => {
   await withBrowser(async (browser, context) => {
     await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<main>
@@ -87,9 +101,13 @@ test('old answers and old done controls cannot complete a new query', { skip: !a
 test('missing composer reports the specific state and never guesses an authentication failure', { skip: !available }, async () => {
   await withBrowser(async (browser, context, userPage) => {
     await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: fixture('metaso', { noComposer: true }) }));
-    await assert.rejects(queryBrowserChat(browser, { provider: 'metaso', query: 'Question', timeoutMs: 1000 }),
-      error => error.message === 'agent_browser_chat_composer_unavailable');
-    assert.deepEqual(context.pages(), [userPage]);
+    const result = await queryBrowserChat(browser, { provider: 'metaso', query: 'Question', timeoutMs: 2000 });
+    assert.equal(result.error, 'agent_browser_chat_composer_unavailable');
+    assert.equal(result.failureClass, 'composer_unavailable');
+    assert.equal(result.querySubmitted, false);
+    assert.equal(result.verificationPageRetained, true);
+    assert.equal(context.pages().length, 2);
+    assert.ok(context.pages().includes(userPage));
   });
 });
 
@@ -109,10 +127,72 @@ test('guest requests never reuse an existing login context', { skip: !available 
   });
 });
 
-test('verification pages report a challenge rather than a lost login', { skip: !available }, async () => {
-  await withBrowser(async (browser, context) => {
+test('verification retains one exact page, resuming after human verification submits only once', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
     await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<title>请稍候…</title><main id="challenge-stage"></main>' }));
-    await assert.rejects(queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 }), /agent_browser_chat_verification_required/);
+    const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 });
+    assert.equal(first.failureClass, 'provider_challenge');
+    assert.equal(first.querySubmitted, false);
+    assert.equal(first.verificationPageRetained, true);
+    assert.ok(first.verificationTargetId);
+    const page = context.pages().find(p => p !== userPage);
+    const second = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 });
+    assert.equal(second.verificationTargetId, first.verificationTargetId);
+    assert.deepEqual(context.pages(), [userPage, page]);
+    // Simulate the external human-owned transition, not a CAPTCHA solver.
+    await page.setContent(fixture('chatgpt'));
+    let submissions = 0;
+    await page.exposeFunction('recordSubmission', () => submissions++);
+    await page.evaluate(() => document.querySelector('textarea').addEventListener('keydown', e => {
+      if (e.key === 'Enter') window.recordSubmission();
+    }));
+    const resumed = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 5000 });
+    assert.equal(resumed.completion, 'observed_stable');
+    assert.equal(submissions, 1);
+    assert.deepEqual(context.pages(), [userPage]);
+  });
+});
+
+test('manual navigation of a retained page is preserved and never submitted into', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<title>Just a moment</title><main id="challenge-stage"></main>' }));
+    await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 });
+    const page = context.pages().find(p => p !== userPage);
+    await page.goto('https://other.example.test/');
+    await assert.rejects(queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 }), /verification_target_changed/);
+    assert.equal(page.isClosed(), false);
+    assert.equal(page.url(), 'https://other.example.test/');
+  });
+});
+
+test('concurrent queries never race the same provider page', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: fixture('chatgpt') }));
+    const first = queryBrowserChat(browser, { provider: 'chatgpt', query: 'First', timeoutMs: 5000 });
+    const busy = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Second', timeoutMs: 5000 });
+    assert.equal(busy.failureClass, 'provider_busy');
+    assert.equal(busy.querySubmitted, false);
+    assert.equal((await first).ok, true);
+    assert.deepEqual(context.pages(), [userPage]);
+  });
+});
+
+test('cancelling a retained guest page releases only its owned context', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    const originalNew = browser.newContext.bind(browser);
+    browser.newContext = async () => {
+      const guest = await originalNew();
+      await guest.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<title>Just a moment</title>' }));
+      return guest;
+    };
+    const result = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', guest: true, timeoutMs: 1500 });
+    assert.equal(result.querySubmitted, false);
+    assert.equal(browser.contexts().length, 2);
+    const controller = new AbortController(); controller.abort();
+    await assert.rejects(queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', guest: true,
+      timeoutMs: 1500, signal: controller.signal }), /cancelled/);
+    assert.deepEqual(browser.contexts(), [context]);
+    assert.deepEqual(context.pages(), [userPage]);
   });
 });
 

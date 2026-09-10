@@ -127,6 +127,10 @@ try {
     await page.locator('button[type="submit"]').click();
     await page.waitForURL(/\/admin(?:\?.*)?$/, { timeout: 20_000 });
     assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
+    await page.evaluate(() => {
+        localStorage.setItem("v8-admin-debug-mode", "true");
+        localStorage.setItem("v8-admin-sidebar-collapsed", "true");
+    });
     await verifySystemOperationsCard(page, baseUrl);
     assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
 
@@ -140,6 +144,7 @@ try {
             "existing_owner_credentials_sign_in",
             "no_browser_page_errors",
             "system_operations_card_fake_os_boundary_identity_validation_password_clear_and_reload",
+            "persisted_debug_and_sidebar_preferences_hydrate_without_page_errors",
         ],
     }, null, 2));
 } finally {

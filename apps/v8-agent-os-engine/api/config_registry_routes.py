@@ -271,6 +271,7 @@ def _build_supervisor_domain() -> dict[str, Any]:
             },
             "specialistRegistry": dict(supervisor_config.get("specialistRegistry") or {}),
             "research": dict(supervisor_config.get("research") or {}),
+            "compressedDirectImages": supervisor_config.get("compressedDirectImages") is True,
         },
         "source": f"V8_AGENT_OS.md + {_config_source('systemBase.identity')} + {_config_source('supervisor')} + {_config_source('models')}",
         "savePath": [
@@ -308,6 +309,10 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
         storage.save_system_base_config({"identity": dict(data.get("identity") or {})})
 
     supervisor_config = dict(storage.get_supervisor_config() or {})
+    if "compressedDirectImages" in data:
+        if not isinstance(data["compressedDirectImages"], bool):
+            raise HTTPException(status_code=400, detail="compressedDirectImages must be boolean")
+        supervisor_config["compressedDirectImages"] = data["compressedDirectImages"]
     if "allowedTools" in data:
         allowed_tools = data.get("allowedTools")
         supervisor_config["allowed_tools"] = allowed_tools if allowed_tools is not None else None
@@ -892,6 +897,7 @@ def _build_computer_use_domain() -> dict[str, Any]:
                 "fallbackRerankerModel": model_control_plane.get_role_model_id("reranker") or "",
             },
             "candidateRerankEnabled": bool(runtime_config.get("candidateRerankEnabled", False)),
+            "compressedFrameInput": runtime_config.get("compressedFrameInput") is True,
             "browserLane": {
                 "enabled": bool(browser_lane.get("enabled", True)),
                 "mode": str(browser_lane.get("mode") or "auto_if_available"),
@@ -931,6 +937,8 @@ def _build_computer_use_domain() -> dict[str, Any]:
 
 def _save_computer_use_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
+    if "compressedFrameInput" in data and not isinstance(data["compressedFrameInput"], bool):
+        raise HTTPException(status_code=400, detail="compressedFrameInput must be boolean")
     model_bindings = dict(data.get("modelBindings") or {})
     _update_role_bindings(
         {
@@ -943,6 +951,7 @@ def _save_computer_use_domain(payload: dict[str, Any]) -> dict[str, Any]:
     storage.save_computer_use_config(
         {
             "candidateRerankEnabled": bool(data.get("candidateRerankEnabled", False)),
+            "compressedFrameInput": data.get("compressedFrameInput", storage.get_computer_use_config().get("compressedFrameInput", False)),
             "browserLane": dict(data.get("browserLane") or {}),
             "observationPolicy": dict(data.get("observationPolicy") or {}),
             "inputPolicy": dict(data.get("inputPolicy") or {}),

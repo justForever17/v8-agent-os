@@ -4686,6 +4686,9 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
                 "elapsedMs": payload.get("elapsedMs"),
                 "retryable": payload.get("retryable"),
                 "recommendedNextAction": payload.get("recommendedNextAction"),
+                "querySubmitted": payload.get("querySubmitted"),
+                "verificationTargetId": payload.get("verificationTargetId"),
+                "verificationPageRetained": payload.get("verificationPageRetained"),
             }
         )
         if payload.get("blocked") is not None:
@@ -6614,14 +6617,15 @@ def web_search(
                 attempted_providers.append({"provider": provider, "route": "browser_chat",
                     "status": "ok" if chat_result.get("ok") else "error",
                     "failureClass": chat_result.get("failureClass"),
-                    "reason": chat_result.get("error")})
+                    "reason": chat_result.get("error"),
+                    **{key: chat_result[key] for key in ("verificationTargetId", "verificationPageRetained", "querySubmitted", "recommendedNextAction") if key in chat_result}})
                 if chat_result.get("ok"):
                     return json.dumps({**chat_result, "requestedProvider": requested_provider,
                         "attemptedProviders": attempted_providers,
                         **_source_router_payload_fields(router_plan, selected_provider=provider,
                                                        attempted_providers=attempted_providers)}, ensure_ascii=False)
                 last_error = str(chat_result.get("error") or "agent_browser_chat_no_answer")
-                if requested_provider != "auto" and chat_result.get("failureClass") == "provider_challenge":
+                if requested_provider != "auto" and chat_result.get("failureClass") in {"provider_challenge", "provider_busy", "composer_unavailable", "answer_pending"}:
                     return json.dumps({**chat_result, "provider": provider, "attemptedProviders": attempted_providers}, ensure_ascii=False)
                 continue
             effective_use_agent_browser_profile = bool(

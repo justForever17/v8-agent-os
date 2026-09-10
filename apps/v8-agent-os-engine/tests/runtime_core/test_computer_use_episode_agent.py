@@ -41,6 +41,40 @@ class _FakeRuntime:
     browser_automation = SimpleNamespace()
 
 
+@pytest.mark.parametrize("compressed", [False, True])
+def test_frame_compression_preserves_completion_version_and_normalized_coordinates(tmp_path, monkeypatch, compressed):
+    import base64
+    import hashlib
+    from io import BytesIO
+    from PIL import Image
+    from core.storage import storage
+    monkeypatch.setattr(storage, "get_computer_use_config", lambda: {"compressedFrameInput": compressed})
+    frame = tmp_path / "frame.png"
+    Image.new("RGB", (2560, 1440), "red").save(frame)
+    agent = ComputerUseEpisodeAgent(episode_id="episode_test", session_id="session_test", run_id="run_test",
+        user_id="user_test", project_id="project_test", workspace_id="workspace_test", workspace_path=str(tmp_path),
+        task_brief=_brief(), runtime=_FakeRuntime())
+    agent._current_observation = {"id": "frame-1", "framePath": str(frame),
+        "sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+        "contextHash": hashlib.sha256(b"{}").hexdigest(), "actionCount": 0}
+    result = agent._model_messages(round_index=1, context="{}", frame=frame)
+    image_url = next(b["image_url"]["url"] for b in result[1].content if b["type"] == "image_url")
+    sent = base64.b64decode(image_url.split(",", 1)[1])
+    with Image.open(BytesIO(sent)) as image:
+        assert image.size == ((1344, 756) if compressed else (2560, 1440))
+        assert image.getpixel((2, 2)) == (255, 0, 0)
+    assert agent._completion_observation_valid("frame-1") is True
+    if compressed:
+        mapping = agent._current_observation["imageMapping"]
+        assert mapping["inputSha256"] == hashlib.sha256(sent).hexdigest()
+        assert mapping["sourceWidth"] == 2560
+        assert "do not send resized pixel coordinates" in str(result[1].content)
+    Image.new("RGB", (2560, 1440), "blue").save(frame)
+    assert agent._completion_observation_valid("frame-1") is False
+    agent._model_messages(round_index=1, context="{}", frame=frame)
+    assert agent._current_observation["presented"] is False
+
+
 def _brief(*, write_set: list[str] | None = None, goal: str = "") -> dict:
     return {
         "taskBriefId": "computer-use-test",

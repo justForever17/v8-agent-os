@@ -1,3 +1,9 @@
+const closingContexts = new WeakMap();
+export function closeOwnedContext(context) {
+  if (!closingContexts.has(context)) closingContexts.set(context, context.close().catch(() => {}));
+  return closingContexts.get(context);
+}
+
 function navigationAllowed(initial, target, alreadySecure) {
   if (!["https:", "http:"].includes(target.protocol) || target.username || target.password) return false;
   const root = host => host.replace(/^www\./, "");
@@ -48,6 +54,13 @@ export async function withProfilePage(browser, spec, consume) {
   const deadline = Date.now() + timeout;
   let createTimer, context;
   const creating = (async () => {
+    if (spec.existingPage) {
+      context = spec.existingPage.context();
+      if (!browser.contexts().includes(context) || !navigationAllowed(url, new URL(spec.existingPage.url()), true)) {
+        throw Error('agent_browser_chat_verification_target_changed');
+      }
+      return spec.existingPage;
+    }
     context = guest ? await browser.newContext() : browser.contexts()[0];
     if (!context) throw Error("agent_browser_profile_context_missing");
     return context.newPage();
@@ -58,6 +71,9 @@ export async function withProfilePage(browser, spec, consume) {
       createTimer = setTimeout(() => reject(Error("agent_browser_profile_read_creation_timeout")), timeout);
     })]);
   } catch (error) {
+    // A retained page may have been taken over by the user. A rejected resume
+    // must not close that page or its guest context.
+    if (spec.existingPage) throw Error('agent_browser_chat_verification_target_changed');
     void creating.then(async latePage => {
       await latePage.close({ runBeforeUnload: false }).catch(() => {});
       if (guest) await context?.close().catch(() => {});
@@ -71,6 +87,7 @@ export async function withProfilePage(browser, spec, consume) {
   spec.signal?.addEventListener('abort', abort, { once: true });
   let stage = "navigation_guard", cdp, navigationFailure = () => "";
   const blockedFrames = new Set();
+  let retained = false;
   try {
     if (spec.signal?.aborted) throw Error("agent_browser_chat_cancelled");
     // Playwright page.route only sees the first URL of an HTTP redirect chain.
@@ -84,9 +101,9 @@ export async function withProfilePage(browser, spec, consume) {
     stage = "navigation";
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw Error("profile_read_timeout");
-    const response = await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: remaining });
+    const response = spec.existingPage ? null : await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: remaining });
     stage = "content";
-    const result = await consume(page, { deadline, response, navigationFailure });
+    const result = await consume(page, { deadline, response, navigationFailure, retainForUser: () => { retained = true; } });
     if (spec.signal?.aborted) throw Error("agent_browser_chat_cancelled");
     if (navigationFailure()) throw Error(navigationFailure());
     return { ...result, url: page.url(), status: response?.status() || 0, contextReused: !guest,
@@ -99,9 +116,10 @@ export async function withProfilePage(browser, spec, consume) {
   } finally {
     clearTimeout(timer);
     spec.signal?.removeEventListener('abort', abort);
-    await page.close({ runBeforeUnload: false }).catch(() => {});
+    if (!retained || spec.signal?.aborted) await page.close({ runBeforeUnload: false }).catch(() => {});
+    if (retained) await cdp?.send('Fetch.disable').catch(() => {});
     await cdp?.detach().catch(() => {});
-    if (guest) await context.close().catch(() => {});
+    if (guest && (!retained || spec.signal?.aborted)) await closeOwnedContext(context);
   }
 }
 

@@ -5199,5 +5199,9 @@
   "admin.contextMenu.copy": "Copy",
   "admin.contextMenu.paste": "Paste",
   "admin.contextMenu.selectAll": "Select all",
-  "admin.contextMenu.copyLink": "Copy link"
+  "admin.contextMenu.copyLink": "Copy link",
+  "visualInput.direct.title": "Send compressed images directly",
+  "visualInput.direct.description": "Vision-capable Supervisor and child agents see local images without a separate analysis call. Text models and remote media keep the analyzer. Image order and original dimensions are preserved.",
+  "visualInput.frame.title": "Compress desktop screenshots",
+  "visualInput.frame.description": "Resize screenshots before sending them to the desktop execution model. Original dimensions and coordinate mapping remain available. Turn this off when small text requires full resolution."
 }

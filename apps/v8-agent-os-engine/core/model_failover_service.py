@@ -458,6 +458,9 @@ class ModelFailoverService:
                 api_standard=self._provider_api_standard(preferred_provider_meta),
                 runtime_ready=preferred_runtime_ready,
             )
+        from core.direct_image_input import hydrate_direct_images
+        messages = hydrate_direct_images(messages, context=ctx,
+                                         supports_multimodal=bool(preferred_matrix.get("supports_multimodal")))
         capability_requirements = infer_runtime_capability_requirements(
             role=role,
             messages=messages,

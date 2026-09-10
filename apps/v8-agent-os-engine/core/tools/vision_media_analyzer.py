@@ -434,6 +434,10 @@ def _analyze_ordered_images(images, *, prompt: str, tool_call_id: str) -> str:
             raise VisionImageInputError("image_remote_access_denied")
 
     prepared = prepare_ordered_images(images, runtime_context=context, remote_guard=guard_url)
+    from core.direct_image_input import caller_accepts_direct_images, direct_image_receipt
+    if (all(item["source"]["sourceKind"] == "file" for item in prepared)
+            and caller_accepts_direct_images(context)):
+        return direct_image_receipt(prepared, prompt=prompt, tool_call_id=tool_call_id, context=context)
     role = str(context.get("vision_role_override") or "vision").strip() or "vision"
     resolution = model_control_plane.resolve_model_for_role(role)
     provider = dict(resolution.get("resolvedProvider") or {})
@@ -508,7 +512,9 @@ def vision_media_analyzer(
     their message will explicitly contain a system injected path: `[User uploaded file: /path/to/media.mp4]`.
     
     Extract that local path, and pass it immediately to this tool along with your analytical requirements in `prompt`.
-    This tool returns textual analysis which you can incorporate into your reasoning.
+    By default this tool returns textual analysis. With compressed direct images enabled and a vision-capable caller,
+    local images are attached to your next model request instead; assess the actual images yourself.
+    A prepared-image receipt is not an analysis or proof of task completion. Remote media keep the analyzer path.
     For cross-image comparison use images=[{file_path: ..., label: ...}, {source_url: ..., label: ...}].
     The list order is authoritative: the same model request receives image_1, image_2, etc. with each actual image.
     Any invalid, unauthorized or oversized image rejects the entire set; there is no silent dropping or renumbering.
@@ -562,6 +568,10 @@ def vision_media_analyzer(
             guessed_mime, _ = mimetypes.guess_type(urlparse(resolved_url).path)
             mime = str(mime_type_hint or guessed_mime or "application/octet-stream").strip()
         media_kind = infer_media_kind(mime)
+        if media_kind == "image" and path is not None:
+            from core.direct_image_input import caller_accepts_direct_images
+            if caller_accepts_direct_images(runtime_context):
+                return _analyze_ordered_images([{"file_path": str(path)}], prompt=prompt, tool_call_id=tool_call_id)
         if media_kind == "file" and _looks_like_audio_source(resolved_url or str(path or "")):
             mime = _normalize_audio_mime(mime if mime != "application/octet-stream" else "", resolved_url or str(path or "")) or "audio/mpeg"
             media_kind = "audio"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 import os
@@ -11,6 +12,56 @@ import subprocess
 import time
 import uuid
 from typing import Any
+
+
+@contextmanager
+def measure_native_stages(runtime):
+    """Time real methods without replacing results or recording UI contents."""
+    from functools import wraps
+    from threading import local
+    from unittest.mock import patch
+
+    results = {}
+    nesting = local()
+
+    def timed(method, label):
+        @wraps(method)
+        def wrapped(*args, **kwargs):
+            stack = getattr(nesting, "stack", None)
+            if stack is None:
+                stack = nesting.stack = []
+            frame = [time.perf_counter(), 0.0]
+            stack.append(frame)
+            try:
+                return method(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - frame[0]
+                stack.pop()
+                if stack:
+                    stack[-1][1] += elapsed
+                entry = results.setdefault(label, {"calls": 0, "totalMs": 0.0, "selfMs": 0.0})
+                entry["calls"] += 1
+                entry["totalMs"] += elapsed * 1000
+                entry["selfMs"] += max(0, elapsed - frame[1]) * 1000
+        return wrapped
+
+    methods = {
+        "runtime": (runtime, ("focus_window", "_prepare_action_window_context", "_collect_window_candidates",
+                              "_wait_for_post_action_stability", "_stop_step_heartbeat")),
+        "driver": (runtime.driver, ("focus_window", "_focus_wrapper", "list_windows", "list_windows_batch", "_safe_backend_windows",
+                                    "observe_desktop", "_enumerate_elements", "_resolve_target", "capture_screenshot",
+                                    "click_element", "type_text", "verify_action")),
+    }
+    with ExitStack() as scope:
+        for owner, (target, names) in methods.items():
+            for name in names:
+                method = getattr(target, name, None)
+                if callable(method):
+                    scope.enter_context(patch.object(target, name, timed(method, f"{owner}.{name}")))
+        yield results
+    for entry in results.values():
+        entry["totalMs"] = round(entry["totalMs"], 2)
+        entry["selfMs"] = round(entry["selfMs"], 2)
 
 
 def fixture_image_proof(path: Path, *, expected_color: tuple[int, int, int]) -> dict[str, Any]:
@@ -143,13 +194,17 @@ def run_owned_window_probe(runtime: Any, *, output_directory: Path, native_actio
 
             def capture_owned(label: str, handle: int) -> dict[str, Any]:
                 assert_owned(handle)
+                observation_started = time.perf_counter()
                 observation = driver.observe_desktop(window_handle=handle, use_cache=False)
+                observation_ms = round((time.perf_counter() - observation_started) * 1000, 2)
                 observed_handle = int(observation.metadata.get("windowHandle") or 0)
                 assert_owned(observed_handle)
                 if observed_handle != handle:
                     raise RuntimeError("observation_handle_mismatch")
                 path = output_directory / f"{label}.png"
+                capture_started = time.perf_counter()
                 screenshot = driver.capture_screenshot(path, window_handle=observed_handle)
+                capture_ms = round((time.perf_counter() - capture_started) * 1000, 2)
                 captured_handle = int((screenshot.get("window") or {}).get("handle") or 0)
                 if captured_handle != observed_handle:
                     raise RuntimeError("capture_handle_mismatch")
@@ -165,6 +220,7 @@ def run_owned_window_probe(runtime: Any, *, output_directory: Path, native_actio
                     "capturedHandle": captured_handle, "windowTitle": observation.window_title,
                     "windowBounds": observation.metadata.get("windowBounds"), "dpiScale": observation.metadata.get("dpiScale"),
                     "captureBounds": screenshot["bounds"], "imageSize": dimensions, "bytes": path.stat().st_size,
+                    "timings": {"observationMs": observation_ms, "captureMs": capture_ms},
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "imagePath": str(path),
                 }
 
@@ -256,14 +312,14 @@ def _run_native_actions(runtime, *, title, handle, output_directory, process, as
         if not input_desktop_status()["available"]:
             raise RuntimeError("input_desktop_changed_before_native_action")
         started = time.perf_counter()
-        with bind_runtime_context(**context):
+        with measure_native_stages(runtime) as stages, bind_runtime_context(**context):
             message = getattr(native, name).invoke({"type": "tool_call", "id": f"owned-{uuid.uuid4().hex}",
                 "name": name, "args": {"window_title": title, "window_handle": handle, **arguments}})
         result = json.loads(message.content)
         elapsed = round((time.perf_counter() - started) * 1000, 2)
         timings.append({"tool": name, "elapsedMs": elapsed, "ok": result.get("ok"),
                         "status": result.get("status"), "verification": result.get("verification"),
-                        "planStep": result.get("planStep"), "summary": result.get("summary")})
+                        "planStep": result.get("planStep"), "summary": result.get("summary"), "stages": stages})
         (output_directory / "native-progress.json").write_text(json.dumps(timings, ensure_ascii=False, indent=2), encoding="utf-8")
         if not result.get("ok"):
             raise RuntimeError(f"native_action_failed:{name}:{result.get('summary')}")

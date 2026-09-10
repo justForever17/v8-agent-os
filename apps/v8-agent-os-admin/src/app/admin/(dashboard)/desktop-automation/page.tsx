@@ -44,6 +44,7 @@ type ComputerUseData = {
         fallbackRerankerModel?: string;
     };
     candidateRerankEnabled: boolean;
+    compressedFrameInput?: boolean;
     memoryProfiles: {
         version?: number;
         apps?: Record<string, unknown>;
@@ -640,6 +641,9 @@ export default function DesktopAutomationPage() {
                             placeholder={t("app.admin.dashboard.desktop.automation.page.k54745147")}
                             onValueChange={(value) => updateBinding("plannerModel", value)}
                         />
+                        <SettingToggleCard id="compressed-frame-input" title={t("visualInput.frame.title")}
+                            description={t("visualInput.frame.description")} checked={envelope.data.compressedFrameInput === true}
+                            onCheckedChange={(checked) => setEnvelope({ ...envelope, data: { ...envelope.data, compressedFrameInput: checked } })} />
                     </div>
                 </ConfigCard>
 

@@ -119,6 +119,7 @@ def build_supervisor_runtime_bundle(
 
     supervisor_reasoning_effort = normalize_reasoning_effort(getattr(config, "supervisor_reasoning_effort", None))
     supervisor_model_kwargs = dict(caller_kwargs)
+    supervisor_model_kwargs["_role"] = "supervisor"
     if supervisor_reasoning_effort != "auto":
         supervisor_model_kwargs["_reasoning_effort"] = supervisor_reasoning_effort
 

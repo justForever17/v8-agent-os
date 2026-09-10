@@ -27,7 +27,7 @@ MAX_VISION_IMAGE_PIXELS = 40_000_000
 class VisionImageInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    file_path: str | None = Field(default=None, description="Image path in the authorized workspace, or an exact source/artifact already registered to this session; exclusive with source_url.")
+    file_path: str | None = Field(default=None, description="Relative path within the bound workspace, or absolute authorized image/source/artifact path. Known workspace filenames need no shell lookup or existence precheck; this tool resolves and checks them. Exclusive with source_url.")
     source_url: str | None = Field(default=None, description="HTTP(S) image URL; exclusive with file_path. Each redirect is checked before download.")
     label: str | None = Field(default=None, max_length=160, description="Optional user-supplied context, e.g. before/after; it does not establish causality.")
 

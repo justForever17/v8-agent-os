@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Loader2, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
@@ -25,12 +25,10 @@ export function Sidebar() {
     const { toast } = useToast();
     const [signingOut, setSigningOut] = useState(false);
 
-    const [isCollapsed, setIsCollapsed] = useState(() => {
-        if (typeof window === "undefined") {
-            return false;
-        }
-        return localStorage.getItem("v8-admin-sidebar-collapsed") === "true";
-    });
+    const [isCollapsed, setIsCollapsed] = useState(false);
+    useEffect(() => {
+        setIsCollapsed(localStorage.getItem("v8-admin-sidebar-collapsed") === "true");
+    }, []);
 
     const toggleCollapse = () => {
         setIsCollapsed((prev) => {

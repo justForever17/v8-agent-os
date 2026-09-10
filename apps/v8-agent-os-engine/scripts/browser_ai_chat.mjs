@@ -1,4 +1,11 @@
-import { withProfilePage } from './browser_profile_read.mjs';
+import { withProfilePage, closeOwnedContext } from './browser_profile_read.mjs';
+import { trackAgentPage } from './browser_agent_surface.mjs';
+
+// At most one pre-submission verification page per site/profile. The same
+// browser owns it; retaining a challenge never grants access to another tab.
+const verificationPages = new WeakMap();
+const activeQueries = new WeakMap();
+const pendingPages = new WeakMap();
 
 // Site adapters describe observed DOM contracts, not private HTTP APIs/tokens.
 const sites = {
@@ -17,13 +24,69 @@ export async function queryBrowserChat(browser, spec = {}) {
   const site = sites[spec.provider];
   const query = typeof spec.query === 'string' ? spec.query.trim() : '';
   if (!site || !query || query.length > 12000) throw Error('agent_browser_chat_invalid_request');
-  return withProfilePage(browser, { ...spec, url: site.url }, async (page, { deadline }) => {
+  let retained = verificationPages.get(browser);
+  if (!retained) { retained = new Map(); verificationPages.set(browser, retained); }
+  const key = `${spec.provider}:${spec.guest === true ? 'guest' : 'profile'}`;
+  let active = activeQueries.get(browser);
+  if (!active) { active = new Set(); activeQueries.set(browser, active); }
+  if (active.has(key)) return { ok: false, provider: spec.provider, error: 'agent_browser_chat_busy',
+    failureClass: 'provider_busy', retryable: true, querySubmitted: false };
+  const pending = pendingPages.get(browser)?.get(key);
+  if (pending && !pending.page.isClosed()) {
+    return { ok: false, provider: spec.provider, error: 'agent_browser_chat_answer_pending',
+      failureClass: 'answer_pending', retryable: true, querySubmitted: true,
+      verificationTargetId: pending.targetId, verificationPageRetained: true,
+      recommendedNextAction: '问题已经提交但原页尚未给出可读正文；请在原 Agent 浏览器页观察或稍后继续同一问题。不要再次提交。' };
+  }
+  active.add(key);
+  try {
+  const existingPage = retained.get(key);
+  if (existingPage && !existingPage.isClosed() && new URL(existingPage.url()).origin !== new URL(site.url).origin) {
+    retained.delete(key);
+    throw Error('agent_browser_chat_verification_target_changed');
+  }
+  retained.delete(key);
+  return await withProfilePage(browser, { ...spec, existingPage: existingPage && !existingPage.isClosed() ? existingPage : undefined, url: site.url }, async (page, { deadline, retainForUser }) => {
     const remaining = () => Math.max(1, deadline - Date.now());
     const composer = page.locator(site.composer).first();
-    const challengeAtNavigation = await page.evaluate(() =>
-      /^(Just a moment|请稍候|请稍等)/i.test(document.title) || Boolean(document.querySelector('#challenge-running,#challenge-stage')));
-    try { await composer.waitFor({ state: 'visible', timeout: remaining() }); }
-    catch { throw Error(challengeAtNavigation ? 'agent_browser_chat_verification_required' : 'agent_browser_chat_composer_unavailable'); }
+    const retainAttention = async (failureClass, error) => {
+      trackAgentPage(page);
+      retained.set(key, page);
+      // Install one lifetime cleanup; repeated challenges reuse this exact page.
+      if (!existingPage) page.once('close', () => {
+        if (retained.get(key) === page) retained.delete(key);
+        if (spec.guest === true && page.context().pages().length === 0) void closeOwnedContext(page.context());
+      });
+      const identity = await page.context().newCDPSession(page);
+      let targetId;
+      try { targetId = (await identity.send('Target.getTargetInfo')).targetInfo.targetId; }
+      finally { await identity.detach(); }
+      retainForUser();
+      return { ok: false, provider: spec.provider, failureClass,
+        error, retryable: false, querySubmitted: false,
+        verificationTargetId: targetId, verificationPageRetained: true,
+        recommendedNextAction: failureClass === 'provider_challenge'
+          ? '在 Agent 浏览器中完成此页验证，再继续原查询。此次尚未提交问题；不要重复创建页面。'
+          : '尚未找到可用输入区，原页已保留供检查站点界面或登录状态；这不证明登录失效。此次尚未提交问题。' };
+    };
+    let readiness;
+    try {
+      const handle = await page.waitForFunction(selector => {
+        const visible = e => e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+        const css = selector.replaceAll(':visible', '');
+        if ([...document.querySelectorAll(css)].some(visible)) return 'ready';
+        if (/^(Just a moment|请稍候|请稍等)/i.test(document.title.trim())
+            || [...document.querySelectorAll('#challenge-running,#challenge-stage,iframe[src*="challenges.cloudflare.com"]')].some(visible)
+            || /verify you are human|验证您是真人|确认您是人类/i.test(document.body?.innerText || '')) return 'challenge';
+        return false;
+      }, site.composer, { timeout: Math.max(1, remaining() - 700), polling: 250 });
+      readiness = await handle.jsonValue();
+      await handle.dispose();
+    } catch {
+      if (spec.signal?.aborted) throw Error('agent_browser_chat_cancelled');
+      return retainAttention('composer_unavailable', 'agent_browser_chat_composer_unavailable');
+    }
+    if (readiness === 'challenge') return retainAttention('provider_challenge', 'agent_browser_chat_verification_required');
     await page.evaluate(({ answer, done }) => {
       // This state belongs only to this owned page and expires when it closes.
       window.__v8ChatBaseline = {
@@ -76,6 +139,19 @@ export async function queryBrowserChat(browser, spec = {}) {
     }
     if (latest?.text) return { ...latest, ok: true, provider: spec.provider, sourceKind: 'ai_generated_answer',
       completion: 'partial', querySubmitted: true, citationsVerified: false };
-    throw Error('agent_browser_chat_answer_timeout');
+    const identity = await page.context().newCDPSession(page);
+    let targetId;
+    try { targetId = (await identity.send('Target.getTargetInfo')).targetInfo.targetId; }
+    finally { await identity.detach(); }
+    let pendingForBrowser = pendingPages.get(browser);
+    if (!pendingForBrowser) { pendingForBrowser = new Map(); pendingPages.set(browser, pendingForBrowser); }
+    pendingForBrowser.set(key, { page, query, targetId });
+    page.once('close', () => { if (pendingForBrowser.get(key)?.page === page) pendingForBrowser.delete(key); });
+    retainForUser();
+    return { ok: false, provider: spec.provider, failureClass: 'answer_pending',
+      error: 'agent_browser_chat_answer_pending', retryable: true, querySubmitted: true,
+      verificationTargetId: targetId, verificationPageRetained: true,
+      recommendedNextAction: '问题已经提交但原页尚未给出可读正文；请在原 Agent 浏览器页观察或稍后继续同一问题。不要再次提交。' };
   });
+  } finally { active.delete(key); }
 }

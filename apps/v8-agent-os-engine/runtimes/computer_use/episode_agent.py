@@ -1060,17 +1060,38 @@ class ComputerUseEpisodeAgent:
             "Select exactly one next tool call."
         )
         media = self._data_url(frame)
+        source_media = media
+        image_mapping = None
+        from core.storage import storage
+        if media and storage.get_computer_use_config().get("compressedFrameInput") is True:
+            from io import BytesIO
+            from PIL import Image
+            from core.local_visual_support import build_inline_image_data_from_bytes
+            original = base64.b64decode(media.split(",", 1)[1])
+            media = build_inline_image_data_from_bytes(original)["dataUrl"]
+            encoded = base64.b64decode(media.split(",", 1)[1])
+            with Image.open(BytesIO(original)) as source, Image.open(BytesIO(encoded)) as sent:
+                image_mapping = {"sourceWidth": source.width, "sourceHeight": source.height,
+                                 "inputWidth": sent.width, "inputHeight": sent.height,
+                                 "sourceSha256": hashlib.sha256(original).hexdigest(),
+                                 "inputSha256": hashlib.sha256(encoded).hexdigest()}
+            prompt += ("\nIMAGE MAPPING: " + json.dumps(image_mapping) +
+                       "\nScreenshot resized without cropping. desktop_click/desktop_input use normalized "
+                       "x/y in [0,1] relative to this same full frame; do not send resized pixel coordinates. "
+                       "If a small target is unreadable, use a semantic control or report the uncertainty.")
         observation = self._current_observation or {}
         if observation:
             observation["presented"] = bool(
-                media and hashlib.sha256(base64.b64decode(media.split(",", 1)[1])).hexdigest() == observation["sha256"]
+                source_media and hashlib.sha256(base64.b64decode(source_media.split(",", 1)[1])).hexdigest() == observation["sha256"]
                 and hashlib.sha256(context.encode("utf-8")).hexdigest() == observation["contextHash"]
             )
+            if image_mapping:
+                observation["imageMapping"] = image_mapping
         if media:
             content = build_multimodal_content(
                 prompt=prompt,
                 media_url=media,
-                mime_type="image/jpeg" if str(frame).lower().endswith((".jpg", ".jpeg")) else "image/png",
+                mime_type=media.split(";", 1)[0].removeprefix("data:"),
                 transport_mode="inline_base64_image",
             )
             return [system, HumanMessage(content=content)]

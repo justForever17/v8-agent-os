@@ -5199,5 +5199,9 @@
   "admin.contextMenu.copy": "复制",
   "admin.contextMenu.paste": "粘贴",
   "admin.contextMenu.selectAll": "全选",
-  "admin.contextMenu.copyLink": "复制链接"
+  "admin.contextMenu.copyLink": "复制链接",
+  "visualInput.direct.title": "压缩图片直传",
+  "visualInput.direct.description": "Supervisor 及子代理绑定视觉模型时，调用视觉工具后直接收到本地图片，省去独立模型往返。文字模型和远程媒体继续使用分析模型。图片保留编号与原尺寸；细小文字可能需要局部查看。",
+  "visualInput.frame.title": "压缩桌面截图",
+  "visualInput.frame.description": "桌面执行模型接收缩放后的截图，保留原始尺寸和坐标映射。细小文字需要原分辨率时可关闭。"
 }

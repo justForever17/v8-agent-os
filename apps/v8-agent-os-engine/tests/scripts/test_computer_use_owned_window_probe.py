@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,3 +60,24 @@ def test_native_cli_requires_live_before_creating_state_or_windows(tmp_path, mon
         probe.main(["--isolated-root", str(target)])
     assert stopped.value.code == 2
     assert not target.exists()
+
+
+def test_stage_measurements_preserve_real_returns_errors_and_restore_methods():
+    calls = []
+
+    def focus_window(value):
+        calls.append(value)
+        if value == "fail":
+            raise ValueError("fixture failure")
+        return {"handle": value}
+
+    runtime = SimpleNamespace(driver=SimpleNamespace(focus_window=focus_window))
+    with probe.measure_native_stages(runtime) as stages:
+        assert runtime.driver.focus_window(42) == {"handle": 42}
+        with pytest.raises(ValueError, match="fixture failure"):
+            runtime.driver.focus_window("fail")
+    assert runtime.driver.focus_window is focus_window
+    assert calls == [42, "fail"]
+    assert stages["driver.focus_window"]["calls"] == 2
+    assert stages["driver.focus_window"]["totalMs"] >= stages["driver.focus_window"]["selfMs"] >= 0
+    assert set(stages["driver.focus_window"]) == {"calls", "totalMs", "selfMs"}

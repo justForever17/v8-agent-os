@@ -16,6 +16,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { useDebugMode } from "@/lib/useDebugMode";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";
 import { fetchAdminJson, primeAdminJsonCache } from "@/lib/admin-client-cache";
 interface AIModel {
@@ -104,6 +105,7 @@ export default function SupervisorPage() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedModelId, setSelectedModelId] = useState<string>("default");
   const [visionModelId, setVisionModelId] = useState<string>("__empty__");
+  const [compressedDirectImages, setCompressedDirectImages] = useState(false);
   const [visionModelSource, setVisionModelSource] = useState<string | null>(null);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [name, setName] = useState(tg(t, "8537cbcf"));
@@ -184,6 +186,7 @@ export default function SupervisorPage() {
       if (typeof data.avatar === "string") setAvatar(data.avatar);
       setSupervisorTemperature(data.supervisor_temperature === null || data.supervisor_temperature === undefined ? "" : String(data.supervisor_temperature));
       setSubagentTemperature(data.subagent_temperature === null || data.subagent_temperature === undefined ? "" : String(data.subagent_temperature));
+      setCompressedDirectImages(data.compressed_direct_images === true);
       setModels(Array.isArray(modelData) ? modelData : []);
       setMcpTools(Array.isArray(mcpData.mcpTools) ? mcpData.mcpTools : []);
       setVisionModelId(visionData.value || "__empty__");
@@ -240,6 +243,7 @@ export default function SupervisorPage() {
           name,
           roleLabel,
           avatar,
+          compressed_direct_images: compressedDirectImages,
           supervisor_temperature: parseOptionalTemperature(supervisorTemperature),
           subagent_temperature: parseOptionalTemperature(subagentTemperature)
         })
@@ -494,6 +498,10 @@ export default function SupervisorPage() {
                         </CardHeader>
                         <CardContent className="space-y-3">
                             <ModelSelect models={visionCapableModels} value={visionModelId || "__empty__"} emptyLabel={t("app.admin.dashboard.supervisor.page.k3930f0e4")} placeholder={t("app.admin.dashboard.supervisor.page.k3930f0e4")} onValueChange={setVisionModelId} />
+                            <SettingToggleCard id="compressed-direct-images"
+                                title={t("visualInput.direct.title")}
+                                description={t("visualInput.direct.description")}
+                                checked={compressedDirectImages} onCheckedChange={setCompressedDirectImages} />
                         </CardContent>
                     </Card>
 

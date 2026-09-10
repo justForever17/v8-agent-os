@@ -74,6 +74,23 @@ def test_compact_web_result_keeps_ai_body_and_complete_detail():
     assert compact["citationsVerified"] is False
 
 
+@pytest.mark.parametrize("failure", ["provider_challenge", "provider_busy"])
+def test_browser_attention_state_survives_source_and_agent_projection(monkeypatch, failure):
+    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.storage import storage
+    monkeypatch.setattr(storage, "get_computer_use_config", lambda: {})
+    monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
+    raw = {"ok": False, "provider": "chatgpt", "failureClass": failure,
+           "error": "agent_browser_chat_verification_required" if failure == "provider_challenge" else "agent_browser_chat_busy",
+           "querySubmitted": False, "retryable": failure == "provider_busy", "verificationTargetId": "owned-target",
+           "verificationPageRetained": True, "recommendedNextAction": "Complete verification in the original page."}
+    monkeypatch.setattr(agent_browser_automation, "query_chat_page", lambda **_: raw)
+    payload = web_chat_source.search_chat_page(provider="chatgpt", query="Question", limit=2, timeout_seconds=5, reuse_profile=True)
+    compact = web_fetcher._compact_web_broker_payload(payload, requested_mode="search", debug=False)
+    for key in ("failureClass", "querySubmitted", "retryable", "verificationTargetId", "verificationPageRetained", "recommendedNextAction"):
+        assert compact[key] == raw[key]
+
+
 def test_static_default_search_auto_uses_eligible_baidu_profile(monkeypatch):
     monkeypatch.setattr(web_fetcher, "_source_router_plan", lambda **kw: {"providers": ["baidu"]})
     monkeypatch.setattr(web_fetcher, "_guard_url", lambda *a, **kw: (True, None))

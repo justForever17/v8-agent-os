@@ -2748,11 +2748,20 @@ class ComputerUseRuntime:
                 seen.add(signature)
                 windows.append(dict(item))
 
-        for query in queries:
+        batch = getattr(self.driver, "list_windows_batch", None)
+        if callable(batch):
             try:
-                _append(self.driver.list_windows(**query))
+                for items in batch(queries):
+                    _append(items)
             except Exception:
-                continue
+                pass
+        else:
+            # POSIX drivers retain their native per-query discovery contract.
+            for query in queries:
+                try:
+                    _append(self.driver.list_windows(**query))
+                except Exception:
+                    continue
         _append(extra_windows)
 
         title_tokens = {str(item).strip().lower() for item in expected_titles if str(item).strip()}

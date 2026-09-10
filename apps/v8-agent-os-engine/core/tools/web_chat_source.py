@@ -20,6 +20,9 @@ def search_chat_page(*, provider: str, query: str, limit: int, timeout_seconds: 
             raise
         return {"ok": False, "failureClass": "provider_challenge", "error": str(exc), "retryable": False,
                 "recommendedNextAction": "该网站正在要求浏览器验证；请在 Agent 浏览器完成验证后再试。当前状态不证明登录态失效，请勿重复提交查询。"}
+    if raw.get("failureClass") in {"provider_challenge", "provider_busy", "composer_unavailable", "answer_pending"}:
+        return {key: raw.get(key) for key in ("ok", "provider", "failureClass", "error", "retryable", "querySubmitted",
+                "verificationTargetId", "verificationPageRetained", "recommendedNextAction", "url")}
     text = str(raw.get("text") or "")
     if raw.get("ok") is not True or not text or raw.get("querySubmitted") is not True:
         return {"ok": False, "failureClass": "no_results", "error": "agent_browser_chat_no_answer"}

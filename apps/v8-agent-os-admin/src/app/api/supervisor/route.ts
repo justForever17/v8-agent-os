@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
 
 type SupervisorRegistryData = {
+    compressedDirectImages?: boolean;
     systemPrompt?: string;
     allowedTools?: string[] | null;
     lockedNativeTools?: Array<{
@@ -59,6 +60,7 @@ export async function GET() {
             runtime_managed_tools: supervisorData.runtimeManagedTools ?? [],
             supervisor_temperature: supervisorData.modelParameters?.supervisor?.temperature ?? null,
             subagent_temperature: supervisorData.modelParameters?.subagent?.temperature ?? null,
+            compressed_direct_images: supervisorData.compressedDirectImages === true,
             name: profile.name || "智能主管",
             roleLabel: profile.roleLabel || "主理人",
             avatar: profile.avatar || "",
@@ -74,12 +76,13 @@ export async function POST(req: Request) {
         const unauthorized = await requireAdminIdentity();
         if (unauthorized) return unauthorized;
 
-        const { systemPrompt, model_id, allowed_tools, name, roleLabel, avatar, supervisor_temperature, subagent_temperature } = await req.json();
+        const { systemPrompt, model_id, allowed_tools, name, roleLabel, avatar, supervisor_temperature, subagent_temperature, compressed_direct_images } = await req.json();
         const { response, data } = await proxyEngineJson("/config-registry/supervisor", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 data: {
+                    compressedDirectImages: compressed_direct_images,
                     systemPrompt,
                     allowedTools: allowed_tools,
                     profile: {
@@ -110,6 +113,7 @@ export async function POST(req: Request) {
             binding_source: "config.json#models.roles.supervisor",
             supervisor_temperature: supervisor_temperature ?? null,
             subagent_temperature: subagent_temperature ?? null,
+            compressed_direct_images: (data as { data?: SupervisorRegistryData })?.data?.compressedDirectImages === true,
             allowed_tools,
             name,
             roleLabel,

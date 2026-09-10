@@ -469,6 +469,37 @@ class WindowsUIADriver:
         include_titleless: bool = False,
         include_shell_windows: bool = False,
     ) -> List[Dict[str, Any]]:
+        snapshot = [self._window_dict(wrapper) for wrapper in self._safe_backend_windows(backend_name)]
+        return self._filter_window_snapshot(
+            snapshot, title_filter=title_filter, title_filters=title_filters,
+            class_name=class_name, class_names=class_names, process_ids=process_ids,
+            process_names=process_names, limit=limit, include_titleless=include_titleless,
+            include_shell_windows=include_shell_windows,
+        )
+
+    def list_windows_batch(self, queries: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """Evaluate this discovery's alternatives against one fresh OS snapshot.
+
+        No snapshot survives the call. Action dispatch still reacquires and
+        verifies the selected HWND/control; this only avoids repeated discovery.
+        """
+        snapshot = [self._window_dict(wrapper) for wrapper in self._safe_backend_windows("uia")]
+        return [self._filter_window_snapshot(snapshot, **query) for query in queries]
+
+    def _filter_window_snapshot(
+        self,
+        snapshot: List[Dict[str, Any]],
+        *,
+        title_filter: str | None = None,
+        title_filters: Iterable[str] | None = None,
+        class_name: str | None = None,
+        class_names: Iterable[str] | None = None,
+        process_ids: Iterable[int] | None = None,
+        process_names: Iterable[str] | None = None,
+        limit: int = 20,
+        include_titleless: bool = False,
+        include_shell_windows: bool = False,
+    ) -> List[Dict[str, Any]]:
         windows: List[Tuple[int, Dict[str, Any]]] = []
         process_filter = {int(item) for item in (process_ids or []) if item not in (None, "")}
         process_name_filter = {str(item).strip().lower() for item in (process_names or []) if str(item).strip()}
@@ -478,8 +509,7 @@ class WindowsUIADriver:
         class_filter_values = [str(item).strip().lower() for item in (class_names or []) if str(item).strip()]
         if class_name and str(class_name).strip():
             class_filter_values.append(str(class_name).strip().lower())
-        for wrapper in self._safe_backend_windows(backend_name):
-            data = self._window_dict(wrapper)
+        for data in snapshot:
             title = (data.get("title") or "").strip()
             if not title and not include_titleless:
                 continue

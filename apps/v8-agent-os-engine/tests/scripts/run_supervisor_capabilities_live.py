@@ -85,6 +85,12 @@ def case_spec(kind: str, *, window_title: str = "", nonce: str = "", page_url: s
     from tests.scripts.run_supervisor_runtime_skill_live_audit import LiveCaseSpec
 
     prompts = {
+        "direct_images": (
+            "请你自己用 vision_media_analyzer 的 images 参数一次联合查看当前工作区的 frame-2.png、frame-0.png、frame-2.png，"
+            "保持这个顺序和重复图片。不用子代理或runtime委派。本次完全禁止调用命令，包括只读列目录；直接把相对文件名传给视觉工具即可。"
+            "按图像实际内容回答每张图中蓝色圆形位于左、中还是右，以及橙色矩形的准确数量。"
+            "最后输出三行：编号,位置(left/middle/right),数量；可另外中文说明你不能确定的内容。不要把图片准备回执当作已看到图片。"
+        ),
         "video": (
             f"Agent浏览器已登录这个视频网站：{video_url} 。请你自己用该浏览器新开测试页，保留原有标签。"
             "观察一个当前可播放的视频，读取可用字幕，并取该视频三个不同时间点的实际画面（优先前10秒内，短视频按实际时长调整），"
@@ -142,6 +148,11 @@ def evaluate_result(result, kind: str, *, submitted: dict | None = None, nonce: 
     if kind == "discovery":
         checks["actualDiscovery"] = {"computer_use_list_apps", "creative_media_capabilities"} <= names
         checks["noGeneration"] = "creative_media_jobs" not in names
+    elif kind == "direct_images":
+        checks["oneVisualRead"] = [t["toolName"] for t in result.tool_invocations].count("vision_media_analyzer") == 1
+        checks["visibleImageFacts"] = all(re.search(rf"(?m)^\s*{i}\s*[,，]\s*{position}\s*[,，]\s*{count}\s*$", result.final_text)
+            for i, position, count in [(1, "right", 3), (2, "left", 1), (3, "right", 3)])
+        checks["noCommandSubstitute"] = not names & {"run_system_command", "read_native_file"}
     elif kind == "desktop":
         checks["actualGuiSubmission"] = (submitted or {}).get("submittedText") == nonce
         checks["directObservedAction"] = {"computer_use_observe_scene", "computer_use_click_target"} <= names
@@ -297,7 +308,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--allow-side-effects", action="store_true")
-    parser.add_argument("--case", choices=["discovery", "desktop", "browser", "interface", "research_chat", "media", "delegation", "video"], required=True)
+    parser.add_argument("--case", choices=["discovery", "desktop", "browser", "interface", "research_chat", "media", "delegation", "video", "direct_images"], required=True)
     parser.add_argument("--video-url", default="", help="Explicitly authorized video page for the video case")
     parser.add_argument("--engine-url", default="http://127.0.0.1:9530")
     parser.add_argument("--web-url", required=True)
@@ -334,6 +345,12 @@ def main(argv=None) -> int:
                   or not str(prior.get("result", {}).get("session_id", "")).startswith("supervisor-runtime-skill-live-")):
         parser.error("resume requires a matching media/video harness report")
     workspace = prior["workspace"] if prior else _prepare_engineering_live_workspace(args.engine_url, browser_executable=args.browser_executable)
+    if args.case == "direct_images":
+        from tests.scripts.run_vision_images_live_audit import generate_images
+        from core.storage import storage
+        if storage.get_supervisor_config().get("compressedDirectImages") is not True:
+            raise RuntimeError("Enable compressed direct images in Admin before this opt-in live case")
+        generate_images(Path(workspace))
     nonce = "direct-" + uuid.uuid4().hex[:8]
     fixture = owned_window(output / "window") if args.case == "desktop" else owned_page(direct_api=args.case == 'interface') if args.case in {"browser", "interface"} else nullcontext({})
     with fixture as window:
@@ -365,6 +382,9 @@ def main(argv=None) -> int:
         if prior:
             checks.pop("actualMediaJob", None)  # Existing real artifact is the target; re-creation would be a bug.
         proof = durable_proof(result, args.engine_url, args.case)
+        if args.case == "direct_images":
+            checks["modelOwnershipKnown"] = bool(proof["modelCalls"]) and all(str(m.get("role") or "").strip() for m in proof["modelCalls"])
+            checks["noSeparateVisionModel"] = checks["modelOwnershipKnown"] and not any(str(m.get("role")) == "vision" for m in proof["modelCalls"])
         if args.case == "media":
             jobs = proof["mediaJobs"]
             checks["oneRealImageDelivered"] = len(jobs) == 1 and jobs[0]["status"] == "succeeded" and len(jobs[0]["artifacts"]) == 1

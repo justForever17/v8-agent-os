@@ -813,4 +813,4 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
             {"streaming": True, "timeout": 180},
         )
     ]
-    assert supervisor_models == [(expected_supervisor_model, {"streaming": True, "timeout": 180})]
+    assert supervisor_models == [(expected_supervisor_model, {"streaming": True, "timeout": 180, "_role": "supervisor"})]

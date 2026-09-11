@@ -81,13 +81,24 @@ export async function withProfilePage(browser, spec, consume) {
     if (guest) await context?.close().catch(() => {});
     throw Error(error?.message === "agent_browser_profile_context_missing" ? error.message : "agent_browser_profile_read_creation_failed");
   } finally { clearTimeout(createTimer); }
-  const timer = setTimeout(() => void page.close({ runBeforeUnload: false }).catch(() => {}), Math.max(0, deadline - Date.now()));
+  // A retained challenge/pending page is intentionally allowed to outlive
+  // the request deadline so a later call can observe the same page. The timer
+  // only owns cleanup while the request still owns the page.
+  let retained = Boolean(spec.existingPage && spec.retainExistingPage);
+  const userOwnsPage = () => typeof spec.preservePage === 'function' && spec.preservePage() === true;
+  let expire;
+  const deadlineReached = new Promise(resolve => { expire = resolve; });
+  const timer = setTimeout(() => {
+    expire();
+    if (!retained && !userOwnsPage()) void page.close({ runBeforeUnload: false }).catch(() => {});
+  }, Math.max(0, deadline - Date.now()));
   timer.unref();
-  const abort = () => void page.close({ runBeforeUnload: false }).catch(() => {});
+  const abort = () => {
+    if (!userOwnsPage()) void page.close({ runBeforeUnload: false }).catch(() => {});
+  };
   spec.signal?.addEventListener('abort', abort, { once: true });
   let stage = "navigation_guard", cdp, navigationFailure = () => "";
   const blockedFrames = new Set();
-  let retained = false;
   try {
     if (spec.signal?.aborted) throw Error("agent_browser_chat_cancelled");
     // Playwright page.route only sees the first URL of an HTTP redirect chain.
@@ -103,7 +114,8 @@ export async function withProfilePage(browser, spec, consume) {
     if (remaining <= 0) throw Error("profile_read_timeout");
     const response = spec.existingPage ? null : await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: remaining });
     stage = "content";
-    const result = await consume(page, { deadline, response, navigationFailure, retainForUser: () => { retained = true; } });
+    const result = await consume(page, { deadline, deadlineReached, response, navigationFailure,
+      retainForUser: () => { retained = true; }, releaseForCleanup: () => { retained = false; } });
     if (spec.signal?.aborted) throw Error("agent_browser_chat_cancelled");
     if (navigationFailure()) throw Error(navigationFailure());
     return { ...result, url: page.url(), status: response?.status() || 0, contextReused: !guest,
@@ -116,10 +128,11 @@ export async function withProfilePage(browser, spec, consume) {
   } finally {
     clearTimeout(timer);
     spec.signal?.removeEventListener('abort', abort);
-    if (!retained || spec.signal?.aborted) await page.close({ runBeforeUnload: false }).catch(() => {});
+    const closePage = (!retained || spec.signal?.aborted) && !userOwnsPage();
+    if (closePage) await page.close({ runBeforeUnload: false }).catch(() => {});
     if (retained) await cdp?.send('Fetch.disable').catch(() => {});
     await cdp?.detach().catch(() => {});
-    if (guest && (!retained || spec.signal?.aborted)) await closeOwnedContext(context);
+    if (guest && closePage) await closeOwnedContext(context);
   }
 }
 

@@ -4732,7 +4732,10 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
     if debug and debug_payload:
         compact["debug"] = debug_payload
 
-    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+    # An explicit null submission result means Enter may have reached the site;
+    # preserve that uncertainty instead of dropping the side-effect state.
+    return {key: value for key, value in compact.items()
+            if value not in (None, "", [], {}) or (key == "querySubmitted" and key in payload)}
 
 
 def _looks_like_url(value: str) -> bool:
@@ -6606,7 +6609,7 @@ def web_search(
                         if rejection:
                             return rejection
                         continue
-                from core.tools.web_chat_source import search_chat_page
+                from core.tools.web_chat_source import BROWSER_ATTENTION_FAILURES, search_chat_page
 
                 chat_remaining = total_timeout_seconds - (time.monotonic() - started_at)
                 if chat_remaining <= 0:
@@ -6625,7 +6628,7 @@ def web_search(
                         **_source_router_payload_fields(router_plan, selected_provider=provider,
                                                        attempted_providers=attempted_providers)}, ensure_ascii=False)
                 last_error = str(chat_result.get("error") or "agent_browser_chat_no_answer")
-                if requested_provider != "auto" and chat_result.get("failureClass") in {"provider_challenge", "provider_busy", "composer_unavailable", "answer_pending"}:
+                if requested_provider != "auto" and chat_result.get("failureClass") in BROWSER_ATTENTION_FAILURES:
                     return json.dumps({**chat_result, "provider": provider, "attemptedProviders": attempted_providers}, ensure_ascii=False)
                 continue
             effective_use_agent_browser_profile = bool(

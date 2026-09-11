@@ -5,6 +5,9 @@ import hashlib
 from urllib.parse import urlparse
 
 CHAT_SITES = {"metaso": "https://metaso.cn/", "chatgpt": "https://chatgpt.com/"}
+BROWSER_ATTENTION_FAILURES = frozenset({
+    "provider_challenge", "provider_busy", "composer_unavailable", "answer_pending", "observation_changed",
+})
 
 
 def search_chat_page(*, provider: str, query: str, limit: int, timeout_seconds: float, reuse_profile: bool) -> dict:
@@ -20,7 +23,7 @@ def search_chat_page(*, provider: str, query: str, limit: int, timeout_seconds: 
             raise
         return {"ok": False, "failureClass": "provider_challenge", "error": str(exc), "retryable": False,
                 "recommendedNextAction": "该网站正在要求浏览器验证；请在 Agent 浏览器完成验证后再试。当前状态不证明登录态失效，请勿重复提交查询。"}
-    if raw.get("failureClass") in {"provider_challenge", "provider_busy", "composer_unavailable", "answer_pending"}:
+    if raw.get("failureClass") in BROWSER_ATTENTION_FAILURES:
         return {key: raw.get(key) for key in ("ok", "provider", "failureClass", "error", "retryable", "querySubmitted",
                 "verificationTargetId", "verificationPageRetained", "recommendedNextAction", "url")}
     text = str(raw.get("text") or "")

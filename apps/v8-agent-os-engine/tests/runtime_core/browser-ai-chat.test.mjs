@@ -44,6 +44,32 @@ async function withBrowser(fn) {
   finally { await browser.close(); }
 }
 
+async function unansweredChat(context, { newConversation = false } = {}) {
+  let submissions = 0;
+  await context.exposeBinding('recordPendingSubmission', () => submissions++);
+  await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<main>
+    <textarea id="mobile-composer-prompt"></textarea><button data-testid="stop-button">Stop</button>
+    <script>document.querySelector('textarea').onkeydown = e => {
+      if (e.key !== 'Enter') return;
+      window.recordPendingSubmission();
+      ${newConversation ? "history.pushState({}, '', '/c/created-by-submission');" : ''}
+    };</script></main>` }));
+  return () => submissions;
+}
+
+async function finishAnswer(page, text = 'Late answer') {
+  await page.evaluate(text => {
+    document.querySelector('[data-testid="stop-button"]')?.remove();
+    const answer = document.createElement('div');
+    answer.dataset.messageAuthorRole = 'assistant';
+    answer.textContent = text;
+    document.querySelector('main').append(answer);
+    const done = document.createElement('button');
+    done.setAttribute('aria-label', 'Copy response');
+    document.querySelector('main').append(done);
+  }, text);
+}
+
 for (const provider of ['metaso', 'chatgpt']) {
   test(`${provider}: real DOM submission, answer/citation extraction, owned-page cleanup`, { skip: !available }, async () => {
     await withBrowser(async (browser, context, userPage) => {
@@ -74,7 +100,7 @@ test('a stalled generation returns captured partial content without pretending c
 
 test('a submitted page with no readable answer is retained and never re-submits on retry', { skip: !available }, async () => {
   await withBrowser(async (browser, context, userPage) => {
-    await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<main><textarea id="mobile-composer-prompt"></textarea><button data-testid="StopButton">Stop</button></main>' }));
+    const submissions = await unansweredChat(context);
     const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 3000 });
     assert.equal(first.failureClass, 'answer_pending');
     assert.equal(first.querySubmitted, true);
@@ -83,7 +109,188 @@ test('a submitted page with no readable answer is retained and never re-submits 
     assert.equal(second.verificationTargetId, first.verificationTargetId);
     assert.equal(context.pages().length, 2);
     assert.ok(context.pages().includes(userPage));
+    assert.equal(submissions(), 1);
   });
+});
+
+test('a pending page is reread after a late answer without a duplicate submission', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    const submissions = await unansweredChat(context, { newConversation: true });
+    const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 });
+    assert.equal(first.failureClass, 'answer_pending');
+    const page = context.pages().find(p => p !== userPage);
+    assert.equal(page.url(), 'https://chatgpt.com/c/created-by-submission');
+    await finishAnswer(page);
+    const resumed = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 3000 });
+    assert.equal(resumed.ok, true);
+    assert.equal(resumed.completion, 'observed_stable');
+    assert.match(resumed.text, /Late answer/);
+    assert.equal(submissions(), 1);
+    assert.equal(page.isClosed(), true);
+    assert.deepEqual(context.pages(), [userPage]);
+  });
+});
+
+for (const transition of ['server-commit', 'user-navigation', 'different-question']) {
+  test(`metaso pending temporary chat ${transition} preserves submission identity`, { skip: !available }, async () => {
+    await withBrowser(async (browser, context, userPage) => {
+      let submissions = 0;
+      await context.exposeBinding('recordPendingSubmission', () => submissions++);
+      await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<main>
+        <textarea class="search-consult-textarea"></textarea><button id="navigate">Open history</button>
+        <script>document.querySelector('textarea').onkeydown=e=>{ if(e.key!=='Enter')return;
+          window.recordPendingSubmission(); history.pushState({},'', '/chat/temp-00000000-abcd');
+          const title=document.createElement('span');title.dataset.testid='_ResultTitle.span.fixture';
+          title.textContent='Question';document.querySelector('main').append(title);
+        };</script></main>` }));
+      const first = await queryBrowserChat(browser, { provider: 'metaso', query: 'Question', timeoutMs: 1500 });
+      assert.equal(first.failureClass, 'answer_pending');
+      const page = context.pages().find(p => p !== userPage);
+      if (transition === 'user-navigation') await page.locator('#navigate').click();
+      await page.evaluate(transition => {
+        if (transition === 'different-question') document.querySelector('span').textContent='Unrelated old question';
+        history.replaceState({}, '', '/chat/123456789');
+        const answer=document.createElement('p');answer.className='markdown';answer.textContent='Late answer';
+        const done=document.createElement('button');done.dataset.testid='SearchResultActions.ChatIconButton.fixture';
+        document.querySelector('main').append(answer,done);
+      }, transition);
+      const second = await queryBrowserChat(browser, { provider: 'metaso', query: 'Question', timeoutMs: 3000 });
+      assert.equal(submissions, 1);
+      if (transition === 'server-commit') {
+        assert.equal(second.ok, true);
+        assert.equal(second.text, 'Late answer');
+        assert.equal(second.completion, 'observed_stable');
+        assert.deepEqual(context.pages(), [userPage]);
+      } else {
+        assert.equal(second.failureClass, 'observation_changed');
+        assert.equal(second.text, undefined);
+        assert.equal(page.isClosed(), false);
+      }
+    });
+  });
+}
+
+test('a different query cannot be attributed to a pending submission', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    const submissions = await unansweredChat(context);
+    const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'First question', timeoutMs: 1200 });
+    assert.equal(first.failureClass, 'answer_pending');
+    const second = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Different question', timeoutMs: 1200 });
+    assert.equal(second.failureClass, 'provider_busy');
+    assert.equal(second.querySubmitted, false);
+    assert.equal(second.verificationTargetId, first.verificationTargetId);
+    assert.ok(context.pages().includes(userPage));
+    assert.equal(submissions(), 1);
+  });
+});
+
+test('a delayed browser poll cannot close a submitted page at the request deadline', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    const submissions = await unansweredChat(context);
+    const createPage = context.newPage.bind(context);
+    let queryPage;
+    context.newPage = async () => {
+      queryPage = await createPage();
+      // A delayed browser transport reply crosses the deadline. This is a fault
+      // at the browser boundary, not a change to the adapter's state machine.
+      queryPage.waitForTimeout = () => new Promise(resolve => setTimeout(resolve, 1600));
+      return queryPage;
+    };
+    const result = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1200 });
+    assert.equal(result.failureClass, 'answer_pending');
+    assert.equal(result.verificationPageRetained, true);
+    assert.equal(queryPage.isClosed(), false);
+    assert.deepEqual(context.pages(), [userPage, queryPage]);
+    assert.equal(submissions(), 1);
+  });
+});
+
+test('an ambiguous Enter result retains its page and never retries the submission', { skip: !available }, async () => {
+  await withBrowser(async (browser, context, userPage) => {
+    const submissions = await unansweredChat(context);
+    const createPage = context.newPage.bind(context);
+    context.newPage = async () => {
+      const page = await createPage();
+      const locate = page.locator.bind(page);
+      page.locator = (...args) => {
+        const locator = locate(...args).first();
+        const press = locator.press.bind(locator);
+        locator.first = () => locator;
+        locator.press = async (...args) => { await press(...args); throw Error('lost browser reply after Enter'); };
+        return locator;
+      };
+      return page;
+    };
+    let target;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 2000 });
+      assert.equal(result.failureClass, 'observation_changed');
+      assert.equal(result.querySubmitted, null);
+      assert.equal(result.retryable, false);
+      assert.equal(result.verificationPageRetained, true);
+      target ||= result.verificationTargetId;
+      assert.equal(result.verificationTargetId, target);
+      assert.equal(submissions(), 1);
+      assert.equal(context.pages().length, 2);
+      assert.ok(context.pages().includes(userPage));
+    }
+  });
+});
+
+for (const change of ['reload', 'lost-baseline', 'same-origin-conversation', 'away-and-back']) {
+  test(`a pending ${change} requires attention and cannot resend or capture an old answer`, { skip: !available }, async () => {
+    await withBrowser(async (browser, context, userPage) => {
+      const submissions = await unansweredChat(context);
+      const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1200 });
+      assert.equal(first.failureClass, 'answer_pending');
+      const page = context.pages().find(p => p !== userPage);
+      if (change === 'reload') await page.reload();
+      else await page.evaluate(change => {
+        if (change === 'lost-baseline') delete window.__v8ChatBaseline;
+        else {
+          history.pushState({}, '', '/c/unrelated-old-conversation');
+          if (change === 'away-and-back') history.pushState({}, '', '/');
+        }
+      }, change);
+      await finishAnswer(page, 'UNRELATED OLD ANSWER');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', timeoutMs: 1500 });
+        assert.equal(result.failureClass, 'observation_changed');
+        assert.equal(result.querySubmitted, true);
+        assert.equal(result.retryable, false);
+        assert.equal(result.verificationTargetId, first.verificationTargetId);
+        assert.equal(result.verificationPageRetained, true);
+        assert.equal(result.text, undefined);
+        assert.equal(submissions(), 1);
+        assert.deepEqual(context.pages(), [userPage, page]);
+      }
+    });
+  });
+}
+
+test('cancelling a pending guest closes its owned context, but preserves a page taken over by the user', { skip: !available }, async () => {
+  for (const navigated of [false, true]) {
+    await withBrowser(async (browser, context, userPage) => {
+      const createContext = browser.newContext.bind(browser);
+      let guest, submissions;
+      browser.newContext = async () => {
+        guest = await createContext();
+        submissions = await unansweredChat(guest);
+        return guest;
+      };
+      const first = await queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', guest: true, timeoutMs: 1200 });
+      assert.equal(first.failureClass, 'answer_pending');
+      const page = guest.pages()[0];
+      if (navigated) await page.goto('https://other.example.test/');
+      const controller = new AbortController(); controller.abort();
+      await assert.rejects(queryBrowserChat(browser, { provider: 'chatgpt', query: 'Question', guest: true,
+        timeoutMs: 1500, signal: controller.signal }), /cancelled/);
+      assert.equal(submissions(), 1);
+      assert.deepEqual(context.pages(), [userPage]);
+      assert.equal(page.isClosed(), !navigated);
+      assert.deepEqual(browser.contexts(), navigated ? [context, guest] : [context]);
+    });
+  }
 });
 
 test('old answers and old done controls cannot complete a new query', { skip: !available }, async () => {

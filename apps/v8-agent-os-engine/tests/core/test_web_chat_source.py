@@ -74,7 +74,7 @@ def test_compact_web_result_keeps_ai_body_and_complete_detail():
     assert compact["citationsVerified"] is False
 
 
-@pytest.mark.parametrize("failure", ["provider_challenge", "provider_busy"])
+@pytest.mark.parametrize("failure", ["provider_challenge", "provider_busy", "composer_unavailable", "answer_pending", "observation_changed"])
 def test_browser_attention_state_survives_source_and_agent_projection(monkeypatch, failure):
     from runtimes.computer_use.browser_automation import agent_browser_automation
     from core.storage import storage
@@ -82,11 +82,34 @@ def test_browser_attention_state_survives_source_and_agent_projection(monkeypatc
     monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
     raw = {"ok": False, "provider": "chatgpt", "failureClass": failure,
            "error": "agent_browser_chat_verification_required" if failure == "provider_challenge" else "agent_browser_chat_busy",
-           "querySubmitted": False, "retryable": failure == "provider_busy", "verificationTargetId": "owned-target",
+           "querySubmitted": failure in {"answer_pending", "observation_changed"},
+           "retryable": failure in {"provider_busy", "answer_pending"}, "verificationTargetId": "owned-target",
            "verificationPageRetained": True, "recommendedNextAction": "Complete verification in the original page."}
     monkeypatch.setattr(agent_browser_automation, "query_chat_page", lambda **_: raw)
     payload = web_chat_source.search_chat_page(provider="chatgpt", query="Question", limit=2, timeout_seconds=5, reuse_profile=True)
     compact = web_fetcher._compact_web_broker_payload(payload, requested_mode="search", debug=False)
+    for key in ("failureClass", "querySubmitted", "retryable", "verificationTargetId", "verificationPageRetained", "recommendedNextAction"):
+        assert compact[key] == raw[key]
+
+
+@pytest.mark.parametrize("submitted", [True, None])
+def test_observation_change_survives_explicit_search_without_retry_or_lost_target(monkeypatch, submitted):
+    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.storage import storage
+    monkeypatch.setattr(storage, "get_computer_use_config", lambda: {})
+    monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
+    monkeypatch.setattr(web_fetcher, "_source_router_plan", lambda **kw: {"providers": ["chatgpt", "metaso"]})
+    monkeypatch.setattr(web_fetcher, "_guard_url", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(web_fetcher, "_agent_browser_profile_allowed", lambda *a: (True, "chatgpt.com"))
+    calls = []
+    raw = {"ok": False, "provider": "chatgpt", "failureClass": "observation_changed",
+           "error": "agent_browser_chat_observation_changed", "querySubmitted": submitted, "retryable": False,
+           "verificationTargetId": "owned-pending-target", "verificationPageRetained": True,
+           "recommendedNextAction": "Inspect the original page; do not resend."}
+    monkeypatch.setattr(agent_browser_automation, "query_chat_page", lambda **kw: calls.append(kw) or raw)
+    result = json.loads(web_fetcher.web_search.func(query="Question", search_engine="chatgpt", mode="dynamic"))
+    compact = web_fetcher._compact_web_broker_payload(result, requested_mode="search", debug=False)
+    assert [call["provider"] for call in calls] == ["chatgpt"]
     for key in ("failureClass", "querySubmitted", "retryable", "verificationTargetId", "verificationPageRetained", "recommendedNextAction"):
         assert compact[key] == raw[key]
 

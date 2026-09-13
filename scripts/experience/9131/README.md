@@ -15,4 +15,6 @@
 
 Admin首切片独立复验见 `ADMIN-CCBCD590-REVIEW.md` 与 `reports/admin-ccbcd590-review.json`。`verify-admin-candidate.mjs`只连接被明确交付的22828候选，前提是负责人确认实际commit和冻结状态；它不会为指定Git hash自动切换服务版本。
 
+后续生产候选见 `ADMIN-D951D9CC-REVIEW.md`：原失败项通过，新增焦点/镜头及页面状态问题仍须处理。`graph-observation.mjs`记录真实绘制与资源调用；后台信号注入与真实页面切离分层报告。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

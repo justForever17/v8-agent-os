@@ -71,13 +71,13 @@ const choose=async label=>{await switchTo('web');await web.getByTitle('Independe
 const draft=()=>web.locator('textarea').first().evaluate(e=>({text:e.value,start:e.selectionStart,end:e.selectionEnd,
   scroll:document.querySelector('.v8-chat-viewport-surface').scrollTop,doc:window.__experienceDoc,timeOrigin:performance.timeOrigin}));
 const queueApi=label=>web.evaluate(async id=>{const response=await fetch('/api/chat-queue?session_id='+id,{cache:'no-store'});return {status:response.status,payload:await response.json()};},records[label].id);
-const readStoredDraft=()=>web.evaluate(async id=>{
+const readStoredDraft=(label='A')=>web.evaluate(async id=>{
   const databases=await indexedDB.databases();if(!databases.some(x=>x.name==='v8-composer-drafts-v1'))return [];
   const request=indexedDB.open('v8-composer-drafts-v1');
   const db=await new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
   const rows=await new Promise((resolve,reject)=>{const result=db.transaction('drafts','readonly').objectStore('drafts').getAll();result.onsuccess=()=>resolve(result.result);result.onerror=()=>reject(result.error);});
   db.close();return rows.filter(row=>{try{return JSON.parse(row.key)[3]===id;}catch{return false;}}).map(row=>({key:row.key,values:row.values,revision:row.revision,saved:row.saved,hydrated:row.hydrated}));
-},records.A.id);
+},records[label].id);
 async function test(id,fn){
   if(!only.includes(id))return;
   const row={id};try{row.details=await fn();row.status='PASS';}catch(error){row.status='FAIL';row.error=String(error).slice(0,2000);}
@@ -158,6 +158,43 @@ try{
     assert.equal(actual.text,'Independent_durable_A_reload_9131');
     assert.ok(stored.some(row=>row.values.text===actual.text));
     return {actual,stored,qualification:'A new governed Shell process restored the marker written and verified by the preceding draft run.'};
+  });
+  await test('draft-state',async()=>{
+    await choose('A');const input=web.locator('textarea').first();
+    await web.waitForFunction(()=>{const field=document.querySelector('textarea');return field&&!field.disabled;});
+    assert.equal(await input.inputValue(),'Independent_durable_A_reload_9131');
+    await input.press('Home');for(let i=0;i<3;i++)await input.press('ArrowRight');for(let i=0;i<6;i++)await input.press('Shift+ArrowRight');
+    const viewport=web.locator('.v8-chat-viewport-surface');const box=await viewport.boundingBox();
+    const scrolling=await viewport.evaluate(element=>({top:element.scrollTop,max:element.scrollHeight-element.clientHeight}));
+    assert.ok(scrolling.max>500,'Long synthetic history must have a meaningful reading range');
+    await web.mouse.move(box.x+box.width/2,box.y+box.height/2);await web.mouse.wheel(0,scrolling.max/2-scrolling.top);await web.waitForTimeout(700);
+    const before=await draft(),diskA=await readStoredDraft();assert.equal(before.start,3);assert.equal(before.end,9);
+    assert.ok(before.scroll>100&&before.scroll<scrolling.max-100,'Reading position must be away from both top and bottom');
+    assert.ok(diskA.some(row=>row.values.text===before.text&&row.values.selection?.start===3&&row.values.selection?.end===9));
+    await choose('B');await web.locator('textarea').first().fill('Independent_B_durable_6809641c');await web.waitForTimeout(700);
+    const diskB=await readStoredDraft('B');assert.ok(diskB.some(row=>row.values.text==='Independent_B_durable_6809641c'&&row.saved));
+    await choose('A');await web.waitForTimeout(300);const returned=await draft();
+    assert.equal(returned.text,before.text);assert.equal(returned.start,3);assert.equal(returned.end,9);assert.ok(Math.abs(returned.scroll-before.scroll)<1);
+    const adminBefore=await admin.evaluate(()=>({doc:window.__experienceDoc,timeOrigin:performance.timeOrigin}));
+    await switchTo('admin');await switchTo('web');const surfaceReturn=await draft();
+    assert.deepEqual(surfaceReturn,returned);assert.deepEqual(await admin.evaluate(()=>({doc:window.__experienceDoc,timeOrigin:performance.timeOrigin})),adminBefore);
+    for(const label of ['A','B']){const api=await queueApi(label);assert.equal(api.status,200);assert.equal(api.payload.queuedMessages.length,1);}
+    const result={before,returned,surfaceReturn,diskA,diskB,noQueueMutations:true,qualification:'Real keyboard selection and mouse wheel, A/B fresh markers, and one resident surface round trip. No source/file upload exercised.'};
+    fs.writeFileSync(path.join(out,'draft-state-expected.json'),JSON.stringify(result,null,2));
+    await web.screenshot({path:path.join(out,'draft-state-A-restored.png')});return result;
+  });
+  await test('cold-state',async()=>{
+    const expectedPath=path.resolve(option('--expected-state',''));
+    assert.ok(expectedPath.startsWith(path.join(own,'tmp/experience-9131')+path.sep));
+    const expected=JSON.parse(fs.readFileSync(expectedPath,'utf8'));
+    await choose('A');await web.waitForFunction(()=>{const field=document.querySelector('textarea');return field&&!field.disabled;});await web.waitForTimeout(1200);
+    const actual=await draft(),diskA=await readStoredDraft();
+    assert.equal(actual.text,expected.before.text);assert.equal(actual.start,expected.before.start);assert.equal(actual.end,expected.before.end);
+    assert.ok(Math.abs(actual.scroll-expected.before.scroll)<1,`Cold scroll ${actual.scroll} versus durable ${expected.before.scroll}`);
+    await choose('B');await web.waitForFunction(()=>{const field=document.querySelector('textarea');return field&&!field.disabled;});await web.waitForTimeout(700);
+    const b=await draft();assert.equal(b.text,'Independent_B_durable_6809641c');
+    await choose('A');await web.waitForTimeout(300);assert.equal((await draft()).text,expected.before.text);
+    return {actual,diskA,B:b,qualification:'A separate governed Shell process restored both fresh markers plus A selection/scroll; old erased text is not recovered.'};
   });
   await test('resident',async()=>{
     await choose('A');const input=web.locator('textarea').first();await input.fill('Shell_A_UNSENT_中文_Keep_exact_draft');

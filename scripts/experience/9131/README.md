@@ -37,4 +37,6 @@ Phone新release定向闭环见 `PHONE-6111D7C6-REVIEW.md`：实际AVD ABABA及A/
 
 Phone传输后续候选见 `PHONE-49DB49EA-REVIEW.md`：独立原生ABABA及协调要求的一次A重启通过；P10A单次判据不替换原P10，传输故障/LAN/长流作者证据与本lane最窄主流程分别保留。
 
+真实Shell草稿闭环见 `SHELL-6809641C-REVIEW.md`：原已落盘→reload同key正文判据通过，完整新Shell恢复A/B新正文及选择3–9/中段scroll4142；旧已擦正文不声称找回，source/file/IME和历史全文去重不扩大宣称。测试Shell均治理退出，默认服务释放协调。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

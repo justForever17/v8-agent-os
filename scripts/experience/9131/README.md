@@ -19,4 +19,6 @@ Admin首切片独立复验见 `ADMIN-CCBCD590-REVIEW.md` 与 `reports/admin-ccbc
 
 Extensions生产候选见 `EXTENSIONS-09DFCC3C-REVIEW.md`：原来源/目标/footer通过，结构错误文案和继承的stdio参数保真问题分别保留；真实安装和业务API不由合成UI层证明。
 
+Admin后续定向闭环见 `ADMIN-251D31E6-REVIEW.md`：焦点、相机过渡、安全两类失败恢复和治理文案5项通过，范围不扩大为全站/整合验收。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

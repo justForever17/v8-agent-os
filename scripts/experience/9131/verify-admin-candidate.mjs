@@ -35,6 +35,7 @@ page.setDefaultTimeout(12000);
 const evidence = [], requests = [], writes = [], pageErrors = [], assetHashes = new Map();
 const clone = value => structuredClone(value);
 let failWrite = false, failConfigReads = false, theme = 'light', holdGraphWrite = false, releaseGraphWrite;
+let failSafetyConfig = false, safetyDiagnostics = 'unlisted';
 const initialConfig = () => clone(adminExperienceFixture(base + '/api/config-registry/system-base'));
 let config = initialConfig();
 let graph = clone(sampleClusters);
@@ -83,6 +84,14 @@ async function routeBoundary(route) {
   if (url.pathname.startsWith('/api/config-registry/') && failConfigReads) fixture = undefined;
   if (url.pathname === '/api/ui-preferences/theme') fixture = { theme };
   if (url.pathname === '/api/memory/graph') fixture = graphRead(url);
+  if (url.pathname === '/api/config-registry/safety' && failSafetyConfig) {
+    record.result = 'synthetic-primary-503';
+    return route.fulfill({status:503,json:{error:'independent_primary_safety_unavailable'}});
+  }
+  if (url.pathname === '/api/safety/dashboard' && safetyDiagnostics !== 'unlisted') {
+    if(safetyDiagnostics === 'failed') { record.result='synthetic-diagnostics-503'; return route.fulfill({status:503,json:{error:'independent_optional_diagnostics_unavailable'}}); }
+    fixture = {summary:{},pendingSafetyApprovals:[],skillSafetyReviews:[],allowlistEntries:[],recentDecisions:[]};
+  }
   record.result = fixture === undefined ? 'synthetic-503' : 'synthetic-200';
   return route.fulfill(fixture === undefined ? { status: 503, json: { error: 'independent_fixture_unavailable' } } : { json: fixture });
 }
@@ -490,6 +499,51 @@ try {
       } catch(error) { observations.push({route,harnessError:String(error).slice(0,500)}); }
     }
     return {observationOnly:true,qualification:'Synthetic configured/unavailable page snapshots. Not all controls, true operations or complete feature acceptance; settled state may still depend on fixture coverage.',observations};
+  });
+  await test('A10-safety-primary-failure-recovery', 'function-convenience', async () => {
+    failSafetyConfig=true; safetyDiagnostics='ready'; const initialErrors=pageErrors.length;
+    try {
+      await visit('/admin/safety-control');
+      const alert=page.locator('.admin-page [role=alert]'); await alert.waitFor();
+      assert.equal(await page.locator('h1').count(),1);
+      assert.equal(await page.locator('.admin-content .animate-spin').count(),0);
+      const before={heading:await page.locator('h1').innerText(),alert:await alert.innerText(),spinnerCount:0};
+      failSafetyConfig=false;
+      await alert.getByRole('button',{name:'重试',exact:true}).click();
+      await page.locator('#admin-save-actions button').last().waitFor();
+      assert.ok(await page.locator('#admin-save-actions button').last().isEnabled());
+      assert.equal(pageErrors.length,initialErrors);
+      return {before,retryRestoresConfiguration:true,uncaughtErrors:0,actualMutation:false};
+    } finally { failSafetyConfig=false; safetyDiagnostics='unlisted'; }
+  });
+  await test('A11-safety-optional-failure-recovery', 'function-convenience', async () => {
+    safetyDiagnostics='failed'; const initialErrors=pageErrors.length;
+    try {
+      await visit('/admin/safety-control');
+      const alert=page.getByRole('alert').filter({hasText:'independent_optional_diagnostics_unavailable'}); await alert.waitFor();
+      const save=page.locator('#admin-save-actions button').last();
+      assert.ok(await save.isEnabled());
+      const fieldCount=await page.locator('.admin-content input,.admin-content select,.admin-content [role=combobox]').count();
+      assert.ok(fieldCount>0,'primary configuration remains rendered when optional diagnostics fail');
+      const errorBounds=await rectInViewport(alert);
+      safetyDiagnostics='ready';
+      await page.getByRole('button',{name:'重试',exact:true}).click();
+      await alert.waitFor({state:'detached'});
+      assert.ok(await save.isEnabled()); assert.equal(pageErrors.length,initialErrors);
+      return {configurationControls:fieldCount,saveEnabledDuringPartialFailure:true,errorBounds,diagnosticsRetryClearsError:true,uncaughtErrors:0,actualMutation:false};
+    } finally {safetyDiagnostics='unlisted';}
+  });
+  await test('A12-governance-single-heading-readable-toast', 'visual-convenience', async () => {
+    const initialErrors=pageErrors.length;
+    const translations=JSON.parse(git('show',candidate+':apps/v8-agent-os-admin/src/i18n/locales/zh-CN.json'));
+    const key='components.runtime.RuntimeGovernanceWorkbench.k4a84157b';
+    const expected=translations[key]; assert.ok(expected && expected!==key,'source contains the intended user-facing translation');
+    await visit('/admin/runtime-governance');
+    await page.getByText(expected,{exact:true}).waitFor();
+    const headings=await page.locator('h1').allTextContents(); assert.equal(headings.length,1,JSON.stringify(headings));
+    const visibleText=await page.locator('body').innerText(); assert.equal(visibleText.includes('components.runtime.RuntimeGovernanceWorkbench.'),false);
+    assert.equal(pageErrors.length,initialErrors);
+    return {headings,actualToastTitle:expected,unknownKeysVisible:false,uncaughtErrors:0};
   });
 } finally {
   failWrite = false;

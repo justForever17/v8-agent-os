@@ -297,6 +297,41 @@ def engineering_capsule_mode(task_brief: dict[str, Any] | None) -> str:
     return str(capsule.get("executionMode") or "none") if capsule else "none"
 
 
+def effective_execution_surface(task_brief: dict[str, Any] | None, *, tool_names: Iterable[str] | None = None) -> dict[str, Any]:
+    """Observe the existing typed contract and binding; never grant capabilities."""
+    task = dict(task_brief or {})
+    capsule = effective_engineering_capsule(task)
+    mode = str(capsule.get("executionMode") or "none")
+    names = set(tool_names) if tool_names is not None else None
+    command_names = {"run_system_command", "execute_system_command", "command_session_broker"}
+    control_names = {"command_session_broker", "read_background_output", "send_background_input", "terminate_background_command"}
+    policy = task.get("toolPolicy") if isinstance(task.get("toolPolicy"), dict) else {}
+    typed_read_only = task.get("readOnly", task.get("read_only"))
+    return {
+        "capsuleAttached": bool(capsule), "executionMode": mode,
+        "typedReadOnly": typed_read_only if isinstance(typed_read_only, bool) else None,
+        "writeRequired": capsule.get("writeRequired") if capsule else None,
+        "readSet": list(capsule.get("readSet") or []), "writeSet": list(capsule.get("writeSet") or []),
+        "toolPolicyMode": str(policy.get("mode") or "default"),
+        "toolSurfaceStatus": "bound" if names is not None else "not_bound_yet",
+        "commandTools": sorted(names & command_names) if names is not None else None,
+        "controlTools": sorted(names & control_names) if names is not None else None,
+        "commandExecution": (
+            "unavailable_without_capsule" if mode == "none" else "not_bound_yet" if names is None
+            else "available_subject_to_tool_checks" if names & command_names else "not_in_bound_tool_surface"
+        ),
+    }
+
+
+def render_effective_execution_surface(surface: dict[str, Any]) -> str:
+    return (
+        "Effective execution contract: " + json.dumps(surface, ensure_ascii=False) + "\n"
+        "Text constraints do not grant command authority. If a required command is unavailable, return a blocker; "
+        "the Supervisor must repair the typed task and use the existing capability path. "
+        "A listed control tool still enforces command ownership, workspace and cancellation boundaries."
+    )
+
+
 def ensure_engineering_task_capsule(
     task_brief: dict[str, Any],
     *,

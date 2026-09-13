@@ -1692,6 +1692,7 @@ def _delegation_compact_item(
     registry_hash: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
+    from core.engineering_capsule import effective_execution_surface
     item: dict[str, Any] = {
         "delegationId": delegation_id,
         "taskBriefId": str(task_brief.get("taskBriefId") or "").strip(),
@@ -1708,6 +1709,7 @@ def _delegation_compact_item(
         "agentId": target_id,
         "agentName": target_label,
         "status": status,
+        **({"effectiveExecution": effective_execution_surface(task_brief)} if lane == "subagent" else {}),
         "traceRef": trace_ref or {},
         "artifactRefs": list(artifact_refs or []),
         "localSelfCheck": local_self_check,

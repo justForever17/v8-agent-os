@@ -1361,9 +1361,10 @@ def _format_collaboration_identity_contract(
     return "\n".join(lines)
 
 
-def _format_delegated_task_contract(task_brief: dict | None) -> str:
+def _format_delegated_task_contract(task_brief: dict | None, *, tool_names: list[str] | None = None) -> str:
     if not isinstance(task_brief, dict):
         return ""
+    from core.engineering_capsule import effective_execution_surface, render_effective_execution_surface
     lines: list[str] = [
         "",
         "<delegated_task_plan>",
@@ -1728,6 +1729,7 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
                 lines.append("- Write Discipline: Treat this task as read-only. Do not modify production files unless the supervisor explicitly grants a writeSet.")
             elif not _compact_prompt_value(task_brief.get("writeSet")) and role:
                 lines.append("- Write Discipline: writeSet is missing. Ask for clarification before editing files.")
+    lines.append(render_effective_execution_surface(effective_execution_surface(task_brief, tool_names=tool_names)))
     lines.append("</delegated_task_plan>")
     return "\n".join(lines) + "\n"
 
@@ -2093,7 +2095,6 @@ def build_agent_node(
                     **dict(delegated_task_brief or {}),
                     "runtimeAccess": delegated_runtime_access,
                 }
-            delegated_plan_context = _format_delegated_task_contract(delegated_task_brief)
             inherited_query = str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
             full_task_brief_query = task_brief_query_text(delegated_task_brief)
             extensions_route_query = task_brief_route_query_text(delegated_task_brief)
@@ -2287,7 +2288,7 @@ def build_agent_node(
                 agent_system_prompt=effective_agent_system_prompt,
                 env_context=env_context,
                 active_plan_context=active_plan_context,
-                delegated_plan_context=delegated_plan_context,
+                delegated_plan_context=_format_delegated_task_contract(delegated_task_brief, tool_names=tool_surface),
                 collaboration_identity_context=collaboration_identity_context + "\n" + runtime_tool_guidance(delegated_runtime_access),
                 route_prompt_addition=route_bundle.prompt_addition,
                 available_tool_names=[str(getattr(tool_ref, "name", "")) for tool_ref in combined_tools],

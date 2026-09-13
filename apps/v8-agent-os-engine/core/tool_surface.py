@@ -2270,6 +2270,9 @@ def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> 
                 f"status={_short_text(status, 50)}" if status else "",
             ]
             lines.append("- " + " | ".join(part for part in parts if part))
+            if isinstance(item.get("effectiveExecution"), dict):
+                from core.engineering_capsule import render_effective_execution_surface
+                lines.append(render_effective_execution_surface(item["effectiveExecution"]))
             tool_policy = item.get("toolPolicy") if isinstance(item.get("toolPolicy"), dict) else {}
             policy_mode = str(tool_policy.get("mode") or "").strip().lower()
             if policy_mode == "none":

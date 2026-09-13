@@ -1,8 +1,19 @@
 import { Image, StyleSheet, View } from "react-native";
 import { useVideoPlayer, VideoView } from "expo-video";
-import { useEffect } from "react";
 import { useIsFocused } from "@react-navigation/native";
 import { useAppVisibility } from "@/src/hooks/use-app-visibility";
+
+function BackgroundVideo({ uri }: { uri: string }) {
+    // Expo owns release on source change/unmount. No consumer cleanup may call
+    // the shared player after that release (including profile tree replacement).
+    const player = useVideoPlayer(uri, (nextPlayer) => {
+        nextPlayer.loop = true;
+        nextPlayer.muted = true;
+        nextPlayer.play();
+    });
+    return <VideoView player={player} nativeControls={false} contentFit="cover"
+        style={StyleSheet.absoluteFillObject} surfaceType="textureView" />;
+}
 
 export function PhoneBackgroundMedia({
     uri,
@@ -13,29 +24,11 @@ export function PhoneBackgroundMedia({
 }) {
     const focused = useIsFocused();
     const visible = useAppVisibility();
-    const videoUri = mediaType === "video" && focused && visible ? uri : "";
-    const player = useVideoPlayer(videoUri || null, (nextPlayer) => {
-        nextPlayer.loop = true;
-        nextPlayer.muted = true;
-        if (videoUri) nextPlayer.play();
-    });
-    useEffect(() => {
-        if (videoUri) player.play();
-        else player.pause();
-        return () => player.pause();
-    }, [player, videoUri]);
-
     if (!uri) return null;
     return (
         <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
             {mediaType === "video" ? (
-                <VideoView
-                    player={player}
-                    nativeControls={false}
-                    contentFit="cover"
-                    style={StyleSheet.absoluteFillObject}
-                    surfaceType="textureView"
-                />
+                focused && visible ? <BackgroundVideo key={uri} uri={uri} /> : null
             ) : (
                 <Image source={{ uri }} resizeMode="cover" style={StyleSheet.absoluteFillObject} />
             )}

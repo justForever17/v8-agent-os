@@ -1,4 +1,5 @@
-import { buildAdminApiUrl, parseJsonSafe, streamSse, streamSseWithXmlHttpRequest } from "@/src/lib/admin-client";
+import { fetch as expoFetch } from "expo/fetch";
+import { buildAdminApiUrl, parseJsonSafe, streamSse } from "@/src/lib/admin-client";
 import type { PhoneUser } from "@/src/types/admin";
 import type { ProfileCredentials } from "@/src/lib/admin-connection-profiles";
 
@@ -160,15 +161,17 @@ export class PhoneTransport {
         };
         const open = async () => {
             const headers = { Authorization: `Bearer ${this.credentials.accessToken}`, Accept: "text/event-stream" };
-            if (this.options.native) {
-                await streamSseWithXmlHttpRequest({ url: buildAdminApiUrl(this.endpoint, path), headers,
-                    signal: controller.signal, onEvent: receive,
-                    onHeaders: (values) => this.options.onClock(values["x-v8-engine-now"] || null) });
-            } else {
-                const response = await fetch(buildAdminApiUrl(this.endpoint, path), { headers, signal: controller.signal });
-                if (!response.ok) throw Object.assign(new Error("Realtime connection unavailable"), { status: response.status });
-                await streamSse(response, receive);
+            // Native fetch consumes byte chunks; RN XHR retains the whole SSE
+            // responseText for the lifetime of this (potentially endless) stream.
+            const streamFetch = this.options.native ? expoFetch : fetch;
+            const response = await streamFetch(buildAdminApiUrl(this.endpoint, path), { headers, signal: controller.signal });
+            if (this.disposed || controller.signal.aborted || !response.ok) {
+                await response.body?.cancel().catch(() => undefined);
+                this.assertCurrent(controller.signal);
+                throw Object.assign(new Error("Realtime connection unavailable"), { status: response.status });
             }
+            this.options.onClock(response.headers.get("x-v8-engine-now"));
+            await streamSse(response, receive, controller.signal);
         };
         try {
             const token = this.credentials.accessToken;

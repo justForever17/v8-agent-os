@@ -11,6 +11,7 @@ function loader(mocks = {}) {
   const cache = new Map();
   return function load(name) {
     if (Object.hasOwn(mocks, name)) return mocks[name];
+    if (name === "expo/fetch") return { fetch: (...args) => globalThis.fetch(...args) };
     if (!name.startsWith("@/")) return require(name);
     if (cache.has(name)) return cache.get(name);
     const file = path.join(root, name.slice(2) + ".ts");
@@ -39,6 +40,99 @@ function sqliteMock() {
   return { openDatabaseAsync: async () => adapter, db };
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("SSE byte reader preserves UTF-8 and split CRLF events, discards half events and cancels its reader", async () => {
+  const { streamSse } = loader({ "@/src/lib/locale": {} })("@/src/lib/admin-client");
+  const bytes = new TextEncoder().encode('id: 1\r\nevent: runtime\r\ndata: {"text":"中文😀"}\r\n\r\nid: 2\rdata: 2\r\rdata: {"half":');
+  let offset = 0;
+  const response = new Response(new ReadableStream({ pull(c) { if (offset === bytes.length) c.close(); else c.enqueue(bytes.slice(offset, ++offset)); } }));
+  const seen = [];
+  await streamSse(response, (name, value) => seen.push([name, value]));
+  assert.deepEqual(seen, [["runtime", { text: "中文😀", _diagnostics: { sseEventId: "1" } }], ["message", 2]]);
+  assert.equal(response.body.locked, false);
+  const abort = new AbortController(); let canceled = 0;
+  const pending = new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"half":')); }, cancel() { canceled++; } }));
+  const running = streamSse(pending, () => assert.fail("partial event delivered"), abort.signal);
+  await tick(); abort.abort(); await running;
+  assert.equal(canceled, 1); assert.equal(pending.body.locked, false);
+});
+
+test("SSE delivery exceptions are not redelivered as plain text", async () => {
+  const { streamSse } = loader({ "@/src/lib/locale": {} })("@/src/lib/admin-client");
+  let calls = 0;
+  await assert.rejects(streamSse(new Response('data: {"seq":1}\n\n'), () => { calls++; throw new Error("consumer failed"); }), /consumer failed/);
+  assert.equal(calls, 1);
+});
+
+test("native stream uses chunked Expo fetch; same-lane replacement, late A and dispose cannot reach B", async () => {
+  const opened = [];
+  const mockFetch = async (url, init) => {
+    let producer;
+    const response = new Response(new ReadableStream({ start(c) { producer = c; } }));
+    opened.push({ url, init, producer, response });
+    return response;
+  };
+  const { PhoneTransport } = loader({ "expo/fetch": { fetch: mockFetch }, "@/src/lib/locale": {} })("@/src/lib/phone-transport");
+  const make = (profileId) => transport(PhoneTransport, { endpoints: [`http://fixture/${profileId}`], native: true });
+  const a = make("A"), b = make("B"), seen = [];
+  const old = a.authorizedRealtimeStream("/detail-A", (_, value) => seen.push(["old", value]));
+  await tick();
+  const second = a.authorizedRealtimeStream("/detail-A2", (_, value) => seen.push(["A2", value]));
+  await tick();
+  assert.equal(opened[0].init.signal.aborted, true);
+  a.dispose();
+  const third = b.authorizedRealtimeStream("/detail-B", (_, value) => seen.push(["B", value]));
+  await tick();
+  assert.throws(() => opened[0].producer.enqueue(new TextEncoder().encode('data: "late-A"\n\n')));
+  opened[2].producer.enqueue(new TextEncoder().encode('data: {"seq":1,"text":"中文"}\n\ndata: {"seq":1,"text":"duplicate"}\n\n'));
+  await tick();
+  assert.deepEqual(seen.map(([owner]) => owner), ["B", "B"]); // existing projection owns event deduplication
+  b.dispose(); await Promise.all([old, second, third]);
+  assert.ok(opened.every((entry) => entry.init.signal.aborted));
+  assert.ok(opened.every((entry) => !entry.response.body.locked));
+});
+
+test("background player release belongs to Expo across A/B, image, blur and unmount", () => {
+  const file = path.join(root, "src/components/personalization/PhoneBackgroundMedia.tsx");
+  const source = fs.readFileSync(file, "utf8");
+  function exercise(code, verify = true) {
+    let focused = true, visible = true;
+    const cleanup = [], players = [];
+    const hooks = { useEffect(fn) { const release = fn(); if (release) cleanup.push(release); } };
+    const mocks = {
+      react: hooks,
+      "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
+      "react-native": { Image: "Image", View: "View", StyleSheet: { absoluteFillObject: {} } },
+      "@react-navigation/native": { useIsFocused: () => focused },
+      "@/src/hooks/use-app-visibility": { useAppVisibility: () => visible },
+      "expo-video": { VideoView: "VideoView", useVideoPlayer(uri, setup) {
+        const player = { uri, released: false, plays: 0, release() { assert.equal(this.released, false); this.released = true; },
+          play() { assert.equal(this.released, false); this.plays++; }, pause() { if (this.released) throw new Error("already released"); } };
+        players.push(player); cleanup.push(() => player.release()); setup?.(player); return player;
+      } },
+    };
+    const module = { exports: {} };
+    const compiled = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+    vm.runInThisContext(`(function(require,module,exports){${compiled}\n})`)((name) => mocks[name], module, module.exports);
+    function render(node) {
+      if (!node) return;
+      if (Array.isArray(node)) { node.forEach(render); return; }
+      if (typeof node.type === "function") render(node.type(node.props)); else render(node.props?.children);
+    }
+    const unmount = () => { for (const release of cleanup.splice(0)) release(); };
+    const show = (uri, mediaType = "video") => render(module.exports.PhoneBackgroundMedia({ uri, mediaType }));
+    show("", "image"); unmount(); show("image-A", "image"); unmount();
+    if (verify) assert.equal(players.length, 0, "images must not allocate native players");
+    show("video-A"); unmount(); show("video-B"); unmount();
+    focused = false; show("video-B"); unmount(); focused = true;
+    visible = false; show("video-B"); unmount(); visible = true;
+    show("video-A"); unmount();
+    if (verify) { assert.equal(players.length, 3); assert.ok(players.every((player) => player.released && player.plays === 1)); }
+  }
+  exercise(source);
+  const badCleanup = 'import { useEffect } from "react";\n' + source.replace('return <VideoView', 'useEffect(() => () => player.pause(), [player]);\n    return <VideoView');
+  assert.throws(() => exercise(badCleanup, false), /already released/);
+});
 
 test("same IDs in independent profiles / serving instances isolate SQL messages, cursors and tombstones", async () => {
   const sqlite = sqliteMock();

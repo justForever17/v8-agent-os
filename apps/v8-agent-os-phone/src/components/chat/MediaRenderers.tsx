@@ -3,6 +3,8 @@ import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "rea
 import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { useIsFocused } from "@react-navigation/native";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
 import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
@@ -19,13 +21,14 @@ const InlineAudioPlayback = memo(function InlineAudioPlayback({
     isMusic: boolean;
 }) {
     const { colors, t } = useUiPrefs();
-    const player = useAudioPlayer();
+    const player = useAudioPlayer({ uri: src });
     const status = useAudioPlayerStatus(player);
+    const focused = useIsFocused();
+    const visible = useAppVisibility();
     useEffect(() => {
-        player.pause();
-        player.replace({ uri: src });
-        return () => player.pause();
-    }, [player, src]);
+        if (!focused || !visible) player.pause();
+        // The Expo hook alone owns release; unmount needs no player call.
+    }, [player, focused, visible]);
     const duration = Number(status.duration || 0);
     const currentTime = Number(status.currentTime || 0);
     const progress = duration > 0 ? Math.max(0, Math.min(100, currentTime / duration * 100)) : 0;

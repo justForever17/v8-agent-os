@@ -5351,8 +5351,11 @@ const [detail, turnPage, syncData] = await Promise.all([
         if (!isFocused || !appVisible) {
             void closeDesktopPreviewRef.current();
             ttsRequestIdRef.current += 1;
-            try { ttsPlayer.pause(); replyPopPlayer.pause(); } catch { /* Native player may already be released. */ }
+            ttsPlayer.pause(); replyPopPlayer.pause();
         }
+        // Invalidate async TTS before a replaced profile's request can call its
+        // released player. Expo alone owns native player release on unmount.
+        return () => { ttsRequestIdRef.current += 1; };
     }, [isFocused, appVisible, ttsPlayer, replyPopPlayer]);
 
     const handleSelectConversation = useCallback(async (item: ConversationSummary) => {

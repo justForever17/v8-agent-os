@@ -514,8 +514,14 @@ test("Web realtime identity retention stays bounded without guessing legacy snap
 });
 
 test("Web scopes realtime sequence state to the active conversation", () => {
-  assert.match(
-    chatClientSource,
-    /if \(previousConversationId === activeConversationId\) \{\s*return;\s*\}\s*latestRealtimeSeqRef\.current = 0;\s*snapshotCoveredRealtimeSeqRef\.current = 0;\s*seenRealtimeEventIdentitiesRef\.current\.clear\(\);/,
-  );
+  const start=chatClientSource.indexOf('const previousConversationId = renderedConversationIdRef.current');
+  const end=chatClientSource.indexOf('historyLoadControllerRef.current?.abort()',start);
+  const source=chatClientSource.slice(start,end);
+  function run(next) {
+    const latestRealtimeSeqRef={current:20},snapshotCoveredRealtimeSeqRef={current:19};let cleared=0;
+    new Function('activeConversationId','renderedConversationIdRef','activeConversationIdRef','queueCacheRef','queuedMessagesRef','setQueuedMessages','latestRealtimeSeqRef','snapshotCoveredRealtimeSeqRef','seenRealtimeEventIdentitiesRef',source)(next,{current:'a'},{current:'a'},{current:new Map()},{current:[]},()=>{},latestRealtimeSeqRef,snapshotCoveredRealtimeSeqRef,{current:{clear(){cleared++}}});
+    return [latestRealtimeSeqRef.current,snapshotCoveredRealtimeSeqRef.current,cleared];
+  }
+  assert.deepEqual(run('a'),[20,19,0]);
+  assert.deepEqual(run('b'),[0,0,1]);
 });

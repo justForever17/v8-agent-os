@@ -37,8 +37,12 @@ test("Web keeps session detail reads behind the authenticated local proxy", () =
   assert.doesNotMatch(askUser, /const direct = asText\(item\.contentUrl\)/);
   assert.match(client, /sessionId=\{activeConversationId\}/);
   assert.doesNotMatch(`${client}\n${askUser}`, /\/api\/client\/(?:conversations|sessions|artifacts)/);
-  assert.match(nextConfig, /beforeFiles:/);
-  assert.match(nextConfig, /fallback:/);
+  // A runtime proxy resolves the authenticated Admin connection on each request.
+  // Build-time rewrites froze the development port into production builds.
+  const fallback = readText("apps/v8-agent-os-web/src/app/api/[...path]/route.ts");
+  assert.doesNotMatch(nextConfig, /async rewrites|beforeFiles:|fallback:/);
+  assert.match(fallback, /requireAdminProxyContext/);
+  assert.match(fallback, /safeAdminProxyFetch/);
   assert.doesNotMatch(nextConfig, /localApiNamespaces/);
   assert.match(clientAuth, /verifyServiceAuth\(req\)/);
   assert.match(clientAuth, /findUserByIdentifier\(serviceIdentifier\)/);
@@ -84,11 +88,11 @@ test("Web waits for the trusted local session before hydrating conversation hist
   );
   assert.match(
     client,
-    /\[activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface,[^\]]*loadConversationHistory, loadRuns,[^\]]*status\]/,
+    /\[activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface,[^\]]*loadConversationHistory, loadRuns,[^\]]*status[^\]]*\]/,
   );
   assert.match(
     client,
-    /if \(status !== "authenticated" \|\| !activeConversationId\) \{\s+applySessionProcessSurface\(\[\], \{ forceClear: true \}\);/,
+    /if \(status !== "authenticated" \|\| !activeConversationId[^)]*\) \{\s+applySessionProcessSurface\(\[\], \{ forceClear: true \}\);/,
   );
 });
 
@@ -166,6 +170,12 @@ test("keyboard submission cannot outrun attachment persistence", () => {
   const input = readText("apps/v8-agent-os-web/src/components/chat/InputArea.tsx");
 
   assert.match(input, /if \(uploading\) \{\s+showInlineNotice\("info", t\("web\.chat\.attachments\.uploading"\)\);\s+return;/);
-  assert.match(input, /onSubmit=\{async \(e\) => \{\s+if \(uploading\) \{\s+e\.preventDefault\(\);/);
+  assert.match(input, /onSubmit=\{async \(e\) => \{\s+e\.preventDefault\(\);[\s\S]*?if \(uploading\)/);
   assert.match(input, /disabled=\{uploading \|\| showRunBusy \|\| \(!runActive && !canSubmit\)\}/);
+  const ts = require('typescript');
+  const start=input.indexOf('const handleKeyDown = (e: React.KeyboardEvent');
+  const end=input.indexOf('const uploadFiles =',start);
+  const source=ts.transpileModule(input.slice(start,end),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const run=new Function('uploading','composing', `let submitted=0;const isLoading=false,isCommandPickerOpen=false,isSkillPickerOpen=false;const showInlineNotice=()=>{},t=x=>x;${source};handleKeyDown({key:'Enter',nativeEvent:{isComposing:composing},preventDefault(){},currentTarget:{closest:()=>({requestSubmit:()=>submitted++})}});return submitted;`);
+  assert.equal(run(true,false),0); assert.equal(run(false,true),0); assert.equal(run(false,false),1);
 });

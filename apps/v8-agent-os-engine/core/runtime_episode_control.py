@@ -191,13 +191,21 @@ def publish_attention(episode: dict[str, Any], *, kind: str, detail: dict[str, A
     run_id, session_id = str(episode.get("run_id") or ""), str(episode.get("session_id") or "")
     if not episode_id or not run_id or not session_id:
         return None
-    if kind not in {"terminal", "input_required", "partial", "partial_invalidated"}:
+    if kind not in {"terminal", "input_required", "partial", "partial_invalidated", "user_guidance"}:
         raise ValueError("observation_is_not_parent_attention")
     digest = hashlib.sha256(json.dumps(detail, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return db.append_runtime_episode_message(
         episode_id=episode_id, session_id=session_id, run_id=run_id,
         recipient=f"supervisor:{run_id}", kind=kind, request_id=f"attention:{episode_id}:{kind}:{digest}", content=detail,
     )
+
+
+def pending_run_guidance(run_id: str) -> dict[str, Any] | None:
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM chat_user_message_queue WHERE run_id=? AND state='promoted' ORDER BY ordinal, created_at LIMIT 1", (run_id,),
+        ).fetchone()
+    return db.get_chat_user_message_queue_item(row["id"]) if row else None
 
 
 def reconcile_episode_attention(episode: dict[str, Any]) -> None:

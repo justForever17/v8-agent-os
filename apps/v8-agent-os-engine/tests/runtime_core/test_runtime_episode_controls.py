@@ -680,3 +680,39 @@ def test_partial_version_flood_is_one_parent_decision_with_latest_output_and_pre
     rows = database.list_runtime_episode_messages(run_id="run", recipient="supervisor:run", pending_only=False)
     assert len(rows) == 22 and all(item["deliveryState"] == "processed" for item in rows)
     assert all(item["receipt"].get("supersededByMessageId") for item in rows[:20])
+
+
+def test_parked_parent_wakes_for_durable_user_guidance_even_when_signal_is_lost(database, monkeypatch):
+    import erc.command_router as router_module
+    import erc.run_service as run_module
+    import erc.session_lane_scheduler as lane_module
+    import runtimes.chat.runtime as chat_module
+    enqueue(database)
+    database.claim_runtime_episode(worker_id="long-A", lease_seconds=30)
+    database.update_run_record("run", status="running", metadata={"runtimeEpisodeResume": {"state": "waiting", "episodeIds": ["A"]}})
+    for index in range(2):
+        database.add_chat_user_message_queue_item(queue_id=f"guide-{index}", session_id="session", run_id="run", client_message_id=f"client-{index}", content=f"Revised requirement {index}")
+        database.update_chat_user_message_queue_item(f"guide-{index}", state="promoted", timestamp_field="promoted_at")
+    for module in (router_module, run_module, chat_module):
+        monkeypatch.setattr(module, "db", database)
+    monkeypatch.setattr(lane_module, "session_lane_scheduler", lane_module.SessionLaneScheduler())
+    router = router_module.RuntimeCommandRouter()
+    requests = []
+    router.configure(schedule_chat_run=lambda request, **kwargs: requests.append(kwargs) or "run")
+    monkeypatch.setattr(router, "_build_runtime_handoff_resume_chat_request", lambda *_args, **_kwargs: {"sameRun": "run"})
+    monkeypatch.setattr(router, "_emit_resume_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(router_module, "runtime_command_router", router)
+    runner = runner_module.RuntimeEpisodeRunner()
+    runner._recover_parent_wakes()
+    runner._recover_parent_wakes()
+    assert len(requests) == 1 and requests[0]["run_id"] == "run"
+    monkeypatch.setattr(chat_module.erc_kernel, "consume_control_signal", lambda _run: None)
+    runtime = chat_module.ChatRuntime()
+    first = runtime.consume_control_signal("run")
+    assert first == {"command": "guidance", "payload": {"queueMessageId": "guide-0"}}
+    database.update_chat_user_message_queue_item("guide-0", state="injected", timestamp_field="injected_at")
+    assert runtime.consume_control_signal("run")["payload"]["queueMessageId"] == "guide-1"
+    monkeypatch.setattr(chat_module.erc_kernel, "consume_control_signal", lambda _run: {"command": "cancel"})
+    assert runtime.consume_control_signal("run") == {"command": "cancel"}
+    assert database.get_runtime_episode("A")["state"] == "active"
+    assert len(database.list_runtime_episodes(run_id="run")) == 1

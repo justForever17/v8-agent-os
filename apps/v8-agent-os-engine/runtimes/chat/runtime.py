@@ -11440,7 +11440,16 @@ class ChatRuntime:
         logger.exception("Chat run '%s' failed during stream execution", run_id)
 
     def consume_control_signal(self, run_id: str):
-        return erc_kernel.consume_control_signal(run_id)
+        signal = erc_kernel.consume_control_signal(run_id)
+        if signal and self.should_stop_stream(signal):
+            return signal
+        from core.runtime_episode_control import pending_run_guidance
+        guidance = pending_run_guidance(run_id)
+        if guidance:
+            return {"command": "guidance", "payload": {"queueMessageId": guidance["id"]}}
+        if signal and signal.get("command") == "guidance":
+            return None
+        return signal
 
     @staticmethod
     def _expire_plugin_task_grants(run_id: str, *, reason: str) -> None:
@@ -11881,6 +11890,19 @@ class ChatRuntime:
                             stream_iter = event_stream.__aiter__()
                             try:
                                 while True:
+                                    # A parked graph may resume because guidance
+                                    # became durable while no stream consumer was
+                                    # alive. Check before invoking its first model.
+                                    early_control = self.consume_control_signal(chat_run.active_run_id)
+                                    if early_control and early_control.get("command") == "guidance":
+                                        guidance_signal = early_control
+                                        break
+                                    if early_control and early_control.get("command") == "session_coordination":
+                                        coordination_signal = early_control
+                                        break
+                                    if self.should_stop_stream(early_control):
+                                        interrupted_signal = early_control
+                                        break
                                     event = None
                                     try:
                                         signal_kind, event = await self._wait_for_stream_signal(

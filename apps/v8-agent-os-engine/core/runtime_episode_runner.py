@@ -1277,6 +1277,10 @@ class RuntimeEpisodeRunner:
                 if not recovered.get("updated"):
                     continue
             episodes = db.list_runtime_episodes(run_id=row["id"], limit=200)
+            from core.runtime_episode_control import pending_run_guidance
+            guidance = pending_run_guidance(row["id"])
+            if guidance and episodes:
+                publish_attention(episodes[0], kind="user_guidance", detail={"queueMessageId": guidance["id"]})
             signatures = getattr(self, "_parent_attention_signatures", {})
             signature = json.dumps([(item.get("episodeId"), item.get("state"), item.get("resultRef"), item.get("handoffRefs")) for item in episodes], sort_keys=True, default=str)
             if signatures.get(row["id"]) != signature:
@@ -1951,6 +1955,19 @@ class RuntimeEpisodeRunner:
             heartbeat_interval_seconds=interval_seconds,
         )
 
+    @staticmethod
+    async def _run_sync_episode_call(function: Any, *args: Any, **kwargs: Any) -> Any:
+        """Cancellation of a coroutine must not detach its synchronous writer."""
+        execution = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(execution)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(execution)
+            except (Exception, asyncio.CancelledError):
+                pass
+            raise
+
     def _emit(
         self,
         topic: str,
@@ -2584,15 +2601,7 @@ class RuntimeEpisodeRunner:
         # Research performs synchronous provider calls and web retrieval. Keep
         # that blocking work off the EpisodeRunner event loop so the durable
         # lease heartbeat and cancellation watchdog can continue to run.
-        execution = asyncio.create_task(asyncio.to_thread(self._execute_research_sync, episode))
-        try:
-            return await asyncio.shield(execution)
-        except asyncio.CancelledError:
-            try:
-                await asyncio.shield(execution)
-            except (RuntimeEpisodeCancelled, EpisodeControlCancelled):
-                pass
-            raise
+        return await self._run_sync_episode_call(self._execute_research_sync, episode)
 
     def _execute_research_sync(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._publish_episode_progress(
@@ -6941,7 +6950,7 @@ class RuntimeEpisodeRunner:
                 task_brief_id = str(task_brief.get("taskBriefId") or "task").strip() or "task"
                 result = await self._await_with_heartbeat(
                     episode_id,
-                    asyncio.to_thread(
+                    self._run_sync_episode_call(
                         execute_computer_use_task_brief,
                         episode_id=episode_id,
                         session_id=str(episode.get("session_id") or "") or None,
@@ -7165,7 +7174,7 @@ class RuntimeEpisodeRunner:
                 )
                 draft = await self._await_with_heartbeat(
                     episode_id,
-                    asyncio.to_thread(rpa_runtime.compile_traces_to_draft, run_ids, save=bool(inputs.get("save", True))),
+                    self._run_sync_episode_call(rpa_runtime.compile_traces_to_draft, run_ids, save=bool(inputs.get("save", True))),
                     progress="rpa: compiling traces",
                 )
                 draft_id = str(draft.get("id") or "")
@@ -7180,7 +7189,7 @@ class RuntimeEpisodeRunner:
                 )
                 draft = await self._await_with_heartbeat(
                     episode_id,
-                    asyncio.to_thread(rpa_runtime.compile_trace_to_draft, trace_run_id, save=bool(inputs.get("save", True))),
+                    self._run_sync_episode_call(rpa_runtime.compile_trace_to_draft, trace_run_id, save=bool(inputs.get("save", True))),
                     progress="rpa: compiling trace",
                 )
                 draft_id = str(draft.get("id") or "")
@@ -7196,7 +7205,7 @@ class RuntimeEpisodeRunner:
                     )
                     result = await self._await_with_heartbeat(
                         episode_id,
-                        asyncio.to_thread(
+                        self._run_sync_episode_call(
                             rpa_runtime.run_draft,
                             script_id=script_id,
                             variables=variables,
@@ -7222,7 +7231,7 @@ class RuntimeEpisodeRunner:
                         episode,
                         {"stage": "prepare", "summary": "正在检查自动流程草稿", "toolName": "rpa_runtime", "nodeId": "rpa-prepare-draft"},
                     )
-                    prepared = await asyncio.to_thread(
+                    prepared = await self._run_sync_episode_call(
                         rpa_runtime.prepare_draft_run,
                         script_id=script_id,
                         variables=variables,
@@ -7242,7 +7251,7 @@ class RuntimeEpisodeRunner:
                     )
                     result = await self._await_with_heartbeat(
                         episode_id,
-                        asyncio.to_thread(
+                        self._run_sync_episode_call(
                             rpa_runtime.run_existing_flow,
                             robot_file=robot_file,
                             variables=variables,
@@ -7268,7 +7277,7 @@ class RuntimeEpisodeRunner:
                         episode,
                         {"stage": "prepare", "summary": "正在检查自动流程", "toolName": "rpa_runtime", "nodeId": "rpa-prepare-robot"},
                     )
-                    prepared = await asyncio.to_thread(
+                    prepared = await self._run_sync_episode_call(
                         rpa_runtime.prepare_existing_run,
                         robot_file=robot_file,
                         variables=variables,

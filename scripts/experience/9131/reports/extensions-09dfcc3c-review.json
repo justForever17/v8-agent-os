@@ -1,0 +1,309 @@
+{
+  "candidateCommit": "09dfcc3cd231d1717d3e712ad2270750c4c1fe31",
+  "runtime": "production standalone 22825, author-declared frozen final product source; built before commit",
+  "buildId": "thJVYuOhK1Mqvf23zCP0d",
+  "browserVersion": "153.0.8010.36",
+  "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.",
+  "evidence": [
+    {
+      "id": "X01-manual-source",
+      "dimension": "function",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "freshDefaultInternational": true,
+        "manualPersistReload": true,
+        "offlineKeepsSource": true,
+        "switchBack": true
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=",
+      "screenshot": "X01-manual-source.png"
+    },
+    {
+      "id": "X03-query-order",
+      "dimension": "function",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "newSurvivesOldResponse": true,
+        "order": "old started → new rendered → old fulfilled"
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=new",
+      "screenshot": "X03-query-order.png"
+    },
+    {
+      "id": "X02-MCP-target-after-late-detail",
+      "dimension": "function",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "submittedId": "author/beta",
+        "candidateId": "author/beta-candidate",
+        "abortDeliberatelyIneffective": true,
+        "configuredNotHealthy": true
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=mcp&query=",
+      "screenshot": "X02-MCP-target-after-late-detail.png"
+    },
+    {
+      "id": "X04-concurrent-install-identity",
+      "dimension": "function",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "BPendingAfterACompletion": true,
+        "BDialogPreserved": true,
+        "singleBSubmit": true,
+        "skippedNotInstalled": true
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=",
+      "screenshot": "X04-concurrent-install-identity.png"
+    },
+    {
+      "id": "X05-footer-and-receipt-feedback",
+      "dimension": "convenience-visual",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "longReadme": 100,
+        "variants": [
+          {
+            "theme": "light",
+            "action": {
+              "box": {
+                "x": 918.5,
+                "y": 799.5,
+                "width": 77,
+                "height": 35
+              },
+              "viewport": {
+                "width": 1440,
+                "height": 900
+              },
+              "inside": true
+            },
+            "receiptStatus": {
+              "box": {
+                "x": 444.5,
+                "y": 810,
+                "width": 52.5,
+                "height": 14
+              },
+              "viewport": {
+                "width": 1440,
+                "height": 900
+              },
+              "inside": true
+            }
+          },
+          {
+            "theme": "dark",
+            "action": {
+              "box": {
+                "x": 32.5,
+                "y": 732.859375,
+                "width": 325,
+                "height": 35
+              },
+              "viewport": {
+                "width": 390,
+                "height": 844
+              },
+              "inside": true
+            },
+            "receiptStatus": {
+              "box": {
+                "x": 32.5,
+                "y": 767.859375,
+                "width": 52.5,
+                "height": 14
+              },
+              "viewport": {
+                "width": 390,
+                "height": 844
+              },
+              "inside": true
+            }
+          }
+        ],
+        "footerFeedbackVisibleWithDocs": true
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=",
+      "screenshot": "X05-footer-and-receipt-feedback.png"
+    },
+    {
+      "id": "X09-health-partial-availability",
+      "dimension": "convenience",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "health503Visible": true,
+        "independentImportDraftEditable": true,
+        "submittedRealCommand": false
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions",
+      "screenshot": "X09-health-partial-availability.png"
+    },
+    {
+      "id": "X10-structured-error-readable",
+      "dimension": "convenience",
+      "layer": "production browser / synthetic HTTP boundary",
+      "status": "FAIL",
+      "error": "structured error message lost: '[object Object]'",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=offline",
+      "screenshot": "X10-structured-error-readable.png"
+    },
+    {
+      "id": "X11-provider-receipt-and-reload",
+      "dimension": "function",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "sameIdReceiptIsolatedByProvider": true,
+        "domesticReloadNoInternationalList": true,
+        "reloadListRequests": 1
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=",
+      "screenshot": "X11-provider-receipt-and-reload.png"
+    },
+    {
+      "id": "X12-detail-warm-samples",
+      "dimension": "performance",
+      "layer": "production browser / synthetic HTTP boundary",
+      "details": {
+        "n": 30,
+        "samplesMs": [
+          98.3,
+          105,
+          102.9,
+          95.8,
+          97.5,
+          80.1,
+          78.5,
+          102.6,
+          126.2,
+          125.6,
+          118.8,
+          123.5,
+          159.8,
+          174.1,
+          119.1,
+          128.7,
+          122.8,
+          111,
+          138.6,
+          123.1,
+          123.2,
+          119.7,
+          112.2,
+          102.3,
+          104.3,
+          102.5,
+          117.5,
+          139.1,
+          117.3,
+          119
+        ],
+        "medianMs": 118.15,
+        "p95Ms": 159.8,
+        "qualification": "Production Chrome153 warm click→detail ready→two frames with synthetic response; documentation is lazy and not opened. No baseline comparison or native performance claim."
+      },
+      "status": "PASS",
+      "url": "http://127.0.0.1:22825/admin/extensions/store?kind=skills&query=",
+      "screenshot": "X12-detail-warm-samples.png"
+    }
+  ],
+  "summary": {
+    "PASS": 8,
+    "FAIL": 1,
+    "HARNESS_ERROR": 0
+  },
+  "runs": [
+    {
+      "name": "extensions-09dfcc3c-final",
+      "requests": 43,
+      "submissions": 3,
+      "errors": []
+    },
+    {
+      "name": "extensions-09dfcc3c-focused",
+      "requests": 15,
+      "submissions": 2,
+      "errors": []
+    },
+    {
+      "name": "extensions-09dfcc3c-performance",
+      "requests": 36,
+      "submissions": 0,
+      "errors": []
+    }
+  ],
+  "submitted": [
+    {
+      "provider": "international",
+      "source": "same-source",
+      "skillId": "beta",
+      "id": "author/beta",
+      "candidateId": "author/beta-candidate",
+      "values": {},
+      "overwrite": false,
+      "replace": false,
+      "revision": "fixture-revision",
+      "retry": false,
+      "packageSource": "original"
+    },
+    {
+      "provider": "international",
+      "source": "same-source",
+      "skillId": "alpha",
+      "id": "author/alpha",
+      "values": {},
+      "overwrite": false,
+      "replace": false,
+      "revision": "fixture-revision",
+      "retry": false,
+      "packageSource": "original"
+    },
+    {
+      "provider": "international",
+      "source": "same-source",
+      "skillId": "beta",
+      "id": "author/beta",
+      "values": {},
+      "overwrite": false,
+      "replace": false,
+      "revision": "fixture-revision",
+      "retry": false,
+      "packageSource": "original"
+    },
+    {
+      "provider": "international",
+      "source": "same-source",
+      "skillId": "alpha",
+      "id": "author/alpha",
+      "values": {},
+      "overwrite": false,
+      "replace": false,
+      "revision": "fixture-revision",
+      "retry": false,
+      "packageSource": "original"
+    },
+    {
+      "provider": "international",
+      "source": "same-source",
+      "skillId": "beta",
+      "id": "author/beta",
+      "values": {},
+      "overwrite": false,
+      "replace": false,
+      "revision": "fixture-revision",
+      "retry": false,
+      "packageSource": "original"
+    }
+  ],
+  "harnessCorrections": [
+    "source behavior waits for any nonempty alert; readable message is independently asserted as X10 so [object Object] cannot prevent switch-back cleanup",
+    "each transaction initializes source through actual manual button when needed, avoiding prior failed-test state contamination",
+    "duplicate B submission count scoped to current Skills transaction, excluding earlier legitimate MCP payload carrying same skillId"
+  ]
+}

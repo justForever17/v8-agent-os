@@ -17,4 +17,6 @@ Admin首切片独立复验见 `ADMIN-CCBCD590-REVIEW.md` 与 `reports/admin-ccbc
 
 后续生产候选见 `ADMIN-D951D9CC-REVIEW.md`：原失败项通过，新增焦点/镜头及页面状态问题仍须处理。`graph-observation.mjs`记录真实绘制与资源调用；后台信号注入与真实页面切离分层报告。
 
+Extensions生产候选见 `EXTENSIONS-09DFCC3C-REVIEW.md`：原来源/目标/footer通过，结构错误文案和继承的stdio参数保真问题分别保留；真实安装和业务API不由合成UI层证明。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

@@ -42,8 +42,10 @@ async def main():
     theme = {"theme": "light"}
     mcp_config = None
     config_saves = []
+    extension_config_saves = []
+    extension_config = {"domain": "extensions", "data": {"prefilterPolicy": {"enabled": False, "futurePolicy": "keep", "skills": {"future": 0}}, "modelBindings": {}, "futureConfig": {"keep": False}}, "warnings": []}
     selected = [x for x in args.only.split(",") if x]
-    report = {"candidateCommit": args.candidate, "targetUrl": base, "runtime": "production standalone, exact source/build as explicitly handed off by owner", "buildId": args.build_id, "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.", "requests": requests, "submitted": submitted, "configSaves": config_saves, "evidence": evidence, "errors": errors}
+    report = {"candidateCommit": args.candidate, "targetUrl": base, "runtime": "production standalone, exact source/build as explicitly handed off by owner", "buildId": args.build_id, "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.", "requests": requests, "submitted": submitted, "configSaves": config_saves, "extensionConfigSaves": extension_config_saves, "evidence": evidence, "errors": errors}
     long_readme = "\n\n".join(f"## Independent section {i}\n\n合成长说明用于测试操作可达性 {i}。" for i in range(100))
 
     def operation(body, kind):
@@ -122,7 +124,10 @@ async def main():
             else:
                 data, status = mcp_config, 200
         elif u.path == "/api/config-registry/extensions":
-            data, status = {"domain": "extensions", "data": {"prefilterPolicy": {"enabled": False, "futurePolicy": "keep", "skills": {"future": 0}}, "modelBindings": {}, "futureConfig": {"keep": False}}, "warnings": []}, 200
+            if req.method == "POST":
+                extension_config_saves.append(req.post_data_json)
+                extension_config["data"] = req.post_data_json["data"]
+            data, status = extension_config, 200
         elif u.path in ["/api/models", "/api/skills/safety/reviews", "/api/admin-inbox"]:
             data, status = ([] if u.path == "/api/models" else {"items": []}), 200
         row["status"] = status
@@ -438,12 +443,59 @@ async def main():
                         return {label:el.getAttribute('aria-label')||el.textContent.trim(),x:r.x,y:r.y,width:r.width,height:r.height,clip,
                           inside:r.left>=clip.left-.5&&r.top>=clip.top-.5&&r.right<=clip.right+.5&&r.bottom<=clip.bottom+.5};
                       })""")
-                    measurements.append({"width": width, "theme": desired, "controls": controls})
+                    save_status = await page.locator(".admin-page-header").evaluate("""header=>{
+                      const status=[...header.querySelectorAll('span')].find(el=>el.textContent.trim().startsWith('自动选择策略：'));
+                      if(!status)return null;const range=document.createRange();range.selectNodeContents(status);const b=status.getBoundingClientRect();
+                      return {text:status.textContent.trim(),lineRects:range.getClientRects().length,x:b.x,y:b.y,width:b.width,height:b.height};
+                    }""")
+                    measurements.append({"width": width, "theme": desired, "controls": controls, "saveStatus": save_status})
                     await page.screenshot(path=str(out / f"header-actions-{width}-{desired}.png"))
                 clipped = [{"viewportWidth": item["width"], "theme": item["theme"], **control} for item in measurements for control in item["controls"] if not control["inside"]]
                 assert not clipped, json.dumps(clipped, ensure_ascii=False)
+                assert all(item["saveStatus"] and item["saveStatus"]["lineRects"] == 1 for item in measurements), measurements
                 return {"measurements": measurements, "allHeaderActionsReachable": True}
             await test("X15-header-actions-clipping", "convenience-visual", header_action_reachability)
+
+            async def header_save_and_reload_clicks():
+                results = []
+                for width, desired in [(1440, "light"), (390, "light"), (1440, "dark"), (390, "dark")]:
+                    await close()
+                    await page.set_viewport_size({"width": width, "height": 844 if width == 390 else 900})
+                    await page.goto(base + "/admin/extensions", wait_until="networkidle")
+                    await page.get_by_text("部分数据加载失败，可重试；已加载数据仍可使用。", exact=True).wait_for()
+                    if desired not in (await page.locator("html").get_attribute("class")).split():
+                        await page.get_by_role("button", name="切换明暗主题", exact=True).click()
+                    await page.wait_for_function("desired=>document.documentElement.classList.contains(desired)", arg=desired)
+                    header = page.locator(".admin-page-header")
+                    save = header.get_by_role("button", name="保存", exact=True)
+                    assert await save.is_enabled()
+                    save_box = await bounds(save)
+                    assert save_box["inside"], save_box
+                    before = len(extension_config_saves)
+                    async with page.expect_response(lambda response: urlparse(response.url).path == "/api/config-registry/extensions" and response.request.method == "POST") as response_info:
+                        b = save_box["box"]
+                        await page.mouse.click(b["x"] + b["width"]/2, b["y"] + b["height"]/2)
+                    assert (await response_info.value).status == 200
+                    assert len(extension_config_saves) == before + 1
+                    await header.get_by_text("自动选择策略：已保存", exact=True).wait_for()
+                    assert extension_config["data"]["futureConfig"] == {"keep": False}
+                    assert extension_config["data"]["prefilterPolicy"]["skills"]["future"] == 0
+                    reload_box = await bounds(header.get_by_role("button", name="刷新扩展", exact=True))
+                    assert reload_box["inside"], reload_box
+                    async with page.expect_response(lambda response: urlparse(response.url).path == "/api/extensions/reload" and response.request.method == "POST") as response_info:
+                        b = reload_box["box"]
+                        await page.mouse.click(b["x"] + b["width"]/2, b["y"] + b["height"]/2)
+                    assert (await response_info.value).status == 503
+                    failure = page.get_by_text("刷新失败", exact=True).first
+                    await failure.wait_for()
+                    failure_box = await bounds(failure)
+                    assert failure_box["inside"], failure_box
+                    results.append({"width": width, "theme": desired, "save": save_box, "reload": reload_box,
+                                    "reloadFailure": failure_box, "savePostCount": len(extension_config_saves)-before,
+                                    "savedStatusVisible": True, "unknownPreserved": True, "realEngineMutation": False})
+                    await page.screenshot(path=str(out / f"header-clicks-{width}-{desired}.png"))
+                return {"variants": results, "coordinateClicksWithoutAutomaticScrolling": True}
+            await test("X16-header-save-reload-coordinate-clicks", "function-convenience", header_save_and_reload_clicks)
         finally:
             for gate in holds.values():
                 gate.set()

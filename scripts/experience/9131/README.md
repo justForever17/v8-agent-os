@@ -29,4 +29,6 @@ Admin+Extensions共享包组合验收见 `INTEGRATION-C03B7EBB-REVIEW.md`：2293
 
 Phone新release定向闭环见 `PHONE-6111D7C6-REVIEW.md`：实际AVD ABABA及A/B分别活动态进程重启保留身份/消息/草稿，原切换崩溃不再复现。S06对照82ed失败/6111通过，验证submitting恢复unknown而保留消息ID/指纹/新输入；native、存储替身、作者terminal/长流和物理机仍分层陈述。
 
+扩展管理动作行闭环见 `INTEGRATION-829B34A3-REVIEW.md`：原X15裁切判据在两主题390/桌面通过，保存状态单行；X16以实际坐标点击保存/刷新并观察合成响应反馈，X05/footer和X14/header定向回归通过。原c03失败记录保留，不重写成首轮全绿。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

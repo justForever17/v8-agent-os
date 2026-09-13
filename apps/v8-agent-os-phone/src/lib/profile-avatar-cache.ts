@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
+import { resourceCacheDirectory } from "@/src/lib/resource-cache-directory";
 
 type AvatarCacheRecord = {
     source: string;
@@ -51,7 +52,7 @@ export async function cacheProfileAvatar(source: string, authorityKey: string): 
         return stored.localUri;
     }
 
-    const directory = `${root}v8-profile-avatar/${encodeURIComponent(authorityKey)}/`;
+    const directory = await resourceCacheDirectory(root, "avatar", authorityKey);
     const localUri = `${directory}avatar-${stableHash(normalizedSource)}.webp`;
     await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);
     if (!await localFileExists(localUri)) {

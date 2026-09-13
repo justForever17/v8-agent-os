@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
+import { resourceCacheDirectory } from "@/src/lib/resource-cache-directory";
 
 type BackgroundCacheRecord = {
     source: string;
@@ -46,7 +47,7 @@ export async function cacheProfileBackground(source: string, mediaType: "image" 
         return stored.localUri;
     }
 
-    const directory = `${root}v8-profile-background/${encodeURIComponent(authorityKey)}/`;
+    const directory = await resourceCacheDirectory(root, "background", authorityKey);
     const extension = mediaType === "video" ? "mp4" : "webp";
     const localUri = `${directory}background-${stableHash(normalizedSource)}.${extension}`;
     await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);

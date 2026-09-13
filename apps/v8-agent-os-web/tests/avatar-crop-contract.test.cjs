@@ -39,7 +39,7 @@ test("Phone avatar truth refreshes and caches immutable avatar URLs locally", ()
   assert.match(session, /cacheProfileAvatar\(avatar, active\.authorityKey\)/);
   assert.match(cache, /FileSystem\.downloadAsync/);
   assert.match(cache, /v8\.phone\.avatar\.\$\{authorityKey\}/);
-  assert.match(cache, /encodeURIComponent\(authorityKey\)/);
+  assert.match(cache, /resourceCacheDirectory\(root, "avatar", authorityKey\)/);
   assert.match(cache, /avatar-\$\{stableHash\(normalizedSource\)\}\.webp/);
 });
 

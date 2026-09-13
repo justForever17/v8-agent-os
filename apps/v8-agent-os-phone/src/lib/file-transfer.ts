@@ -2,6 +2,7 @@ import * as Linking from "expo-linking";
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform, Share } from "react-native";
 import { translateCurrent } from "@/src/lib/locale";
+import { resourceCacheDirectory } from "@/src/lib/resource-cache-directory";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -147,7 +148,7 @@ export async function saveResponseToCache(
         throw new Error(translateCurrent("src.lib.file_transfer.text"));
     }
     if (!options.resourceKey) throw new Error("Missing resource identity");
-    const folder = `${root}v8-agent-os/${encodeURIComponent(options.resourceKey)}/`;
+    const folder = await resourceCacheDirectory(root, "resource", options.resourceKey);
     await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
     const uri = `${folder}${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName}`;
     const declaredBytes = Number(response.headers.get("Content-Length") || 0);

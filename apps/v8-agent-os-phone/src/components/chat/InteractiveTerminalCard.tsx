@@ -160,6 +160,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     useEffect(() => {
         if (!pollingEnabled || !process.processId || !outputPath || !focused || !appVisible || isCollapsed) return;
         const controller = new AbortController();
+        const currentTarget = () => !controller.signal.aborted && targetRef.current === targetKey;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const poll = async () => {
             let delay = 1200;
@@ -167,19 +168,20 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                 const requestedCursor = outputCursorRef.current.cursor;
                 const separator = outputPath.includes("?") ? "&" : "?";
                 const response = await authorizedFetch(`${outputPath}${separator}cursor=${requestedCursor}`, { signal: controller.signal });
+                if (!currentTarget()) return;
                 if (response.status === 400 && requestedCursor > 0) outputCursorRef.current = initialTerminalOutputCursor();
                 if (response.status === 404) {
                     await response.text();
-                    if (!controller.signal.aborted) { setPollingEnabled(false); setIsRunning(false); }
+                    if (currentTarget()) { setPollingEnabled(false); setIsRunning(false); }
                     return;
                 }
                 if (!response.ok) throw new Error(t("phone.devices.terminalUnavailable"));
                 const payload = await response.json() as {
-                    output?: string; outputCursor?: number; outputGeneration?: string | number; outputHasMore?: boolean;
+                    output?: string; outputCursor?: number; outputGeneration?: string | number; outputHasMore?: boolean; outputReset?: boolean;
                     stableScreenSnapshot?: string; screenSnapshot?: string; is_running?: boolean; isRunning?: boolean;
                     process?: { status?: string; is_running?: boolean; stable_screen_snapshot?: string; screen_snapshot?: string };
                 };
-                if (controller.signal.aborted) return;
+                if (!currentTarget()) return;
                 const next = mergeTerminalOutput(outputCursorRef.current, requestedCursor, payload);
                 const screen = normalizeTerminalScreen(String(payload.stableScreenSnapshot || payload.screenSnapshot || payload.process?.stable_screen_snapshot || payload.process?.screen_snapshot || ""));
                 setTerminalOutput(prefersScreenPolling ? screen : cleanTerminalOutput(next.output));
@@ -192,15 +194,15 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                 if (!stillRunning && !payload.outputHasMore && !next.reset) { setPollingEnabled(false); return; }
                 if (payload.outputHasMore || next.reset) delay = 60;
             } catch {
-                if (controller.signal.aborted) return;
+                if (!currentTarget()) return;
                 setConnectionNote(t("phone.devices.terminalUnavailable"));
                 delay = 3000;
             }
-            if (!controller.signal.aborted) timer = setTimeout(() => void poll(), delay);
+            if (currentTarget()) timer = setTimeout(() => void poll(), delay);
         };
         void poll();
         return () => { controller.abort(); if (timer) clearTimeout(timer); };
-    }, [authorizedFetch, outputPath, pollingEnabled, prefersScreenPolling, process.processId, focused, appVisible, isCollapsed, t]);
+    }, [authorizedFetch, outputPath, pollingEnabled, prefersScreenPolling, process.processId, targetKey, focused, appVisible, isCollapsed, t]);
 
     const handleTerminate = async () => {
         if (!process?.terminateAdminPath) {

@@ -123,6 +123,18 @@ test("slow acceptance never erases v2; unrelated queue updates do not prevent v1
   await store.flushAll();
 });
 
+test("process restart turns an in-flight submission into an unknown receipt without changing its id", async () => {
+  const storage = memoryStorage();
+  const { PhoneDraftStore } = loader({ "@/src/lib/mobile-storage": {} })("@/src/lib/phone-drafts");
+  const first = new PhoneDraftStore(storage);
+  await first.hydrate("A"); first.set("A", "input", "unsent text");
+  first.set("A", "pendingIntent", { clientMessageId: "intent-unique", state: "submitting", fingerprint: "same-intent" });
+  await first.flush("A");
+  const restarted = new PhoneDraftStore(storage); await restarted.hydrate("A");
+  assert.deepEqual(restarted.get("A").values.pendingIntent, { clientMessageId: "intent-unique", state: "acceptance_unknown", fingerprint: "same-intent" });
+  assert.equal(restarted.get("A").values.input, "unsent text");
+});
+
 test("SQLite write rejection is visible, keeps the in-memory draft, and recovers on explicit flush", async () => {
   const storage = memoryStorage(); let fail = true;
   const { PhoneDraftStore } = loader({ "@/src/lib/mobile-storage": {} })("@/src/lib/phone-drafts");
@@ -293,4 +305,46 @@ test("terminal UTF-8 byte cursor never repeats a pipe prefix and generation chan
   assert.equal(state.cursor, 0); assert.equal(state.output, ""); assert.equal(state.reset, true);
   state = mergeTerminalOutput(state, 0, { output: "new-generation", outputCursor: 14, outputGeneration: "g2" });
   assert.equal(state.output, "new-generation"); assert.equal(state.cursor, 14);
+  state = mergeTerminalOutput(state, 14, { output: "reset tail", outputCursor: 2, outputGeneration: "g2", outputReset: true });
+  assert.equal(state.output, ""); assert.equal(state.cursor, 0); assert.equal(state.reset, true);
+  state = mergeTerminalOutput(state, 0, { output: "reset-start", outputCursor: 11, outputGeneration: "g2" });
+  assert.equal(state.output, "reset-start");
+});
+
+test("actual terminal polling effect ignores late A 400 after switching to B even when abort is ineffective", async () => {
+  const filename = path.join(root, "src/components/chat/InteractiveTerminalCard.tsx");
+  const source = ts.createSourceFile(filename, fs.readFileSync(filename, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "useEffect" && node.arguments[0]?.getText(source).includes("const requestedCursor")) callback = node.arguments[0].getText(source);
+    ts.forEachChild(node, visit);
+  }
+  visit(source); assert.ok(callback);
+  const effects = []; let resolve;
+  const targetRef = { current: "A" }, outputCursorRef = { current: { cursor: 5, generation: "A", output: "A", reset: false } };
+  const context = vm.createContext({ pollingEnabled: true, process: { processId: "shared-process" }, outputPath: "/fixture", focused: true, appVisible: true, isCollapsed: false,
+    targetKey: "A", targetRef, outputCursorRef, AbortController: class { signal = { aborted: false }; abort() {} },
+    authorizedFetch: () => new Promise((done) => { resolve = done; }), setTimeout: () => { effects.push("scheduled"); }, clearTimeout() {},
+    initialTerminalOutputCursor: () => { effects.push("reset"); return { cursor: 0 }; }, setPollingEnabled: () => effects.push("polling"), setIsRunning: () => effects.push("running"),
+    setConnectionNote: () => effects.push("note"), t: (key) => key,
+  });
+  const code = ts.transpileModule(`this.callback = ${callback}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  vm.runInContext(code, context);
+  const cleanup = context.callback();
+  cleanup(); targetRef.current = "B"; outputCursorRef.current = { cursor: 99, generation: "B", output: "B", reset: false };
+  resolve({ status: 400, ok: false }); await tick();
+  assert.equal(outputCursorRef.current.cursor, 99); assert.equal(outputCursorRef.current.output, "B"); assert.deepEqual(effects, []);
+});
+
+test("full resource identities map to distinct short native directory names and same-key calls share storage", async () => {
+  const storage = memoryStorage();
+  const { resourceCacheDirectory } = loader({ "@/src/lib/mobile-storage": { readMetadata: storage.read, writeMetadata: storage.write } })("@/src/lib/resource-cache-directory");
+  const longIdentity = JSON.stringify(["authority".repeat(60), "serving", "session", "resource", "version"]);
+  const [a, again, b] = await Promise.all([
+    resourceCacheDirectory("file:///cache/", "artifact", longIdentity),
+    resourceCacheDirectory("file:///cache/", "artifact", longIdentity),
+    resourceCacheDirectory("file:///cache/", "artifact", longIdentity + "B"),
+  ]);
+  assert.equal(a, again); assert.notEqual(a, b); assert.ok(a.length < 100); assert.equal(storage.values.size, 2);
+  assert.equal(await resourceCacheDirectory("file:///cache/", "artifact", longIdentity), a);
 });

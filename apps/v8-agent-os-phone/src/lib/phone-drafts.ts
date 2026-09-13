@@ -40,6 +40,12 @@ export class PhoneDraftStore {
             try {
                 const raw = await this.storage.read(`v8.phone.draft.v2.${key}`);
                 const saved = raw ? JSON.parse(raw) as DraftSnapshot : null;
+                const pending = saved?.values?.pendingIntent as Record<string, unknown> | undefined;
+                if (pending?.state === "submitting") {
+                    // A previous process cannot still confirm this submission.
+                    // Preserve its id and fingerprint for reconciliation / retry.
+                    saved!.values.pendingIntent = { ...pending, state: "acceptance_unknown" };
+                }
                 const current = entry.snapshot;
                 // Fields edited while storage was loading win; untouched fields restore.
                 this.notify(entry, { ...current, loaded: true, error: "",

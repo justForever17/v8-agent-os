@@ -110,7 +110,7 @@ export function PhoneWordmark({
     const shine = useSharedValue(0);
     const reduceMotion = useReducedMotion();
     const appVisible = useAppVisibility();
-    const animationEnabled = active && appVisible && !reduceMotion;
+    const animationEnabled = dark && active && appVisible && !reduceMotion;
     const [textWidth, setTextWidth] = useState(Math.max(Math.ceil(text.length * fontSize * 0.68), 90));
     const lineHeight = Math.round(fontSize * 1.18);
 
@@ -150,6 +150,7 @@ export function PhoneWordmark({
     };
 
     const glowColor = dark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.12)";
+    if (!dark) return <WordmarkText color="#172033" text={text} fontSize={fontSize} />;
 
     return (
         <View style={[styles.wordmark, { width: textWidth, height: lineHeight }]}>

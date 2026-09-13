@@ -50,7 +50,7 @@ const server = http.createServer(async (req, res) => {
   if (route.includes("/turns") || route.includes("/timeline/sync")) return send({ sessionId: route.split("/")[4], messages: [{ id: "message-1", role: "assistant", content: `${profile} synthetic message`, ordinal: 1, createdAt: timestamp, turnId: "turn-1" }], deletions: [], syncCursor: `cursor-${profile}`, pageInfo: { hasOlder: false } });
   if (route.endsWith("/processes")) return send({ processes: [], stale: false });
   if (route.includes("/snapshot") || /^\/api\/client\/conversations\/[^/]+$/.test(route)) return send({ conversation: sessions[0], session: sessions[0], runtime: { status: "idle", latestSeq: 0 }, messages: [], queuedMessages: [], controls: { canInterrupt: false }, latestSeq: 0, messagesOmitted: true });
-  if (route.endsWith("/chat/submit") || route.endsWith("/chat")) {
+  if (route.endsWith("/chat-submit") || route.endsWith("/chat/submit") || route.endsWith("/chat")) {
     counts.submits++; if (!accepted.has(body.clientMessageId)) accepted.set(body.clientMessageId, { accepted: true, runId: "fixture-run", userMessage: { id: body.clientMessageId, role: "user", content: body.message || body.content || "fixture" } });
     setTimeout(() => send(accepted.get(body.clientMessageId)), 1500); return;
   }

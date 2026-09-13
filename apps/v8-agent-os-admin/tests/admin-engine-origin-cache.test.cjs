@@ -35,6 +35,30 @@ function response(data) {
   };
 }
 
+test("structured server failures stay readable and retain cached data for retry", async () => {
+  const cases = [
+    [{ detail: { message: "Source is temporarily offline" } }, "Source is temporarily offline"],
+    [{ detail: "Retry this source" }, "Retry this source"],
+    [{ error: { message: "Installation interrupted" } }, "Installation interrupted"],
+    [{ detail: { code: "offline" }, error: "Try again" }, "Try again"],
+    [{ detail: [{ type: "validation" }] }, "HTTP 502"],
+  ];
+  for (const [payload, expected] of cases) {
+    let failed = true;
+    const cache = loadTypeScriptModule("src/lib/admin-client-cache.ts", {
+      fetchImpl: async () => Response.json(failed ? payload : { items: ["recovered"] }, { status: failed ? 502 : 200 }),
+    });
+    const url = "/api/extensions/store/skills?provider=modelscope";
+    cache.primeAdminJsonCache(url, { items: ["retained"] });
+    await assert.rejects(cache.fetchAdminJson(url, { force: true }), { message: expected });
+    assert.equal(cache.getAdminJsonSnapshot(url).error, expected);
+    assert.deepEqual(cache.peekAdminJsonCache(url), { items: ["retained"] });
+    failed = false;
+    assert.deepEqual(await cache.fetchAdminJson(url, { force: true }), { items: ["recovered"] });
+    assert.equal(cache.getAdminJsonSnapshot(url).error, null);
+  }
+});
+
 function systemBaseEnvelope(engineBaseUrl) {
   return {
     domain: "system-base",

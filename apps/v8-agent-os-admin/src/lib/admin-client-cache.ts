@@ -282,7 +282,11 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
       assertCurrentGeneration(requestGeneration);
       if (!response.ok) {
         const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
-        throw new Error(String(record.detail || record.error || `HTTP ${response.status}`));
+        const message = [record.detail, record.error, record.message]
+          .map((value) => typeof value === "string" ? value
+            : value && typeof value === "object" && "message" in value ? value.message : undefined)
+          .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+        throw new Error(message?.trim() || `HTTP ${response.status}`);
       }
       const current = cache.get(key);
       if (current?.requestId === requestId) {

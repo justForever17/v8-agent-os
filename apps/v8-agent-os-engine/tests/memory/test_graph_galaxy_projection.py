@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import asyncio
 
 import pytest
 
@@ -98,3 +99,29 @@ def test_overview_pages_global_once_and_rejects_forged_cluster(graph, monkeypatc
     assert found["nextOffset"] is None
     with pytest.raises(ValueError, match="not_found"):
         service.get_graph_overview(cluster_id='["workspace","unregistered"]')
+
+
+def test_global_background_entity_connects_only_to_explicit_workspace_through_api(graph, monkeypatch):
+    from api.knowledge_routes import add_graph_relation, remove_graph_relation
+    from api.models import GraphRelationPayload
+    from fastapi import HTTPException
+    from runtimes.memory.knowledge_service import knowledge_service
+
+    monkeypatch.setattr(knowledge_service, "_build_graph_workspace_catalog", lambda: {"defaultWorkspaceKey": "a", "items": [
+        {"workspaceKey": "a", "label": "A", "_scopes": {"workspace:a"}, "writeScope": "workspace:a"},
+        {"workspaceKey": "b", "label": "B", "_scopes": {"workspace:b"}, "writeScope": "workspace:b"},
+    ]})
+    graph.add_scoped_relation("global-only", "OWNS", "global-target", scope="global", evidence_refs=["fixture://global"])
+    global_before = graph.get_graph_cluster(scopes=["global"])
+    result = asyncio.run(add_graph_relation(GraphRelationPayload(
+        subject="global-only", predicate="USES", object="new-local-target", workspaceKey="b", maintainerSource="human_admin")))
+    assert result["created"] is True
+    assert graph.get_graph_cluster(scopes=["global"]) == global_before
+    assert graph.query_graph_cluster_entity(entity="global-only", scopes=["workspace:a"])["total"] == 0
+    local = graph.query_graph_cluster_entity(entity="global-only", scopes=["workspace:b"])
+    assert local["total"] == 1 and local["relations"][0]["scope"] == "workspace:b"
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(remove_graph_relation(GraphRelationPayload(
+            subject="global-only", predicate="OWNS", object="global-target", workspaceKey="b", scope="global")))
+    assert rejected.value.status_code == 400
+    assert graph.get_graph_cluster(scopes=["global"]) == global_before

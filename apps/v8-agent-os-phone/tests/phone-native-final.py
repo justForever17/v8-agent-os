@@ -1,5 +1,8 @@
 """Narrow final native gates. Requires the disposable emulator and synthetic fixture.
-Run --live --serial emulator-5586 --output <directory> --step identity|inspect|long-stream.
+Run --live --serial emulator-5586 --output <directory> --step <gate>.
+Transport gates run in order: transport-pair, transport-offline,
+transport-bodies, transport-restore. They create/remove only a synthetic C
+profile and preserve the handed-off A/B profiles and independent drafts.
 This never reads credentials or modifies real profile data.
 """
 import argparse
@@ -10,6 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 parser = argparse.ArgumentParser()
@@ -78,6 +82,9 @@ def capture(name):
 def restart():
     adb('shell', 'am', 'force-stop', 'com.v8agentos.phone')
     adb('shell', 'am', 'start', '-n', 'com.v8agentos.phone/.MainActivity')
+
+def dismiss_read_error():
+    if '读取会话失败' in texts(ui()): tap('OK')
 
 def assert_draft(profile):
     expected = f'Independent_{profile}1_9131_UNSENT'
@@ -170,6 +177,77 @@ elif args.step == 'terminal':
     navigate('连接与设备'); tap('切换')
     navigate('工作区'); tap('A task 1'); assert_draft('A')
     result.update({'reads': reads, 'checks': ['native terminal HTTP output reachable with UTF-8 byte cursor', 'same-generation reset requests cursor zero', 'switch away from active terminal to B and back']})
+elif args.step == 'prepare-A':
+    visible = texts(ui())
+    if any('读取会话失败' in text for text in visible): tap('OK')
+    if wait(editor=True).get('text') == 'Independent_B1_9131_UNSENT':
+        navigate('连接与设备'); tap('切换')
+    assert_draft('A')
+    result['checks'] = ['A1 selected for native gate']
+elif args.step == 'transport-pair':
+    if '连接这台设备' not in texts(ui()):
+        assert_draft('A')
+        navigate('连接与设备'); tap('配对另一台设备'); tap('备用配对链接')
+    tap_node(wait(editor=True)); ui()
+    link = json.dumps({'instanceId': 'fixture-C', 'code': 'synthetic-code',
+        'adminUrls': ['http://127.0.0.1:22836/C', 'http://127.0.0.1:22836/wrong']}, separators=(',', ':'))
+    link = 'v8agentosphone://pair?manifest=' + urllib.parse.quote(link, safe='')
+    adb('shell', 'input', 'keycombination', '113', '29')
+    for start in range(0, len(link), 60):
+        adb('shell', f"input text '{link[start:start+60]}'")
+        ui()  # Wait for controlled TextInput to commit each injected key burst.
+    adb('shell', 'input', 'keyevent', '4'); ui()
+    tap('连接并进入 V8 OS')
+    navigate('工作区'); tap('C task 1')
+    type_text('Native_C_Transport_Draft')
+    navigate('连接与设备')
+    root = ui()
+    labels = [node for node in root.iter('node') if node.get('class') == 'android.widget.Button' and node.get('content-desc') == '127.0.0.1:22836']
+    tap_node(labels[0])  # newly paired C is first; preserve A/B names
+    type_text('Transport_C_9131'); tap('保存')
+    tap('V8 Agent OS')
+    assert wait(editor=True).get('text') == 'Native_C_Transport_Draft'
+    result['checks'] = ['paired independent synthetic C with wrong alias', 'C draft prepared without changing A/B']
+elif args.step == 'transport-offline':
+    fixture({'offlineC': True, 'resetRequestCounts': True})
+    restart()
+    dismiss_read_error()
+    assert wait(editor=True).get('text') == 'Native_C_Transport_Draft'
+    visible = capture('C-offline-cached')
+    requests = fixture(route='metrics')['credentialRequests']
+    assert any(row['profile'] == 'wrong' for row in requests), requests
+    assert all(not row['authorization'] and not row['refreshToken'] for row in requests), requests
+    result.update({'requests': requests, 'checks': ['native cold start offline keeps paired C user and draft', 'wrong alias receives only unauthenticated instance probes']})
+    fixture({'offlineC': False})
+elif args.step == 'transport-bodies':
+    fixture({'holdBodiesC': True, 'resetRequestCounts': True})
+    restart()
+    samples = []
+    start = time.monotonic()
+    try:
+        while time.monotonic() - start < 7:
+            metrics = fixture(route='metrics')
+            samples.append({'seconds': round(time.monotonic()-start, 2), 'held': metrics['heldBodies'], 'maximum': metrics['maximumHeldBodies']})
+            time.sleep(0.25)
+    finally: fixture({'holdBodiesC': False})
+    assert max(row['maximum'] for row in samples) == 2, samples
+    result.update({'samples': samples, 'checks': ['native headers with held bodies never exceed two finite reads', 'cached C draft remains readable after held-body failures']})
+    dismiss_read_error()
+    assert wait(editor=True).get('text') == 'Native_C_Transport_Draft'
+    restart()
+elif args.step == 'transport-restore':
+    fixture({'offlineC': False, 'holdBodiesC': False})
+    dismiss_read_error()
+    navigate('连接与设备'); type_text('127.0.0.1')
+    tap('切换')
+    current = wait(editor=True).get('text')
+    if current == 'Independent_B1_9131_UNSENT':
+        navigate('连接与设备'); type_text('127.0.0.1'); tap('切换')
+    assert_draft('A')
+    navigate('连接与设备'); type_text('Transport_C_9131'); tap('Transport_C_9131')
+    tap('移除连接'); tap('移除连接')
+    tap('V8 Agent OS'); assert_draft('A')
+    result['checks'] = ['removed only synthetic temporary C profile', 'A1 and A/B pairing preserved']
 elif args.step == 'long-stream':
     assert_draft('A')
     before = fixture(route='metrics')

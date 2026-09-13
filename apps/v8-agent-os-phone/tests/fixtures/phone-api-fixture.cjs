@@ -2,8 +2,9 @@
 const http = require("node:http");
 const port = Number(process.argv[2] || 22836);
 const nativeFinal = process.argv.includes("--native-final");
-const counts = { requests: 0, activeStreams: 0, maximumStreams: 0, submits: 0, streamBytes: 0, streamConnections: 0, artifactDownloads: 0, terminalReads: [] };
-const controls = { holdSubmit: false, terminalEnabled: false, terminalReset: false, terminalGeneration: "fixture-generation-1", streamPaddingBytes: 0 };
+const counts = { requests: 0, activeStreams: 0, maximumStreams: 0, submits: 0, streamBytes: 0, streamConnections: 0, artifactDownloads: 0, terminalReads: [], credentialRequests: [], heldBodies: 0, maximumHeldBodies: 0 };
+const heldBodies = new Set();
+const controls = { holdSubmit: false, terminalEnabled: false, terminalReset: false, terminalGeneration: "fixture-generation-1", streamPaddingBytes: 0, offlineC: false, holdBodiesC: false };
 const submitReceipts = [];
 const longArtifactId = "artifact-" + "long-identity-".repeat(30);
 const accepted = new Map();
@@ -16,18 +17,31 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${port}`);
   let bytes = ""; for await (const chunk of req) bytes += chunk;
   let body; try { body = JSON.parse(bytes || "{}"); } catch { body = {}; }
-  const parts = url.pathname.split("/"); const profile = parts[1] === "B" ? "B" : "A";
+  const parts = url.pathname.split("/"); const profile = ["B", "C", "wrong"].includes(parts[1]) ? parts[1] : "A";
   const base = `http://127.0.0.1:${port}/${profile}`;
-  const route = url.pathname.replace(/^\/[AB]/, "");
+  const route = url.pathname.replace(/^\/(?:[ABC]|wrong)(?=\/)/, "");
   const user = { id: "fixture-owner", login: "fixture", name: "Test owner", email: "fixture@invalid", role: "ADMIN" };
   const send = (payload, status = 200) => { res.statusCode = status; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(payload)); };
   if (route === "/fixture/metrics") return send(counts);
   if (nativeFinal && route === "/fixture/control") {
     if (req.method === "POST") Object.assign(controls, body);
+    if (!controls.holdBodiesC) for (const response of heldBodies) response.end('true}');
+    if (body.resetRequestCounts) { counts.credentialRequests = []; counts.maximumHeldBodies = counts.heldBodies; }
     return send({ ...controls, submitReceipts, longArtifactId });
   }
+  if (nativeFinal && ["C", "wrong"].includes(profile)) {
+    counts.credentialRequests.push({ profile, route, authorization: Boolean(req.headers.authorization), refreshToken: Boolean(body.refreshToken) });
+    if (counts.credentialRequests.length > 500) counts.credentialRequests.shift();
+    if (profile === "C" && controls.offlineC) return send({ error: "synthetic offline C" }, 503);
+    if (profile === "C" && controls.holdBodiesC && route.startsWith("/api/client/") && !route.endsWith("/instance") && !route.includes("/stream")) {
+      res.writeHead(200, { "Content-Type": "application/json" }); res.write('{"held":');
+      heldBodies.add(res); counts.heldBodies++; counts.maximumHeldBodies = Math.max(counts.maximumHeldBodies, counts.heldBodies);
+      res.on("close", () => { if (heldBodies.delete(res)) counts.heldBodies--; }); return;
+    }
+  }
   if (route.endsWith("/instance")) return send({ instanceId: `fixture-${profile}` });
-  if (route.endsWith("/pairing/consume") || route.endsWith("/auth/refresh")) return send({ accessToken: `synthetic-access-${profile}`, refreshToken: `synthetic-refresh-${profile}`, user, instanceId: `fixture-${profile}`, adminBaseUrl: base, adminUrls: [base] });
+  if (route.endsWith("/pairing/consume") || route.endsWith("/auth/refresh")) return send({ accessToken: `synthetic-access-${profile}`, refreshToken: `synthetic-refresh-${profile}`, user, instanceId: `fixture-${profile}`, adminBaseUrl: base, adminUrls: profile === "C" ? [base, `http://127.0.0.1:${port}/wrong`] : [base] });
+  if (route.endsWith("/connection")) return send({ user, linkManifest: { instanceId: `fixture-${profile}` }, connection: { adminBaseUrl: base } });
   if (route.endsWith("/auth/me")) return send({ user });
   if (route.endsWith("/auth/logout")) return send({ success: true });
   if (route.includes("/stream")) {

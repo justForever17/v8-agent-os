@@ -68,19 +68,21 @@ test('body backpressure: delayed response bodies retain both permits, queued abo
 });
 
 test('LAN recovery: foreground singleflight validates instance and connection owner before selecting local', async () => {
-  const old = global.fetch, seen = [], endpoints = []; let localIdentity = 'wrong';
+  const old = global.fetch, seen = [], endpoints = []; let localIdentity = 'wrong', returnedOwner = 'owner';
   const transport = create({ onEndpoint: value => endpoints.push(value) });
   global.fetch = async (url, init) => {
     seen.push({ url, authorized: new Headers(init.headers).has('authorization') });
     if (url.endsWith('/instance')) { await tick(); return Response.json({ instanceId: localIdentity }); }
-    return Response.json({ user: { id: 'owner' }, linkManifest: { instanceId: 'paired-instance' } });
+    return Response.json({ user: { id: returnedOwner }, linkManifest: { instanceId: 'paired-instance' } });
   };
   try {
     transport.setForeground(true);
     await Promise.all(Array.from({ length: 8 }, () => transport.recoverLocalEndpoint()));
     assert.equal(endpoints.length, 0); assert.equal(seen.filter(row => row.authorized).length, 0);
     assert.equal(seen.filter(row => row.url.endsWith('/instance')).length, 1);
-    localIdentity = 'paired-instance'; await transport.recoverLocalEndpoint();
+    localIdentity = 'paired-instance'; returnedOwner = 'other-owner';
+    await transport.recoverLocalEndpoint(); assert.deepEqual(endpoints, []);
+    returnedOwner = 'owner'; await transport.recoverLocalEndpoint();
     assert.deepEqual(endpoints, ['http://192.168.1.2']);
     assert.ok(seen.at(-1).url.endsWith('/connection') && seen.at(-1).authorized);
     transport.setForeground(false); const count = seen.length;

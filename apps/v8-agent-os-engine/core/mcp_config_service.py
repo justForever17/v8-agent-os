@@ -6,6 +6,8 @@ from typing import Any
 from core.interprocess_lock import interprocess_file_lock
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+import hashlib
+import json
 
 
 _MCP_CONFIG_LOCK_TIMEOUT_SECONDS = 30.0
@@ -97,12 +99,16 @@ def validate_mcp_server_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]
                 "missing_command",
                 f"MCP server `{server_name}` 使用 stdio 时必须提供 command。",
             )
-        if not disabled and transport_type in {"http", "sse"} and not url:
+        endpoint_ref = server.get("endpointRef")
+        if endpoint_ref:
+            from core.security.credentials import CredentialRefStore
+            CredentialRefStore._target(str(endpoint_ref))
+        if not disabled and transport_type in {"http", "sse"} and not (url or endpoint_ref):
             raise McpConfigValidationError(
                 "missing_url",
                 f"MCP server `{server_name}` 使用 {transport_type} 时必须提供 url。",
             )
-        if not disabled and not command and not url:
+        if not disabled and not command and not url and not endpoint_ref:
             raise McpConfigValidationError(
                 "missing_target",
                 f"MCP server `{server_name}` 至少需要提供 command 或 url。",
@@ -120,7 +126,12 @@ def request_mcp_inventory_refresh(reason: str) -> None:
         return
 
 
-def install_mcp_server_config(config: dict[str, Any], *, refresh_reason: str = "mcp_config_tool_install") -> dict[str, Any]:
+def mcp_config_revision(server: dict[str, Any] | None) -> str:
+    return hashlib.sha256(json.dumps(server, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def install_mcp_server_config(config: dict[str, Any], *, refresh_reason: str = "mcp_config_tool_install",
+                              expected_revisions: dict[str, str] | None = None) -> dict[str, Any]:
     new_servers = validate_mcp_server_map(config)
     with interprocess_file_lock(
         _mcp_config_lock_path(),
@@ -131,6 +142,9 @@ def install_mcp_server_config(config: dict[str, Any], *, refresh_reason: str = "
         if not isinstance(existing_servers, dict):
             existing_servers = {}
         next_servers = dict(existing_servers)
+        for name, revision in (expected_revisions or {}).items():
+            if mcp_config_revision(existing_servers.get(name)) != revision:
+                raise McpConfigValidationError("config_conflict", "该 MCP 配置已变化，请检查当前配置后重试。")
         replaced_servers = sorted(name for name in new_servers if name in next_servers)
         next_servers.update(new_servers)
         storage.save_mcp_config({"mcpServers": next_servers})

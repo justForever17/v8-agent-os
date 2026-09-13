@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import re
@@ -18,8 +17,9 @@ import httpx
 import yaml
 
 from core.interprocess_lock import interprocess_file_lock
-from core.process_launch import run_windowless
+from core.process_launch import run_windowless_bounded
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+from core.skills_archive import ArchiveValidationError, extract_archive, skill_root
 
 _SUPPORTED_NPX_FLAGS = {"-y", "--yes"}
 _SKILL_INSTALL_BOOLEAN_FLAGS = {"-g", "--global", "-y", "--yes", "--copy"}
@@ -264,7 +264,7 @@ def _parse_github_source(source: str) -> tuple[str, str] | None:
 def _clone_from_github(owner: str, repo: str, destination: Path) -> Path:
     repo_url = f"https://github.com/{owner}/{repo}.git"
     if shutil.which("git"):
-        run_windowless(
+        run_windowless_bounded(
             ["git", "clone", "--depth", "1", repo_url, str(destination)],
             check=True,
             capture_output=True,
@@ -272,6 +272,7 @@ def _clone_from_github(owner: str, repo: str, destination: Path) -> Path:
             encoding="utf-8",
             errors="replace",
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=120,
         )
         return destination
 
@@ -303,14 +304,10 @@ def _resolve_source_tree(source: str, workspace: Path) -> Path:
 
 
 def _safe_extract_zip_bytes(content: bytes, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(content)) as archive:
-        for member in archive.infolist():
-            member_path = destination / member.filename
-            resolved_target = member_path.resolve(strict=False)
-            if not str(resolved_target).startswith(str(destination.resolve(strict=False))):
-                raise ValueError("压缩包包含非法路径，已拒绝导入。")
-        archive.extractall(destination)
+    try:
+        extract_archive(content, destination)
+    except (ArchiveValidationError, zipfile.BadZipFile) as exc:
+        raise SkillInstallValidationError("unsafe_archive", str(exc)) from None
 
 
 def _safe_extract_zip_file(archive_path: Path, destination: Path) -> None:
@@ -320,63 +317,16 @@ def _safe_extract_zip_file(archive_path: Path, destination: Path) -> None:
 
 def _validate_skill_zip_layout(content: bytes) -> str:
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            file_members = []
-            top_level_entries: set[str] = set()
-            root_level_files: list[str] = []
-            skill_md_relpaths: list[str] = []
-
-            for member in archive.infolist():
-                normalized = str(member.filename or "").replace("\\", "/").strip()
-                if not normalized or normalized.startswith("__MACOSX/"):
-                    continue
-
-                clean_parts = [part for part in normalized.split("/") if part and part != "."]
-                if not clean_parts:
-                    continue
-
-                top_level_entries.add(clean_parts[0])
-                if member.is_dir():
-                    continue
-
-                file_members.append(clean_parts)
-                if len(clean_parts) == 1:
-                    root_level_files.append(clean_parts[0])
-                if clean_parts[-1].lower() == "skill.md":
-                    skill_md_relpaths.append("/".join(clean_parts))
-
-            if not file_members:
-                raise SkillInstallValidationError(
-                    "empty_archive",
-                    "压缩包中没有可导入的文件。",
-                )
-            if root_level_files:
-                raise SkillInstallValidationError(
-                    "invalid_root_structure",
-                    "压缩包顶层必须只有一个目录，不能直接放散文件。",
-                    {"rootFiles": root_level_files[:8]},
-                )
-            if len(top_level_entries) != 1:
-                raise SkillInstallValidationError(
-                    "multiple_root_directories",
-                    "压缩包顶层必须只包含一个目录。",
-                    {"rootEntries": sorted(top_level_entries)},
-                )
-            if not skill_md_relpaths:
-                raise SkillInstallValidationError(
-                    "missing_skill_manifest",
-                    "压缩包内至少需要包含一个 SKILL.md 文件。",
-                )
-
-            return next(iter(top_level_entries))
-    except zipfile.BadZipFile as exc:
-        raise SkillInstallValidationError(
-            "invalid_zip",
-            "上传文件不是合法的 ZIP 压缩包。",
-        ) from exc
+        return skill_root(content)
+    except (ArchiveValidationError, zipfile.BadZipFile) as exc:
+        raise SkillInstallValidationError("invalid_zip", str(exc)) from None
 
 
 def _discover_skill_manifests(root: Path) -> list[SkillManifest]:
+    if (root / "SKILL.md").is_file():
+        frontmatter = _parse_yaml_frontmatter((root / "SKILL.md").read_text(encoding="utf-8"))
+        return [SkillManifest(root.name, str(frontmatter.get("name") or root.name),
+                              str(frontmatter.get("description") or ""), root)]
     candidates: list[Path] = []
     for preferred_root in (root / ".agents" / "skills", root / "skills"):
         if preferred_root.exists() and preferred_root.is_dir():
@@ -429,6 +379,7 @@ def _install_manifests(
     *,
     source: str,
     overwrite: bool,
+    identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_root = _target_root()
     target_root.mkdir(parents=True, exist_ok=True)
@@ -437,10 +388,20 @@ def _install_manifests(
     conflicts: list[dict[str, Any]] = []
 
     for manifest in manifests:
+        from core.extensions_store_operations import checkpoint
+        checkpoint("staging")
+        content = (manifest.source_dir / "SKILL.md").read_text(encoding="utf-8")
+        if not content.startswith("---") or len(content.split("---", 2)) != 3 or not isinstance(_parse_yaml_frontmatter(content), dict):
+            raise SkillInstallValidationError("invalid_manifest", "SKILL.md 缺少有效的 YAML frontmatter。")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", manifest.folder) or manifest.folder in {".", ".."}:
+            raise SkillInstallValidationError("invalid_target", "Skill 安装目录名无效。")
         target_dir = target_root / manifest.folder
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", manifest.folder).strip(".-_") or "skill"
         staging_dir = target_root.resolve(strict=False).parent / f".v8-skill-install-{safe_name}-{uuid4().hex}"
         try:
+            for entry in manifest.source_dir.rglob("*"):
+                if entry.is_symlink() or not entry.resolve().is_relative_to(manifest.source_dir.resolve()):
+                    raise SkillInstallValidationError("unsafe_source", "Skill 来源不能包含外部路径或链接。")
             shutil.copytree(manifest.source_dir, staging_dir)
             staging_digest = _directory_content_digest(staging_dir)
             backup_path: Path | None = None
@@ -448,8 +409,12 @@ def _install_manifests(
                 _skill_lock_path(target_dir),
                 timeout_seconds=_INSTALL_LOCK_TIMEOUT_SECONDS,
             ):
+                checkpoint("publishing", can_cancel=False)
                 if target_dir.exists():
                     if _directory_content_digest(target_dir) == staging_digest:
+                        if identity:
+                            _write_skill_receipt({**identity, "folder": manifest.folder, "name": manifest.name,
+                                "contentDigest": staging_digest, "path": str(target_dir)})
                         skipped.append(
                             {
                                 "name": manifest.name,
@@ -481,9 +446,23 @@ def _install_manifests(
 
                 try:
                     _publish_staged_skill(staging_dir, target_dir)
+                    from runtimes.extensions.skills.loader import SkillLoader
+                    with interprocess_file_lock(_skills_registry_lock_path(), timeout_seconds=_INSTALL_LOCK_TIMEOUT_SECONDS):
+                        SkillLoader.reload_skills()
+                    if identity:
+                        receipt = {**identity, "folder": manifest.folder, "name": manifest.name,
+                                   "contentDigest": staging_digest, "path": str(target_dir),
+                                   "files": sorted(p.relative_to(target_dir).as_posix() for p in target_dir.rglob("*") if p.is_file())}
+                        _write_skill_receipt(receipt)
                 except Exception:
-                    if backup_path and backup_path.exists() and not target_dir.exists():
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir)
+                    if backup_path and backup_path.exists():
                         backup_path.rename(target_dir)
+                    try:
+                        SkillLoader.reload_skills()
+                    except Exception:
+                        pass  # Original failure remains visible; files have been restored.
                     raise
         finally:
             if staging_dir.exists():
@@ -522,16 +501,9 @@ def _install_manifests(
     if not installed and conflicts:
         raise ValueError("目标目录中已存在同名 Skill；如需覆盖，请在命令中追加 `--overwrite`。")
 
-    from runtimes.extensions.skills.loader import SkillLoader
-
-    if installed:
-        with interprocess_file_lock(
-            _skills_registry_lock_path(),
-            timeout_seconds=_INSTALL_LOCK_TIMEOUT_SECONDS,
-        ):
-            SkillLoader.reload_skills()
     return {
-        "status": "success",
+        "status": "partial" if conflicts else "success",
+        "readiness": "installed" if installed else "already_installed",
         "source": source,
         "targetRoot": str(target_root),
         "installed": installed,
@@ -541,7 +513,7 @@ def _install_manifests(
     }
 
 
-def install_skill_from_command(command: str) -> dict[str, Any]:
+def install_skill_from_command(command: str, *, identity: dict[str, Any] | None = None) -> dict[str, Any]:
     parsed = parse_skill_install_command(command)
     with tempfile.TemporaryDirectory(prefix="v8chat-skill-install-") as temp_dir:
         source_tree = _resolve_source_tree(parsed.source, Path(temp_dir))
@@ -549,7 +521,13 @@ def install_skill_from_command(command: str) -> dict[str, Any]:
         if not manifests:
             raise ValueError("来源中没有发现任何合法的 Skill 目录。")
         selected = _select_manifests(manifests, skill_name=parsed.skill_name)
-        result = _install_manifests(selected, source=parsed.source, overwrite=parsed.overwrite)
+        if identity:
+            if len(selected) != 1:
+                raise SkillInstallValidationError("select_skill", "请选择一个 Skill 后安装。")
+            old = get_skill_receipt(identity["provider"], identity["itemId"])
+            slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", identity["itemId"]).strip("-.")[:70]
+            selected[0].folder = old["folder"] if old else f"skills-sh-{slug}-{hashlib.sha256(identity['itemId'].encode()).hexdigest()[:10]}"
+        result = _install_manifests(selected, source=parsed.source, overwrite=parsed.overwrite, identity=identity)
         result["normalizedCommand"] = parsed.normalized_command
         if parsed.yes_flag_added:
             result.setdefault("warnings", []).append("未检测到 `--yes/-y`，已自动按非交互模式执行 Skills 安装。")
@@ -558,7 +536,32 @@ def install_skill_from_command(command: str) -> dict[str, Any]:
         return result
 
 
-def install_skills_from_zip(file_name: str, content: bytes) -> dict[str, Any]:
+def _receipt_path(provider: str, item_id: str) -> Path:
+    digest = hashlib.sha256(f"{provider}:{item_id}".encode()).hexdigest()
+    return V8_AGENT_OS_HOME / "extensions" / "skill-receipts" / f"{digest}.json"
+
+
+def get_skill_receipt(provider: str, item_id: str) -> dict[str, Any] | None:
+    path = _receipt_path(provider, item_id)
+    if not path.is_file():
+        return None
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    return receipt if (Path(receipt["path"]) / "SKILL.md").is_file() else None
+
+
+def _write_skill_receipt(receipt: dict[str, Any]) -> None:
+    path = _receipt_path(receipt["provider"], receipt["itemId"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f".{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def install_skills_from_zip(file_name: str, content: bytes, *, identity: dict[str, Any] | None = None,
+                            overwrite: bool = False, selected_skill: str | None = None) -> dict[str, Any]:
     if not str(file_name or "").lower().endswith(".zip"):
         raise SkillInstallValidationError("invalid_file_type", "当前仅支持 ZIP 压缩包导入。")
 
@@ -573,4 +576,17 @@ def install_skills_from_zip(file_name: str, content: bytes) -> dict[str, Any]:
                 "压缩包结构已解压，但没有发现任何合法的 Skill 目录。",
                 {"rootFolder": root_folder},
             )
-        return _install_manifests(manifests, source=file_name, overwrite=False)
+        if selected_skill:
+            manifests = _select_manifests(manifests, skill_name=selected_skill)
+        if identity:
+            if len(manifests) != 1:
+                raise SkillInstallValidationError("select_skill", "该合集包含多个 Skill，请选择后安装。",
+                    {"skills": [{"name": m.name, "folder": m.folder} for m in manifests]})
+            provider, item_id = identity["provider"], identity["itemId"]
+            old = get_skill_receipt(provider, item_id)
+            slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", item_id).strip("-.")[:70]
+            manifests[0].folder = old["folder"] if old else f"{provider}-{slug}-{hashlib.sha256(item_id.encode()).hexdigest()[:10]}"
+            identity = {**identity, "archiveSha256": hashlib.sha256(content).hexdigest()}
+        elif not root_folder:
+            manifests[0].folder = re.sub(r"[^A-Za-z0-9_.-]+", "-", manifests[0].name).strip("-.") or "skill"
+        return _install_manifests(manifests, source=file_name, overwrite=overwrite, identity=identity)

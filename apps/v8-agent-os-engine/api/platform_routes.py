@@ -979,19 +979,36 @@ async def close_mcp_app_instance(app_instance_id: str):
 
 @router.post("/mcp/config")
 async def update_mcp_config(config: dict = Body(...)):
+    created_refs = []
+    committed = False
     try:
+        from core.mcp_connection_setup import secure_mcp_config, discard_credentials
+        from core.mcp_config_service import install_mcp_server_config, mcp_config_revision
+        import asyncio
         new_servers = validate_mcp_server_map(config)
         existing = storage.get_mcp_config() or {"mcpServers": {}}
         existing_servers = existing.get("mcpServers", {})
-        existing_servers.update(new_servers)
-        storage.save_mcp_config({"mcpServers": existing_servers})
+        revisions = {}
+        for name, server in new_servers.items():
+            base = server.pop("x-v8-edit-base", None)
+            revisions[name] = mcp_config_revision(base if base is not None else existing_servers.get(name))
+            secured, refs = await asyncio.to_thread(secure_mcp_config, server)
+            new_servers[name] = secured
+            created_refs.extend(refs)
+        await asyncio.to_thread(install_mcp_server_config, {"mcpServers": new_servers},
+                                expected_revisions=revisions, refresh_reason="mcp_config_update")
+        committed = True
         inventory_refresh = await extensions_runtime_service.refresh_inventory_if_changed(reason="mcp_config_update")
         runtime_health = extensions_runtime_service.build_health()
         return {"status": "success", "extensionsRuntime": runtime_health, "inventoryRefresh": inventory_refresh}
     except McpConfigValidationError as e:
+        if not committed:
+            discard_credentials(created_refs)
         raise HTTPException(status_code=400, detail=e.to_payload())
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        if not committed:
+            discard_credentials(created_refs)
+        raise HTTPException(status_code=500, detail="MCP 配置操作未完成，请检查凭据库、配置存储与连接状态。") from None
 
 
 @router.delete("/mcp/config/{server_name}")
@@ -1204,8 +1221,14 @@ async def install_skill_command(command: str = Body(..., embed=True)):
 @router.post("/skills/install/zip")
 async def install_skill_zip(file: UploadFile = File(...)):
     try:
-        content = await file.read()
-        result = install_skills_from_zip(file.filename or "skills.zip", content)
+        import asyncio
+        from core.skills_archive import MAX_ARCHIVE_BYTES
+        content = bytearray()
+        while chunk := await file.read(64 * 1024):
+            content.extend(chunk)
+            if len(content) > MAX_ARCHIVE_BYTES:
+                raise SkillInstallValidationError("archive_too_large", "ZIP 文件不能超过 32 MiB。")
+        result = await asyncio.to_thread(install_skills_from_zip, file.filename or "skills.zip", bytes(content))
         extensions_runtime_service.request_skill_inventory_refresh(reason="platform_skill_install_zip")
         return result
     except SkillInstallValidationError as e:

@@ -9,6 +9,16 @@ from urllib.parse import quote
 import pytest
 
 from core import extensions_store_service as service
+from core import mcp_connection_setup
+from core.security.credentials import CredentialRefStore, MemoryCredentialBackend, resolve_config_credential_refs
+
+
+@pytest.fixture(autouse=True)
+def isolated_credentials(monkeypatch):
+    store = CredentialRefStore(MemoryCredentialBackend())
+    monkeypatch.setattr(mcp_connection_setup, "credential_ref_store", store)
+    monkeypatch.setattr(service.storage, "get_mcp_config", lambda: {"mcpServers": {}})
+    return store
 
 
 def test_parse_skills_home_items_reads_embedded_popular_payload() -> None:
@@ -80,7 +90,7 @@ def test_parse_skill_download_response_ignores_symbol_only_description() -> None
     assert detail["markdown"] == "Use this skill to prepare a concise project brief."
 
 
-def test_decorate_skill_items_pins_find_skills_and_filters_low_install_items(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_decorate_skill_items_pins_find_skills_without_hiding_low_install_items(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service, "_installed_skill_ids", lambda: set())
     monkeypatch.setattr(service, "_enrich_skill_summary", lambda item: item)
     items = service._dedupe_skill_items(
@@ -96,6 +106,7 @@ def test_decorate_skill_items_pins_find_skills_and_filters_low_install_items(mon
     assert [item["id"] for item in decorated] == [
         "vercel-labs/skills@find-skills",
         "example/skills@useful",
+        "example/skills@tiny",
     ]
 
 
@@ -185,9 +196,9 @@ def test_same_cache_key_coalesces_concurrent_loads(
             original_event = flight.event
 
             class ObservedEvent:
-                def wait(self) -> None:
+                def wait(self, timeout=None) -> bool:
                     follower_waiting.set()
-                    original_event.wait()
+                    return original_event.wait(timeout=timeout)
 
                 def set(self) -> None:
                     original_event.set()
@@ -248,7 +259,7 @@ def test_cache_load_preserves_stale_fallback(tmp_path, monkeypatch: pytest.Monke
 def test_install_store_skill_compiles_controlled_global_command(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[str] = []
 
-    def fake_install(command: str) -> dict:
+    def fake_install(command: str, *, identity=None) -> dict:
         commands.append(command)
         return {"status": "success", "installed": [], "warnings": []}
 
@@ -423,7 +434,7 @@ def test_parse_mcp_detail_page_text_reads_markdown_body_description() -> None:
     assert "- Repository Management: Browse and query code." in detail["markdown"]
 
 
-def test_install_store_mcp_applies_requirements_and_uses_config_service(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_install_store_mcp_applies_requirements_and_uses_config_service(monkeypatch: pytest.MonkeyPatch, isolated_credentials) -> None:
     candidate = {
         "id": "abc123",
         "serverName": "github",
@@ -449,7 +460,7 @@ def test_install_store_mcp_applies_requirements_and_uses_config_service(monkeypa
 
     monkeypatch.setattr(service, "_candidate_by_id", lambda mcp_id, candidate_id: candidate)
 
-    def fake_install(config: dict, *, refresh_reason: str) -> dict:
+    def fake_install(config: dict, *, refresh_reason: str, expected_revisions=None) -> dict:
         installed_payloads.append(config)
         return {"status": "success", "installedServers": ["github"], "replacedServers": [], "refreshRequested": True}
 
@@ -463,15 +474,10 @@ def test_install_store_mcp_applies_requirements_and_uses_config_service(monkeypa
         }
     )
 
-    assert installed_payloads == [
-        {
-            "mcpServers": {
-                "github": {
-                    "type": "http",
-                    "url": "https://api.githubcopilot.com/mcp/",
-                    "headers": {"Authorization": "Bearer ghp_secret"},
-                }
-            }
-        }
-    ]
+    saved = installed_payloads[0]["mcpServers"]["github"]
+    assert "ghp_secret" not in json.dumps(installed_payloads)
+    assert "https://api.githubcopilot.com/mcp/" not in json.dumps(installed_payloads)
+    connection = resolve_config_credential_refs(saved, store=isolated_credentials)
+    assert connection["url"] == "https://api.githubcopilot.com/mcp/"
+    assert connection["headers"] == {"Authorization": "Bearer ghp_secret"}
     assert result["store"]["serverName"] == "github"

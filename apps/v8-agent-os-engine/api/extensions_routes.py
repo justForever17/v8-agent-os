@@ -95,6 +95,8 @@ async def get_extensions_store_skills(
     query: str = "",
     limit: int = Query(default=24, ge=1, le=60),
     refresh: bool = False,
+    provider: str = "international",
+    page: int = Query(default=1, ge=1, le=10000),
 ):
     try:
         return await asyncio.to_thread(
@@ -102,6 +104,7 @@ async def get_extensions_store_skills(
             query=query,
             limit=limit,
             refresh=refresh,
+            **({"provider": provider, "page": page} if provider != "international" or isinstance(page, int) and page != 1 else {}),
         )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
@@ -126,6 +129,7 @@ async def get_extensions_store_skill_detail(
     source: str,
     skillId: str,
     refresh: bool = False,
+    provider: str = "international",
 ):
     try:
         return await asyncio.to_thread(
@@ -133,6 +137,7 @@ async def get_extensions_store_skill_detail(
             source=source,
             skill_id=skillId,
             refresh=refresh,
+            **({"provider": provider} if provider != "international" else {}),
         )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
@@ -145,6 +150,8 @@ async def get_extensions_store_mcp(
     query: str = "",
     limit: int = Query(default=24, ge=1, le=60),
     refresh: bool = False,
+    provider: str = "international",
+    page: int = Query(default=1, ge=1, le=10000),
 ):
     try:
         return await asyncio.to_thread(
@@ -152,6 +159,7 @@ async def get_extensions_store_mcp(
             query=query,
             limit=limit,
             refresh=refresh,
+            **({"provider": provider, "page": page} if provider != "international" or isinstance(page, int) and page != 1 else {}),
         )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
@@ -163,12 +171,14 @@ async def get_extensions_store_mcp(
 async def get_extensions_store_mcp_detail(
     id: str,
     refresh: bool = False,
+    provider: str = "international",
 ):
     try:
         return await asyncio.to_thread(
             get_store_mcp_detail,
             mcp_id=id,
             refresh=refresh,
+            **({"provider": provider} if provider != "international" else {}),
         )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
@@ -186,6 +196,42 @@ async def install_extensions_store_mcp(payload: dict = Body(...)):
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/extensions/store/operations")
+async def get_store_operations():
+    from core.extensions_store_operations import list_operations
+    return await asyncio.to_thread(list_operations)
+
+
+@router.post("/extensions/store/operations/{kind}")
+async def create_store_operation(kind: str, payload: dict = Body(...)):
+    from core.extensions_store_operations import start_operation
+    if kind not in {"skills", "mcp"}:
+        raise HTTPException(status_code=400, detail="无效扩展类型。")
+    if payload.get("provider", "international") not in {"international", "modelscope"}:
+        raise HTTPException(status_code=400, detail="无效来源。")
+    return await asyncio.to_thread(start_operation, kind, payload,
+                                  install_store_skill if kind == "skills" else install_store_mcp)
+
+
+@router.post("/extensions/store/operations/{operation_id}/cancel")
+async def cancel_store_operation(operation_id: str):
+    from core.extensions_store_operations import cancel_operation
+    try:
+        return await asyncio.to_thread(cancel_operation, operation_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="安装操作不存在。")
+
+
+@router.post("/extensions/store/mcp/check")
+async def check_store_mcp(payload: dict = Body(...)):
+    from core.mcp_config_service import mcp_runtime_status_snapshot, request_mcp_inventory_refresh
+    await asyncio.to_thread(request_mcp_inventory_refresh, "extensions_store_check")
+    snapshot = await asyncio.to_thread(mcp_runtime_status_snapshot)
+    server_name = str(payload.get("serverName") or "")
+    status = (snapshot.get("servers") or {}).get(server_name) or {"status": "pending"}
+    return {"serverName": server_name, "connection": status, "businessReachability": "not_checked", "authorized": False}
 
 
 @router.delete("/extensions/skills/{skill_id}")

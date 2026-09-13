@@ -18,6 +18,8 @@ from pydantic import AnyUrl
 
 from core.json_safe import to_jsonable
 from core.security.credentials import resolve_config_credential_refs
+from core.mcp_connection_setup import connection_failure, process_mirror_environment
+from runtimes.extensions.mcp.transport_logging import private_transport
 from core.storage import storage
 from runtimes.extensions.mcp.stdio import stdio_client
 from runtimes.extensions.mcp.oauth import mcp_oauth_coordinator
@@ -206,7 +208,7 @@ class MCPManager:
                     self._app_registry_by_tool[(name, tool_name)] = entry
                 app_tools.append(entry)
         except Exception as exc:
-            errors.append(f"tools/list apps metadata failed: {type(exc).__name__}: {exc}")
+            errors.append(f"tools/list apps metadata failed: {connection_failure(exc)}")
 
         try:
             listed_resources = await session.list_resources()
@@ -231,7 +233,7 @@ class MCPManager:
                     self._app_resources_by_uri[(name, uri)] = entry
                 resources.append(entry)
         except Exception as exc:
-            errors.append(f"resources/list failed: {type(exc).__name__}: {exc}")
+            errors.append(f"resources/list failed: {connection_failure(exc)}")
 
         return {
             "appsSupported": bool(app_tools or resources),
@@ -349,7 +351,7 @@ class MCPManager:
 
                 command = srv_config.get("command")
                 url = srv_config.get("url")
-                if not command and not url:
+                if not command and not url and not srv_config.get("endpointRef"):
                     self._set_server_state(
                         name,
                         transport=transport_type,
@@ -490,6 +492,7 @@ class MCPManager:
             raise asyncio.CancelledError("MCP manager is shutting down")
         # Credential refs are resolved only in this ephemeral connection copy.
         # The canonical config, fingerprints, logs and API responses keep refs.
+        mirror_env = process_mirror_environment(srv_config)
         srv_config = resolve_config_credential_refs(srv_config)
         stack = AsyncExitStack()
         tools_refresh_task: asyncio.Task | None = None
@@ -505,6 +508,7 @@ class MCPManager:
         command = srv_config.get("command")
         url = srv_config.get("url")
         transport_type = srv_config.get("type") or ("stdio" if command else ("http" if str(url or "").startswith("http") else "sse"))
+        logging_token = private_transport.set(transport_type in {"http", "sse"})
         try:
             if transport_type == "stdio":
                 if not command:
@@ -515,6 +519,7 @@ class MCPManager:
                 if env:
                     for k, v in env.items():
                         server_env[k] = str(v)
+                server_env.update(mirror_env)
 
                 import platform
                 import shutil
@@ -554,7 +559,7 @@ class MCPManager:
                 if not url:
                     raise ValueError(f"Server '{name}' is configured for HTTP (Streamable) but missing 'url'.")
                 headers = srv_config.get("headers", {})
-                print(f"[MCP] Connecting to server '{name}' via HTTP ({url})...")
+                print(f"[MCP] Connecting to server '{name}' via HTTP...")
                 auth = mcp_oauth_coordinator.provider_for(server_name=name, server_url=url, config=srv_config) if bool(srv_config.get("oauth")) else None
                 custom_client = httpx.AsyncClient(headers=headers, timeout=30.0, auth=auth)
                 custom_client = await stack.enter_async_context(custom_client)
@@ -566,7 +571,7 @@ class MCPManager:
                 if not url:
                     raise ValueError(f"Server '{name}' is configured for sse but missing 'url'.")
                 headers = srv_config.get("headers", {})
-                print(f"[MCP] Connecting to server '{name}' via SSE ({url})...")
+                print(f"[MCP] Connecting to server '{name}' via SSE...")
                 auth = mcp_oauth_coordinator.provider_for(server_name=name, server_url=url, config=srv_config) if bool(srv_config.get("oauth")) else None
                 read, write = await stack.enter_async_context(sse_client(url=url, headers=headers, auth=auth))
 
@@ -617,7 +622,7 @@ class MCPManager:
             raise
         except Exception as exc:
             if bool(srv_config.get("oauth")):
-                mcp_oauth_coordinator.mark_failed(name, str(exc).strip() or exc.__class__.__name__)
+                mcp_oauth_coordinator.mark_failed(name, connection_failure(exc))
             if ready_future.done():
                 self._set_server_state(
                     name,
@@ -625,7 +630,7 @@ class MCPManager:
                     status="reconnecting",
                     impact="background_reconnect",
                     toolCount=len(self._server_tools.get(name) or []),
-                    lastError=str(exc).strip() or exc.__class__.__name__,
+                    lastError=connection_failure(exc),
                     lastErrorKind=exc.__class__.__name__,
                     executionImpacted=False,
                 )
@@ -636,13 +641,13 @@ class MCPManager:
                     status="error",
                     impact="startup_failed",
                     toolCount=0,
-                    lastError=str(exc).strip() or exc.__class__.__name__,
+                    lastError=connection_failure(exc),
                     lastErrorKind=exc.__class__.__name__,
                     executionImpacted=False,
                 )
             if not ready_future.done():
-                ready_future.set_exception(exc)
-            raise
+                ready_future.set_exception(RuntimeError(connection_failure(exc)))
+            raise RuntimeError(connection_failure(exc)) from None
         finally:
             if tools_refresh_task is not None:
                 tools_refresh_task.cancel()
@@ -667,7 +672,9 @@ class MCPManager:
                 raise
             except Exception as close_exc:
                 if not (self._closing or stop_event.is_set()):
-                    print(f"[MCP] Error closing '{name}': {type(close_exc).__name__}: {close_exc}")
+                    print(f"[MCP] Error closing '{name}': {connection_failure(close_exc)}")
+            finally:
+                private_transport.reset(logging_token)
 
     async def cleanup(self):
         print("[MCP] Cleaning up MCP Client connections...")
@@ -777,7 +784,7 @@ class MCPManager:
                     lastErrorKind=None,
                     executionImpacted=False,
                 )
-            elif not srv_config.get("command") and not srv_config.get("url"):
+            elif not srv_config.get("command") and not srv_config.get("url") and not srv_config.get("endpointRef"):
                 await self._stop_server_task(normalized_name, cancel=True)
                 self._remove_server_tools(normalized_name)
                 self._remove_server_apps(normalized_name)
@@ -882,7 +889,7 @@ class MCPManager:
                         lastErrorKind=None,
                         executionImpacted=False,
                     )
-                elif not srv_config.get("command") and not srv_config.get("url"):
+                elif not srv_config.get("command") and not srv_config.get("url") and not srv_config.get("endpointRef"):
                     await self._stop_server_task(server_name, cancel=True)
                     self._remove_server_tools(server_name)
                     self._remove_server_apps(server_name)

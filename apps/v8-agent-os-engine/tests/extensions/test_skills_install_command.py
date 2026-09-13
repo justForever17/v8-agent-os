@@ -68,7 +68,7 @@ def test_install_skill_from_command_reports_normalized_global_command(monkeypatc
     monkeypatch.setattr(
         service,
         "_install_manifests",
-        lambda manifests, source, overwrite: {
+        lambda manifests, source, overwrite, identity=None: {
             "status": "success",
             "source": source,
             "targetRoot": "~/.agents/skills",
@@ -100,7 +100,7 @@ def test_github_clone_uses_windowless_runner(monkeypatch: pytest.MonkeyPatch, tm
         destination.mkdir()
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(service, "run_windowless", fake_run)
+    monkeypatch.setattr(service, "run_windowless_bounded", fake_run)
 
     result = service._clone_from_github("owner", "repo", destination)
 

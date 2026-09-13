@@ -16,7 +16,9 @@ from uuid import uuid4
 
 import httpx
 
-from core.mcp_config_service import McpConfigValidationError, install_mcp_server_config
+from core.mcp_config_service import McpConfigValidationError, install_mcp_server_config, mcp_config_revision
+from core.mcp_connection_setup import secure_mcp_config, discard_credentials, process_mirror_environment
+from core.extensions_store_operations import checkpoint
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -29,7 +31,6 @@ _SKILLS_DOWNLOAD_URL = "https://skills.sh/api/download"
 _SKILLS_HOME_URL = "https://skills.sh/"
 _GITHUB_MCP_URL = "https://github.com/mcp"
 _USER_AGENT = "v8-agent-os-admin-extensions-store/1.0"
-_MIN_SKILL_INSTALLS = 200
 _SKILL_SOURCE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SKILL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _INPUT_PLACEHOLDER_PATTERN = re.compile(r"\$\{input:([A-Za-z0-9_.-]+)\}")
@@ -51,6 +52,8 @@ class _CacheFlight:
 
 _CACHE_FLIGHTS: dict[str, _CacheFlight] = {}
 _CACHE_FLIGHTS_LOCK = threading.Lock()
+_HTTP_SLOTS = threading.BoundedSemaphore(4)
+_CACHE_PRUNE_LOCK = threading.Lock()
 
 
 class ExtensionStoreError(ValueError):
@@ -91,6 +94,7 @@ def _read_cache(name: str, *, allow_stale: bool = False) -> tuple[Any | None, st
         cached_at = float(envelope.get("cachedAt") or 0)
         if not allow_stale and time.time() - cached_at > _CACHE_TTL_SECONDS:
             return None, "stale"
+        path.touch()
         return envelope.get("payload"), "cached"
     except Exception:
         return None, "invalid"
@@ -106,6 +110,14 @@ def _write_cache(name: str, payload: Any) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
+        # Bounded disk cache, including abandoned search spellings. Public data only.
+        with _CACHE_PRUNE_LOCK:
+            files = sorted(path.parent.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+            size = 0
+            for index, cached in enumerate(files):
+                size += cached.stat().st_size
+                if index >= 256 or size > 32 * 1024 * 1024:
+                    cached.unlink(missing_ok=True)
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -132,7 +144,8 @@ def _load_cached_value(
             is_leader = False
 
     if not is_leader:
-        flight.event.wait()
+        if not flight.event.wait(timeout=60):
+            raise ExtensionStoreError("source_wait_timeout", "来源请求等待超时，请重试。", status_code=504)
         if flight.error is not None:
             raise flight.error
         return flight.payload, flight.freshness, flight.fallback_error
@@ -167,18 +180,21 @@ def _load_cached_value(
 
 
 def _fetch_text(url: str) -> str:
-    with httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS, follow_redirects=True, headers={"User-Agent": _USER_AGENT}) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.text
+    with _HTTP_SLOTS, httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS, follow_redirects=True, headers={"User-Agent": _USER_AGENT}) as client:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            content = bytearray()
+            started = time.monotonic()
+            for chunk in response.iter_bytes(64 * 1024):
+                content.extend(chunk)
+                if len(content) > 8 * 1024 * 1024 or time.monotonic() - started > 45:
+                    raise ExtensionStoreError("source_budget", "来源响应超过预览限制。")
+            return content.decode("utf-8", errors="replace")
 
 
 def _fetch_json(url: str) -> dict[str, Any]:
-    with httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS, follow_redirects=True, headers={"User-Agent": _USER_AGENT}) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {}
+    payload = json.loads(_fetch_text(url))
+    return payload if isinstance(payload, dict) else {}
 
 
 def _stable_hash(payload: Any) -> str:
@@ -383,7 +399,11 @@ def _skill_detail_cache_name(source: str, skill_id: str) -> str:
     return _cache_key("skill-detail-v2", f"{source}@{skill_id}")
 
 
-def get_store_skill_detail(*, source: str, skill_id: str, refresh: bool = False) -> dict[str, Any]:
+def get_store_skill_detail(*, source: str, skill_id: str, refresh: bool = False, provider: str = "international") -> dict[str, Any]:
+    _validate_provider(provider)
+    if provider == "modelscope":
+        from core.extensions_modelscope import skill_detail
+        return skill_detail(skill_id, refresh=refresh)
     normalized_source = str(source or "").strip()
     normalized_skill_id = str(skill_id or "").strip()
     if not _SKILL_SOURCE_PATTERN.fullmatch(normalized_source):
@@ -446,16 +466,6 @@ def _is_pinned_skill(item: dict[str, Any]) -> bool:
         str(item.get("source") or "").strip().lower() == "vercel-labs/skills"
         and str(item.get("skillId") or "").strip().lower() == "find-skills"
     )
-
-
-def _is_trusted_skill_item(item: dict[str, Any]) -> bool:
-    if _is_pinned_skill(item):
-        return True
-    try:
-        installs = int(item.get("installs") or 0)
-    except Exception:
-        installs = 0
-    return installs >= _MIN_SKILL_INSTALLS
 
 
 def _skill_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
@@ -536,22 +546,48 @@ def _enrich_skill_summary(item: dict[str, Any]) -> dict[str, Any]:
 
 def _decorate_skill_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     installed = _installed_skill_ids()
-    sorted_items = sorted([item for item in items if _is_trusted_skill_item(item)], key=_skill_sort_key)
+    sorted_items = sorted(items, key=_skill_sort_key)
     selected_items = [dict(item) for item in sorted_items[:limit]]
     enriched_items = [_enrich_skill_summary(item) for item in selected_items]
     decorated: list[dict[str, Any]] = []
     for next_item in enriched_items:
-        next_item["installed"] = str(next_item.get("skillId") or "").lower() in installed
+        from core.skills_install_service import get_skill_receipt
+        receipt = get_skill_receipt("skills.sh", f"{next_item['source']}@{next_item['skillId']}")
+        next_item["installed"] = bool(receipt)
+        next_item["localNameMatch"] = str(next_item.get("skillId") or "").lower() in installed
         decorated.append(next_item)
     return decorated
 
 
-def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False) -> dict[str, Any]:
+def _validate_provider(provider: str) -> None:
+    if provider not in {"international", "modelscope"}:
+        raise ExtensionStoreError("unknown_provider", "请选择国际源或魔搭国内源。")
+
+
+def _page(items: list[dict[str, Any]], page: int, limit: int, provider: str, kind: str) -> dict[str, Any]:
+    selected = items[(page - 1) * limit:page * limit]
+    for row in selected:
+        row["provider"] = provider
+        row["itemKey"] = f"{provider}:{kind}:{row['id']}"
+    more = page * limit < len(items)
+    return {"items": selected, "returnedCount": len(selected), "hasMore": more,
+            "nextCursor": str(page + 1) if more else None, "page": page, "sourceCoverage": "curated"}
+
+
+def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False,
+                      provider: str = "international", page: int = 1) -> dict[str, Any]:
+    _validate_provider(provider)
+    if provider == "modelscope":
+        from core.extensions_modelscope import list_items
+        return list_items("skills", query=query, limit=_normalize_limit(limit), page=page, refresh=refresh)
     normalized_query = str(query or "").strip()
     safe_limit = _normalize_limit(limit)
     warnings: list[str] = []
+    if len(normalized_query) == 1:
+        return {"provider": "skills.sh", "items": [], "hasMore": False, "returnedCount": 0,
+                "sourceCoverage": "search", "warnings": ["请继续输入至少两个字符以搜索国际来源。"]}
     if len(normalized_query) >= 2:
-        fetch_limit = min(max(safe_limit * 3, safe_limit), 100)
+        fetch_limit = 100
         params = urlencode({"q": normalized_query, "limit": str(fetch_limit)})
         cache_name = _cache_key("skills-search", params)
         try:
@@ -575,7 +611,7 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
             "sourceUrl": _SKILLS_HOME_URL,
             "query": normalized_query,
             "freshness": freshness,
-            "items": _decorate_skill_items(items, limit=safe_limit),
+            **_page(_decorate_skill_items(items, limit=len(items)), page, safe_limit, "international", "skills"),
             "warnings": warnings,
         }
 
@@ -608,7 +644,7 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
         "sourceUrl": _SKILLS_HOME_URL,
         "query": normalized_query,
         "freshness": freshness,
-        "items": _decorate_skill_items(items, limit=safe_limit),
+        **_page(_decorate_skill_items(items, limit=len(items)), page, safe_limit, "international", "skills"),
         "warnings": warnings,
     }
 
@@ -616,6 +652,10 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
 def install_store_skill(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ExtensionStoreError("invalid_payload", "Skills 商店安装请求必须是 JSON 对象。")
+    _validate_provider(str(payload.get("provider") or "international"))
+    if payload.get("provider") == "modelscope":
+        from core.extensions_modelscope import install_skill
+        return install_skill(payload)
     source = str(payload.get("source") or "").strip()
     skill_id = str(payload.get("skillId") or payload.get("skill_id") or "").strip()
     overwrite = bool(payload.get("overwrite", False))
@@ -627,7 +667,8 @@ def install_store_skill(payload: dict[str, Any]) -> dict[str, Any]:
     if overwrite:
         command = f"{command} --overwrite"
     try:
-        result = install_skill_from_command(command)
+        checkpoint("downloading")
+        result = install_skill_from_command(command, identity={"provider": "skills.sh", "itemId": f"{source}@{skill_id}"})
     except SkillInstallValidationError:
         raise
     except Exception as exc:
@@ -722,18 +763,24 @@ def _fuzzy_match_mcp(card: dict[str, Any], query: str) -> bool:
 
 
 def _decorate_mcp_cards(cards: list[dict[str, Any]], *, query: str, limit: int) -> list[dict[str, Any]]:
-    installed = _installed_mcp_server_names()
+    servers = (storage.get_mcp_config() or {}).get("mcpServers", {})
     filtered = [card for card in cards if _fuzzy_match_mcp(card, query)]
     filtered.sort(key=lambda item: int(item.get("stars") or 0), reverse=True)
     decorated: list[dict[str, Any]] = []
     for card in filtered[:limit]:
         next_card = dict(card)
-        next_card["installed"] = str(card.get("serverName") or "").lower() in installed
+        identity = (servers.get(card.get("serverName")) or {}).get("x-v8-store") or {}
+        next_card["installed"] = identity.get("provider") == "international" and identity.get("id") == card["id"]
         decorated.append(next_card)
     return decorated
 
 
-def list_store_mcp(*, query: str = "", limit: int = 24, refresh: bool = False) -> dict[str, Any]:
+def list_store_mcp(*, query: str = "", limit: int = 24, refresh: bool = False,
+                   provider: str = "international", page: int = 1) -> dict[str, Any]:
+    _validate_provider(provider)
+    if provider == "modelscope":
+        from core.extensions_modelscope import list_items
+        return list_items("mcp", query=query, limit=_normalize_limit(limit), page=page, refresh=refresh)
     normalized_query = str(query or "").strip()
     safe_limit = _normalize_limit(limit)
     warnings: list[str] = []
@@ -766,7 +813,7 @@ def list_store_mcp(*, query: str = "", limit: int = 24, refresh: bool = False) -
         "sourceUrl": _GITHUB_MCP_URL,
         "query": normalized_query,
         "freshness": freshness,
-        "items": _decorate_mcp_cards(cards, query=normalized_query, limit=safe_limit),
+        **_page(_decorate_mcp_cards(cards, query=normalized_query, limit=len(cards)), page, safe_limit, "international", "mcp"),
         "warnings": warnings,
     }
 
@@ -1243,7 +1290,11 @@ def _mcp_detail_cache_name(mcp_id: str) -> str:
     return _cache_key("github-mcp-detail-v3", mcp_id)
 
 
-def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any]:
+def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False, provider: str = "international") -> dict[str, Any]:
+    _validate_provider(provider)
+    if provider == "modelscope":
+        from core.extensions_modelscope import mcp_detail
+        return mcp_detail(mcp_id, refresh=refresh)
     normalized_id = str(mcp_id or "").strip().strip("/")
     if not normalized_id or ".." in normalized_id or normalized_id.startswith(("http://", "https://")):
         raise ExtensionStoreError("invalid_mcp_id", "MCP 商店详情请求缺少合法的 GitHub MCP id。")
@@ -1296,7 +1347,10 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
         cached_warnings = list(payload.get("warnings") or [])
         cached_warnings.append("当前展示上次可用的 MCP 详情。")
         return {**payload, "freshness": "cached", "warnings": cached_warnings}
-    return {**payload, "freshness": freshness}
+    servers = (storage.get_mcp_config() or {}).get("mcpServers", {})
+    revisions = {c["serverName"]: mcp_config_revision(servers.get(c["serverName"])) for c in payload.get("candidates") or []}
+    return {**payload, "freshness": freshness, "configRevisions": revisions,
+            "configuredServers": [name for name in revisions if name in servers]}
 
 
 def _deep_replace(value: Any, replacements: dict[str, str]) -> Any:
@@ -1316,6 +1370,8 @@ def _deep_replace(value: Any, replacements: dict[str, str]) -> Any:
 
 def _candidate_by_id(mcp_id: str, candidate_id: str) -> dict[str, Any]:
     normalized_id = str(mcp_id or "").strip().strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", normalized_id) or ".." in normalized_id:
+        raise ExtensionStoreError("invalid_mcp_id", "MCP 来源 ID 无效。")
     detail_url = f"{_GITHUB_MCP_URL}/{quote(normalized_id, safe='/._-')}"
     page_html = _fetch_text(detail_url)
     default_server_name = _server_name_from_mcp_name(normalized_id)
@@ -1357,6 +1413,8 @@ def _compiled_mcp_server_config(candidate: dict[str, Any], values: dict[str, Any
         if placeholder:
             replacements[placeholder] = value
         target = str(requirement.get("target") or "")
+        if requirement.get("secret") and target == "arg" and value:
+            raise ExtensionStoreError("secret_in_argv", "此来源要求命令行秘密参数，请改用服务支持的环境变量或凭据配置。")
         name = str(requirement.get("name") or "").strip()
         template = str(requirement.get("valueTemplate") or "")
         if target == "env" and name and not _placeholder_names(template):
@@ -1384,19 +1442,51 @@ def install_store_mcp(payload: dict[str, Any]) -> dict[str, Any]:
     values = payload.get("values") if isinstance(payload.get("values"), dict) else {}
     if not mcp_id or not candidate_id:
         raise ExtensionStoreError("invalid_mcp_install_payload", "MCP 商店安装请求缺少 id 或 candidateId。")
-    candidate = _candidate_by_id(mcp_id, candidate_id)
+    provider = str(payload.get("provider") or "international")
+    _validate_provider(provider)
+    if provider == "modelscope":
+        from core.extensions_modelscope import mcp_detail
+        detail = mcp_detail(mcp_id, refresh=True, private=True)
+        candidate = next((c for c in detail["candidates"] if c["id"] == candidate_id), None)
+        if not candidate:
+            raise ExtensionStoreError("source_changed", "来源配置已变化，请重新打开详情确认。", status_code=409)
+    else:
+        candidate = _candidate_by_id(mcp_id, candidate_id)
     server_name, server_config = _compiled_mcp_server_config(candidate, values)
+    server_config["x-v8-store"] = {"provider": provider, "id": mcp_id, "candidateId": candidate_id}
+    if payload.get("packageSource") == "domestic":
+        server_config["x-v8-package-source"] = "domestic"
+        process_mirror_environment(server_config)
+    if server_config.get("type") == "stdio":
+        from core.mcp_dependency_setup import prepare_stdio
+        try:
+            server_config = prepare_stdio(server_config, target=f"{provider}:{mcp_id}:{candidate_id}")
+        except Exception as exc:
+            from core.mcp_connection_setup import connection_failure
+            message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else connection_failure(exc)
+            raise ExtensionStoreError("dependency_preparation_failed", message, status_code=400) from None
+    server_config, created_refs = secure_mcp_config(server_config)
+    servers = (storage.get_mcp_config() or {}).get("mcpServers", {})
+    expected = payload.get("configRevision") or mcp_config_revision(None)
+    if server_name in servers and not payload.get("replace"):
+        discard_credentials(created_refs)
+        raise ExtensionStoreError("config_exists", "已存在同名 MCP，请明确选择替换并核对当前配置。", status_code=409)
+    checkpoint("saving_config", can_cancel=False)
     try:
         result = install_mcp_server_config(
             {"mcpServers": {server_name: server_config}},
             refresh_reason="extensions_store_mcp_install",
+            expected_revisions={server_name: expected},
         )
     except McpConfigValidationError:
+        discard_credentials(created_refs)
         raise
     except Exception as exc:
-        raise ExtensionStoreError("mcp_install_failed", str(exc), status_code=400) from exc
+        discard_credentials(created_refs)
+        raise ExtensionStoreError("mcp_install_failed", "MCP 配置未保存，请检查凭据库与配置存储。", status_code=400) from None
+    result["readiness"] = "configured"
     result["store"] = {
-        "provider": "github.com/mcp",
+        "provider": provider,
         "id": mcp_id,
         "candidateId": candidate_id,
         "serverName": server_name,

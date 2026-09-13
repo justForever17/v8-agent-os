@@ -401,10 +401,13 @@ def resolve_config_credential_refs(
     """Materialize plugin credential refs into an ephemeral runtime config."""
 
     result = deepcopy(config or {})
+    active_store = store or credential_ref_store
+    endpoint_ref = result.pop("endpointRef", None)
+    if endpoint_ref:
+        result["url"] = active_store.resolve(str(endpoint_ref))
     refs = result.pop("x-v8-credential-refs", {})
     if not isinstance(refs, dict):
         return result
-    active_store = store or credential_ref_store
     for binding in refs.values():
         if not isinstance(binding, dict):
             continue

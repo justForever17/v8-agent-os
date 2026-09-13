@@ -9,7 +9,7 @@ import {
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
-import { BackgroundPlaybackControls, BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
+import { BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ShellWindowControls } from "./ShellWindowControls";
 import { RpaTopbarOverlay } from "./RpaTopbarOverlay";

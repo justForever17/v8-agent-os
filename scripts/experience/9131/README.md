@@ -25,4 +25,6 @@ Extensions定向闭环见 `EXTENSIONS-84959E0F-REVIEW.md`：X10可读错误和F0
 
 Phone原生独立阻断见 `PHONE-82ED1C88-REVIEW.md`：同会话/跨会话草稿通过，原生配对B及B切回A均触发VideoPlayer已释放错误。`verify-phone-native.py`只接受显式`--live`及移交的合成AVD，核对安装APK与文件hash；首次配对用例要求仅已有A，后续P05/P10要求已有A/B及本脚本草稿。`verify-phone-storage-boundary.mjs --candidate <commit>`执行冻结生产模块与内存SQLite反例，结果不能替代原生UI或OS故障注入。
 
+Admin+Extensions共享包组合验收见 `INTEGRATION-C03B7EBB-REVIEW.md`：22938只使用公开合成owner，22928保留协调模型live。两脚本支持`--url`并记录实际target/build；`admin-surface-observation.mjs`跨脚本对照真实shell/CSS。新增X15捕获祖先overflow裁切下根scrollWidth不变的窄屏不可达按钮，不用shell一致的通过项抵消该故障。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

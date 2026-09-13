@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { installGraphicsProbe } from './graph-observation.mjs';
+import { measureAdminSurface } from './admin-surface-observation.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../../..');
 const args = process.argv.slice(2);
@@ -16,7 +17,14 @@ const runtime = value('--runtime', 'dev-turbopack');
 assert.ok(['dev-turbopack', 'production'].includes(runtime), 'runtime must match the explicitly handed-off process');
 const selectedTests = value('--only', '').split(',').filter(Boolean);
 const resultName = selectedTests.length ? 'focused-' + selectedTests.join('-').replaceAll(/[^a-zA-Z0-9_-]/g, '') + '.json' : 'independent-evidence.json';
-const base = 'http://127.0.0.1:22828';
+const target = new URL(value('--url', 'http://127.0.0.1:22828'));
+assert.ok(target.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(target.hostname) && ['22828', '22938'].includes(target.port), 'only explicitly handed-off isolated Admin ports are permitted');
+assert.equal(target.username, ''); assert.equal(target.password, '');
+assert.equal(target.pathname, '/'); assert.equal(target.search, ''); assert.equal(target.hash, '');
+const base = target.origin;
+const declaredBuildId = value('--build-id', 'unspecified');
+const bootstrapOwner = args.includes('--bootstrap-owner');
+if (bootstrapOwner) assert.equal(target.port, '22938', 'owner setup is authorized only for the new integration UI fixture state');
 const out = path.join(repo, 'tmp/experience-9131/admin-candidate-' + candidate.slice(0, 8));
 fs.mkdirSync(out, { recursive: true });
 const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -39,7 +47,7 @@ let failSafetyConfig = false, safetyDiagnostics = 'unlisted';
 const initialConfig = () => clone(adminExperienceFixture(base + '/api/config-registry/system-base'));
 let config = initialConfig();
 let graph = clone(sampleClusters);
-const report = { candidateCommit: candidate, fixtureCommit: candidate, authorDeclaredRuntime: runtime, sourceCheckedThrough: 'local Git object database in experience checkout plus explicit process handoff', browserVersion: browser.version(), viewport: { width: 1440, height: 900, dpr: 1 }, evidence, requests, writes, pageErrors };
+const report = { candidateCommit: candidate, fixtureCommit: candidate, targetUrl: base, declaredBuildId, authorDeclaredRuntime: runtime, sourceCheckedThrough: 'local Git object database in experience checkout plus explicit process handoff', browserVersion: browser.version(), viewport: { width: 1440, height: 900, dpr: 1 }, evidence, requests, writes, pageErrors };
 
 function graphRead(url) {
   const key = url.searchParams.get('clusterId');
@@ -56,6 +64,7 @@ async function routeBoundary(route) {
   if (url.origin !== base) { requests.push({ path: url.pathname, method: req.method(), result: 'external-aborted' }); return route.abort(); }
   if (!url.pathname.startsWith('/api/')) return route.continue();
   if (['/api/auth/providers','/api/auth/csrf','/api/auth/callback/credentials','/api/auth/session'].includes(url.pathname)) return route.continue();
+  if (bootstrapOwner && url.pathname === '/api/auth/bootstrap') return route.continue();
   const record = { path: url.pathname, method: req.method() }; requests.push(record);
   if (req.method() !== 'GET') {
     const body = req.postDataJSON(); writes.push({ ...record, body });
@@ -100,7 +109,7 @@ page.on('pageerror', error => pageErrors.push({ route: new URL(page.url()).pathn
 const pendingHashes = [];
 page.on('response', response => {
   const url = new URL(response.url());
-  if (url.origin === base && url.pathname.startsWith('/_next/static/') && /\.js$/.test(url.pathname)) {
+  if (url.origin === base && url.pathname.startsWith('/_next/static/') && /\.(js|css)$/.test(url.pathname)) {
     pendingHashes.push(response.body().then(body => assetHashes.set(url.pathname, { bytes: body.length, sha256: crypto.createHash('sha256').update(body).digest('hex') })).catch(() => {}));
   }
 });
@@ -118,7 +127,7 @@ async function test(id, dimension, fn) {
   catch (error) { row.status = error.name === 'AssertionError' ? 'FAIL' : 'HARNESS_ERROR'; row.error = String(error).slice(0, 1600); }
   row.actualUrl = page.url(); row.screenshot = id + '.png';
   await page.screenshot({ path: path.join(out, row.screenshot) }).catch(() => {});
-  evidence.push(row); console.log(JSON.stringify({ id, status: row.status, details: row.details, error: row.error }));
+  evidence.push(row); console.log(JSON.stringify({ id, status: row.status, error: row.error }));
   fs.writeFileSync(path.join(out, resultName), JSON.stringify(report, null, 2));
 }
 
@@ -127,18 +136,30 @@ try {
   await page.locator('#login').fill('admin-experience-fixture');
   // Deliberately public synthetic account supplied for this isolated state only.
   await page.locator('#password').fill('public-admin-experience-fixture');
+  if (await page.locator('#name').count()) {
+    assert.ok(bootstrapOwner, 'uninitialized state requires the explicit authorized fixture setup flag');
+    await page.locator('#name').fill('合成整合验收账户');
+    await page.locator('#confirmPassword').fill('public-admin-experience-fixture');
+    report.publicFixtureOwnerSetup = true;
+  }
   await page.locator('button[type=submit]').click();
   await page.waitForURL('**/admin', { timeout: 60000 });
 
   await test('A01-save-bar-bounds', 'convenience', async () => {
-    await visit('/admin/system-base');
     const measurements = [];
-    for (const size of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, { width: 390, height: 844 }]) {
-      await page.setViewportSize(size); await settle();
-      const save = page.locator('#admin-save-actions button').first(); await save.waitFor();
-      const measurement = await rectInViewport(save); measurements.push(measurement);
-      assert.equal(measurement.inside, true, 'save action must be visible before scrolling');
+    for (const desired of ['light', 'dark']) {
+      theme = desired; await visit('/admin/system-base');
+      if (!(await page.locator('html').getAttribute('class')).split(/\s+/).includes(desired)) await page.getByRole('button', {name:'切换明暗主题',exact:true}).click();
+      await page.waitForFunction(desired => document.documentElement.classList.contains(desired), desired);
+      for (const size of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, { width: 390, height: 844 }]) {
+        await page.setViewportSize(size); await settle();
+        const save = page.locator('#admin-save-actions button').first(); await save.waitFor();
+        const measurement = {theme:desired,...await rectInViewport(save),surface:await page.evaluate(measureAdminSurface)}; measurements.push(measurement);
+        assert.equal(measurement.inside, true, 'save action must be visible before scrolling');
+        await page.screenshot({path:path.join(out, `save-${size.width}-${desired}.png`)});
+      }
     }
+    theme = 'light';
     return measurements;
   });
   await test('A05-touch-first-tap-help', 'convenience', async () => {
@@ -316,9 +337,11 @@ try {
   });
   await test('V01-layout-theme-and-text-zoom', 'visual', async () => {
     const observations = [];
-    for (const variant of [{ width: 1440, theme: 'light', scale: 1 }, { width: 390, theme: 'light', scale: 1 }, { width: 1440, theme: 'dark', scale: 1 }, { width: 1440, theme: 'light', scale: 2 }]) {
+    for (const variant of [{ width: 1440, theme: 'light', scale: 1 }, { width: 390, theme: 'light', scale: 1 }, { width: 1440, theme: 'dark', scale: 1 }, { width: 390, theme: 'dark', scale: 1 }, { width: 1440, theme: 'light', scale: 2 }]) {
       theme = variant.theme; await page.setViewportSize({ width: variant.width, height: 900 });
       await visit('/admin/model-hub'); await page.getByText('Fixture provider', { exact: true }).first().waitFor();
+      if (!(await page.locator('html').getAttribute('class')).split(/\s+/).includes(variant.theme)) await page.getByRole('button',{name:'切换明暗主题',exact:true}).click();
+      await page.waitForFunction(desired => document.documentElement.classList.contains(desired), variant.theme);
       if (variant.scale === 2) await page.evaluate(() => { document.documentElement.style.fontSize = '28px'; });
       await settle();
       const computed = await page.evaluate(() => {
@@ -327,7 +350,7 @@ try {
         const box = el => { const r = el?.getBoundingClientRect(); return r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null; };
         return { theme: document.documentElement.className, rootFont: getComputedStyle(document.documentElement).fontSize, page: box(document.querySelector('.admin-page')), provider: box(card), providerRadius: card && getComputedStyle(card).borderRadius, buttons: [...document.querySelectorAll('button')].filter(b => ['调整','管理'].includes(b.textContent.trim()) || b.getAttribute('aria-label') === '管理').map(b => ({ label: b.textContent.trim() || b.getAttribute('aria-label'), ...box(b), radius: getComputedStyle(b).borderRadius })), topbarHeightToken: style.getPropertyValue('--v8-product-topbar-height'), motion: ['--admin-motion-fast','--admin-motion-control','--admin-motion-panel'].map(k => style.getPropertyValue(k)), overflow: document.documentElement.scrollWidth > innerWidth + 1 };
       });
-      observations.push({ variant, computed });
+      observations.push({ variant, computed, surface:await page.evaluate(measureAdminSurface) });
       await page.screenshot({ path: path.join(out, `visual-${variant.theme}-${variant.width}-${variant.scale}.png`) });
       assert.equal(computed.overflow, false, JSON.stringify({ variant, computed }));
       assert.equal(computed.topbarHeightToken.trim(), '48px');

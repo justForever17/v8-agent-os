@@ -9,12 +9,13 @@ import re
 import subprocess
 import statistics
 import math
+import hashlib
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from playwright.async_api import async_playwright
 
 COMMIT = "09dfcc3cd231d1717d3e712ad2270750c4c1fe31"
-BASE = "http://127.0.0.1:22825"
+DEFAULT_BASE = "http://127.0.0.1:22825"
 
 
 async def main():
@@ -23,8 +24,15 @@ async def main():
     parser.add_argument("--only", default="")
     parser.add_argument("--candidate", default=COMMIT)
     parser.add_argument("--build-id", default="unspecified")
+    parser.add_argument("--url", default=DEFAULT_BASE)
+    parser.add_argument("--fixture-account", choices=["extensions", "admin"], default="extensions")
     args = parser.parse_args()
+    base = args.url.rstrip("/")
+    target = urlparse(base)
+    assert target.scheme == "http" and target.hostname in ["127.0.0.1", "localhost"] and target.port in [22825, 22938]
+    assert not target.path and not target.query and not target.fragment and not target.username and not target.password
     repo = Path(__file__).resolve().parents[3]
+    surface_probe = Path(__file__).with_name("admin-surface-observation.mjs").read_text(encoding="utf-8").replace("export function measureAdminSurface", "function measureAdminSurface", 1)
     assert subprocess.check_output(["git", "rev-parse", args.candidate], cwd=repo, text=True).strip() == args.candidate
     out = args.out.resolve()
     assert out.is_relative_to(repo / "tmp")
@@ -35,7 +43,7 @@ async def main():
     mcp_config = None
     config_saves = []
     selected = [x for x in args.only.split(",") if x]
-    report = {"candidateCommit": args.candidate, "runtime": "production standalone 22825, exact source/build as explicitly handed off by owner", "buildId": args.build_id, "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.", "requests": requests, "submitted": submitted, "configSaves": config_saves, "evidence": evidence, "errors": errors}
+    report = {"candidateCommit": args.candidate, "targetUrl": base, "runtime": "production standalone, exact source/build as explicitly handed off by owner", "buildId": args.build_id, "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.", "requests": requests, "submitted": submitted, "configSaves": config_saves, "evidence": evidence, "errors": errors}
     long_readme = "\n\n".join(f"## Independent section {i}\n\n合成长说明用于测试操作可达性 {i}。" for i in range(100))
 
     def operation(body, kind):
@@ -54,7 +62,7 @@ async def main():
         nonlocal mcp_config
         req = route.request
         u = urlparse(req.url)
-        if f"{u.scheme}://{u.netloc}" != BASE:
+        if f"{u.scheme}://{u.netloc}" != base:
             requests.append({"path": u.path, "action": "external-aborted"})
             await route.abort()
             return
@@ -132,6 +140,16 @@ async def main():
         page.set_default_timeout(12000)
         page.on("pageerror", lambda error: errors.append({"url": page.url, "error": str(error)[:300]}))
         report["browserVersion"] = browser.version
+        asset_jobs = []
+        async def record_asset(response):
+            url = urlparse(response.url)
+            if f"{url.scheme}://{url.netloc}" == base and url.path.startswith("/_next/static/") and re.search(r"\.(js|css)$", url.path):
+                try:
+                    body = await response.body()
+                    assets.append({"path": url.path, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()})
+                except Exception:
+                    pass  # An aborted asset read is not proof of a loaded asset.
+        page.on("response", lambda response: asset_jobs.append(asyncio.create_task(record_asset(response))))
 
         async def close():
             if await page.get_by_role("dialog").count():
@@ -140,7 +158,7 @@ async def main():
 
         async def visit(kind="skills", normalize_source=True):
             await close()
-            await page.goto(BASE + "/admin/extensions/store?kind=" + kind, wait_until="networkidle")
+            await page.goto(base + "/admin/extensions/store?kind=" + kind, wait_until="networkidle")
             await page.locator("article button").first.wait_for()
             if normalize_source and await page.get_by_role("button", name="切回国际源", exact=True).count():
                 await page.get_by_role("button", name="切回国际源", exact=True).click()
@@ -170,14 +188,14 @@ async def main():
             row["screenshot"] = name + ".png"
             await page.screenshot(path=str(out / row["screenshot"]))
             evidence.append(row)
-            print(json.dumps(row, ensure_ascii=False), flush=True)
+            print(json.dumps({"id": name, "status": row["status"], "error": row.get("error")}, ensure_ascii=False), flush=True)
             (out / "evidence.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
         try:
-            await page.goto(BASE + "/login", wait_until="networkidle")
-            await page.locator("#login").fill("fixture-owner")
+            await page.goto(base + "/login", wait_until="networkidle")
+            await page.locator("#login").fill("fixture-owner" if args.fixture_account == "extensions" else "admin-experience-fixture")
             # Explicitly public isolated fixture account, not a user credential.
-            await page.locator("#password").fill("synthetic-ui-password")
+            await page.locator("#password").fill("synthetic-ui-password" if args.fixture_account == "extensions" else "public-admin-experience-fixture")
             await page.locator('button[type="submit"]').click()
             await page.wait_for_url("**/admin")
 
@@ -262,8 +280,16 @@ async def main():
             async def footer():
                 await close()
                 await visit()
+                await item("international beta")
+                dialog = page.get_by_role("dialog")
+                await page.wait_for_function("() => [...document.querySelectorAll('[role=dialog] button')].some(b=>b.textContent.trim()==='安装'&&!b.disabled)||[...document.querySelectorAll('[role=dialog] [role=status]')].some(n=>n.textContent.includes('已是此版本'))")
+                install = dialog.get_by_role("button", name="安装", exact=True)
+                if await install.count():
+                    await install.click()
+                # Summary and footer both show the receipt before opening docs.
+                await dialog.get_by_role("status").filter(has_text="已是此版本").first.wait_for()
                 results = []
-                for width, height, desired in [(1440, 900, "light"), (390, 844, "dark")]:
+                for width, height, desired in [(1440, 900, "light"), (390, 844, "light"), (1440, 900, "dark"), (390, 844, "dark")]:
                     await close()
                     if theme["theme"] != desired:
                         await page.get_by_role("button", name="切换明暗主题", exact=True).click()
@@ -287,7 +313,7 @@ async def main():
             async def health_failure():
                 await close()
                 await page.set_viewport_size({"width": 1440, "height": 900})
-                await page.goto(BASE + "/admin/extensions", wait_until="networkidle")
+                await page.goto(base + "/admin/extensions", wait_until="networkidle")
                 await page.get_by_text("部分数据加载失败，可重试；已加载数据仍可使用。", exact=True).wait_for()
                 command = page.get_by_placeholder("npx --yes skills add https://github.com/vercel-labs/skills -g --skill find-skills")
                 await command.fill("synthetic non-executed install draft")
@@ -344,7 +370,7 @@ async def main():
                 exact_args = ["--label", "  spaced value  ", ""]
                 mcp_config = {"mcpServers": {"independent-arguments": {"type": "stdio", "command": "synthetic-command", "args": exact_args.copy(), "env": {}, "disabled": True, "future": {"keep": False, "zero": 0}}}}
                 await close()
-                await page.goto(BASE + "/admin/extensions", wait_until="networkidle")
+                await page.goto(base + "/admin/extensions", wait_until="networkidle")
                 await page.get_by_title("编辑 MCP 配置", exact=True).click()
                 dialog = page.get_by_role("dialog")
                 await dialog.wait_for()
@@ -360,9 +386,69 @@ async def main():
                 assert actual["future"] == {"keep": False, "zero": 0}
                 return {"unmodifiedArgsShownExactly": True, "actualInterceptedPostArgs": actual["args"], "unknownRetained": True, "realEngineWrite": False}
             await test("X13-stdio-ui-unmodified-save", "function", stdio_ui_roundtrip)
+
+            async def integrated_shell():
+                results = []
+                for width, desired in [(1440, "light"), (390, "light"), (1440, "dark"), (390, "dark")]:
+                    await page.set_viewport_size({"width": width, "height": 844 if width == 390 else 900})
+                    await visit()
+                    if desired not in (await page.locator("html").get_attribute("class")).split():
+                        await page.get_by_role("button", name="切换明暗主题", exact=True).click()
+                    await page.wait_for_function("desired=>document.documentElement.classList.contains(desired)", arg=desired)
+                    store = await page.evaluate("(" + surface_probe + ")()")
+                    await page.screenshot(path=str(out / f"shell-store-{width}-{desired}.png"))
+                    if width == 390:
+                        await page.get_by_role("button", name="导航", exact=True).click()
+                        await page.get_by_role("dialog").wait_for()
+                    await page.locator('nav a[href="/admin/extensions"]').filter(visible=True).first.click()
+                    await page.wait_for_url("**/admin/extensions")
+                    await page.get_by_text("部分数据加载失败，可重试；已加载数据仍可使用。", exact=True).wait_for()
+                    manager = await page.evaluate("(" + surface_probe + ")()")
+                    await page.screenshot(path=str(out / f"shell-manager-{width}-{desired}.png"))
+                    for actual in [store, manager]:
+                        assert desired in actual["theme"].split(), actual["theme"]
+                        assert not actual["horizontalOverflow"]
+                        assert len(actual["headings"]) == 1, actual["headings"]
+                        assert actual["topbar"]["height"] == 48, actual["topbar"]
+                        assert actual["tokens"]["--v8-product-panel-radius"] == "12px"
+                        assert actual["tokens"]["--v8-product-control-radius"] == "8px"
+                    assert store["topbar"] == manager["topbar"], "shell must not change on store→manager navigation"
+                    assert store["tokens"] == manager["tokens"]
+                    assert await page.get_by_role("dialog").count() == 0, "mobile navigation must close after selecting the management route"
+                    results.append({"width": width, "theme": desired, "store": store, "manager": manager, "mobileMenuClosed": True})
+                return {"variants": results, "sameShellAcrossActualNavigation": True}
+            await test("X14-integrated-shell-themes-navigation", "visual-convenience", integrated_shell)
+
+            async def header_action_reachability():
+                measurements = []
+                report["headerActionMeasurements"] = measurements
+                for width, desired in [(1440, "light"), (390, "light"), (1440, "dark"), (390, "dark")]:
+                    await close()
+                    await page.set_viewport_size({"width": width, "height": 844 if width == 390 else 900})
+                    await page.goto(base + "/admin/extensions", wait_until="networkidle")
+                    await page.get_by_text("部分数据加载失败，可重试；已加载数据仍可使用。", exact=True).wait_for()
+                    if desired not in (await page.locator("html").get_attribute("class")).split():
+                        await page.get_by_role("button", name="切换明暗主题", exact=True).click()
+                    await page.wait_for_function("desired=>document.documentElement.classList.contains(desired)", arg=desired)
+                    controls = await page.locator(".admin-page-header").evaluate("""header => [...header.querySelectorAll('button,a')].filter(el=>el.getClientRects().length).map(el=>{
+                        const r=el.getBoundingClientRect();let clip={left:0,top:0,right:innerWidth,bottom:innerHeight};
+                        for(let p=el.parentElement;p;p=p.parentElement){const s=getComputedStyle(p),b=p.getBoundingClientRect();
+                          if(/hidden|clip|auto|scroll/.test(s.overflowX)){clip.left=Math.max(clip.left,b.left);clip.right=Math.min(clip.right,b.right);}
+                          if(/hidden|clip|auto|scroll/.test(s.overflowY)){clip.top=Math.max(clip.top,b.top);clip.bottom=Math.min(clip.bottom,b.bottom);}}
+                        return {label:el.getAttribute('aria-label')||el.textContent.trim(),x:r.x,y:r.y,width:r.width,height:r.height,clip,
+                          inside:r.left>=clip.left-.5&&r.top>=clip.top-.5&&r.right<=clip.right+.5&&r.bottom<=clip.bottom+.5};
+                      })""")
+                    measurements.append({"width": width, "theme": desired, "controls": controls})
+                    await page.screenshot(path=str(out / f"header-actions-{width}-{desired}.png"))
+                clipped = [{"viewportWidth": item["width"], "theme": item["theme"], **control} for item in measurements for control in item["controls"] if not control["inside"]]
+                assert not clipped, json.dumps(clipped, ensure_ascii=False)
+                return {"measurements": measurements, "allHeaderActionsReachable": True}
+            await test("X15-header-actions-clipping", "convenience-visual", header_action_reachability)
         finally:
             for gate in holds.values():
                 gate.set()
+            await asyncio.gather(*asset_jobs, return_exceptions=True)
+            report["assetHashes"] = list({asset["path"]: asset for asset in assets}.values())
             report["summary"] = {status: sum(row["status"] == status for row in evidence) for status in ["PASS", "FAIL", "HARNESS_ERROR"]}
             (out / "evidence.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             await browser.close()

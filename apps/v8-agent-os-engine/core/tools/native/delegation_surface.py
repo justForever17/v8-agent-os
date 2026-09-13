@@ -93,6 +93,9 @@ def supervisor_delegation_broker(
     executor actually stops. await yields for delegation_id; runtime_broker
     await supports several episode_ids. Avoid busy polling. resume retains its
     external-worker meaning.
+    inspect.executionTerminal includes degraded, failed and cancelled outcomes;
+    completedAt is the persisted settlement timestamp when available. A missing
+    historical timestamp leaves the time unknown; use state to judge activity.
     The Supervisor must inspect evidence and accept/retry/ignore the result.
     """
     return delegation_broker.func(

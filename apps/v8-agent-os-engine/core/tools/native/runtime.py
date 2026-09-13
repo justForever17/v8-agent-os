@@ -4503,6 +4503,8 @@ def runtime_broker(
     are needed, or when no independent work remains. inspect reads progress/receipts on demand; steer requests
     guidance and cancel waits for actual executor settlement. Avoid busy polling. accept_partial with exact
     handoff_id, consumers and reason permits only the selected downstream tasks; it never completes the parent.
+    inspect.executionTerminal includes degraded, failed and cancelled outcomes; completedAt is the persisted
+    settlement timestamp when available. A missing historical timestamp leaves the time unknown; use state to judge activity.
     Never claim completion from a queued episode or incomplete proof.
     In user-facing text say 深度调研、编程模式、多媒体创作、桌面操作、自动流程 or 子代理协作, not this tool name.
     """

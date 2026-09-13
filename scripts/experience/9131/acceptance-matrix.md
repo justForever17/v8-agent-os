@@ -88,6 +88,7 @@
 | G02 | 6/20/100 clusters，长标签；公转/自转/hover/拖动/点击/空白 | 几何不穿越；hover 停靠微近、点选惯性靠近；空白回自然轨道，标签水平 |
 | G03 | 节点菜单 CRUD/关系/定位，运动中编辑与版本冲突 | 原功能可达；target canonicalEntityId/scope/version 固定；删视觉实例不误删共享实体 |
 | G04 | 暂停/reduced motion/离 tab/后台；20次打开关闭；有界 nodes/edges/bytes | 单时钟；隐藏无持续绘制；global/local-only计数口径明确；partial非完整 |
+| G05 | global-only节点→明确选择允许的workspace→建立本地关系，再查看global relation | 保留原global背景实体作为工作区关系端点的能力；不直接写global，不显示可删除global relation；同名跨scope不串用。仅“全局菜单只读”不足以通过 |
 | W01 | A→Admin→A，选择文本/草稿/附件/滚动/背景；Shell20次切面 | 同文档/会话/实例恢复；无 loadURL 硬刷新；详细订阅唯一 |
 | W02 | A→B→A与点当前会话；两套草稿、输入法与附件 | 同目标 no-op；不同目标独立；返回不是 new；selection/引用可恢复 |
 | W03 | v1 提交延迟2s时输入 v2；成功/timeout/旧失败；重复ACK | v2不被清/覆盖；v1 clientMessageId 一致；未知结果先对账 |

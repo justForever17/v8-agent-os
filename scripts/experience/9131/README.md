@@ -13,4 +13,6 @@
 
 运行命令和首轮结论见 `BASELINE.md`。完整入口与反例见 `acceptance-matrix.md`。安装依赖前先核对该 checkout 的 package/lock；本机基线只读复用原有 Admin node_modules，使用本 worktree 独立 `.next`。不共享可变构建输出。
 
+Admin首切片独立复验见 `ADMIN-CCBCD590-REVIEW.md` 与 `reports/admin-ccbcd590-review.json`。`verify-admin-candidate.mjs`只连接被明确交付的22828候选，前提是负责人确认实际commit和冻结状态；它不会为指定Git hash自动切换服务版本。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

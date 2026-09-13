@@ -104,6 +104,9 @@ test("Phone uses a virtualized cache-first newest-turn surface and never starts 
   assert.doesNotMatch(screen, /getConversationTimelineSync\([^\n]+syncCursor \|\| ""/);
   assert.match(window, /<FlatList/);
   assert.match(window, /maintainVisibleContentPosition/);
-  assert.match(database, /CREATE TABLE IF NOT EXISTS local_session_indexes/);
+  // The paired-identity cache owns this index in its new database. The former
+  // table name is not an interface; retain the namespace primary-key guard.
+  assert.match(database, /CREATE TABLE IF NOT EXISTS indexes \(namespace TEXT PRIMARY KEY/);
+  assert.match(database, /SELECT raw_json FROM indexes WHERE namespace = \?/);
   assert.match(database, /deleteSessionData/);
 });

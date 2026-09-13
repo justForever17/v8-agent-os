@@ -111,7 +111,7 @@ print("Validated parent work: " + hashlib.sha256(data).hexdigest())
     except BaseException:
         if result.run_id:
             try:
-                audit._json_request(f"{audit._engine_api_base(args.engine_url)}/runs/{result.run_id}/cancel",
+                audit._json_request(f"{audit._engine_api_base(args.engine_url)}/runs/{result.run_id}/commands/cancel",
                     method="POST", payload={"reason": "cross_graph_live_harness_failed"}, timeout=10)
             except Exception:
                 print(json.dumps({"cleanupRequestFailed": True, "runId": result.run_id}), flush=True)

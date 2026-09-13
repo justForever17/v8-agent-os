@@ -172,6 +172,11 @@ test("human session surfaces compact oversized live-session payloads before Web 
   assert.match(phoneApi, /surface=phone&compact=1/);
   assert.match(webClient, /params\.set\("surface", "web"\)/);
   assert.match(webClient, /params\.set\("compact", "1"\)/);
-  assert.match(phoneDb, /compact_message_surface_v1/);
-  assert.match(phoneDb, /LENGTH\(raw_json\) > \?/);
+  // The unscoped legacy DB is quarantined. Production SQL behavior tests cover
+  // oversize exclusion, cursor invalidation, corrupt-row rebuild and isolation.
+  assert.match(phoneDb, /v8_phone_cache_v2\.db/);
+  assert.match(phoneDb, /MAX_LOCAL_MESSAGE_JSON_CHARS = 1_000_000/);
+  assert.match(phoneDb, /JSON\.stringify\(message\)\.length > MAX_LOCAL_MESSAGE_JSON_CHARS/);
+  assert.match(phoneDb, /cache_exclusions WHERE session_key = \?/);
+  assert.match(phoneDb, /await this\.deleteSessionData\(sessionId\)/);
 });

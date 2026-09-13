@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Pressable,
@@ -19,6 +19,10 @@ import { MessageBubble } from "@/src/components/chat/MessageBubble";
 import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
+import { createFrameTaskScheduler } from "@/src/lib/motion-behavior";
+import { usePhoneDraftField, usePhoneDraftStatus } from "@/src/hooks/use-phone-draft";
+import { useIsFocused } from "@react-navigation/native";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { AskUserInteraction, ChatMessage, PendingApproval } from "@/src/types/admin";
@@ -27,6 +31,7 @@ type ChatPendingInteraction = PendingApproval | AskUserInteraction;
 const EMPTY_RUNTIME_ACTIVITIES: PhoneRuntimeStageActivity[] = [];
 
 type ChatWindowProps = {
+    cacheKey: string;
     adminBaseUrl: string;
     sessionId?: string;
     workspaceId?: string;
@@ -125,6 +130,7 @@ function hasRenderableMessage(message: ChatMessage) {
 }
 
 export const ChatWindow = memo(function ChatWindow({
+    cacheKey,
     adminBaseUrl,
     sessionId,
     workspaceId,
@@ -157,6 +163,21 @@ export const ChatWindow = memo(function ChatWindow({
 }: ChatWindowProps) {
     const { colors, t } = useUiPrefs();
     const scrollRef = useRef<FlatList<ChatMessage> | null>(null);
+    const focused = useIsFocused();
+    const appVisible = useAppVisibility();
+    const draggingRef = useRef(false);
+    const followRef = useRef(true);
+    const scrollTasks = useMemo(() => createFrameTaskScheduler(requestAnimationFrame, cancelAnimationFrame), []);
+    const [anchor, setAnchor] = usePhoneDraftField(cacheKey, "scrollAnchor", { messageId: "", offset: 0, atBottom: true });
+    const draft = usePhoneDraftStatus(cacheKey);
+    const restorePendingRef = useRef(true);
+    const anchorRef = useRef(anchor);
+    anchorRef.current = anchor;
+    const cellLayouts = useRef(new Map<string, { y: number; id: string }>());
+    const Cell = useCallback((props: any) => <View style={props.style} onLayout={(event) => {
+        cellLayouts.current.set(props.cellKey, { y: event.nativeEvent.layout.y, id: props.item?.id || "" });
+        props.onLayout?.(event);
+    }}>{props.children}</View>, []);
     const lastLoadTriggerAtRef = useRef(0);
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [askUserOpen, setAskUserOpen] = useState(Boolean(pendingApproval && isAskUserApproval(pendingApproval)));
@@ -199,10 +220,26 @@ export const ChatWindow = memo(function ChatWindow({
     const hudBottomOffset = Math.max(56, bottomInset - 96);
 
     useEffect(() => {
-        if (isAtBottom) {
-            requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+        if (focused && appVisible && isAtBottom && anchor.atBottom && !draggingRef.current) {
+            scrollTasks.request(() => {
+                if (!draggingRef.current && followRef.current) scrollRef.current?.scrollToEnd({ animated: false });
+            });
         }
-    }, [isAtBottom, lastVisibleSignature, visibleMessages.length]);
+        return () => scrollTasks.cancel();
+    }, [focused, appVisible, isAtBottom, anchor.atBottom, lastVisibleSignature, visibleMessages.length, scrollTasks]);
+
+    const restoreAnchor = useCallback(() => {
+        if (!restorePendingRef.current || !draft.loaded || !visibleMessages.length) return;
+        const saved = anchorRef.current;
+        if (saved.atBottom || !saved.messageId) { restorePendingRef.current = false; return; }
+        const index = visibleMessages.findIndex((message) => message.id === saved.messageId);
+        if (index < 0) return;
+        followRef.current = false;
+        setIsAtBottom(false);
+        scrollRef.current?.scrollToIndex({ index, animated: false, viewOffset: -saved.offset });
+        restorePendingRef.current = false;
+    }, [draft.loaded, visibleMessages]);
+    useEffect(() => { restoreAnchor(); }, [restoreAnchor]);
 
     useEffect(() => {
         setAskUserOpen(Boolean(pendingApproval && isAskUserApproval(pendingApproval)));
@@ -217,6 +254,7 @@ export const ChatWindow = memo(function ChatWindow({
             <View style={[styles.messagesShell, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                 <FlatList
                     ref={scrollRef}
+                    CellRendererComponent={Cell}
                     style={styles.scroll}
                     data={visibleMessages}
                     keyExtractor={(message) => message.renderKey || message.id}
@@ -231,7 +269,16 @@ export const ChatWindow = memo(function ChatWindow({
                         visibleMessages.length === 0 && styles.messagesContentEmpty,
                     ]}
                     refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} /> : undefined}
-                    maintainVisibleContentPosition={{ minIndexForVisible: 1, autoscrollToTopThreshold: 20 }}
+                    maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+                    onContentSizeChange={restoreAnchor}
+                    onScrollToIndexFailed={({ index, averageItemLength }) => {
+                        restorePendingRef.current = true;
+                        scrollRef.current?.scrollToOffset({ offset: averageItemLength * index, animated: false });
+                    }}
+                    onScrollBeginDrag={() => { draggingRef.current = true; restorePendingRef.current = false; scrollTasks.cancel(); }}
+                    onScrollEndDrag={() => { draggingRef.current = false; }}
+                    onMomentumScrollBegin={() => { draggingRef.current = true; scrollTasks.cancel(); }}
+                    onMomentumScrollEnd={() => { draggingRef.current = false; }}
                     initialNumToRender={12}
                     maxToRenderPerBatch={8}
                     windowSize={9}
@@ -308,7 +355,15 @@ export const ChatWindow = memo(function ChatWindow({
                     onScroll={(event) => {
                         const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
                         const distanceToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+                        followRef.current = distanceToBottom < 96;
                         setIsAtBottom(distanceToBottom < 96);
+                        if (!restorePendingRef.current) {
+                            let first: { y: number; id: string } | undefined;
+                            for (const cell of cellLayouts.current.values()) {
+                                if (cell.y <= contentOffset.y && (!first || cell.y > first.y)) first = cell;
+                            }
+                            setAnchor({ messageId: first?.id || visibleMessages[0]?.id || "", offset: first ? contentOffset.y - first.y : 0, atBottom: distanceToBottom < 96 });
+                        }
                         if (
                             contentOffset.y < 88
                             && hasOlderTurns
@@ -342,7 +397,7 @@ export const ChatWindow = memo(function ChatWindow({
                             bottom: scrollToBottomOffset,
                         },
                     ]}
-                    onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
+                    onPress={() => { followRef.current = true; setIsAtBottom(true); setAnchor({ messageId: "", offset: 0, atBottom: true }); scrollRef.current?.scrollToEnd({ animated: true }); }}
                 >
                     <MaterialCommunityIcons name="arrow-down" size={18} color={colors.text} />
                 </Pressable>

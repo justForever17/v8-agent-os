@@ -540,6 +540,19 @@ export async function listConversations(authorizedFetch: AuthorizedFetch) {
     return normalizeSessionHistoryList(Array.isArray(payload) ? payload : []);
 }
 
+export async function listConversationPage(authorizedFetch: AuthorizedFetch, options: { cursor?: string; query?: string; signal?: AbortSignal } = {}) {
+    const query = new URLSearchParams({ limit: "80" });
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.query) query.set("q", options.query);
+    const response = await authorizedFetch(`/api/client/conversations?${query}`, { cache: "no-store", signal: options.signal });
+    if (response.status === 409) {
+        await response.text();
+        throw Object.assign(new Error("Session list changed. Refresh and continue."), { code: "session_index_changed" });
+    }
+    const payload = await readJsonOrThrow<{ items: ConversationSummary[]; pageInfo?: { nextCursor?: string | null } }>(response, translateCurrent("src.lib.phone_api.text_13"));
+    return { items: normalizeSessionHistoryList(payload.items || []), nextCursor: payload.pageInfo?.nextCursor || null };
+}
+
 export async function createConversation(
     authorizedFetch: AuthorizedFetch,
     input?: string | CreateConversationInput,

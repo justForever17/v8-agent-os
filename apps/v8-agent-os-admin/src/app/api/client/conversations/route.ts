@@ -6,7 +6,7 @@ import {
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 import { jsonSizeBytes, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, buildClientLinkManifest, resolveRequestOrigin } from "@/lib/server/runtime-config";
 import { readSessionStateError } from "@/lib/server/session-state-error";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -20,13 +20,24 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        let response = await fetch(`${ENGINE_URL}/sessions/quick-index`, {
+        const paged = req.nextUrl.searchParams.has("limit");
+        const query = new URLSearchParams();
+        if (paged) {
+            query.set("limit", String(Math.min(200, Math.max(1, Number(req.nextUrl.searchParams.get("limit")) || 80))));
+            query.set("cursor", req.nextUrl.searchParams.get("cursor") || "");
+            query.set("q", (req.nextUrl.searchParams.get("q") || "").slice(0, 200));
+        }
+        let response = await fetch(`${ENGINE_URL}/sessions/quick-index${paged ? `?${query}` : ""}`, {
             method: "GET",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...(paged ? {
+                "x-v8-authority-instance-id": buildClientLinkManifest(resolveRequestOrigin(req)).instanceId,
+                "x-v8-agent-os-user-email": userEmail,
+            } : {}) },
             cache: "no-store",
+            signal: req.signal,
         });
 
-        if (!response.ok) {
+        if (!response.ok && !paged) {
             console.warn("[Client Conversations] Quick index unavailable, falling back to live sessions:", response.status);
             response = await fetch(`${ENGINE_URL}/sessions`, {
                 method: "GET",
@@ -35,6 +46,9 @@ export async function GET(req: NextRequest) {
             });
         }
 
+        if (response.status === 409 && paged) {
+            return NextResponse.json({ error: "Session list changed. Reload the list to continue.", code: "session_index_changed" }, { status: 409 });
+        }
         if (!response.ok) {
             const failure = await readSessionStateError(response);
             console.error("[Client Conversations] Failed to fetch sessions:", failure.error.code);
@@ -53,7 +67,7 @@ export async function GET(req: NextRequest) {
             elapsedMs,
             payloadBytes,
         });
-        return NextResponse.json(sessions, {
+        return NextResponse.json(paged ? { items: sessions, pageInfo: data.pageInfo } : sessions, {
             headers: {
                 ...(response.headers.get(ENGINE_NOW_HEADER)
                     ? { [ENGINE_NOW_HEADER]: response.headers.get(ENGINE_NOW_HEADER)! }

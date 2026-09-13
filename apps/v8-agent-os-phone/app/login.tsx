@@ -38,6 +38,7 @@ export default function LoginScreen() {
     const [busy, setBusy] = useState(false);
     const [scannerOpen, setScannerOpen] = useState(false);
     const [scanLocked, setScanLocked] = useState(false);
+    const [manualOpen, setManualOpen] = useState(Platform.OS === "web");
     const attemptedPairingUriRef = useRef("");
 
     const pageTitle = useMemo(() => t("app.login.connect_this_device"), [t]);
@@ -176,7 +177,10 @@ export default function LoginScreen() {
                                     <Text style={styles.statusText}>{t("app.login.connecting")}</Text>
                                 </View>
                             ) : null}
-                            {Platform.OS === "web" ? (
+                            {!manualOpen ? <Pressable accessibilityRole="button" onPress={() => setManualOpen(true)} style={{ minHeight: 44, justifyContent: "center" }}>
+                                <Text style={{ color: colors.primary }}>{t("app.login.pairing_link")}</Text>
+                            </Pressable> : null}
+                            {manualOpen ? (
                                 <View style={styles.field}>
                                     <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
                                     <TextInput
@@ -203,7 +207,7 @@ export default function LoginScreen() {
                                 </View>
                             ) : null}
 
-                            {Platform.OS === "web" ? (
+                            {manualOpen ? (
                                 <Pressable disabled={busy} onPress={() => void submit()} style={[styles.submit, busy && styles.disabled]}>
                                     <LinearGradient
                                         colors={[colors.primary, colors.primaryDeep]}

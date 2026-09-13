@@ -1,6 +1,9 @@
 import * as SQLite from "expo-sqlite";
 import { phoneSessionKey } from "@/src/lib/phone-identity";
 
+export const MAX_LOCAL_MESSAGE_JSON_CHARS = 1_000_000;
+const MAX_SESSION_CACHE_BYTES = 8 * 1024 * 1024;
+
 export function buildLocalSessionIndexNamespace(authorityKey: string, servingInstanceId: string) {
     if (!authorityKey || !servingInstanceId) throw new Error("Cache requires a paired identity");
     return JSON.stringify([authorityKey, servingInstanceId]);
@@ -20,6 +23,7 @@ export const PHONE_CACHE_SCHEMA = `
     );
     CREATE TABLE IF NOT EXISTS indexes (namespace TEXT PRIMARY KEY, raw_json TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS cache_usage (session_key TEXT PRIMARY KEY, touched_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS cache_exclusions (session_key TEXT PRIMARY KEY, reason TEXT NOT NULL);
 `;
 
 let connection: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -59,12 +63,17 @@ export class LocalDatabaseService {
     }
     async setSyncCursor(sessionId: string, cursor: string) {
         const key = this.key(sessionId);
-        await write((db) => db.runAsync("INSERT OR REPLACE INTO cursors VALUES (?, ?)", [key, cursor]));
+        await write((db) => db.runAsync("INSERT OR REPLACE INTO cursors SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM cache_exclusions WHERE session_key = ?)", [key, cursor, key]));
     }
     async upsertMessages(sessionId: string, messages: any[]) {
         const key = this.key(sessionId);
         if (!messages.length) return;
         await write(async (db) => {
+            if (await db.getFirstAsync("SELECT 1 FROM cache_exclusions WHERE session_key = ?", [key])) return;
+            if (messages.some((message) => JSON.stringify(message).length > MAX_LOCAL_MESSAGE_JSON_CHARS)) {
+                await this.exclude(db, key, "oversized_message");
+                return;
+            }
             await db.withTransactionAsync(async () => {
                 const statement = await db.prepareAsync(`INSERT OR REPLACE INTO messages
                     (session_key, id, ordinal, created_at, turn_id, turn_position, raw_json)
@@ -89,6 +98,10 @@ export class LocalDatabaseService {
     }
     private async prune(db: SQLite.SQLiteDatabase, activeKey: string) {
         // History only: drafts / pending intents live separately and are never evicted.
+        const own = await db.getFirstAsync<{ bytes: number; count: number }>(
+            "SELECT COALESCE(SUM(LENGTH(CAST(raw_json AS BLOB))), 0) AS bytes, COUNT(*) AS count FROM messages WHERE session_key = ?", [activeKey],
+        );
+        if ((own?.bytes || 0) > MAX_SESSION_CACHE_BYTES || (own?.count || 0) > 10_000) await this.exclude(db, activeKey, "session_budget");
         const size = await db.getFirstAsync<{ bytes: number; count: number }>(
             "SELECT COALESCE(SUM(LENGTH(CAST(raw_json AS BLOB))), 0) AS bytes, COUNT(*) AS count FROM messages",
         );
@@ -118,7 +131,7 @@ export class LocalDatabaseService {
             "SELECT raw_json FROM messages WHERE session_key = ? ORDER BY ordinal ASC, created_at ASC LIMIT ? OFFSET ?",
             [this.key(sessionId), limit, offset],
         );
-        return rows.map((row) => JSON.parse(row.raw_json));
+        return this.parseRows(sessionId, rows);
     }
     async getLatestTurnMessages(sessionId: string): Promise<any[]> {
         const key = this.key(sessionId);
@@ -132,13 +145,23 @@ export class LocalDatabaseService {
             "SELECT raw_json FROM messages WHERE session_key = ? AND turn_id = ? ORDER BY ordinal ASC, created_at ASC",
             [key, latest.turn_id],
         );
-        return rows.map((row) => JSON.parse(row.raw_json));
+        return this.parseRows(sessionId, rows);
+    }
+    private async parseRows(sessionId: string, rows: { raw_json: string }[]) {
+        try { return rows.map((row) => JSON.parse(row.raw_json)); }
+        catch {
+            // A corrupt cache row never becomes an empty authoritative snapshot.
+            // Remove only this cache partition and force a complete server read.
+            await this.deleteSessionData(sessionId);
+            return [];
+        }
     }
     async getSessionIndex<T>(namespace: string): Promise<T[]> {
         const row = await (await database()).getFirstAsync<{ raw_json: string }>(
             "SELECT raw_json FROM indexes WHERE namespace = ?", [namespace],
         );
-        return row ? JSON.parse(row.raw_json) as T[] : [];
+        try { return row ? JSON.parse(row.raw_json) as T[] : []; }
+        catch { await write((db) => db.runAsync("DELETE FROM indexes WHERE namespace = ?", [namespace])); return []; }
     }
     async setSessionIndex<T>(namespace: string, sessions: T[]) {
         await write((db) => db.runAsync("INSERT OR REPLACE INTO indexes VALUES (?, ?)", [namespace, JSON.stringify(sessions)]));
@@ -150,8 +173,12 @@ export class LocalDatabaseService {
             }
         });
     }
+    private async exclude(db: SQLite.SQLiteDatabase, key: string, reason: string) {
+        await this.deleteKey(db, key);
+        await db.runAsync("INSERT OR REPLACE INTO cache_exclusions VALUES (?, ?)", [key, reason]);
+    }
     async deleteSessionData(sessionId: string) {
         const key = this.key(sessionId);
-        await write((db) => this.deleteKey(db, key));
+        await write(async (db) => { await this.deleteKey(db, key); await db.runAsync("DELETE FROM cache_exclusions WHERE session_key = ?", [key]); });
     }
 }

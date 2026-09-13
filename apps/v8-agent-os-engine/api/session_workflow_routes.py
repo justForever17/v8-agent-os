@@ -726,16 +726,35 @@ async def get_sessions():
 
 
 @router.get("/sessions/quick-index")
-async def get_sessions_quick_index(force: int = Query(default=0)):
+async def get_sessions_quick_index(
+    force: int = Query(default=0),
+    limit: Optional[int] = Query(default=None, ge=1, le=200),
+    cursor: str = Query(default="", max_length=4096),
+    q: str = Query(default="", max_length=200),
+    authority: str = Header(default="", alias="x-v8-authority-instance-id"),
+    principal: str = Header(default="", alias="x-v8-agent-os-user-email"),
+):
+    from .session_history_paging import page_session_history, SessionHistoryCursorError
+
     payload = None
     try:
         payload = None if force else _read_web_session_index_payload()
         if payload is None:
             payload = _rebuild_web_session_index()
+        if isinstance(limit, int):
+            payload = page_session_history(payload, authority=authority, principal=principal, query=q, cursor=cursor, limit=limit)
         return _overlay_active_run_status(payload)
+    except SessionHistoryCursorError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
         stale_payload = payload or _read_web_session_index_payload(allow_stale=True)
         if stale_payload is not None:
+            if isinstance(limit, int):
+                # A stale snapshot is still paged; never send all rows as an error fallback.
+                try:
+                    stale_payload = page_session_history(stale_payload, authority=authority, principal=principal, query=q, cursor=cursor, limit=limit)
+                except SessionHistoryCursorError as cursor_error:
+                    raise HTTPException(status_code=409, detail=str(cursor_error)) from cursor_error
             return _mark_session_index_degraded(stale_payload, operation="quick-index")
         raise _state_database_http_exception(error, operation="quick-index") from error
 

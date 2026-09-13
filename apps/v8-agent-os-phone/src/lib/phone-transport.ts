@@ -40,6 +40,11 @@ export class PhoneTransport {
         for (const controller of this.streams.values()) controller.abort();
         this.streams.clear();
     }
+    async settleRefresh() {
+        // A token rotation already in flight must persist before another profile
+        // disposes this connection. It never refreshes an inactive profile itself.
+        await this.refreshInFlight?.catch(() => undefined);
+    }
     private controller(signal?: AbortSignal | null) {
         this.assertCurrent(signal);
         const controller = new AbortController();

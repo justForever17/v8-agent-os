@@ -1,6 +1,7 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import * as Clipboard from "expo-clipboard";
+import { completeMessageText, shouldCollapseLongMessage } from "@/src/lib/long-message-preview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useIsFocused } from "@react-navigation/native";
@@ -874,7 +875,7 @@ function readIdentityField(message: ChatMessage, keys: string[]) {
 
 const EMPTY_RUNTIME_ACTIVITIES: PhoneRuntimeStageActivity[] = [];
 
-export const MessageBubble = memo(function MessageBubble({
+const FullMessageBubble = memo(function FullMessageBubble({
     adminBaseUrl,
     message,
     isLast = false,
@@ -1701,6 +1702,29 @@ export const MessageBubble = memo(function MessageBubble({
             </View>
         </View>
     );
+});
+
+export const MessageBubble = memo(function MessageBubble(props: ComponentProps<typeof FullMessageBubble>) {
+    const { colors, t } = useUiPrefs();
+    const [expanded, setExpanded] = useState(false);
+    const active = Boolean(props.isLoading || props.executionActive || props.message.uiEphemeral);
+    const collapsible = shouldCollapseLongMessage(props.message, active);
+    useEffect(() => setExpanded(false), [props.message.id]);
+    if (!collapsible) return <FullMessageBubble {...props} />;
+    return <View style={{ gap: 8 }}>
+        {expanded ? <FullMessageBubble {...props} /> : <View style={{ padding: 16, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+            <Text selectable style={{ color: colors.text, lineHeight: 22 }}>{completeMessageText(props.message).slice(0, 1600)}…</Text>
+        </View>}
+        <View style={{ flexDirection: "row", gap: 16, paddingHorizontal: 12 }}>
+            <Pressable accessibilityRole="button" onPress={() => setExpanded((value) => !value)} style={{ minHeight: 44, justifyContent: "center" }}>
+                <Text style={{ color: colors.primary }}>{t(expanded ? "phone.devices.collapse" : "phone.devices.expand")}</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("src.components.chat.messagebubble.copy")}
+                onPress={() => void Clipboard.setStringAsync(completeMessageText(props.message))} style={{ minHeight: 44, justifyContent: "center" }}>
+                <MaterialCommunityIcons name="content-copy" size={16} color={colors.textMuted} />
+            </Pressable>
+        </View>
+    </View>;
 });
 
 const styles = StyleSheet.create({

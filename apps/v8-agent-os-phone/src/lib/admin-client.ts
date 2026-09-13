@@ -57,7 +57,8 @@ export function resolveAdminAssetUrl(baseUrl: string, value?: string | null) {
 export async function parseJsonSafe<T>(response: Response): Promise<T | null> {
     try {
         return (await response.json()) as T;
-    } catch {
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
         return null;
     }
 }
@@ -65,7 +66,8 @@ export async function parseJsonSafe<T>(response: Response): Promise<T | null> {
 export async function parseTextSafe(response: Response) {
     try {
         return await response.text();
-    } catch {
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
         return "";
     }
 }

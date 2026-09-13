@@ -216,7 +216,7 @@ function ArtifactPreview({
 }
 
 export default function ArtifactsScreen() {
-    const { status, userAvatarUri, adminBaseUrl, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, userAvatarUri, adminBaseUrl, authorityKey, servingInstanceId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const params = useLocalSearchParams<{ conversationId?: string | string[]; artifactId?: string | string[] }>();
@@ -233,7 +233,7 @@ export default function ArtifactsScreen() {
     const loadRequestRef = useRef(0);
 
     const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
+        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
         { key: "sessions", icon: "view-headline", onPress: () => router.push("/sessions" as Href) },
         { key: "approvals", icon: "bell-outline", onPress: () => router.push("/approvals" as Href) },
         { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
@@ -315,6 +315,7 @@ export default function ArtifactsScreen() {
                 try {
                     const response = await fetchArtifactContentResponse(authorizedFetch, selectedArtifact.id, conversationId);
                     const cached = await saveResponseToCache(response, {
+                        resourceKey: JSON.stringify([authorityKey, servingInstanceId, conversationId, "artifact", selectedArtifact.id, selectedArtifact.createdAt || ""]),
                         prefix: `artifact-${selectedArtifact.id}`,
                     });
                     const opened = await openCachedFile(cached.uri);

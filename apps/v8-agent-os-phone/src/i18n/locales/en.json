@@ -1,4 +1,12 @@
 {
+  "phone.devices.navigation": "Navigation",
+  "phone.devices.settings": "Settings",
+  "phone.devices.returnChat": "Return to chat",
+  "phone.devices.terminalUnavailable": "Terminal connection unavailable. Retrying.",
+  "phone.devices.terminalReset": "Terminal log changed. Restoring from the beginning.",
+  "phone.devices.terminalRecent": "Showing recent output; the complete log remains on the device.",
+  "src.screens.chatscreen.uploading": "Attachments are uploading. Keep the draft or select unfinished attachments again.",
+  "src.components.chat.messagebubble.copy": "Copy complete message",
   "phone.devices.title": "Connections & devices",
   "phone.devices.profiles": "Paired connections",
   "phone.devices.peers": "Supervisors on this connection",

@@ -116,6 +116,7 @@ import {
     listWorkspaceFolders,
     listCommandPresets,
     listConversations,
+    listConversationPage,
     listPlugins,
     listSkillsAndSubagentFamilies,
     runManualMemoryExtraction,
@@ -2149,6 +2150,12 @@ export default function ChatScreen() {
     const [transcribing, setTranscribing] = useState(false);
     const [speakingId, setSpeakingId] = useState("");
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [historyQuery, setHistoryQuery] = useState("");
+    const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+    const [historyPageBusy, setHistoryPageBusy] = useState(false);
+    const [historyError, setHistoryError] = useState("");
+    const [historySearchItems, setHistorySearchItems] = useState<ConversationSummary[]>([]);
+    const historyPageAbortRef = useRef<AbortController | null>(null);
     const [historyCreatingGroupKey, setHistoryCreatingGroupKey] = useState<string | null>(null);
     const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
@@ -2499,7 +2506,7 @@ export default function ChatScreen() {
         if (CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)) {
             setPendingContextSessionRefs([{ sessionId: contextSessionIdParam, source: "history_menu" }]);
         }
-    }, [contextSessionIdParam]);
+    }, [draftKey, contextSessionIdParam]);
 
     useEffect(() => {
         runtimeRef.current = runtime;
@@ -2609,6 +2616,10 @@ export default function ChatScreen() {
     }, []);
 
     const clearActiveConversationViewState = useCallback(() => {
+        sendingRef.current = false;
+        setSending(false);
+        setAttachmentBusy(false);
+        setTranscribing(false);
         resetConversationStreamState();
         messagesRef.current = [];
         messageConversationIdRef.current = null;
@@ -3574,44 +3585,61 @@ export default function ChatScreen() {
         // Chat hydration starts independently. Catalogs never hold its first frame.
         void listCommandPresets(authorizedFetch).then(setCommands).catch(() => undefined);
         void loadProjects().catch(() => undefined);
-        const nextConversations = await listConversations(authorizedFetch);
+        const page = await listConversationPage(authorizedFetch);
+        const nextConversations = page.items;
+        setHistoryCursor(page.nextCursor);
         setConversations(sortSessionHistory(nextConversations));
         await localDatabase.setSessionIndex(sessionIndexNamespace, nextConversations);
     }, [authorizedFetch, loadProjects, localDatabase, sessionIndexNamespace]);
 
     const refreshConversationIndex = useCallback((): Promise<void> => {
-        if (conversationIndexRefreshRef.current) {
-            conversationIndexRefreshPendingRef.current = true;
-            return conversationIndexRefreshRef.current;
-        }
+        if (conversationIndexRefreshRef.current) return conversationIndexRefreshRef.current;
         const request = (async () => {
             try {
-                do {
-                    conversationIndexRefreshPendingRef.current = false;
-                    try {
-                        const nextConversations = await listConversations(authorizedFetch);
-                        const sorted = sortSessionHistory(nextConversations);
-                        sessionIndexReadyRef.current = true;
-                        setConversations(sorted);
-                        await localDatabase.setSessionIndex(sessionIndexNamespace, sorted);
-                        const currentSessionId = activeConversationIdRef.current;
-                        if (
-                            currentSessionId
-                            && !sorted.some((item) => (item.sessionId || item.id) === currentSessionId)
-                        ) {
-                            await setActiveConversationId(null);
-                        }
-                    } catch (error) {
-                        console.warn("[phone/chat] session activity refresh failed", error instanceof Error ? error.message : error);
-                    }
-                } while (conversationIndexRefreshPendingRef.current);
-            } finally {
-                conversationIndexRefreshRef.current = null;
-            }
+                const page = await listConversationPage(authorizedFetch);
+                sessionIndexReadyRef.current = true;
+                setConversations(sortSessionHistory(page.items));
+                if (!historyQuery) setHistoryCursor(page.nextCursor);
+                await localDatabase.setSessionIndex(sessionIndexNamespace, page.items);
+            } catch (error) {
+                console.warn("[phone/chat] session activity refresh failed", error instanceof Error ? error.message : error);
+            } finally { conversationIndexRefreshRef.current = null; }
         })();
         conversationIndexRefreshRef.current = request;
         return request;
-    }, [authorizedFetch, sessionIndexNamespace, setActiveConversationId]);
+    }, [authorizedFetch, historyQuery, localDatabase, sessionIndexNamespace]);
+
+    const loadHistoryPage = useCallback(async (append = false) => {
+        historyPageAbortRef.current?.abort();
+        const controller = new AbortController();
+        historyPageAbortRef.current = controller;
+        setHistoryPageBusy(true);
+        try {
+            const page = await listConversationPage(authorizedFetch, {
+                query: historyQuery, cursor: append ? historyCursor || undefined : undefined, signal: controller.signal,
+            });
+            if (controller.signal.aborted) return;
+            const merge = (current: ConversationSummary[]) => append
+                ? sortSessionHistory([...current, ...page.items.filter((item) => !current.some((old) => (old.sessionId || old.id) === (item.sessionId || item.id)))])
+                : page.items;
+            if (historyQuery) setHistorySearchItems(merge);
+            else setConversations(merge);
+            setHistoryCursor(page.nextCursor);
+            setHistoryError("");
+        } catch (error) {
+            if (!controller.signal.aborted) {
+                if ((error as { code?: string }).code === "session_index_changed") setHistoryCursor(null);
+                setHistoryError(error instanceof Error ? error.message : t("src.screens.chatscreen.load_failed"));
+            }
+        } finally { if (!controller.signal.aborted) setHistoryPageBusy(false); }
+    }, [authorizedFetch, historyCursor, historyQuery, t]);
+    const loadHistoryPageRef = useRef(loadHistoryPage);
+    loadHistoryPageRef.current = loadHistoryPage;
+    useEffect(() => {
+        if (!historyOpen || !isFocused || !appVisible) return;
+        const timer = setTimeout(() => void loadHistoryPageRef.current(), historyQuery ? 180 : 0);
+        return () => { clearTimeout(timer); historyPageAbortRef.current?.abort(); };
+    }, [historyOpen, historyQuery, isFocused, appVisible]);
 
     useEffect(() => {
         if (!sessionIndexReadyRef.current || status !== "authenticated") {
@@ -3874,7 +3902,7 @@ export default function ChatScreen() {
                 engineProfile: readPayloadProfile(payload),
             });
         }
-    }, [applyConversationProjection]);
+    }, [draftKey, applyConversationProjection]);
 
     const scheduleRealtimeSnapshotRefresh = useCallback((conversationId?: string | null, options?: { force?: boolean }) => {
         const targetConversationId = String(conversationId || activeConversationIdRef.current || "").trim();
@@ -3976,7 +4004,7 @@ export default function ChatScreen() {
             }
             return [...without, { ...item, state }].sort((a, b) => Number(a.ordinal || 0) - Number(b.ordinal || 0));
         });
-    }, []);
+    }, [draftKey]);
 
     const handleRealtimeEvent = useCallback((eventName: string, payload: unknown) => {
         const upstreamDiagnostics = readRealtimeDiagnostics(payload);
@@ -4839,7 +4867,7 @@ export default function ChatScreen() {
                 { force: normalized.type === "done" || normalized.type === "error" },
             );
         }
-    }, [
+    }, [draftKey,
         appendRuntimeTimeline,
         applyRealtimeSnapshotPayload,
         getEngineNowMs,
@@ -4933,10 +4961,11 @@ export default function ChatScreen() {
         setConversationBusy(true);
         let hadCachedTurn = false;
         try {
-            const syncCursor = await localDatabase.getSyncCursor(conversationId);
             const cachedLatestTurn = await localDatabase.getLatestTurnMessages(conversationId);
+            const syncCursor = await localDatabase.getSyncCursor(conversationId);
             if (
                 cachedLatestTurn.length > 0
+                && (messageConversationIdRef.current !== conversationId || messagesRef.current.length === 0)
                 && activeConversationIdRef.current === conversationId
                 && conversationTransitionTokenRef.current === transitionToken
             ) {
@@ -4979,6 +5008,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             if (turnPage.messages && turnPage.messages.length > 0) {
                 await localDatabase.upsertMessages(conversationId, turnPage.messages);
             }
+            if (activeConversationIdRef.current !== conversationId || conversationTransitionTokenRef.current !== transitionToken) return false;
             const timelineMessages = Array.isArray(turnPage.messages) && turnPage.messages.length > 0
                 ? turnPage.messages
                 : cachedLatestTurn;
@@ -4991,13 +5021,14 @@ const [detail, turnPage, syncData] = await Promise.all([
             const preserveOptimisticLocalState = Boolean(
                 messageConversationIdRef.current === conversationId
                 && (
-                    optimisticSeedConversationIdRef.current === conversationId
+                    hydratedConversationIdRef.current === conversationId
+                    || optimisticSeedConversationIdRef.current === conversationId
                     || sendingRef.current
                     || hasPreservableLocalAssistantState(messagesRef.current)
                 )
             );
             const normalized = preserveOptimisticLocalState
-                ? mergeAuthoritativeSnapshotMessages(messagesRef.current, snapshotMessages, true)
+                ? mergeAuthoritativeSnapshotMessages(messagesRef.current.filter((message) => !syncData.deletions?.includes(message.id)), snapshotMessages, true)
                 : snapshotMessages;
             if (!preserveOptimisticLocalState) {
                 resetConversationStreamState();
@@ -5040,7 +5071,7 @@ const [detail, turnPage, syncData] = await Promise.all([
                 setConversationBusy(false);
             }
         }
-    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState, t]);
+    }, [draftKey, applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState, t]);
 
     const loadOlderConversationTurn = useCallback(async () => {
         const conversationId = activeConversationIdRef.current;
@@ -5101,7 +5132,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             } catch { /* Preserve this session's last known process surface on network failure. */ }
             finally { polling = false; }
         };
-        void poll();
+        void Promise.resolve().then(poll);
         const timer = setInterval(() => {
             if (runtimePanelOpen || isQueueEligibleRunStatus(runtimeRef.current.status) || processesRef.current.length) void poll();
         }, 12_000);
@@ -5316,6 +5347,13 @@ const [detail, turnPage, syncData] = await Promise.all([
             void closeDesktopPreviewRef.current();
         };
     }, []);
+    useEffect(() => {
+        if (!isFocused || !appVisible) {
+            void closeDesktopPreviewRef.current();
+            ttsRequestIdRef.current += 1;
+            try { ttsPlayer.pause(); replyPopPlayer.pause(); } catch { /* Native player may already be released. */ }
+        }
+    }, [isFocused, appVisible, ttsPlayer, replyPopPlayer]);
 
     const handleSelectConversation = useCallback(async (item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
@@ -5364,7 +5402,6 @@ const [detail, turnPage, syncData] = await Promise.all([
             return;
         }
         await handleNewConversation();
-        setPendingContextSessionRefs([{ sessionId: canonicalSessionId, source: "history_menu" }]);
         router.replace(`/chat?new=1&contextSessionId=${encodeURIComponent(canonicalSessionId)}` as Href);
     }, [handleNewConversation]);
 
@@ -5562,6 +5599,8 @@ const [detail, turnPage, syncData] = await Promise.all([
     }, [activeConversationId, authorizedFetch, t]);
 
     const handlePickAttachment = useCallback(async () => {
+        const targetSessionId = activeConversationIdRef.current;
+        const transition = conversationTransitionTokenRef.current;
         setAttachmentBusy(true);
         try {
             const result = await DocumentPicker.getDocumentAsync({
@@ -5584,14 +5623,16 @@ const [detail, turnPage, syncData] = await Promise.all([
                     },
                     localId,
                 );
+                setUploadedFiles((current) => mergeUploadedWorkspaceFiles(current, [{ ...previewDraft, localId, uploadState: "uploading" }]));
+                await phoneDrafts.flush(draftKey);
                 try {
                     const nextFile = await uploadAttachment(authorizedFetch, {
                         uri: normalizedAsset.uri,
                         name: normalizedAsset.name,
                         type: normalizedAsset.mimeType || "application/octet-stream",
                     }, {
-                        sessionId: activeConversationIdRef.current,
-                        conversationId: activeConversationIdRef.current,
+                        sessionId: targetSessionId,
+                        conversationId: targetSessionId,
                         workspaceId: scopeBinding?.workspaceId,
                         workspacePath: scopeBinding?.workspacePath,
                         projectId: scopeBinding?.projectId,
@@ -5605,8 +5646,11 @@ const [detail, turnPage, syncData] = await Promise.all([
                         previewUri: previewDraft.previewUri,
                         previewKind: previewDraft.previewKind,
                         durationLabel: previewDraft.durationLabel,
+                        uploadState: "uploaded",
                     });
                 } catch (error) {
+                    setUploadedFiles((current) => current.map((file) => file.localId === localId ? { ...file, uploadState: "failed", uploadError: "Upload incomplete. Select this attachment again." } : file));
+                    await phoneDrafts.flush(draftKey);
                     throw buildUploadTransportError(normalizedAsset, error, adminBaseUrl);
                 }
             }
@@ -5620,9 +5664,9 @@ const [detail, turnPage, syncData] = await Promise.all([
             }
             Alert.alert(t("src.screens.chatscreen.upload_failed"), errorMessage);
         } finally {
-            setAttachmentBusy(false);
+            if (conversationTransitionTokenRef.current === transition) setAttachmentBusy(false);
         }
-    }, [authorizedFetch]);
+    }, [draftKey, authorizedFetch, adminBaseUrl, scopeBinding?.workspaceId, scopeBinding?.workspacePath, scopeBinding?.projectId, t]);
 
     const handleToggleRecording = useCallback(async () => {
         try {
@@ -5721,7 +5765,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         } finally {
             setTranscribing(false);
         }
-    }, [authorizedFetch, input, recorder, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, t]);
+    }, [draftKey, authorizedFetch, input, recorder, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, t]);
 
     const reconcileComposerReferences = useCallback((next: string) => {
         if (selectedCommand && !composerTextContainsReference(next, {
@@ -5746,7 +5790,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             id: `plugin:${plugin.pluginId}`,
             label: plugin.displayName || plugin.pluginId,
         })));
-    }, [selectedCommand]);
+    }, [draftKey, selectedCommand]);
 
     const handleBodyInputChange = useCallback((next: string) => {
         if (next.length < input.length) {
@@ -5770,7 +5814,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             : Math.min(next.length, composerSelection.start + Math.max(0, next.length - (input.length - selectedLength)));
         setComposerSelection({ start: nextCaret, end: nextCaret });
         reconcileComposerReferences(next);
-    }, [composerReferences, composerSelection.end, composerSelection.start, input, reconcileComposerReferences]);
+    }, [draftKey, composerReferences, composerSelection.end, composerSelection.start, input, reconcileComposerReferences]);
 
     const handleComposerBackspace = useCallback(() => {
         if (input.trim()) {
@@ -5779,7 +5823,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         if (pendingContextSessionRefs.length > 0) {
             setPendingContextSessionRefs((current) => current.slice(0, -1));
         }
-    }, [input, pendingContextSessionRefs.length]);
+    }, [draftKey, input, pendingContextSessionRefs.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
         const voiceText = text.trim();
@@ -5801,7 +5845,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             player.pause();
             player.seekTo?.(0);
             const response = await requestTextToSpeech(authorizedFetch, { text: voiceText });
-            const cached = await saveResponseToCache(response, { prefix: "tts", fallbackExtension: "mp3" });
+            const cached = await saveResponseToCache(response, { resourceKey: draftKey, prefix: "tts", fallbackExtension: "mp3" });
             const audioUri = String(cached.uri || "").trim();
             if (!audioUri) {
                 throw new Error(t("src.screens.chatscreen.failed_to_create_audio_file"));
@@ -5930,7 +5974,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         }
         setEditingQueuedMessage(item);
         setQueuedMessageEditText(String(item.content || ""));
-    }, []);
+    }, [draftKey]);
 
     const handleSaveQueuedMessageEdit = useCallback(async () => {
         const item = editingQueuedMessage;
@@ -5953,7 +5997,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         } finally {
             setQueuedMessageEditBusy(false);
         }
-    }, [authorizedFetch, editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
+    }, [draftKey, authorizedFetch, editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
 
     const runtimeTimelineForProjection = useMemo(
         () => runtimeTimeline.slice(0, PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT),
@@ -6414,6 +6458,10 @@ const [detail, turnPage, syncData] = await Promise.all([
             ? stripComposerReferences(displayText, composerReferences)
             : displayText.trim();
         const effectiveUploadedFiles = hasExplicitFiles ? [...(options.files || [])] : uploadedFiles;
+        if (effectiveUploadedFiles.some((file) => file.uploadState === "uploading" || file.uploadState === "failed")) {
+            Alert.alert(t("src.screens.chatscreen.upload_failed"), "Complete or reselect the pending attachments before sending.");
+            return;
+        }
         if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && selectedPlugins.length === 0 && effectiveUploadedFiles.length === 0) {
             return;
         }
@@ -7200,6 +7248,10 @@ const [detail, turnPage, syncData] = await Promise.all([
             ) : null}
             {activeConversationId ? (
                 <>
+                {(draftStatus.values.pendingIntent as { state?: string } | undefined)?.state === "acceptance_unknown" ?
+                    <Text style={{ color: "#B45309", padding: 8 }}>{t("phone.devices.unknownSubmit")}</Text> : null}
+                {uploadedFiles.some((file) => file.uploadState === "failed" || file.uploadState === "uploading") ?
+                    <Text style={{ color: "#B45309", padding: 8 }}>{uploadedFiles.find((file) => file.uploadError)?.uploadError || t("src.screens.chatscreen.uploading")}</Text> : null}
                 {draftStatus.error ? <Pressable accessibilityRole="button" onPress={() => void phoneDrafts.flush(draftKey).catch(() => undefined)}>
                     <Text style={{ color: "#B45309", padding: 8 }}>{draftStatus.error}</Text>
                 </Pressable> : null}
@@ -7447,6 +7499,8 @@ const [detail, turnPage, syncData] = await Promise.all([
                                 </ScrollView>
                             ) : (
                                 <ChatWindow
+                                    key={draftKey}
+                                    cacheKey={draftKey}
                                     adminBaseUrl={adminBaseUrl}
                                     sessionId={activeConversationId || undefined}
                                     workspaceId={scopeBinding?.workspaceId || undefined}
@@ -7785,9 +7839,15 @@ const [detail, turnPage, syncData] = await Promise.all([
 
                 <HistoryDrawer
                     visible={historyOpen}
-                    items={conversations}
+                    items={historyQuery ? historySearchItems : conversations}
+                    query={historyQuery}
+                    onQueryChange={setHistoryQuery}
+                    hasMore={Boolean(historyCursor)}
+                    onLoadMore={() => void loadHistoryPage(true)}
+                    error={historyError}
+                    onRetry={() => void loadHistoryPage()}
                     activeConversationId={activeConversationId}
-                    loading={loading}
+                    loading={loading || historyPageBusy}
                     onClose={() => setHistoryOpen(false)}
                     onSelectConversation={(item) => void handleSelectConversation(item)}
                     onContinueConversation={(item) => void handleContinueConversation(item)}

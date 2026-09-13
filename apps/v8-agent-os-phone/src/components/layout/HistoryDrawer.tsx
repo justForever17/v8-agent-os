@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Alert, Modal, Pressable, SectionList, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -20,6 +20,12 @@ export function HistoryDrawer({
     groups: groupedItems,
     activeConversationId,
     loading,
+    query = "",
+    onQueryChange,
+    hasMore,
+    onLoadMore,
+    error,
+    onRetry,
     onClose,
     onSelectConversation,
     onContinueConversation,
@@ -35,6 +41,12 @@ export function HistoryDrawer({
     groups?: ConversationWorkspaceGroup[];
     activeConversationId: string | null;
     loading?: boolean;
+    query?: string;
+    onQueryChange?: (query: string) => void;
+    hasMore?: boolean;
+    onLoadMore?: () => void;
+    error?: string;
+    onRetry?: () => void;
     onClose: () => void;
     onSelectConversation: (item: ConversationSummary) => void;
     onContinueConversation: (item: ConversationSummary) => void;
@@ -224,22 +236,27 @@ export function HistoryDrawer({
                             </Pressable>
                         </View>
 
-                        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-                            <View style={styles.sectionHeader}>
-                                <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>{t("src.components.layout.historydrawer.history")}</Text>
-                            </View>
-
-                            {items.length === 0 ? (
-                                <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-                                    {loading ? t("src.components.layout.historydrawer.syncing_history") : t("src.components.layout.historydrawer.no_history_yet")}
-                                </Text>
-                            ) : (
-                                groups.map((group) => {
-                                    const entries = group.items;
-                                    const isOpen = openGroups[group.key];
-                                    return (
-                                        <View key={group.key} style={styles.groupWrap}>
-                                            <View style={styles.groupHeader}>
+                        {onQueryChange ? <TextInput value={query} onChangeText={onQueryChange}
+                            accessibilityLabel={t("phone.devices.searchSessions")} placeholder={t("phone.devices.searchSessions")}
+                            placeholderTextColor={colors.textSoft} style={[styles.inlineInput, { flex: 0, color: colors.text, borderColor: colors.border, marginBottom: 10 }]} /> : null}
+                        {error ? <Pressable onPress={onRetry}><Text style={{ color: colors.danger, paddingVertical: 8 }}>{error} · {t("phone.devices.retry")}</Text></Pressable> : null}
+                        <SectionList
+                            sections={groups.map((group) => ({ ...group, data: openGroups[group.key] ? group.items : [] }))}
+                            keyExtractor={(item) => item.sessionId || item.id}
+                            contentContainerStyle={styles.scrollContent}
+                            keyboardShouldPersistTaps="handled"
+                            showsVerticalScrollIndicator={false}
+                            stickySectionHeadersEnabled={false}
+                            initialNumToRender={18} maxToRenderPerBatch={10} windowSize={7}
+                            ListFooterComponent={hasMore ? <Pressable disabled={loading} onPress={onLoadMore} style={{ minHeight: 44, justifyContent: "center" }}>
+                                <Text style={{ color: colors.primary }}>{t("phone.devices.more")}</Text>
+                            </Pressable> : null}
+                            ListEmptyComponent={<Text style={[styles.emptyText, { color: colors.textMuted }]}>
+                                {loading ? t("src.components.layout.historydrawer.syncing_history") : t("src.components.layout.historydrawer.no_history_yet")}
+                            </Text>}
+                            renderSectionHeader={({ section: group }) => {
+                                const isOpen = openGroups[group.key];
+                                return (<View style={styles.groupHeader}>
                                                 <Pressable
                                                     style={styles.groupToggle}
                                                     onPress={() => toggleGroup(group.key)}
@@ -275,12 +292,10 @@ export function HistoryDrawer({
                                                 {creatingGroupKey === group.key || presentationBusyKey === `group:${group.key}` ? (
                                                     <ActivityIndicator size="small" color={colors.primary} style={styles.groupBusy} />
                                                 ) : null}
-                                            </View>
-
-                                            {isOpen ? (
-                                                <View style={styles.items}>
-                                                    {entries.map((item) => {
-                                                        const canonicalSessionId = item.sessionId || item.id;
+                                            </View>);
+                            }}
+                            renderItem={({ item }) => {
+                                const canonicalSessionId = item.sessionId || item.id;
                                                         const active = canonicalSessionId === activeConversationId;
                                                         const activityState = getConversationActivityState(item);
                                                     return (
@@ -343,14 +358,8 @@ export function HistoryDrawer({
                                                             </View>
                                                         </Pressable>
                                                     );
-                                                    })}
-                                                </View>
-                                            ) : null}
-                                        </View>
-                                    );
-                                })
-                            )}
-                        </ScrollView>
+                            }}
+                        />
 
                     </Animated.View>
                     <Pressable style={styles.backdrop} onPress={onClose} />

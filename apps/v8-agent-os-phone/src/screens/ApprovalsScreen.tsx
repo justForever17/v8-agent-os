@@ -24,7 +24,7 @@ export default function ApprovalsScreen() {
     const [busyId, setBusyId] = useState("");
 
     const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
+        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
         { key: "connect", icon: "lan-connect", onPress: () => router.push("/connect" as Href) },
         { key: "desktop-live", icon: "monitor-dashboard", onPress: () => router.push("/desktop-live" as Href), tone: "primary" },
         { key: "rpa", icon: "robot-outline", onPress: () => router.push("/rpa" as Href), tone: "accent" },

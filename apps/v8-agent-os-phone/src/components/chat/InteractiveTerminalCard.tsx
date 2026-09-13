@@ -14,7 +14,6 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useReducedMotion } from "react-native-reanimated";
 import {
     isActiveCommandSessionStatus,
-    resolveAdminProcessWsUrl,
     type AdminProcessRef,
 } from "@v8/session-realtime";
 
@@ -29,6 +28,9 @@ import {
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
+import { initialTerminalOutputCursor, mergeTerminalOutput } from "@/src/lib/terminal-output-cursor";
+import { useIsFocused } from "@react-navigation/native";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 
 type InteractiveTerminalCardProps = {
     process: AdminProcessRef;
@@ -86,7 +88,14 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     onTerminated,
 }: InteractiveTerminalCardProps) {
     const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
-    const { adminBaseUrl, authorizedFetch } = useAppSession();
+    const { authorityKey, authorizedFetch } = useAppSession();
+    const focused = useIsFocused();
+    const appVisible = useAppVisibility();
+    const outputCursorRef = useRef(initialTerminalOutputCursor());
+    const targetKey = JSON.stringify([authorityKey, process.processId]);
+    const targetRef = useRef(targetKey);
+    targetRef.current = targetKey;
+    const [connectionNote, setConnectionNote] = useState("");
     const { colors, themeMode, t } = useUiPrefs();
     const reduceMotion = useReducedMotion();
     const [isRunning, setIsRunning] = useState(() => isActiveCommandSessionStatus(process.status));
@@ -103,8 +112,6 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
         () => createFrameTaskScheduler(requestAnimationFrame, cancelAnimationFrame),
         [],
     );
-    const wsRef = useRef<WebSocket | null>(null);
-    const wsOpenedRef = useRef(false);
     const notifiedTerminationRef = useRef(false);
     const outputPath = useMemo(
         () => processOutputPath(process),
@@ -142,150 +149,77 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     useEffect(() => () => scrollToEndScheduler.cancel(), [scrollToEndScheduler]);
 
     useEffect(() => {
-        if (!process?.processId) {
-            return undefined;
-        }
-
-        if (prefersScreenPolling) {
-            setPollingEnabled(true);
-            return undefined;
-        }
-
-        const wsUrl = resolveAdminProcessWsUrl("phone", adminBaseUrl, process);
-        if (!wsUrl) {
-            setPollingEnabled(true);
-            return undefined;
-        }
-        let disposed = false;
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-        wsOpenedRef.current = false;
+        outputCursorRef.current = initialTerminalOutputCursor();
+        setTerminalOutput(normalizeTerminalScreen(String(processRecord.stableScreenSnapshot || process.screenSnapshot || "")));
+        setInputText("");
+        setSensitiveInput(false);
         notifiedTerminationRef.current = false;
-
-        ws.onopen = () => {
-            if (disposed) {
-                return;
-            }
-            wsOpenedRef.current = true;
-            setPollingEnabled(false);
-        };
-
-        ws.onmessage = (event) => {
-            if (disposed) {
-                return;
-            }
-            const nextChunk = typeof event.data === "string" ? event.data : String(event.data ?? "");
-            if (!nextChunk) {
-                return;
-            }
-            setTerminalOutput((current) => appendTerminalOutput(current, nextChunk));
-        };
-
-        ws.onclose = () => {
-            if (disposed) {
-                return;
-            }
-            if (!wsOpenedRef.current) {
-                setPollingEnabled(true);
-                return;
-            }
-            setIsRunning(false);
-            setTerminalOutput((current) => appendTerminalOutput(current, "\n[Process terminated]"));
-        };
-
-        ws.onerror = () => {
-            if (disposed) {
-                return;
-            }
-            if (!wsOpenedRef.current) {
-                setPollingEnabled(true);
-                return;
-            }
-            setIsRunning(false);
-            setTerminalOutput((current) => appendTerminalOutput(current, "\n[Connection error]"));
-        };
-
-        return () => {
-            disposed = true;
-            ws.close();
-            wsRef.current = null;
-        };
-    }, [adminBaseUrl, prefersScreenPolling, process]);
+        setPollingEnabled(true);
+    }, [authorityKey, process.processId]);
 
     useEffect(() => {
-        if (!pollingEnabled || !process?.processId) {
-            return undefined;
-        }
-        if (!outputPath) {
-            return undefined;
-        }
-        let cancelled = false;
+        if (!pollingEnabled || !process.processId || !outputPath || !focused || !appVisible || isCollapsed) return;
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const poll = async () => {
+            let delay = 1200;
             try {
-                const response = await authorizedFetch(outputPath);
-                if (!response.ok) {
+                const requestedCursor = outputCursorRef.current.cursor;
+                const separator = outputPath.includes("?") ? "&" : "?";
+                const response = await authorizedFetch(`${outputPath}${separator}cursor=${requestedCursor}`, { signal: controller.signal });
+                if (response.status === 400 && requestedCursor > 0) outputCursorRef.current = initialTerminalOutputCursor();
+                if (response.status === 404) {
+                    await response.text();
+                    if (!controller.signal.aborted) { setPollingEnabled(false); setIsRunning(false); }
                     return;
                 }
+                if (!response.ok) throw new Error(t("phone.devices.terminalUnavailable"));
                 const payload = await response.json() as {
-                    output?: string;
-                    stableScreenSnapshot?: string;
-                    screenSnapshot?: string;
-                    awaitingInput?: boolean;
-                    is_running?: boolean;
-                    isRunning?: boolean;
-                    process?: {
-                        status?: string;
-                        is_running?: boolean;
-                        stable_screen_snapshot?: string;
-                        screen_snapshot?: string;
-                    };
+                    output?: string; outputCursor?: number; outputGeneration?: string | number; outputHasMore?: boolean;
+                    stableScreenSnapshot?: string; screenSnapshot?: string; is_running?: boolean; isRunning?: boolean;
+                    process?: { status?: string; is_running?: boolean; stable_screen_snapshot?: string; screen_snapshot?: string };
                 };
-                if (cancelled) {
-                    return;
-                }
-                const nextScreen = normalizeTerminalScreen(
-                    String(payload.stableScreenSnapshot || payload.screenSnapshot || payload.process?.stable_screen_snapshot || payload.process?.screen_snapshot || ""),
-                );
-                if (prefersScreenPolling && nextScreen) {
-                    setTerminalOutput(nextScreen);
-                } else if (payload.output) {
-                    setTerminalOutput((current) => appendTerminalOutput(current, payload.output || ""));
-                }
+                if (controller.signal.aborted) return;
+                const next = mergeTerminalOutput(outputCursorRef.current, requestedCursor, payload);
+                const screen = normalizeTerminalScreen(String(payload.stableScreenSnapshot || payload.screenSnapshot || payload.process?.stable_screen_snapshot || payload.process?.screen_snapshot || ""));
+                setTerminalOutput(prefersScreenPolling ? screen : cleanTerminalOutput(next.output));
+                outputCursorRef.current = next;
+                setConnectionNote(next.reset ? t("phone.devices.terminalReset") : next.output.length >= 32_000 ? t("phone.devices.terminalRecent") : "");
                 const stillRunning = typeof payload.process?.status === "string"
                     ? isActiveCommandSessionStatus(payload.process.status)
                     : Boolean(payload.is_running ?? payload.isRunning ?? payload.process?.is_running);
                 setIsRunning(stillRunning);
-                if (!stillRunning) {
-                    setPollingEnabled(false);
-                }
+                if (!stillRunning && !payload.outputHasMore && !next.reset) { setPollingEnabled(false); return; }
+                if (payload.outputHasMore || next.reset) delay = 60;
             } catch {
-                // Polling is a best-effort fallback for mobile WebSocket failures.
+                if (controller.signal.aborted) return;
+                setConnectionNote(t("phone.devices.terminalUnavailable"));
+                delay = 3000;
             }
+            if (!controller.signal.aborted) timer = setTimeout(() => void poll(), delay);
         };
         void poll();
-        const timer = setInterval(() => void poll(), 1200);
-        return () => {
-            cancelled = true;
-            clearInterval(timer);
-        };
-    }, [authorizedFetch, outputPath, pollingEnabled, prefersScreenPolling, process.processId]);
+        return () => { controller.abort(); if (timer) clearTimeout(timer); };
+    }, [authorizedFetch, outputPath, pollingEnabled, prefersScreenPolling, process.processId, focused, appVisible, isCollapsed, t]);
 
     const handleTerminate = async () => {
         if (!process?.terminateAdminPath) {
             return;
         }
         try {
-            await authorizedFetch(process.terminateAdminPath, {
+            const response = await authorizedFetch(process.terminateAdminPath, {
                 method: "POST",
             });
-        } catch {
-            // Best-effort termination mirrors the web behavior.
-        } finally {
+            if (!response.ok) throw new Error("Termination was not accepted");
+            await response.text();
+            if (targetRef.current !== targetKey) return;
             setIsRunning(false);
             if (!notifiedTerminationRef.current) {
                 notifiedTerminationRef.current = true;
                 onTerminated?.(process.processId);
             }
+        } catch {
+            if (targetRef.current === targetKey) setConnectionNote(t("phone.devices.terminalUnavailable"));
         }
     };
 
@@ -298,17 +232,23 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
             const inputPath = sensitiveInput
                 ? process.inputAdminPath.replace(/\/input(?:\?.*)?$/i, "/sensitive-input")
                 : process.inputAdminPath;
-            await authorizedFetch(inputPath, {
+            const submittedInput = inputText;
+            const response = await authorizedFetch(inputPath, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(sensitiveInput
                     ? { input_text: inputText, secret_type: "terminal_secret" }
                     : { input_text: inputText }),
             });
-            setInputText("");
+            if (!response.ok) throw new Error("Input was not accepted");
+            await response.text();
+            if (targetRef.current !== targetKey) return;
+            setInputText((current) => current === submittedInput ? "" : current);
             setSensitiveInput(false);
+        } catch {
+            if (targetRef.current === targetKey) setConnectionNote(t("phone.devices.terminalUnavailable"));
         } finally {
-            setSendingInput(false);
+            if (targetRef.current === targetKey) setSendingInput(false);
         }
     };
 
@@ -418,6 +358,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
 
             {!isCollapsed ? (
                 <CardContent style={styles.content}>
+                    {connectionNote ? <Text style={{ color: colors.warning }}>{connectionNote}</Text> : null}
                     {encodingWarning ? (
                         <View style={[styles.warningBanner, { backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.14)" : "rgba(254,243,199,0.92)", borderColor: colors.warning }]}>
                             <MaterialCommunityIcons name="alert-circle-outline" size={14} color={colors.warning} />

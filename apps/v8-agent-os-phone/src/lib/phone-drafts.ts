@@ -93,6 +93,15 @@ export class PhoneDraftStore {
         try { await request; } finally { if (entry.writing === request) entry.writing = undefined; }
     }
     async flushAll() { for (const key of this.entries.keys()) await this.flush(key); }
+    evictSavedInactive() {
+        if (this.entries.size <= 128) return;
+        for (const [key, entry] of this.entries) {
+            if (entry.listeners.size || entry.timer || entry.loading || entry.writing || entry.snapshot.error
+                || entry.savedRevision !== entry.snapshot.revision) continue;
+            this.entries.delete(key);
+            if (this.entries.size <= 128) break;
+        }
+    }
 }
 
 export const phoneDrafts = new PhoneDraftStore({ read: readMetadata, write: writeMetadata });

@@ -136,7 +136,7 @@ async function shareLocalFile(uri: string, filename: string) {
 
 export async function saveResponseToCache(
     response: Response,
-    options?: { prefix?: string; filename?: string; fallbackExtension?: string },
+    options: { resourceKey: string; prefix?: string; filename?: string; fallbackExtension?: string },
 ) {
     const contentType = response.headers.get("Content-Type") || "application/octet-stream";
     const dispositionName = parseDispositionFilename(response.headers.get("Content-Disposition"));
@@ -146,10 +146,14 @@ export async function saveResponseToCache(
     if (!root) {
         throw new Error(translateCurrent("src.lib.file_transfer.text"));
     }
-    const folder = `${root}v8-agent-os/`;
+    if (!options.resourceKey) throw new Error("Missing resource identity");
+    const folder = `${root}v8-agent-os/${encodeURIComponent(options.resourceKey)}/`;
     await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
-    const uri = `${folder}${safeName}`;
+    const uri = `${folder}${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName}`;
+    const declaredBytes = Number(response.headers.get("Content-Length") || 0);
+    if (declaredBytes > 64 * 1024 * 1024) throw new Error("This resource is too large to preview on the phone.");
     const base64 = arrayBufferToBase64(await response.arrayBuffer());
+    if (base64.length > 90 * 1024 * 1024) throw new Error("This resource is too large to preview on the phone.");
     await FileSystem.writeAsStringAsync(uri, base64, {
         encoding: FileSystem.EncodingType.Base64,
     });

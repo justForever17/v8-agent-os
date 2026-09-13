@@ -1,4 +1,12 @@
 {
+  "phone.devices.navigation": "导航",
+  "phone.devices.settings": "设置",
+  "phone.devices.returnChat": "返回聊天",
+  "phone.devices.terminalUnavailable": "终端连接暂不可用，正在重试",
+  "phone.devices.terminalReset": "终端日志已更新，正在从头恢复",
+  "phone.devices.terminalRecent": "显示最近输出；完整日志仍保留在设备上",
+  "src.screens.chatscreen.uploading": "附件正在上传；未完成时请保留草稿或重新选择附件。",
+  "src.components.chat.messagebubble.copy": "复制完整消息",
   "phone.devices.title": "连接与设备",
   "phone.devices.profiles": "已配对连接",
   "phone.devices.peers": "当前连接的 Supervisor",

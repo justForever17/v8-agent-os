@@ -3,7 +3,8 @@ import {
     Alert,
     Pressable,
     RefreshControl,
-    ScrollView,
+    SectionList,
+    TextInput,
     StyleSheet,
     Text,
     View,
@@ -19,7 +20,9 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { getConversationActivityState, groupConversationsByWorkspace } from "@/src/lib/conversation-groups";
-import { deleteConversation, listConversations } from "@/src/lib/phone-api";
+import { deleteConversation, listConversationPage } from "@/src/lib/phone-api";
+import { useIsFocused } from "@react-navigation/native";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -39,54 +42,60 @@ export default function SessionsScreen() {
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
-    const grouped = groupConversationsByWorkspace(conversations, locale);
+    const [query, setQuery] = useState("");
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const grouped = useMemo(() => groupConversationsByWorkspace(conversations, locale), [conversations, locale]);
+    const focused = useIsFocused();
+    const visible = useAppVisibility();
+    const requestRef = useRef<AbortController | null>(null);
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
     const suppressNextPressRef = useRef<string | null>(null);
 
     const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
+        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
         { key: "connect", icon: "lan-connect", onPress: () => router.push("/connect" as Href) },
         { key: "desktop-live", icon: "monitor-dashboard", onPress: () => router.push("/desktop-live" as Href), tone: "primary" },
         { key: "rpa", icon: "robot-outline", onPress: () => router.push("/rpa" as Href), tone: "accent" },
         { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
     ];
 
-    const load = useCallback(async (options?: { showSpinner?: boolean; useCache?: boolean; surfaceErrors?: boolean }) => {
-        const showSpinner = options?.showSpinner !== false;
-        const useCache = options?.useCache !== false;
-        const surfaceErrors = options?.surfaceErrors !== false;
-        if (showSpinner) setRefreshing(true);
-        let hasCachedSessions = false;
+    const load = useCallback(async (options?: { showSpinner?: boolean; useCache?: boolean; surfaceErrors?: boolean; cursor?: string }) => {
+        requestRef.current?.abort();
+        const controller = new AbortController();
+        requestRef.current = controller;
+        if (options?.showSpinner !== false) setRefreshing(true);
         try {
-            if (useCache) {
+            if (options?.useCache !== false && !query && !options?.cursor) {
                 const cached = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace);
-                if (cached.length > 0) {
-                    hasCachedSessions = true;
-                    setConversations(cached);
-                }
+                if (!controller.signal.aborted && cached.length) setConversations(cached);
             }
-            const next = await listConversations(authorizedFetch);
-            setConversations(next);
-            await localDatabase.setSessionIndex(sessionIndexNamespace, next);
+            const page = await listConversationPage(authorizedFetch, { cursor: options?.cursor, query, signal: controller.signal });
+            if (controller.signal.aborted) return;
+            setConversations((current) => options?.cursor
+                ? [...current, ...page.items.filter((item) => !current.some((old) => (old.sessionId || old.id) === (item.sessionId || item.id)))]
+                : page.items);
+            setNextCursor(page.nextCursor);
+            if (!query && !options?.cursor) await localDatabase.setSessionIndex(sessionIndexNamespace, page.items);
         } catch (error) {
-            if (surfaceErrors && !hasCachedSessions) {
-                Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_load_the_conversation_list"));
+            if (!controller.signal.aborted) {
+                if ((error as { code?: string }).code === "session_index_changed") setNextCursor(null);
+                if (options?.surfaceErrors !== false) Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_load_the_conversation_list"));
             }
         } finally {
-            if (showSpinner) setRefreshing(false);
+            if (!controller.signal.aborted) setRefreshing(false);
         }
-    }, [authorizedFetch, sessionIndexNamespace, t]);
+    }, [authorizedFetch, localDatabase, query, sessionIndexNamespace, t]);
 
     useEffect(() => {
-        if (status === "authenticated") {
-            void load({ showSpinner: true, useCache: true, surfaceErrors: true });
-        }
-    }, [load, status]);
+        if (status !== "authenticated" || !focused || !visible) return;
+        const timer = setTimeout(() => void load({ showSpinner: true, useCache: true, surfaceErrors: true }), query ? 180 : 0);
+        return () => { clearTimeout(timer); requestRef.current?.abort(); };
+    }, [load, status, query, focused, visible]);
 
     useEffect(() => {
-        if (status !== "authenticated" || sessionActivityVersion <= 0) return;
+        if (status !== "authenticated" || !focused || !visible || sessionActivityVersion <= 0) return;
         void load({ showSpinner: false, useCache: false, surfaceErrors: false });
-    }, [load, sessionActivityVersion, status]);
+    }, [load, sessionActivityVersion, status, focused, visible]);
 
     const createNew = async () => {
         setBusy(true);
@@ -135,8 +144,8 @@ export default function SessionsScreen() {
     const continueInNewConversation = async (item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
         if (!canonicalSessionId) return;
-        await setActiveConversationId(null);
-        router.push(`/chat?new=1&contextSessionId=${encodeURIComponent(canonicalSessionId)}` as Href);
+        await createNewDraft();
+        router.dismissTo(`/chat?new=1&contextSessionId=${encodeURIComponent(canonicalSessionId)}` as Href);
     };
 
     const openConversationActions = (item: ConversationSummary) => {
@@ -177,24 +186,30 @@ export default function SessionsScreen() {
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
                 <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
-                <ScrollView
+                <SectionList
+                    sections={grouped.map((group, index) => ({ ...group, data: (openGroups[group.key] ?? index === 0) ? group.items : [] }))}
+                    keyExtractor={(item) => item.sessionId || item.id}
                     contentContainerStyle={styles.content}
+                    initialNumToRender={18} maxToRenderPerBatch={10} windowSize={7}
+                    stickySectionHeadersEnabled={false}
+                    keyboardShouldPersistTaps="handled"
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load({ showSpinner: true, useCache: false, surfaceErrors: true })} />}
-                >
-                    <Pressable style={[styles.newButton, busy && styles.disabled]} onPress={() => void createNew()}>
+                    ListHeaderComponent={<View style={{ gap: 12 }}>
+                        <Pressable style={[styles.newButton, busy && styles.disabled]} onPress={() => void createNew()}>
                         <MaterialCommunityIcons name="plus" size={18} color="#FFFFFF" />
                         <Text style={styles.newButtonText}>{t("src.screens.sessionsscreen.new_chat")}</Text>
                     </Pressable>
-
-                    {conversations.length === 0 ? (
-                        <Text style={styles.emptyBody}>{t("src.screens.sessionsscreen.there_are_no_conversations_yet")}</Text>
-                    ) : null}
-
-                    {grouped.map((group, index) => {
-                        const isOpen = openGroups[group.key] ?? index === 0;
-                        return (
-                            <View key={group.key} style={styles.groupSection}>
-                                <Pressable
+                        <TextInput value={query} onChangeText={setQuery} accessibilityLabel={t("phone.devices.searchSessions")}
+                            placeholder={t("phone.devices.searchSessions")} placeholderTextColor={colors.textSoft}
+                            style={{ minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingHorizontal: 12, color: colors.text }} />
+                    </View>}
+                    ListEmptyComponent={<Text style={styles.emptyBody}>{t("src.screens.sessionsscreen.there_are_no_conversations_yet")}</Text>}
+                    ListFooterComponent={nextCursor ? <Pressable style={{ padding: 16 }} onPress={() => void load({ cursor: nextCursor, useCache: false })}>
+                        <Text style={{ color: colors.primary }}>{t("phone.devices.more")}</Text>
+                    </Pressable> : null}
+                    renderSectionHeader={({ section: group }) => {
+                        const isOpen = openGroups[group.key] ?? grouped[0]?.key === group.key;
+                        return (<Pressable
                                     style={styles.groupHeader}
                                     onPress={() => setOpenGroups((current) => ({ ...current, [group.key]: !isOpen }))}
                                 >
@@ -203,10 +218,10 @@ export default function SessionsScreen() {
                                         <Text style={styles.groupLabel} numberOfLines={1}>{group.label}</Text>
                                     </View>
                                     <Text style={styles.groupCount}>{group.items.length}</Text>
-                                </Pressable>
-
-                                {isOpen ? group.items.map((item) => {
-                                    const canonicalSessionId = item.sessionId || item.id;
+                                </Pressable>);
+                    }}
+                    renderItem={({ item }) => {
+                        const canonicalSessionId = item.sessionId || item.id;
                                     const active = canonicalSessionId === activeConversationId;
                                     const activityState = getConversationActivityState(item);
                                     return (
@@ -218,7 +233,7 @@ export default function SessionsScreen() {
                                                     return;
                                                 }
                                                 await setActiveConversationId(canonicalSessionId);
-                                                router.push("/chat" as Href);
+                                                router.dismissTo("/chat" as Href);
                                             }}
                                             onLongPress={() => openConversationActions(item)}
                                         >
@@ -248,11 +263,8 @@ export default function SessionsScreen() {
                                             </GlassCard>
                                         </Pressable>
                                     );
-                                }) : null}
-                            </View>
-                        );
-                    })}
-                </ScrollView>
+                    }}
+                />
             </SafeAreaView>
         </LinearGradient>
     );

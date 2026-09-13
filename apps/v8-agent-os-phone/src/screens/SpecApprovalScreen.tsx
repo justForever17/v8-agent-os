@@ -52,7 +52,7 @@ export default function SpecApprovalScreen() {
     const [busy, setBusy] = useState(false);
 
     const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
+        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
         { key: "approvals", icon: "bell-outline", onPress: () => router.push("/approvals" as Href) },
         { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
     ];

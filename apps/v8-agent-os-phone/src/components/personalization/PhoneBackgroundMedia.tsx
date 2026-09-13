@@ -1,5 +1,8 @@
 import { Image, StyleSheet, View } from "react-native";
 import { useVideoPlayer, VideoView } from "expo-video";
+import { useEffect } from "react";
+import { useIsFocused } from "@react-navigation/native";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 
 export function PhoneBackgroundMedia({
     uri,
@@ -8,12 +11,19 @@ export function PhoneBackgroundMedia({
     uri: string;
     mediaType: "image" | "video";
 }) {
-    const videoUri = mediaType === "video" ? uri : "";
+    const focused = useIsFocused();
+    const visible = useAppVisibility();
+    const videoUri = mediaType === "video" && focused && visible ? uri : "";
     const player = useVideoPlayer(videoUri || null, (nextPlayer) => {
         nextPlayer.loop = true;
         nextPlayer.muted = true;
         if (videoUri) nextPlayer.play();
     });
+    useEffect(() => {
+        if (videoUri) player.play();
+        else player.pause();
+        return () => player.pause();
+    }, [player, videoUri]);
 
     if (!uri) return null;
     return (

@@ -35,10 +35,11 @@ test("Phone avatar truth refreshes and caches immutable avatar URLs locally", ()
   const cache = read("apps/v8-agent-os-phone/src/lib/profile-avatar-cache.ts");
 
   assert.match(session, /AppState\.addEventListener\("change"/);
-  assert.match(session, /10_000/);
-  assert.match(session, /cacheProfileAvatar\(source\)/);
+  assert.match(session, /foreground, refreshUser/);
+  assert.match(session, /cacheProfileAvatar\(avatar, active\.authorityKey\)/);
   assert.match(cache, /FileSystem\.downloadAsync/);
-  assert.match(cache, /userAvatarCache/);
+  assert.match(cache, /v8\.phone\.avatar\.\$\{authorityKey\}/);
+  assert.match(cache, /encodeURIComponent\(authorityKey\)/);
   assert.match(cache, /avatar-\$\{stableHash\(normalizedSource\)\}\.webp/);
 });
 

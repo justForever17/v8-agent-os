@@ -380,6 +380,8 @@ export type ArtifactDetail = {
 };
 
 export type UploadedWorkspaceFile = {
+    uploadState?: "uploading" | "uploaded" | "failed";
+    uploadError?: string;
     localId?: string;
     id?: string;
     sourceId?: string;

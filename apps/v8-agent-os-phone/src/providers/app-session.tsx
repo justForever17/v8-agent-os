@@ -3,8 +3,8 @@ import { AppState, Platform, Pressable, Text, View } from "react-native";
 import { buildAdminApiUrl, normalizeAdminBaseUrl, parseJsonSafe, resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { type AdminConnectionProfile, type ProfileCredentials, orderAdminBaseUrlCandidates,
     readActiveAdminConnectionProfileId, readAdminConnectionProfiles, readProfileCredentials,
-    forgetProfileCredentials, upsertAdminConnectionProfile, writeActiveAdminConnectionProfileId,
-    writeAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
+    upsertAdminConnectionProfile, writeActiveAdminConnectionProfileId,
+    updateAdminConnectionProfiles, commitActiveAdminConnectionProfile } from "@/src/lib/admin-connection-profiles";
 import { getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
 import { clearSessionStorage, getStoredValue, readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 import { cacheProfileAvatar } from "@/src/lib/profile-avatar-cache";
@@ -46,6 +46,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [active, setActive] = React.useState<ActiveSession | null>(null);
     const activeRef = React.useRef<ActiveSession | null>(null);
     const activationSeq = React.useRef(0);
+    const activationChain = React.useRef<Promise<unknown>>(Promise.resolve());
+    const viewChain = React.useRef<Promise<unknown>>(Promise.resolve());
     const [baseUrl, setBaseUrl] = React.useState("");
     const [connectionError, setConnectionError] = React.useState("");
     const [userAvatarUri, setUserAvatarUri] = React.useState("");
@@ -56,10 +58,12 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const refreshUserInFlight = React.useRef<{ key: string; request: Promise<PhoneUser | null> } | null>(null);
 
     const publish = React.useCallback((next: ActiveSession | null) => { activeRef.current = next; setActive(next); }, []);
-    const activateProfile = React.useCallback(async (profileId: string) => {
+    const performActivation = React.useCallback(async (profileId: string) => {
         if (activeRef.current?.profile.id === profileId) return;
         const seq = ++activationSeq.current;
         await phoneDrafts.flushAll();
+        await viewChain.current.catch(() => undefined);
+        await activeRef.current?.transport.settleRefresh();
         const profiles = await readAdminConnectionProfiles();
         const profile = profiles.find((item) => item.id === profileId);
         if (!profile) throw new Error("Connection no longer exists.");
@@ -78,7 +82,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 if (!payload?.user?.id) throw new Error("This connection needs pairing again.");
                 profile.user = payload.user;
                 profile.principalId = payload.user.id;
-                await writeAdminConnectionProfiles(profiles);
+                await updateAdminConnectionProfiles((current) => current.map((item) => item.id === profileId
+                    ? { ...item, user: profile.user, principalId: profile.principalId } : item));
             } finally { clearTimeout(timer); }
         }
         const authorityKey = phoneAuthorityKey({ instanceId, principalId: profile.user.id, profileId });
@@ -92,11 +97,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             credentials, principalId: profile.user.id, native: Platform.OS !== "web",
             persistRefresh: async (nextCredentials, user) => {
                 if (activeRef.current?.transport !== transport) throw abortError();
-                const latest = await readAdminConnectionProfiles();
-                const own = latest.find((item) => item.id === profileId);
-                if (!own) throw abortError();
-                Object.assign(own, nextCredentials, { user, principalId: user.id });
-                await writeAdminConnectionProfiles(latest);
+                const latest = await updateAdminConnectionProfiles((current) => {
+                    if (activeRef.current?.transport !== transport) throw abortError();
+                    const own = current.find((item) => item.id === profileId);
+                    if (!own) throw abortError();
+                    Object.assign(own, nextCredentials, { user, principalId: user.id });
+                    return current;
+                });
+                const own = latest.find((item) => item.id === profileId)!;
                 if (activeRef.current?.transport !== transport) throw abortError();
                 publish({ ...activeRef.current, profile: own, credentials: nextCredentials });
             },
@@ -110,19 +118,26 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 if (offset !== null) setEngineClockOffsetMs((previous) => Math.abs(previous - offset) < 500 ? previous : offset);
             },
         });
-        try {
-            await writeActiveAdminConnectionProfileId(profileId);
-            if (seq !== activationSeq.current) throw abortError();
-        } catch (error) { transport.dispose(); throw error; }
-        activeRef.current?.transport.dispose();
         const next: ActiveSession = { profile, credentials, authorityKey, transport,
             conversationId: view.conversationId || null, draftId: view.draftId || newDraftId() };
-        publish(next);
-        setBaseUrl(profile.adminBaseUrl);
-        setConnectionError("");
-        setEngineClockOffsetMs(0);
-        setStatus("authenticated");
+        try {
+            await commitActiveAdminConnectionProfile(profileId, profile.credentialRef, () => {
+                if (seq !== activationSeq.current) throw abortError();
+                activeRef.current?.transport.dispose();
+                publish(next);
+                phoneDrafts.evictSavedInactive();
+                setBaseUrl(profile.adminBaseUrl);
+                setConnectionError("");
+                setEngineClockOffsetMs(0);
+                setStatus("authenticated");
+            });
+        } catch (error) { transport.dispose(); throw error; }
     }, [publish]);
+    const activateProfile = React.useCallback((profileId: string) => {
+        const operation = activationChain.current.catch(() => undefined).then(() => performActivation(profileId));
+        activationChain.current = operation;
+        return operation;
+    }, [performActivation]);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -153,9 +168,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         return () => subscription.remove();
     }, []);
 
-    const saveView = React.useCallback(async (conversationId: string | null, draftId?: string) => {
+    const performSaveView = React.useCallback(async (conversationId: string | null, draftId?: string) => {
         const current = activeRef.current;
         if (!current) return;
+        if (current.authorityKey !== active?.authorityKey) throw abortError();
         if (current.conversationId === conversationId && !draftId) return;
         await phoneDrafts.flushAll();
         if (activeRef.current?.transport !== current.transport) throw abortError();
@@ -163,15 +179,19 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         await writeMetadata(viewKey(current.authorityKey), JSON.stringify({ conversationId, draftId: next.draftId }));
         if (activeRef.current?.transport !== current.transport) throw abortError();
         publish(next);
-    }, [publish]);
+    }, [publish, active?.authorityKey]);
+    const saveView = React.useCallback((conversationId: string | null, draftId?: string) => {
+        const operation = viewChain.current.catch(() => undefined).then(() => performSaveView(conversationId, draftId));
+        viewChain.current = operation;
+        return operation;
+    }, [performSaveView]);
     const setActiveConversationId = React.useCallback((next: string | null) => saveView(next), [saveView]);
     const createNewDraft = React.useCallback(() => saveView(null, newDraftId()), [saveView]);
 
     const pairDevice = React.useCallback(async (input: DevicePairingInput) => {
         const pairing = parseDevicePairingUri(input.pairingUri);
         const payload = await consumeDevicePairing({ ...input, deviceName: input.deviceName || `v8-phone-${Platform.OS}` });
-        const profiles = await readAdminConnectionProfiles();
-        const { profile, profiles: next } = upsertAdminConnectionProfile(profiles, {
+        const next = await updateAdminConnectionProfiles((profiles) => upsertAdminConnectionProfile(profiles, {
             adminBaseUrl: payload.adminBaseUrl || pairing.adminBaseUrl,
             instanceId: payload.instanceId || pairing.instanceId, serverId: payload.serverId || pairing.serverId,
             adminUrls: payload.adminUrls || pairing.adminUrls,
@@ -180,23 +200,26 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             cloudflareUrls: payload.pairingManifest?.cloudflareUrls || pairing.cloudflareUrls,
             endpoints: payload.pairingManifest?.endpoints || pairing.endpoints,
             accessToken: payload.accessToken, refreshToken: payload.refreshToken, user: payload.user,
-        });
-        if (!profile) throw new Error("Pairing did not return a valid connection.");
-        await writeAdminConnectionProfiles(next);
-        await activateProfile(profile.id);
+        }).profiles);
+        if (!next[0]) throw new Error("Pairing did not return a valid connection.");
+        await activateProfile(next[0].id);
     }, [activateProfile]);
 
-    const signOut = React.useCallback(async () => {
+    const performSignOut = React.useCallback(async () => {
         const current = activeRef.current;
+        if (current?.authorityKey !== active?.authorityKey) throw abortError();
         await phoneDrafts.flushAll();
         if (current) {
             // Only this pairing is revoked; other profiles and all drafts survive.
-            await current.transport.authorizedFetch("/api/client/auth/logout", { method: "POST",
+            const response = await current.transport.authorizedFetch("/api/client/auth/logout", { method: "POST",
                 headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refreshToken: current.credentials.refreshToken }) });
-            await forgetProfileCredentials(current.profile);
-            const profiles = await readAdminConnectionProfiles();
-            const own = profiles.find((profile) => profile.id === current.profile.id);
-            if (own) { delete own.credentialRef; await writeAdminConnectionProfiles(profiles); }
+            if (!response.ok) throw new Error("Sign out could not be confirmed. Retry.");
+            await response.text();
+            await updateAdminConnectionProfiles((profiles) => {
+                const own = profiles.find((profile) => profile.id === current.profile.id);
+                if (own) delete own.credentialRef;
+                return profiles;
+            });
         }
         await writeActiveAdminConnectionProfileId(null);
         await clearSessionStorage();
@@ -204,7 +227,12 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         current?.transport.dispose();
         publish(null);
         setStatus("anonymous");
-    }, [publish]);
+    }, [publish, active?.authorityKey]);
+    const signOut = React.useCallback(() => {
+        const operation = activationChain.current.catch(() => undefined).then(performSignOut);
+        activationChain.current = operation;
+        return operation;
+    }, [performSignOut]);
 
     const refreshUser = React.useCallback(async () => {
         const current = activeRef.current;
@@ -217,9 +245,11 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             if (activeRef.current?.transport !== current.transport) throw abortError();
             if (!payload?.user || payload.user.id !== current.profile.user?.id) throw new Error("The paired account changed. Pair this connection again.");
             if (JSON.stringify(payload.user) !== JSON.stringify(activeRef.current.profile.user)) {
-                const profiles = await readAdminConnectionProfiles();
-                const own = profiles.find((profile) => profile.id === current.profile.id);
-                if (own) { own.user = payload.user; await writeAdminConnectionProfiles(profiles); }
+                await updateAdminConnectionProfiles((profiles) => {
+                    const own = profiles.find((profile) => profile.id === current.profile.id);
+                    if (own) own.user = payload.user;
+                    return profiles;
+                });
                 if (activeRef.current?.transport === current.transport) publish({ ...activeRef.current, profile: { ...activeRef.current.profile, user: payload.user } });
             }
             setConnectionError("");
@@ -237,14 +267,17 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
     const updateCurrentUser = React.useCallback(async (user: PhoneUser | null) => {
         const current = activeRef.current;
+        if (current?.authorityKey !== active?.authorityKey) throw abortError();
         if (!current || !user || user.id !== current.profile.user?.id) return;
-        const profiles = await readAdminConnectionProfiles();
+        const profiles = await updateAdminConnectionProfiles((profiles) => {
+            const own = profiles.find((profile) => profile.id === current.profile.id);
+            if (own) own.user = user;
+            return profiles;
+        });
         const own = profiles.find((profile) => profile.id === current.profile.id);
         if (!own) return;
-        own.user = user;
-        await writeAdminConnectionProfiles(profiles);
         if (activeRef.current?.transport === current.transport) publish({ ...activeRef.current, profile: own });
-    }, [publish]);
+    }, [publish, active?.authorityKey]);
 
     const user = active?.profile.user || null;
     const media = user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "";
@@ -270,9 +303,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             while (!stopped) {
                 const started = Date.now();
                 try {
-                    await active.transport.authorizedRealtimeStream("/api/client/realtime/session-activity/stream", () => {
+                    await active.transport.authorizedRealtimeStream("/api/client/realtime/session-activity/stream", (eventName) => {
+                        if (eventName !== "ready" && eventName !== "activity") return;
                         if (timer || stopped) return;
-                        timer = setTimeout(() => { timer = undefined; if (!stopped) setSessionActivityVersion((value) => value + 1); }, 180);
+                        timer = setTimeout(() => { timer = undefined; if (!stopped) setSessionActivityVersion((value) => value + 1); }, 750);
                     }, controller.signal);
                     if (Date.now() - started > 10_000) failures = 0;
                 } catch { if (controller.signal.aborted) break; }

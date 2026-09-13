@@ -8,7 +8,7 @@ import { PhoneTopbar } from "@/src/components/layout/PhoneTopbar";
 import { PeerConversation } from "@/src/components/connections/PeerConversation";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { useAppVisibility } from "@/src/hooks/use-app-visibility";
-import { type AdminConnectionProfile, readAdminConnectionProfiles, writeAdminConnectionProfiles, forgetProfileCredentials } from "@/src/lib/admin-connection-profiles";
+import { type AdminConnectionProfile, readAdminConnectionProfiles, updateAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
 import { listSupervisorPeers, updateSupervisorPeer, revokeSupervisorPeer, type SupervisorPeer } from "@/src/lib/supervisor-peers";
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 import { useAppSession } from "@/src/providers/app-session";
@@ -80,9 +80,8 @@ export default function ConnectScreen() {
         const target = selected;
         await act("rename", async () => {
             if (target.kind === "profile") {
-                const current = await readAdminConnectionProfiles();
-                const own = current.find((item) => item.id === target.value.id);
-                if (own) { own.label = nickname.trim(); await writeAdminConnectionProfiles(current); await loadProfiles(); }
+                await updateAdminConnectionProfiles((current) => current.map((item) => item.id === target.value.id ? { ...item, label: nickname.trim() } : item));
+                await loadProfiles();
             } else { await updateSupervisorPeer(authorizedFetch, target.value, nickname.trim()); await refreshPeers(); }
             setSelected(null);
         });
@@ -98,9 +97,7 @@ export default function ConnectScreen() {
                 if (target.kind === "peer") { await revokeSupervisorPeer(authorizedFetch, target.value); await refreshPeers(); }
                 else if (isActive) await signOut();
                 else {
-                    await forgetProfileCredentials(target.value);
-                    const current = await readAdminConnectionProfiles();
-                    await writeAdminConnectionProfiles(current.filter((item) => item.id !== target.value.id));
+                    await updateAdminConnectionProfiles((current) => current.filter((item) => item.id !== target.value.id));
                     await loadProfiles();
                 }
                 setSelected(null);

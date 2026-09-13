@@ -210,7 +210,8 @@ function sanitizeProfile(value: unknown): AdminConnectionProfile | null {
     };
 }
 
-export async function readAdminConnectionProfiles() {
+let migration: Promise<AdminConnectionProfile[]> | null = null;
+async function readProfiles() {
     const current = await readMetadata(PROFILES_KEY);
     const raw = current ?? await getStoredValue("adminConnectionProfiles");
     const parsed = raw ? JSON.parse(raw) : [];
@@ -226,9 +227,16 @@ export async function readAdminConnectionProfiles() {
             active.principalId = active.user.id;
         }
         await writeAdminConnectionProfiles(profiles);
-        return readAdminConnectionProfiles();
+        return readProfiles();
     }
     return profiles.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
+}
+
+export async function readAdminConnectionProfiles() {
+    if (migration) return migration;
+    const operation = readProfiles();
+    migration = operation;
+    try { return await operation; } finally { if (migration === operation) migration = null; }
 }
 
 const PROFILES_KEY = "v8.phone.profiles.v2";
@@ -241,13 +249,46 @@ export async function readProfileCredentials(profile: AdminConnectionProfile): P
     return value.accessToken && value.refreshToken ? value : null;
 }
 
-export async function forgetProfileCredentials(profile: AdminConnectionProfile) {
-    if (profile.credentialRef) await deleteSecureItem(profile.credentialRef);
+let directoryMutations: Promise<unknown> = Promise.resolve();
+export function updateAdminConnectionProfiles(update: (current: AdminConnectionProfile[]) => AdminConnectionProfile[]) {
+    const transaction = directoryMutations.catch(() => undefined).then(async () => {
+        const current = await readAdminConnectionProfiles();
+        const next = update(current);
+        const activeId = await readActiveAdminConnectionProfileId();
+        if (activeId && current.some((item) => item.id === activeId) && !next.some((item) => item.id === activeId)) {
+            throw new Error("Switch away or sign out before removing the active connection.");
+        }
+        await writeAdminConnectionProfiles(next);
+        return next;
+    });
+    directoryMutations = transaction;
+    return transaction;
 }
 
-export async function writeAdminConnectionProfiles(profiles: AdminConnectionProfile[]) {
+export function commitActiveAdminConnectionProfile(profileId: string, expectedCredentialRef: string | undefined, publish: () => void) {
+    const transaction = directoryMutations.catch(() => undefined).then(async () => {
+        const current = await readAdminConnectionProfiles();
+        const profile = current.find((item) => item.id === profileId);
+        if (!profile?.credentialRef || profile.credentialRef !== expectedCredentialRef) {
+            throw new Error("Connection changed while switching. Retry this connection.");
+        }
+        await writeActiveAdminConnectionProfileId(profileId);
+        // No await between pointer commit and in-memory activation. Directory
+        // removal cannot interleave after validation and before publication.
+        publish();
+    });
+    directoryMutations = transaction;
+    return transaction;
+}
+
+/** Low-level migration writer. Production mutations must use updateAdminConnectionProfiles. */
+async function writeAdminConnectionProfiles(profiles: AdminConnectionProfile[]) {
+    const previousRaw = await readMetadata(PROFILES_KEY);
+    const previous: AdminConnectionProfile[] = previousRaw ? JSON.parse(previousRaw) : [];
     const metadata: AdminConnectionProfile[] = [];
     const createdRefs: string[] = [];
+    const pendingKey = "v8.phone.retiredCredentials.v2";
+    const pending: string[] = JSON.parse(await readMetadata(pendingKey) || "[]");
     try {
         for (const profile of profiles) {
             const { accessToken, refreshToken, ...item } = profile;
@@ -260,6 +301,10 @@ export async function writeAdminConnectionProfiles(profiles: AdminConnectionProf
             }
             metadata.push(item);
         }
+        // Recovery ledger precedes publication. After an interrupted transaction,
+        // only slots absent from the committed directory can be collected.
+        await writeMetadata(pendingKey, JSON.stringify([...new Set([...pending, ...createdRefs,
+            ...previous.map((item) => item.credentialRef).filter(Boolean)])]));
         await writeMetadata(PROFILES_KEY, JSON.stringify(metadata));
     } catch (error) {
         for (const ref of createdRefs) await deleteSecureItem(ref).catch(() => undefined);
@@ -271,6 +316,12 @@ export async function writeAdminConnectionProfiles(profiles: AdminConnectionProf
         delete profile.accessToken;
         delete profile.refreshToken;
     });
+    const retained = new Set(metadata.map((profile) => profile.credentialRef).filter(Boolean));
+    const retired = previous.map((profile) => profile.credentialRef).filter((ref): ref is string => Boolean(ref && !retained.has(ref)));
+    const cleanup = [...new Set([...pending, ...retired, ...createdRefs])].filter((ref) => !retained.has(ref));
+    await writeMetadata(pendingKey, JSON.stringify(cleanup));
+    for (const ref of cleanup) await deleteSecureItem(ref);
+    await writeMetadata(pendingKey, "[]");
 }
 
 export async function readActiveAdminConnectionProfileId() {

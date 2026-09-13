@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Image,
+    Modal,
     LayoutChangeEvent,
     Pressable,
     StyleSheet,
@@ -8,6 +9,9 @@ import {
     View,
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { router, type Href } from "expo-router";
+import { phoneDrafts } from "@/src/lib/phone-drafts";
 import type { LucideIcon } from "lucide-react-native";
 import { Monitor, MoonStar, SunMedium, Workflow } from "lucide-react-native";
 import MaskedView from "@react-native-masked-view/masked-view";
@@ -314,6 +318,16 @@ export function PhoneTopbar({
     const { colors, themeMode, t } = useUiPrefs();
     const isFocused = useIsFocused();
     const [rpaOpen, setRpaOpen] = useState(false);
+    const [navigationOpen, setNavigationOpen] = useState(false);
+    const [navigationError, setNavigationError] = useState("");
+    const navigate = async (path: string) => {
+        try {
+            await phoneDrafts.flushAll();
+            setNavigationOpen(false);
+            if (path === "/chat") router.dismissTo(path as Href);
+            else router.navigate(path as Href);
+        } catch (error) { setNavigationError(error instanceof Error ? error.message : t("phone.devices.failed")); }
+    };
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
         .map((key) => actionMap.get(key))
@@ -332,6 +346,10 @@ export function PhoneTopbar({
             <BrandArea colors={colors} themeMode={themeMode} onBrandPress={onBrandPress} wordmarkActive={isFocused} />
 
             <View style={styles.actions}>
+                <Pressable accessibilityRole="button" accessibilityLabel={t("phone.devices.navigation")} onPress={() => setNavigationOpen(true)}
+                    style={{ width: 40, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
+                    <MaterialCommunityIcons name="menu" size={21} color={colors.textMuted} />
+                </Pressable>
                 {orderedActions
                     .filter((action) => action.key === "desktop-live" || action.key === "rpa")
                     .map((action) => (
@@ -371,7 +389,7 @@ export function PhoneTopbar({
                             opacity: pressed ? 0.82 : 1,
                         },
                     ]}
-                    onPress={onProfilePress}
+                    onPress={onProfilePress || (() => void navigate("/settings"))}
                 >
                     {userImageUri ? (
                         <Image source={{ uri: userImageUri }} style={styles.profileImage} />
@@ -381,6 +399,21 @@ export function PhoneTopbar({
                 </Pressable>
             </View>
             <PhoneRpaOverlay visible={rpaOpen} onClose={() => setRpaOpen(false)} />
+            <Modal visible={navigationOpen} transparent animationType="fade" onRequestClose={() => setNavigationOpen(false)}>
+                <Pressable onPress={() => setNavigationOpen(false)} style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", padding: 28 }}>
+                    <View style={{ borderRadius: 18, backgroundColor: colors.surface, padding: 12 }}>
+                        {([
+                            ["/chat", t("phone.devices.returnChat")],
+                            ["/sessions", t("src.components.layout.historydrawer.history")],
+                            ["/connect", t("phone.devices.title")],
+                            ["/settings", t("phone.devices.settings")],
+                        ] as const).map(([path, label]) => <Pressable key={path} accessibilityRole="button" onPress={() => void navigate(path)} style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 12 }}>
+                            <Text style={{ color: colors.text, fontWeight: "600" }}>{label}</Text>
+                        </Pressable>)}
+                        {navigationError ? <Text style={{ color: colors.danger, padding: 12 }}>{navigationError}</Text> : null}
+                    </View>
+                </Pressable>
+            </Modal>
         </View>
     );
 }

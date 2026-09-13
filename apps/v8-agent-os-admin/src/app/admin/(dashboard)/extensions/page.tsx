@@ -418,8 +418,17 @@ function normalizeMcpTransportType(value: unknown): McpTransportType | "" {
   return "sse";
   return "";
 }
-function parseMcpArgs(value: string): string[] {
-  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+function parseMcpArgs(value: string, t: TranslateFn): string[] {
+  if (value.trimStart().startsWith("[")) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); }
+    catch { throw new Error(t("extensions.store.invalidArgsArray")); }
+    if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string")) {
+      throw new Error(t("extensions.store.invalidArgsArray"));
+    }
+    return parsed;
+  }
+  return value === "" ? [] : value.split(/\r?\n/);
 }
 function parseMcpKeyValueLines(value: string, label: string, t: TranslateFn): Record<string, string> {
   const result: Record<string, string> = {};
@@ -441,7 +450,8 @@ function parseMcpKeyValueLines(value: string, label: string, t: TranslateFn): Re
   return result;
 }
 function formatMcpArgsText(value: unknown): string {
-  return Array.isArray(value) ? value.map((item) => String(item ?? "")).filter(Boolean).join("\n") : "";
+  // JSON represents empty/whitespace arguments and embedded newlines exactly.
+  return Array.isArray(value) ? JSON.stringify(value, null, 2) : "";
 }
 function formatMcpKeyValueText(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -488,7 +498,7 @@ function buildMcpFormPayload(form: McpInstallFormState, t: TranslateFn): Record<
       throw new Error(t("app.admin.dashboard.extensions.page.mcpCommandRequired"));
     }
     server.command = command;
-    const args = parseMcpArgs(form.argsText);
+    const args = parseMcpArgs(form.argsText, t);
     server.args = args;
     const env = parseMcpKeyValueLines(form.envText, t("app.admin.dashboard.extensions.page.mcpEnv"), t);
     server.env = env;

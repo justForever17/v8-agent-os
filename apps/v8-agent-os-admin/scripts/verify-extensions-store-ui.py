@@ -19,6 +19,8 @@ async def main():
         errors, requests, submitted = [], [], []
         jobs = {}
         theme_state = {"theme": "light"}
+        exact_args = ["--label", "  spaced value  ", ""]
+        config_saves = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         async def route_api(route):
             from urllib.parse import urlparse, parse_qs
@@ -81,7 +83,13 @@ async def main():
                 await route.fulfill(status=503, json={"detail": "Synthetic health unavailable"})
                 return
             elif url.path == "/api/extensions/catalog":
-                data = {"summary": {"skillCount": 0, "mcpServerCount": 0, "connectedMcpServerCount": 0, "mcpToolCount": 0}, "skills": {"root": "fixture", "items": []}, "mcp": {"servers": []}}
+                data = {"summary": {"skillCount": 0, "mcpServerCount": 1, "connectedMcpServerCount": 0, "mcpToolCount": 0}, "skills": {"root": "fixture", "items": []}, "mcp": {"servers": [{"name": "arguments-fixture", "status": "disabled", "transport": "stdio", "toolCount": 0, "tools": []}]}}
+            elif url.path == "/api/mcp/config":
+                if route.request.method == "POST":
+                    config_saves.append(route.request.post_data_json)
+                    data = {"status": "success"}
+                else:
+                    data = {"mcpServers": {"arguments-fixture": {"type": "stdio", "command": "fixture", "args": exact_args, "env": {}, "disabled": True}}}
             elif url.path == "/api/config-registry/extensions":
                 data = {"domain": "extensions", "data": {"prefilterPolicy": {"enabled": False, "futurePolicy": "keep", "skills": {"futureSkill": 7}}, "modelBindings": {}, "futureConfig": {"keep": True}}, "warnings": []}
             await route.fulfill(json=data)
@@ -112,6 +120,8 @@ async def main():
         await search.fill("offline")
         await page.wait_for_timeout(700)
         assert await page.get_by_text("当前：魔搭国内源", exact=True).is_visible()
+        assert await page.get_by_role("alert").get_by_text("Synthetic source offline", exact=True).is_visible()
+        assert "[object Object]" not in (await page.get_by_role("alert").inner_text())
         await page.get_by_role("button", name="切回国际源", exact=True).click()
         await search.fill("")
         await page.wait_for_timeout(700)
@@ -169,12 +179,19 @@ async def main():
         await page.goto(args.url + "/admin/extensions", wait_until="networkidle")
         await page.get_by_placeholder("npx --yes skills add https://github.com/vercel-labs/skills -g --skill find-skills").wait_for(timeout=10000)
         assert await page.get_by_text("部分数据加载失败，可重试；已加载数据仍可使用。", exact=True).is_visible()
+        await page.get_by_title("编辑 MCP 配置", exact=True).click()
+        await page.get_by_role("dialog").wait_for()
+        arg_editor = page.get_by_role("dialog").locator("textarea").first
+        assert json.loads(await arg_editor.input_value()) == exact_args
+        await page.get_by_role("dialog").get_by_role("button", name="保存修改", exact=True).click()
+        await page.get_by_role("dialog").wait_for(state="hidden")
+        assert config_saves[-1]["mcpServers"]["arguments-fixture"]["args"] == exact_args
         await page.screenshot(path=str(output / "management-partial.png"), full_page=True)
         assert not errors, errors
         result = {"status": "passed", "boundary": "production UI with synthetic network; no Engine install",
-                  "checks": ["manual source persistence and switch back", "offline never switches source", "late query ignored",
+                  "checks": ["manual source persistence and switch back", "offline never switches source and preserves detail.message", "late query ignored",
                              "late detail cannot change install target", "footer visible on desktop and narrow viewport",
-                             "skipped result distinguished", "A completion preserves B dialog and B pending install", "MCP late detail cannot change submitted id or candidate", "health failure does not block management or import"],
+                             "skipped result distinguished", "A completion preserves B dialog and B pending install", "MCP late detail cannot change submitted id or candidate", "health failure does not block management or import", "stdio edit submits exact whitespace and empty arguments"],
                   "requests": len(requests), "screenshots": str(output)}
         (output / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps(result))

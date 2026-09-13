@@ -35,6 +35,28 @@ assert.deepEqual(JSON.parse(context.cleared).mcpServers.fixture["x-v8-credential
 assert.deepEqual(base.futureField, { keep: 42 });
 console.log("Production form roundtrip passed: endpoint ref, header refs, unknown fields, replace and explicit clear.");
 
+const exactArgCases = [
+  ["--label", "  spaced value  ", ""],
+  [""],
+  [],
+  ["line\nbreak", "line\r\nbreak", "[literal]", "\twhitespace\t", 'quotes " and \\'],
+];
+function exactArgsOracle(runtime) {
+  for (const args of exactArgCases) {
+    runtime.stdio = { type: "stdio", command: "fixture", args, env: { NORMAL: "value" } };
+    vm.runInContext(`globalThis.exactArgs = JSON.stringify(buildMcpFormPayload(mcpFormFromServerConfig("fixture", stdio), value => value).mcpServers.fixture.args);`, runtime);
+    assert.deepEqual(JSON.parse(runtime.exactArgs), args);
+  }
+}
+exactArgsOracle(context);
+vm.runInContext(`globalThis.editedArgs = JSON.stringify(parseMcpArgs('--label\\n  spaced value  \\n', value => value));`, context);
+assert.deepEqual(JSON.parse(context.editedArgs), ["--label", "  spaced value  ", ""]);
+for (const invalid of ['[1]', '[null]', '["unfinished"']) {
+  context.invalid = invalid;
+  assert.throws(() => vm.runInContext("parseMcpArgs(invalid, value => value)", context), /extensions.store.invalidArgsArray/);
+}
+console.log("Exact stdio arguments roundtrip passed: whitespace, empty arguments and embedded newlines.");
+
 const requestSource = fs.readFileSync(new URL("../src/lib/extensions-store-state.ts", import.meta.url), "utf8");
 const requestJs = ts.transpileModule(requestSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const requestContext = vm.createContext({ exports: {} });

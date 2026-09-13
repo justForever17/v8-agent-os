@@ -80,10 +80,12 @@ def _run_phone_behavior(pattern: str, filename: str = "phone-transport-boundary.
     if not node or not (phone / "node_modules/typescript/lib/typescript.js").is_file():
         pytest.skip("Phone runtime dependencies absent; behavior gate must run in the Phone CI matrix")
     result = subprocess.run(
-        [node, "--test", f"--test-name-pattern={pattern}", str(phone / "tests" / filename)],
+        [node, "--test", "--test-reporter=tap", f"--test-name-pattern={pattern}", str(phone / "tests" / filename)],
         cwd=phone, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    executed = re.search(r"^# pass (\d+)\s*$", result.stdout, re.MULTILINE)
+    assert executed and int(executed.group(1)) > 0, f"No Phone behavior matched {pattern!r}: {result.stdout}"
 
 
 def test_local_trusted_client_boundary_is_documented() -> None:

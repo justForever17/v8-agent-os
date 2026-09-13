@@ -37,6 +37,9 @@ async def main():
                 output=chunk[:min(65536,max(0,limit-cursor))];state['maxBatch']=max(state['maxBatch'],len(output));state['cursor']=cursor+len(output);state['requests']+=1
                 body={'status':'success','output':output,'outputCursor':state['cursor'],'outputGeneration':u.path.split('/')[-1],'outputHasMore':state['cursor']<limit,'outputTotalBytes':limit,'is_running':state['running']}
                 await r.fulfill(json=body);state['inflight']-=1;return
+            else:
+                errors.append(f'Undeclared fixture API: {u.path}')
+                return await r.fulfill(status=500,json={'error':'undeclared_fixture_api'})
             return await r.fulfill(json=body)
         await context.route('**/*',route)
         try:

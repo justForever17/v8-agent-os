@@ -76,6 +76,10 @@ async def main():
                 if not state["submit_ok"]: return await request_route.fulfill(status=503, json={"error": "fixture rejection"})
                 body = {"accepted": True, "queued": True, "queuedMessage": queue, "runId": "fixture-run", "session_id": "fixture-a"}
             elif "supervisor-reasoning-effort" in path: body = {"visible": False, "levels": ["auto"]}
+            elif path in {"/api/artifacts", "/api/sources", "/api/runtime/bridge", "/api/workbench/sessions/fixture-a/files", "/api/workbench/sessions/fixture-b/files", "/api/realtime/sessions/fixture-a/snapshot", "/api/realtime/sessions/fixture-b/snapshot"}: body = {}
+            else:
+                errors.append(f"Undeclared fixture API: {path}")
+                return await request_route.fulfill(status=500, json={"error": "undeclared_fixture_api"})
             return await request_route.fulfill(json=body)
 
         await context.route("**/*", route)

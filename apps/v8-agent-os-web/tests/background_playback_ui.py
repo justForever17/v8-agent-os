@@ -41,6 +41,9 @@ async def main():
                 if u.path=='/api/auth/session':body={'user':{'id':'fixture-owner','email':'fixture@example.invalid'},'expires':'2099-01-01'}
                 if u.path=='/api/conversations':body=[]
                 if u.path=='/api/client/instance':body={'instanceId':'fixture-instance'}
+                if u.path not in {'/api/auth/session','/api/conversations','/api/client/instance','/api/projects','/api/supervisor-profile','/api/realtime/session-activity/stream'}:
+                    errors.append(f'Undeclared fixture API: {u.path}')
+                    return await r.fulfill(status=500,json={'error':'undeclared_fixture_api'})
                 return await r.fulfill(json=body)
             return await r.continue_()
         await context.route('**/*',route)

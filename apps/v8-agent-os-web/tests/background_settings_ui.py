@@ -34,6 +34,9 @@ async def main():
                     return await request.fulfill(body=buffer.getvalue(), content_type="image/webp")
                 if parsed.path == "/api/auth/session":
                     return await request.fulfill(json={"user": {"id": "fixture-owner", "email": "fixture@example.invalid"}, "expires": "2099-01-01"})
+                if parsed.path.startswith('/api/'):
+                    errors.append(f'Undeclared fixture API: {parsed.path}')
+                    return await request.fulfill(status=500,json={'error':'undeclared_fixture_api'})
                 return await request.continue_()
 
             await context.route("**/*", route)

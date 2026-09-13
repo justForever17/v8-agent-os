@@ -72,7 +72,7 @@ def test_probe_six_sequential_fresh_samples_without_retry_or_tool_execution(tmp_
 
     class FixtureModel:
         model_id = "fixture-model"
-        _meta = {"model_record": {"outputTokenMode": "auto"}}
+        _meta = {"model_record": {"outputTokenMode": "auto"}, "model_ref": "fixture-model", "model_id": "fixture-model"}
         _model_kwargs = {}
         max_retries = 0
 
@@ -118,3 +118,28 @@ def test_probe_does_not_coerce_nested_json_or_treat_mode_only_as_success():
         assert not result["matchesExplicitTask"]
         if isinstance(arguments.get("tasks"), str):
             assert not result["publicValid"]
+
+
+def test_real_factory_native_id_matches_qualified_ref_without_network(monkeypatch):
+    import httpx
+    from core.llm_factory import LLMFactory, model_control_plane
+    canonical = "fixture-provider::FixtureNative"
+    monkeypatch.setattr(httpx.Client, "send", lambda *_a, **_k: pytest.fail("factory identity check must not use network"))
+    monkeypatch.setattr(httpx.AsyncClient, "send", lambda *_a, **_k: pytest.fail("factory identity check must not use network"))
+    monkeypatch.setattr(model_control_plane, "resolve_model_for_role", lambda role: {"resolvedModelRef": canonical})
+    monkeypatch.setattr(model_control_plane, "get_role_temperature", lambda role: None)
+    monkeypatch.setattr(LLMFactory, "_resolve_model_metadata", classmethod(lambda cls, ref: {
+        "is_found": True, "model_ref": canonical, "model_id": "FixtureNative", "provider_id": "fixture-provider",
+        "api_standard": "openai", "wire_protocol": "openai.chat_completions", "api_key": "test-only-not-a-credential",
+        "model_record": {"outputTokenMode": "auto"}, "capabilities": {"supportsTools": True, "supportsStreaming": True},
+    }))
+    model = LLMFactory.create_for_role("supervisor", streaming=True, max_retries=0)
+    assert model.model_id == "FixtureNative" and model.model_id != canonical
+    assert probe.assert_expected_model(model, canonical) == {"canonicalModelRef": canonical, "nativeModelId": "FixtureNative"}
+    assert model._get_base_model().max_retries == 0
+    for expected in ("different-provider::FixtureNative", "fixture-provider::DifferentNative", "FixtureNative"):
+        with pytest.raises(ValueError, match="configured_model_changed"):
+            probe.assert_expected_model(model, expected)
+    model.model_id = "unannounced-wire-change"
+    with pytest.raises(ValueError, match="configured_model_changed"):
+        probe.assert_expected_model(model, canonical)

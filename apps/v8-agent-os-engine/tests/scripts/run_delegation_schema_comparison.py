@@ -71,6 +71,16 @@ def response_checks(response, public_validator, internal_validator, expected: di
     return result
 
 
+def assert_expected_model(model, expected_ref: str) -> dict:
+    """The factory binds a native wire ID and retains ModelHub's qualified ref."""
+    meta = model._meta
+    canonical_ref = str(meta.get("model_ref") or "")
+    wire_id = str((meta.get("endpoint_binding") or {}).get("providerModelId") or meta.get("model_id") or "")
+    if canonical_ref != expected_ref or not wire_id or str(model.model_id) != wire_id:
+        raise ValueError("configured_model_changed")
+    return {"canonicalModelRef": canonical_ref, "nativeModelId": str(model.model_id)}
+
+
 def run_comparison(args, public_schema: dict) -> dict:
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -108,8 +118,7 @@ def run_comparison(args, public_schema: dict) -> dict:
                 # Disable transport retries explicitly; do not use failover or
                 # a result-correction service. Each of the six samples is fresh.
                 model = llm_factory.create_for_role("supervisor", streaming=True, max_retries=0)
-                if model.model_id != args.expected_model:
-                    raise ValueError("configured_model_changed")
+                row["modelIdentity"] = assert_expected_model(model, args.expected_model)
                 budget = resolve_output_token_budget(model._meta)
                 if budget != {"mode": "auto", "maxTokens": None, "source": "provider_default"}:
                     raise ValueError("configured_output_policy_changed")

@@ -30,7 +30,8 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
     const [page, setPage] = useState(0);
     const [workspaceSearch, setWorkspaceSearch] = useState("");
     const [writeWorkspace, setWriteWorkspace] = useState("");
-    const nodeTrigger = useRef<HTMLElement | null>(null);
+    const clusterTriggers = useRef(new Map<string, HTMLButtonElement>());
+    const overviewTrigger = useRef<HTMLButtonElement | null>(null);
     const menuRef = useRef<HTMLElement | null>(null);
     const [nextPage, setNextPage] = useState<number | null>(null);
     const [total, setTotal] = useState(0);
@@ -112,9 +113,10 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
     const background = useCallback(() => {
         if (!canLeave()) return false;
         setSelected(null); setNodeSelection(null); selectionRef.current = null; setMode("summary"); setTarget(""); setPredicate("RELATED_TO");
-        nodeTrigger.current?.focus({ preventScroll: true });
+        const returnTarget = clusterTriggers.current.get(selected || "") || overviewTrigger.current;
+        returnTarget?.focus({ preventScroll: true });
         return true;
-    }, [canLeave]);
+    }, [canLeave, selected]);
     useEffect(() => {
         if (!nodeSelection) return;
         const key = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.isComposing) { event.preventDefault(); background(); } };
@@ -127,7 +129,6 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
     }, [canLeave]);
     const selectNode = useCallback((cluster: GalaxyCluster, node: GalaxyNode) => {
         if (!canLeave()) return;
-        nodeTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setWriteWorkspace("");
         const selection = { cluster, node }; selectionRef.current = selection; setSelected(cluster.clusterId); setNodeSelection(selection); setMode("summary"); setRelationOffset(0); setRelations({ relations: [], total: 0, nextOffset: null }); setTarget(""); setPredicate("RELATED_TO");
     }, [canLeave]);
@@ -161,7 +162,7 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
                 selectionRef.current = nextSelection; setNodeSelection(nextSelection); setSelected(destination.clusterId);
                 setTarget(""); setPredicate("RELATED_TO"); setMode("disconnect");
             } else await refreshSelection(selection);
-            if (selectionRef.current === selection) { setTarget(""); setPredicate("RELATED_TO"); setMode("disconnect"); if (action === "delete_entity") { setNodeSelection(null); selectionRef.current = null; } }
+            if (selectionRef.current === selection) { setTarget(""); setPredicate("RELATED_TO"); setMode("disconnect"); if (action === "delete_entity") { setNodeSelection(null); selectionRef.current = null; (clusterTriggers.current.get(selection.cluster.clusterId) || overviewTrigger.current)?.focus({ preventScroll: true }); } }
         } catch (reason) { setError(`${t("admin.galaxy.writeFailed")} ${String(reason)}`); }
         finally { busy.current = false; setMutating(false); }
     };
@@ -172,7 +173,7 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
         <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[150px] flex-1"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground"/><Input value={query} onChange={event => setQuery(event.target.value)} aria-label={t("admin.galaxy.search")} placeholder={t("admin.galaxy.search")} className="pl-9"/></div>
             <Button variant="outline" onClick={() => setPaused(value => !value)} aria-pressed={paused || reduced}>{paused || reduced ? <Play size={16} className="mr-2"/> : <Pause size={16} className="mr-2"/>}{t(paused || reduced ? "admin.galaxy.resume" : "admin.galaxy.pause")}</Button>
-            <Button variant="outline" onClick={background}><ArrowLeft size={16} className="mr-2"/>{t("admin.galaxy.overview")}</Button>
+            <Button ref={overviewTrigger} variant="outline" onClick={background}><ArrowLeft size={16} className="mr-2"/>{t("admin.galaxy.overview")}</Button>
             <Button variant="ghost" size="icon" disabled={loading || mutating || Boolean(nodeSelection)} onClick={() => void load(page, true)} aria-label={t("admin.galaxy.refresh")}><RefreshCw size={16} className={loading ? "animate-spin" : ""}/></Button>
         </div>
         {error ? <div role="alert" className="rounded-lg border border-destructive/40 px-3 py-2 text-sm text-destructive">{error}</div> : null}
@@ -185,14 +186,14 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
             <div className="space-y-2">
                 <Input aria-label={t("admin.galaxy.workspaceSearch")} placeholder={t("admin.galaxy.workspaceSearch")} value={workspaceSearch} disabled={mutating || draft} onChange={event => { if (canLeave()) { background(); setPage(0); setWorkspaceSearch(event.target.value); } }}/>
                 <div className="max-h-[260px] space-y-1 overflow-auto" aria-label={t("admin.galaxy.clusters")}>
-                    {visibleClusters.map(cluster => <button key={cluster.clusterId} type="button" aria-pressed={selected === cluster.clusterId} onClick={() => selectCluster(cluster.clusterId)} className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm ${selected === cluster.clusterId ? "bg-accent text-primary" : "hover:bg-muted"}`}><span className="min-w-0 break-words">{cluster.scopeKind === "global" ? t("admin.galaxy.global") : cluster.label}</span><span className="shrink-0 text-xs text-muted-foreground">{cluster.meta.totalEntities} / {cluster.meta.totalRelations}</span></button>)}
+                    {visibleClusters.map(cluster => <button key={cluster.clusterId} ref={element => { if (element) clusterTriggers.current.set(cluster.clusterId, element); else clusterTriggers.current.delete(cluster.clusterId); }} type="button" aria-pressed={selected === cluster.clusterId} onClick={() => selectCluster(cluster.clusterId)} className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm ${selected === cluster.clusterId ? "bg-accent text-primary" : "hover:bg-muted"}`}><span className="min-w-0 break-words">{cluster.scopeKind === "global" ? t("admin.galaxy.global") : cluster.label}</span><span className="shrink-0 text-xs text-muted-foreground">{cluster.meta.totalEntities} / {cluster.meta.totalRelations}</span></button>)}
                 </div>
                 {page > 0 || nextPage !== null ? <div className="flex gap-2"><Button variant="outline" size="sm" disabled={!page || mutating || draft} onClick={() => { background(); setPage(Math.max(0, page - 8)); }}>{t("admin.galaxy.previous")}</Button><Button variant="outline" size="sm" disabled={nextPage === null || mutating || draft} onClick={() => { background(); setPage(nextPage!); }}>{t("admin.galaxy.next")}</Button></div> : null}
             </div>
             <div className="min-w-0 space-y-3">
                 {activeCluster ? <><div className="text-sm font-medium">{activeCluster.scopeKind === "global" ? t("admin.galaxy.global") : activeCluster.label}<span className="ml-2 text-xs font-normal text-muted-foreground">{t("admin.galaxy.rendered", { nodes: activeCluster.meta.renderedEntities, total: activeCluster.meta.totalEntities, edges: activeCluster.meta.renderedRelations, edgeTotal: activeCluster.meta.totalRelations })}</span></div><div className="flex max-h-[160px] flex-wrap gap-2 overflow-auto">{activeCluster.nodes.filter(node => !query || node.label.toLowerCase().includes(query.toLowerCase()) || activeCluster.label.toLowerCase().includes(query.toLowerCase())).map(node => <Button key={visualNodeId(activeCluster.clusterId, node.id)} variant="outline" size="sm" onClick={() => selectNode(activeCluster, node)}>{node.label}</Button>)}{!activeCluster.nodes.length ? <span className="text-sm text-muted-foreground">{t("admin.galaxy.empty")}</span> : null}</div></> : null}
                 {nodeSelection ? createPortal(<section ref={menuRef} aria-label={t("admin.galaxy.nodeMenu")} className="admin-node-menu fixed right-3 top-[64px] z-40 grid max-h-[min(560px,calc(100dvh-80px))] w-[min(360px,calc(100vw-24px))] grid-rows-[auto_minmax(0,1fr)_auto] rounded-xl border border-border bg-card shadow-xl">
-                    <div className="flex items-start justify-between gap-3 border-b border-border p-3"><div className="min-w-0"><h3 className="break-words text-sm font-semibold">{nodeSelection.node.label}</h3><p className="text-xs text-muted-foreground">{nodeSelection.node.type} · {nodeSelection.cluster.label} · {relations.total}</p></div><Button variant="ghost" size="icon" aria-label={t("admin.galaxy.close")} onClick={() => { if (canLeave()) { setNodeSelection(null); selectionRef.current = null; } }}><X size={16}/></Button></div>
+                    <div className="flex items-start justify-between gap-3 border-b border-border p-3"><div className="min-w-0"><h3 className="break-words text-sm font-semibold">{nodeSelection.node.label}</h3><p className="text-xs text-muted-foreground">{nodeSelection.node.type} · {nodeSelection.cluster.label} · {relations.total}</p></div><Button variant="ghost" size="icon" aria-label={t("admin.galaxy.close")} onClick={() => { if (canLeave()) { setNodeSelection(null); selectionRef.current = null; (clusterTriggers.current.get(nodeSelection.cluster.clusterId) || overviewTrigger.current)?.focus({ preventScroll: true }); } }}><X size={16}/></Button></div>
                     <div className="min-h-0 space-y-3 overflow-auto p-3">
                         {readOnly ? <p className="text-xs text-muted-foreground">{t("admin.galaxy.globalReadonly")}</p> : null}
                         {relationLoading ? <Loader2 size={16} className="animate-spin"/> : (mode === "summary" ? relations.relations.slice(0, 5) : relations.relations).map(relation => <div key={relation.relationId} className="flex items-start justify-between gap-2 border-b border-border/60 py-2 text-xs"><span className="break-all">{relation.subject} → {relation.predicate} → {relation.object}<span className="block text-muted-foreground">{relation.scope}</span></span>{mode === "disconnect" && !readOnly ? <Button variant="ghost" size="icon" disabled={mutating} aria-label={t("admin.galaxy.disconnect")} onClick={() => void mutate("delete_relation", relation)}><Unlink2 size={14}/></Button> : null}</div>)}

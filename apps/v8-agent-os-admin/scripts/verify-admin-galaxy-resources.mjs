@@ -12,10 +12,16 @@ try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: 'zh-CN' });
     await page.addInitScript(() => {
         const original = CanvasRenderingContext2D.prototype.clearRect;
+        const arc = CanvasRenderingContext2D.prototype.arc;
         window.__galaxyFrames = [];
+        window.__galaxyFrameRadii = [];
         CanvasRenderingContext2D.prototype.clearRect = function(...args) {
-            if (this.canvas.getAttribute('aria-label')?.startsWith('记忆星系')) window.__galaxyFrames.push(performance.now());
+            if (this.canvas.getAttribute('aria-label')?.startsWith('记忆星系')) { window.__galaxyFrames.push(performance.now()); window.__galaxyFrameRadii.push([]); }
             return original.apply(this, args);
+        };
+        CanvasRenderingContext2D.prototype.arc = function(...args) {
+            if (this.canvas.getAttribute('aria-label')?.startsWith('记忆星系') && args[2] > 20) window.__galaxyFrameRadii.at(-1)?.push(args[2]);
+            return arc.apply(this, args);
         };
     });
     await page.goto(base + '/login', { waitUntil: 'networkidle' });
@@ -38,6 +44,17 @@ try {
         samples.push((await page.evaluate(() => window.__galaxyFrames.length)) - before);
     }
     assert.ok(samples.every(value => value > 0 && value <= 35), `passive frame counts ${samples}`);
+    await page.getByRole('button', { name: /Workspace A.*12/ }).click();
+    await canvas.scrollIntoViewIfNeeded(); await page.mouse.move(0, 0); await page.waitForTimeout(500);
+    const radiusBefore = await page.evaluate(() => window.__galaxyFrameRadii.at(-1)[0]);
+    await page.evaluate(() => { window.__galaxyFrameRadii = []; });
+    const canvasBox = await canvas.boundingBox();
+    await page.mouse.click(canvasBox.x + canvasBox.width - 8, canvasBox.y + 8);
+    await page.mouse.move(0, 0); await page.waitForTimeout(650);
+    const radii = await page.evaluate(() => window.__galaxyFrameRadii.map(frame => frame[0]).filter(Number.isFinite));
+    const radiusAfter = radii.at(-1);
+    const intermediateFrames = radii.filter(radius => radius < radiusBefore - 1 && radius > radiusAfter + 1).length;
+    assert.ok(radiusBefore > radiusAfter && intermediateFrames >= 3, `camera return must ease through intermediate frames: ${JSON.stringify({ radiusBefore, radiusAfter, intermediateFrames, radii })}`);
     await page.getByRole('button', { name: '暂停运动', exact: true }).click();
     await page.waitForTimeout(400);
     const paused = await page.evaluate(() => window.__galaxyFrames.length);
@@ -67,8 +84,9 @@ try {
     }
     const finalCount = await page.evaluate(() => window.__galaxyFrames.length);
     await page.waitForTimeout(600); assert.equal(await page.evaluate(() => window.__galaxyFrames.length), finalCount);
-    const evidence = { runtime: 'real production canvas with synthetic HTTP data', browser: browser.version(), viewport: '1440x900', nodes: 36, edges: 33, samplesPerSecond: samples,
+    const evidence = { runtime: 'real Admin canvas with synthetic HTTP data', buildMode: process.env.V8_ADMIN_BUILD_MODE || 'unspecified', browser: browser.version(), viewport: '1440x900', nodes: 36, edges: 33, samplesPerSecond: samples,
         pausedNoDraw: true, injectedHiddenNoDraw: true, reducedNoDraw: true, inactiveNoDrawAfter20Cycles: true,
+        cameraReturn: { radiusBefore, radiusAfter, intermediateFrames },
         limits: 'Visibility is injected at document boundary. This is not physical background/heap or end-user INP evidence.' };
     fs.writeFileSync(path.join(out, 'resource-evidence.json'), JSON.stringify(evidence, null, 2));
     console.log(JSON.stringify(evidence));

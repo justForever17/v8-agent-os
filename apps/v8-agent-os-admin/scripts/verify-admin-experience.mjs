@@ -26,10 +26,14 @@ try {
     let failWrites = false;
     let holdGraph = false;
     let releaseGraph;
+    let failSafetyConfig = true;
+    let failSafetyDiagnostics = true;
     const savedDomains = new Map();
     await page.route('**/api/**', async route => {
         const request = route.request(), url = new URL(request.url());
         if (url.pathname.startsWith('/api/auth/')) return route.continue();
+        if (url.pathname === '/api/config-registry/safety' && failSafetyConfig) return route.fulfill({ status: 503, json: { error: 'fixture_safety_unavailable' } });
+        if (url.pathname === '/api/safety/dashboard') return route.fulfill(failSafetyDiagnostics ? { status: 503, json: { error: 'fixture_diagnostics_unavailable' } } : { json: { summary: {}, incidents: [], allowlist: [], approvals: [] } });
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
             writes.push({ path: url.pathname, method: request.method(), body: request.postDataJSON() });
             if (failWrites) return route.fulfill({ status: 500, json: { error: 'fixture_failure' } });
@@ -39,6 +43,7 @@ try {
                 const cluster = sampleClusters.find(item => item.workspaceKey === body.workspaceKey);
                 if (body.action === 'add_relation') cluster.links.push({ relationId: `${cluster.clusterId}-${cluster.links.length}`, source: body.subject, target: body.object, label: body.predicate, scope: `workspace:${body.workspaceKey}`, confidence: 1 });
                 if (body.action === 'delete_relation') cluster.links = cluster.links.filter(edge => !(edge.source === body.subject && edge.target === body.object && edge.label === body.predicate && edge.scope === body.scope));
+                if (body.action === 'delete_entity') { cluster.links = cluster.links.filter(edge => edge.source !== body.name && edge.target !== body.name); cluster.nodes = cluster.nodes.filter(node => node.id !== body.name); }
                 cluster.meta.totalRelations = cluster.links.length;
                 return route.fulfill({ json: { created: true, deleted: true } });
             }
@@ -147,6 +152,7 @@ try {
     await page.getByRole('button', { name: '管理全部关系', exact: true }).focus();
     await page.keyboard.press('Escape');
     await menu.waitFor({ state: 'detached' });
+    assert.ok((await page.evaluate(() => document.activeElement?.textContent || '')).includes('Workspace A'));
     await page.getByRole('button', { name: /全局记忆.*12/ }).click();
     await page.getByRole('button', { name: 'shared', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: '节点管理' }).getByRole('button', { name: '新建连接', exact: true }).count(), 0);
@@ -159,8 +165,29 @@ try {
     await page.getByRole('button', { name: '断开关系', exact: true }).first().waitFor();
     assert.equal(writes.at(-1).body.workspaceKey, 'b');
     assert.equal(JSON.stringify(sampleClusters[0].links), globalBefore);
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('region', { name: '节点管理' }).getByRole('button', { name: '删除', exact: true }).click();
+    await menu.waitFor({ state: 'detached' });
+    assert.ok((await page.evaluate(() => document.activeElement?.textContent || '')).includes('Workspace B'));
     await page.screenshot({ path: path.join(out, 'galaxy.png') });
-    evidence.push({ route: '/admin/memory?tab=graph', globalCount: sampleClusters.filter(item => item.clusterId === 'global').length, writeFailureRetainsTarget: true, capturedWorkspace: 'a', pendingFieldsLocked: true, menuEscape: true, menuBox, globalPreserved: true, explicitGlobalDestination: 'b' });
+    evidence.push({ route: '/admin/memory?tab=graph', globalCount: sampleClusters.filter(item => item.clusterId === 'global').length, writeFailureRetainsTarget: true, capturedWorkspace: 'a', pendingFieldsLocked: true, menuEscape: true, menuBox, globalPreserved: true, explicitGlobalDestination: 'b', escapeFocus: 'Workspace A', deletedNodeFocus: 'Workspace B' });
+    await visit('/admin/safety-control');
+    assert.equal(await page.locator('h1').count(), 1);
+    await page.getByRole('alert').filter({ hasText: 'fixture_safety_unavailable' }).waitFor();
+    assert.equal(await page.locator('main .animate-spin').count(), 0);
+    failSafetyConfig = false;
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await page.locator('#admin-save-actions button').last().waitFor();
+    await page.getByRole('alert').filter({ hasText: 'fixture_diagnostics_unavailable' }).waitFor();
+    assert.equal(await page.locator('#admin-save-actions button').last().isEnabled(), true);
+    failSafetyDiagnostics = false;
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: 'fixture_diagnostics_unavailable' }).waitFor({ state: 'detached' });
+    evidence.push({ route: '/admin/safety-control', failedLoadHasHeadingAndRetry: true, noStuckSpinner: true, partialConfigurationRemainsEditable: true, diagnosticsRetry: true });
+    await visit('/admin/runtime-governance');
+    assert.equal(await page.locator('h1').count(), 1);
+    assert.equal((await page.locator('body').innerText()).includes('components.runtime.RuntimeGovernanceWorkbench.'), false);
+    evidence.push({ route: '/admin/runtime-governance', singleHeading: true, errorToastLocalized: true });
     assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(out, 'interaction-evidence.json'), JSON.stringify({ evidence, writes, errors }, null, 2));
     console.log(JSON.stringify({ ok: true, evidence, writes: writes.length, output: out }));

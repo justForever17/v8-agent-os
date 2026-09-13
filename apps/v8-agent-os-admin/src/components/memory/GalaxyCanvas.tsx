@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { allocateOrbits, clusterCenter, inverseNode, localNode, transformNode, visualNodeId, type GalaxyCluster, type GalaxyNode, type Orbit, type Point } from "./galaxy-layout";
 
 type Camera = Point & { zoom: number };
+type CameraTransition = { from: Camera; to: Camera; started: number; duration: number };
 type Props = { clusters: GalaxyCluster[]; selected: string | null; paused: boolean; reduced: boolean; label: string;
     onCluster: (id: string) => void; onNode: (cluster: GalaxyCluster, node: GalaxyNode) => void; onBackground: () => boolean };
 
@@ -12,6 +13,10 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
     const orbitsRef = useRef<Orbit[]>([]);
     const offsets = useRef(new Map<string, Point>());
     const camera = useRef<Camera>({ x: 0, y: 0, zoom: 1 });
+    const cameraTransition = useRef<CameraTransition | null>(null);
+    const viewport = useRef({ width: 0, height: 0, selected: null as string | null, manual: false, clusterIds: "" });
+    const handlers = useRef({ onCluster, onNode, onBackground });
+    useEffect(() => { handlers.current = { onCluster, onNode, onBackground }; }, [onCluster, onNode, onBackground]);
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -25,11 +30,19 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
             const orbit = orbits.find(item => item.id === cluster.clusterId)!;
             cluster.nodes.forEach((node, index) => { const key = visualNodeId(cluster.clusterId, node.id); if (!offsets.current.has(key)) offsets.current.set(key, localNode(index, cluster.nodes.length, orbit.radius)); });
         }
-        let width = 1, height = 1, visible = true, frame = 0, last = 0, painted = 0;
+        const viewState = viewport.current;
+        const firstView = viewState.width === 0;
+        const selectionChanged = viewport.current.selected !== selected;
+        const clusterIds = JSON.stringify(clusters.map(cluster => cluster.clusterId));
+        const clustersChanged = viewport.current.clusterIds !== clusterIds;
+        viewport.current.selected = selected;
+        viewport.current.clusterIds = clusterIds;
+        let width = viewport.current.width, height = viewport.current.height;
+        let visible = true, frame = 0, last = 0, painted = 0;
         let hover: { id: string; entered: number; entry: Point; origin: Camera; zoomed: boolean } | null = null;
-        let manual = false;
+        let manual = viewport.current.manual;
         let drag: { start: Point; previous: Point; node?: { cluster: GalaxyCluster; node: GalaxyNode; orbit: Orbit }; moved: boolean } | null = null;
-        let transition: { from: Camera; to: Camera; started: number; duration: number } | null = null;
+        let transition = cameraTransition.current;
         let nodePositions: { cluster: GalaxyCluster; node: GalaxyNode; orbit: Orbit; point: Point }[] = [];
         const colors = ["#8b6ee8", "#559f9a", "#c48a55", "#6995c8", "#b578a6", "#83a460"];
         const overview = (): Camera => ({ x: 0, y: 0, zoom: Math.min(width, height) / (2 * (Math.max(100, ...orbits.map(item => item.orbitRadius + item.radius)) + 24)) });
@@ -56,7 +69,7 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
                 camera.current = { x: transition.from.x + (transition.to.x - transition.from.x) * eased, y: transition.from.y + (transition.to.y - transition.from.y) * eased + arc, zoom: transition.from.zoom + (transition.to.zoom - transition.from.zoom) * eased };
                 if (progress === 1) { transition = null; last = now; }
             }
-            if (now - painted >= 32 || transition || !moving) {
+            if (now - painted >= (transition ? 1000 / 60 : 1000 / 30) || (!moving && !transition && !(hover && !hover.zoomed))) {
                 painted = now;
                 ctx.clearRect(0, 0, width, height);
                 nodePositions = [];
@@ -88,12 +101,16 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
                     if (selected === cluster.clusterId) for (const node of cluster.nodes.slice(0, 12)) { const point = positions.get(node.id)!; ctx.textAlign = "left"; ctx.fillStyle = dark ? "#d5d8e0" : "#475162"; ctx.fillText(node.label.slice(0, 24), point.x + 7, point.y + 4); }
                 }
             }
-            if (moving || transition || (hover && !hover.zoomed)) request();
+            // Re-evaluate after the last camera frame; the pre-frame `moving`
+            // value still referred to the transition that has just completed.
+            if ((!paused && !reduced && !selected && !hover && !manual && !drag) || transition || (hover && !hover.zoomed)) request();
         };
         const resize = () => {
             const rect = canvas.getBoundingClientRect(); width = Math.max(1, rect.width); height = Math.max(1, rect.height);
             const dpr = Math.min(devicePixelRatio || 1, 2); canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            if (!selected && !manual) camera.current = overview();
+            const resized = viewport.current.width !== width || viewport.current.height !== height;
+            viewport.current.width = width; viewport.current.height = height;
+            if (firstView || (resized && !selected && !manual && !transition)) camera.current = overview();
             request();
         };
         const hitCluster = (point: Point) => orbits.find(orbit => { const center = screen(clusterCenter(orbit, clock.current)); return Math.hypot(center.x - point.x, center.y - point.y) <= orbit.radius * camera.current.zoom + 5; });
@@ -121,13 +138,13 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
         const pointerUp = (event: PointerEvent) => {
             if (!drag) return;
             const previous = drag; drag = null; if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-            if (!previous.moved) { const point = pointOf(event); if (previous.node) onNode(previous.node.cluster, previous.node.node); else { const hit = hitCluster(point); if (hit) onCluster(hit.id); else if (onBackground()) { manual = false; hover = null; moveCamera(overview()); } } }
+            if (!previous.moved) { const point = pointOf(event); if (previous.node) handlers.current.onNode(previous.node.cluster, previous.node.node); else { const hit = hitCluster(point); if (hit) handlers.current.onCluster(hit.id); else if (handlers.current.onBackground()) { manual = false; hover = null; moveCamera(overview()); } } }
             last = 0; request();
         };
         const cancelPointer = () => { drag = null; last = 0; request(); };
         const leave = () => { if (!selected && !drag && hover) { const origin = hover.origin; hover = null; moveCamera(origin, 280); } };
         const wheel = (event: WheelEvent) => { if (document.activeElement !== canvas) return; event.preventDefault(); manual = true; hover = null; transition = null; camera.current.zoom = Math.max(.15, Math.min(5, camera.current.zoom * Math.exp(-event.deltaY * .001))); request(); };
-        const key = (event: KeyboardEvent) => { if (event.key === "Escape") { if (onBackground()) { manual = false; hover = null; moveCamera(overview()); } } else if (event.key === "+" || event.key === "-") { event.preventDefault(); manual = true; camera.current.zoom *= event.key === "+" ? 1.2 : 1 / 1.2; request(); } };
+        const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); if (handlers.current.onBackground()) { manual = false; hover = null; moveCamera(overview()); } } else if (event.key === "+" || event.key === "-") { event.preventDefault(); manual = true; camera.current.zoom *= event.key === "+" ? 1.2 : 1 / 1.2; request(); } };
         const visibility = () => { if (!visible || document.hidden) { cancelAnimationFrame(frame); frame = 0; last = 0; } else request(); };
         const observer = new ResizeObserver(resize); observer.observe(canvas);
         const intersection = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; visibility(); }); intersection.observe(canvas);
@@ -135,8 +152,12 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
         document.addEventListener("visibilitychange", visibility);
         canvas.addEventListener("pointermove", pointerMove); canvas.addEventListener("pointerdown", pointerDown); canvas.addEventListener("pointerup", pointerUp); canvas.addEventListener("pointercancel", cancelPointer); canvas.addEventListener("pointerleave", leave); canvas.addEventListener("wheel", wheel, { passive: false }); canvas.addEventListener("keydown", key);
         resize();
-        if (selected) moveCamera({ ...centerOf(selected), zoom: Math.min(width, height) / 230 });
-        return () => { cancelAnimationFrame(frame); observer.disconnect(); intersection.disconnect(); themeObserver.disconnect(); document.removeEventListener("visibilitychange", visibility); canvas.removeEventListener("pointermove", pointerMove); canvas.removeEventListener("pointerdown", pointerDown); canvas.removeEventListener("pointerup", pointerUp); canvas.removeEventListener("pointercancel", cancelPointer); canvas.removeEventListener("pointerleave", leave); canvas.removeEventListener("wheel", wheel); canvas.removeEventListener("keydown", key); };
-    }, [clusters, selected, paused, reduced, onCluster, onNode, onBackground]);
+        if (selectionChanged) {
+            manual = false;
+            moveCamera(selected ? { ...centerOf(selected), zoom: Math.min(width, height) / 230 } : overview());
+        } else if (clustersChanged && !selected && !manual) moveCamera(overview());
+        if (reduced && transition) { camera.current = transition.to; transition = null; }
+        return () => { cameraTransition.current = transition; viewState.manual = manual; cancelAnimationFrame(frame); observer.disconnect(); intersection.disconnect(); themeObserver.disconnect(); document.removeEventListener("visibilitychange", visibility); canvas.removeEventListener("pointermove", pointerMove); canvas.removeEventListener("pointerdown", pointerDown); canvas.removeEventListener("pointerup", pointerUp); canvas.removeEventListener("pointercancel", cancelPointer); canvas.removeEventListener("pointerleave", leave); canvas.removeEventListener("wheel", wheel); canvas.removeEventListener("keydown", key); };
+    }, [clusters, selected, paused, reduced]);
     return <canvas ref={canvasRef} tabIndex={0} role="img" aria-label={label} className="h-[clamp(340px,58dvh,640px)] w-full touch-none rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />;
 }

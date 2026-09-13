@@ -1,9 +1,10 @@
 "use client";
 import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
+import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdvancedSection } from "@/components/admin-shell/AdvancedSection";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
@@ -464,32 +465,41 @@ export default function SafetyControlPage() {
   const [loading, setLoading] = useState(!initialState.envelope);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [preset, setPreset] = useState<(typeof PRESET_OPTIONS)[number]["key"]>(initialState.preset);
   const [dashboard, setDashboard] = useState<SafetyDashboard | null>(initialState.dashboard);
   const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
   const [rememberAllowlist, setRememberAllowlist] = useState<Record<string, boolean>>({});
-  const loadConfig = async (force = false) => {
+  const loadConfig = useCallback(async (force = false) => {
+    setLoadError("");
     try {
-      const [next, modelList, safetyDashboard] = await Promise.all([
+      const [configResult, modelsResult, dashboardResult] = await Promise.allSettled([
         fetchConfigDomain<SafetyData>("safety", { force }),
         fetchAdminJson<ModelOption[]>("/api/models", { force }),
         fetchAdminJson<SafetyDashboard>("/api/safety/dashboard?limit=80", { force, ttlMs: 10_000 }),
       ]);
+      if (configResult.status === "rejected") throw configResult.reason;
+      const next = configResult.value;
       const normalized = normalizeSafetyData(next.data);
       setEnvelope({
         ...next,
         data: normalized
       });
-      setModels(Array.isArray(modelList) ? modelList : []);
-      setDashboard(safetyDashboard && typeof safetyDashboard === "object" ? safetyDashboard : {});
+      if (modelsResult.status === "fulfilled") setModels(Array.isArray(modelsResult.value) ? modelsResult.value : []);
+      if (dashboardResult.status === "fulfilled") setDashboard(dashboardResult.value);
+      const unavailable = [modelsResult, dashboardResult].filter(result => result.status === "rejected");
+      if (unavailable.length) setLoadError(`${t("admin.experience.loadFailed")} ${unavailable.map(result => String((result as PromiseRejectedResult).reason)).join("; ")}`);
       setPreset(detectPreset(normalized));
+    } catch (error) {
+      setLoadError(String(error));
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
   useEffect(() => {
     void loadConfig();
-  }, []);
+  }, [loadConfig]);
   const llmModels = useMemo(() => models.filter(model => ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes((model.type || "").toUpperCase())), [models]);
   const summary = useMemo(() => {
     const data = envelope?.data;
@@ -509,6 +519,8 @@ export default function SafetyControlPage() {
   const saveData = async (nextData: SafetyData) => {
     if (!envelope) return;
     setSaving(true);
+    setSaveError("");
+    setSaved(false);
     try {
       const next = await saveConfigDomain<SafetyData>("safety", {
         data: nextData
@@ -521,6 +533,8 @@ export default function SafetyControlPage() {
       setPreset(detectPreset(normalized));
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
+    } catch (error) {
+      setSaveError(`${t("admin.experience.saveFailed")} ${String(error)}`);
     } finally {
       setSaving(false);
     }
@@ -602,15 +616,13 @@ export default function SafetyControlPage() {
     }
   };
   if (loading || !envelope) {
-    return <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
-            </div>;
+    return <AdminLoadState title="app.admin.dashboard.safety.control.page.k8f467cf5" error={loadError} onRetry={() => void loadConfig(true)}/>;
   }
   const data = envelope.data;
   return <AdminPageShell>
             <AdminPageHeader title="app.admin.dashboard.safety.control.page.k8f467cf5" description="app.admin.dashboard.safety.control.page.k65868ff2" actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
-                        <AdminSaveBar><Button onClick={() => void saveData(data)} disabled={saving}>
+                        <AdminSaveBar error={saveError || loadError}>{loadError ? <Button variant="outline" onClick={() => void loadConfig(true)}>{t("admin.experience.retry")}</Button> : null}<Button onClick={() => void saveData(data)} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
                             {ti(t, "k5e4644a2c8")}
                         </Button></AdminSaveBar>

@@ -10,9 +10,12 @@ import {
     ToastViewport,
 } from "@/components/ui/toast"
 import { useToast } from "@/components/ui/use-toast"
+import { useResolveText } from "@/components/providers/LocaleProvider"
+import { isTranslationKey } from "@/lib/locale"
 
 export function Toaster() {
     const { toasts } = useToast()
+    const resolveText = useResolveText()
 
     return (
         <ToastProvider>
@@ -20,9 +23,9 @@ export function Toaster() {
                 return (
                     <Toast key={id} {...props}>
                         <div className="grid gap-1">
-                            {title && <ToastTitle>{title}</ToastTitle>}
+                            {title && <ToastTitle>{typeof title === "string" && isTranslationKey(title) ? resolveText(title) : title}</ToastTitle>}
                             {description && (
-                                <ToastDescription>{description}</ToastDescription>
+                                <ToastDescription>{typeof description === "string" && isTranslationKey(description) ? resolveText(description) : description}</ToastDescription>
                             )}
                         </div>
                         {action}

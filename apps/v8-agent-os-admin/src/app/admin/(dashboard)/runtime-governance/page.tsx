@@ -19,7 +19,7 @@ export default function RuntimeGovernancePage() {
                 tone="warning"
             />
 
-            <RuntimeGovernanceWorkbench />
+            <RuntimeGovernanceWorkbench embedded />
         </AdminPageShell>
     );
 }

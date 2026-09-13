@@ -1,0 +1,3 @@
+# Signed brand assets must keep the bytes used by the catalog on Windows too.
+apps/v8-agent-os-engine/runtimes/plugin_manager/resources/logos/*.svg text eol=lf
+apps/v8-agent-os-admin/public/model-assets/providers/*.svg text eol=lf

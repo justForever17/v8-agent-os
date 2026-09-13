@@ -646,6 +646,41 @@ def test_grandchild_without_parent_capsule_cannot_gain_write_authority(tmp_path:
     assert derived["engineeringTaskCapsule"]["writeSet"] == []
 
 
+@pytest.mark.parametrize("requested", [["src/../outside.txt"], ["src\\..\\outside.txt"],
+    ["src/"], ["src/", "src/nested.txt"], ["./src/./", "src/nested.txt"]])
+def test_grandchild_directory_partition_cannot_escape_or_regrant_the_whole_parent(tmp_path: Path, requested) -> None:
+    parent = normalize_task_brief({"taskBriefId": "parent-dir", "goal": "Update source", "context": {"workspacePath": str(tmp_path)},
+        "writeRequired": True, "writeSet": ["src/"], "expectedOutputs": ["Source"], "acceptanceContract": "Source verified"})
+    child = derive_grandchild_engineering_task(parent, normalize_task_brief({"taskBriefId": "child-dir", "goal": "Update a partition",
+        "writeRequired": True, "writeSet": requested, "expectedOutputs": ["Partition"], "acceptanceContract": "Partition verified"}))
+    assert engineering_capsule_mode(child) == "verify"
+    assert child["writeSet"] == []
+
+
+def test_grandchild_partition_resolves_directory_aliases_in_the_bound_workspace(tmp_path: Path) -> None:
+    parent = normalize_task_brief({"taskBriefId": "parent-dir", "goal": "Update source", "context": {"workspacePath": str(tmp_path)},
+        "writeRequired": True, "writeSet": ["src/"], "expectedOutputs": ["Source"], "acceptanceContract": "Source verified"})
+    child = derive_grandchild_engineering_task(parent, normalize_task_brief({"taskBriefId": "child-file", "goal": "Update one file",
+        "writeRequired": True, "writeSet": [str(tmp_path / "src/one.txt")], "expectedOutputs": ["One file"], "acceptanceContract": "File verified"}))
+    assert engineering_capsule_mode(child) == "write"
+    assert child["writeSet"] == [str(tmp_path / "src/one.txt")]
+
+
+def test_grandchild_partition_cannot_follow_a_symlink_out_of_the_parent_directory(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "outside").mkdir()
+    try:
+        (tmp_path / "src/link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"Host cannot create isolated directory symlink: {error.errno}")
+    parent = normalize_task_brief({"taskBriefId": "parent-dir", "goal": "Update source", "context": {"workspacePath": str(tmp_path)},
+        "writeRequired": True, "writeSet": ["src/"], "expectedOutputs": ["Source"], "acceptanceContract": "Source verified"})
+    child = derive_grandchild_engineering_task(parent, normalize_task_brief({"taskBriefId": "child-link", "goal": "Update a file",
+        "writeRequired": True, "writeSet": ["src/link/result.txt"], "expectedOutputs": ["File"], "acceptanceContract": "File verified"}))
+    assert engineering_capsule_mode(child) == "verify"
+    assert child["writeSet"] == []
+
+
 def test_peer_help_derives_verify_grandchild_capsule(tmp_path: Path) -> None:
     parent = _write_task(tmp_path)
     command = request_peer_help.func(

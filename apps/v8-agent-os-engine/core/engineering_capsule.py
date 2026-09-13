@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from copy import deepcopy
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
 
 
@@ -549,12 +551,29 @@ def derive_grandchild_engineering_task(
     child["context"] = child_context
     parent_write_set = _unique_text(_values(parent_capsule.get("writeSet")))
     requested_child_write_set = _unique_text(_values(child.get("writeSet")))
+    workspace_path = str(parent_capsule.get("workspacePath") or "").strip()
 
     def _path_key(value: Any) -> str:
         text = str(value or "").strip().strip("`'\"").replace("\\", "/")
-        while text.startswith("./"):
-            text = text[2:]
-        return re.sub(r"/+", "/", text).rstrip("/").casefold()
+        # A declaration containing traversal must not be promoted into a new
+        # child permission by a string-prefix comparison. Resolve existing
+        # symlinks in the bound workspace, and use this host's case semantics.
+        if not text or ".." in PurePosixPath(text).parts:
+            return ""
+        if os.name != "nt" and PureWindowsPath(text).drive:
+            return ""  # A different host's drive is not this workspace.
+        try:
+            if workspace_path:
+                root = Path(workspace_path).resolve()
+                target = Path(text)
+                target = (target if target.is_absolute() else root / target).resolve()
+                target.relative_to(root)
+                text = str(target)
+            else:
+                text = PurePosixPath(text).as_posix()
+            return os.path.normcase(text).replace("\\", "/").rstrip("/")
+        except (OSError, RuntimeError, ValueError):
+            return ""
 
     def _covered_by_parent(child_path: str) -> bool:
         child_key = _path_key(child_path)
@@ -579,14 +598,10 @@ def derive_grandchild_engineering_task(
         and child_keys
         and parent_keys
         and all(_covered_by_parent(item) for item in requested_child_write_set)
-        and (
-            child_keys != parent_keys
-            or any(
-                child_key != parent_key and child_key.startswith(parent_key + "/")
-                for child_key in child_keys
-                for parent_key in parent_keys
-            )
-        )
+        # Compare the represented authority, not merely the list of strings:
+        # ["src", "src/a"] grants the entire parent "src", not a strict subset.
+        and not all(any(parent_key == child_key or parent_key.startswith(child_key + "/")
+                        for child_key in child_keys) for parent_key in parent_keys)
     )
     child["readOnly"] = not explicit_subset
     child["writeRequired"] = explicit_subset

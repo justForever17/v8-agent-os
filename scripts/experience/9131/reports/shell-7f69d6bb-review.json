@@ -1,0 +1,216 @@
+{
+  "candidate": "7f69d6bb514cc3ae01e36c4ce57b0287ccee019d",
+  "buildIds": {
+    "admin": "w3O2_UjivS-DgjLZ1HZBq",
+    "web": "OD7v5ILr_Pyk3KrMEHmvX"
+  },
+  "electron": {
+    "version": "43.4.1",
+    "chrome": "150.0.7871.224",
+    "windows": 1,
+    "userData": "E:\\Projects\\v8chat\\.codex-tmp\\release-20260913-1\\preview-state-1\\electron\\shell",
+    "pid": 70968
+  },
+  "initialA": {
+    "text": "",
+    "start": 0,
+    "end": 0,
+    "scroll": 0,
+    "doc": "b9b24c50-9988-4765-8fd6-52088be03a98",
+    "timeOrigin": 1789295198258.4
+  },
+  "theme": {
+    "id": "theme",
+    "details": {
+      "variants": [
+        {
+          "sourceKind": "web",
+          "targetKind": "admin",
+          "desired": "dark",
+          "synchronized": true,
+          "canonical": {
+            "status": 200,
+            "payload": {
+              "theme": "dark"
+            }
+          },
+          "actual": {
+            "theme": "dark",
+            "focused": true
+          },
+          "activationGets": 1
+        },
+        {
+          "sourceKind": "admin",
+          "targetKind": "web",
+          "desired": "light",
+          "synchronized": true,
+          "canonical": {
+            "status": 200,
+            "payload": {
+              "theme": "light"
+            }
+          },
+          "actual": {
+            "theme": "h-full light",
+            "focused": true
+          },
+          "activationGets": 1
+        },
+        {
+          "sourceKind": "web",
+          "targetKind": "admin",
+          "desired": "dark",
+          "synchronized": true,
+          "canonical": {
+            "status": 200,
+            "payload": {
+              "theme": "dark"
+            }
+          },
+          "actual": {
+            "theme": "dark",
+            "focused": true
+          },
+          "activationGets": 1
+        },
+        {
+          "sourceKind": "admin",
+          "targetKind": "web",
+          "desired": "light",
+          "synchronized": true,
+          "canonical": {
+            "status": 200,
+            "payload": {
+              "theme": "light"
+            }
+          },
+          "actual": {
+            "theme": "h-full light",
+            "focused": true
+          },
+          "activationGets": 1
+        }
+      ],
+      "repeatedRealShellActivation": 5,
+      "repeatGets": 0
+    },
+    "status": "PASS"
+  },
+  "combinedQueueDraftFailure": {
+    "id": "queue",
+    "status": "FAIL",
+    "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ ''\n- 'Shell_A_UNSENT_中文_Keep_exact_draft'\n"
+  },
+  "queueStorageReadback": [
+    {
+      "id": "experience-queue-81031e56-7d26-4441-a3a7-3cbe1bf8db83-2",
+      "session_id": "81031e56-7d26-4441-a3a7-3cbe1bf8db83",
+      "content": "Independent A pending queue 2",
+      "state": "cancelled",
+      "client_message_id": "experience-client-81031e56-7d26-4441-a3a7-3cbe1bf8db83-2"
+    },
+    {
+      "id": "experience-queue-81031e56-7d26-4441-a3a7-3cbe1bf8db83-1",
+      "session_id": "81031e56-7d26-4441-a3a7-3cbe1bf8db83",
+      "content": "Independent A queue edited through real UI",
+      "state": "pending",
+      "client_message_id": "experience-client-81031e56-7d26-4441-a3a7-3cbe1bf8db83-1"
+    },
+    {
+      "id": "experience-queue-adc14d45-7b81-489b-aca1-5f22f92c2974-1",
+      "session_id": "adc14d45-7b81-489b-aca1-5f22f92c2974",
+      "content": "Independent B pending queue 1",
+      "state": "pending",
+      "client_message_id": "experience-client-adc14d45-7b81-489b-aca1-5f22f92c2974-1"
+    }
+  ],
+  "queueColdReadback": {
+    "paths": {
+      "pid": 62176,
+      "userData": "E:\\Projects\\v8chat\\.codex-tmp\\release-20260913-1\\preview-state-1\\electron\\shell",
+      "sessionData": "E:\\Projects\\v8chat\\.codex-tmp\\release-20260913-1\\preview-state-1\\electron\\shell\\Session Data"
+    },
+    "queue": {
+      "status": 200,
+      "items": [
+        {
+          "id": "experience-queue-81031e56-7d26-4441-a3a7-3cbe1bf8db83-1",
+          "content": "Independent A queue edited through real UI",
+          "state": "pending"
+        }
+      ]
+    },
+    "queueVisible": true
+  },
+  "draftCounterexample": {
+    "before": [
+      {
+        "key": "[\"v8i_EN_aL0fvcEnUC6ga0N8hctHk\",\"bd77633b-22e8-408e-8e20-ba000e1cbdeb\",\"E:/Projects/v8chat/.codex-worktrees/9131-experience/tmp/experience-9131/shell-fixture-workspace\",\"81031e56-7d26-4441-a3a7-3cbe1bf8db83\"]",
+        "text": "Independent_durable_A_reload_9131",
+        "fields": [
+          "scroll",
+          "files",
+          "text",
+          "selection",
+          "skills",
+          "families",
+          "plugins"
+        ],
+        "revision": 6,
+        "hydrated": true,
+        "saved": true
+      }
+    ],
+    "after": [
+      {
+        "key": "[\"v8i_EN_aL0fvcEnUC6ga0N8hctHk\",\"bd77633b-22e8-408e-8e20-ba000e1cbdeb\",\"E:/Projects/v8chat/.codex-worktrees/9131-experience/tmp/experience-9131/shell-fixture-workspace\",\"81031e56-7d26-4441-a3a7-3cbe1bf8db83\"]",
+        "fields": [
+          "scroll",
+          "files"
+        ],
+        "revision": 1,
+        "hydrated": true,
+        "saved": true
+      }
+    ],
+    "expected": "Independent_durable_A_reload_9131",
+    "actual": ""
+  },
+  "draftCounterexampleStatus": "FAIL",
+  "governedStops": [
+    [
+      {
+        "id": "shell",
+        "status": "stopped",
+        "reason": "killed",
+        "pid": 70968,
+        "verifiedPortOwner": false,
+        "matchedBy": null
+      }
+    ],
+    [
+      {
+        "id": "shell",
+        "status": "stopped",
+        "reason": "killed",
+        "pid": 62176,
+        "verifiedPortOwner": false,
+        "matchedBy": null
+      }
+    ]
+  ],
+  "errors": [],
+  "modelApiRequests": [],
+  "limits": [
+    "Queue uses preseeded pending rows, no active run or execution.",
+    "Same complete IDB key before and after, but put/delete ordering was not instrumented.",
+    "Original 30-round retention belongs to the preceding production build.",
+    "Theme includes actual buttons in both directions and five real native same-surface IPC activations."
+  ],
+  "screenshots": {
+    "tmp\\experience-9131\\shell-production-7f69d6bb\\admin-dark.png": "4a5e3fdbc5c2ff80743fa3d1c5e5bc7b40e429037730b75d5500a613a8b93505",
+    "tmp\\experience-9131\\shell-production-7f69d6bb\\web-light.png": "02f59961a118c4d0051a03429fd4134fa3322823780a8f48912f3dedf4d9f144",
+    "tmp\\experience-9131\\shell-production-draft-diagnosis\\durable-A-after-reload.png": "f23a27686ed1beefacfb32e5c0e7399c5da63b1624dac31cb898e81e25e0c060"
+  }
+}

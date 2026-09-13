@@ -71,6 +71,13 @@ const choose=async label=>{await switchTo('web');await web.getByTitle('Independe
 const draft=()=>web.locator('textarea').first().evaluate(e=>({text:e.value,start:e.selectionStart,end:e.selectionEnd,
   scroll:document.querySelector('.v8-chat-viewport-surface').scrollTop,doc:window.__experienceDoc,timeOrigin:performance.timeOrigin}));
 const queueApi=label=>web.evaluate(async id=>{const response=await fetch('/api/chat-queue?session_id='+id,{cache:'no-store'});return {status:response.status,payload:await response.json()};},records[label].id);
+const readStoredDraft=()=>web.evaluate(async id=>{
+  const databases=await indexedDB.databases();if(!databases.some(x=>x.name==='v8-composer-drafts-v1'))return [];
+  const request=indexedDB.open('v8-composer-drafts-v1');
+  const db=await new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  const rows=await new Promise((resolve,reject)=>{const result=db.transaction('drafts','readonly').objectStore('drafts').getAll();result.onsuccess=()=>resolve(result.result);result.onerror=()=>reject(result.error);});
+  db.close();return rows.filter(row=>{try{return JSON.parse(row.key)[3]===id;}catch{return false;}}).map(row=>({key:row.key,values:row.values,revision:row.revision,saved:row.saved,hydrated:row.hydrated}));
+},records.A.id);
 async function test(id,fn){
   if(!only.includes(id))return;
   const row={id};try{row.details=await fn();row.status='PASS';}catch(error){row.status='FAIL';row.error=String(error).slice(0,2000);}
@@ -78,7 +85,14 @@ async function test(id,fn){
   fs.writeFileSync(path.join(out,'review.json'),JSON.stringify(report,null,2));
 }
 try{
-  admin=await waitPage(9528);
+  const startDeadline=Date.now()+60000;
+  while(Date.now()<startDeadline){
+    admin=app.context().pages().find(p=>p.url().startsWith('http://127.0.0.1:9528/'));
+    web=app.context().pages().find(p=>p.url().startsWith('http://127.0.0.1:9527/'));
+    if(admin||web)break;await new Promise(r=>setTimeout(r,200));
+  }
+  if(!admin&&web){await observeVisibility(web);await web.getByRole('button',{name:'控制台',exact:true}).click();admin=await waitPage(9528);}
+  assert.ok(admin,'Real bootstrap must reach an authorized product surface');
   if(new URL(admin.url()).pathname==='/login'){
     await admin.locator('#login').fill('shell-preview-fixture');await admin.locator('#password').fill('public-shell-preview-fixture');
     if(await admin.locator('#name').count()){await admin.locator('#name').fill('桌面独立合成验收');await admin.locator('#confirmPassword').fill('public-shell-preview-fixture');}
@@ -91,6 +105,7 @@ try{
   report.electron=await app.evaluate(({app,BrowserWindow})=>({version:process.versions.electron,chrome:process.versions.chrome,windows:BrowserWindow.getAllWindows().length,userData:app.getPath('userData'),pid:process.pid}));
   await test('queue',async()=>{
     const observations=[];
+    report.queueProgress={observations};
     for(const label of ['A','B','A']){
       await choose(label);const api=await queueApi(label);
       assert.equal(api.status,200);assert.equal(api.payload.queuedMessages.length,label==='A'?2:1);
@@ -103,15 +118,46 @@ try{
     await queueRow.getByRole('button',{name:'编辑消息',exact:true}).click();
     await web.getByRole('menuitem',{name:'编辑消息',exact:true}).click();
     const editor=web.getByPlaceholder('修改这条排队消息',{exact:true});await editor.fill('Independent A queue edited through real UI');
-    const dialog=web.locator('[role=dialog]').filter({has:editor});
+    const dialog=editor.locator('..');
     await dialog.getByRole('button',{name:'保存',exact:true}).click();await editor.waitFor({state:'hidden'});
     const edited=await queueApi('A');const actual=edited.payload.queuedMessages.find(x=>x.id===item.id);
     assert.equal(actual.content,'Independent A queue edited through real UI');assert.equal(actual.state,'pending');
+    const cancelled=edited.payload.queuedMessages.find(x=>x.id!==item.id);
+    const cancelRow=web.getByText(cancelled.content,{exact:true}).locator('..').locator('..');
+    await cancelRow.getByRole('button',{name:'关闭排队',exact:true}).click();
+    await web.getByText(cancelled.content,{exact:true}).waitFor({state:'hidden'});
+    const remaining=await queueApi('A');assert.deepEqual(remaining.payload.queuedMessages.map(x=>x.id),[item.id]);
+    Object.assign(report.queueProgress,{editedId:item.id,cancelledId:cancelled.id,remaining:remaining.payload.queuedMessages.map(x=>({id:x.id,content:x.content,state:x.state}))});
     await web.reload({waitUntil:'domcontentloaded'});await observeVisibility(web);
     await web.getByText(actual.content,{exact:true}).waitFor();
     assert.equal((await draft()).text,'Shell_A_UNSENT_中文_Keep_exact_draft');
     await web.screenshot({path:path.join(out,'queue-after-real-edit-reload.png')});
-    return {observations,editedQueue:{id:actual.id,content:actual.content,state:actual.state},reloadPreserved:true,executed:false};
+    const storage=JSON.parse(execFileSync(env.V8_ENGINE_PYTHON,['-X','utf8','-c',
+      'import sqlite3,json,sys; from pathlib import Path; p=Path(sys.argv[1]).resolve(); c=sqlite3.connect(p.as_uri()+"?mode=ro",uri=True); c.row_factory=sqlite3.Row; rows=c.execute("SELECT id,session_id,content,state,client_message_id FROM chat_user_message_queue WHERE id IN (?,?)",sys.argv[2:]).fetchall(); print(json.dumps([dict(r) for r in rows])); c.close()',
+      path.join(state,'state.db'),item.id,cancelled.id],{cwd:own,env,encoding:'utf8',timeout:15000}));
+    assert.equal(storage.find(x=>x.id===item.id).content,actual.content);assert.equal(storage.find(x=>x.id===cancelled.id).state,'cancelled');
+    return {observations,editedQueue:{id:actual.id,content:actual.content,state:actual.state},cancelledId:cancelled.id,storage,reloadPreserved:true,executed:false};
+  });
+  await test('draft',async()=>{
+    await choose('A');const marker='Independent_durable_A_reload_9131';
+    await web.locator('textarea').first().fill(marker);await web.waitForTimeout(700);
+    const before=await readStoredDraft();assert.ok(before.some(row=>row.values.text===marker&&row.saved&&row.hydrated),'The marker must be durably stored before reload');
+    await web.reload({waitUntil:'domcontentloaded'});await observeVisibility(web);
+    await web.waitForFunction(()=>{const input=document.querySelector('textarea');return input&&!input.disabled;});
+    await web.waitForTimeout(1500);
+    const actual=await draft(),after=await readStoredDraft();
+    report.draftPersistence={before,after,expected:marker,actual};
+    await web.screenshot({path:path.join(out,'durable-draft-after-reload.png')});
+    assert.equal(actual.text,marker,'An already persisted draft must survive reload without being replaced by an initial scroll record');
+    assert.ok(after.some(row=>row.key===before.find(x=>x.values.text===marker).key&&row.values.text===marker));
+    return report.draftPersistence;
+  });
+  await test('cold-draft',async()=>{
+    await choose('A');await web.waitForFunction(()=>{const input=document.querySelector('textarea');return input&&!input.disabled;});await web.waitForTimeout(1200);
+    const actual=await draft(),stored=await readStoredDraft();
+    assert.equal(actual.text,'Independent_durable_A_reload_9131');
+    assert.ok(stored.some(row=>row.values.text===actual.text));
+    return {actual,stored,qualification:'A new governed Shell process restored the marker written and verified by the preceding draft run.'};
   });
   await test('resident',async()=>{
     await choose('A');const input=web.locator('textarea').first();await input.fill('Shell_A_UNSENT_中文_Keep_exact_draft');
@@ -125,20 +171,35 @@ try{
     const variants=[];
     report.themeVariants=variants;
     await app.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows()[0];window.show();window.focus();});
-    for(const desired of ['dark','light']){
-      await switchTo('web');
-      if(!(await web.locator('html').getAttribute('class')).split(/\s+/).includes(desired))await web.getByRole('button',{name:'切换明暗主题',exact:true}).click();
-      await web.waitForFunction(theme=>document.documentElement.classList.contains(theme),desired);
-      await web.screenshot({path:path.join(out,`web-${desired}.png`)});
-      await switchTo('admin');
-      let synchronized=true;try{await admin.waitForFunction(theme=>document.documentElement.classList.contains(theme),desired,{timeout:5000});}catch{synchronized=false;}
-      const canonical=await admin.evaluate(async()=>{const response=await fetch('/api/ui-preferences/theme');return {status:response.status,payload:await response.json()};});
-      const actual=await admin.evaluate(()=>({theme:document.documentElement.className,focused:document.hasFocus()}));
-      await admin.screenshot({path:path.join(out,`admin-${desired}.png`)});
-      variants.push({desired,synchronized,canonical,actual});
+    for(const [sourceKind,desired] of [['web','dark'],['admin','light'],['web','dark'],['admin','light']]){
+      const source=sourceKind==='web'?web:admin,target=sourceKind==='web'?admin:web,targetKind=sourceKind==='web'?'admin':'web';
+      await switchTo(sourceKind);
+      if(!(await source.locator('html').getAttribute('class')).split(/\s+/).includes(desired)){
+        const written=source.waitForResponse(response=>new URL(response.url()).pathname==='/api/ui-preferences/theme'&&response.request().method()==='PUT');
+        await source.getByRole('button',{name:'切换明暗主题',exact:true}).click();assert.equal((await written).status(),200);
+      }
+      await source.waitForFunction(theme=>document.documentElement.classList.contains(theme),desired);
+      await source.screenshot({path:path.join(out,`${sourceKind}-${desired}.png`)});
+      const requestStart=requests.length;
+      await switchTo(targetKind);
+      let synchronized=true;try{await target.waitForFunction(theme=>document.documentElement.classList.contains(theme),desired,{timeout:5000});}catch{synchronized=false;}
+      const activationGets=requests.slice(requestStart).filter(x=>x.path==='/api/ui-preferences/theme'&&x.origin===`http://127.0.0.1:${targetKind==='web'?9527:9528}`&&x.method==='GET').length;
+      const canonical=await target.evaluate(async()=>{const response=await fetch('/api/ui-preferences/theme');return {status:response.status,payload:await response.json()};});
+      const actual=await target.evaluate(()=>({theme:document.documentElement.className,focused:document.hasFocus()}));
+      await target.screenshot({path:path.join(out,`${targetKind}-${desired}.png`)});
+      variants.push({sourceKind,targetKind,desired,synchronized,canonical,actual,activationGets});
       assert.equal(canonical.payload.theme,desired);assert.ok(synchronized,'Resident Admin must refresh the saved theme when its Shell surface becomes visible');
+      assert.ok(activationGets>=1&&activationGets<=2,'Activation GETs must remain bounded');
     }
-    await switchTo('web');return {variants};
+    await switchTo('web');await web.waitForTimeout(300);
+    const start=requests.length;
+    // Repeat the existing governed IPC; these are real Shell visibility events,
+    // not a synthetic DOM visibility dispatch or mocked callback.
+    for(let i=0;i<5;i++)await web.evaluate(()=>window.v8osShell.openWeb());
+    await web.waitForTimeout(400);
+    const repeatGets=requests.slice(start).filter(x=>x.path==='/api/ui-preferences/theme'&&x.method==='GET').length;
+    assert.equal(repeatGets,0,'Repeated visible=true must not create a refresh storm');
+    return {variants,repeatedRealShellActivation:5,repeatGets};
   });
 }catch(error){report.bootstrapFailure=String(error).slice(0,1600);process.exitCode=1;}
 finally{

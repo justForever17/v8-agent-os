@@ -1265,6 +1265,23 @@ test("managed process identity recognizes POSIX npm through its Node interpreter
   assert.equal(verifiedManagedComponentPid("cybercore", record, { ...descriptor, commandLine: "node unrelated.mjs" }), null);
 });
 
+test("Engine identity uses the recorded interpreter after the launch override is removed", () => {
+  const pid = 41999;
+  const spec = COMPONENTS.engine.command({ mode: "start" });
+  const command = path.join(os.tmpdir(), "recorded-v8-python", process.platform === "win32" ? "python.exe" : "python");
+  const record = { pid, command, args: ["main.py"], cwd: spec.cwd, processStartToken: "launch-A" };
+  const descriptor = { pid, executablePath: command, commandLine: `${command} main.py`, cwd: spec.cwd, processStartToken: "launch-A" };
+  const identity = resolveManagedComponentIdentity("engine", {
+    record, processDescriptors: new Map([[pid, descriptor]]), pidIsAlive: () => true,
+  });
+  assert.equal(identity.effectivePid, pid);
+  assert.deepEqual(identity.stalePids, []);
+  assert.equal(verifiedManagedComponentPid("engine", record, { ...descriptor, processStartToken: "reused-PID" }), null);
+  assert.equal(verifiedManagedComponentPid("engine", record, { ...descriptor, executablePath: process.execPath }), null);
+  assert.equal(verifiedManagedComponentPid("engine", record, { ...descriptor, commandLine: `${command} unrelated.py` }), null);
+  assert.equal(verifiedManagedComponentPid("engine", { ...record, cwd: os.tmpdir() }, descriptor), null);
+});
+
 test("stale recorded Engine PID never enters the verified stop target set", () => {
   const pid = 19676;
   const spec = COMPONENTS.engine.command({ mode: "start" });

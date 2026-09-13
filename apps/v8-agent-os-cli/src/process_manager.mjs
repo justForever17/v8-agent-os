@@ -484,23 +484,32 @@ function expectedComponentCwd(componentId) {
   return component?.command({ mode: "start" })?.cwd || component?.cwd || "";
 }
 
+function candidateMatchesRecordedComponent(componentId, record, candidate) {
+  // A later CLI/Shell invocation may choose a different default interpreter.
+  // Existing processes belong to their saved launch contract, not that default.
+  return componentId === "engine"
+    ? processCandidateMatchesEngine(candidate, { command: record.command, cwd: record.cwd })
+    : processCandidateMatchesComponent(componentId, candidate, null, record.port);
+}
+
 function recordMatchesComponent(componentId, record) {
   const component = COMPONENTS[componentId];
   if (!component || !record || typeof record !== "object") return false;
+  if (typeof record.command !== "string" || !record.command.trim()) return false;
   if (normalizeProcessText(path.resolve(String(record.cwd || ""))) !== normalizeProcessText(path.resolve(expectedComponentCwd(componentId)))) return false;
-  return processCandidateMatchesComponent(componentId, {
+  return candidateMatchesRecordedComponent(componentId, record, {
     pid: positivePid(record.pid),
     executablePath: record.command,
     commandLine: recordCommandLine(record),
     cwd: record.cwd,
-  }, null, record.port);
+  });
 }
 
 export function verifiedManagedComponentPid(componentId, record, descriptor) {
   const pid = positivePid(record?.pid);
   if (!pid || positivePid(descriptor?.pid) !== pid) return null;
   if (!recordMatchesComponent(componentId, record)) return null;
-  const descriptorMatchesComponent = processCandidateMatchesComponent(componentId, descriptor, null, record.port);
+  const descriptorMatchesComponent = candidateMatchesRecordedComponent(componentId, record, descriptor);
   if (!descriptorMatchesComponent) return null;
   const executableMatches = processExecutableMatchesCommand(descriptor, record.command);
   const verifiedPosixNpmInterpreter = componentId === "cybercore"

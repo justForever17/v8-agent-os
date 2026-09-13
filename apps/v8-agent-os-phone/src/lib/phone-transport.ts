@@ -244,6 +244,16 @@ export class PhoneTransport {
         let response = await this.fetch(endpoint, path, { ...init, headers, signal }, Math.min(read ? 4_000 : 10_000, deadline - Date.now()));
         if (response.status === 401) {
             await response.text();
+            if (!read) {
+                // A write may have reached Engine before an intermediary
+                // returned 401. Refresh credentials for the user's next
+                // explicit retry, but never replay an ambiguous side effect.
+                if (this.credentials.accessToken === token) await this.refresh(endpoint, signal);
+                throw Object.assign(new Error("Authentication expired; the side effect needs explicit retry."), {
+                    status: 401,
+                    acceptanceUnknown: true,
+                });
+            }
             if (this.credentials.accessToken === token) await this.refresh(endpoint, signal);
             await this.verifyEndpoint(endpoint, signal);
             headers.set("Authorization", `Bearer ${this.credentials.accessToken}`);

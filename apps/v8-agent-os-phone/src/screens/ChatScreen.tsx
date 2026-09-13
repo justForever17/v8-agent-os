@@ -2102,6 +2102,7 @@ export default function ChatScreen() {
     const realtimeSnapshotPendingRef = useRef(false);
     const waitingApprovalRefreshAtRef = useRef(0);
     const recentlyResolvedApprovalIdsRef = useRef<Set<string>>(new Set());
+    const approvalResolutionInFlightRef = useRef<Set<string>>(new Set());
     const lastMessageFingerprintRef = useRef("");
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
@@ -5878,19 +5879,34 @@ const [detail, turnPage, syncData] = await Promise.all([
         if (!approvalId) {
             return;
         }
-        if (isAskUser) {
-            if (!approve) {
-                setAskUserInteractions((current) => current.filter((item) => String(item.id || item.interactionId || "") !== approvalId));
+        if (approvalResolutionInFlightRef.current.has(approvalId)) {
+            return;
+        }
+        approvalResolutionInFlightRef.current.add(approvalId);
+        const targetConversationId = activeConversationIdRef.current;
+        const targetTransitionToken = conversationTransitionTokenRef.current;
+        try {
+            if (isAskUser) {
+                if (!approve) {
+                    if (activeConversationIdRef.current === targetConversationId && conversationTransitionTokenRef.current === targetTransitionToken) {
+                        setAskUserInteractions((current) => current.filter((item) => String(item.id || item.interactionId || "") !== approvalId));
+                    }
+                } else {
+                    await respondAskUser(authorizedFetch, approvalId, answer);
+                }
             } else {
-                await respondAskUser(authorizedFetch, approvalId, answer);
+                await approvePendingItem(authorizedFetch, approvalId, answer, approve);
+                if (activeConversationIdRef.current !== targetConversationId || conversationTransitionTokenRef.current !== targetTransitionToken) {
+                    return;
+                }
+                recentlyResolvedApprovalIdsRef.current.add(approvalId);
+                setTimeout(() => {
+                    recentlyResolvedApprovalIdsRef.current.delete(approvalId);
+                }, 30000);
+                setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
             }
-        } else {
-            await approvePendingItem(authorizedFetch, approvalId, answer, approve);
-            recentlyResolvedApprovalIdsRef.current.add(approvalId);
-            setTimeout(() => {
-                recentlyResolvedApprovalIdsRef.current.delete(approvalId);
-            }, 30000);
-            setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
+        } finally {
+            approvalResolutionInFlightRef.current.delete(approvalId);
         }
     }, [adminBaseUrl, authorizedFetch, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath]);
 

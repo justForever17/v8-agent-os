@@ -264,3 +264,48 @@ test('finite native response: active Expo body getter stays untouched before tex
     assert.equal(bodyAccesses, 0); assert.equal(transport.activeReads, 0);
   } finally { transport.dispose(); global.fetch = old; }
 });
+
+test('401 mutation refreshes credentials without replaying the ambiguous side effect', async () => {
+  const old = global.fetch; let writes = 0, refreshes = 0;
+  const transport = create({ endpoints: ['https://remote.invalid'] });
+  global.fetch = async url => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.endsWith('/auth/refresh')) { refreshes++; return Response.json({ accessToken: 'new-access', refreshToken: 'new-refresh', user: { id: 'owner' } }); }
+    writes++; return new Response('', { status: 401 });
+  };
+  try {
+    await assert.rejects(transport.authorizedFetch('/api/client/approve', { method: 'POST', body: JSON.stringify({ approvalId: 'approval-1' }) }), error => error.status === 401 && error.acceptanceUnknown === true);
+    assert.equal(writes, 1); assert.equal(refreshes, 1);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+test('approval resolution owner deduplicates a double tap and drops UI cleanup after session switch', async () => {
+  const file = path.join(root, 'src/screens/ChatScreen.tsx');
+  const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let arrow;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'handleApprovalResolve') {
+      arrow = node.initializer.arguments?.[0]?.getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source); assert.ok(arrow);
+  const effects = []; let resolve;
+  const context = vm.createContext({
+    useCallback: fn => fn, activeConversationIdRef: { current: 'A' }, conversationTransitionTokenRef: { current: 1 },
+    approvalResolutionInFlightRef: { current: new Set() },
+    setAskUserInteractions: fn => effects.push(['ask', fn]), setApprovals: fn => effects.push(['approval', fn]),
+    authorizedFetch: {},
+    respondAskUser: async () => {}, approvePendingItem: async () => { await new Promise(done => { resolve = done; }); effects.push('side-effect'); },
+    recentlyResolvedApprovalIdsRef: { current: new Set() }, setTimeout, String, Boolean, Promise,
+  });
+  vm.runInContext(ts.transpileModule(`this.resolveApproval = ${arrow};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  const approval = { id: 'approval-1', approval_id: 'approval-1' };
+  const first = context.resolveApproval(approval, 'yes', true);
+  const second = context.resolveApproval(approval, 'yes', true);
+  assert.equal(context.approvalResolutionInFlightRef.current.size, 1);
+  context.activeConversationIdRef.current = 'B'; context.conversationTransitionTokenRef.current = 2;
+  resolve(); await Promise.all([first, second]);
+  assert.deepEqual(effects.filter(value => value === 'side-effect'), ['side-effect']);
+  assert.equal(effects.filter(value => Array.isArray(value) && value[0] === 'approval').length, 0);
+});

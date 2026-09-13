@@ -34,19 +34,29 @@ function createResidentSurfaces({ baseContents, createAdminView, attachView, get
     active = entry; visibility(); entry.contents.focus();
     const current = entry.contents.getURL();
     const sameOrigin = current && new URL(current).origin === target.origin;
-    if (entry.loaded && sameOrigin && (resume || current === url)) return true;
+    if (entry.loaded && sameOrigin && (resume || current === url)) { entry.pendingSession = null; return true; }
     if (entry.loaded && sameOrigin && kind === 'web' && sessionId) {
       entry.contents.send('v8os-shell:navigate-session', { sessionId });
       entry.pendingSession = null;
       return true;
     }
-    if (entry.pending) return entry.pending;
+    if (entry.pending) {
+      if (!resume && url !== entry.lastProductUrl) entry.pendingUrl = url;
+      return entry.pending;
+    }
     entry.lastProductUrl = url;
-    entry.pending = entry.contents.loadURL(url).then(() => {
+    entry.pending = (async () => {
+      let targetUrl = url;
+      do {
+        entry.pendingUrl = null;
+        entry.lastProductUrl = targetUrl;
+        await entry.contents.loadURL(targetUrl);
+        targetUrl = entry.pendingUrl;
+      } while (targetUrl && targetUrl !== entry.contents.getURL());
       entry.loaded = true;
       if (entry.pendingSession) { entry.contents.send('v8os-shell:navigate-session', { sessionId: entry.pendingSession }); entry.pendingSession = null; }
       visibility(); return true;
-    })
+    })()
       .finally(() => { entry.pending = null; });
     return entry.pending;
   }

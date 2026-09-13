@@ -31,3 +31,15 @@ test('registered identity and precise origin both gate IPC; all auxiliary views 
   assert.deepEqual(f.admin.events.at(-1),['v8os-shell:surface-visibility',{visible:false}]);
   f.registry.dispose();assert.equal(f.admin.closed,true);
 });
+test('a pending Admin load retains the last explicit target without queuing intermediate routes',async()=>{
+  const f=fixture();let finish;
+  f.admin.loadURL=function(url){this.loads.push(url);if(this.loads.length===1)return new Promise(resolve=>{finish=()=>{this.url=url;resolve();};});this.url=url;return Promise.resolve();};
+  const first=f.registry.open('http://127.0.0.1:22828/admin');
+  const second=f.registry.open('http://127.0.0.1:22828/admin/models');
+  const last=f.registry.open('http://127.0.0.1:22828/admin/desktop-pet');
+  finish();await Promise.all([first,second,last]);
+  assert.deepEqual(f.admin.loads,['http://127.0.0.1:22828/admin','http://127.0.0.1:22828/admin/desktop-pet']);
+  await f.registry.open('http://127.0.0.1:22827/chat?id=session-a');
+  await f.registry.open('http://127.0.0.1:22827/chat?id=session-a',{sessionId:'session-a'});
+  assert.equal(f.registry.entryFor(f.web).pendingSession,null);
+});

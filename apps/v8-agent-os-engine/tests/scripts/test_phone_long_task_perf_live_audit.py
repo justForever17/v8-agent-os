@@ -21,7 +21,10 @@ from tests.scripts.run_phone_long_task_perf_live_audit import (
 
 
 def test_repo_root_points_to_v8_agent_os() -> None:
-    assert REPO_ROOT.name == "v8-agent-os"
+    # Git worktrees and renamed clones retain the same product layout.
+    assert REPO_ROOT == Path(__file__).resolve().parents[4]
+    assert (REPO_ROOT / "release-manifest.json").is_file()
+    assert PHONE_ROOT == REPO_ROOT / "apps" / "v8-agent-os-phone"
     assert PHONE_ROOT.name == "v8-agent-os-phone"
     assert PHONE_ROOT.exists()
 

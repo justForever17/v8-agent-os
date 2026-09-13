@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import hashlib
 import json
 import re
@@ -463,7 +465,7 @@ def test_timeout_cleanup_error_stays_visible_and_does_not_hide_live_failure(monk
 
 
 def test_live_audit_default_workspace_is_product_repository():
-    assert audit.REPO_ROOT.name == "v8-agent-os"
+    assert audit.REPO_ROOT == Path(__file__).resolve().parents[4]
     assert (audit.REPO_ROOT / "release-manifest.json").is_file()
 
 

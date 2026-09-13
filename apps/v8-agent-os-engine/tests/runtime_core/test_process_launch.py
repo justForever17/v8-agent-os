@@ -151,7 +151,7 @@ def test_interactive_surface_processes_share_windowless_helpers() -> None:
 
     assert chat_realtime_routes.run_windowless is process_launch.run_windowless
     assert action_executor.run_windowless_bounded is process_launch.run_windowless_bounded
-    assert skills_install_service.run_windowless is process_launch.run_windowless
+    assert skills_install_service.run_windowless_bounded is process_launch.run_windowless_bounded
     assert browser_automation.run_windowless is process_launch.run_windowless
     assert browser_automation.popen_windowless is process_launch.popen_windowless
     assert visual_locator_runtime.run_windowless is process_launch.run_windowless

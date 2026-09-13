@@ -234,7 +234,9 @@ def test_dispatch_persists_canonical_delegation_episode(monkeypatch) -> None:
     assert persisted
     episode, bindings = persisted[0]
     assert episode["kind"] == "delegation"
-    assert episode["state"] == "waiting"
+    assert episode["state"] == "queued"
+    assert bindings["enqueue"] is True
+    assert episode["continuationTarget"] == "runtime_episode_runner"
     assert episode["inputs"]["workerBriefs"][0]["taskBriefId"] == "review-task"
     assert bindings["session_id"] == "session-delegation-persist"
     assert bindings["run_id"] == "run-delegation-persist"

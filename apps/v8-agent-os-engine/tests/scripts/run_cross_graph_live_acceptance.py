@@ -188,7 +188,7 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
         "取得真实commandId和CROSS_GRAPH_READY输出后，A用delegation_broker(mode='publish_partial')发布一次a-ready中间成果："
         f"outputKey='a-ready', version='v1', sourceVersion='{original_worker_hash}', usableFor=['parent-independent-b']，"
         "compactSummary包含实际进程启动时间与commandId，proofRefs引用本次命令；然后继续观察原命令到退出码0与CROSS_GRAPH_DONE，禁止提前结束任务或重启脚本。"
-        "在本机PowerShell中，A发布ready后可用一次Wait-Process -Id实际PID -Timeout 80做有界只读等待，再observe原command；不要高频重复observe。"
+        f"{'在本机PowerShell中，A发布ready后可用一次Wait-Process -Id实际PID -Timeout 80做有界只读等待，再observe原command；不要高频重复observe。' if os.name == 'nt' else '发布ready后仅按需观察原command，避免高频重复读取。'}"
         "派发A后，你作为Supervisor先await该episode，收到a-ready后inspect并用accept_partial接受此版本仅用于parent-independent-b，"
         "随即在A真实进程仍运行期间独立完成B：使用原生文件工具写parent-b.txt，"
         f"内容严格为 {marker}，不加换行。B不依赖A的结果，不得委派B，也不能等待A完成才做B。"

@@ -1,4 +1,7 @@
 {
+  "web.terminal.locationHint": "Workspace: {workspace}; starting directory: {cwd}",
+  "web.terminal.unknownDirectory": "Unknown",
+  "web.terminal.agentCommand": "Agent command",
   "web.background.limit": "A background playlist can contain up to 50 items.",
   "web.background.importFailed": "Could not import the media.",
   "web.background.saveFailed": "Could not save the background. Your draft has been kept.",

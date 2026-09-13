@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Square, TerminalSquare, X } from 'lucide-react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
+import React, { useMemo } from 'react';
+import { Plus, TerminalSquare, X } from 'lucide-react';
+import { TerminalViewport } from './TerminalViewport';
+
 import { isActiveCommandSessionStatus, type AdminProcessRef } from '@v8/session-realtime';
 import { useT } from '@/components/providers/LocaleProvider';
 import { cn } from '@/lib/utils';
@@ -18,6 +18,8 @@ export interface TerminalProfileView {
 }
 
 export interface ManualTerminalSessionView {
+    conversationId?: string;
+    workspaceId?: string;
     ok?: boolean;
     sessionId?: string;
     commandId?: string;
@@ -54,24 +56,6 @@ interface ManualTerminalPanelProps {
     onClosePanel: () => void;
 }
 
-function buildTerminalSessionWsUrl(sessionId: string, ticket: string) {
-    if (!sessionId || typeof window === 'undefined') {
-        return '';
-    }
-    const configured = String(
-        process.env.NEXT_PUBLIC_V8_ENGINE_WS_BASE_URL
-        || process.env.NEXT_PUBLIC_V8_AGENT_OS_ENGINE_WS_BASE_URL
-        || '',
-    ).trim();
-    const query = `ticket=${encodeURIComponent(ticket)}`;
-    if (configured) {
-        const normalizedBase = configured.replace(/\/$/, '').endsWith('/v1') ? configured.replace(/\/$/, '') : `${configured.replace(/\/$/, '')}/v1`;
-        return `${normalizedBase}/terminal/sessions/${encodeURIComponent(sessionId)}/ws?${query}`;
-    }
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}/api/terminal-ws/sessions/${encodeURIComponent(sessionId)}/ws?${query}`;
-}
-
 function formatTerminalTitle(session: ManualTerminalSessionView) {
     const label = session.profileLabel || session.profileId || 'Terminal';
     const id = String(session.sessionId || session.commandId || '').trim();
@@ -87,328 +71,6 @@ function formatProcessTitle(process: AdminProcessRef) {
     const id = String(process.commandId || process.processId || '').trim();
     const shortId = id ? ` · ${id.slice(-6)}` : '';
     return `${process.title || process.commandPreview || 'Process'}${shortId}`;
-}
-
-function writePlainSnapshot(term: Terminal, text: string) {
-    if (!text) {
-        return;
-    }
-    term.reset();
-    term.write(text.replace(/\r?\n/g, '\r\n'));
-}
-
-interface ManualTerminalXtermProps {
-    session: ManualTerminalSessionView;
-    error?: string;
-}
-
-function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
-    const t = useT();
-    const terminalHostRef = useRef<HTMLDivElement | null>(null);
-    const terminalRef = useRef<Terminal | null>(null);
-    const fitAddonRef = useRef<FitAddon | null>(null);
-    const wsRef = useRef<WebSocket | null>(null);
-    const sessionUsesLocalEcho = session.usesTty === false || String((session as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
-    const resizeTimerRef = useRef<number | null>(null);
-    const wroteInitialSnapshotRef = useRef(false);
-    const pendingInputRef = useRef('');
-    const localEchoRef = useRef(false);
-    const [connected, setConnected] = useState(false);
-    const [running, setRunning] = useState(session.isRunning !== false);
-    const [socketError, setSocketError] = useState('');
-
-    const sessionId = String(session.sessionId || '').trim();
-
-    const sendFrame = useCallback((payload: Record<string, unknown>) => {
-        const socket = wsRef.current;
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
-            return false;
-        }
-        socket.send(JSON.stringify(payload));
-        return true;
-    }, []);
-
-    const sendTerminalInput = useCallback((data: string) => {
-        const text = String(data || '');
-        if (!text) {
-            return;
-        }
-        if (localEchoRef.current) {
-            const term = terminalRef.current;
-            if (term) {
-                if (text === '\r' || text === '\n') {
-                    term.write('\r\n');
-                } else if (text === '\u007f' || text === '\b') {
-                    term.write('\b \b');
-                } else if (!text.startsWith('\x1b')) {
-                    term.write(text);
-                }
-            }
-        }
-        if (!sendFrame({ type: 'input', data: text })) {
-            pendingInputRef.current += text;
-        }
-    }, [sendFrame]);
-
-    const flushPendingInput = useCallback(() => {
-        const buffered = pendingInputRef.current;
-        if (!buffered) {
-            return;
-        }
-        if (sendFrame({ type: 'input', data: buffered })) {
-            pendingInputRef.current = '';
-        }
-    }, [sendFrame]);
-
-    const sendResize = useCallback(() => {
-        const term = terminalRef.current;
-        const fitAddon = fitAddonRef.current;
-        if (!term || !fitAddon) {
-            return;
-        }
-        try {
-            fitAddon.fit();
-        } catch {}
-        sendFrame({ type: 'resize', cols: term.cols, rows: term.rows });
-    }, [sendFrame]);
-
-    const scheduleResize = useCallback(() => {
-        if (resizeTimerRef.current !== null) {
-            window.clearTimeout(resizeTimerRef.current);
-        }
-        resizeTimerRef.current = window.setTimeout(() => {
-            resizeTimerRef.current = null;
-            sendResize();
-        }, 80);
-    }, [sendResize]);
-
-    const pasteClipboard = useCallback(async () => {
-        try {
-            const text = await navigator.clipboard?.readText?.();
-            if (text) {
-                sendTerminalInput(text);
-            }
-            terminalRef.current?.focus();
-        } catch {
-            terminalRef.current?.focus();
-        }
-    }, [sendTerminalInput]);
-
-    const terminate = useCallback(() => {
-        if (sendFrame({ type: 'terminate' })) {
-            setRunning(false);
-        }
-        terminalRef.current?.focus();
-    }, [sendFrame]);
-
-    useEffect(() => {
-        const host = terminalHostRef.current;
-        if (!host || !sessionId) {
-            return;
-        }
-
-        host.innerHTML = '';
-        wroteInitialSnapshotRef.current = false;
-        pendingInputRef.current = '';
-        localEchoRef.current = sessionUsesLocalEcho;
-
-        const fitAddon = new FitAddon();
-        const term = new Terminal({
-            cursorBlink: true,
-            convertEol: true,
-            fontFamily: 'SF Mono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-            fontSize: 12,
-            lineHeight: 1.18,
-            scrollback: 10000,
-            theme: {
-                background: '#05070b',
-                foreground: '#e5e7eb',
-                cursor: '#f8fafc',
-                selectionBackground: '#334155',
-                black: '#020617',
-                blue: '#60a5fa',
-                cyan: '#22d3ee',
-                green: '#34d399',
-                magenta: '#c084fc',
-                red: '#fb7185',
-                white: '#e5e7eb',
-                yellow: '#fbbf24',
-            },
-        });
-        term.loadAddon(fitAddon);
-        term.open(host);
-        terminalRef.current = term;
-        fitAddonRef.current = fitAddon;
-
-        window.setTimeout(scheduleResize, 30);
-        const resizeObserver = new ResizeObserver(scheduleResize);
-        resizeObserver.observe(host);
-
-        const dataDisposable = term.onData((data) => {
-            sendTerminalInput(data);
-        });
-        term.attachCustomKeyEventHandler((event) => {
-            if (
-                event.type === 'keydown'
-                && (event.ctrlKey || event.metaKey)
-                && event.key.toLowerCase() === 'v'
-            ) {
-                void pasteClipboard();
-                return false;
-            }
-            return true;
-        });
-        term.focus();
-
-        let disposed = false;
-        let ws: WebSocket | null = null;
-
-        const connect = async () => {
-            try {
-                const ticketResponse = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}/ws-ticket`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                });
-                const ticketPayload = await ticketResponse.json().catch(() => ({}));
-                const ticket = String(ticketPayload?.ticket || '').trim();
-                if (!ticketResponse.ok || !ticket) {
-                    throw new Error(String(ticketPayload?.detail || ticketPayload?.error || t('web.terminal.ticketUnavailable')));
-                }
-                if (disposed) {
-                    return;
-                }
-                const wsUrl = buildTerminalSessionWsUrl(sessionId, ticket);
-                if (!wsUrl) {
-                    throw new Error(t('web.terminal.missingUrl'));
-                }
-
-                ws = new WebSocket(wsUrl);
-                wsRef.current = ws;
-                ws.onopen = () => {
-                    setConnected(true);
-                    setSocketError('');
-                    scheduleResize();
-                    flushPendingInput();
-                };
-                ws.onmessage = (event) => {
-                    if (typeof event.data !== 'string') {
-                        return;
-                    }
-                    let payload: Record<string, unknown> | null = null;
-                    try {
-                        payload = JSON.parse(event.data) as Record<string, unknown>;
-                    } catch {
-                        term.write(event.data);
-                        wroteInitialSnapshotRef.current = true;
-                        return;
-                    }
-                    const type = String(payload?.type || '');
-                    if (type === 'output') {
-                        const data = String(payload.data || '');
-                        if (data) {
-                            term.write(data);
-                            wroteInitialSnapshotRef.current = true;
-                        }
-                        return;
-                    }
-                    if (type === 'snapshot') {
-                        const nextSession = (payload.session || {}) as ManualTerminalSessionView;
-                        setRunning(nextSession.isRunning !== false);
-                        localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
-                        const delta = String(nextSession.outputDelta || '');
-                        if (delta) {
-                            term.write(delta);
-                            wroteInitialSnapshotRef.current = true;
-                            return;
-                        }
-                        const snapshot = String(nextSession.rawScreenSnapshot || nextSession.screenSnapshot || '');
-                        if (!wroteInitialSnapshotRef.current && snapshot) {
-                            writePlainSnapshot(term, snapshot);
-                            wroteInitialSnapshotRef.current = true;
-                        }
-                        return;
-                    }
-                    if (type === 'status') {
-                        const nextSession = (payload.session || {}) as ManualTerminalSessionView;
-                        setRunning(nextSession.isRunning !== false);
-                        localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
-                        return;
-                    }
-                    if (type === 'error') {
-                        setSocketError(String(payload.message || t('web.terminal.connectionError')));
-                    }
-                };
-                ws.onerror = () => {
-                    setSocketError(t('web.terminal.connectionError'));
-                };
-                ws.onclose = () => {
-                    wsRef.current = null;
-                    setConnected(false);
-                };
-            } catch (connectError) {
-                if (disposed) {
-                    return;
-                }
-                const message = connectError instanceof Error ? connectError.message : t('web.terminal.connectionError');
-                setSocketError(message);
-                term.writeln(`\r\n[${message}]`);
-            }
-        };
-        void connect();
-
-        return () => {
-            disposed = true;
-            if (resizeTimerRef.current !== null) {
-                window.clearTimeout(resizeTimerRef.current);
-                resizeTimerRef.current = null;
-            }
-            resizeObserver.disconnect();
-            dataDisposable.dispose();
-            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-                ws.close();
-            }
-            term.dispose();
-            terminalRef.current = null;
-            fitAddonRef.current = null;
-        };
-    }, [flushPendingInput, pasteClipboard, scheduleResize, sendFrame, sendTerminalInput, session.isRunning, sessionId, sessionUsesLocalEcho, t]);
-
-    return (
-        <div
-            className="flex min-h-0 flex-1 flex-col bg-[#05070b]"
-            tabIndex={0}
-            onMouseDown={(event) => {
-                event.currentTarget.focus();
-                terminalRef.current?.focus();
-            }}
-            onPointerDownCapture={(event) => {
-                event.currentTarget.focus();
-                terminalRef.current?.focus();
-            }}
-            onContextMenu={(event) => {
-                event.preventDefault();
-                void pasteClipboard();
-            }}
-        >
-            <div ref={terminalHostRef} className="min-h-0 flex-1 px-2 py-2" />
-            <div className="flex items-center gap-2 border-t border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-300">
-                <span className={cn("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-slate-500")} />
-                <span className="truncate">
-                    {error || socketError || (connected ? (running ? t('web.terminal.connected') : t('web.terminal.stopped')) : t('web.terminal.connecting'))}
-                </span>
-                {running && sessionId && (
-                    <button
-                        type="button"
-                        className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded hover:bg-white/10"
-                        title={t('web.terminal.terminate')}
-                        onClick={terminate}
-                    >
-                        <Square className="h-3.5 w-3.5" />
-                    </button>
-                )}
-            </div>
-        </div>
-    );
 }
 
 export function ManualTerminalPanel({
@@ -480,8 +142,8 @@ export function ManualTerminalPanel({
                 <div className="flex min-w-0 items-center gap-2">
                     <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
                     <span className="font-semibold text-foreground">{t('web.terminal.title')}</span>
-                    <span className="max-w-[28vw] truncate font-mono text-muted-foreground/80">
-                        {workspacePath || t('web.terminal.unboundWorkspace')}
+                    <span title={t('web.terminal.locationHint', { workspace: workspacePath || t('web.terminal.unboundWorkspace'), cwd: activeTab?.kind === "manual" ? activeTab.session.cwd || t('web.terminal.unknownDirectory') : t('web.terminal.agentCommand') })} className="max-w-[28vw] truncate font-mono text-muted-foreground/80">
+                        {activeTab?.kind === 'manual' ? activeTab.session.cwd || workspacePath : workspacePath || t('web.terminal.unboundWorkspace')}
                     </span>
                 </div>
                 <div className="ml-2 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -574,11 +236,7 @@ export function ManualTerminalPanel({
                 </button>
             </div>
             {activeTab?.kind === 'manual' ? (
-                <ManualTerminalXterm
-                    key={activeTab.session.sessionId}
-                    session={activeTab.session}
-                    error={error}
-                />
+                <TerminalViewport key={activeTab.session.sessionId} path={`/api/client/terminal/sessions/${encodeURIComponent(activeTab.session.sessionId || "")}`} kind="manual" initialRunning={activeTab.session.isRunning !== false} canInput={activeTab.session.usesTty !== false} />
             ) : activeTab?.kind === 'process' ? (
                 <div className="min-h-0 flex-1 overflow-auto bg-[#05070b] p-2">
                     <InteractiveTerminalCard

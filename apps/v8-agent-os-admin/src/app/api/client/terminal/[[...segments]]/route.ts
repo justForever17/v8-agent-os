@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
+import { resolveClientUser, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 
@@ -11,8 +11,8 @@ function buildTarget(req: NextRequest, segments?: string[]) {
 }
 
 async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST") {
-    const userEmail = await resolveClientUserEmail(req);
-    if (!userEmail) {
+    const user = await resolveClientUser(req);
+    if (!user) {
         return unauthorizedClientJson();
     }
     const internalSecret = resolveInternalSecret();
@@ -27,7 +27,8 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
             headers: {
                 "Content-Type": "application/json",
                 "x-v8-agent-os-secret": internalSecret,
-                "x-v8-agent-os-user-email": userEmail,
+                "x-v8-agent-os-user-email": user.email || user.login,
+                "x-v8-agent-os-user-id": user.id,
             },
             cache: "no-store",
             signal: req.signal,

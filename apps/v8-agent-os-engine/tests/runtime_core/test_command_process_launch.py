@@ -881,11 +881,9 @@ def test_http_terminal_input_does_not_wrap_rejection_as_success(monkeypatch) -> 
         "error": "command_session_not_interactive",
         "summary": "pipe sessions do not accept input",
     }
-    monkeypatch.setattr(
-        native_tools,
-        "send_background_input",
-        SimpleNamespace(invoke=lambda *_args, **_kwargs: json.dumps(rejection)),
-    )
+    def reject_input(_text):
+        raise RuntimeError(json.dumps(rejection))
+    monkeypatch.setitem(native_tools._bg_processes, "pipe-session", SimpleNamespace(write_input=reject_input))
 
     with pytest.raises(HTTPException) as caught:
         asyncio.run(

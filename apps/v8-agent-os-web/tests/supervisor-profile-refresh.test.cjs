@@ -38,6 +38,7 @@ function fixture() {
   `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   vm.runInNewContext(compiled, {
     module, window, document, AbortController,
+    isSurfaceVisible: () => document.visibilityState === 'visible',
     readString: value => typeof value === 'string' ? value : '', resolveProfileAvatarSrc: value => value,
     setSupervisorDisplayProfile: update => updates.push(update({ name: 'before', roleLabel: 'before', avatar: '' })),
     fetch: (_url, options) => new Promise((resolve, reject) => requests.push({ options, resolve, reject })),

@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 import uuid
+import threading
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,37 @@ MANUAL_TERMINAL_SESSION_PREFIX = "manual-terminal:"
 TERMINAL_WS_TICKET_TTL_SECONDS = 60
 _manual_terminal_sessions: dict[str, dict[str, Any]] = {}
 _terminal_ws_tickets: dict[str, dict[str, Any]] = {}
+_terminal_create_lock = threading.RLock()
+_terminal_create_requests: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+
+
+def _idempotent_terminal_create(function):
+    @wraps(function)
+    def wrapped(*, create_request_id: str | None = None, user_email: str | None = None, **kwargs):
+        with _terminal_create_lock:
+            key = (str(user_email or "").lower(), str(create_request_id or ""))
+            fingerprint = json.dumps(kwargs, sort_keys=True)
+            if create_request_id and key in _terminal_create_requests:
+                previous, result = _terminal_create_requests[key]
+                if previous != fingerprint:
+                    raise RuntimeError("terminal_create_request_conflict")
+                return result
+            result = function(user_email=user_email, **kwargs)
+            if create_request_id:
+                _terminal_create_requests[key] = (fingerprint, result)
+                while len(_terminal_create_requests) > 256:
+                    _terminal_create_requests.pop(next(iter(_terminal_create_requests)))
+            return result
+    return wrapped
+
+
+def require_terminal_owner(session_id: str, user_email: str) -> None:
+    session = _manual_terminal_sessions.get(session_id)
+    if not session:
+        raise RuntimeError("Terminal session not found.")
+    owner = str(session.get("userEmail") or "").lower()
+    if not user_email or (owner and owner != user_email.lower()):
+        raise PermissionError("Terminal owner mismatch")
 
 
 def _now_iso() -> str:
@@ -138,6 +171,8 @@ def _snapshot_for_session(session_id: str, *, output_delta: str = "") -> dict[st
         "profileId": session.get("profileId"),
         "profileLabel": session.get("profileLabel"),
         "cwd": session.get("cwd"),
+        "conversationId": session.get("conversationId"),
+        "workspaceId": session.get("workspaceId"),
         "status": "running" if process.is_running else "stopped",
         "outputDelta": output_delta,
         "screenSnapshot": status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "",
@@ -156,6 +191,7 @@ def _snapshot_for_session(session_id: str, *, output_delta: str = "") -> dict[st
     }
 
 
+@_idempotent_terminal_create
 def create_terminal_session(
     *,
     profile_id: str | None = None,
@@ -163,8 +199,19 @@ def create_terminal_session(
     conversation_id: str | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
+    user_email: str | None = None,
 ) -> dict[str, Any]:
     profile = _resolve_profile(profile_id)
+    if conversation_id:
+        from runtimes.memory.scope_resolution import session_scope_binding_service
+        canonical = session_scope_binding_service.get_binding(conversation_id)
+        if not canonical or not canonical.workspace_path:
+            raise RuntimeError("workspace_binding_required")
+        if (workspace_id and workspace_id != canonical.workspace_id) or (project_id and project_id != canonical.project_id):
+            raise RuntimeError("workspace_binding_conflict")
+        if cwd and Path(cwd).resolve() != Path(canonical.workspace_path).resolve():
+            raise RuntimeError("workspace_binding_conflict")
+        cwd, workspace_id, project_id = canonical.workspace_path, canonical.workspace_id, canonical.project_id
     requested_cwd = str(cwd or "").strip() or workspace_resolution_service.get_main_workspace_path()
     binding = build_workspace_binding(
         {
@@ -203,6 +250,8 @@ def create_terminal_session(
         "sessionId": terminal_id,
         "commandId": command_id,
         "conversationId": str(conversation_id or ""),
+        "workspaceId": workspace_id,
+        "userEmail": str(user_email or "").lower(),
         "profileId": profile.get("id"),
         "profileLabel": profile.get("label"),
         "cwd": str(resolved_cwd),
@@ -210,7 +259,7 @@ def create_terminal_session(
         "createdAt": created_at,
         "updatedAt": created_at,
     }
-    return _snapshot_for_session(terminal_id, output_delta=process.get_new_output())
+    return _snapshot_for_session(terminal_id)
 
 
 def create_managed_command_session(
@@ -281,10 +330,12 @@ def create_managed_command_session(
     return _snapshot_for_session(terminal_id, output_delta=process.get_new_output())
 
 
-def list_terminal_sessions(*, conversation_id: str | None = None) -> dict[str, Any]:
+def list_terminal_sessions(*, conversation_id: str | None = None, user_email: str | None = None) -> dict[str, Any]:
     normalized_conversation_id = str(conversation_id or "").strip()
     sessions: list[dict[str, Any]] = []
     for session_id, session in list(_manual_terminal_sessions.items()):
+        if user_email and session.get("userEmail") and session["userEmail"] != user_email.lower():
+            continue
         if normalized_conversation_id and str(session.get("conversationId") or "").strip() != normalized_conversation_id:
             continue
         snapshot = _snapshot_for_session(session_id)
@@ -295,19 +346,31 @@ def list_terminal_sessions(*, conversation_id: str | None = None) -> dict[str, A
     return {"ok": True, "sessions": sessions}
 
 
-def read_terminal_session(session_id: str) -> dict[str, Any]:
+def read_terminal_session(session_id: str, cursor: int | None = None) -> dict[str, Any]:
     session_id = str(session_id or "").strip()
     session = _manual_terminal_sessions.get(session_id)
     output_delta = ""
     if session:
         process = _bg_processes.get(str(session.get("commandId") or ""))
         if process:
+            if cursor is not None:
+                try: output = process.read_output(cursor)
+                except ValueError:
+                    output = process.read_output(0)
+                    return {**_snapshot_for_session(session_id), "outputReset": True, "outputCursor": 0, "outputGeneration": output["generation"]}
+                return {**_snapshot_for_session(session_id, output_delta=output["data"]), "outputCursor": output["cursor"], "outputGeneration": output["generation"], "outputHasMore": output["hasMore"], "outputTotalBytes": output["totalBytes"]}
+            # Internal managed command observer retains its existing cursor;
+            # HTTP and WS always supply their own independent cursor.
             output_delta = process.get_new_output()
     return _snapshot_for_session(session_id, output_delta=output_delta)
 
 
-def consume_terminal_session_output(session_id: str) -> dict[str, Any]:
-    return read_terminal_session(session_id)
+def consume_terminal_session_output(session_id: str, cursor: int = 0) -> dict[str, Any]:
+    session = _manual_terminal_sessions.get(session_id)
+    process = _bg_processes.get(str((session or {}).get("commandId") or ""))
+    if not process: return {"ok": False, "isRunning": False}
+    output = process.read_output(cursor)
+    return {"ok": True, "isRunning": process.is_running, "outputDelta": output["data"], **output}
 
 
 def write_terminal_session_input(session_id: str, input_text: str) -> dict[str, Any]:
@@ -342,7 +405,7 @@ def send_terminal_input(session_id: str, input_text: str) -> dict[str, Any]:
     if not process:
         return _snapshot_for_session(session_id)
     process.write_input(str(input_text or ""))
-    return _snapshot_for_session(str(session_id), output_delta=process.get_new_output())
+    return _snapshot_for_session(str(session_id))
 
 
 def terminate_terminal_session(session_id: str) -> dict[str, Any]:
@@ -354,7 +417,7 @@ def terminate_terminal_session(session_id: str) -> dict[str, Any]:
         process.terminate()
     session["status"] = "stopped"
     session["updatedAt"] = _now_iso()
-    return _snapshot_for_session(str(session_id), output_delta=process.get_new_output() if process else "")
+    return _snapshot_for_session(str(session_id))
 
 
 def _prune_terminal_ws_tickets(now: float | None = None) -> None:
@@ -369,6 +432,7 @@ def issue_terminal_ws_ticket(
     *,
     user_email: str,
     ttl_seconds: int = TERMINAL_WS_TICKET_TTL_SECONDS,
+    origin: str = "",
 ) -> dict[str, Any]:
     normalized_session_id = str(session_id or "").strip()
     normalized_user_email = str(user_email or "").strip()
@@ -376,6 +440,7 @@ def issue_terminal_ws_ticket(
         raise RuntimeError("Terminal session not found.")
     if not normalized_user_email:
         raise RuntimeError("Terminal user is required.")
+    require_terminal_owner(normalized_session_id, normalized_user_email)
 
     _prune_terminal_ws_tickets()
     ticket = secrets.token_urlsafe(32)
@@ -386,6 +451,7 @@ def issue_terminal_ws_ticket(
         "userEmail": normalized_user_email,
         "expiresAtEpoch": expires_at_epoch,
         "used": False,
+        "origin": origin,
     }
     return {
         "ok": True,
@@ -396,7 +462,7 @@ def issue_terminal_ws_ticket(
     }
 
 
-def consume_terminal_ws_ticket(session_id: str, ticket: str) -> dict[str, Any]:
+def consume_terminal_ws_ticket(session_id: str, ticket: str, origin: str = "") -> dict[str, Any]:
     normalized_session_id = str(session_id or "").strip()
     normalized_ticket = str(ticket or "").strip()
     if not normalized_session_id or not normalized_ticket:
@@ -411,6 +477,8 @@ def consume_terminal_ws_ticket(session_id: str, ticket: str) -> dict[str, Any]:
         return {"ok": False, "reason": "expired_ticket"}
     if not secrets.compare_digest(str(record.get("sessionId") or ""), normalized_session_id):
         return {"ok": False, "reason": "session_mismatch"}
+    if str(record.get("origin") or "") != origin:
+        return {"ok": False, "reason": "origin_mismatch"}
 
     _terminal_ws_tickets.pop(normalized_ticket, None)
     return {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { verifyServiceAuth } from "@/lib/service-auth";
+import { findUserByIdentifier } from "@/lib/users";
 import { resolveEngineBaseUrl, resolveEngineWsBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 
@@ -15,6 +16,8 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
     if (!userEmail) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const user = findUserByIdentifier(userEmail);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const internalSecret = resolveInternalSecret();
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
@@ -28,6 +31,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
                 "Content-Type": "application/json",
                 "x-v8-agent-os-secret": internalSecret,
                 "x-v8-agent-os-user-email": userEmail,
+                "x-v8-agent-os-user-id": user.id,
                 "x-v8-terminal-origin": req.headers.get("x-v8-terminal-origin") || "",
             },
             cache: "no-store",

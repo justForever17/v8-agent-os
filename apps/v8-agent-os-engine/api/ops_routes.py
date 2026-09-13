@@ -3,7 +3,7 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile, WebSocket
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Request, UploadFile, WebSocket
 from pydantic import BaseModel
 
 from core.storage import storage
@@ -404,8 +404,31 @@ async def delete_memory_document(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def require_process_access(cmd_id: str, x_v8_agent_os_secret: str | None = Header(default=None), x_v8_agent_os_user_email: str | None = Header(default=None), x_v8_agent_os_user_id: str | None = Header(default=None)):
+    import hmac
+    from core.system_base import get_internal_secret
+    from core.tools.native.command import _bg_processes
+    from core.database import db
+    secret = get_internal_secret()
+    if not secret or not hmac.compare_digest(secret, str(x_v8_agent_os_secret or "")) or not x_v8_agent_os_user_email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    process = _bg_processes.get(cmd_id)
+    if process is None: raise HTTPException(status_code=404, detail="Process not found")
+    # A manual terminal also exists in the process registry. The process route
+    # must enforce the same owner when used as an alternate transport.
+    from core.client_terminal_broker import MANUAL_TERMINAL_SESSION_PREFIX, require_terminal_owner
+    if str(process.session_id or "").startswith(MANUAL_TERMINAL_SESSION_PREFIX):
+        try: require_terminal_owner(cmd_id, x_v8_agent_os_user_email)
+        except PermissionError as exc: raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except RuntimeError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+    owner = str((db.get_session(str(process.session_id or "")) or {}).get("user_id") or "")
+    if owner and owner != "anonymous" and owner not in {str(x_v8_agent_os_user_id or ""), str(x_v8_agent_os_user_email)}:
+        raise HTTPException(status_code=403, detail="Process owner mismatch")
+    return process
+
+
 @router.get("/bg_processes/{cmd_id}")
-async def get_bg_process_output(cmd_id: str):
+async def get_bg_process_output(cmd_id: str, cursor: int = 0, _auth=Depends(require_process_access)):
     try:
         from core.native_tools import _bg_processes, _prune_stale_background_processes
 
@@ -413,11 +436,19 @@ async def get_bg_process_output(cmd_id: str):
         bg_proc = _bg_processes.get(cmd_id)
         if not bg_proc:
             return {"status": "not_found", "output": "", "is_running": False}
-        output = bg_proc.get_new_output()
+        try: chunk = bg_proc.read_output(cursor)
+        except ValueError:
+            chunk = bg_proc.read_output(0)
+            return {"status": "success", "output": "", "outputReset": True, "outputCursor": 0, "outputGeneration": chunk["generation"], "is_running": bg_proc.is_running}
+        output = chunk["data"]
         process = bg_proc.status_snapshot()
         return {
             "status": "success",
             "output": output,
+            "outputCursor": chunk["cursor"],
+            "outputGeneration": chunk["generation"],
+            "outputHasMore": chunk["hasMore"],
+            "outputTotalBytes": chunk["totalBytes"],
             "is_running": bg_proc.is_running,
             "ttyMode": process.get("tty_mode"),
             "screenMode": process.get("screen_mode"),
@@ -446,18 +477,17 @@ async def get_bg_process_output(cmd_id: str):
 
 
 @router.post("/bg_processes/{cmd_id}/input")
-async def send_bg_process_input(cmd_id: str, request: TerminalInputRequest):
+async def send_bg_process_input(cmd_id: str, request: TerminalInputRequest, _auth=Depends(require_process_access)):
     try:
-        from core.native_tools import send_background_input
-
-        result = send_background_input.invoke({"command_id": cmd_id, "input_text": request.input_text})
-        try:
-            result_payload = json.loads(str(result))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            result_payload = None
-        if isinstance(result_payload, dict) and result_payload.get("ok") is False:
-            raise HTTPException(status_code=409, detail=result_payload)
-        return {"status": "success", "message": result}
+        from core.native_tools import _bg_processes
+        process = _bg_processes.get(cmd_id)
+        if not process: raise HTTPException(status_code=404, detail="Process not found")
+        try: await asyncio.to_thread(process.write_input, request.input_text)
+        except RuntimeError as error:
+            try: detail = json.loads(str(error))
+            except ValueError: detail = str(error)
+            raise HTTPException(status_code=409, detail=detail) from error
+        return {"status": "success", "message": '{"ok":true}'}
     except HTTPException:
         raise
     except Exception as e:
@@ -465,7 +495,7 @@ async def send_bg_process_input(cmd_id: str, request: TerminalInputRequest):
 
 
 @router.post("/bg_processes/{cmd_id}/sensitive-input")
-async def send_bg_process_sensitive_input(cmd_id: str, request: SensitiveTerminalInputRequest):
+async def send_bg_process_sensitive_input(cmd_id: str, request: SensitiveTerminalInputRequest, _auth=Depends(require_process_access)):
     try:
         from core.native_tools import _bg_processes
 
@@ -487,7 +517,7 @@ async def send_bg_process_sensitive_input(cmd_id: str, request: SensitiveTermina
                     "recommendedNextAction": "terminate_then_restart_with_pty",
                 },
             )
-        process.write_input(request.input_text)
+        await asyncio.to_thread(process.write_input, request.input_text)
         return {
             "status": "success",
             "secretInputSeen": True,
@@ -501,64 +531,31 @@ async def send_bg_process_sensitive_input(cmd_id: str, request: SensitiveTermina
 
 
 @router.post("/bg_processes/{cmd_id}/terminate")
-async def terminate_bg_process(cmd_id: str):
+async def terminate_bg_process(cmd_id: str, _auth=Depends(require_process_access)):
     try:
         from core.native_tools import terminate_background_command
 
         result = terminate_background_command.invoke(cmd_id)
+        from core.native_tools import _bg_processes
+        process = _bg_processes.get(cmd_id)
+        if process and process.is_running: raise HTTPException(status_code=409, detail="Process is still running")
         return {"status": "success", "message": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/bg_processes/{cmd_id}/resize")
+async def resize_bg_process(cmd_id: str, request: Request, _auth=Depends(require_process_access)):
+    from core.native_tools import _bg_processes
+    body = await request.json()
+    return _bg_processes[cmd_id].resize_terminal(int(body.get("cols") or 80), int(body.get("rows") or 24))
+
+
 @router.websocket("/bg_processes/{cmd_id}/ws")
 async def bg_process_websocket(websocket: WebSocket, cmd_id: str):
-    await websocket.accept()
-    from core.native_tools import _bg_processes
-
-    if cmd_id not in _bg_processes:
-        await websocket.send_text(f"Error: No active background command with ID {cmd_id}.")
-        await websocket.close()
-        return
-
-    bg_proc = _bg_processes[cmd_id]
-    process_status = bg_proc.status_snapshot()
-    if not bool(process_status.get("interactive")) or not bool(process_status.get("uses_tty")):
-        await websocket.send_json({
-            "ok": False,
-            "kind": "command_session_not_interactive",
-            "error": "command_session_not_interactive",
-            "summary": "当前命令会话使用 pipe 后端，不接受交互输入。",
-            "terminalMode": process_status.get("terminal_mode"),
-            "resolvedTerminalMode": process_status.get("resolved_terminal_mode") or "pipe",
-            "backend": process_status.get("backend"),
-            "recommendedNextAction": "terminate_then_restart_with_pty",
-        })
-        await websocket.close(code=1008)
-        return
-    initial_output = "".join(bg_proc.output_history)
-    if initial_output:
-        await websocket.send_text(initial_output)
-
-    async def read_from_process():
-        try:
-            while bg_proc.is_running:
-                output = bg_proc.get_new_output()
-                if output:
-                    await websocket.send_text(output)
-                await asyncio.sleep(0.05)
-            final_output = bg_proc.get_new_output()
-            if final_output:
-                await websocket.send_text(final_output)
-        finally:
-            await websocket.close()
-
-    async def write_to_process():
-        try:
-            while True:
-                data = await websocket.receive_text()
-                bg_proc.write_input(data)
-        except Exception:
-            return
-
-    await asyncio.gather(read_from_process(), write_to_process())
+    # Browser clients use the authenticated BFF cursor endpoint. Keep this legacy
+    # endpoint closed rather than exposing command output without an identity.
+    # Phone falls back to its existing authorized HTTP observation path.
+    await websocket.close(code=1008)

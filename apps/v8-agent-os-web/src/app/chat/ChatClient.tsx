@@ -77,11 +77,12 @@ import {
 } from "@/lib/creative-canvas-task-contract";
 import { createSessionOverviewDocument } from "@/lib/workbench";
 import { ingestWorkbenchRuntimeEvent, useWorkbenchStore } from "@/store/workbench-store";
-import {
-    ManualTerminalPanel,
-    type ManualTerminalSessionView,
-    type TerminalProfileView,
+import type {
+    ManualTerminalSessionView,
+    TerminalProfileView,
 } from "@/components/chat/ManualTerminalPanel";
+const ManualTerminalPanel = dynamic(() => import("@/components/chat/ManualTerminalPanel").then(module => module.ManualTerminalPanel), { ssr: false });
+import { isSurfaceVisible, useSurfaceVisible } from "@/hooks/use-surface-visible";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
 import {
@@ -898,6 +899,7 @@ function buildSpecReviewHref(approval: Record<string, unknown>, fallbackWorkspac
 
 
 export default function ChatClient() {
+    const surfaceVisible = useSurfaceVisible();
     const t = useT();
     const { locale } = useLocale();
     const { status, data: session } = useSession();
@@ -1010,7 +1012,7 @@ export default function ChatClient() {
         let disposed = false;
         let inFlight: AbortController | null = null;
         const refresh = () => {
-            if (disposed || inFlight || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+            if (disposed || inFlight || !isSurfaceVisible()) return;
             const request = new AbortController();
             inFlight = request;
             void loadSupervisorDisplayProfile(request.signal).catch(() => undefined).finally(() => {
@@ -1018,7 +1020,7 @@ export default function ChatClient() {
             });
         };
         refresh();
-        const timer = window.setInterval(refresh, 2_000);
+        const timer = window.setInterval(refresh, 30_000);
         window.addEventListener("focus", refresh);
         document.addEventListener("visibilitychange", refresh);
         return () => {
@@ -1173,7 +1175,8 @@ export default function ChatClient() {
         () => resolveProfileAvatarSrc(clientProfile?.image || session?.user?.image || ""),
         [clientProfile?.image, session?.user?.image],
     );
-    const terminalWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || "";
+    const terminalWorkspacePath = scopeOwner === activeConversationId ? scopeBinding?.workspacePath || "" : "";
+    const terminalCreateRef = useRef<{ owner: string; requestId: string; inFlight: boolean } | null>(null);
     const hasActiveWorkbenchSession = Boolean(activeConversationId);
 
     const upsertQueuedMessage = useCallback((incoming: unknown) => {
@@ -1294,9 +1297,12 @@ export default function ChatClient() {
     }, [t, terminalOpen]);
 
     const startManualTerminal = useCallback(async () => {
-        if (terminalBusy) {
+        if (!draftKey || !terminalWorkspacePath || !activeConversationId || terminalCreateRef.current?.inFlight) {
             return;
         }
+        const owner = activeConversationId;
+        const requestId = terminalCreateRef.current?.owner === owner ? terminalCreateRef.current.requestId : crypto.randomUUID();
+        terminalCreateRef.current = { owner, requestId, inFlight: true };
         setTerminalBusy(true);
         setTerminalError("");
         try {
@@ -1304,6 +1310,7 @@ export default function ChatClient() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    createRequestId: requestId,
                     profileId: terminalProfileId || undefined,
                     cwd: terminalWorkspacePath || undefined,
                     conversationId: activeConversationId || undefined,
@@ -1312,19 +1319,23 @@ export default function ChatClient() {
                 }),
             });
             const payload = await response.json().catch(() => ({}));
+            if (activeConversationIdRef.current !== owner) return;
             if (!response.ok || payload?.ok === false) {
                 setTerminalError(String(payload?.error || payload?.detail || t("web.terminal.startFailed")));
                 return;
             }
             upsertManualTerminalSession(payload, true);
+            terminalCreateRef.current = null;
             setTerminalProfileId((prev) => prev || payload?.profileId || "");
         } catch (error) {
-            setTerminalError(error instanceof Error ? error.message : t("web.terminal.startFailed"));
+            if (activeConversationIdRef.current === owner) setTerminalError(error instanceof Error ? error.message : t("web.terminal.startFailed"));
         } finally {
+            if (terminalCreateRef.current?.requestId === requestId) terminalCreateRef.current.inFlight = false;
             setTerminalBusy(false);
         }
     }, [
         activeConversationId,
+        draftKey,
         scopeBinding?.projectId,
         scopeBinding?.workspaceId,
         terminalBusy,
@@ -1348,6 +1359,7 @@ export default function ChatClient() {
             }
             const payload = await response.json().catch(() => ({}));
             const sessions = Array.isArray(payload?.sessions) ? payload.sessions as ManualTerminalSessionView[] : [];
+            if (activeConversationIdRef.current !== activeConversationId) return;
             setManualTerminalSessions(sessions);
             setActiveTerminalTabId((current) => current || terminalTabIdForManualSession(sessions[0]?.sessionId || ""));
         } catch (error) {
@@ -2904,6 +2916,7 @@ export default function ChatClient() {
                 return;
             }
             const data = await res.json().catch(() => ({}));
+            if (activeConversationIdRef.current !== conversationId || !isSurfaceVisible()) return;
             applySessionProcessSurface(Array.isArray(data?.processes) ? data.processes : []);
         } catch (error) {
             console.warn("[ChatClient] Failed to load session processes:", error);
@@ -2912,7 +2925,7 @@ export default function ChatClient() {
     }, [applySessionProcessSurface]);
 
     useEffect(() => {
-        if (status !== "authenticated" || !activeConversationId) {
+        if (status !== "authenticated" || !activeConversationId || !surfaceVisible) {
             applySessionProcessSurface([], { forceClear: true });
             return;
         }
@@ -2927,7 +2940,7 @@ export default function ChatClient() {
         return () => {
             window.clearInterval(timer);
         };
-    }, [activeConversationId, activeConversationRunning, applySessionProcessSurface, loadSessionProcesses, status]);
+    }, [activeConversationId, activeConversationRunning, applySessionProcessSurface, loadSessionProcesses, status, surfaceVisible]);
 
     const buildScopePayload = useCallback((conversationId?: string | null) => ({
         conversationId: conversationId || activeConversationIdRef.current || undefined,
@@ -3251,6 +3264,7 @@ export default function ChatClient() {
                     const payload = await connectionResponse.json().catch(() => null);
                     throw new Error(payload?.error || payload?.message || t("web.generated.40132fa524"));
                 }
+                if (cancelled) return;
 
                 const result = await signIn("credentials", {
                     localSession: "1",
@@ -3272,6 +3286,7 @@ export default function ChatClient() {
 
         return () => {
             cancelled = true;
+            localConnectAttemptedRef.current = false;
         };
     }, [router, status, t]);
 

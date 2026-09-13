@@ -1,4 +1,7 @@
 {
+  "web.terminal.locationHint": "工作区：{workspace}；启动目录：{cwd}",
+  "web.terminal.unknownDirectory": "未知",
+  "web.terminal.agentCommand": "Agent 命令",
   "web.background.limit": "背景列表最多包含 50 项。",
   "web.background.importFailed": "素材导入失败",
   "web.background.saveFailed": "背景保存失败，草稿已保留。",

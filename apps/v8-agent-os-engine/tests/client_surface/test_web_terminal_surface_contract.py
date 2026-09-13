@@ -10,18 +10,19 @@ def _read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_web_manual_terminal_uses_bff_ticketed_websocket() -> None:
+def test_web_manual_terminal_uses_authenticated_cursor_backpressure() -> None:
     panel = _read("apps/v8-agent-os-web/src/components/chat/ManualTerminalPanel.tsx")
     web_config = _read("apps/v8-agent-os-web/next.config.ts")
+    viewport = _read("apps/v8-agent-os-web/src/components/chat/TerminalViewport.tsx")
 
     assert "/api/client/terminal/sessions/" in panel
-    assert "/ws-ticket" in panel
-    assert "/api/terminal-ws/sessions/" in panel
-    assert "term.onData" in panel
+    assert "?cursor=${lease.cursor}" in viewport
+    assert "lease.terminal.write(text, resolve)" in viewport
+    assert "terminal.onData" in viewport
     assert "onKeyDownCapture" not in panel
     assert ":9530" not in panel
-    assert 'source: "/api/terminal-ws/:path*"' in web_config
-    assert "/v1/terminal/:path*" in web_config
+    assert ":9530" not in web_config
+    assert "isSurfaceVisible" in viewport
 
 
 def test_web_terminal_panel_consumes_agent_process_tabs() -> None:

@@ -1,4 +1,5 @@
 import hashlib
+import codecs
 import json
 import locale
 import math
@@ -36,6 +37,7 @@ else:
 from langchain_core.tools import InjectedToolCallId, tool
 
 from core.command_environment import default_shell_dialect
+from core.command_output_log import CommandOutputLog
 from core.process_launch import (
     _attach_windows_process_job,
     run_windowless_bounded,
@@ -2767,8 +2769,9 @@ class BackgroundProcess:
         from core.runtime_episode_control import assert_episode_execution_allowed
         assert_episode_execution_allowed(self.runtime_context)
         self.chat_cli_variant = _detect_chat_cli_variant(command) if self.profile == "chat_cli" else ""
-        self.output_queue = queue.Queue()
-        self.output_history = []
+        self.output_log = CommandOutputLog()
+        self.output_cursor = 0
+        self.output_history = deque(maxlen=8)
         self.is_running = True
         self.pty_win = None
         self.proc = None
@@ -3385,7 +3388,10 @@ class BackgroundProcess:
             return
         now = time.time()
         self.last_output_at = now
-        self.output_history.append(data)
+        self.output_log.append(data)
+        # The semantic screen tail is bounded independently of the complete log.
+        for offset in range(0, len(data), 16384):
+            self.output_history.append(data[offset:offset + 16384])
         self.worker_result_raw_buffer = (self.worker_result_raw_buffer + data)[-50000:]
         self.raw_frame_version += 1
         self.raw_bytes += len(data.encode("utf-8", "replace"))
@@ -3408,8 +3414,6 @@ class BackgroundProcess:
                 self.screen_snapshot_cache = next_snapshot
                 self.last_screen_at = now
                 self.screen_version += 1
-        for char in data:
-            self.output_queue.put(char)
 
     def _read_output(self):
         try:
@@ -3430,6 +3434,7 @@ class BackgroundProcess:
                         break
             elif self.backend == "posix_pty" and self.fd is not None:
                 fd = self.fd
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
                 while self.is_running:
                     try:
                         readable, _, _ = select.select([fd], [], [], 0.1)
@@ -3445,13 +3450,18 @@ class BackgroundProcess:
                         break
                     if not raw_data:
                         break
-                    self._ingest_output(raw_data.decode("utf-8", "replace"))
+                    self._ingest_output(decoder.decode(raw_data, final=False))
+                self._ingest_output(decoder.decode(b"", final=True))
             else:
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
                 while self.is_running and self.proc:
-                    char = self.proc.stdout.read(1)
-                    if not char:
+                    stream = self.proc.stdout
+                    binary = getattr(stream, "buffer", None)
+                    chunk = binary.read1(65536) if binary is not None else stream.read(4096)
+                    if not chunk:
                         break
-                    self._ingest_output(char)
+                    self._ingest_output(decoder.decode(chunk, final=False) if isinstance(chunk, bytes) else chunk)
+                self._ingest_output(decoder.decode(b"", final=True))
         except BaseException as exc:
             if self.is_running:
                 self._mark_backend_failure(exc, operation="read_loop")
@@ -3489,10 +3499,12 @@ class BackgroundProcess:
                     pass
 
     def get_new_output(self) -> str:
-        chars = []
-        while not self.output_queue.empty():
-            chars.append(self.output_queue.get())
-        return "".join(chars)
+        output, cursor = self.output_log.read_remaining(self.output_cursor)
+        self.output_cursor = cursor
+        return output
+
+    def read_output(self, cursor: int = 0, limit: int = 65536) -> dict:
+        return self.output_log.read(cursor, limit)
 
     def discard_pending_output(self) -> str:
         return self.get_new_output()
@@ -3596,7 +3608,7 @@ class BackgroundProcess:
             if len(snapshot) > 6000:
                 return snapshot[-6000:]
             return snapshot
-        history = "".join(self.output_history[-8:]).strip()
+        history = "".join(list(self.output_history)[-8:]).strip()
         if len(history) > 4000:
             return history[-4000:]
         return history

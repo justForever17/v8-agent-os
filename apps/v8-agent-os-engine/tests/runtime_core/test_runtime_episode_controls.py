@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+import sys
+import time
+
+import pytest
+from langchain_core.messages import AIMessage
+from typing_extensions import Annotated, TypedDict
+from langgraph.graph.message import add_messages
+
+from core.database import DatabaseManager
+from core.runtime_episodes import build_runtime_episode
+from core import runtime_episode_control as control
+from core import runtime_episode_runner as runner_module
+
+
+@pytest.fixture
+def database(tmp_path, monkeypatch):
+    instance = DatabaseManager(tmp_path / "controls.db")
+    instance.create_or_update_session("session", "controls", user_id="test")
+    instance.create_run_record(run_id="run", session_id="session", run_type="chat", status="running")
+    monkeypatch.setattr(control, "db", instance)
+    monkeypatch.setattr(runner_module, "db", instance)
+    monkeypatch.setattr(control, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    return instance
+
+
+def enqueue(database, name="A"):
+    return database.upsert_runtime_episode_record(
+        build_runtime_episode(need={"episodeId": name, "kind": "research", "inputs": {}}, kind="research", state="queued"),
+        session_id="session", run_id="run", enqueue=True,
+    )
+
+
+def test_controls_survive_restart_and_replay_has_one_identity(database):
+    enqueue(database)
+    kwargs = dict(episode_id="A", session_id="session", run_id="run", kind="steer", request_id="edit-1", followup="Use version B")
+    first = control.request_control(**kwargs)
+    again = control.request_control(**kwargs)
+    assert first["messageId"] == again["messageId"]
+    restored = DatabaseManager(database.db_path)
+    assert len(restored.list_runtime_episode_messages(run_id="run", recipient="A")) == 1
+    state = {"messages": [AIMessage(content="", tool_calls=[{"id": "old-call", "name": "write", "args": {}}])]}
+    assert control.apply_worker_controls(state, episode_id="A", run_id="run")
+    assert state["messages"][1].tool_call_id == "old-call"
+    assert "not executed" in state["messages"][1].content
+    assert "Use version B" in state["messages"][-1].content
+    assert not control.apply_worker_controls(state, episode_id="A", run_id="run")
+    assert restored.list_runtime_episode_messages(run_id="run", recipient="A", pending_only=False)[0]["deliveryState"] == "applied"
+    # A restarted worker reconstructs the original guidance instead of losing
+    # it after a receipt was committed but before its next model invocation.
+    restarted_state = {"messages": []}
+    assert control.apply_worker_controls(restarted_state, episode_id="A", run_id="run")
+    with pytest.raises(ValueError, match="scope"):
+        control.inspect_episode("A", session_id="another-session", run_id="run")
+    with pytest.raises(ValueError, match="idempotency"):
+        control.request_control(**{**kwargs, "followup": "different"})
+
+
+def test_cancel_receipt_waits_for_executor_cleanup_and_stops_writes(database, tmp_path, monkeypatch):
+    enqueue(database)
+    runner = runner_module.RuntimeEpisodeRunner()
+    episode = database.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_schedule_chat_handoff_resume", lambda *_args: None)
+    output = tmp_path / "writes.txt"
+
+    async def scenario():
+        started, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def execute(_episode):
+            try:
+                output.write_text("before cancel")
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                cleanup.set()
+                await release.wait()
+                output.write_text("cleanup complete")
+
+        monkeypatch.setattr(runner, "_execute_research", execute)
+        task = asyncio.create_task(runner._execute_episode(episode))
+        await started.wait()
+        receipt = control.request_control("A", session_id="session", run_id="run", kind="cancel", request_id="cancel-1")
+        await asyncio.wait_for(cleanup.wait(), 3)
+        assert database.get_runtime_episode("A")["state"] == "active"
+        assert database.list_runtime_episode_messages(run_id="run", recipient="A")[0]["deliveryState"] == "pending"
+        release.set()
+        await asyncio.wait_for(task, 3)
+        assert database.get_runtime_episode("A")["state"] == "cancelled"
+        messages = database.list_runtime_episode_messages(run_id="run", recipient="A", pending_only=False)
+        assert messages[0]["messageId"] == receipt["messageId"]
+        assert messages[0]["deliveryState"] == "stopped"
+        assert messages[0]["receipt"]["writesTerminated"] is True
+        assert output.read_text() == "cleanup complete"
+
+    asyncio.run(scenario())
+
+
+def test_message_sequence_and_duplicate_request_are_atomic(database):
+    enqueue(database)
+    barrier = threading.Barrier(4)
+    results = []
+
+    def submit():
+        barrier.wait()
+        results.append(control.request_control("A", session_id="session", run_id="run", kind="steer", request_id="same", followup="once"))
+
+    threads = [threading.Thread(target=submit) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(results) == 4
+    assert {item["deliverySeq"] for item in results} == {1}
+    assert len(database.list_runtime_episode_messages(run_id="run", recipient="A")) == 1
+
+
+def test_cancel_real_research_thread_waits_for_actual_writer_exit(database, tmp_path, monkeypatch):
+    enqueue(database)
+    runner = runner_module.RuntimeEpisodeRunner()
+    claimed = database.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_schedule_chat_handoff_resume", lambda *_args: None)
+    monkeypatch.setattr(runner_module, "_EPISODE_CANCEL_SETTLE_SECONDS", 0.05)
+    started, release, exited = threading.Event(), threading.Event(), threading.Event()
+    output = tmp_path / "real-thread.txt"
+
+    def blocking_research(_episode):
+        try:
+            with output.open("a") as stream:
+                started.set()
+                while not release.wait(0.01):
+                    stream.write("write\n")
+                    stream.flush()
+        finally:
+            exited.set()
+        return {"status": "ready"}
+
+    monkeypatch.setattr(runner, "_execute_research_sync", blocking_research)
+
+    async def scenario():
+        task = asyncio.create_task(runner._execute_episode(claimed))
+        try:
+            assert await asyncio.to_thread(started.wait, 3)
+            control.request_control("A", session_id="session", run_id="run", kind="cancel", request_id="cancel-thread")
+            await asyncio.sleep(0.35)
+            assert not task.done() and not exited.is_set()
+            assert database.get_runtime_episode("A")["state"] == "active"
+            assert database.list_runtime_episode_messages(run_id="run", recipient="A")[0]["deliveryState"] == "pending"
+            with pytest.raises(control.EpisodeControlCancelled):
+                control.assert_episode_execution_allowed({"run_id": "run", "delegation_id": "A"})
+            # The cancellation is scoped to A, so B may still perform work.
+            control.assert_episode_execution_allowed({"run_id": "run", "delegation_id": "B"})
+            (tmp_path / "B.txt").write_text("independent B completed")
+        finally:
+            release.set()
+            await asyncio.wait_for(task, 5)
+        assert exited.is_set()
+        size = output.stat().st_size
+        await asyncio.sleep(0.1)
+        assert output.stat().st_size == size
+        assert database.list_runtime_episode_messages(run_id="run", recipient="A", pending_only=False)[0]["deliveryState"] == "stopped"
+
+    asyncio.run(scenario())
+
+
+def test_cancel_managed_process_tree_keeps_independent_episode_running(database, tmp_path, monkeypatch):
+    from core.tools.native import command
+    enqueue(database)
+    enqueue(database, "B")
+    script = tmp_path / "writer.py"
+    script.write_text("import pathlib,sys,time\np=pathlib.Path(sys.argv[1])\nwhile True:\n with p.open('a') as f: f.write('tick\\n'); f.flush()\n time.sleep(.02)\n")
+    processes = {}
+    monkeypatch.setattr(command, "_bg_processes", processes)
+    try:
+        for episode in ("A", "B"):
+            output = tmp_path / f"{episode}.log"
+            if sys.platform == "win32":
+                cmd = f"& '{sys.executable}' '{script}' '{output}'"
+                dialect = "powershell"
+            else:
+                import shlex
+                cmd = " ".join(shlex.quote(str(value)) for value in (sys.executable, script, output))
+                dialect = "bash"
+            processes[episode] = command.BackgroundProcess(cmd, cwd=str(tmp_path), shell_dialect=dialect,
+                session_id="session", run_id="run", runtime_context={"session_id": "session", "run_id": "run", "delegation_id": episode}, timeout_seconds=20)
+        deadline = time.monotonic() + 8
+        while (not (tmp_path / "A.log").exists() or not (tmp_path / "B.log").exists()) and time.monotonic() < deadline:
+            time.sleep(0.03)
+        assert (tmp_path / "A.log").exists() and (tmp_path / "B.log").exists()
+        result = command.terminate_episode_background_commands("A")
+        assert result["confirmed"] and result["stoppedCommandIds"] == ["A"]
+        a_size, b_size = (tmp_path / "A.log").stat().st_size, (tmp_path / "B.log").stat().st_size
+        time.sleep(0.15)
+        assert (tmp_path / "A.log").stat().st_size == a_size
+        assert (tmp_path / "B.log").stat().st_size > b_size
+    finally:
+        for process in processes.values():
+            process.terminate()
+
+
+def test_partial_dependency_requires_explicit_scoped_current_version_acceptance(database):
+    from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
+    for episode_id, task_id, deps in (("A", "source", []), ("B", "consumer", ["source"]), ("C", "other", ["source"])):
+        database.upsert_runtime_episode_record(build_runtime_episode(need={
+            "episodeId": episode_id, "kind": "research", "inputs": {"workerBriefs": [{"taskBriefId": task_id, "goal": task_id, "dependencies": deps}]},
+        }, kind="research", state="queued"), session_id="session", run_id="run", enqueue=True)
+    claimed = database.claim_runtime_episode(worker_id="owner", lease_seconds=30)
+    assert claimed["episodeId"] == "A"
+    runner = runner_module.RuntimeEpisodeRunner()
+    _, before = runner._prepare_cross_episode_dependencies(database.get_runtime_episode("B"))
+    assert before["state"] == "waiting_dependency"
+    handoff = {"outputKey": "dataset", "version": "1", "sourceVersion": "source-hash-1", "usableFor": ["consumer"],
+               "compactSummary": "First partition is usable; the rest is still running", "proofRefs": ["proof://partition-1"]}
+    partial = control.publish_partial("A", handoff=handoff, worker_id="owner", lease_generation=claimed["leaseGeneration"])
+    _, unpublished = runner._prepare_cross_episode_dependencies(database.get_runtime_episode("B"))
+    assert unpublished["state"] == "waiting_dependency"
+    receipt = control.accept_partial("A", session_id="session", run_id="run", handoff_id=partial["handoffRefId"],
+                                     consumers=["consumer"], reason="Partition 1 is sufficient for B", request_id="accept-1")
+    prepared, gate = runner._prepare_cross_episode_dependencies(database.get_runtime_episode("B"))
+    assert gate is None
+    dependency = prepared["inputs"]["dependencyResults"][0]
+    assert dependency["resultPhase"] == "accepted_partial" and dependency["executionTerminal"] is False
+    assert dependency["partialAcceptanceId"] == receipt["messageId"]
+    _, outside_scope = runner._prepare_cross_episode_dependencies(database.get_runtime_episode("C"))
+    assert outside_scope["state"] == "waiting_dependency"
+    assert database.get_runtime_episode("A")["state"] == "active"
+    assert evaluate_supervisor_completion(episodes=database.list_runtime_episodes(run_id="run"), final_text="All done").action == "waiting_runtime"
+    control.publish_partial("A", handoff={**handoff, "version": "2", "sourceVersion": "source-hash-2"}, worker_id="owner", lease_generation=claimed["leaseGeneration"])
+    _, invalidated = runner._prepare_cross_episode_dependencies(database.get_runtime_episode("B"))
+    assert invalidated["state"] == "waiting_dependency"
+    with pytest.raises(ValueError, match="superseded"):
+        control.accept_partial("A", session_id="session", run_id="run", handoff_id=partial["handoffRefId"],
+                               consumers=["consumer"], reason="old", request_id="old-accept")
+
+
+def test_attention_flood_never_enters_decision_inbox_and_claim_is_single_writer(database, monkeypatch):
+    enqueue(database)
+    runner = runner_module.RuntimeEpisodeRunner()
+    episode = database.get_runtime_episode("A")
+    # Exercise the real event emitter and DB. Only its public realtime
+    # transport is stubbed; persistence and decision classification run here.
+    for index in range(120):
+        runner._emit("runtime.episode.progress", episode=episode, session_id="session", run_id="run",
+                     progress={"stage": "heartbeat", "summary": str(index)})
+    assert database.list_runtime_episode_messages(run_id="run", recipient="supervisor:run") == []
+    control.publish_attention(episode, kind="input_required", detail={"question": "choose source"})
+    control.publish_attention(episode, kind="input_required", detail={"question": "choose source"})
+    assert len(database.list_runtime_episode_messages(run_id="run", recipient="supervisor:run")) == 1
+    database.update_run_record("run", status="running", metadata={"runtimeEpisodeResume": {"state": "waiting", "episodeIds": ["A"]}})
+    barrier = threading.Barrier(4)
+    claims = []
+
+    def claim():
+        barrier.wait()
+        claims.append(database.claim_runtime_episode_resume_schedule("run", marker_key="runtimeEpisodeResume",
+            next_marker={"state": "scheduled"}, terminal_states={"completed"}, active_states={"active", "queued"}))
+
+    threads = [threading.Thread(target=claim) for _ in range(4)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join()
+    assert sum(bool(item["claimed"]) for item in claims) == 1
+    messages = control.parent_attention_messages({"messages": []}, run_id="run")
+    assert len(messages) == 1
+    # A crash before checkpointing replays the same delivery identity.
+    assert control.parent_attention_messages({"messages": []}, run_id="run")[0].id == messages[0].id
+    assert control.parent_attention_messages({"messages": messages}, run_id="run") == []
+    assert database.list_runtime_episode_messages(run_id="run", recipient="supervisor:run", pending_only=False)[0]["deliveryState"] == "processed"
+
+
+def test_running_worker_steer_changes_real_tool_effect_before_old_call_executes(database, tmp_path, monkeypatch):
+    from langchain_core.messages import HumanMessage
+    from langchain_core.tools import tool
+    from langgraph.types import Command
+    from graph.parallel_support import _run_parallel_agent_branch
+    from graph.tool_routing import create_routed_tool_node
+    enqueue(database)
+    started, release = threading.Event(), threading.Event()
+    output = tmp_path / "steered.txt"
+    model_calls, writes = [], []
+
+    @tool
+    async def save_choice(value: str) -> str:
+        """Save the selected fixture value."""
+        output.write_text(value)
+        writes.append(value)
+        return "saved " + value
+
+    def provider_node(state):
+        model_calls.append(state)
+        if len(model_calls) == 1:
+            started.set()
+            release.wait(5)
+            return Command(goto="worker_tools", update={"messages": [AIMessage(content="", tool_calls=[{"id": "old", "name": "save_choice", "args": {"value": "old"}}])]})
+        if not writes:
+            assert any("choose new" in str(message.content) for message in state["messages"])
+            return Command(goto="worker_tools", update={"messages": [AIMessage(content="", tool_calls=[{"id": "new", "name": "save_choice", "args": {"value": "new"}}])]})
+        return Command(goto="supervisor", update={"messages": [AIMessage(content="Saved the new choice.")]})
+
+    async def scenario():
+        state = {"messages": [HumanMessage(content="choose old")], "run_id": "run", "session_id": "session",
+                 "workspace_path": str(tmp_path), "parallel_branch": {"agentId": "worker", "delegationId": "A",
+                 "taskBriefId": "choice", "reason": "choose a value", "allowChildDelegation": False, "initialMessageCount": 1}}
+        task = asyncio.create_task(_run_parallel_agent_branch(state, {"node_func": provider_node,
+            "tool_node_func": create_routed_tool_node([save_choice], "worker_tools", "worker"), "tool_mode": "native"}))
+        assert await asyncio.to_thread(started.wait, 3)
+        control.request_control("A", session_id="session", run_id="run", kind="steer", request_id="steer-real", followup="choose new")
+        release.set()
+        await asyncio.wait_for(task, 15)
+        assert writes == ["new"] and output.read_text() == "new"
+        assert database.list_runtime_episode_messages(run_id="run", recipient="A", pending_only=False)[0]["deliveryState"] == "applied"
+
+    asyncio.run(scenario())
+
+
+def test_real_graph_background_dispatch_completes_B_before_A_and_checkpoints_await(database, tmp_path, monkeypatch):
+    import json
+    import core.runtime_episodes as episodes_module
+    import core.tools.native.delegation as delegation_module
+    import core.tools.native.runtime as runtime_module
+    import graph.workflow_assembly as workflow
+    from erc.run_service import run_service
+    from erc.runtime_context import bind_runtime_context
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from langgraph.graph import StateGraph, START
+    from langgraph.types import Command
+    from typing_extensions import TypedDict, Annotated
+    from langgraph.graph.message import add_messages
+    monkeypatch.setattr(episodes_module, "db", database)
+    monkeypatch.setattr(delegation_module, "db", database)
+    monkeypatch.setattr(runtime_module, "db", database)
+    monkeypatch.setattr(workflow, "db", database)
+    monkeypatch.setattr(run_service, "update_metadata", lambda run_id, value: database.update_run_record(run_id, status="running", metadata=value))
+    started, release = threading.Event(), threading.Event()
+    runner = runner_module.RuntimeEpisodeRunner()
+
+    def worker_provider(_state):
+        started.set()
+        release.wait(20)
+        return Command(goto="supervisor", update={"messages": [AIMessage(content="The requested observation is complete.")]})
+
+    monkeypatch.setattr(runner, "_build_agent_nodes_map", lambda **_kwargs: {
+        str(item.get("targetId") or item.get("target_id")): {"node_func": worker_provider, "tool_mode": "native"}
+        for item in database.list_runtime_episodes(run_id="run")
+    })
+
+    class State(TypedDict, total=False):
+        messages: Annotated[list, add_messages]
+        phase: int
+        current_route_context: dict
+        runtime_dispatch_status: dict
+        run_id: str
+        session_id: str
+        workspace_path: str
+        parallel_invocations: list
+
+    def supervisor(state):
+        if not state.get("phase"):
+            with bind_runtime_context(run_id="run", session_id="session", workspace_path=str(tmp_path),
+                                      runtime_kind="chat", actor_role="supervisor", agent_id="supervisor"):
+                command = delegation_module.delegation_broker.func(mode="dispatch", tasks=[{
+                    "taskBriefId": "long-A", "targetAgentName": "Verification Engineer", "goal": "Return a concise observation",
+                    "readOnly": True, "writeSet": [], "expectedOutputs": ["observation"], "acceptanceContract": ["observation supplied"],
+                    "allowChildDelegation": False, "toolPolicy": {"mode": "none"},
+                }], tool_call_id="dispatch-A", state=state)
+            assert command.goto == "supervisor", json.dumps(str(command))
+            assert command.update["runtime_dispatch_status"]["nextAction"] == "continue_supervisor"
+            return Command(goto="supervisor", update={**command.update, "phase": 1})
+        assert started.wait(5), database.list_runtime_episodes(run_id="run")
+        (tmp_path / "B-complete.txt").write_text("B completed while A was running")
+        assert database.list_runtime_episodes(run_id="run")[0]["state"] == "active"
+        episode_id = database.list_runtime_episodes(run_id="run")[0]["episodeId"]
+        return workflow._route_runtime_tool_commands(runtime_module.runtime_broker.func(
+            mode="await", episode_ids=[episode_id], tool_call_id="await-A", state=state))
+
+    async def scenario():
+        await runner.start()
+        checkpoint_path = str(tmp_path / "parent.sqlite")
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as saver:
+            graph = StateGraph(State)
+            graph.add_node("supervisor", supervisor)
+            graph.add_node("runtime_episode", workflow.build_runtime_episode_wait_node())
+            graph.add_edge(START, "supervisor")
+            compiled = graph.compile(checkpointer=saver)
+            config = {"configurable": {"thread_id": "parent-run"}}
+            try:
+                await compiled.ainvoke({"phase": 0, "messages": [], "run_id": "run", "session_id": "session", "workspace_path": str(tmp_path)}, config)
+            finally:
+                release.set()
+                for _ in range(150):
+                    if all(item["state"] in {"completed", "failed", "degraded"} for item in database.list_runtime_episodes(run_id="run")):
+                        break
+                    await asyncio.sleep(0.02)
+                await runner.stop()
+            saved = await compiled.aget_state(config)
+            assert saved.next == () and saved.values["runtime_dispatch_status"]["state"] == "background_wait"
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as restored:
+            checkpoint = await restored.aget_tuple(config)
+            assert checkpoint.checkpoint["channel_values"]["phase"] == 1
+        assert (tmp_path / "B-complete.txt").read_text().startswith("B completed")
+        assert len(database.list_runtime_episode_queue()) == 1
+        assert database.list_runtime_episodes(run_id="run")[0]["state"] == "completed"
+
+    asyncio.run(scenario())

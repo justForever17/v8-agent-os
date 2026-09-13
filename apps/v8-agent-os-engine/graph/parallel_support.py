@@ -2643,6 +2643,14 @@ async def _run_parallel_agent_branch(
         summary=f"{branch.get('agentName') or agent_id} 已开始处理任务。",
     )
     while True:
+        from core.runtime_episode_control import apply_worker_controls
+        control_context = _runtime_context_from_parallel_state(local_state, branch=branch)
+        if apply_worker_controls(
+            local_state,
+            episode_id=str(branch.get("delegationId") or control_context.get("delegation_id") or ""),
+            run_id=str(control_context.get("run_id") or ""),
+        ):
+            current_node = agent_id
         if current_node != last_progress_node:
             stage = "working"
             summary = f"{branch.get('agentName') or agent_id} 正在处理任务。"
@@ -2682,7 +2690,15 @@ async def _run_parallel_agent_branch(
                 with bind_runtime_context(**runtime_context):
                     return agent_data["node_func"](local_state)
 
-            result = await asyncio.to_thread(_invoke_agent_node)
+            invocation = asyncio.create_task(asyncio.to_thread(_invoke_agent_node))
+            try:
+                result = await asyncio.shield(invocation)
+            except asyncio.CancelledError:
+                # A cancelled asyncio wrapper does not stop its Python thread.
+                # Settle the actual invocation before the Runner can acknowledge
+                # that this episode has stopped writing.
+                await asyncio.shield(invocation)
+                raise
         elif current_node == f"{agent_id}_tools":
             tool_node = agent_data.get("tool_node_func")
             if tool_node is None:
@@ -2714,7 +2730,12 @@ async def _run_parallel_agent_branch(
                 with bind_runtime_context(**runtime_context):
                     return reviewer(local_state)
 
-            result = await asyncio.to_thread(_invoke_reviewer_node)
+            invocation = asyncio.create_task(asyncio.to_thread(_invoke_reviewer_node))
+            try:
+                result = await asyncio.shield(invocation)
+            except asyncio.CancelledError:
+                await asyncio.shield(invocation)
+                raise
         else:
             raise _parallel_branch_error(
                 f"{agent_id} 进入了未识别的并发分支节点：{current_node}",

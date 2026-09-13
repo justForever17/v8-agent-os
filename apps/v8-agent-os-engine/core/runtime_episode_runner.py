@@ -15,6 +15,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from core.database import db
+from core.runtime_episode_control import EpisodeControlCancelled, acknowledge_stopped, cancellation_requested
+from core.runtime_episode_control import publish_attention
 from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.runtime_continuation import (
@@ -1161,6 +1163,7 @@ class RuntimeEpisodeRunner:
         assert self._stop_event is not None
         self._thread_started.set()
         active_tasks: set[asyncio.Task] = set()
+        self._recover_parent_wakes(restart=True)
         try:
             while not self._stop_event.is_set():
                 try:
@@ -1177,6 +1180,7 @@ class RuntimeEpisodeRunner:
                             print(f"[EpisodeRunner] Episode task error: {type(exc).__name__}: {exc}")
 
                     claimed_any = False
+                    self._recover_parent_wakes()
                     while len(active_tasks) < self._max_concurrent:
                         try:
                             episode = db.claim_runtime_episode(
@@ -1214,6 +1218,38 @@ class RuntimeEpisodeRunner:
                 task.cancel()
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
+
+    def _recover_parent_wakes(self, *, restart: bool = False) -> None:
+        """Retry lost notifications from durable facts, without a model heartbeat.
+
+        All scheduling still uses CommandRouter's single atomic DB claim. A
+        runner poll is observation only when there is no decision-ready event.
+        """
+        from erc.session_lane_scheduler import session_lane_scheduler
+        from erc.run_service import run_service
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, session_id, metadata FROM run_records WHERE status='running' "
+                "AND json_extract(metadata, '$.runtimeEpisodeResume.state') IN ('waiting','scheduled','executing') LIMIT 200",
+            ).fetchall()
+        for row in rows:
+            if session_lane_scheduler.get_active_run(row["session_id"]):
+                continue
+            marker = json.loads(row["metadata"] or "{}").get("runtimeEpisodeResume") or {}
+            if marker.get("state") != "waiting":
+                if not restart:
+                    continue
+                recovered = run_service.update_metadata_key_if_state(
+                    row["id"], key="runtimeEpisodeResume", expected_state=marker["state"],
+                    next_value={**marker, "state": "waiting", "recoveredAfterRestart": True}, expected_status="running",
+                )
+                if not recovered.get("updated"):
+                    continue
+            episodes = db.list_runtime_episodes(run_id=row["id"], limit=200)
+            pending = db.list_runtime_episode_messages(run_id=row["id"], recipient=f"supervisor:{row['id']}", limit=1)
+            candidate = next((item for item in episodes if pending or item.get("state") in {"completed", "degraded", "failed", "cancelled"}), None)
+            if candidate:
+                _schedule_runtime_episode_handoff_resume(candidate)
 
     def _complete_corrupted_episode_contract(
         self,
@@ -1310,8 +1346,6 @@ class RuntimeEpisodeRunner:
         target_kind = str(episode.get("targetKind") or episode.get("target_kind") or "local_runtime").strip() or "local_runtime"
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
-        if self._episode_cancellation_requested(episode_id, run_id=run_id):
-            return
         claimed_worker_id = str(episode.get("worker_id") or episode.get("workerId") or "").strip()
         try:
             claimed_generation = int(episode.get("leaseGeneration") or episode.get("lease_generation") or 0)
@@ -1409,6 +1443,7 @@ class RuntimeEpisodeRunner:
                     "running",
                     "waiting",
                     "pending",
+                    "partial",
                 }
                 or will_retry
             )
@@ -1454,7 +1489,7 @@ class RuntimeEpisodeRunner:
                     run_id=run_id,
                 )
                 return
-            if handoff_status in {"running", "waiting", "pending"}:
+            if handoff_status in {"running", "waiting", "pending", "partial"}:
                 waiting_state = "waiting_external" if target_kind in {"network_peer", "external_worker"} else "waiting"
                 if self._handoff_has_child_episodes(handoff):
                     waiting_state = "waiting_child"
@@ -1545,9 +1580,29 @@ class RuntimeEpisodeRunner:
             self._resume_cross_episode_dependents(completed)
             self._maybe_schedule_chat_handoff_resume(completed)
             self._maybe_resume_parent_episode(completed, session_id=session_id, run_id=run_id)
-        except (RuntimeEpisodeCancelled, RuntimeEpisodeLeaseLost) as exc:
+        except (RuntimeEpisodeCancelled, RuntimeEpisodeLeaseLost, EpisodeControlCancelled) as exc:
             if isinstance(exc, RuntimeEpisodeLeaseLost):
                 logger.warning("Discarded stale runtime episode result for %s: %s", episode_id or "<unknown>", exc)
+            else:
+                from core.tools.native.command import terminate_episode_background_commands
+                while True:
+                    process_stop = await asyncio.to_thread(terminate_episode_background_commands, episode_id)
+                    if process_stop["confirmed"]:
+                        break
+                    if not db.heartbeat_runtime_episode(episode_id, progress="cancelling: awaiting managed process exit",
+                                                       lease_seconds=self._lease_seconds, **self._claim_fence_kwargs(episode_id)):
+                        return
+                    await asyncio.sleep(0.2)
+                stopped = db.complete_runtime_episode(
+                    episode_id, state="cancelled", error_code="episode_cancelled",
+                    error_message="Executor settled after cancellation.",
+                    **self._claim_fence_kwargs(episode_id),
+                )
+                if stopped:
+                    acknowledge_stopped(episode_id, run_id=run_id or "")
+                    self._emit("runtime.episode.cancelled", episode=stopped, session_id=session_id, run_id=run_id,
+                               cancellation={"executorSettled": True, "writesTerminated": True})
+                    self._maybe_schedule_chat_handoff_resume(stopped)
             return
         except RuntimeEpisodeDeadlineExceeded as exc:
             failed = self._require_claim_write(
@@ -1640,6 +1695,8 @@ class RuntimeEpisodeRunner:
         ).strip()
         if not effective_run_id:
             return False
+        if cancellation_requested(episode_id, effective_run_id):
+            return True
         try:
             run = db.get_run_record(effective_run_id) or {}
         except Exception:
@@ -1713,6 +1770,18 @@ class RuntimeEpisodeRunner:
             while True:
                 if self._episode_cancellation_requested(episode_id, run_id=run_id):
                     await self._stop_awaitable_task(task, episode_id=episode_id)
+                    if not task.done():
+                        # Keep the lease and pending receipt until real cleanup
+                        # completes. Timeout is not a stopped acknowledgement.
+                        while not task.done():
+                            db.heartbeat_runtime_episode(episode_id, progress="cancelling: awaiting executor settlement",
+                                                         lease_seconds=self._lease_seconds, **self._claim_fence_kwargs(episode_id))
+                            try:
+                                await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+                            except asyncio.TimeoutError:
+                                continue
+                            except (asyncio.CancelledError, EpisodeControlCancelled):
+                                break
                     raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
                 if task.done():
                     return await task
@@ -1845,6 +1914,11 @@ class RuntimeEpisodeRunner:
         run_id: str | None,
         **payload: Any,
     ) -> None:
+        if topic in {"runtime.episode.completed", "runtime.episode.failed", "runtime.episode.degraded", "runtime.episode.cancelled", "runtime.episode.waiting_input"}:
+            publish_attention(episode, kind="input_required" if topic.endswith("waiting_input") else "terminal", detail={
+                "state": episode.get("state"), "resultRef": episode.get("resultRef") or episode.get("result_ref"),
+                "detailRef": f"episode://{episode.get('episodeId') or episode.get('id')}",
+            })
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         if topic.endswith(".progress") and self._episode_cancellation_requested(episode_id, run_id=run_id):
             return
@@ -2464,7 +2538,15 @@ class RuntimeEpisodeRunner:
         # Research performs synchronous provider calls and web retrieval. Keep
         # that blocking work off the EpisodeRunner event loop so the durable
         # lease heartbeat and cancellation watchdog can continue to run.
-        return await asyncio.to_thread(self._execute_research_sync, episode)
+        execution = asyncio.create_task(asyncio.to_thread(self._execute_research_sync, episode))
+        try:
+            return await asyncio.shield(execution)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(execution)
+            except (RuntimeEpisodeCancelled, EpisodeControlCancelled):
+                pass
+            raise
 
     def _execute_research_sync(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._publish_episode_progress(
@@ -5197,6 +5279,7 @@ class RuntimeEpisodeRunner:
             "degradedReason",
             "producerEpisodeId",
             "handoffRefId",
+            "resultPhase", "executionTerminal", "partialAcceptanceId", "sourceVersion", "version", "acceptedFor",
         )
         return {
             key: result.get(key)
@@ -5317,6 +5400,17 @@ class RuntimeEpisodeRunner:
                 continue
             state = str(sibling.get("state") or "").strip().lower()
             if state in ACTIVE_EPISODE_STATES:
+                from core.runtime_episode_control import accepted_partial_for
+                partial = accepted_partial_for(sibling, consumer_task_ids=set(cls._episode_task_ids(episode)))
+                if partial:
+                    for task_id in task_ids:
+                        completed[task_id] = {
+                            **cls._compact_cross_episode_result(task_id=task_id, episode=sibling, handoff=partial, forced_status="ok"),
+                            "resultPhase": "accepted_partial", "executionTerminal": False,
+                            "partialAcceptanceId": partial["partialAcceptanceId"], "sourceVersion": partial["sourceVersion"],
+                            "version": partial["version"], "acceptedFor": partial["acceptedFor"],
+                        }
+                    continue
                 for task_id in task_ids:
                     active_task_to_episode[task_id] = sibling_id
                 continue

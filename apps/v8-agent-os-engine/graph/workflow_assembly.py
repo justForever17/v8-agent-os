@@ -1522,8 +1522,18 @@ def build_runtime_episode_wait_node():
 
         while True:
             episodes = _load_relevant_episodes(route_context=route_context, session_id=session_id, run_id=run_id)
+            dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
+            explicit_await = "awaitEpisodeIds" in dispatch_status
+            awaited_ids = set(dispatch_status.get("awaitEpisodeIds") or [])
+            if explicit_await and awaited_ids:
+                episodes = [episode for episode in episodes if _string_value(episode.get("episodeId"), episode.get("id")) in awaited_ids]
             if episodes:
                 last_episodes = episodes
+            if explicit_await and run_id and db.list_runtime_episode_messages(run_id=run_id, recipient=f"supervisor:{run_id}", limit=1):
+                return Command(goto="supervisor", update={
+                    **identity_update, "current_route_context": route_context,
+                    "runtime_dispatch_status": {"mode": "runtime_episode", "nextAction": "attention_ready"},
+                })
             route_context, handoffs = _merge_handoffs(route_context, episodes)
             active = _active_episodes(episodes)
             terminal = _terminal_episodes(episodes)
@@ -1776,6 +1786,13 @@ def build_runtime_episode_wait_node():
                 )
 
             if active:
+                if explicit_await:
+                    from erc.run_service import run_service
+                    run_service.update_metadata(run_id, {"runtimeAwait": {"episodeIds": sorted(awaited_ids), "explicit": True}})
+                    return Command(goto="__end__", update={
+                        "current_route_context": route_context, **identity_update,
+                        "runtime_dispatch_status": {**dispatch_status, "state": "background_wait", "executionTerminal": False},
+                    })
                 active_states = {str(episode.get("state") or "") for episode in active}
                 only_unclaimed_queue = active_states <= {"detected", "routed", "queued"}
                 queue_grace_elapsed = all(

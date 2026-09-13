@@ -1292,6 +1292,10 @@ def _peek_command_control_signal(runtime_context: dict[str, Any]) -> dict[str, A
     run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
     if not run_id:
         return None
+    from core.runtime_episode_control import cancellation_requested
+    episode_id = str(runtime_context.get("delegation_id") or runtime_context.get("episode_id") or "")
+    if episode_id and cancellation_requested(episode_id, run_id):
+        return {"command": "cancel", "reason": "episode_cancel_requested"}
     try:
         from erc import erc_kernel
 
@@ -2759,6 +2763,9 @@ class BackgroundProcess:
         self.profile_reason = str(profile_reason or "")
         self.shell_dialect = _resolve_shell_dialect(command, shell_dialect)
         self.runtime_context = dict(runtime_context or {})
+        self.episode_id = str(self.runtime_context.get("delegation_id") or self.runtime_context.get("episode_id") or "")
+        from core.runtime_episode_control import assert_episode_execution_allowed
+        assert_episode_execution_allowed(self.runtime_context)
         self.chat_cli_variant = _detect_chat_cli_variant(command) if self.profile == "chat_cli" else ""
         self.output_queue = queue.Queue()
         self.output_history = []
@@ -3739,6 +3746,34 @@ class BackgroundProcess:
             self._cleanup_backend_process()
 
 _bg_processes = {}
+
+
+def terminate_episode_background_commands(episode_id: str) -> dict[str, Any]:
+    """Stop only this episode's managed processes and verify their OS identities.
+
+    is_running/return_code are UI projections and cannot prove process exit.
+    Capture psutil Process identities before termination (including creation
+    time), then wait for all observed descendants to exit.
+    """
+    pending, stopped = [], []
+    for command_id, process in list(_bg_processes.items()):
+        if getattr(process, "episode_id", "") != episode_id:
+            continue
+        process_id = process._process_id()
+        identities = []
+        try:
+            if process_id:
+                root = psutil.Process(process_id)
+                identities = [*root.children(recursive=True), root]
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error:
+            pending.append(command_id)
+            continue
+        process.terminate(reason="episode_cancelled")
+        _, alive = psutil.wait_procs(identities, timeout=1.0)
+        (pending if alive else stopped).append(command_id)
+    return {"stoppedCommandIds": stopped, "pendingCommandIds": pending, "confirmed": not pending}
 
 
 def _prune_stale_background_processes(*, max_age_seconds: int = _BACKGROUND_PROCESS_RETENTION_SECONDS) -> None:

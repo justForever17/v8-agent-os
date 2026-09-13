@@ -4444,6 +4444,16 @@ class DatabaseManager:
                         "currentState": marker_state,
                     }
 
+                lane = conn.execute("SELECT active_run_id FROM session_lane_records WHERE session_id=?", (run_record["session_id"],)).fetchone()
+                if lane and lane["active_run_id"]:
+                    return {"claimed": False, "reason": "parent_graph_writer_active"}
+                attention = conn.execute(
+                    "SELECT MAX(CAST(json_extract(payload_json, '$.deliverySeq') AS INTEGER)) "
+                    "FROM runtime_episode_events WHERE run_id=? AND topic='runtime.episode.message' "
+                    "AND state='pending' AND json_extract(payload_json, '$.recipient')=?",
+                    (run_id, f"supervisor:{run_id}"),
+                ).fetchone()[0]
+
                 episode_rows = conn.execute(
                     """
                     SELECT id, state
@@ -4453,6 +4463,10 @@ class DatabaseManager:
                     (run_id,),
                 ).fetchall()
                 for episode_row in episode_rows:
+                    if attention:
+                        break
+                    if marker.get("awaitExplicit") and episode_row["id"] not in set(marker.get("episodeIds") or []):
+                        continue
                     episode_state = str(episode_row["state"] or "").strip().lower()
                     if episode_state in normalized_active or (
                         normalized_terminal and episode_state not in normalized_terminal
@@ -4466,7 +4480,7 @@ class DatabaseManager:
                         }
 
                 next_metadata = dict(metadata)
-                next_metadata[key] = to_jsonable(next_marker or {})
+                next_metadata[key] = to_jsonable({**next_marker, "attentionSeq": attention, "scheduledAt": utc_now_iso()})
                 conn.execute(
                     "UPDATE run_records SET metadata = ? WHERE id = ?",
                     (json.dumps(to_jsonable(next_metadata), ensure_ascii=False), run_id),
@@ -6995,6 +7009,91 @@ class DatabaseManager:
                 conn.commit()
 
         self._run_write_with_retry(_write)
+
+    def append_runtime_episode_message(
+        self, *, episode_id: str, session_id: str, run_id: str,
+        recipient: str, kind: str, request_id: str, content: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Durable control/attention delivery in the episode event ledger.
+
+        The request identity is immutable. Delivery state is a receipt, separate
+        from episode completion and parent acceptance. No in-memory signal owns
+        the message; pending rows survive both a lost notification and restart.
+        """
+        event_id = f"episode_message:{run_id}:{request_id}"
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                episode = conn.execute(
+                    "SELECT id FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
+                    (episode_id, session_id, run_id),
+                ).fetchone()
+                if not episode:
+                    raise ValueError("episode_scope_mismatch")
+                existing = conn.execute(
+                    "SELECT payload_json, state FROM runtime_episode_events WHERE id=?", (event_id,),
+                ).fetchone()
+                if existing:
+                    payload = json.loads(existing["payload_json"])
+                    if (payload["recipient"], payload["kind"], payload["content"], payload["episodeId"]) != (
+                        recipient, kind, to_jsonable(content), episode_id,
+                    ):
+                        raise ValueError("episode_message_idempotency_conflict")
+                    return {**payload, "deliveryState": existing["state"]}
+                seq = conn.execute(
+                    "SELECT COALESCE(MAX(json_extract(payload_json, '$.deliverySeq')), 0)+1 "
+                    "FROM runtime_episode_events WHERE run_id=? AND topic='runtime.episode.message'",
+                    (run_id,),
+                ).fetchone()[0]
+                payload = {
+                    "messageId": event_id, "episodeId": episode_id, "recipient": recipient,
+                    "kind": kind, "deliverySeq": seq, "content": to_jsonable(content),
+                }
+                conn.execute(
+                    "INSERT INTO runtime_episode_events "
+                    "(id, episode_id, session_id, run_id, topic, state, payload_json, created_at) "
+                    "VALUES (?, ?, ?, ?, 'runtime.episode.message', 'pending', ?, ?)",
+                    (event_id, episode_id, session_id, run_id, json.dumps(payload, ensure_ascii=False), utc_now_iso()),
+                )
+                conn.commit()
+                return {**payload, "deliveryState": "pending"}
+
+        return self._run_write_with_retry(_write)
+
+    def list_runtime_episode_messages(
+        self, *, run_id: str, recipient: str, pending_only: bool = True, limit: int = 128,
+    ) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT state, payload_json FROM runtime_episode_events "
+                "WHERE run_id=? AND topic='runtime.episode.message' "
+                "AND json_extract(payload_json, '$.recipient')=? "
+                + ("AND state='pending' " if pending_only else "")
+                + "ORDER BY CAST(json_extract(payload_json, '$.deliverySeq') AS INTEGER) LIMIT ?",
+                (run_id, recipient, max(1, min(limit, 1000))),
+            ).fetchall()
+        return [{**json.loads(row["payload_json"]), "deliveryState": row["state"]} for row in rows]
+
+    def acknowledge_runtime_episode_message(
+        self, message_id: str, *, recipient: str, state: str, result: Dict[str, Any],
+    ) -> bool:
+        if state not in {"applied", "stopped", "rejected", "processed"}:
+            raise ValueError("invalid_episode_message_receipt")
+
+        def _write():
+            with self.get_connection() as conn:
+                updated = conn.execute(
+                    "UPDATE runtime_episode_events SET state=?, "
+                    "payload_json=json_set(payload_json, '$.receipt', json(?)) "
+                    "WHERE id=? AND topic='runtime.episode.message' AND state='pending' "
+                    "AND json_extract(payload_json, '$.recipient')=?",
+                    (state, json.dumps(to_jsonable({**result, "at": utc_now_iso()})), message_id, recipient),
+                )
+                conn.commit()
+                return updated.rowcount == 1
+
+        return self._run_write_with_retry(_write)
 
     def add_runtime_episode_handoff(
         self,

@@ -1223,6 +1223,9 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
 def create_routed_tool_node(tools, name, fallback_goto):
     """Return a ToolNode wrapper that always routes explicitly via Command."""
     async def _wrapped_tool_call(request, execute):
+        from core.runtime_episode_control import assert_episode_execution_allowed
+        from erc.runtime_context import get_runtime_context
+        assert_episode_execution_allowed(get_runtime_context())
         if request.tool is not None and request.tool_call.get("id"):
             # BaseTool's start callback contains args, not the ToolCall envelope.
             # Attach the actual invocation identity to this per-call copy so
@@ -1234,7 +1237,24 @@ def create_routed_tool_node(tools, name, fallback_goto):
                     "v8_invocation_tool_call_id": request.tool_call["id"],
                 },
             }))
-        return await async_tool_call_wrapper(request, execute, tool_node_name=name)
+        async def execute_and_settle_sync_tool(req):
+            from langchain_core.tools import StructuredTool
+            if not isinstance(req.tool, StructuredTool) or req.tool.coroutine is not None:
+                return await execute(req)
+            # StructuredTool runs a synchronous function in an executor thread.
+            # Preserve that actual invocation until it settles after cancel;
+            # cancelling its asyncio proxy cannot prove that writes stopped.
+            invocation = asyncio.create_task(execute(req))
+            try:
+                return await asyncio.shield(invocation)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(invocation)
+                except Exception:
+                    pass
+                raise
+
+        return await async_tool_call_wrapper(request, execute_and_settle_sync_tool, tool_node_name=name)
 
     base_node = ToolNode(
         tools,

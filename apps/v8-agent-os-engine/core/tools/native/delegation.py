@@ -2288,7 +2288,7 @@ def _grandchild_write_contract_block_payload(
 
 @tool
 def delegation_broker(
-    mode: Literal["dispatch", "observe", "resume", "request_input"] = "observe",
+    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume", "request_input", "publish_partial"] = "observe",
     family: str = "",
     tasks: Annotated[
         list[DelegationTaskInput] | dict[str, Any] | str | None,
@@ -2304,6 +2304,7 @@ def delegation_broker(
     write_set_partitions: Any = None,
     delegation_id: str = "",
     followup: str = "",
+    partial_handoff: Annotated[dict[str, Any] | None, "For publish_partial by a direct child: outputKey, version, sourceVersion, usableFor task IDs, compactSummary, proofRefs, optional artifactRefs. Publishing preserves active execution and requires parent acceptance for downstream use."] = None,
     required_inputs: Annotated[
         list[RuntimeContinuationInput] | None,
         "Only for mode=request_input. Typed missing inputs discovered during this direct subagent execution.",
@@ -2322,7 +2323,7 @@ def delegation_broker(
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set task `requireChildDelegation=true` when the must-level acceptance contract itself requires that verifier; set `allow_child_delegation=false` to forbid the path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
     A direct subagent that discovers a genuinely missing irreversible choice must call `mode='request_input'` with typed `required_inputs`; never encode a pause marker in prose. The same runtime episode will resume after strict answer validation.
-    Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
+    Local dispatch returns background episode handles. Continue independent work and use await for required dependencies. inspect/observe read progress and receipts on demand; steer applies followup at the original episode's safe point; cancel requires a stopped receipt. Avoid busy polling. Direct children can publish_partial with versioned source/proof and usableFor scopes, continue work, and leave selective acceptance to the Supervisor. Supervisor still verifies and merges the final result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
     runtime_context = get_runtime_context()
@@ -2365,7 +2366,7 @@ def delegation_broker(
                 ]
             }
         )
-    if caller.is_direct_subagent and normalized_mode not in {"dispatch", "request_input"}:
+    if caller.is_direct_subagent and normalized_mode not in {"dispatch", "request_input", "publish_partial"}:
         return Command(
             update={
                 "messages": [
@@ -2383,6 +2384,22 @@ def delegation_broker(
                 ]
             }
         )
+    if normalized_mode == "publish_partial":
+        from core.runtime_episode_control import publish_partial
+        from core.runtime_episode_runner import _RUNTIME_EPISODE_CLAIM_CONTEXT
+        claim = _RUNTIME_EPISODE_CLAIM_CONTEXT.get()
+        try:
+            if not caller.is_direct_subagent or not claim or claim[0] != caller.delegation_id:
+                raise ValueError("partial_requires_current_episode_lease")
+            result = publish_partial(claim[0], handoff=partial_handoff or {}, worker_id=claim[1], lease_generation=claim[2])
+            payload = {"ok": True, "handoff": result, "executionTerminal": False}
+        except ValueError as exc:
+            payload = {"ok": False, "error": str(exc)}
+        return Command(update={"messages": [ToolMessage(content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]})
+    if normalized_mode in {"inspect", "steer", "cancel", "await"} or (normalized_mode == "observe" and delegation_id.startswith("subagent::")):
+        from core.tools.native.runtime import runtime_broker
+        return runtime_broker.func(mode="inspect" if normalized_mode == "observe" else normalized_mode,
+                                   episode_id=delegation_id, followup=followup, tool_call_id=tool_call_id, state=state)
     if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt", "request_input"}:
         return Command(
             goto="supervisor",
@@ -3526,11 +3543,11 @@ def delegation_broker(
                         recommended_next_action=(
                             "observe"
                             if any(item.get("lane") == "external_worker" for item in items)
-                            else "yield_for_graph_handoff"
+                            else "continue_independent_work"
                         ),
                         localHandoffPending=bool(sends),
                         localHandoffInstruction=(
-                            "本地子 Agent 结果会由执行图自动回流。不要调用 wait 或 observe 轮询；结束当前执行片段并等待结构化回流。"
+                            "后台 episode 已持久派发。可继续独立且无写集冲突的工作；按需 inspect/steer/cancel，需要依赖时用 await。最终答复仍需验收必需结果。"
                             if sends
                             else None
                         ),
@@ -3564,6 +3581,7 @@ def delegation_broker(
             or ""
         ).strip()
         task_briefs_by_id = dict(effective_task_briefs_by_id)
+        background_dispatch = bool(caller.is_supervisor and not runtime_owner_episode_id and not parent_delegation_id)
         episode_root_id = _delegation_root_episode_id(
             inherited_context,
             parent_episode_id=parent_delegation_id,
@@ -3577,6 +3595,9 @@ def delegation_broker(
                 continue
             status = str(item.get("status") or "").strip().lower()
             episode_state = "failed" if status in {"error", "blocked", "failed"} else "waiting"
+            enqueue_local = background_dispatch and item.get("lane") == "subagent" and episode_state != "failed"
+            if enqueue_local:
+                episode_state = "queued"
             task_brief_value = task_briefs_by_id.get(str(item.get("taskBriefId") or "").strip(), {})
             managed_workspace = (
                 dict(item.get("engineeringWorkspace") or {})
@@ -3608,7 +3629,7 @@ def delegation_broker(
                 state=episode_state,
                 required_runtime_access=list(task_brief_value.get("runtimeAccess") or []),
                 parent_episode_id=parent_delegation_id or runtime_owner_episode_id,
-                continuation_target="parallel_delegate_join" if item.get("lane") == "subagent" else "delegation_broker.observe",
+                continuation_target=("runtime_episode_runner" if enqueue_local else "parallel_delegate_join") if item.get("lane") == "subagent" else "delegation_broker.observe",
                 extra={
                     "invocationId": invocation_id,
                     "taskBriefId": item.get("taskBriefId"),
@@ -3629,7 +3650,7 @@ def delegation_broker(
                 session_id=session_id,
                 run_id=run_id,
                 priority=40,
-                enqueue=False,
+                enqueue=enqueue_local,
             )
             dispatch_route_context = upsert_runtime_episode(dispatch_route_context, persisted_episode)
             emit_runtime_episode_event("capability.need.detected", {"episode": episode})
@@ -3650,7 +3671,9 @@ def delegation_broker(
             ]
         if parallel_results:
             update["parallel_results"] = parallel_results
-        return Command(goto=sends if sends else "supervisor", update=update)
+        if background_dispatch:
+            update["runtime_dispatch_status"] = {"mode": "runtime_broker_route", "nextAction": "continue_supervisor", "dispatched": bool(sends)}
+        return Command(goto=sends if sends and not background_dispatch else "supervisor", update=update)
 
     parsed = parse_delegation_id(delegation_id)
     if str(parsed.get("lane") or "").strip() != "external_worker":

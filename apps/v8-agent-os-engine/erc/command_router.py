@@ -566,11 +566,11 @@ class RuntimeCommandRouter:
                 ChatMessage(
                     role="user",
                     content=(
-                        "[Runtime Episode Terminal]\n"
-                        "A previously routed runtime episode has now reached a terminal state. "
-                        "Continue by merging any available typed handoff into the user-facing answer; if the episode failed "
+                        "[Runtime Episode Attention]\n"
+                        "A previously routed runtime episode has a decision event ready in the durable inbox. "
+                        "Inspect available typed handoffs and continue the authorized task and its ready dependencies; if the episode failed "
                         "or was cancelled without a usable handoff, report that terminal outcome accurately. "
-                        "Do not route a new runtime episode, rewrite Spec documents, or perform direct file or command work.\n"
+                        "Other background episodes may still be active. Work independently only within the original authority and nonconflicting write sets. Await required results before final acceptance; never repeat an existing dispatch.\n"
                         f"episodeId: {episode_id}\n"
                         f"episodeKind: {episode_kind}\n"
                         f"episodeState: {episode_state}\n"
@@ -917,7 +917,8 @@ class RuntimeCommandRouter:
         if not run_id:
             return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_id_missing"}
         episode_state = str(episode.get("state") or "").strip().lower()
-        if episode_state not in RUNTIME_EPISODE_RESUME_TERMINAL_STATES:
+        pending_attention = db.list_runtime_episode_messages(run_id=run_id, recipient=f"supervisor:{run_id}", limit=1)
+        if episode_state not in RUNTIME_EPISODE_RESUME_TERMINAL_STATES and not pending_attention:
             return {
                 "resume_mode": "chat",
                 "resume_scheduled": False,

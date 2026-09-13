@@ -27,7 +27,7 @@ class SessionLaneScheduler:
         normalized_policy = str(policy or "queue").strip().lower() or "queue"
         with self._condition:
             active_run_id = self._active_runs.get(session_id)
-            if active_run_id in {None, run_id}:
+            if active_run_id is None:
                 self._active_runs[session_id] = run_id
                 return SessionLaneDecision(acquired=True, policy=normalized_policy, active_run_id=active_run_id)
 
@@ -40,7 +40,7 @@ class SessionLaneScheduler:
                 )
 
             interrupted_run_id = None
-            if normalized_policy == "interrupt_then_replace":
+            if normalized_policy == "interrupt_then_replace" and active_run_id != run_id:
                 interrupted_run_id = active_run_id
                 command_service.interrupt_run(
                     active_run_id,
@@ -59,7 +59,7 @@ class SessionLaneScheduler:
         normalized_policy = str(policy or "queue").strip().lower() or "queue"
         with self._condition:
             active_run_id = self._active_runs.get(session_id)
-            if active_run_id in {None, run_id}:
+            if active_run_id is None:
                 self._active_runs[session_id] = run_id
                 return SessionLaneDecision(acquired=True, policy=normalized_policy, active_run_id=active_run_id)
 
@@ -72,7 +72,7 @@ class SessionLaneScheduler:
                 )
 
             interrupted_run_id = None
-            if normalized_policy == "interrupt_then_replace":
+            if normalized_policy == "interrupt_then_replace" and active_run_id != run_id:
                 interrupted_run_id = active_run_id
                 command_service.interrupt_run(
                     active_run_id,
@@ -82,7 +82,7 @@ class SessionLaneScheduler:
             waited = True
             while True:
                 current = self._active_runs.get(session_id)
-                if current in {None, run_id}:
+                if current is None:
                     self._active_runs[session_id] = run_id
                     return SessionLaneDecision(
                         acquired=True,

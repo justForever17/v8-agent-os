@@ -217,6 +217,10 @@ def build_supervisor_node(
     from core.automation.hooks import hooks_manager
 
     def supervisor_node(state):
+        from core.runtime_episode_control import parent_attention_messages
+        from erc.runtime_context import get_runtime_context
+        attention_run = str(get_runtime_context().get("run_id") or state.get("run_id") or "")
+        attention_messages = parent_attention_messages(state, run_id=attention_run) if attention_run else []
         current_agents = storage.get_all_agents()
         current_registry_snapshot = build_subagent_registry_snapshot(
             current_agents,
@@ -225,6 +229,7 @@ def build_supervisor_node(
         state_with_registry = {
             **dict(state),
             "subagent_registry_snapshot": dict(current_registry_snapshot or {}),
+            "messages": [*list(state.get("messages") or []), *attention_messages],
         }
         messages = list(state_with_registry["messages"])
         hooks_manager.execute_hook("on_supervisor_start")
@@ -261,6 +266,8 @@ def build_supervisor_node(
                 *state_compaction_updates,
                 *list(routed_update.get("messages") or []),
             ]
+        if attention_messages:
+            routed_update["messages"] = [*attention_messages, *list(routed_update.get("messages") or [])]
         return Command(
             graph=routed.graph,
             goto=routed.goto,

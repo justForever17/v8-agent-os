@@ -22,7 +22,7 @@ class ManualExternalDelegationTask(DelegationTaskInput, total=False):
 
 @tool("delegation_broker")
 def supervisor_delegation_broker(
-    mode: Literal["dispatch", "observe", "resume"] = "observe",
+    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume"] = "observe",
     tasks: Annotated[
         list[ManualLocalDelegationTask | ManualExternalDelegationTask] | None,
         "For dispatch use a flat array. Each local task requires targetAgentName, taskBriefId, goal, expectedOutputs and acceptanceContract. Omit unused optional fields; do not send null strings or taskBrief wrappers.",
@@ -61,8 +61,13 @@ def supervisor_delegation_broker(
     assign its modes or invent config_broker_* tool names for a child; provide
     authorized evidence or assign the appropriate visible read-only discovery.
 
-    Local results arrive through graph handoffs; do not poll. Observe/resume are
-    for an explicit external delegation_id or a terminal diagnostic read.
+    Local dispatch returns durable episode handles and lets you continue
+    independent work without overlapping write sets. inspect (or observe) reads
+    current progress and control receipts. steer uses followup and is applied at
+    a safe point in the original episode; cancel remains pending until its
+    executor actually stops. await yields for delegation_id; runtime_broker
+    await supports several episode_ids. Avoid busy polling. resume retains its
+    external-worker meaning.
     The Supervisor must inspect evidence and accept/retry/ignore the result.
     """
     return delegation_broker.func(

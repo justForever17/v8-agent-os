@@ -9878,6 +9878,8 @@ class ChatRuntime:
             return
         if self._owner_kind_for_agent(stream_state.current_agent) != "supervisor":
             return
+        from core.runtime_episode_control import acknowledge_parent_messages
+        acknowledge_parent_messages(state, run_id=chat_run.active_run_id)
         message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
         row = db.get_chat_canonical_message(message_id) or {}
         current_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")
@@ -10965,6 +10967,8 @@ class ChatRuntime:
         if decision.action == "waiting_runtime":
             resume_after_terminal = decision.reason == "runtime_episode_active_at_stream_end"
             if resume_after_terminal:
+                run_metadata = dict((db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {})
+                runtime_await = dict(run_metadata.get("runtimeAwait") or {})
                 top_level_episode_ids = [
                     str(episode.get("episodeId") or episode.get("id") or "").strip()
                     for episode in episodes
@@ -10977,7 +10981,8 @@ class ChatRuntime:
                         "runtimeEpisodeResume": {
                             "state": "waiting",
                             "reason": decision.reason,
-                            "episodeIds": top_level_episode_ids,
+                            "episodeIds": list(runtime_await.get("episodeIds") or top_level_episode_ids),
+                            "awaitExplicit": bool(runtime_await.get("explicit")),
                         }
                     },
                 )
@@ -10994,13 +10999,13 @@ class ChatRuntime:
                 for episode in refreshed_episodes
                 if not str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
             ]
-            if resume_after_terminal and top_level_refreshed and all(
-                str(episode.get("state") or "").strip().lower() in TERMINAL_EPISODE_STATES
-                for episode in top_level_refreshed
-            ):
+            if resume_after_terminal and top_level_refreshed:
                 from erc.command_router import runtime_command_router
 
-                runtime_command_router.schedule_runtime_episode_handoff_resume(top_level_refreshed[-1])
+                for candidate in top_level_refreshed:
+                    if str(candidate.get("state") or "").lower() in TERMINAL_EPISODE_STATES:
+                        runtime_command_router.schedule_runtime_episode_handoff_resume(candidate)
+                        break
             return {
                 "type": "done",
                 "status": "running",
@@ -11694,6 +11699,17 @@ class ChatRuntime:
             }
             return
 
+        resume_value = getattr(chat_run.request, "resume_value", None) or {}
+        if isinstance(resume_value, dict) and resume_value.get("runtimeEpisodeHandoff"):
+            marker = dict((db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {}).get("runtimeEpisodeResume") or {}
+            claimed_resume = run_service.update_metadata_key_if_state(
+                chat_run.active_run_id, key="runtimeEpisodeResume", expected_state="scheduled",
+                next_value={**marker, "state": "executing"}, expected_status="running",
+            )
+            if not claimed_resume.get("updated"):
+                session_admission_service.release(chat_run.session_id, chat_run.active_run_id, policy=lane_policy, runtime_kind="chat")
+                yield {"type": "done", "status": "running", "reason": "runtime_resume_already_consumed", "run_id": chat_run.active_run_id}
+                return
         chat_run.emit_runtime_event(
             "run.lane.acquired",
             {

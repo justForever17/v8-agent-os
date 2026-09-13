@@ -524,7 +524,7 @@ class RuntimeBrokerArgs(BaseModel):
 
     mode: str = Field(
         default="list",
-        description="Operation. Use route for execution, list for the compact catalog, and grant/revoke only for explicit run-scoped tool groups.",
+        description="Operation: route dispatches a background episode; inspect reads it; steer/cancel request acknowledged control; await yields for selected dependencies. list/grant/revoke manage direct tool groups.",
     )
     runtime_kind: str | None = Field(
         default=None,
@@ -615,8 +615,13 @@ class RuntimeBrokerArgs(BaseModel):
     )
     episode_id: str | None = Field(
         default=None,
-        description="Required only for mode=resume. Must identify the waiting_input episode in the current session.",
+        description="Exact current-run episode handle for inspect/steer/cancel/resume.",
     )
+    episode_ids: list[str] = Field(default_factory=list, description="For await: exact dependencies to wait for; empty means all current-run episodes.")
+    followup: str = Field(default="", description="For steer: guidance applied at the existing episode's next safe point, within its original authority.")
+    request_id: str = Field(default="", description="Stable idempotency ID for steer/cancel; defaults to the tool call ID.")
+    handoff_id: str = Field(default="", description="For accept_partial: exact versioned partial handoff ID after evidence inspection.")
+    consumers: list[str] = Field(default_factory=list, description="For accept_partial: downstream taskBriefIds allowed to use this partial. Final acceptance remains separate.")
     continuation_request_id: str | None = Field(
         default=None,
         description="Required only for mode=resume. Must exactly match the latest waiting continuationRequest.requestId.",
@@ -4454,6 +4459,11 @@ def runtime_broker(
         Optional[dict[str, Any]],
         "Required only for mode=resume. Exact user/Supervisor answers keyed by requiredInputs.id.",
     ] = None,
+    episode_ids: list[str] | None = None,
+    followup: str = "",
+    request_id: str = "",
+    handoff_id: str = "",
+    consumers: list[str] | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
@@ -4488,11 +4498,46 @@ def runtime_broker(
     Engineering shape: `{"mode":"route","routeKind":"engineering","routeReason":"implement and verify","taskBriefs":[{"taskBriefId":"implementation","goal":"implement the bounded change","writeRequired":true,"writeSet":["src/feature.py"],"expectedArtifacts":["src/feature.py"],"expectedOutputs":["working implementation"],"acceptanceContract":["the requirement is implemented"]},{"taskBriefId":"verification","goal":"persist proof","writeRequired":true,"writeSet":["reports/verification.json"],"expectedArtifacts":["reports/verification.json"],"expectedOutputs":["verification report"],"acceptanceContract":["checks pass and the report records them"],"dependencies":["implementation"]}]}`.
 
     New Research calls use researchBriefIds + researchBriefGoals; other routes use taskBriefs. Preserve JSON array/object types. Use `list` only for a compact catalog and `grant`
-    only for explicit run-scoped facade access. A successful route automatically waits for the typed handoff: never call
-    repeated observe/status/wait_episode, and never claim completion from a queued episode or incomplete proof.
+    only for explicit run-scoped facade access. A successful route returns a durable background handle. Continue
+    independent authorized work without overlapping write sets; call await with episode_ids when those results
+    are needed, or when no independent work remains. inspect reads progress/receipts on demand; steer requests
+    guidance and cancel waits for actual executor settlement. Avoid busy polling. accept_partial with exact
+    handoff_id, consumers and reason permits only the selected downstream tasks; it never completes the parent.
+    Never claim completion from a queued episode or incomplete proof.
     In user-facing text say 深度调研、编程模式、多媒体创作、桌面操作、自动流程 or 子代理协作, not this tool name.
     """
     normalized_mode = str(mode or "list").strip().lower()
+    if normalized_mode in {"inspect", "steer", "cancel", "await", "accept_partial"}:
+        from core.runtime_episode_control import accept_partial, inspect_episode, request_control
+        context = get_runtime_context()
+        route = dict((state or {}).get("current_route_context") or {})
+        session = str(context.get("session_id") or (state or {}).get("session_id") or route.get("sessionId") or "")
+        run = str(context.get("run_id") or (state or {}).get("run_id") or route.get("runId") or "")
+        try:
+            if not session or not run:
+                raise ValueError("episode_control_requires_bound_run")
+            if any(context.get(key) for key in ("subagent_id", "delegation_id", "delegation_depth")):
+                raise ValueError("episode_control_supervisor_only")
+            if normalized_mode == "await":
+                ids = list(dict.fromkeys(episode_ids or ([episode_id] if episode_id else [])))
+                for value in ids:
+                    inspect_episode(value, session_id=session, run_id=run)
+                return Command(goto="supervisor", update={
+                    "messages": [ToolMessage(content=json.dumps({"ok": True, "mode": "await", "episodeIds": ids}), tool_call_id=tool_call_id)],
+                    "runtime_dispatch_status": {"mode": "runtime_episode", "nextAction": "wait_episode", "awaitEpisodeIds": ids},
+                })
+            if normalized_mode == "inspect":
+                result = inspect_episode(str(episode_id or ""), session_id=session, run_id=run)
+            elif normalized_mode == "accept_partial":
+                result = accept_partial(str(episode_id or ""), session_id=session, run_id=run, handoff_id=handoff_id,
+                                        consumers=consumers or [], reason=reason or "", request_id=request_id or tool_call_id)
+            else:
+                result = request_control(str(episode_id or ""), session_id=session, run_id=run,
+                                         kind=normalized_mode, request_id=request_id or tool_call_id, followup=followup)
+            payload = {"ok": True, "mode": normalized_mode, **result}
+        except ValueError as exc:
+            payload = {"ok": False, "mode": normalized_mode, "error": str(exc)}
+        return Command(goto="supervisor", update={"messages": [ToolMessage(content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]})
     need_payload_for_intent = _route_need_from_public_transport(
         need,
         route_kind=routeKind,
@@ -5438,16 +5483,7 @@ def runtime_broker(
         if not admission_reused:
             _emit_runtime_episode_event("capability.need.detected", {"episode": episode})
             _emit_runtime_episode_event("runtime.episode.queued", {"episode": episode})
-        if route_kind in {"engineering", "delegation"}:
-            next_action = "wait_episode"
-        elif route_kind == "research":
-            next_action = "wait_episode"
-        elif route_kind == "creative_media":
-            next_action = "wait_episode"
-        elif route_kind in {"computer_use", "rpa"}:
-            next_action = "wait_episode"
-        else:
-            next_action = "wait_episode"
+        next_action = "continue_supervisor"
         return Command(
             goto="supervisor",
             update={
@@ -5465,7 +5501,7 @@ def runtime_broker(
                             changed=grants,
                             episode=episode,
                             next_action=("The graph retains the original episode and will resolve its typed handoff; no new episode was queued."
-                                         if admission_reused else "Runtime episode queued. The graph now owns waiting and will inject the typed handoff; do not poll."),
+                                         if admission_reused else "Background episode queued. Continue independent authorized work; use await with specific episode_ids when its results are needed. inspect/steer/cancel address this handle. Never repeat dispatch or claim success before final acceptance."),
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -5479,7 +5515,7 @@ def runtime_broker(
                     "episodeId": str(episode.get("episodeId") or ""),
                     "episodeKind": route_kind,
                     "episodeCount": 0 if admission_reused else 1,
-                    "nextAction": "wait_episode",
+                    "nextAction": next_action,
                 },
             },
         )

@@ -747,6 +747,7 @@ def test_creative_media_deadline_cancels_executor_and_fails_without_retry(tmp_pa
 
     monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
     monkeypatch.setattr(runner, "_episode_executor_deadline_seconds", lambda _episode: 0.03)
+    monkeypatch.setattr("core.runtime_episode_control.db", manager)
     cancellation_observed: list[bool] = []
 
     async def _blocking_creative_media(_active_episode):
@@ -976,6 +977,7 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
     )
     manager.upsert_runtime_episode_record(direct, session_id="session-direct", run_id="run-direct", enqueue=False)
     monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    monkeypatch.setattr("core.runtime_episode_control.db", manager)
     atomic_stages: list[str] = []
     monkeypatch.setattr(manager, "_runtime_episode_delivery_failpoint", atomic_stages.append)
     monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"code-review-architect": {"id": "code-review-architect"}})
@@ -1116,6 +1118,7 @@ def test_runtime_runner_finalizes_direct_delegation_model_timeout(monkeypatch, t
         "_build_agent_nodes_map",
         lambda _self: {"verification-engineer": {"id": "verification-engineer"}},
     )
+    monkeypatch.setattr("core.runtime_episode_control.db", manager)
 
     async def _timed_out_branch(_arg, _agent_data, progress_callback=None):
         if progress_callback:

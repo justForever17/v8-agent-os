@@ -3,7 +3,9 @@
 import { ArrowDown, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // import { LoadingBubble } from "./LoadingBubble";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
+import { readDraft, setDraftField } from "@/lib/composer-drafts";
+import { useDraftField } from "@/hooks/use-composer-draft";
 import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
 import { ChatTurnIndexEntry, TurnNavigator } from "./TurnNavigator";
@@ -25,6 +27,7 @@ import {
 const EMPTY_RUNTIME_ACTIVITIES: RuntimeStageActivity[] = [];
 
 interface ChatWindowProps {
+    viewKey?: string;
     messages: Message[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
@@ -48,6 +51,7 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({
+    viewKey = "",
     messages,
     processes,
     contextReferences,
@@ -88,7 +92,20 @@ export function ChatWindow({
     });
 
     // Scroll state
-    const [isAtBottom, setIsAtBottom] = useState(true);
+    const [savedScroll] = useDraftField<{ turnId: string; offset: number; bottom: boolean; top: number } | undefined>(viewKey, "scroll", undefined);
+    const [isAtBottom, setIsAtBottom] = useState(savedScroll?.bottom ?? true);
+    const restoredRef = useRef(false);
+    useLayoutEffect(() => {
+        const container = scrollContainerRef.current;
+        if (restoredRef.current || !container || !messages.length || !viewKey) return;
+        const saved = readDraft(viewKey).values.scroll as typeof savedScroll;
+        if (saved) {
+            const target = Array.from(container.querySelectorAll<HTMLElement>("[data-turn-id]")).find((element) => element.dataset.turnId === saved.turnId);
+            container.scrollTop = saved.bottom ? container.scrollHeight : target ? container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - saved.offset : saved.top;
+            setIsAtBottom(saved.bottom); setShowScrollButton(!saved.bottom);
+        }
+        if (!saved || saved.bottom || Array.from(container.querySelectorAll<HTMLElement>("[data-turn-id]")).some((element) => element.dataset.turnId === saved.turnId)) restoredRef.current = true;
+    }, [messages.length, viewKey, savedScroll]);
     const [showScrollButton, setShowScrollButton] = useState(false);
     const [activeVisibleTurnId, setActiveVisibleTurnId] = useState("");
 
@@ -124,7 +141,7 @@ export function ChatWindow({
         };
         scrollStateRef.current = nextState;
 
-        if (!isAtBottom) {
+        if (!isAtBottom || (savedScroll?.bottom === false && !restoredRef.current)) {
             return;
         }
 
@@ -155,7 +172,7 @@ export function ChatWindow({
         }
 
         commit();
-    }, [isAtBottom, isLoading, lastMessageId, messages.length, scrollToBottom]);
+    }, [isAtBottom, isLoading, lastMessageId, messages.length, scrollToBottom, savedScroll?.bottom]);
 
     useEffect(() => {
         if (!focusedTurnId || typeof window === "undefined") {
@@ -228,6 +245,11 @@ export function ChatWindow({
 
         setIsAtBottom(isBottom);
         setShowScrollButton(!isBottom);
+        if (viewKey) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const anchor = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[data-turn-id]")).find((element) => element.getBoundingClientRect().bottom >= rect.top);
+            setDraftField(viewKey, "scroll", { turnId: anchor?.dataset.turnId || "", offset: anchor ? anchor.getBoundingClientRect().top - rect.top : 0, bottom: isBottom, top: scrollTop }, null);
+        }
 
         if (turnIndex.length > 0) {
             const containerRect = e.currentTarget.getBoundingClientRect();
@@ -250,7 +272,7 @@ export function ChatWindow({
             olderLoadAnchorRef.current = { scrollHeight, scrollTop };
             onReachTop();
         }
-    }, [hasOlderTurns, isLoadingOlderTurns, onActiveTurnChange, onReachTop, turnIndex.length]);
+    }, [hasOlderTurns, isLoadingOlderTurns, onActiveTurnChange, onReachTop, turnIndex.length, viewKey]);
 
     const confirmDelete = async () => {
         if (!deleteId) return;

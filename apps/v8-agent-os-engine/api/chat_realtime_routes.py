@@ -1229,6 +1229,16 @@ async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = 
     }
 
 
+@router.get("/chat/queued-messages")
+async def list_queued_messages(session_id: str, after_ordinal: int | None = None):
+    from erc.snapshot_service import snapshot_service
+    if after_ordinal is not None and after_ordinal < 0:
+        raise HTTPException(status_code=400, detail="Invalid queue cursor")
+    if not db.get_session(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    return to_jsonable(snapshot_service.queued_message_page(session_id, after_ordinal))
+
+
 @router.patch("/chat/queued-messages/{queue_id}")
 async def update_queued_message(queue_id: str, request: Request):
     payload = await request.json()

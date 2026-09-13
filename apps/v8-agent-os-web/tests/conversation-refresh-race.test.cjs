@@ -64,6 +64,7 @@ function mountContext(initialOwner = 'owner-a') {
       readWebSessionIndexCache: () => [], clearWebSessionIndexCache: () => {},
       writeWebSessionIndexCache: (key, items) => cacheWrites.push({ key, items: structuredClone(items) }),
     };
+    if (name === '@/lib/composer-drafts') return { removeDrafts: async () => {} };
     throw new Error(`Unexpected import ${name}`);
   };
   const mod = { exports: {} };

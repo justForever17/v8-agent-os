@@ -4,6 +4,8 @@ import dynamic from "next/dynamic";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import type { ChatTurnIndexEntry } from "@/components/chat/TurnNavigator";
 import { InputArea } from "@/components/chat/InputArea";
+import { draftOwnerKey, hydrateDraft, readDraft, removeDrafts, setDraftField } from "@/lib/composer-drafts";
+import { readCompleteQueue, reconcileQueueSnapshot } from "@/lib/queue-snapshot";
 import { useLangGraphStream } from "@/hooks/use-langgraph-stream";
 import {
     cloneMessages,
@@ -1028,7 +1030,16 @@ export default function ChatClient() {
         };
     }, [loadSupervisorDisplayProfile, status]);
 
-    const [input, setInput] = useState("");
+    const [instanceId, setInstanceId] = useState("");
+    useEffect(() => {
+        if (status !== "authenticated") { setInstanceId(""); return; }
+        const controller = new AbortController();
+        void fetch("/api/client/instance", { cache: "no-store", signal: controller.signal })
+            .then((response) => response.ok ? response.json() : null)
+            .then((value) => { if (!controller.signal.aborted) setInstanceId(String(value?.instanceId || "")); })
+            .catch(() => undefined);
+        return () => controller.abort();
+    }, [status, session?.user?.id]);
     const { conversations, refreshConversations, createConversation, patchConversationSummary, updateConversationPresentation } = useConversationContext();
     const conversationSummaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [supervisorRuntimeModeDrafts, setSupervisorRuntimeModeDrafts] = useState<Record<string, SupervisorRuntimeMode>>({});
@@ -1055,6 +1066,16 @@ export default function ChatClient() {
     const [workspaceChooserBusy, setWorkspaceChooserBusy] = useState(false);
     const [newProjectPath, setNewProjectPath] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
+    const [scopeOwner, setScopeOwner] = useState("");
+    const scopeCacheRef = useRef(new Map<string, ScopeBindingView>());
+    const draftKey = draftOwnerKey(instanceId, String(session?.user?.id || ""), scopeOwner === activeConversationId ? String(scopeBinding?.workspaceId || scopeBinding?.workspacePath || "") : "", activeConversationId || "");
+    const previousPrincipalRef = useRef("");
+    useEffect(() => {
+        const principal = status === "authenticated" ? String(session?.user?.id || "") : "";
+        const previous = previousPrincipalRef.current;
+        if (previous && previous !== principal) void removeDrafts((key) => { try { return JSON.parse(key)[1] === previous; } catch { return false; } });
+        previousPrincipalRef.current = principal;
+    }, [status, session?.user?.id]);
     const [, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
@@ -1069,6 +1090,10 @@ export default function ChatClient() {
     const [totalTurnCount, setTotalTurnCount] = useState(0);
     const [focusedTurnId, setFocusedTurnId] = useState<string | null>(null);
     const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+    const queueCacheRef = useRef(new Map<string, QueuedChatMessage[]>());
+    const queueSequenceRef = useRef(new Map<string, number>());
+    const queuedMessagesRef = useRef(queuedMessages);
+    queuedMessagesRef.current = queuedMessages;
     const queuedMessagesSessionIdRef = useRef<string | null>(activeConversationId);
     queuedMessagesSessionIdRef.current = activeConversationId;
     const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
@@ -1153,22 +1178,30 @@ export default function ChatClient() {
 
     const upsertQueuedMessage = useCallback((incoming: unknown) => {
         const normalized = normalizeQueuedMessage(incoming);
-        const sessionId = queuedMessagesSessionIdRef.current;
-        if (!normalized || !sessionId || normalized.sessionId !== sessionId) {
+        const sessionId = normalized?.sessionId;
+        if (!normalized || !sessionId) {
             return;
         }
-        setQueuedMessages((current) => {
-            const next = current.filter((item) => item.id !== normalized.id);
-            return sortQueuedMessages([...next, normalized]);
-        });
+        const current = sessionId === queuedMessagesSessionIdRef.current ? queuedMessagesRef.current : queueCacheRef.current.get(sessionId) || [];
+        const next = sortQueuedMessages([...current.filter((item) => item.id !== normalized.id), normalized]);
+        queueCacheRef.current.set(sessionId, next);
+        if (sessionId === queuedMessagesSessionIdRef.current) { queuedMessagesRef.current = next; setQueuedMessages(next); }
     }, []);
 
-    const applyQueuedMessagesSnapshot = useCallback((incoming: QueuedChatMessage[] | null, expectedSessionId?: string | null) => {
+    const applyQueuedMessagesSnapshot = useCallback((incoming: QueuedChatMessage[] | null, expectedSessionId?: string | null, sequence = 0, complete = false) => {
         const sessionId = expectedSessionId || queuedMessagesSessionIdRef.current;
         if (!incoming || !sessionId) {
             return;
         }
-        setQueuedMessages(sortQueuedMessages(incoming.filter((item) => item.sessionId === sessionId)));
+        if (sessionId !== queuedMessagesSessionIdRef.current) return;
+        const knownSequence = Math.max(queueSequenceRef.current.get(sessionId) || 0, latestRealtimeSeqRef.current);
+        const next = reconcileQueueSnapshot(queuedMessagesRef.current, incoming.filter((item) => item.sessionId === sessionId), sequence, knownSequence, complete);
+        if (sequence < knownSequence) return;
+        queueSequenceRef.current.set(sessionId, sequence);
+        queueCacheRef.current.set(sessionId, next);
+        queuedMessagesRef.current = next;
+        setQueuedMessages(sortQueuedMessages(next));
+        setQueuedMessageError("");
     }, []);
 
     const visibleQueuedMessages = useMemo(
@@ -1177,6 +1210,27 @@ export default function ChatClient() {
         ))),
         [activeConversationId, queuedMessages],
     );
+    const queueSyncControllerRef = useRef<AbortController | null>(null);
+    const synchronizeQueue = useCallback(async (sessionId: string) => {
+        if (!sessionId || sessionId !== activeConversationIdRef.current || queueSyncControllerRef.current) return;
+        const controller = new AbortController();
+        queueSyncControllerRef.current = controller;
+        try {
+            const result = await readCompleteQueue<QueuedChatMessage>(sessionId, async (cursor) => {
+                const query = new URLSearchParams({ session_id: sessionId });
+                if (cursor !== null) query.set("after_ordinal", String(cursor));
+                const response = await fetch(`/api/chat-queue?${query}`, { cache: "no-store", signal: controller.signal });
+                if (!response.ok) throw new Error("Queue sync failed");
+                return await response.json();
+            }, (sequence) => !controller.signal.aborted && activeConversationIdRef.current === sessionId && sequence >= latestRealtimeSeqRef.current);
+            if (!controller.signal.aborted) applyQueuedMessagesSnapshot(result.items, sessionId, result.sequence, true);
+        } catch {
+            if (!controller.signal.aborted && activeConversationIdRef.current === sessionId) setQueuedMessageError("队列同步未完成，保留上次状态。");
+        } finally { if (queueSyncControllerRef.current === controller) queueSyncControllerRef.current = null; }
+    }, [applyQueuedMessagesSnapshot]);
+    useEffect(() => {
+        return () => { queueSyncControllerRef.current?.abort(); queueSyncControllerRef.current = null; };
+    }, [activeConversationId, instanceId, session?.user?.id]);
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
         const sessionId = String(payload?.sessionId || "").trim();
@@ -2249,6 +2303,10 @@ export default function ChatClient() {
         if (previousConversationId === activeConversationId) {
             return;
         }
+        if (previousConversationId) queueCacheRef.current.set(previousConversationId, queuedMessagesRef.current);
+        const cachedQueue = queueCacheRef.current.get(activeConversationId || "") || [];
+        queuedMessagesRef.current = cachedQueue;
+        setQueuedMessages(cachedQueue);
         latestRealtimeSeqRef.current = 0;
         snapshotCoveredRealtimeSeqRef.current = 0;
         seenRealtimeEventIdentitiesRef.current.clear();
@@ -2527,7 +2585,6 @@ export default function ChatClient() {
         historyLoadControllerRef.current?.abort();
         const controller = new AbortController();
         historyLoadControllerRef.current = controller;
-        setQueuedMessages([]);
         turnIndexRef.current = [];
         setTurnIndex([]);
         setTotalTurnCount(0);
@@ -2548,6 +2605,7 @@ export default function ChatClient() {
         }
         if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
         if (!detailRes.ok) {
+            setQueuedMessageError("队列同步失败，保留上次状态。请重新同步。");
             if (detailRes.status === 404) {
                 router.replace("/chat");
                 return;
@@ -2564,7 +2622,10 @@ export default function ChatClient() {
         applyQueuedMessagesSnapshot(
             extractQueuedMessages(projectionPayload) ?? extractQueuedMessages(detailPayload),
             conversationId,
+            Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0),
+            projectionPayload?.queuedMessagesWindow?.complete === true,
         );
+        if (projectionPayload?.queuedMessagesWindow?.hasMore) void synchronizeQueue(conversationId);
         const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
         setSessionProjection((current) => projection ? {
             ...projection,
@@ -2609,7 +2670,7 @@ export default function ChatClient() {
             preserveCurrentHistory ? messagesRef.current : normalized,
             latestSeq,
             {
-                mergeWithCurrent: options?.mergeWithCurrent === true,
+                mergeWithCurrent: options?.mergeWithCurrent === true || messagesRef.current.length > normalized.length,
             },
         );
         messageCacheRef.current.set(conversationId, cloneMessages(nextMessages));
@@ -2641,7 +2702,22 @@ export default function ChatClient() {
             }
         };
         window.setTimeout(() => void hydrateTurnIndex(), 0);
-    }, [applyAskUserPendingApproval, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router]);
+    }, [applyAskUserPendingApproval, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router, synchronizeQueue]);
+
+    useEffect(() => {
+        if (!draftKey || !activeConversationId) return;
+        const controller = new AbortController();
+        const sessionId = activeConversationId;
+        void hydrateDraft(draftKey).then(async () => {
+            const scroll = readDraft(draftKey).values.scroll as { turnId?: string; bottom?: boolean } | undefined;
+            if (controller.signal.aborted || !scroll?.turnId || scroll.bottom || messagesRef.current.some((message) => message.turnId === scroll.turnId)) return;
+            const page = await loadConversationTurnPage(sessionId, { around: scroll.turnId, radius: 1, signal: controller.signal });
+            if (controller.signal.aborted || activeConversationIdRef.current !== sessionId) return;
+            const next = normalizeMessagesForState([...messagesRef.current, ...page.messages]);
+            messagesRef.current = next; setMessages(next);
+        }).catch(() => undefined);
+        return () => controller.abort();
+    }, [draftKey, activeConversationId, loadConversationTurnPage, setMessages]);
 
     const loadOlderConversationTurn = useCallback(async () => {
         const conversationId = activeConversationIdRef.current;
@@ -2653,6 +2729,7 @@ export default function ChatClient() {
         setIsLoadingOlderTurns(true);
         try {
             const turnPage = await loadConversationTurnPage(conversationId, { before });
+            if (activeConversationIdRef.current !== conversationId) return;
             const incoming = normalizeMessagesForState(turnPage.messages);
             mergeTurnIndexEntries(incoming.flatMap<ChatTurnIndexEntry>((message) => (
                 message.turnId && Number(message.turnPosition || 0) > 0
@@ -2793,21 +2870,29 @@ export default function ChatClient() {
     }, []);
 
     const loadSessionScope = useCallback(async (conversationId: string) => {
+        if (activeConversationIdRef.current !== conversationId) return;
+        const cached = scopeCacheRef.current.get(conversationId);
+        setScopeOwner(conversationId);
+        setScopeBinding(cached || null);
         setScopeLoading(true);
         try {
             const res = await fetch(`/api/sessions/${conversationId}/scope`, { cache: "no-store" });
+            if (activeConversationIdRef.current !== conversationId) return;
             if (!res.ok) {
                 setScopeBinding(null);
                 return;
             }
             const data = await res.json();
+            if (activeConversationIdRef.current !== conversationId) return;
             const normalized = normalizeScopeBinding(data?.binding);
+            if (normalized) scopeCacheRef.current.set(conversationId, normalized);
             setScopeBinding(normalized);
         } catch (error) {
+            if (activeConversationIdRef.current !== conversationId) return;
             console.warn("[ChatClient] Failed to load scope binding:", error);
             setScopeBinding(null);
         } finally {
-            setScopeLoading(false);
+            if (activeConversationIdRef.current === conversationId) setScopeLoading(false);
         }
     }, []);
 
@@ -2879,6 +2964,7 @@ export default function ChatClient() {
             { role: "user", content },
         ];
         const requestBody: Record<string, unknown> = {
+            clientMessageId: requestData.clientMessageId,
             messages: requestMessages,
             data: requestData,
             fileUrls: allFileUrls,
@@ -3624,10 +3710,6 @@ export default function ChatClient() {
     }, [messages]);
 
     // Handle Input Change
-    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        setInput(e.target.value);
-    };
-
     // Handle Send
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleSend = async (e: React.FormEvent<HTMLFormElement>, options?: { data?: any }) => {
@@ -3636,7 +3718,7 @@ export default function ChatClient() {
         const optionData = { ...(options?.data || {}) };
         const messageOverride = typeof optionData.messageOverride === "string" ? optionData.messageOverride : null;
         delete optionData.messageOverride;
-        const currentInput = messageOverride ?? input;
+        const currentInput = messageOverride ?? String(readDraft(draftKey).values.text || "");
         const hasText = currentInput.trim().length > 0;
         const hasCommandPreset = Boolean(optionData.commandPreset?.name);
         const hasSkillReferences = Array.isArray(optionData.skillReferences) && optionData.skillReferences.length > 0;
@@ -3655,9 +3737,8 @@ export default function ChatClient() {
         const submissionData = {
             ...optionData,
             supervisorRuntimeMode: supervisorRuntimeModeSnapshot,
-            ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
+            ...(!optionData.contextSessionRefs && pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
-        if (messageOverride === null) setInput(""); // Clear the visible Composer only for Composer submissions.
         if (activeConversationRunning) {
             try {
                 await submitQueuedMessage(currentInput, submissionData);
@@ -3669,7 +3750,6 @@ export default function ChatClient() {
                 if (isWorkspaceBindingErrorMessage(errorMessage)) {
                     setWorkspaceChooserVisible(true);
                 }
-                if (messageOverride === null) setInput(currentInput);
                 setQueuedMessageError(errorMessage);
                 return false;
             }
@@ -3700,7 +3780,6 @@ export default function ChatClient() {
                     streamingConversationIdRef.current = null;
                     streamingTransportRef.current = null;
                 }
-                if (messageOverride === null) setInput(currentInput);
             }
             return Boolean(accepted);
         } catch (error) {
@@ -3714,7 +3793,6 @@ export default function ChatClient() {
                 setWorkspaceChooserVisible(true);
                 setQueuedMessageError(errorMessage);
             }
-            if (messageOverride === null) setInput(currentInput);
             return false;
         }
     };
@@ -4016,10 +4094,11 @@ export default function ChatClient() {
                 if (isLegacyChatUnsupportedPayload(snapshotPayload)) {
                     setLegacyChatUnsupported(true);
                 }
-                applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload), activeConversationId);
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
                 const localStreamActive = isLocalStreamActive(activeConversationId);
                 const snapshotLatestSeq = Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0);
+                applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload), activeConversationId, snapshotLatestSeq, asPlainRecord(snapshotRecord.queuedMessagesWindow).complete === true);
+                if (asPlainRecord(snapshotRecord.queuedMessagesWindow).hasMore) void synchronizeQueue(activeConversationId);
                 const terminalProjection = nextView && localStreamActive
                     ? deriveMatchingTerminalProjection({
                         localRunId: getSubmittedRunId(),
@@ -4117,7 +4196,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, settleTerminalStream, status]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, settleTerminalStream, status, synchronizeQueue]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -4343,6 +4422,8 @@ export default function ChatClient() {
                         </div>
                     ) : (
                         <ChatWindow
+                            key={draftKey || activeConversationId}
+                            viewKey={draftKey}
                             messages={messages}
                             processes={hudProcesses}
                             contextReferences={projectionContextReferences}
@@ -4427,6 +4508,7 @@ export default function ChatClient() {
                                             {queuedMessageError ? (
                                                 <div className="mx-auto mt-1 max-w-4xl rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                                                     {queuedMessageError}
+                                                    <button type="button" className="ml-2 underline" onClick={() => activeConversationId && void synchronizeQueue(activeConversationId)}>重新同步</button>
                                                 </div>
                                             ) : null}
                                         </div>
@@ -4441,15 +4523,14 @@ export default function ChatClient() {
                                         </div>
                                     ) : null}
                                     <InputArea
-                                    key={activeConversationId || "new-session"}
-                                    input={input}
-                                    handleInputChange={handleInputChange}
+                                    key={draftKey || activeConversationId}
+                                    draftKey={draftKey}
                                     handleSubmit={handleSend}
                                     onVoiceTranscript={(transcript) => {
-                                        setInput((prev) => {
+                                        setDraftField<string>(draftKey, "text", (prev) => {
                                             const prefix = prev.trim();
                                             return prefix ? `${prefix}\n${transcript}` : transcript;
-                                        });
+                                        }, "");
                                     }}
                                     onVoiceAudioMessage={handleVoiceAudioMessage}
                                     isLoading={localConversationLoading}

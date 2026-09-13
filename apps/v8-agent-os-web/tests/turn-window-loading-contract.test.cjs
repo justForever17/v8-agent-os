@@ -55,10 +55,10 @@ test("Web keeps historical messages mounted without replaying entrance motion", 
 test("Web keeps queued messages isolated to the active conversation", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
 
-  assert.match(client, /normalized\.sessionId !== sessionId/);
+  assert.match(client, /sessionId === queuedMessagesSessionIdRef.current/);
   assert.match(client, /incoming\.filter\(\(item\) => item\.sessionId === sessionId\)/);
   assert.match(client, /item\.sessionId === activeConversationId && isVisibleQueuedMessage\(item\)/);
-  assert.match(client, /applyQueuedMessagesSnapshot\(extractQueuedMessages\(snapshotPayload\), activeConversationId\)/);
+  assert.match(client, /applyQueuedMessagesSnapshot\(extractQueuedMessages\(snapshotPayload\), activeConversationId, snapshotLatestSeq/);
 });
 
 test("Web turn navigator lives in the outer gutter and expands the hovered tick", () => {

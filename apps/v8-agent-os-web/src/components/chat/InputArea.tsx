@@ -2,6 +2,8 @@
 /* eslint-disable @next/next/no-img-element */
 
 import * as React from "react";
+import { useComposerDraft, useDraftField } from "@/hooks/use-composer-draft";
+import { acknowledgeDraft, beginDraftSubmission, flushDraft, readDraft } from "@/lib/composer-drafts";
 import {
     buildComposerInlineSegments,
     composerTextContainsReference,
@@ -170,8 +172,7 @@ function encodeWavBlob(samples: Float32Array, sampleRate: number): Blob {
 
 
 interface InputAreaProps {
-    input: string;
-    handleInputChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
+    draftKey: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handleSubmit: (e: FormEvent<HTMLFormElement>, options?: { data?: any }) => void | boolean | Promise<void | boolean>;
     onVoiceTranscript?: (text: string) => void;
@@ -334,8 +335,7 @@ function isPluginCandidate(value: unknown): value is Record<string, unknown> {
 }
 
 export function InputArea({
-    input,
-    handleInputChange,
+    draftKey,
     handleSubmit,
     onVoiceTranscript,
     onVoiceAudioMessage,
@@ -348,8 +348,8 @@ export function InputArea({
     reasoningEffortControl,
     reasoningEffort = "auto",
     onReasoningEffortChange,
-    contextSessionRefs = [],
-    onRemoveContextSessionRef,
+    contextSessionRefs: suppliedContextSessionRefs = [],
+    onRemoveContextSessionRef: removeSuppliedContextSessionRef,
     contextUsagePercent = null,
     supervisorRuntimeMode = "auto",
     onSupervisorRuntimeModeChange,
@@ -357,26 +357,37 @@ export function InputArea({
     uploadScope,
 }: InputAreaProps) {
     const t = useT();
+    const draft = useComposerDraft(draftKey);
+    const [input, setInput] = useDraftField(draftKey, "text", "");
+    const [contextSessionRefs, setContextSessionRefs] = useDraftField<ContextSessionReference[]>(draftKey, "contextSessionRefs", suppliedContextSessionRefs);
+    const onRemoveContextSessionRef = React.useCallback((sessionId: string) => {
+        setContextSessionRefs((current) => current.filter((item) => item.sessionId !== sessionId));
+        removeSuppliedContextSessionRef?.(sessionId);
+    }, [setContextSessionRefs, removeSuppliedContextSessionRef]);
+    React.useEffect(() => {
+        if (draftKey && draft.hydrated && suppliedContextSessionRefs.length && readDraft(draftKey).values.contextSessionRefs === undefined) setContextSessionRefs(suppliedContextSessionRefs);
+    }, [draftKey, draft.hydrated, suppliedContextSessionRefs, setContextSessionRefs]);
+    const handleInputChange = React.useCallback((event: ChangeEvent<HTMLTextAreaElement>) => setInput(event.target.value), [setInput]);
     const [commandPresets, setCommandPresets] = React.useState<CommandPresetSummary[]>([]);
     const [commandsLoaded, setCommandsLoaded] = React.useState(false);
     const [commandsLoading, setCommandsLoading] = React.useState(false);
-    const [selectedCommandPreset, setSelectedCommandPreset] = React.useState<CommandPresetSummary | null>(null);
+    const [selectedCommandPreset, setSelectedCommandPreset] = useDraftField<CommandPresetSummary | null>(draftKey, "command", null);
     const [skills, setSkills] = React.useState<SkillReferenceSummary[]>([]);
     const [subagentFamilies, setSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
     const [plugins, setPlugins] = React.useState<PluginReferenceSummary[]>([]);
     const [skillsLoaded, setSkillsLoaded] = React.useState(false);
     const [skillsLoading, setSkillsLoading] = React.useState(false);
-    const [selectedSkills, setSelectedSkills] = React.useState<SkillReferenceSummary[]>([]);
-    const [selectedSubagentFamilies, setSelectedSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
-    const [selectedPlugins, setSelectedPlugins] = React.useState<PluginReferenceSummary[]>([]);
-    const [specModeEnabled, setSpecModeEnabled] = React.useState(false);
+    const [selectedSkills, setSelectedSkills] = useDraftField<SkillReferenceSummary[]>(draftKey, "skills", []);
+    const [selectedSubagentFamilies, setSelectedSubagentFamilies] = useDraftField<SubagentFamilySummary[]>(draftKey, "families", []);
+    const [selectedPlugins, setSelectedPlugins] = useDraftField<PluginReferenceSummary[]>(draftKey, "plugins", []);
+    const [specModeEnabled, setSpecModeEnabled] = useDraftField(draftKey, "specMode", false);
     const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
     const [supervisorRuntimeModeOpen, setSupervisorRuntimeModeOpen] = React.useState(false);
     const [safetyApprovalMode, setSafetyApprovalMode] = React.useState<SafetyApprovalMode>("reduced");
     const [safetyApprovalModeOpen, setSafetyApprovalModeOpen] = React.useState(false);
-    const [files, setFiles] = React.useState<File[]>([]);
-    const [uploadedSources, setUploadedSources] = React.useState<UploadedSourceDescriptor[]>([]);
-    const [uploading, setUploading] = React.useState(false);
+    const [files, setFiles] = useDraftField<File[]>(draftKey, "files", []);
+    const [uploadedSources, setUploadedSources] = useDraftField<UploadedSourceDescriptor[]>(draftKey, "sources", []);
+    const [uploading, setUploading] = useDraftField(draftKey, "uploading", false);
     const [isFileDragActive, setIsFileDragActive] = React.useState(false);
     const [isRecording, setIsRecording] = React.useState(false);
     const [isTranscribing, setIsTranscribing] = React.useState(false);
@@ -384,7 +395,25 @@ export function InputArea({
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
     const inputMirrorRef = React.useRef<HTMLDivElement>(null);
     const reasoningEffortMenuRef = React.useRef<HTMLDivElement>(null);
-    const [selectionRange, setSelectionRange] = React.useState({ start: input.length, end: input.length });
+    const [selectionRange, setSelectionRange] = useDraftField(draftKey, "selection", { start: input.length, end: input.length });
+    const submittingRef = React.useRef(false);
+    const previewLeases = React.useRef(new Map<File, string>());
+    const [previewUrls, setPreviewUrls] = React.useState(new Map<File, string>());
+    React.useEffect(() => {
+        const leases = previewLeases.current;
+        for (const [file, url] of leases) if (!files.includes(file)) { URL.revokeObjectURL(url); leases.delete(file); }
+        for (const file of files) if (file instanceof Blob && !leases.has(file)) leases.set(file, URL.createObjectURL(file));
+        setPreviewUrls(new Map(leases));
+    }, [files]);
+    React.useEffect(() => () => {
+        for (const url of previewLeases.current.values()) URL.revokeObjectURL(url);
+        previewLeases.current.clear();
+    }, []);
+    React.useLayoutEffect(() => {
+        if (draft.hydrated) textareaRef.current?.setSelectionRange(selectionRange.start, selectionRange.end);
+    // Restore once on hydration; native selection remains authoritative while typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [draft.hydrated]);
     const mediaStreamRef = React.useRef<MediaStream | null>(null);
     const audioContextRef = React.useRef<AudioContext | null>(null);
     const sourceNodeRef = React.useRef<MediaStreamAudioSourceNode | null>(null);
@@ -908,6 +937,7 @@ export function InputArea({
     }, [contextSessionRefs, onRemoveContextSessionRef]);
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         if (e.key === "Backspace") {
             const deletion = removeComposerReferenceAtBackspace(
                 input,
@@ -950,12 +980,13 @@ export function InputArea({
     };
 
     const uploadFiles = React.useCallback(async (newFiles: File[]) => {
-        if (newFiles.length === 0 || uploading) return;
+        if (newFiles.length === 0 || uploading || !draftKey) return;
         if (files.length + newFiles.length > 14) {
             showInlineNotice("error", t("web.generated.ee75d524b0"));
             return;
         }
         setFiles((prev) => [...prev, ...newFiles]);
+        setUploadedSources((prev) => [...prev, ...newFiles.map((file) => ({ name: file.name, type: file.type }))]);
         setUploading(true);
         try {
             const uploadPromises = newFiles.map(async (file) => {
@@ -966,15 +997,23 @@ export function InputArea({
                 if (!res.ok) throw new Error("Failed to upload file");
                 return await res.json() as UploadedSourceDescriptor;
             });
-            const uploaded = await Promise.all(uploadPromises);
-            setUploadedSources((prev) => [...prev, ...uploaded]);
+            const results = await Promise.allSettled(uploadPromises);
+            const uploaded = results.map((result, index) => result.status === "fulfilled" ? result.value : { name: newFiles[index].name, type: newFiles[index].type });
+            // Preserve each file's slot even when another upload fails or finishes first.
+            setUploadedSources((prev) => {
+                const currentFiles = (readDraft(draftKey).values.files || []) as File[];
+                const next = [...prev];
+                newFiles.forEach((file, index) => { const position = currentFiles.indexOf(file); if (position >= 0) next[position] = uploaded[index]; });
+                return next;
+            });
+            if (results.some((result) => result.status === "rejected")) showInlineNotice("error", t("web.generated.a0608c519e"));
         } catch (error) {
             console.error('Upload failed:', error);
             showInlineNotice("error", t("web.generated.a0608c519e"));
         } finally {
             setUploading(false);
         }
-    }, [files.length, showInlineNotice, t, uploadScope, uploading]);
+    }, [draftKey, files.length, setFiles, setUploadedSources, setUploading, showInlineNotice, t, uploadScope, uploading]);
 
     const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFiles = Array.from(event.target.files || []);
@@ -1276,7 +1315,7 @@ export function InputArea({
         const itemType: 'video' | 'image' = isVideo ? 'video' : 'image';
         return {
             type: itemType,
-            src: URL.createObjectURL(f),
+            src: previewUrls.get(f) || String(uploadedSources[files.indexOf(f)]?.previewUrl || uploadedSources[files.indexOf(f)]?.url || ""),
             name: f.name,
             file: f
         };
@@ -1285,12 +1324,20 @@ export function InputArea({
     return (
         <form
             data-file-drop-active={isFileDragActive ? "true" : "false"}
+            data-draft-ready={Boolean(draftKey) ? "true" : "false"}
+            data-draft-hydrated={draft.hydrated ? "true" : "false"}
             onDragEnter={handleFileDragEnter}
             onDragOver={handleFileDragOver}
             onDragLeave={handleFileDragLeave}
             onDrop={handleFileDrop}
             onDragEnd={resetFileDragState}
             onSubmit={async (e) => {
+                e.preventDefault();
+                if (!draftKey || !draft.hydrated || submittingRef.current) return;
+                if (files.some((_, index) => !uploadedSources[index]?.sourceId && !uploadedSources[index]?.id)) {
+                    showInlineNotice("error", "请移除并重新选择未上传成功的附件。");
+                    return;
+                }
                 if (uploading) {
                     e.preventDefault();
                     showInlineNotice("info", t("web.chat.attachments.uploading"));
@@ -1310,7 +1357,8 @@ export function InputArea({
                     setSelectedCommandPreset(null);
                     return;
                 }
-                const nextData: Record<string, unknown> = {};
+                const submission = beginDraftSubmission(draftKey);
+                const nextData: Record<string, unknown> = { messageOverride: input, clientMessageId: submission.clientMessageId };
                 const pendingSpecMode = specModeEnabled;
                 nextData.supervisorRuntimeMode = supervisorRuntimeMode;
                 nextData.safetyApprovalMode = safetyApprovalMode;
@@ -1396,19 +1444,11 @@ export function InputArea({
                     };
                 }
 
-                const accepted = await handleSubmit(e, { data: nextData });
-                if (accepted === false) return;
-                updateInputValue("");
-                setSelectionRange({ start: 0, end: 0 });
-                setFiles([]);
-                setUploadedSources([]);
-                setSelectedCommandPreset(null);
-                setSelectedSkills([]);
-                setSelectedSubagentFamilies([]);
-                setSelectedPlugins([]);
-                if (pendingSpecMode) {
-                    setSpecModeEnabled(false);
-                }
+                submittingRef.current = true;
+                try {
+                    const accepted = await handleSubmit(e, { data: nextData });
+                    if (accepted !== false) acknowledgeDraft(draftKey, submission.revision);
+                } finally { submittingRef.current = false; }
             }}
             className={cn(
                 "relative mx-auto flex w-full flex-col overflow-visible rounded-[1.25rem] border shadow-sm transition-all duration-500",
@@ -1421,11 +1461,13 @@ export function InputArea({
             )}
             style={{ backdropFilter: 'blur(16px) saturate(120%)' }}
         >
+            {draft.error ? <div role="alert" className="px-3 pt-2 text-xs text-destructive">草稿保存失败，内容仍在此页，请复制备份。<button type="button" className="ml-2 underline" onClick={() => void flushDraft(draftKey)}>重试保存</button></div> : null}
+            {files.some((file, index) => !(file instanceof Blob) && !uploadedSources[index]?.id && !uploadedSources[index]?.sourceId) ? <div role="status" className="px-3 pt-2 text-xs text-amber-600">未完成上传的附件需要移除并重新选择。</div> : null}
             {/* Unified Input Box Top Area: File Previews (if any) */}
             {files.length > 0 && (
                 <div className="scrollbar-none flex min-h-[4rem] items-end gap-2.5 overflow-x-auto px-3 pb-0 pt-3">
                     {files.map((file, i) => {
-                        const url = URL.createObjectURL(file);
+                        const url = previewUrls.get(file) || String(uploadedSources[i]?.previewUrl || uploadedSources[i]?.url || "");
                         const isVideo = file.type.startsWith('video/');
                         const isImage = file.type.startsWith('image/');
                         
@@ -1528,6 +1570,7 @@ export function InputArea({
                             data-v8os-chat-composer="true"
                             ref={textareaRef}
                             value={input}
+                            disabled={!draftKey || !draft.hydrated}
                             onChange={handleComposerInputChange}
                             onSelect={(event) => setSelectionRange({
                                 start: event.currentTarget.selectionStart,

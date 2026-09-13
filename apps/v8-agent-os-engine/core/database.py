@@ -7981,6 +7981,7 @@ class DatabaseManager:
         session_id: str,
         states: Optional[list[str]] = None,
         limit: int = 50,
+        after_ordinal: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         normalized_states = [str(item).strip() for item in (states or []) if str(item).strip()]
         params: list[Any] = [session_id]
@@ -7989,6 +7990,9 @@ class DatabaseManager:
             placeholders = ",".join("?" for _ in normalized_states)
             query += f' AND state IN ({placeholders})'
             params.extend(normalized_states)
+        if after_ordinal is not None:
+            query += ' AND ordinal > ?'
+            params.append(int(after_ordinal))
         query += ' ORDER BY ordinal ASC, created_at ASC LIMIT ?'
         params.append(int(limit))
         with self.get_connection() as conn:

@@ -78,8 +78,8 @@ class SnapshotService:
         return bool(db.get_messages(session_id) or db.get_runtime_events(session_id))
 
     @staticmethod
-    def _queued_messages(session_id: str) -> list[dict[str, Any]]:
-        items = db.list_chat_user_message_queue(session_id=session_id, states=["pending", "promoted"], limit=20)
+    def _queued_messages(session_id: str, *, after_ordinal: Optional[int] = None, limit: int = 20) -> list[dict[str, Any]]:
+        items = db.list_chat_user_message_queue(session_id=session_id, states=["pending", "promoted"], limit=limit, **({"after_ordinal": after_ordinal} if after_ordinal is not None else {}))
         return [
             {
                 "id": item.get("id"),
@@ -214,7 +214,8 @@ class SnapshotService:
         context_governance = extract_latest_context_governance(runtime_events)
         context_governance_history = extract_context_governance_history(runtime_events, limit=12)
         lane_view = session_admission_service.get_lane_view(session_id)
-        queued_messages = self._queued_messages(session_id)
+        queue_page = self.queued_message_page(session_id)
+        queued_messages = queue_page["queuedMessages"]
         session_coordination_messages = self._session_coordination_messages(session_id)
         session_runtime = resolve_authoritative_session_runtime_state(
             session_id=session_id,
@@ -268,6 +269,7 @@ class SnapshotService:
                 "askUserInteractions": ask_user_interactions,
                 "sources": self._session_sources(session_id),
                 "queuedMessages": queued_messages,
+                "queuedMessagesWindow": queue_page["queuedMessagesWindow"],
                 "controls": controls,
                 "recoverable": build_recoverable_view(workflow_view, controls),
                 "todos": todos,
@@ -313,6 +315,7 @@ class SnapshotService:
             "askUserInteractions": ask_user_interactions,
             "sources": self._session_sources(session_id),
             "queuedMessages": queued_messages,
+            "queuedMessagesWindow": queue_page["queuedMessagesWindow"],
             "controls": controls,
             "recoverable": build_recoverable_view(workflow_view, controls),
             "todos": todos,
@@ -336,6 +339,26 @@ class SnapshotService:
             "liveness": liveness,
             "recoveryClass": recovery_class,
             "legacyChatUnsupported": bool(snapshot.get("legacyChatUnsupported")),
+        }
+
+    def queued_message_page(self, session_id: str, after_ordinal: Optional[int] = None) -> Dict:
+        # Capture before reading. A mutation racing this read invalidates the
+        # client's assembled pages instead of presenting a false full snapshot.
+        sequence = db.get_latest_runtime_seq(session_id)
+        items = self._queued_messages(session_id, after_ordinal=after_ordinal, limit=21)
+        has_more = len(items) > 20
+        page = items[:20]
+        return {
+            "sessionId": session_id,
+            "latestSeq": sequence,
+            "queuedMessages": page,
+            "queuedMessagesWindow": {
+                "complete": after_ordinal is None and not has_more,
+                "hasMore": has_more,
+                "nextOrdinal": page[-1]["ordinal"] if has_more and page else None,
+                "afterOrdinal": after_ordinal,
+                "limit": 20,
+            },
         }
 
     def get_latest_chat_projection(self, session_id: str) -> Optional[Dict]:

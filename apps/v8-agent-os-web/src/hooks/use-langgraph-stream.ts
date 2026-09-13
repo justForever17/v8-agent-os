@@ -479,7 +479,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
 
         // Optimistic User Message
         const tempUserMsg: Message = {
-            id: createClientId('message'),
+            id: typeof data?.clientMessageId === "string" && data.clientMessageId ? data.clientMessageId : createClientId('message'),
             role: 'user',
             content: effectiveUserMessage,
             nodes: nextNodes,

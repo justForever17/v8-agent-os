@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { useSession } from "next-auth/react";
+import { removeDrafts } from "@/lib/composer-drafts";
 import type { SupervisorRuntimeMode } from "@v8/session-realtime";
 import {
     SessionHistoryItem,
@@ -238,13 +239,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             });
             if (res.ok) {
                 setConversations(prev => prev.filter(c => getConversationSessionId(c) !== id));
+                void removeDrafts((key) => { try { const parts = JSON.parse(key); return parts[1] === ownerKey && parts[3] === id; } catch { return false; } });
                 return true;
             }
         } catch (error) {
             console.error("Failed to delete conversation", error);
         }
         return false;
-    }, []);
+    }, [ownerKey]);
 
     const clearConversations = useCallback(async () => {
         try {
@@ -253,13 +255,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             });
             if (res.ok) {
                 setConversations([]);
+                void removeDrafts((key) => { try { return JSON.parse(key)[1] === ownerKey; } catch { return false; } });
                 return true;
             }
         } catch (error) {
             console.error("Failed to clear conversations", error);
         }
         return false;
-    }, []);
+    }, [ownerKey]);
 
     useEffect(() => {
         authenticatedRef.current = status === "authenticated";

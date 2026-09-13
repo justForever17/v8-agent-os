@@ -1,4 +1,5 @@
 "use client";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -478,10 +479,10 @@ export default function EngineeringLanePage() {
         title="app.admin.dashboard.engineeringLane.title"
         description="app.admin.dashboard.engineeringLane.description"
         actions={
-        <Button onClick={save} disabled={saving || loading}>
+        <AdminSaveBar><Button onClick={save} disabled={saving || loading}>
                         {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                         {t("app.admin.dashboard.engineeringLane.save")}
-                    </Button>
+                    </Button></AdminSaveBar>
         } />
 
 

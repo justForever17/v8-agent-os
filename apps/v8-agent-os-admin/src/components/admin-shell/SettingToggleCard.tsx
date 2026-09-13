@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { AdminHoverInfo } from "./AdminHoverInfo";
 import { cn } from "@/lib/utils";
 
 export interface SettingToggleCardProps {
@@ -59,18 +60,14 @@ export function SettingToggleCard({
     return (
         <div
             data-v8-context-menu-ignore
-            className={cn("flex select-none items-center justify-between gap-4 rounded-xl border border-border bg-muted/35 p-4 shadow-none transition-colors hover:bg-muted/60", className)}
+            className={cn("admin-setting-row flex min-h-[56px] items-center justify-between gap-4 rounded-lg border border-border bg-card px-4 py-3 shadow-none", className)}
         >
             <div className="min-w-0 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
                     {titleElement}
+                    {description ? <AdminHoverInfo content={description}><span className="sr-only">{title}</span></AdminHoverInfo> : null}
                     {extraBadge}
                 </div>
-                {description && (
-                    <div className="text-xs leading-relaxed text-muted-foreground">
-                        {description}
-                    </div>
-                )}
                 {showStatusDot && (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <span

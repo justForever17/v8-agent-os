@@ -2241,7 +2241,7 @@ export default function ModelHubPage() {
         }
     };
     const systemAudioConfigCard = (
-        <ConfigCard title={t("app.admin.dashboard.model.hub.audio.systemTitle")} description={t("app.admin.dashboard.model.hub.audio.systemDescription")} variant="list" allowOverflow>
+        <ConfigCard collapsible title={t("app.admin.dashboard.model.hub.audio.systemTitle")} description={t("app.admin.dashboard.model.hub.audio.systemDescription")} variant="list" allowOverflow>
             <div className="grid gap-4 xl:grid-cols-2">
                 <AdminSurfaceCard surface="nested" className="p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -2763,7 +2763,7 @@ export default function ModelHubPage() {
             { label: t("app.admin.dashboard.model.hub.page.kf7cda39f"), value: hubEnvelope?.data.config?.governance?.enabled ? t("app.admin.dashboard.model.hub.page.kd945d5d0") : t("app.admin.dashboard.model.hub.page.k12b31ba6"), description: t("app.admin.dashboard.model.hub.page.k3a277197") },
         ]}/>
 
-            <ConfigCard title={t("app.admin.dashboard.model.hub.catalog.title")} description={t("app.admin.dashboard.model.hub.catalog.description")} variant="list" allowOverflow>
+            <ConfigCard collapsible defaultOpen={providers.length === 0} title={t("app.admin.dashboard.model.hub.catalog.title")} description={t("app.admin.dashboard.model.hub.catalog.description")} variant="list" allowOverflow>
                 <AdminSurfaceCard surface="nested" className="p-4">
                         <div className="text-sm font-semibold">{t("app.admin.dashboard.model.hub.catalog.apiProvider")}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.catalog.apiProviderPurposeHint")}</div>
@@ -3047,7 +3047,7 @@ export default function ModelHubPage() {
             </ConfigCard>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.kd0251a96")} description={t("app.admin.dashboard.model.hub.page.k79d4e8e7")} variant="list" allowOverflow>
-                {visibleProviders.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k8d04b4ed")} description={t("app.admin.dashboard.model.hub.page.k9e469730")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">
+                {visibleProviders.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k8d04b4ed")} description={t("app.admin.dashboard.model.hub.page.k9e469730")}/>) : (<div className="admin-entity-grid">
                         {visibleProviders.map((provider) => (<ProviderCard key={provider.id} provider={provider} health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null} onEdit={() => {
                     const inferredPreset = inferPlatformLoginPreset({
                         providerType: provider.type,
@@ -3118,7 +3118,7 @@ export default function ModelHubPage() {
                     </HydrationSafeClientOnly>
                 </div>
 
-                {filteredModels.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k14457a61")} description={t("app.admin.dashboard.model.hub.page.k8d6baa0f")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">
+                {filteredModels.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k14457a61")} description={t("app.admin.dashboard.model.hub.page.k8d6baa0f")}/>) : (<div className="admin-entity-grid">
                         {filteredModels.map((model) => {
                             const modelRef = model.modelRef || model.id;
                             const controlMeta = controlModelsById.get(modelRef) || null;
@@ -3166,11 +3166,11 @@ export default function ModelHubPage() {
             {hubEnvelope ? (<SourceMetaRow source={hubEnvelope.source} savePath={hubEnvelope.savePath} reloadRequired={hubEnvelope.reloadRequired}/>) : null}
 
             <Dialog open={isProviderDialogOpen} onOpenChange={setIsProviderDialogOpen}>
-                <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+                <DialogContent className="admin-editor-modal sm:max-w-2xl">
                     <DialogHeader>
                         <DialogTitle>{editingProvider ? t("app.admin.dashboard.model.hub.page.k03d9a3c5") : t("app.admin.dashboard.model.hub.page.k9e31d9ed")}</DialogTitle>
                     </DialogHeader>
-                    <form key={`${editingProvider?.id || "new"}-${providerType}-${providerCredentialMode}`} onSubmit={handleSaveProvider} className="space-y-4">
+                    <form key={editingProvider?.id || "new"} onSubmit={handleSaveProvider} className="admin-editor-form"><div className="admin-editor-body space-y-4">
                         <div className="space-y-2">
                             <Label htmlFor="provider-name">{t("app.admin.dashboard.model.hub.page.kd00c0239")}</Label>
                             <Input id="provider-name" name="name" defaultValue={editingProvider?.name || ""} required/>
@@ -3421,17 +3421,17 @@ export default function ModelHubPage() {
                                 <Input id="provider-api-key" name="apiKey" type="password" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}/>
                                 {providerType === "LOCAL" ? (<p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>) : null}
                             </div>)}
-                        <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.k93b84c67")}</Button>
+                        </div><div className="admin-editor-footer"><Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.k93b84c67")}</Button></div>
                     </form>
                 </DialogContent>
             </Dialog>
 
             <Dialog open={isModelDialogOpen} onOpenChange={setIsModelDialogOpen}>
-                <DialogContent>
+                <DialogContent className="admin-editor-modal">
                     <DialogHeader>
                         <DialogTitle>{editingModel ? t("app.admin.dashboard.model.hub.page.k37053cf7") : t("app.admin.dashboard.model.hub.page.k82b1063c")}</DialogTitle>
                     </DialogHeader>
-                    <form onSubmit={handleSaveModel} className="space-y-4">
+                    <form onSubmit={handleSaveModel} className="admin-editor-form"><div className="admin-editor-body space-y-4">
                         {providers.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k5ca95d1d")} description={t("app.admin.dashboard.model.hub.page.k4119e026")}/>) : null}
                         <div className="space-y-2">
                             <Label htmlFor="model-provider">{t("app.admin.dashboard.model.hub.page.kc9371614")}</Label>
@@ -3693,7 +3693,7 @@ export default function ModelHubPage() {
                                 </p>
                             </div>
                         ) : null}
-                        <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button>
+                        </div><div className="admin-editor-footer"><Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button></div>
                     </form>
                 </DialogContent>
             </Dialog>

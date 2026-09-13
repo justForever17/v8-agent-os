@@ -1,4 +1,6 @@
 "use client";
+import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, KeyRound, Loader2, RefreshCw, Save, Shield, Server, Trash2, Wrench } from "lucide-react";
@@ -308,6 +310,7 @@ export default function SystemBasePage() {
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(initialEnvelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [saveError, setSaveError] = useState("");
     const [headscaleBusy, setHeadscaleBusy] = useState(false);
     const [headscaleApiKey, setHeadscaleApiKey] = useState("");
     const [headscaleUserId, setHeadscaleUserId] = useState("");
@@ -317,9 +320,14 @@ export default function SystemBasePage() {
     const [cloudflareProbeState, setCloudflareProbeState] = useState<"idle" | "probing" | "success" | "error">("idle");
     const [cloudflareProbeMessage, setCloudflareProbeMessage] = useState("");
 
+    const [loadError, setLoadError] = useState("");
     const loadData = async () => {
+        setLoadError("");
+        try {
         const next = await fetchConfigDomain<SystemBaseData>("system-base");
         setEnvelope(next);
+
+        } catch (error) { setLoadError(String(error)); }
     };
 
     useEffect(() => {
@@ -390,6 +398,8 @@ export default function SystemBasePage() {
     const saveAll = async () => {
         if (!envelope) return;
         setSaving(true);
+        setSaveError("");
+        setSaved(false);
         try {
             const next = await saveConfigDomain<SystemBaseData>("system-base", {
                 data: envelope.data,
@@ -397,6 +407,8 @@ export default function SystemBasePage() {
             setEnvelope(next);
             setSaved(true);
             window.setTimeout(() => setSaved(false), 1800);
+        } catch (error) {
+            setSaveError(`${t("admin.experience.saveFailed")} ${String(error)}`);
         } finally {
             setSaving(false);
         }
@@ -544,13 +556,7 @@ export default function SystemBasePage() {
         }));
     };
 
-    if (!envelope) {
-        return (
-            <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
-            </div>
-        );
-    }
+    if (!envelope) return <AdminLoadState title="app.admin.dashboard.system.base.page.k4a7de926" error={loadError} onRetry={() => void loadData()}/>;
 
     const bridge = envelope.data.bridge || {};
     const webFetch = envelope.data.webFetch || {};
@@ -592,10 +598,10 @@ export default function SystemBasePage() {
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
-                        <Button onClick={() => void saveAll()} disabled={saving}>
+                        <AdminSaveBar error={saveError}><Button onClick={() => void saveAll()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.system.base.page.k6010e1ed")}
-                        </Button>
+                        </Button></AdminSaveBar>
                     </div>
                 }
             />
@@ -614,8 +620,8 @@ export default function SystemBasePage() {
 
             <DomainSummaryStrip items={summaryItems} />
 
-            <div className="grid gap-4 xl:grid-cols-2">
-                <ConfigCard
+            <div className="grid gap-3">
+                <ConfigCard collapsible
                     title={t("app.admin.dashboard.system.base.page.kba82f34b")}
                     description={t("app.admin.dashboard.system.base.page.kfaf1d8eb")}
                     variant="editor"
@@ -702,7 +708,7 @@ export default function SystemBasePage() {
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
+                <ConfigCard collapsible
                     title={t("app.admin.dashboard.system.base.remoteLink.title")}
                     description={t("app.admin.dashboard.system.base.remoteLink.description")}
                     variant="editor"
@@ -1107,7 +1113,7 @@ export default function SystemBasePage() {
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
+                <ConfigCard collapsible
                     title={t("app.admin.dashboard.system.base.page.kf79a66a7")}
                     description={t("app.admin.dashboard.system.base.page.k6538874e")}
                     variant="editor"
@@ -1187,7 +1193,7 @@ export default function SystemBasePage() {
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
+                <ConfigCard collapsible
                     title={t("app.admin.dashboard.system.base.page.kc963695d")}
                     description={t("app.admin.dashboard.system.base.page.k59f74f45")}
                     variant="editor"
@@ -1282,7 +1288,7 @@ export default function SystemBasePage() {
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
+                <ConfigCard collapsible
                     title={t("app.admin.dashboard.system.base.page.ka8b76bc7")}
                     description={t("app.admin.dashboard.system.base.page.k94619878")}
                     variant="editor"
@@ -1465,7 +1471,7 @@ export default function SystemBasePage() {
                     </div>
                 </ConfigCard>
 
-                <ConfigCard
+                <ConfigCard collapsible
                     title={t("app.admin.dashboard.system.base.page.k5fd0ec33")}
                     description={t("app.admin.dashboard.system.base.page.k558ec5cd")}
                     variant="editor"
@@ -1497,7 +1503,7 @@ export default function SystemBasePage() {
                 </ConfigCard>
             </div>
 
-            <ConfigCard
+            <ConfigCard collapsible
                 title={t("app.admin.dashboard.system.base.page.ka4c0a095")}
                 description={t("app.admin.dashboard.system.base.page.k6cd110b1")}
                 bodyHeight="clamp"

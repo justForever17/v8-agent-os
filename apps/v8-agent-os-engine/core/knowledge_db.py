@@ -2895,6 +2895,7 @@ class KnowledgeDB:
         *,
         scope: Optional[str] = None,
         scopes: Optional[List[str]] = None,
+        include_global: bool = True,
     ) -> tuple[str, List[object]]:
         requested_scopes = list(dict.fromkeys(
             str(item or "").strip()
@@ -2910,7 +2911,7 @@ class KnowledgeDB:
         # Workspace isolation is expressed as a set of internal scope aliases.
         # The global layer is shared by every workspace and is therefore always
         # included in a workspace-scoped graph query.
-        if requested_scopes and "global" not in requested_scopes:
+        if include_global and requested_scopes and "global" not in requested_scopes:
             requested_scopes.append("global")
         placeholders = ",".join("?" for _ in requested_scopes)
         scope_clause = f" AND relation.scope IN ({placeholders})" if requested_scopes else ""
@@ -2933,6 +2934,76 @@ class KnowledgeDB:
             """,
             list(requested_scopes),
         )
+
+    def get_graph_cluster(self, *, scopes: List[str], node_limit: int = 30, edge_limit: int = 60,
+                          byte_limit: int = 65536) -> Dict:
+        """Bounded exact-scope projection. Empty scope sets never mean all scopes."""
+        if not scopes or "*" in scopes:
+            raise ValueError("knowledge_graph_exact_scopes_required")
+        node_limit = max(1, min(int(node_limit), 80))
+        edge_limit = max(1, min(int(edge_limit), 160))
+        byte_limit = max(2048, min(int(byte_limit), 65536))
+        active_sql, params = self._active_graph_relations_sql(scopes=scopes, include_global=False)
+        with self._conn() as conn:
+            # A single read transaction keeps totals, version and preview coherent.
+            conn.execute("BEGIN")
+            counts = conn.execute(f"""WITH active AS ({active_sql}), names AS (
+                SELECT subject AS name FROM active UNION SELECT object FROM active)
+                SELECT (SELECT COUNT(*) FROM names), COUNT(*), MAX(updated_at) FROM active""", params).fetchone()
+            rows = conn.execute(f"""WITH active AS ({active_sql}), endpoints AS (
+                SELECT subject AS name FROM active UNION ALL SELECT object FROM active),
+                degrees AS (SELECT name, COUNT(*) AS degree FROM endpoints GROUP BY name)
+                SELECT e.name, e.type, degrees.degree FROM entities e JOIN degrees ON degrees.name = e.name
+                ORDER BY degrees.degree DESC, e.name LIMIT ?""", [*params, node_limit]).fetchall()
+            nodes = [{"id": row[0], "label": row[0], "type": row[1], "val": row[2]} for row in rows]
+            names = [row[0] for row in rows]
+            links = []
+            if names:
+                placeholders = ",".join("?" for _ in names)
+                edges = conn.execute(f"""WITH active AS ({active_sql})
+                    SELECT id, subject, predicate, object, scope, confidence, updated_at FROM active
+                    WHERE subject IN ({placeholders}) AND object IN ({placeholders})
+                    ORDER BY id LIMIT ?""", [*params, *names, *names, edge_limit]).fetchall()
+                for row in edges:
+                    refs = conn.execute("SELECT evidence_ref FROM scoped_relation_evidence_refs WHERE relation_id = ? ORDER BY evidence_ref LIMIT 8", (row[0],)).fetchall()
+                    links.append({"relationId": row[0], "source": row[1], "label": row[2], "target": row[3],
+                                  "scope": row[4], "confidence": row[5], "version": row[6],
+                                  "evidenceRefs": [item[0] for item in refs]})
+        meta = {"totalEntities": int(counts[0]), "totalRelations": int(counts[1]),
+                "version": hashlib.sha256(json.dumps(list(counts)).encode("utf-8")).hexdigest()[:24], "nodeLimit": node_limit, "edgeLimit": edge_limit}
+        result = {"nodes": nodes, "links": links, "meta": meta}
+        def finish():
+            meta.update(renderedEntities=len(nodes), renderedRelations=len(links),
+                        truncated=len(nodes) < counts[0] or len(links) < counts[1])
+        finish()
+        while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > byte_limit and (links or nodes):
+            if links:
+                links.pop()
+            else:
+                nodes.pop()
+            finish()
+        return result
+
+    def query_graph_cluster_entity(self, *, entity: str, scopes: List[str], offset: int = 0, limit: int = 30) -> Dict:
+        if not scopes or "*" in scopes:
+            raise ValueError("knowledge_graph_exact_scopes_required")
+        active_sql, params = self._active_graph_relations_sql(scopes=scopes, include_global=False)
+        limit = max(1, min(int(limit), 50))
+        offset = max(0, int(offset))
+        entity = entity.lower()
+        with self._conn() as conn:
+            conn.execute("BEGIN")
+            where = "subject = ? OR object = ?"
+            total = conn.execute(f"WITH active AS ({active_sql}) SELECT COUNT(*) FROM active WHERE {where}", [*params, entity, entity]).fetchone()[0]
+            rows = conn.execute(f"""WITH active AS ({active_sql}) SELECT id, subject, predicate, object, scope, confidence, updated_at
+                FROM active WHERE {where} ORDER BY id LIMIT ? OFFSET ?""", [*params, entity, entity, limit, offset]).fetchall()
+        relations = [{"relationId": row[0], "subject": row[1], "predicate": row[2], "object": row[3], "scope": row[4],
+                      "confidence": row[5], "version": row[6], "direction": "out" if row[1] == entity else "in"} for row in rows]
+        while len(json.dumps(relations, ensure_ascii=False).encode("utf-8")) > 65536 and relations:
+            relations.pop()
+        return {"relations": relations, "total": total, "offset": offset,
+                "nextOffset": offset + len(relations) if relations and offset + len(relations) < total else None,
+                "partial": offset + len(relations) < total}
 
     def get_graph_stats(
         self,

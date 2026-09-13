@@ -1,1109 +1,181 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
-import { forceCollide, forceX, forceY } from "d3-force-3d";
-import { Link2, Loader2, Plus, Search, Sparkles, Trash2, Unlink2 } from "lucide-react";
+import { ArrowLeft, Link2, Loader2, Pause, Play, RefreshCw, Search, Trash2, Unlink2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useToast } from "@/components/ui/use-toast";
+import { Label } from "@/components/ui/label";
 import { useT } from "@/components/providers/LocaleProvider";
-import { tg } from "@/i18n/admin-legacy";
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
-  ssr: false,
-  loading: () => <div className="flex h-[620px] items-center justify-center rounded-3xl border border-border/60 bg-muted/10">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-});
-interface GraphNode {
-  id: string;
-  label: string;
-  type: string;
-  color: string;
-  val: number;
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-}
-interface GraphLink {
-  source: string | GraphNode;
-  target: string | GraphNode;
-  label: string;
-  confidence: number;
-}
-interface GraphData {
-  nodes: GraphNode[];
-  links: GraphLink[];
-  meta?: {
-    totalEntities: number;
-    totalRelations: number;
-    renderedEntities: number;
-    renderedRelations: number;
-    limit: number;
-    truncated: boolean;
-  };
-}
-interface GraphRelation {
-  direction: "out" | "in";
-  subject: string;
-  predicate: string;
-  object: string;
-  confidence: number;
-  scope?: string;
-}
-interface GraphWorkspaceOption {
-  workspaceKey: string;
-  workspaceId?: string | null;
-  projectId?: string | null;
-  workspacePath: string;
-  label: string;
-  isDefault: boolean;
-  relationCount: number;
-}
-interface GraphViewerProps {
-  filterNode?: string;
-}
-interface CanvasSize {
-  width: number;
-  height: number;
-}
-const DEFAULT_SIZE: CanvasSize = { width: 1200, height: 620 };
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-function normalizedNodeType(node: GraphNode) {
-  return String(node.type || "other").trim().toLowerCase() || "other";
-}
-function graphClusterKey(node: GraphNode, typeCounts: Map<string, number>) {
-  const type = normalizedNodeType(node);
-  return (typeCounts.get(type) || 0) >= 3 ? type : "other";
-}
-function hashNodeId(value: string) {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = hash * 31 + value.charCodeAt(index) >>> 0;
-  }
-  return hash;
-}
-function graphNodeRadius(node: GraphNode) {
-  const weight = Math.max(Number(node.val) || 3, 1);
-  return 6 + Math.sqrt(weight) * 4;
-}
-function graphScreenRadius(node: GraphNode, scale: number, globalScale: number) {
-  const zoom = Math.max(Number(globalScale) || 1, 0.35);
-  return graphNodeRadius(node) * scale / zoom;
-}
-function seedGraphData(graph: GraphData): GraphData {
-  const nodes = [...(graph.nodes || [])].map((node) => ({ ...node }));
-  const links = [...(graph.links || [])].map((link) => ({ ...link }));
-  const typeCounts = new Map<string, number>();
-  nodes.forEach((node) => {
-    const type = normalizedNodeType(node);
-    typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
-  });
-  const typeGroups = new Map<string, GraphNode[]>();
-  nodes.forEach((node) => {
-    const clusterKey = graphClusterKey(node, typeCounts);
-    const current = typeGroups.get(clusterKey) || [];
-    current.push(node);
-    typeGroups.set(clusterKey, current);
-  });
-  const orderedTypes = Array.from(typeGroups.keys()).sort((left, right) => {
-    const sizeOrder = (typeGroups.get(right)?.length || 0) - (typeGroups.get(left)?.length || 0);
-    return sizeOrder || left.localeCompare(right);
-  });
-  orderedTypes.forEach((type, typeIndex) => {
-    const group = [...(typeGroups.get(type) || [])].sort((left, right) => left.id.localeCompare(right.id));
-    const clusterAngle = typeIndex * GOLDEN_ANGLE - Math.PI / 2;
-    const clusterDistance = orderedTypes.length <= 1 || typeIndex === 0
-      ? 0
-      : Math.min(248, 128 + Math.sqrt(typeIndex) * 52);
-    const clusterX = Math.cos(clusterAngle) * clusterDistance;
-    const clusterY = Math.sin(clusterAngle) * clusterDistance;
-    group.forEach((node, nodeIndex) => {
-    if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
-      node.vx = 0;
-      node.vy = 0;
-      return;
-    }
-    const hash = hashNodeId(node.id);
-    const angle = nodeIndex * GOLDEN_ANGLE + (hash % 29 / 29 - 0.5) * 0.22;
-    const radius = nodeIndex === 0 ? 0 : 34 + Math.sqrt(nodeIndex) * 38 + hash % 11;
-    node.x = clusterX + Math.cos(angle) * radius;
-    node.y = clusterY + Math.sin(angle) * radius;
-    node.vx = 0;
-    node.vy = 0;
-    });
-  });
-  return { nodes, links, meta: graph.meta };
-}
-function preserveGraphPositions(next: GraphData, current: GraphData | null): GraphData {
-  if (!current?.nodes?.length) return next;
-  const positions = new Map(current.nodes.map((node) => [node.id, node]));
-  return {
-    ...next,
-    nodes: next.nodes.map((node) => {
-      const previous = positions.get(node.id);
-      return previous && Number.isFinite(previous.x) && Number.isFinite(previous.y)
-        ? { ...node, x: previous.x, y: previous.y, vx: previous.vx, vy: previous.vy }
-        : node;
-    }),
-  };
-}
-export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
-  const { toast } = useToast();
-  const t = useT();
-  const [data, setData] = useState<GraphData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [relations, setRelations] = useState<GraphRelation[]>([]);
-  const [menuPosition, setMenuPosition] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
-  const [graphSize, setGraphSize] = useState<CanvasSize>(DEFAULT_SIZE);
-  const [connectTarget, setConnectTarget] = useState("");
-  const [connectPredicate, setConnectPredicate] = useState("RELATED_TO");
-  const [menuMode, setMenuMode] = useState<"summary" | "root" | "connect" | "disconnect">("summary");
-  const [mutating, setMutating] = useState(false);
-  const [reducedMotion, setReducedMotion] = useState(false);
-  const [motionClock, setMotionClock] = useState(0);
-  const [graphWorkspaces, setGraphWorkspaces] = useState<GraphWorkspaceOption[]>([]);
-  const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState("");
-  const [workspaceReady, setWorkspaceReady] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const labelBoxesRef = useRef<Array<{
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  }>>([]);
-  const guidedFilterRef = useRef("");
-  const autoFitPendingRef = useRef(true);
-  const graphRequestIdRef = useRef(0);
-  const graphResponseSignatureRef = useRef("");
-  const relationRequestIdRef = useRef(0);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const fgRef = useRef<any>(null);
-  const normalizedFilter = filterNode.trim().toLowerCase();
-  const selectedWorkspace = useMemo(
-    () => graphWorkspaces.find((item) => item.workspaceKey === selectedWorkspaceKey) || null,
-    [graphWorkspaces, selectedWorkspaceKey],
-  );
-  const selectedNode = useMemo(() => data?.nodes.find((node) => node.id === selectedNodeId) || null, [data?.nodes, selectedNodeId]);
-  const firstRenderableNodeId = useMemo(() => data?.nodes?.[0]?.id ?? null, [data?.nodes]);
-  const selectedNeighborhood = useMemo(() => {
-    if (!selectedNodeId || !data?.links?.length) {
-      return new Set<string>();
-    }
-    const related = new Set<string>([selectedNodeId]);
-    data.links.forEach((link) => {
-      const sourceId = typeof link.source === "string" ? link.source : link.source.id;
-      const targetId = typeof link.target === "string" ? link.target : link.target.id;
-      if (sourceId === selectedNodeId) {
-        related.add(targetId);
-      }
-      if (targetId === selectedNodeId) {
-        related.add(sourceId);
-      }
-    });
-    return related;
-  }, [data?.links, selectedNodeId]);
-  const hoveredNeighborhood = useMemo(() => {
-    if (!hoveredNodeId || !data?.links?.length) {
-      return new Set<string>();
-    }
-    const related = new Set<string>([hoveredNodeId]);
-    data.links.forEach((link) => {
-      const sourceId = typeof link.source === "string" ? link.source : link.source.id;
-      const targetId = typeof link.target === "string" ? link.target : link.target.id;
-      if (sourceId === hoveredNodeId) {
-        related.add(targetId);
-      }
-      if (targetId === hoveredNodeId) {
-        related.add(sourceId);
-      }
-    });
-    return related;
-  }, [data?.links, hoveredNodeId]);
-  const matchedNodeIds = useMemo(() => {
-    if (!normalizedFilter) {
-      return new Set<string>();
-    }
-    return new Set((data?.nodes || []).
-    filter((node) => node.id.toLowerCase().includes(normalizedFilter) || node.label.toLowerCase().includes(normalizedFilter)).
-    map((node) => node.id));
-  }, [data?.nodes, normalizedFilter]);
-  const nodeDegrees = useMemo(() => {
-    const degrees = new Map<string, number>();
-    (data?.nodes || []).forEach((node) => degrees.set(node.id, 0));
-    (data?.links || []).forEach((link) => {
-      const sourceId = typeof link.source === "string" ? link.source : link.source.id;
-      const targetId = typeof link.target === "string" ? link.target : link.target.id;
-      degrees.set(sourceId, (degrees.get(sourceId) || 0) + 1);
-      degrees.set(targetId, (degrees.get(targetId) || 0) + 1);
-    });
-    return degrees;
-  }, [data?.links, data?.nodes]);
-  const labelDegreeThreshold = useMemo(() => {
-    const values = Array.from(nodeDegrees.values()).sort((left, right) => right - left);
-    if (values.length <= 36) return 0;
-    return values[Math.min(values.length - 1, Math.max(8, Math.floor(values.length * 0.18)))] || 1;
-  }, [nodeDegrees]);
-  const getNodeScale = useCallback((nodeId: string) => {
-    const isSelected = nodeId === selectedNodeId;
-    const isHovered = nodeId === hoveredNodeId;
-    const isMatched = matchedNodeIds.has(nodeId);
-    const isSelectedNeighbor = selectedNeighborhood.has(nodeId);
-    if (isSelected)
-    return 1.28;
-    if (isHovered)
-    return 1.14;
-    if (isMatched)
-    return 1.08;
-    if (isSelectedNeighbor)
-    return 1.02;
-    return 0.94;
-  }, [hoveredNodeId, matchedNodeIds, selectedNeighborhood, selectedNodeId]);
-  const getNodeMotion = useCallback((node: GraphNode) => {
-    if (reducedMotion) return { x: 0, y: 0, pulse: 1 };
-    const hash = hashNodeId(node.id);
-    const phase = motionClock * 0.00034 + hash % 360 / 57.2958;
-    const isFocused = node.id === selectedNodeId || node.id === hoveredNodeId;
-    const densityScale = (data?.nodes.length || 0) > 80 ? 0.55 : 0.9;
-    const amplitude = isFocused ? densityScale * 0.25 : densityScale;
-    return {
-      x: Math.sin(phase) * amplitude,
-      y: Math.cos(phase * 0.83) * amplitude,
-      pulse: 1 + Math.sin(phase * 1.17) * (isFocused ? 0.012 : 0.025),
-    };
-  }, [data?.nodes.length, hoveredNodeId, motionClock, reducedMotion, selectedNodeId]);
-  const focusPrimaryGraph = useCallback((duration = 0) => {
-    if (!data?.nodes.length || !fgRef.current) return;
-    const positioned = data.nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
-    const focusNodes = positioned.filter((node) => (nodeDegrees.get(node.id) || 0) > 0);
-    const nodes = focusNodes.length ? focusNodes : positioned;
-    if (!nodes.length) return;
-    const xs = nodes.flatMap((node) => {
-      const radius = graphNodeRadius(node) + 18;
-      return [Number(node.x) - radius, Number(node.x) + radius];
-    });
-    const ys = nodes.flatMap((node) => {
-      const radius = graphNodeRadius(node) + 18;
-      return [Number(node.y) - radius, Number(node.y) + radius];
-    });
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    const width = Math.max(1, maxX - minX);
-    const height = Math.max(1, maxY - minY);
-    const zoom = Math.max(0.62, Math.min(1.24, Math.min(
-      (graphSize.width - 180) / width,
-      (graphSize.height - 150) / height,
-    )));
-    fgRef.current.centerAt?.((minX + maxX) / 2, (minY + maxY) / 2, duration);
-    fgRef.current.zoom?.(zoom, duration);
-  }, [data, graphSize.height, graphSize.width, nodeDegrees]);
-  const getLabelOpacity = useCallback((nodeId: string) => {
-    const isSelected = nodeId === selectedNodeId;
-    const isHovered = nodeId === hoveredNodeId;
-    const isMatched = matchedNodeIds.has(nodeId);
-    const isRelated = selectedNeighborhood.has(nodeId) || hoveredNeighborhood.has(nodeId);
-    const hasSearchFocus = matchedNodeIds.size > 0;
-    if (isSelected)
-    return 0.98;
-    if (isHovered)
-    return 0.9;
-    if (isMatched)
-    return 0.72;
-    if (isRelated)
-    return 0.3;
-    if (hasSearchFocus)
-    return 0;
-    const degree = nodeDegrees.get(nodeId) || 0;
-    if ((data?.nodes.length || 0) <= 36)
-    return 0.48;
-    if (degree >= labelDegreeThreshold)
-    return 0.36;
-    return 0.035;
-  }, [data?.nodes.length, hoveredNeighborhood, hoveredNodeId, labelDegreeThreshold, matchedNodeIds, nodeDegrees, selectedNeighborhood, selectedNodeId]);
-  const targetSuggestions = useMemo(() => {
-    if (!connectTarget.trim()) {
-      return (data?.nodes || []).filter((node) => node.id !== selectedNodeId).slice(0, 6);
-    }
-    const keyword = connectTarget.trim().toLowerCase();
-    return (data?.nodes || []).
-    filter((node) => node.id !== selectedNodeId).
-    filter((node) => node.id.toLowerCase().includes(keyword) || node.label.toLowerCase().includes(keyword)).
-    slice(0, 6);
-  }, [connectTarget, data?.nodes, selectedNodeId]);
-  const closeMenu = useCallback(() => {
-    relationRequestIdRef.current += 1;
-    setMenuMode("summary");
-    setMenuPosition(null);
-    setRelations([]);
-    setConnectTarget("");
-    setConnectPredicate("RELATED_TO");
-    setSelectedNodeId(null);
-  }, []);
-  const loadGraphWorkspaces = useCallback(async () => {
-    try {
-      const res = await fetch("/api/memory/graph?workspaces=1");
-      if (!res.ok) throw new Error(`Workspace load failed: ${res.status}`);
-      const json = await res.json();
-      const options = Array.isArray(json?.items) ? json.items as GraphWorkspaceOption[] : [];
-      setGraphWorkspaces(options);
-      setSelectedWorkspaceKey(String(json?.defaultWorkspaceKey || ""));
-    } catch (error) {
-      console.error("Failed to load graph workspaces:", error);
-      setGraphWorkspaces([]);
-      setSelectedWorkspaceKey("");
-    } finally {
-      setWorkspaceReady(true);
-    }
-  }, []);
-  const loadGraph = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    const requestId = ++graphRequestIdRef.current;
-    if (!workspaceReady) return;
-    if (!selectedWorkspaceKey) {
-      graphResponseSignatureRef.current = "";
-      setData({ nodes: [], links: [] });
-      setLoading(false);
-      return;
-    }
-    if (!silent) setLoading(true);
-    try {
-      const res = await fetch(`/api/memory/graph?workspaceKey=${encodeURIComponent(selectedWorkspaceKey)}`);
-      if (!res.ok) {
-        throw new Error(`Load failed: ${res.status}`);
-      }
-      const json = await res.json();
-      if (requestId !== graphRequestIdRef.current) return;
-      const responseSignature = `${selectedWorkspaceKey}:${JSON.stringify(json)}`;
-      if (responseSignature === graphResponseSignatureRef.current) return;
-      graphResponseSignatureRef.current = responseSignature;
-      if (!silent) autoFitPendingRef.current = true;
-      const nextGraph = seedGraphData(json);
-      setData((current) => silent ? preserveGraphPositions(nextGraph, current) : nextGraph);
-    }
-    catch (err) {
-      if (requestId !== graphRequestIdRef.current) return;
-      console.error("Failed to load full graph:", err);
-      if (!silent) {
-        toast({
-          title: t("components.memory.GraphViewer.k0a0a7635"),
-          description: t("components.memory.GraphViewer.kc39f4757"),
-          variant: "destructive"
-        });
-      }
-    } finally
-    {
-      if (requestId === graphRequestIdRef.current) setLoading(false);
-    }
-  }, [selectedWorkspaceKey, t, toast, workspaceReady]);
-  const loadEntityRelations = useCallback(async (entityId: string) => {
-    const requestId = ++relationRequestIdRef.current;
-    if (!selectedWorkspaceKey) {
-      setRelations([]);
-      return;
-    }
-    try {
-      const res = await fetch(`/api/memory/graph?entity=${encodeURIComponent(entityId)}&workspaceKey=${encodeURIComponent(selectedWorkspaceKey)}`);
-      if (!res.ok) {
-        throw new Error(`Relation query failed: ${res.status}`);
-      }
-      const json = await res.json();
-      if (requestId !== relationRequestIdRef.current) return;
-      setRelations(Array.isArray(json?.relations) ? json.relations : []);
-    }
-    catch (error) {
-      if (requestId !== relationRequestIdRef.current) return;
-      console.error("Failed to query entity relations:", error);
-      setRelations([]);
-      toast({
-        title: t("components.memory.GraphViewer.k4581cc9f"),
-        description: t("components.memory.GraphViewer.ka695eebd"),
-        variant: "destructive"
-      });
-    }
-  }, [selectedWorkspaceKey, t, toast]);
-  useEffect(() => {
-    void loadGraphWorkspaces();
-  }, [loadGraphWorkspaces]);
-  useEffect(() => {
-    void loadGraph();
-  }, [loadGraph]);
-  useEffect(() => {
-    closeMenu();
-  }, [closeMenu, selectedWorkspaceKey]);
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element || typeof ResizeObserver === "undefined") {
-      return;
-    }
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry)
-      return;
-      const width = Math.max(420, Math.floor(entry.contentRect.width));
-      const height = Math.max(620, Math.floor(entry.contentRect.height));
-      setGraphSize({ width, height });
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  useEffect(() => {
-    const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    if (!media) return;
-    const update = () => setReducedMotion(media.matches);
-    update();
-    media.addEventListener?.("change", update);
-    return () => media.removeEventListener?.("change", update);
-  }, []);
-  useEffect(() => {
-    if (reducedMotion || !data?.nodes.length) return;
-    let animationFrame = 0;
-    let lastPaintAt = 0;
-    const paint = (timestamp: number) => {
-      if (timestamp - lastPaintAt >= 33 && document.visibilityState === "visible") {
-        setMotionClock(timestamp);
-        lastPaintAt = timestamp;
-      }
-      animationFrame = window.requestAnimationFrame(paint);
-    };
-    animationFrame = window.requestAnimationFrame(paint);
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [data?.nodes.length, reducedMotion]);
-  useEffect(() => {
-    if (!data?.nodes.length || !autoFitPendingRef.current) return;
-    let secondFrame = 0;
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
-        if (!autoFitPendingRef.current) return;
-        autoFitPendingRef.current = false;
-        focusPrimaryGraph();
-      });
-    });
-    return () => {
-      window.cancelAnimationFrame(firstFrame);
-      if (secondFrame) window.cancelAnimationFrame(secondFrame);
-    };
-  }, [data, focusPrimaryGraph]);
-  useEffect(() => {
-    if (!data?.nodes.length || !fgRef.current) {
-      return;
-    }
-    const typeCounts = new Map<string, number>();
-    data.nodes.forEach((node) => {
-      const type = normalizedNodeType(node);
-      typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
-    });
-    const clusterGroups = new Map<string, GraphNode[]>();
-    data.nodes.forEach((node) => {
-      const key = graphClusterKey(node, typeCounts);
-      const group = clusterGroups.get(key) || [];
-      group.push(node);
-      clusterGroups.set(key, group);
-    });
-    const clusterNames = Array.from(clusterGroups.keys()).sort((left, right) => {
-      const sizeOrder = (clusterGroups.get(right)?.length || 0) - (clusterGroups.get(left)?.length || 0);
-      return sizeOrder || left.localeCompare(right);
-    });
-    const centers = new Map(clusterNames.map((type, index) => {
-      const angle = index * GOLDEN_ANGLE - Math.PI / 2;
-      const distance = clusterNames.length <= 1 || index === 0
-        ? 0
-        : Math.min(380, 190 + Math.sqrt(index) * 78);
-      return [type, { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance }] as const;
-    }));
-    const nodeTargets = new Map<string, { x: number; y: number }>();
-    clusterNames.forEach((clusterName) => {
-      const center = centers.get(clusterName) || { x: 0, y: 0 };
-      const group = [...(clusterGroups.get(clusterName) || [])].sort((left, right) => left.id.localeCompare(right.id));
-      group.forEach((node, index) => {
-        const hash = hashNodeId(node.id);
-        const angle = index * GOLDEN_ANGLE + (hash % 31 / 31 - 0.5) * 0.2;
-        const radius = index === 0 ? 0 : 26 + Math.sqrt(index) * 24;
-        nodeTargets.set(node.id, {
-          x: center.x + Math.cos(angle) * radius,
-          y: center.y + Math.sin(angle) * radius,
-        });
-      });
-    });
-    const nodeCount = data.nodes.length;
-    fgRef.current.d3Force("charge")?.strength?.((node: GraphNode) => {
-      const degree = nodeDegrees.get(node.id) || 0;
-      return -210 - Math.min(Math.sqrt(nodeCount) * 8, 110) - Math.min(degree * 8, 112);
-    });
-    fgRef.current.d3Force("link")?.distance?.((link: GraphLink) => {
-      const sourceId = typeof link.source === "string" ? link.source : link.source.id;
-      const targetId = typeof link.target === "string" ? link.target : link.target.id;
-      const sourceDegree = nodeDegrees.get(sourceId) || 0;
-      const targetDegree = nodeDegrees.get(targetId) || 0;
-      return 118 + Math.min(Math.sqrt(nodeCount) * 3.2, 42) + Math.min((sourceDegree + targetDegree) * 2.6, 58);
-    });
-    fgRef.current.d3Force("link")?.strength?.((link: GraphLink) => {
-      const sourceId = typeof link.source === "string" ? link.source : link.source.id;
-      const targetId = typeof link.target === "string" ? link.target : link.target.id;
-      const sourceDegree = nodeDegrees.get(sourceId) || 0;
-      const targetDegree = nodeDegrees.get(targetId) || 0;
-      return Math.max(0.022, 0.065 - Math.min((sourceDegree + targetDegree) * 0.0016, 0.038));
-    });
-    fgRef.current.d3Force("collision", forceCollide().
-    radius((node: GraphNode) => {
-      const degree = nodeDegrees.get(node.id) || 0;
-      const labelAllowance = Math.min(String(node.label || node.id).length * 0.32, 8);
-      return Math.max(graphNodeRadius(node) * 1.45 + Math.min(degree * 0.45, 8) + labelAllowance, 24);
-    }).
-    strength(0.98).
-    iterations(2));
-    fgRef.current.d3Force("center-x", forceX((node: GraphNode) => nodeTargets.get(node.id)?.x || 0).strength(0.12));
-    fgRef.current.d3Force("center-y", forceY((node: GraphNode) => nodeTargets.get(node.id)?.y || 0).strength(0.12));
-    fgRef.current.d3ReheatSimulation?.();
-  }, [data, graphSize.height, graphSize.width, nodeDegrees]);
-  useEffect(() => {
-    if (!selectedNodeId) {
-      return;
-    }
-    void loadEntityRelations(selectedNodeId);
-  }, [loadEntityRelations, selectedNodeId]);
-  useEffect(() => {
-    if (!fgRef.current || !data?.nodes.length) {
-      return;
-    }
-    if (!normalizedFilter) {
-      guidedFilterRef.current = "";
-      return;
-    }
-    if (guidedFilterRef.current === normalizedFilter || matchedNodeIds.size === 0) {
-      return;
-    }
-    const matchedNodes = data.nodes.filter((node) => matchedNodeIds.has(node.id) && Number.isFinite(node.x) && Number.isFinite(node.y));
-    if (matchedNodes.length === 0) {
-      return;
-    }
-    const centerX = matchedNodes.reduce((sum, node) => sum + (node.x || 0), 0) / matchedNodes.length;
-    const centerY = matchedNodes.reduce((sum, node) => sum + (node.y || 0), 0) / matchedNodes.length;
-    fgRef.current.centerAt?.(centerX, centerY, 680);
-    const currentZoom = typeof fgRef.current.zoom === "function" ? fgRef.current.zoom() : 1;
-    const targetZoom = matchedNodes.length === 1 ? 1.28 : 1.08;
-    if (typeof currentZoom === "number" && currentZoom < targetZoom) {
-      fgRef.current.zoom?.(targetZoom, 680);
-    }
-    guidedFilterRef.current = normalizedFilter;
-  }, [data?.nodes, matchedNodeIds, normalizedFilter]);
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!menuRef.current) {
-        return;
-      }
-      if (!menuRef.current.contains(event.target as Node)) {
-        closeMenu();
-      }
-    };
-    window.addEventListener("pointerdown", handlePointerDown);
-    return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [closeMenu]);
-  const refreshGraphState = useCallback(async () => {
-    await loadGraph({ silent: true });
-    if (selectedNodeId) {
-      await loadEntityRelations(selectedNodeId);
-    }
-  }, [loadEntityRelations, loadGraph, selectedNodeId]);
-  useEffect(() => {
-    const refreshVisibleGraph = () => {
-      if (document.visibilityState === "visible") {
-        void refreshGraphState();
-      }
-    };
-    const interval = window.setInterval(refreshVisibleGraph, 5_000);
-    window.addEventListener("focus", refreshVisibleGraph);
-    document.addEventListener("visibilitychange", refreshVisibleGraph);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshVisibleGraph);
-      document.removeEventListener("visibilitychange", refreshVisibleGraph);
-    };
-  }, [refreshGraphState]);
-  const handleDeleteNode = useCallback(async () => {
-    if (!selectedNode || !selectedWorkspaceKey) {
-      return;
-    }
-    if (!window.confirm(t("components.memory.GraphViewer.k30907e46", {
-      selectedNode_id: selectedNode.id
-    }))) {
-      return;
-    }
-    setMutating(true);
-    try {
-      const res = await fetch("/api/memory/graph", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "delete_entity",
-          name: selectedNode.id,
-          workspaceKey: selectedWorkspaceKey,
-        })
-      });
-      if (!res.ok) {
-        throw new Error(`Delete failed: ${res.status}`);
-      }
-      toast({
-        title: t("components.memory.GraphViewer.k99a1de8e"),
-        description: t("components.memory.GraphViewer.k45db347e", {
-          selectedNode_label: selectedNode.label
-        })
-      });
-      closeMenu();
-      await loadGraph();
-    }
-    catch (error) {
-      console.error("Failed to delete node:", error);
-      toast({
-        title: t("components.memory.GraphViewer.k0915ccdf"),
-        description: t("components.memory.GraphViewer.k70149133"),
-        variant: "destructive"
-      });
-    } finally
-    {
-      setMutating(false);
-    }
-  }, [closeMenu, loadGraph, selectedNode, selectedWorkspaceKey, t, toast]);
-  const handleCreateRelation = useCallback(async () => {
-    if (!selectedNode || !selectedWorkspaceKey) {
-      return;
-    }
-    const target = connectTarget.trim().toLowerCase();
-    const predicate = connectPredicate.trim().toUpperCase();
-    if (!target || !predicate) {
-      toast({
-        title: t("components.memory.GraphViewer.kcffa7b82"),
-        description: t("components.memory.GraphViewer.kcee3c374"),
-        variant: "destructive"
-      });
-      return;
-    }
-    setMutating(true);
-    try {
-      const res = await fetch("/api/memory/graph", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "add_relation",
-          subject: selectedNode.id,
-          predicate,
-          object: target,
-          confidence: 1.0,
-          maintainerSource: "human_admin",
-          workspaceKey: selectedWorkspaceKey,
-        })
-      });
-      if (!res.ok) {
-        throw new Error(`Create relation failed: ${res.status}`);
-      }
-      toast({
-        title: t("components.memory.GraphViewer.k15e9fe40"),
-        description: `${selectedNode.id} -[${predicate}]-> ${target}`
-      });
-      setMenuMode("disconnect");
-      setConnectTarget("");
-      setConnectPredicate("RELATED_TO");
-      await refreshGraphState();
-    }
-    catch (error) {
-      console.error("Failed to create relation:", error);
-      toast({
-        title: t("components.memory.GraphViewer.k4375bb96"),
-        description: t("components.memory.GraphViewer.k0a92a8cb"),
-        variant: "destructive"
-      });
-    } finally
-    {
-      setMutating(false);
-    }
-  }, [connectPredicate, connectTarget, refreshGraphState, selectedNode, selectedWorkspaceKey, t, toast]);
-  const handleDeleteRelation = useCallback(async (relation: GraphRelation) => {
-    if (!selectedWorkspaceKey || relation.scope === "global") return;
-    setMutating(true);
-    try {
-      const res = await fetch("/api/memory/graph", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "delete_relation",
-          subject: relation.subject,
-          predicate: relation.predicate,
-          object: relation.object,
-          scope: relation.scope,
-          workspaceKey: selectedWorkspaceKey,
-        })
-      });
-      if (!res.ok) {
-        throw new Error(`Delete relation failed: ${res.status}`);
-      }
-      toast({
-        title: t("components.memory.GraphViewer.kf91b5e0e"),
-        description: t("components.memory.GraphViewer.k9a809092", {
-          relation_subject: relation.subject,
-          relation_object: relation.object
-        })
-      });
-      await refreshGraphState();
-    }
-    catch (error) {
-      console.error("Failed to delete relation:", error);
-      toast({
-        title: t("components.memory.GraphViewer.kcea2a810"),
-        description: t("components.memory.GraphViewer.k5b4be0f6"),
-        variant: "destructive"
-      });
-    } finally
-    {
-      setMutating(false);
-    }
-  }, [refreshGraphState, selectedWorkspaceKey, t, toast]);
-  const handleNodeClick = useCallback(async (node: object, event: MouseEvent) => {
-    const nextNode = node as GraphNode;
-    setSelectedNodeId(nextNode.id);
-    setMenuMode("summary");
-    const containerRect = containerRef.current?.getBoundingClientRect();
-    const posX = containerRect ? event.clientX - containerRect.left : 24;
-    const posY = containerRect ? event.clientY - containerRect.top : 24;
-    setMenuPosition({ x: Math.min(posX + 12, graphSize.width - 280), y: Math.min(posY + 12, graphSize.height - 220) });
-    await loadEntityRelations(nextNode.id);
-  }, [graphSize.height, graphSize.width, loadEntityRelations]);
-  const handleBackgroundClick = useCallback(() => {
-    if (menuPosition || selectedNodeId) {
-      closeMenu();
-    }
-  }, [closeMenu, menuPosition, selectedNodeId]);
-  const isLinkHighlighted = useCallback((link: GraphLink) => {
-    const sourceId = typeof link.source === "string" ? link.source : link.source.id;
-    const targetId = typeof link.target === "string" ? link.target : link.target.id;
-    if (selectedNodeId) {
-      return sourceId === selectedNodeId || targetId === selectedNodeId;
-    }
-    if (hoveredNodeId) {
-      return sourceId === hoveredNodeId || targetId === hoveredNodeId;
-    }
-    if (!normalizedFilter) {
-      return true;
-    }
-    return matchedNodeIds.has(sourceId) || matchedNodeIds.has(targetId) || link.label.toLowerCase().includes(normalizedFilter);
-  }, [hoveredNodeId, matchedNodeIds, normalizedFilter, selectedNodeId]);
-  const workspaceSelector = workspaceReady && graphWorkspaces.length > 0 ? <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border border-border/50 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
-             <span className="sr-only">{t("components.memory.GraphViewer.workspaceLabel")}</span>
-            <Select
-              value={selectedWorkspaceKey}
-              onValueChange={setSelectedWorkspaceKey}
-            >
-              <SelectTrigger className="h-6 w-56 border-0 bg-transparent px-0 py-0 text-xs text-foreground shadow-none focus:ring-0" aria-label={t("components.memory.GraphViewer.workspaceLabel")}>
-                <SelectValue placeholder={t("components.memory.GraphViewer.chooseWorkspace")} />
-              </SelectTrigger>
-              <SelectContent className="max-w-[min(44rem,calc(100vw-2rem))]">
-                {graphWorkspaces.map((option) => <SelectItem key={option.workspaceKey} value={option.workspaceKey}>
-                  {option.label}{option.isDefault ? `（${t("components.memory.GraphViewer.defaultWorkspace")}）` : ""} — {option.workspacePath} · {option.relationCount}
-                </SelectItem>)}
-              </SelectContent>
-            </Select>
-        </div> : null;
-  if (loading) {
-    return <div className="relative flex h-[620px] items-center justify-center rounded-3xl border border-border/60 bg-muted/10">
-                {workspaceSelector}
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>;
-  }
-  if (!data || data.nodes.length === 0) {
-    return <div className="relative flex h-[620px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/10">
-                {workspaceSelector}
-                <p className="mb-2 text-muted-foreground">{t("components.memory.GraphViewer.kc8e2fe51")}</p>
-                <p className="text-xs text-muted-foreground/70">
-                  {selectedWorkspace ? t("components.memory.GraphViewer.k46f71c00") : t("components.memory.GraphViewer.workspaceUnavailable")}
-                </p>
-            </div>;
-  }
-  return <div ref={containerRef} className="relative h-[620px] w-full overflow-hidden rounded-3xl border border-border/60 bg-[radial-gradient(circle_at_center,rgba(99,102,241,0.12),transparent_42%),radial-gradient(circle_at_24%_22%,rgba(56,189,248,0.12),transparent_28%),radial-gradient(circle_at_78%_18%,rgba(16,185,129,0.08),transparent_24%),linear-gradient(180deg,rgba(15,23,42,0.16),rgba(2,6,23,0.02))]">
-            <div className="pointer-events-none absolute inset-0">
-                <div className="absolute left-1/2 top-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/10 blur-3xl" />
-            </div>
+import GalaxyCanvas from "./GalaxyCanvas";
+import { visualNodeId, type GalaxyCluster, type GalaxyNode } from "./galaxy-layout";
 
-            {workspaceSelector}
+type Relation = { relationId: string; subject: string; predicate: string; object: string; scope: string; confidence: number; version: string };
+type Selection = { cluster: GalaxyCluster; node: GalaxyNode };
+type RelationPage = { relations: Relation[]; total: number; nextOffset: number | null };
+const GRAPH_URL = "/api/memory/graph";
 
-            <div className="pointer-events-none absolute right-4 top-4 z-10 rounded-full border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
-                {data.meta?.truncated ? t("components.memory.GraphViewer.graphCountTruncated", {
-      renderedNodeCount: data.meta.renderedEntities,
-      totalNodeCount: data.meta.totalEntities,
-      renderedRelationCount: data.meta.renderedRelations,
-      totalRelationCount: data.meta.totalRelations
-    }) : t("components.memory.GraphViewer.graphCount", {
-      nodeCount: data.meta?.totalEntities ?? data.nodes.length,
-      relationCount: data.meta?.totalRelations ?? data.links.length
-    })}
-            </div>
+async function readGraph(query: URLSearchParams, signal?: AbortSignal) {
+    const response = await fetch(`${GRAPH_URL}?${query}`, { signal, cache: "no-store" });
+    const value = await response.json();
+    if (!response.ok) throw new Error(String(value.detail || value.error || response.status));
+    return value;
+}
 
+export default function GraphViewer({ filterNode = "" }: { filterNode?: string }) {
+    const t = useT();
+    const [clusters, setClusters] = useState<GalaxyCluster[]>([]);
+    const [selected, setSelected] = useState<string | null>(null);
+    const [nodeSelection, setNodeSelection] = useState<Selection | null>(null);
+    const [query, setQuery] = useState(filterNode);
+    const [page, setPage] = useState(0);
+    const [nextPage, setNextPage] = useState<number | null>(null);
+    const [total, setTotal] = useState(0);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+    const [paused, setPaused] = useState(false);
+    const [reduced, setReduced] = useState(false);
+    const [relations, setRelations] = useState<RelationPage>({ relations: [], total: 0, nextOffset: null });
+    const [relationOffset, setRelationOffset] = useState(0);
+    const [relationLoading, setRelationLoading] = useState(false);
+    const [mode, setMode] = useState<"summary" | "root" | "connect" | "disconnect">("summary");
+    const [target, setTarget] = useState("");
+    const [predicate, setPredicate] = useState("RELATED_TO");
+    const [mutating, setMutating] = useState(false);
+    const busy = useRef(false);
+    const overviewRequest = useRef<AbortController | null>(null);
+    const selectionRef = useRef<Selection | null>(null);
+    const host = useRef<HTMLDivElement>(null);
+    const lastRead = useRef(0);
+    const draft = mode === "connect" && (Boolean(target.trim()) || predicate !== "RELATED_TO");
+    const activeCluster = clusters.find(item => item.clusterId === selected);
 
+    const load = useCallback(async (offset: number, force = false) => {
+        if (overviewRequest.current && !force) return;
+        overviewRequest.current?.abort();
+        const controller = new AbortController(); overviewRequest.current = controller;
+        setLoading(true);
+        try {
+            const data = await readGraph(new URLSearchParams({ overview: "1", offset: String(offset) }), controller.signal);
+            if (controller.signal.aborted) return;
+            setClusters(current => {
+                const global = current.find(item => item.clusterId === "global");
+                return offset && global ? [global, ...data.items] : data.items;
+            });
+            setTotal(data.totalWorkspaces); setNextPage(data.nextOffset); setError(""); lastRead.current = Date.now();
+        } catch (reason) { if (!controller.signal.aborted) setError(String(reason)); }
+        finally { if (overviewRequest.current === controller) { overviewRequest.current = null; setLoading(false); } }
+    }, []);
+    useEffect(() => { void load(page, true); return () => overviewRequest.current?.abort(); }, [load, page]);
+    useEffect(() => {
+        const media = matchMedia("(prefers-reduced-motion: reduce)");
+        const update = () => setReduced(media.matches);
+        const initial = requestAnimationFrame(update); media.addEventListener("change", update);
+        return () => { cancelAnimationFrame(initial); media.removeEventListener("change", update); };
+    }, []);
+    useEffect(() => {
+        if (selected || nodeSelection) return;
+        let visible = false;
+        const refresh = () => { if (visible && !document.hidden && Date.now() - lastRead.current > 30000) void load(page); };
+        const observer = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; refresh(); });
+        if (host.current) observer.observe(host.current);
+        document.addEventListener("visibilitychange", refresh);
+        window.addEventListener("focus", refresh);
+        return () => { observer.disconnect(); document.removeEventListener("visibilitychange", refresh); window.removeEventListener("focus", refresh); };
+    }, [load, page, selected, nodeSelection]);
+    useEffect(() => {
+        if (!selected) return;
+        const controller = new AbortController();
+        void readGraph(new URLSearchParams({ overview: "1", clusterId: selected }), controller.signal).then(data => {
+            if (!controller.signal.aborted) setClusters(current => current.map(item => item.clusterId === selected ? data.items[0] : item));
+        }).catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
+        return () => controller.abort();
+    }, [selected]);
+    useEffect(() => {
+        if (!nodeSelection) return;
+        const controller = new AbortController();
+        setRelationLoading(true);
+        void readGraph(new URLSearchParams({ overview: "1", clusterId: nodeSelection.cluster.clusterId, entity: nodeSelection.node.id, relationOffset: String(relationOffset) }), controller.signal).then(data => {
+            if (!controller.signal.aborted) setRelations(data);
+        }).catch(reason => { if (!controller.signal.aborted) setError(String(reason)); }).finally(() => { if (!controller.signal.aborted) setRelationLoading(false); });
+        return () => controller.abort();
+    }, [nodeSelection, relationOffset]);
 
-            <ForceGraph2D ref={fgRef} width={graphSize.width} height={graphSize.height} graphData={data} backgroundColor="rgba(0,0,0,0)" warmupTicks={96} cooldownTicks={360} d3AlphaDecay={0.018} d3VelocityDecay={0.38} enableNodeDrag onBackgroundClick={handleBackgroundClick} onEngineStop={() => {
-      if (autoFitPendingRef.current) {
-        autoFitPendingRef.current = false;
-        focusPrimaryGraph();
-      }
-    }} onNodeHover={(node) => setHoveredNodeId(node ? (node as GraphNode).id : null)} onNodeClick={(node, event) => void handleNodeClick(node, event as MouseEvent)} nodeLabel={(node) => {
-      const graphNode = node as GraphNode;
-      const degree = nodeDegrees.get(graphNode.id) || 0;
-      return t("components.memory.GraphViewer.nodeTooltip.links", {
-        label: graphNode.label || graphNode.id,
-        type: graphNode.type,
-        count: degree
-      });
-    }} linkLabel={(link) => {
-      const edge = link as GraphLink;
-      return `${edge.label} · ${(edge.confidence ?? 1).toFixed(2)}`;
-    }} linkWidth={(link) => {
-      const edge = link as GraphLink;
-      const highlighted = isLinkHighlighted(edge);
-      if (selectedNodeId || hoveredNodeId) {
-        return highlighted ? 1.9 : 0.35;
-      }
-      if (normalizedFilter) {
-        return highlighted ? 1.4 : 0.18;
-      }
-      return highlighted ? 1.1 : 0.45;
-    }} linkColor={(link) => {
-      const edge = link as GraphLink;
-      const highlighted = isLinkHighlighted(edge);
-      if (selectedNodeId) {
-        return highlighted ? "rgba(99,102,241,0.62)" : "rgba(148,163,184,0.08)";
-      }
-      if (hoveredNodeId) {
-        return highlighted ? "rgba(56,189,248,0.48)" : "rgba(148,163,184,0.06)";
-      }
-      if (normalizedFilter) {
-        return highlighted ? "rgba(236,72,153,0.46)" : "rgba(148,163,184,0.05)";
-      }
-      return highlighted ? "rgba(148,163,184,0.42)" : "rgba(148,163,184,0.12)";
-    }} linkDirectionalArrowLength={4} linkDirectionalArrowRelPos={1} nodePointerAreaPaint={(node, color, ctx) => {
-      const graphNode = node as GraphNode;
-      const scale = getNodeScale(graphNode.id);
-      const motion = getNodeMotion(graphNode);
-      const currentZoom = Number(fgRef.current?.zoom?.()) || 1;
-      const radius = Math.max(
-        graphScreenRadius(graphNode, Math.max(scale, 1) * motion.pulse, currentZoom) + 4 / currentZoom,
-        8 / currentZoom,
-      );
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc((graphNode.x || 0) + motion.x, (graphNode.y || 0) + motion.y, radius, 0, 2 * Math.PI, false);
-      ctx.fill();
-    }} nodeCanvasObject={(node, ctx, globalScale) => {
-      const graphNode = node as GraphNode;
-      const label = graphNode.label || graphNode.id;
-      const matchesFilter = !normalizedFilter || matchedNodeIds.has(graphNode.id);
-      const isSelected = graphNode.id === selectedNodeId;
-      const isHovered = graphNode.id === hoveredNodeId;
-      const isMatched = matchedNodeIds.has(graphNode.id);
-      const isRelated = selectedNeighborhood.has(graphNode.id) || hoveredNeighborhood.has(graphNode.id);
-      const scale = getNodeScale(graphNode.id);
-      const motion = getNodeMotion(graphNode);
-      const drawX = (graphNode.x || 0) + motion.x;
-      const drawY = (graphNode.y || 0) + motion.y;
-      const radius = graphScreenRadius(graphNode, scale * motion.pulse, globalScale);
-      const hasSearchFocus = matchedNodeIds.size > 0;
-      if (graphNode.id === firstRenderableNodeId) {
-        labelBoxesRef.current = [];
-      }
-      const baseAlpha = isSelected ?
-      1 :
-      isHovered ?
-      0.98 :
-      isMatched ?
-      0.94 :
-      isRelated ?
-      0.74 :
-      hasSearchFocus ?
-      0.18 :
-      matchesFilter ?
-      0.82 :
-      0.46;
-      ctx.save();
-      ctx.globalAlpha = baseAlpha;
-      ctx.shadowColor = isSelected ?
-      "rgba(99,102,241,0.72)" :
-      isHovered ?
-      "rgba(59,130,246,0.46)" :
-      isMatched ?
-      "rgba(236,72,153,0.32)" :
-      isRelated ?
-      "rgba(99,102,241,0.18)" :
-      "rgba(15,23,42,0.14)";
-      ctx.shadowBlur = isSelected ? 30 : isHovered ? 20 : isMatched ? 18 : isRelated ? 12 : 8;
-      ctx.fillStyle = matchesFilter ? graphNode.color || "#6366f1" : "rgba(148,163,184,0.46)";
-      ctx.beginPath();
-      ctx.arc(drawX, drawY, radius, 0, 2 * Math.PI, false);
-      ctx.fill();
-      if (isSelected) {
-        ctx.strokeStyle = "rgba(255,255,255,0.88)";
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(drawX, drawY, radius + 3.5, 0, 2 * Math.PI, false);
-        ctx.stroke();
-      }
-      if (isHovered || isMatched) {
-        ctx.strokeStyle = isHovered ? "rgba(255,255,255,0.58)" : "rgba(236,72,153,0.44)";
-        ctx.lineWidth = isHovered ? 1.2 : 1;
-        ctx.beginPath();
-        ctx.arc(drawX, drawY, radius + (isHovered ? 2.4 : 1.8), 0, 2 * Math.PI, false);
-        ctx.stroke();
-      }
-      const labelOpacity = getLabelOpacity(graphNode.id);
-      if (labelOpacity > 0.045) {
-        const fontSize = Math.max(9 / globalScale, isSelected ? 12 : 10);
-        ctx.font = `${isSelected ? 700 : 600} ${fontSize}px sans-serif`;
-        const shouldForceLabel = isSelected || isHovered || isMatched;
-        const textWidth = ctx.measureText(label).width;
-        const labelX = drawX;
-        const labelY = drawY + radius + 6 / Math.max(globalScale, 0.35);
-        const labelHeight = fontSize + 4;
-        const labelBox = {
-          x: labelX - textWidth / 2 - 6,
-          y: labelY - 2,
-          w: textWidth + 12,
-          h: labelHeight + 4
-        };
-        const overlaps = labelBoxesRef.current.some((box) => labelBox.x < box.x + box.w &&
-        labelBox.x + labelBox.w > box.x &&
-        labelBox.y < box.y + box.h &&
-        labelBox.y + labelBox.h > box.y);
-        if (!shouldForceLabel && overlaps) {
-          ctx.restore();
-          return;
+    const canLeave = useCallback(() => !busy.current && (!draft || window.confirm(t("admin.galaxy.discardDraft"))), [draft, t]);
+    const background = useCallback(() => {
+        if (!canLeave()) return;
+        setSelected(null); setNodeSelection(null); selectionRef.current = null; setMode("summary"); setTarget(""); setPredicate("RELATED_TO");
+    }, [canLeave]);
+    const selectCluster = useCallback((id: string) => {
+        if (!canLeave()) return;
+        setSelected(id); setNodeSelection(null); selectionRef.current = null; setMode("summary"); setTarget(""); setPredicate("RELATED_TO");
+    }, [canLeave]);
+    const selectNode = useCallback((cluster: GalaxyCluster, node: GalaxyNode) => {
+        if (!canLeave()) return;
+        const selection = { cluster, node }; selectionRef.current = selection; setSelected(cluster.clusterId); setNodeSelection(selection); setMode("summary"); setRelationOffset(0); setRelations({ relations: [], total: 0, nextOffset: null }); setTarget(""); setPredicate("RELATED_TO");
+    }, [canLeave]);
+    const refreshSelection = async (selection: Selection) => {
+        const result = await readGraph(new URLSearchParams({ overview: "1", clusterId: selection.cluster.clusterId }));
+        setClusters(current => current.map(item => item.clusterId === selection.cluster.clusterId ? result.items[0] : item));
+        if (selectionRef.current === selection) {
+            const page = await readGraph(new URLSearchParams({ overview: "1", clusterId: selection.cluster.clusterId, entity: selection.node.id }));
+            if (selectionRef.current === selection) { setRelations(page); setRelationOffset(0); }
         }
-        labelBoxesRef.current.push(labelBox);
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillStyle = `rgba(248,250,252,${Math.min(labelOpacity, 0.96)})`;
-        ctx.shadowColor = `rgba(15,23,42,${Math.min(labelOpacity * 0.55, 0.35)})`;
-        ctx.shadowBlur = 10;
-        ctx.fillText(label, labelX, labelY);
-      }
-      ctx.restore();
-    }} />
+    };
+    const mutate = async (action: "add_relation" | "delete_relation" | "delete_entity", relation?: Relation) => {
+        const selection = selectionRef.current;
+        if (!selection || busy.current || !selection.cluster.workspaceKey || selection.cluster.scopeKind === "global") return;
+        if (relation && relation.scope === "global") return;
+        if (action === "delete_entity" && !window.confirm(t("admin.galaxy.deleteImpact", { name: selection.node.label, workspace: selection.cluster.label }))) return;
+        if (action === "add_relation" && (!target.trim() || !predicate.trim())) return;
+        busy.current = true; setMutating(true); setError("");
+        try {
+            const payload = { action, workspaceKey: selection.cluster.workspaceKey,
+                ...(action === "delete_entity" ? { name: selection.node.id } : { subject: relation?.subject || selection.node.id, predicate: relation?.predicate || predicate.trim(), object: relation?.object || target.trim(), scope: relation?.scope, maintainerSource: "human_admin", confidence: 1 }) };
+            const response = await fetch(GRAPH_URL, { method: action === "add_relation" ? "POST" : "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+            const result = await response.json();
+            if (!response.ok || (action === "add_relation" ? result.created !== true : result.deleted !== true)) throw new Error(String(result.detail || result.error || t("admin.galaxy.notApplied")));
+            await refreshSelection(selection);
+            if (selectionRef.current === selection) { setTarget(""); setPredicate("RELATED_TO"); setMode("disconnect"); if (action === "delete_entity") { setNodeSelection(null); selectionRef.current = null; } }
+        } catch (reason) { setError(`${t("admin.galaxy.writeFailed")} ${String(reason)}`); }
+        finally { busy.current = false; setMutating(false); }
+    };
+    const visibleClusters = useMemo(() => clusters.filter(cluster => !query || cluster.label.toLowerCase().includes(query.toLowerCase()) || cluster.nodes.some(node => node.label.toLowerCase().includes(query.toLowerCase()))), [clusters, query]);
+    const readOnly = nodeSelection?.cluster.scopeKind === "global";
 
-            {menuPosition && selectedNode ? <div ref={menuRef} className="absolute z-20 w-[260px] rounded-3xl border border-border/60 bg-background/90 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl animate-in fade-in-0 zoom-in-95" style={{ left: menuPosition.x, top: menuPosition.y }}>
-                    <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold">{selectedNode.label}</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                {t("components.memory.GraphViewer.selectedNode.relationsCount", {
-              type: selectedNode.type,
-              count: relations.length
-            })}
-                            </p>
-                        </div>
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={closeMenu}>
-                            {t("components.memory.GraphViewer.kabf558c9")}
-                        </Button>
+    return <div ref={host} className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[150px] flex-1"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground"/><Input value={query} onChange={event => setQuery(event.target.value)} aria-label={t("admin.galaxy.search")} placeholder={t("admin.galaxy.search")} className="pl-9"/></div>
+            <Button variant="outline" onClick={() => setPaused(value => !value)} aria-pressed={paused || reduced}>{paused || reduced ? <Play size={16} className="mr-2"/> : <Pause size={16} className="mr-2"/>}{t(paused || reduced ? "admin.galaxy.resume" : "admin.galaxy.pause")}</Button>
+            <Button variant="outline" onClick={background}><ArrowLeft size={16} className="mr-2"/>{t("admin.galaxy.overview")}</Button>
+            <Button variant="ghost" size="icon" disabled={loading || mutating || Boolean(nodeSelection)} onClick={() => void load(page, true)} aria-label={t("admin.galaxy.refresh")}><RefreshCw size={16} className={loading ? "animate-spin" : ""}/></Button>
+        </div>
+        {error ? <div role="alert" className="rounded-lg border border-destructive/40 px-3 py-2 text-sm text-destructive">{error}</div> : null}
+        <div className="relative rounded-xl border border-border bg-card">
+            <GalaxyCanvas clusters={clusters} selected={selected} paused={paused} reduced={reduced} label={t("admin.galaxy.canvas")} onCluster={selectCluster} onNode={selectNode} onBackground={background}/>
+            {loading && !clusters.length ? <div role="status" className="absolute inset-0 flex items-center justify-center gap-2"><Loader2 size={18} className="animate-spin"/>{t("admin.galaxy.loading")}</div> : null}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"><span>{t("admin.galaxy.scopeHint", { count: total })}</span><span>{reduced ? t("admin.galaxy.reduced") : t("admin.galaxy.gestures")}</span></div>
+        <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_minmax(0,2fr)]">
+            <div className="space-y-2">
+                <div className="max-h-[260px] space-y-1 overflow-auto" aria-label={t("admin.galaxy.clusters")}>
+                    {visibleClusters.map(cluster => <button key={cluster.clusterId} type="button" aria-pressed={selected === cluster.clusterId} onClick={() => selectCluster(cluster.clusterId)} className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm ${selected === cluster.clusterId ? "bg-accent text-primary" : "hover:bg-muted"}`}><span className="min-w-0 break-words">{cluster.scopeKind === "global" ? t("admin.galaxy.global") : cluster.label}</span><span className="shrink-0 text-xs text-muted-foreground">{cluster.meta.totalEntities} / {cluster.meta.totalRelations}</span></button>)}
+                </div>
+                {page > 0 || nextPage !== null ? <div className="flex gap-2"><Button variant="outline" size="sm" disabled={!page || mutating || draft} onClick={() => { background(); setPage(Math.max(0, page - 8)); }}>{t("admin.galaxy.previous")}</Button><Button variant="outline" size="sm" disabled={nextPage === null || mutating || draft} onClick={() => { background(); setPage(nextPage!); }}>{t("admin.galaxy.next")}</Button></div> : null}
+            </div>
+            <div className="min-w-0 space-y-3">
+                {activeCluster ? <><div className="text-sm font-medium">{activeCluster.scopeKind === "global" ? t("admin.galaxy.global") : activeCluster.label}<span className="ml-2 text-xs font-normal text-muted-foreground">{t("admin.galaxy.rendered", { nodes: activeCluster.meta.renderedEntities, total: activeCluster.meta.totalEntities, edges: activeCluster.meta.renderedRelations, edgeTotal: activeCluster.meta.totalRelations })}</span></div><div className="flex max-h-[160px] flex-wrap gap-2 overflow-auto">{activeCluster.nodes.filter(node => !query || node.label.toLowerCase().includes(query.toLowerCase()) || activeCluster.label.toLowerCase().includes(query.toLowerCase())).map(node => <Button key={visualNodeId(activeCluster.clusterId, node.id)} variant="outline" size="sm" onClick={() => selectNode(activeCluster, node)}>{node.label}</Button>)}{!activeCluster.nodes.length ? <span className="text-sm text-muted-foreground">{t("admin.galaxy.empty")}</span> : null}</div></> : null}
+                {nodeSelection ? <section aria-label={t("admin.galaxy.nodeMenu")} className="grid max-h-[560px] grid-rows-[auto_minmax(0,1fr)_auto] rounded-xl border border-border bg-card">
+                    <div className="flex items-start justify-between gap-3 border-b border-border p-3"><div className="min-w-0"><h3 className="break-words text-sm font-semibold">{nodeSelection.node.label}</h3><p className="text-xs text-muted-foreground">{nodeSelection.node.type} · {nodeSelection.cluster.label} · {relations.total}</p></div><Button variant="ghost" size="icon" aria-label={t("admin.galaxy.close")} onClick={() => { if (canLeave()) { setNodeSelection(null); selectionRef.current = null; } }}><X size={16}/></Button></div>
+                    <div className="min-h-0 space-y-3 overflow-auto p-3">
+                        {readOnly ? <p className="text-xs text-muted-foreground">{t("admin.galaxy.globalReadonly")}</p> : null}
+                        {relationLoading ? <Loader2 size={16} className="animate-spin"/> : (mode === "summary" ? relations.relations.slice(0, 5) : relations.relations).map(relation => <div key={relation.relationId} className="flex items-start justify-between gap-2 border-b border-border/60 py-2 text-xs"><span className="break-all">{relation.subject} → {relation.predicate} → {relation.object}<span className="block text-muted-foreground">{relation.scope}</span></span>{mode === "disconnect" && !readOnly ? <Button variant="ghost" size="icon" disabled={mutating} aria-label={t("admin.galaxy.disconnect")} onClick={() => void mutate("delete_relation", relation)}><Unlink2 size={14}/></Button> : null}</div>)}
+                        {mode === "connect" ? <div className="space-y-3"><Label htmlFor="galaxy-target">{t("admin.galaxy.target")}</Label><Input id="galaxy-target" value={target} onChange={event => setTarget(event.target.value)} list="galaxy-targets"/><datalist id="galaxy-targets">{activeCluster?.nodes.filter(node => node.id !== nodeSelection.node.id).map(node => <option key={node.id} value={node.id}/>)}</datalist><p className="text-xs text-muted-foreground">{t("admin.galaxy.targetHint")}</p><Label htmlFor="galaxy-predicate">{t("admin.galaxy.predicate")}</Label><Input id="galaxy-predicate" value={predicate} onChange={event => setPredicate(event.target.value)}/></div> : null}
+                        {mode !== "summary" && (relationOffset > 0 || relations.nextOffset !== null) ? <div className="flex gap-2"><Button size="sm" variant="outline" disabled={!relationOffset || relationLoading} onClick={() => setRelationOffset(Math.max(0, relationOffset - 30))}>{t("admin.galaxy.previous")}</Button><Button size="sm" variant="outline" disabled={relations.nextOffset === null || relationLoading} onClick={() => setRelationOffset(relations.nextOffset!)}>{t("admin.galaxy.next")}</Button></div> : null}
                     </div>
-
-                    {menuMode === "summary" ? <div className="mt-4 space-y-3">
-                            <p className="text-xs leading-5 text-muted-foreground">{t("components.memory.GraphViewer.summaryHint")}</p>
-                            <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">
-                                {relations.length === 0 ? <div className="rounded-xl border border-dashed border-border/60 px-3 py-3 text-xs text-muted-foreground">{t("components.memory.GraphViewer.noRelations")}</div> : relations.slice(0, 5).map((relation, index) => {
-              const counterpart = relation.direction === "out" ? relation.object : relation.subject;
-              return <div key={`${relation.subject}-${relation.predicate}-${relation.object}-${index}`} className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2">
-                                            <div className="truncate text-xs font-medium text-foreground">{counterpart}</div>
-                                            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{relation.predicate}</div>
-                                        </div>;
-            })}
-                            </div>
-                            {selectedWorkspaceKey ? <Button variant="outline" size="sm" className="w-full" onClick={() => setMenuMode("root")}>
-                                {t("components.memory.GraphViewer.manageRelations")}
-                            </Button> : null}
-                        </div> : null}
-
-                    {menuMode === "root" ? <div className="mt-4 grid gap-2">
-                            <Button variant="ghost" size="sm" className="justify-start" onClick={() => setMenuMode("summary")}>
-                                {t("components.memory.GraphViewer.backToSummary")}
-                            </Button>
-                            <Button variant="outline" className="justify-start" onClick={() => setMenuMode("connect")}>
-                                <Link2 className="mr-2 h-4 w-4" />
-                                {t("components.memory.GraphViewer.k71619908")}
-                            </Button>
-                            <Button variant="outline" className="justify-start" onClick={() => setMenuMode("disconnect")}>
-                                <Unlink2 className="mr-2 h-4 w-4" />
-                                {t("components.memory.GraphViewer.k4f94aab1")}
-                            </Button>
-                            <Button variant="destructive" className="justify-start" onClick={() => void handleDeleteNode()} disabled={mutating}>
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                {t("components.memory.GraphViewer.keb9d3a3d")}
-                            </Button>
-                        </div> : null}
-
-                    {menuMode === "connect" ? <div className="mt-4 space-y-3">
-                            <div className="grid gap-2">
-                                <label className="text-xs text-muted-foreground">{t("components.memory.GraphViewer.kda08b61d")}</label>
-                                <Input value={connectTarget} onChange={(event) => setConnectTarget(event.target.value)} placeholder={t("components.memory.GraphViewer.k427230ad")} />
-                            </div>
-                            <div className="grid gap-2">
-                                <label className="text-xs text-muted-foreground">{t("components.memory.GraphViewer.k75f25045")}</label>
-                                <Input value={connectPredicate} onChange={(event) => setConnectPredicate(event.target.value.toUpperCase())} placeholder={t("components.memory.GraphViewer.k07a651fc")} className="font-mono" />
-                            </div>
-
-                            <div className="rounded-2xl border border-border/50 bg-muted/20 p-3">
-                                <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-                                    <Search className="h-3.5 w-3.5" />
-                                    {t("components.memory.GraphViewer.k09f0c48a")}
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                    {targetSuggestions.length === 0 ? <span className="text-xs text-muted-foreground">{t("components.memory.GraphViewer.ka0e87e6f")}</span> : targetSuggestions.map((node) => <button key={node.id} type="button" className="rounded-full border border-border/60 px-2.5 py-1 text-xs transition hover:border-primary/40 hover:bg-primary/5" onClick={() => setConnectTarget(node.id)}>
-                                                {node.label}
-                                            </button>)}
-                                </div>
-                            </div>
-
-                            <div className="flex items-center justify-between gap-2">
-                                <Button variant="ghost" size="sm" onClick={() => setMenuMode("root")}>
-                                    {t("components.memory.GraphViewer.k8d9b4100")}
-                                </Button>
-                                <div className="flex flex-wrap justify-end gap-2">
-                                    <Button variant="outline" size="sm" onClick={() => void handleCreateRelation()} disabled={mutating || !connectTarget.trim()}>
-                                        <Plus className="mr-2 h-4 w-4" />
-                                        {tg(t, "25f51fce")}
-                                    </Button>
-                                    <Button size="sm" onClick={() => void handleCreateRelation()} disabled={mutating}>
-                                        <Sparkles className="mr-2 h-4 w-4" />
-                                        {t("components.memory.GraphViewer.kf5843a88")}
-                                    </Button>
-                                </div>
-                            </div>
-                        </div> : null}
-
-                    {menuMode === "disconnect" ? <div className="mt-4 space-y-3">
-                            <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
-                                {relations.length === 0 ? <div className="rounded-2xl border border-dashed px-3 py-4 text-xs text-muted-foreground">
-                                        {t("components.memory.GraphViewer.kf70b8961")}
-                                    </div> : relations.map((relation, index) => {
-            const counterpart = relation.direction === "out" ? relation.object : relation.subject;
-            return <div key={`${relation.subject}-${relation.predicate}-${relation.object}-${index}`} className="rounded-2xl border border-border/50 bg-muted/20 px-3 py-3">
-                                                <div className="text-xs text-muted-foreground">{relation.predicate}</div>
-                                                <div className="mt-1 text-sm font-medium break-all">{counterpart}</div>
-                                                {relation.scope !== "global" ? <div className="mt-3 flex justify-end">
-                                                    <Button variant="outline" size="sm" className="text-xs" onClick={() => void handleDeleteRelation(relation)} disabled={mutating}>
-                                                        <Unlink2 className="mr-2 h-3.5 w-3.5" />
-                                                        {t("components.memory.GraphViewer.k96f8f8c3")}
-                                                    </Button>
-                                                </div> : null}
-                                            </div>;
-          })}
-                            </div>
-                            <div className="flex justify-start">
-                                <Button variant="ghost" size="sm" onClick={() => setMenuMode("root")}>
-                                    {t("components.memory.GraphViewer.k8d9b4100")}
-                                </Button>
-                            </div>
-                        </div> : null}
-                </div> : null}
-        </div>;
+                    <div className="flex flex-wrap gap-2 border-t border-border p-3">
+                        {mode === "connect" ? <><Button disabled={mutating || !target.trim() || !predicate.trim()} onClick={() => void mutate("add_relation")}>{mutating ? <Loader2 size={14} className="mr-2 animate-spin"/> : <Link2 size={14} className="mr-2"/>}{t("admin.galaxy.connect")}</Button><Button variant="outline" disabled={mutating} onClick={() => { setTarget(""); setPredicate("RELATED_TO"); setMode("root"); }}>{t("admin.galaxy.cancel")}</Button></> : <><Button variant="outline" size="sm" onClick={() => setMode("disconnect")}>{t("admin.galaxy.relations")}</Button>{!readOnly ? <><Button variant="outline" size="sm" onClick={() => setMode("connect")}><Link2 size={14} className="mr-2"/>{t("admin.galaxy.connect")}</Button><Button variant="ghost" size="sm" disabled={mutating} onClick={() => void mutate("delete_entity")}><Trash2 size={14} className="mr-2"/>{t("admin.experience.delete")}</Button></> : null}</>}
+                    </div>
+                </section> : null}
+            </div>
+        </div>
+    </div>;
 }

@@ -1,4 +1,5 @@
 "use client";
+import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, GitBranch, Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
@@ -267,7 +268,10 @@ export default function ProjectsWorkspacesPage() {
         buildProjectEditors(initialState.projects?.data.projects || [], {})
     ));
 
+    const [loadError, setLoadError] = useState("");
     const load = useCallback(async () => {
+        setLoadError("");
+        try {
         const [projects, workspace] = await Promise.all([
             fetchConfigDomain<ProjectsData>("projects"),
             fetchConfigDomain<WorkspaceData>("workspace"),
@@ -283,6 +287,8 @@ export default function ProjectsWorkspacesPage() {
         setWorkspaceEnvelope(workspace);
         setWorkspaceDraft(String(workspace.data.agent_workspace_path || ""));
         setProjectEditors((previous) => buildProjectEditors(sortedProjects, previous));
+
+        } catch (error) { setLoadError(String(error)); }
     }, []);
 
     useEffect(() => {
@@ -842,13 +848,7 @@ export default function ProjectsWorkspacesPage() {
     const projects = projectsEnvelope?.data.projects || [];
     const defaultWorkspaceStatus = defaultRules?.workspaceStatus || workspaceEnvelope?.data.pathStatus || {};
 
-    if (!projectsEnvelope || !workspaceEnvelope) {
-        return (
-            <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
-            </div>
-        );
-    }
+    if (!projectsEnvelope || !workspaceEnvelope) return <AdminLoadState title="app.admin.dashboard.projects.workspaces.page.k6dc301c9" error={loadError} onRetry={() => void load()}/>;
 
     return (
         <AdminPageShell>

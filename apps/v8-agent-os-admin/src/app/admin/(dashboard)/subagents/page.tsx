@@ -8,7 +8,7 @@ import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ModelSelect, modelOptionLabel, modelOptionValue } from "@/components/models/ModelSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1430,16 +1430,16 @@ export default function SubagentsPage() {
       });
     }
   }, [fetchData, t, toast]);
-  return <><div className="w-full space-y-8 p-6 lg:p-8">
+  return <><div className="admin-page mx-auto w-full max-w-[1040px] space-y-5">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-start gap-4">
                     <div>
-                        <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.subagents.page.k6c291586")}</h1>
+                        <h1 className="text-[24px] font-semibold tracking-tight">{t("app.admin.dashboard.subagents.page.k6c291586")}</h1>
                         <p className="mt-1 text-muted-foreground flex items-center gap-1.5 flex-wrap">
                             {t("app.admin.dashboard.subagents.page.k790af087")}
                             {debugMode && (
                                 <AdminHoverInfo content={t("app.admin.dashboard.subagents.page.debugConfigHint")}>
-                                    <span className="cursor-help rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted dark:bg-muted dark:text-muted-foreground dark:hover:bg-muted/80">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
+                                    <span className="cursor-help rounded-full bg-muted px-1.5 py-0.5 text-[12px] text-muted-foreground hover:bg-muted dark:bg-muted dark:text-muted-foreground dark:hover:bg-muted/80">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
                                 </AdminHoverInfo>
                             )}
                         </p>
@@ -1464,6 +1464,7 @@ export default function SubagentsPage() {
             <div className="space-y-6">
                 {/* 顶部紧凑控制带：全局配置不再占用右侧常驻栏，给子代理卡片释放横向空间。 */}
                 <div className="space-y-6">
+                    <details className="rounded-xl border border-border bg-card p-3"><summary className="cursor-pointer text-[14px] font-medium">{t("admin.experience.policies")}</summary>
                     <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3 2xl:grid-cols-[minmax(180px,0.82fr)_minmax(190px,0.9fr)_minmax(210px,1fr)_minmax(250px,1.18fr)_minmax(250px,1.18fr)]">
                         <Card className="min-h-[116px] overflow-visible rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                             <CardHeader className="space-y-1 p-3 pb-1.5">
@@ -1485,7 +1486,7 @@ export default function SubagentsPage() {
                                         <div className="font-semibold text-foreground dark:text-slate-100">{enabledExternalWorkerCount}/{externalWorkerTemplateCount}</div>
                                     </div>
                                 </div>
-                                <div className="truncate font-mono text-[11px] text-muted-foreground dark:text-muted-foreground">
+                                <div className="truncate font-mono text-[12px] text-muted-foreground dark:text-muted-foreground">
                                     {baselineToolNames.slice(0, 2).join(" · ") || "none"}{baselineToolNames.length > 2 ? ` · +${baselineToolNames.length - 2}` : ""}
                                 </div>
                             </CardContent>
@@ -1547,7 +1548,7 @@ export default function SubagentsPage() {
                                     </label>
                                     <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
                                 </div>
-                                <div className="grid grid-cols-3 gap-1.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
+                                <div className="grid grid-cols-3 gap-1.5 text-[12px] text-muted-foreground dark:text-muted-foreground">
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "d6c520d8")} {researchDefaultShards}</span>
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "03514d16")} {researchMaxShards}</span>
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "d28b7ea4")} {researchMaxRounds}</span>
@@ -1573,7 +1574,7 @@ export default function SubagentsPage() {
                                         {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
                                     </Badge>
                                 </div>
-                                <div className="grid grid-cols-4 gap-1.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
+                                <div className="grid grid-cols-4 gap-1.5 text-[12px] text-muted-foreground dark:text-muted-foreground">
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</span>
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</span>
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</span>
@@ -1587,8 +1588,10 @@ export default function SubagentsPage() {
                         </Card>
                     </div>
 
+                    </details>
+
                     {/* Specialists 列表网格 */}
-                    <div className="grid gap-4 md:grid-cols-[repeat(auto-fit,minmax(320px,1fr))]">
+                    <div className="admin-entity-grid">
                         {agents.map(agent => {
                             const selectors = Array.isArray(agent.tools) ? agent.tools : [];
                             const toolMode = agent.tool_mode === "explicit" ? "explicit" : "contextual_auto";
@@ -1600,14 +1603,14 @@ export default function SubagentsPage() {
                             const avatarStyle = familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
                             const avatarLabel = firstGrapheme(agent.name, "A");
                             const isBuiltin = isBuiltinAgent(agent);
-                            return <Card key={agent.id} className="rounded-3xl border-border bg-card/95 shadow-sm">
+                            return <Card key={agent.id} className="min-h-[104px] rounded-xl border-border bg-card shadow-none">
                                         <CardHeader className="p-4 pb-2">
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="flex min-w-0 items-center gap-3">
                                                     {agent.avatar ? (
-                                                        <img src={agent.avatar} alt="" className="h-11 w-11 shrink-0 rounded-2xl border border-border object-cover" />
+                                                        <img src={agent.avatar} alt="" className="h-7 w-7 shrink-0 rounded-2xl border border-border object-cover" />
                                                     ) : (
-                                                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={`family:${familyKey}`}>
+                                                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={`family:${familyKey}`}>
                                                             {avatarLabel}
                                                         </div>
                                                     )}
@@ -1617,13 +1620,13 @@ export default function SubagentsPage() {
                                                     </div>
                                                 </div>
                                                 <div className="flex gap-1">
-                                                    <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => {
+                                                    <Button type="button" variant="ghost" size="icon" aria-label={t("admin.experience.adjust")} className="h-8 w-8" onClick={() => {
                                                         setEditingAgent(agent);
                                                         setIsDialogOpen(true);
                                                     }}>
                                                         <Pencil className="h-4 w-4 text-muted-foreground" />
                                                     </Button>
-                                                    <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-rose-600 disabled:opacity-40" onClick={() => void handleDelete(agent.id)} disabled={isBuiltin}>
+                                                    <Button type="button" variant="ghost" size="icon" aria-label={t("admin.experience.delete")} className="h-8 w-8 text-rose-600 disabled:opacity-40" onClick={() => void handleDelete(agent.id)} disabled={isBuiltin}>
                                                         <Trash2 className="h-4 w-4" />
                                                     </Button>
                                                 </div>
@@ -1636,11 +1639,11 @@ export default function SubagentsPage() {
                                             <div className="flex items-center justify-between pt-1 border-t border-border/60 text-xs text-muted-foreground dark:border-border">
                                                 <div className="flex items-center gap-1.5">
                                                     {isBuiltin ? (
-                                                        <Badge variant="outline" className="text-[10px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.builtinBadge")}</Badge>
+                                                        <Badge variant="outline" className="text-[12px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.builtinBadge")}</Badge>
                                                     ) : (
-                                                        <Badge variant="outline" className="text-[10px] text-muted-foreground bg-muted/50 border-border shadow-none px-1.5 py-0 h-5 dark:border-border dark:bg-muted dark:text-muted-foreground">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
+                                                        <Badge variant="outline" className="text-[12px] text-muted-foreground bg-muted/50 border-border shadow-none px-1.5 py-0 h-5 dark:border-border dark:bg-muted dark:text-muted-foreground">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
                                                     )}
-                                                    {agent.globalExposure && <Badge className="text-[10px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">{t("app.admin.dashboard.subagents.page.globalBadge")}</Badge>}
+                                                    {agent.globalExposure && <Badge className="text-[12px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">{t("app.admin.dashboard.subagents.page.globalBadge")}</Badge>}
                                                 </div>
                                                 <AdminHoverInfo
                                                     content={
@@ -1655,8 +1658,8 @@ export default function SubagentsPage() {
                                                                 <div>
                                                                     <strong>{t("app.admin.dashboard.subagents.page.detailExplicitTools", { count: selectors.length })}:</strong>
                                                                     <div className="mt-1 flex flex-wrap gap-1">
-                                                                        {selectors.slice(0, 8).map(s => <span key={s} className="bg-slate-800 text-slate-300 px-1 rounded text-[10px]">{s}</span>)}
-                                                                        {selectors.length > 8 && <span className="text-[10px]">...</span>}
+                                                                        {selectors.slice(0, 8).map(s => <span key={s} className="bg-slate-800 text-slate-300 px-1 rounded text-[12px]">{s}</span>)}
+                                                                        {selectors.length > 8 && <span className="text-[12px]">...</span>}
                                                                     </div>
                                                                 </div>
                                                             )}
@@ -1665,7 +1668,7 @@ export default function SubagentsPage() {
                                                         </div>
                                                     }
                                                 >
-                                                    <span className="cursor-help text-[11px] text-sky-600 hover:text-sky-700 hover:underline flex items-center gap-0.5">
+                                                    <span className="cursor-help text-[12px] text-sky-600 hover:text-sky-700 hover:underline flex items-center gap-0.5">
                                                         {t("app.admin.dashboard.subagents.page.policyDetails")}
                                                     </span>
                                                 </AdminHoverInfo>
@@ -2387,7 +2390,7 @@ export default function SubagentsPage() {
                                     {toolPanels.baseline ? <CardContent className="max-h-[148px] space-y-3 overflow-y-auto overscroll-contain pr-2">
                                             {baselineSystemTools.length > 0 ? <div className="grid gap-2">
                                                     {baselineSystemTools.map(tool => <div key={tool.name} className="rounded-2xl border border-border bg-muted/70 px-3 py-2">
-                                                            <div className="font-mono text-[11px] font-medium text-foreground">{tool.name}</div>
+                                                            <div className="font-mono text-[12px] font-medium text-foreground">{tool.name}</div>
                                                             <div className="mt-1 text-xs leading-5 text-muted-foreground">
                                                                 {tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}
                                                             </div>
@@ -2479,12 +2482,12 @@ export default function SubagentsPage() {
                                 </div> : null}
                         </div>
 
-                        <Button className="w-full" onClick={() => void handleSave()} disabled={isSaving}>
-                            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            {t("app.admin.dashboard.subagents.page.k7171a69c")}
-                        </Button>
                         </div>
                     </div>
+                    <DialogFooter className="shrink-0 border-t border-border bg-card p-4"><Button className="w-full" onClick={() => void handleSave()} disabled={isSaving}>
+                            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            {t("app.admin.dashboard.subagents.page.k7171a69c")}
+                        </Button></DialogFooter>
                 </DialogContent>
             </Dialog>
         </div><AvatarCropDialog

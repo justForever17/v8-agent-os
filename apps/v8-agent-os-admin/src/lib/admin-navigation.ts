@@ -220,6 +220,18 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
 
 const ALL_ITEMS = ADMIN_NAV_GROUPS.flatMap((group) => group.items);
 
+// Presentation groups share the existing route catalog; URL and runtime IDs stay canonical.
+export const ADMIN_TASK_NAV = [
+    { id: "overview", paths: ["/admin"] },
+    { id: "models", paths: ["/admin/model-hub"] },
+    { id: "agents", paths: ["/admin/chat-runtime", "/admin/engineering-lane", "/admin/research-runtime", "/admin/creative-media", "/admin/desktop-automation", "/admin/rpa"] },
+    { id: "extensions", paths: ["/admin/extensions", "/admin/plugins"] },
+    { id: "memory", paths: ["/admin/memory"] },
+    { id: "tasks", paths: ["/admin/automation", "/admin/operations-center"] },
+    { id: "devices", paths: ["/admin/users", "/admin/network-supervisor-runtime"] },
+    { id: "settings", paths: ["/admin/system-base", "/admin/projects-workspaces", "/admin/safety-control", "/admin/desktop-pet"] },
+].map((group) => ({ ...group, title: `admin.experience.${group.id}`, items: group.paths.map((href) => ALL_ITEMS.find((item) => item.href === href)!) }));
+
 export function getAdminNavItem(pathname: string | null | undefined) {
     const normalized = pathname || "/admin";
     const exactMatch = ALL_ITEMS.find((item) => item.href === normalized);

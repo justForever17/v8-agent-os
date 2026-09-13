@@ -1,4 +1,5 @@
 "use client";
+import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
 
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, Clock3, Loader2, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -366,9 +367,14 @@ function ScheduledTasksPage() {
         }
     };
 
+    const [loadError, setLoadError] = useState("");
     const loadData = async () => {
+        setLoadError("");
+        try {
         const next = await fetchConfigDomain<CronData>("cron");
         setEnvelope(next);
+
+        } catch (error) { setLoadError(String(error)); }
     };
 
     useEffect(() => {
@@ -538,13 +544,7 @@ function ScheduledTasksPage() {
         );
     };
 
-    if (!envelope) {
-        return (
-            <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
-            </div>
-        );
-    }
+    if (!envelope) return <AdminLoadState title="app.admin.dashboard.automation.cron.page.k8164146c" error={loadError} onRetry={() => void loadData()}/>;
 
     return (
         <AdminPageShell>

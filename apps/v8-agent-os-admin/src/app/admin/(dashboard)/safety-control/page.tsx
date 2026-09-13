@@ -1,4 +1,5 @@
 "use client";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, ShieldCheck } from "lucide-react";
@@ -609,10 +610,10 @@ export default function SafetyControlPage() {
   return <AdminPageShell>
             <AdminPageHeader title="app.admin.dashboard.safety.control.page.k8f467cf5" description="app.admin.dashboard.safety.control.page.k65868ff2" actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
-                        <Button onClick={() => void saveData(data)} disabled={saving}>
+                        <AdminSaveBar><Button onClick={() => void saveData(data)} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
                             {ti(t, "k5e4644a2c8")}
-                        </Button>
+                        </Button></AdminSaveBar>
                     </div>} />
 
 

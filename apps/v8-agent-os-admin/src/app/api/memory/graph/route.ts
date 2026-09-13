@@ -1,11 +1,22 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireAdminIdentity } from "@/lib/server/engine-proxy";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
-const ENGINE_URL = resolveEngineOrigin();
-
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
+    const unauthorized = await requireAdminIdentity(req);
+    if (unauthorized) return unauthorized;
     try {
+        const ENGINE_URL = resolveEngineOrigin();
         const { searchParams } = new URL(req.url);
+        if (searchParams.get("overview") === "1") {
+            const query = new URLSearchParams();
+            for (const key of ["offset", "limit", "clusterId", "entity", "relationOffset"]) {
+                const value = searchParams.get(key);
+                if (value !== null) query.set(key, value);
+            }
+            const response = await fetch(`${ENGINE_URL}/v1/memory/graph/overview?${query}`, { signal: req.signal, cache: "no-store" });
+            return NextResponse.json(await response.json(), { status: response.status });
+        }
         const entity = searchParams.get("entity");
         const keyword = searchParams.get("keyword");
         const workspaceKey = searchParams.get("workspaceKey");
@@ -20,15 +31,17 @@ export async function GET(req: Request) {
             : keyword
                 ? await fetch(`${ENGINE_URL}/v1/memory/graph/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}${workspaceQuery}`)
                 : await fetch(`${ENGINE_URL}/v1/memory/graph/all?limit=${limit}${workspaceQuery}`);
-        if (!response.ok) throw new Error(`Failed: ${response.status}`);
-        return NextResponse.json(await response.json());
+        return NextResponse.json(await response.json(), { status: response.status });
     } catch (error) {
         return NextResponse.json({ error: String(error) }, { status: 500 });
     }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+    const unauthorized = await requireAdminIdentity(req);
+    if (unauthorized) return unauthorized;
     try {
+        const ENGINE_URL = resolveEngineOrigin();
         const body = await req.json();
         const action = body?.action;
 
@@ -53,8 +66,11 @@ export async function POST(req: Request) {
     }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE(req: NextRequest) {
+    const unauthorized = await requireAdminIdentity(req);
+    if (unauthorized) return unauthorized;
     try {
+        const ENGINE_URL = resolveEngineOrigin();
         const body = await req.json();
         const action = body?.action;
 

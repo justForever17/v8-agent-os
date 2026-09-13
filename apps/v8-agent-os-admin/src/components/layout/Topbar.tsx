@@ -552,7 +552,6 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                 />
             )}
             title={t(current.title)}
-            subtitle={t(current.description)}
             actions={(
                 <>
                     <DeviceConnectDialog />

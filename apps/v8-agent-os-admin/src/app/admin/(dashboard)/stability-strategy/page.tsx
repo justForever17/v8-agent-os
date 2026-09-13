@@ -1,4 +1,6 @@
 "use client";
+import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import { useEffect, useState } from "react";
 import { Gauge, Loader2 } from "lucide-react";
@@ -39,14 +41,20 @@ export default function StabilityStrategyPage() {
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<StabilityData> | null>(initialEnvelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [saveError, setSaveError] = useState("");
     const [mode, setMode] = useState(() => initialEnvelope?.data.sessionLanePolicy === "reject" ? "fast" : "balanced");
     const [durability, setDurability] = useState(() => Boolean(initialEnvelope?.data.strictSupervisorDurability ?? true));
 
+    const [loadError, setLoadError] = useState("");
     const loadConfig = async () => {
+        setLoadError("");
+        try {
         const next = await fetchConfigDomain<StabilityData>("runtime-stability");
         setEnvelope(next);
         setDurability(Boolean(next.data.strictSupervisorDurability ?? true));
         setMode(next.data.sessionLanePolicy === "reject" ? "fast" : "balanced");
+
+        } catch (error) { setLoadError(String(error)); }
     };
 
     useEffect(() => {
@@ -56,6 +64,8 @@ export default function StabilityStrategyPage() {
     const handleSave = async () => {
         if (!envelope) return;
         setSaving(true);
+        setSaveError("");
+        setSaved(false);
         try {
             const selectedMode = MODES.find((item) => item.key === mode) || MODES[1];
             const next = await saveConfigDomain<StabilityData>("runtime-stability", {
@@ -68,18 +78,14 @@ export default function StabilityStrategyPage() {
             setEnvelope(next);
             setSaved(true);
             window.setTimeout(() => setSaved(false), 1800);
+        } catch (error) {
+            setSaveError(`${t("admin.experience.saveFailed")} ${String(error)}`);
         } finally {
             setSaving(false);
         }
     };
 
-    if (!envelope) {
-        return (
-            <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
-            </div>
-        );
-    }
+    if (!envelope) return <AdminLoadState title="app.admin.dashboard.stability.strategy.page.kb80fddf8" error={loadError} onRetry={() => void loadConfig()}/>;
 
     return (
         <AdminPageShell>
@@ -89,10 +95,10 @@ export default function StabilityStrategyPage() {
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
-                        <Button onClick={() => void handleSave()} disabled={saving}>
+                        <AdminSaveBar error={saveError}><Button onClick={() => void handleSave()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Gauge className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.stability.strategy.page.k6010e1ed")}
-                        </Button>
+                        </Button></AdminSaveBar>
                     </div>
                 }
             />

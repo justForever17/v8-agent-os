@@ -363,6 +363,38 @@ class KnowledgeService:
             ],
         }
 
+    def get_graph_overview(self, *, offset: int = 0, limit: int = 8, cluster_id: Optional[str] = None,
+                           entity: Optional[str] = None, relation_offset: int = 0) -> Dict:
+        """Admin observation only; reuse the current workspace catalog authority."""
+        catalog = self._build_graph_workspace_catalog()
+        workspaces = sorted(list(catalog.get("items") or []), key=lambda item: str(item.get("workspaceKey") or ""))
+        clusters = [{"clusterId": "global", "scopeKind": "global", "label": "Global", "workspaceKey": None,
+                     "_scopes": ["global"], "writeScope": None}]
+        for item in workspaces:
+            clusters.append({"clusterId": json.dumps(["workspace", item["workspaceKey"]], ensure_ascii=False, separators=(",", ":")),
+                             "scopeKind": "workspace", "label": item.get("label"), "workspaceKey": item["workspaceKey"],
+                             "writeScope": item.get("writeScope"), "_scopes": sorted(scope for scope in item["_scopes"] if scope != "global")})
+        if cluster_id is not None:
+            selected = next((item for item in clusters if item["clusterId"] == cluster_id), None)
+            if selected is None:
+                raise ValueError("knowledge_graph_workspace_not_found")
+            if entity is not None:
+                return {"clusterId": cluster_id, **knowledge_db.query_graph_cluster_entity(entity=entity, scopes=selected["_scopes"], offset=relation_offset)}
+            page = [selected]
+        else:
+            offset = max(0, int(offset))
+            limit = max(1, min(int(limit), 8))
+            # Global is returned once, separately from the paginated workspace list.
+            page = ([clusters[0]] if offset == 0 else []) + clusters[1:][offset:offset + limit]
+        items = []
+        for item in page:
+            graph = knowledge_db.get_graph_cluster(scopes=item["_scopes"], node_limit=80 if item["scopeKind"] == "global" or cluster_id else 30,
+                                                   edge_limit=160 if item["scopeKind"] == "global" or cluster_id else 60)
+            items.append({key: value for key, value in item.items() if not key.startswith("_")} | graph)
+        return {"items": items, "totalWorkspaces": len(workspaces), "offset": offset,
+                "nextOffset": offset + limit if not cluster_id and offset + limit < len(workspaces) else None,
+                "partial": not cluster_id and offset + limit < len(workspaces)}
+
     def _resolve_graph_workspace(self, workspace_key: Optional[str]) -> Dict[str, object]:
         catalog = self._build_graph_workspace_catalog()
         resolved_key = str(workspace_key or catalog.get("defaultWorkspaceKey") or "").strip()

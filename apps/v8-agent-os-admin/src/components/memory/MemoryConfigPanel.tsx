@@ -1,4 +1,5 @@
 "use client";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -929,10 +930,10 @@ export default function MemoryConfigPanel() {
             )}
 
             <div className="flex justify-end">
-                <Button onClick={handleSave} disabled={saving}>
+                <AdminSaveBar><Button onClick={handleSave} disabled={saving}>
                     {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
                     {saved ? t("components.memory.MemoryConfigPanel.k8b7fa48e") : t("components.memory.MemoryConfigPanel.kaf9b5430")}
-                </Button>
+                </Button></AdminSaveBar>
             </div>
         </div>;
 }

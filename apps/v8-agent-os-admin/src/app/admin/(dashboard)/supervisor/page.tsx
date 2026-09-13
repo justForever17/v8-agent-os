@@ -1,4 +1,5 @@
 "use client";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 /* eslint-disable @next/next/no-img-element */
 import { useMemo, useState, useEffect } from "react";
@@ -329,11 +330,11 @@ export default function SupervisorPage() {
       setIsUploading(false);
     }
   };
-  return <><div className="w-full space-y-8 p-6 lg:p-8">
+  return <><div className="admin-page mx-auto w-full max-w-[1040px] space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-4">
                     <div>
-                        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+                        <h1 className="text-[24px] font-semibold tracking-tight flex items-center gap-2">
                             <Crown className="w-8 h-8 text-amber-500" />
                             {t("app.admin.dashboard.supervisor.page.kf45c6152")}
                         </h1>
@@ -347,10 +348,10 @@ export default function SupervisorPage() {
                         </p>
                     </div>
                 </div>
-                <Button onClick={handleSave} disabled={isLoading || isSaving || promptBudgetOverLimit} size="lg" className="shrink-0">
+                <AdminSaveBar><Button onClick={handleSave} disabled={isLoading || isSaving || promptBudgetOverLimit} size="lg" className="shrink-0">
                     {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
                     {t("app.admin.dashboard.supervisor.page.kaf9b5430")}
-                </Button>
+                </Button></AdminSaveBar>
             </div>
 
             {isLoading ? <div className="grid grid-cols-1 gap-6 lg:grid-cols-[3fr_2fr]" aria-busy="true">

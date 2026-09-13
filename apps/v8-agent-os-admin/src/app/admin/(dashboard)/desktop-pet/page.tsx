@@ -1,4 +1,5 @@
 "use client";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Plus, Save, Trash2 } from "lucide-react";
@@ -513,10 +514,10 @@ export default function DesktopPetSettingsPage() {
         title={t("app.admin.dashboard.desktopPet.title")}
         description={t("app.admin.dashboard.desktopPet.description")}
         actions={
-          <Button onClick={saveAll} disabled={saving || loading}>
+          <AdminSaveBar><Button onClick={saveAll} disabled={saving || loading}>
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
             {t("app.admin.dashboard.desktopPet.save")}
-          </Button>
+          </Button></AdminSaveBar>
         }
       />
 

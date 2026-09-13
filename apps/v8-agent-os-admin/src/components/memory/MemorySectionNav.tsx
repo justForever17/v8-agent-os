@@ -4,7 +4,6 @@ import Link from "next/link";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
-import { useDebugMode } from "@/lib/useDebugMode";
 
 export type MemorySectionKey =
     | "context"
@@ -35,14 +34,7 @@ const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: 
 
 export default function MemorySectionNav({ activeKey }: { activeKey: MemorySectionKey }) {
     const t = useT();
-    const [debugMode] = useDebugMode();
-
-    const visibleItems = MEMORY_SECTION_ITEMS.filter((item) => {
-        if (!debugMode) {
-            return !["logs", "runtime", "config"].includes(item.key);
-        }
-        return true;
-    });
+    const visibleItems = MEMORY_SECTION_ITEMS;
 
     return (
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-2 text-center">
@@ -52,8 +44,10 @@ export default function MemorySectionNav({ activeKey }: { activeKey: MemorySecti
                     <Link
                         key={item.key}
                         href={item.href}
+                        prefetch={false}
+                        aria-current={active ? "page" : undefined}
                         className={cn(
-                            "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                            "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                             active
                                 ? "bg-background text-foreground shadow"
                                 : "text-muted-foreground hover:bg-background/70 hover:text-foreground",

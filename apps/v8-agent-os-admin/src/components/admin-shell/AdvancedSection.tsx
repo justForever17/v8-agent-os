@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { useResolveText } from "@/components/providers/LocaleProvider";
@@ -13,13 +13,17 @@ export function AdvancedSection({
     description,
     defaultOpen = false,
     children,
+    keepMounted = true,
 }: {
     title?: string;
     description?: string;
     defaultOpen?: boolean;
     children: React.ReactNode;
+    keepMounted?: boolean;
 }) {
     const [open, setOpen] = useState(defaultOpen);
+    const [visited, setVisited] = useState(defaultOpen);
+    const contentId = useId();
     const resolveText = useResolveText();
 
     return (
@@ -27,15 +31,16 @@ export function AdvancedSection({
             <Button
                 type="button"
                 variant="outline"
-                className="h-auto w-full justify-between rounded-2xl border-border bg-card px-4 py-4 text-left text-card-foreground shadow-sm hover:bg-muted/50"
-                onClick={() => setOpen((current) => !current)}
+                className="h-auto min-h-[44px] w-full justify-between rounded-lg border-border bg-card px-4 py-3 text-left text-card-foreground shadow-none hover:bg-muted/50"
+                aria-expanded={open}
+                aria-controls={contentId}
+                onClick={() => { setVisited(true); setOpen((current) => !current); }}
             >
-                <AdminHoverInfo content={description ? resolveText(description) : undefined}>
-                    <span className="text-sm font-medium text-foreground">{resolveText(title)}</span>
-                </AdminHoverInfo>
+                <span className="text-sm font-medium text-foreground">{resolveText(title)}</span>
                 <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open ? "rotate-180" : "")} />
             </Button>
-            {open ? children : null}
+            {description ? <AdminHoverInfo content={resolveText(description)}><span className="sr-only">{resolveText(title)}</span></AdminHoverInfo> : null}
+            <div id={contentId} hidden={!open}>{open || (keepMounted && visited) ? children : null}</div>
         </div>
     );
 }

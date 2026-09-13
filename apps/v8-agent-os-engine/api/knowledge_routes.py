@@ -892,6 +892,20 @@ async def get_graph_workspaces():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/memory/graph/overview")
+async def get_graph_overview(
+    offset: int = Query(default=0, ge=0), limit: int = Query(default=8, ge=1, le=8),
+    cluster_id: str | None = Query(default=None, alias="clusterId"),
+    entity: str | None = Query(default=None), relation_offset: int = Query(default=0, alias="relationOffset", ge=0),
+):
+    from runtimes.memory.knowledge_service import knowledge_service
+    try:
+        return await asyncio.to_thread(knowledge_service.get_graph_overview, offset=offset, limit=limit,
+                                       cluster_id=cluster_id, entity=entity, relation_offset=relation_offset)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
 @router.get("/memory/graph/search")
 async def search_graph_entities(
     keyword: str,

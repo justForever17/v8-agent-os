@@ -17,6 +17,8 @@ export function ConfigCard({
     allowOverflow = false,
     className,
     contentClassName,
+    collapsible = false,
+    defaultOpen = false,
 }: {
     title: string;
     description?: string;
@@ -28,11 +30,13 @@ export function ConfigCard({
     allowOverflow?: boolean;
     className?: string;
     contentClassName?: string;
+    collapsible?: boolean;
+    defaultOpen?: boolean;
 }) {
     const resolveText = useResolveText();
 
     const resolvedHeightClass =
-        bodyHeight === "auto"
+        variant !== "list" || bodyHeight === "auto"
             ? ""
             : bodyHeight === 360
               ? "max-h-[360px]"
@@ -45,23 +49,31 @@ export function ConfigCard({
     const resolvedScrollClass =
         allowOverflow
             ? "overflow-visible"
-            : bodyScroll === "auto" || variant !== "summary"
+            : variant === "list" && bodyScroll === "auto"
             ? "overflow-y-auto pr-1"
             : "";
 
+    const body = <CardContent className="min-h-0 space-y-4 overflow-visible px-4 pb-4">
+        <div className={cn("min-h-0", resolvedHeightClass, resolvedScrollClass, contentClassName)}>{children}</div>
+        {footer}
+    </CardContent>;
+
+    if (collapsible) return <AdminSurfaceCard className={cn("min-h-0", className)}>
+        <details open={defaultOpen || undefined}>
+            <summary className="cursor-pointer px-4 py-3 text-[14px] font-medium text-foreground marker:text-muted-foreground">{resolveText(title)}</summary>
+            {description ? <div className="px-4 pb-2"><AdminHoverTitle title={resolveText(title)} description={resolveText(description)} /></div> : null}
+            {body}
+        </details>
+    </AdminSurfaceCard>;
+
     return (
         <AdminSurfaceCard className={cn("min-h-0", allowOverflow ? "overflow-visible" : "", className)}>
-            <CardHeader className="space-y-2">
-                <CardTitle className="text-lg text-foreground">
+            <CardHeader className="space-y-1 px-4 py-3">
+                <CardTitle className="text-[14px] leading-[22px] text-foreground">
                     <AdminHoverTitle title={resolveText(title)} description={description ? resolveText(description) : undefined} />
                 </CardTitle>
             </CardHeader>
-            <CardContent className={cn("min-h-0 space-y-4", allowOverflow ? "overflow-visible" : "overflow-hidden")}>
-                <div className={cn("min-h-0", resolvedHeightClass, resolvedScrollClass, contentClassName)}>
-                    {children}
-                </div>
-                {footer}
-            </CardContent>
+            {body}
         </AdminSurfaceCard>
     );
 }

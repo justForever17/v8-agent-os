@@ -7,5 +7,5 @@ export function AdminPageShell({
     children: React.ReactNode;
     className?: string;
 }) {
-    return <div className={cn("mx-auto flex w-full max-w-7xl flex-col gap-6", className)}>{children}</div>;
+    return <div className={cn("admin-page mx-auto flex w-full max-w-[1040px] flex-col gap-5", className)}>{children}</div>;
 }

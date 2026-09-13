@@ -1,4 +1,6 @@
 "use client";
+import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
+import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -162,10 +164,14 @@ export default function DesktopAutomationPage() {
     const [loading, setLoading] = useState(!initialState.envelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [saveError, setSaveError] = useState("");
     const [runtimeSaving, setRuntimeSaving] = useState(false);
     const [featurePack, setFeaturePack] = useState<RuntimeFeaturePackEntry | null>(initialState.featurePack);
 
+    const [loadError, setLoadError] = useState("");
     const loadData = async (force = false) => {
+        setLoadError("");
+        try {
         try {
             const [config, modelsResponse, capabilitySnapshot, featurePacks] = await Promise.all([
                 fetchConfigDomain<ComputerUseData>("computer-use", { force }),
@@ -188,6 +194,8 @@ export default function DesktopAutomationPage() {
         } finally {
             setLoading(false);
         }
+
+        } catch (error) { setLoadError(String(error)); }
     };
 
     useEffect(() => {
@@ -321,11 +329,15 @@ export default function DesktopAutomationPage() {
     const handleSave = async () => {
         if (!envelope) return;
         setSaving(true);
+        setSaveError("");
+        setSaved(false);
         try {
             const next = await saveConfigDomain<ComputerUseData>("computer-use", { data: envelope.data });
             setEnvelope(next);
             setSaved(true);
             window.setTimeout(() => setSaved(false), 1800);
+        } catch (error) {
+            setSaveError(`${t("admin.experience.saveFailed")} ${String(error)}`);
         } finally {
             setSaving(false);
         }
@@ -358,13 +370,7 @@ export default function DesktopAutomationPage() {
         }
     };
 
-    if (loading || !envelope) {
-        return (
-            <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
-            </div>
-        );
-    }
+    if (loading || !envelope) return <AdminLoadState title="app.admin.dashboard.desktop.automation.page.k20b2ed6e" error={loadError} onRetry={() => void loadData()}/>;
 
     return (
         <AdminPageShell>
@@ -374,10 +380,10 @@ export default function DesktopAutomationPage() {
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
-                        <Button onClick={() => void handleSave()} disabled={saving}>
+                        <AdminSaveBar error={saveError}><Button onClick={() => void handleSave()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MonitorSmartphone className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.desktop.automation.page.k6010e1ed")}
-                        </Button>
+                        </Button></AdminSaveBar>
                     </div>
                 }
             />

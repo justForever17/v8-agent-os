@@ -54,7 +54,7 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
         providerName: provider.name,
         explicitAsset: provider.logoAsset || null,
     });
-    const status = health?.status || (provider.isEnabled ? "healthy" : "disabled");
+    const status = health?.status || (provider.isEnabled ? "unknown" : "disabled");
     const statusLabel = getStatusLabel(status, t);
     const details = [
         `Provider: ${provider.name}`,
@@ -69,7 +69,7 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
     ].filter(Boolean);
 
     return (
-        <Card className="group/card relative h-[128px] overflow-visible transition-shadow hover:shadow-md">
+        <Card className="group/card relative min-h-[88px] overflow-visible shadow-none transition-colors hover:border-primary/40">
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex items-start justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
@@ -85,30 +85,30 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
                         </AdminHoverInfo>
                         <div className="min-w-0">
                             <div className="truncate text-sm font-semibold" title={provider.name}>{provider.name}</div>
-                            <div className="truncate text-[11px] text-muted-foreground" title={provider.code}>
+                            <div className="truncate text-[12px] text-muted-foreground" title={provider.code}>
                                 {provider.code}
                             </div>
                         </div>
                     </div>
-                    <Badge variant={status === "attention" ? "secondary" : provider.isEnabled ? "default" : "secondary"} className="h-5 shrink-0 px-2 text-[10px]">
+                    <Badge variant={status === "attention" ? "secondary" : provider.isEnabled ? "default" : "secondary"} className="h-5 shrink-0 px-2 text-[12px]">
                         {statusLabel}
                     </Badge>
                 </div>
-                <div className="mt-auto flex items-end justify-between gap-2">
-                    <div className="min-w-0 space-y-1 text-[11px] font-medium">
-                        <div className="truncate font-mono text-[10px] text-muted-foreground" title={provider.baseUrl || provider.code}>
-                            {provider.baseUrl || provider.code}
+                <div className="mt-3 flex items-end justify-between gap-2">
+                    <div className="min-w-0 space-y-1 text-[12px] font-medium">
+                        <div className="truncate font-mono text-[12px] text-muted-foreground" title={provider.baseUrl || provider.code}>
+                            {provider.apiStandard || provider.type}
                         </div>
                         <div className="truncate">{provider.models.length} {t("components.models.ProviderCard.k5503fbe2")}</div>
                     </div>
-                    <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onToggle(provider.id, !provider.isEnabled)}>
+                    <div className="flex shrink-0 items-center gap-1">
+                        <Button variant="ghost" size="icon" aria-label={t(provider.isEnabled ? "admin.experience.disable" : "admin.experience.enable")} className="h-8 w-8" onClick={() => onToggle(provider.id, !provider.isEnabled)}>
                             <Power className={`h-3.5 w-3.5 ${provider.isEnabled ? "text-green-500" : "text-muted-foreground"}`} />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEdit(provider)}>
+                        <Button variant="ghost" size="icon" aria-label={t("admin.experience.manage")} className="h-8 w-8" onClick={() => onEdit(provider)}>
                             <Settings className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => onDelete(provider.id)}>
+                        <Button variant="ghost" size="icon" aria-label={t("admin.experience.delete")} className="h-8 w-8 hover:text-destructive" onClick={() => onDelete(provider.id)}>
                             <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                     </div>

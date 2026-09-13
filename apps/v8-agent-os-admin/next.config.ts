@@ -13,7 +13,7 @@ function readBridgeConfig(phase: string) {
     return {};
   }
   try {
-    const configPath = path.join(os.homedir(), ".v8-agent-os", "config.json");
+    const configPath = path.join(String(process.env.V8_AGENT_OS_HOME || "").trim() || path.join(os.homedir(), ".v8-agent-os"), "config.json");
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     return config?.bridge && typeof config.bridge === "object" ? config.bridge : {};
   } catch {
@@ -32,6 +32,7 @@ function resolveEngineOrigin(phase: string) {
 }
 
 const createNextConfig = (phase: string): NextConfig => ({
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
   /* config options here */
   output: "standalone",
   transpilePackages: ["@v8/session-realtime"],

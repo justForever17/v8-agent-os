@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useState } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ReasoningEffortControl } from "@v8/product-ui";
 import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Globe2, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
 import type { ControlPlaneModel, ModelDefaultCategory } from "@/components/models/control-plane-types";
@@ -323,6 +324,7 @@ export function ModelCardV2({
     ? "none"
     : String(reasoningEffortControl?.selectedLevel || "auto");
   const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const commitThinkingLevel = async (nextLevel: string) => {
     if (!onSetReasoningLevel || savingThinkingLevel) return;
     if (nextLevel === configuredThinkingLevel) return;
@@ -368,10 +370,28 @@ export function ModelCardV2({
     explicitAsset: model.logoAsset || null
   });
   const details = [`Route: ${visibleRoute.displayModelId}`, `Provider model ID: ${providerModelLabel}`, visibleRoute.submitPath ? `Request endpoint: ${visibleRoute.submitPath}` : "", visibleProtocol ? `Wire protocol: ${visibleProtocol} (${visibleRoute.protocolConfidence || "unknown"})` : "", visibleRoute.protocolSourceRefs.length ? `Protocol sources: ${visibleRoute.protocolSourceRefs.join(", ")}` : "", `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, model.provider?.baseUrl ? `Base URL: ${model.provider.baseUrl}` : "", `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", model.outputTokenMode === "auto" ? "Output budget: auto" : typeof model.maxTokens === "number" ? `Output budget: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", supportsNoThink ? `No-think control: ${noThinkDisabled ? "disabled reasoning on request" : "model default thinking"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
-  return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
+  return <>
+    <Card className="min-h-[104px] shadow-none">
+      <CardContent className="space-y-2 p-3">
+        <div className="flex items-center gap-2">
+          {modelIcon ? <Image src={modelIcon} alt="" width={28} height={28} className="h-9 w-9 shrink-0 object-contain" unoptimized/> : <Brain size={24}/>}
+          <div className="min-w-0 flex-1"><button type="button" onClick={() => setDetailsOpen(true)} className="block max-w-full truncate text-left text-[14px] font-semibold hover:text-primary" title={providerModelLabel}>{providerModelLabel}</button><div className="truncate text-[12px] text-muted-foreground">{model.provider?.name || t("components.models.ModelCardV2.k4f162e67")}</div></div>
+          <Button variant="ghost" size="sm" onClick={() => setDetailsOpen(true)}>{t("admin.experience.adjust")}</Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
+          {defaultBadges.slice(0, 2).map(category => <span key={category.key} className="text-primary">{defaultCategoryLabel(category, t)}</span>)}
+          {!defaultBadges.length ? <span>{model.type}</span> : null}
+          {defaultBadges.length > 2 ? <button type="button" onClick={() => setDetailsOpen(true)}>+{defaultBadges.length - 2}</button> : null}
+          {missingFields.length || visibleRoute.protocolWarning || displayStatus === "error" || displayStatus === "warning" ? <button type="button" className="flex items-center gap-1 text-amber-600 dark:text-amber-300" onClick={() => setDetailsOpen(true)}><AlertCircle size={14}/>{t("components.models.ModelCardV2.protocolVerificationWarning")}</button> : null}
+          {testing || repairing ? <LoaderCircle size={14} className="animate-spin"/> : null}
+        </div>
+      </CardContent>
+    </Card>
+    <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}><DialogContent className="max-w-2xl max-h-[calc(100dvh-24px)] overflow-y-auto"><DialogHeader><DialogTitle className="break-all">{providerModelLabel}</DialogTitle></DialogHeader>
+    <Card className={`group/card relative min-h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
-                    <AdminHoverInfo lines={details} triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground">
+                    <AdminHoverInfo lines={details} triggerClassName="h-9 w-9 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground">
 
                         {modelIcon ? <Image src={modelIcon} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized /> : <Brain className="h-5 w-5 text-muted-foreground" aria-hidden="true" />}
                     </AdminHoverInfo>
@@ -394,14 +414,14 @@ export function ModelCardV2({
               const badgeTone = String(category.badge || "sky");
               const badgeClass = DEFAULT_CATEGORY_BADGE_CLASSES[badgeTone] || DEFAULT_CATEGORY_BADGE_CLASSES.sky;
               const starClass = DEFAULT_CATEGORY_STAR_CLASSES[badgeTone] || DEFAULT_CATEGORY_STAR_CLASSES.sky;
-              return <Badge key={`${modelRef}:${category.key}`} className={`h-5 shrink-0 border-none px-1.5 text-[10px] ring-1 ${badgeClass}`}>
+              return <Badge key={`${modelRef}:${category.key}`} className={`h-5 shrink-0 border-none px-1.5 text-[12px] ring-1 ${badgeClass}`}>
                                     <Star className={`mr-1 h-3 w-3 ${starClass}`} />
                                     {defaultCategoryLabel(category, t)}
                                 </Badge>;
             })}
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
-                            <span className="mr-1 truncate font-mono text-[10px]" title={t("components.models.ModelCardV2.modelRoute", { route: visibleRoute.displayModelId })}>
+                            <span className="mr-1 truncate font-mono text-[12px]" title={t("components.models.ModelCardV2.modelRoute", { route: visibleRoute.displayModelId })}>
                                 {t("components.models.ModelCardV2.modelRoute", { route: visibleRoute.displayModelId })}
                             </span>
                             {capabilityIconItems.map(({
@@ -413,7 +433,7 @@ export function ModelCardV2({
                                 </span>)}
                         </div>
                         <div className="mt-2 h-5">
-                            {displayStatus !== "idle" ? <div className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${displayStatus === "success" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200" : displayStatus === "warning" ? "bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200" : displayStatus === "error" ? "bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-200" : "bg-slate-100 text-slate-600 dark:bg-muted dark:text-muted-foreground"}`} title={statusMessage}>
+                            {displayStatus !== "idle" ? <div className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[12px] ${displayStatus === "success" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200" : displayStatus === "warning" ? "bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200" : displayStatus === "error" ? "bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-200" : "bg-slate-100 text-slate-600 dark:bg-muted dark:text-muted-foreground"}`} title={statusMessage}>
 
                                     {displayStatus === "success" ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : displayStatus === "error" || displayStatus === "warning" ? <AlertCircle className="h-3 w-3 shrink-0" /> : <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" />}
                                     <span className="truncate">
@@ -435,17 +455,17 @@ export function ModelCardV2({
                     </div>
                 </div>
 
-                <div className="mt-auto flex items-end justify-between gap-2">
+                <div className="mt-4 flex items-end justify-between gap-2">
                     <div className="min-w-0" />
 
-                    <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100">
-                        {onTestConnection && <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" disabled={testing} onClick={async () => {
+                    <div className="flex flex-wrap items-center gap-1">
+                        {onTestConnection && <Button variant="ghost" size="icon" className="h-9 w-9 text-muted-foreground hover:text-primary" disabled={testing} onClick={async () => {
             await onTestConnection(modelRef);
           }} title={testing ? t("components.models.ModelCardV2.k60eba059") : t("components.models.ModelCardV2.kdf48b898")}>
 
                                 <PlugZap className={`h-3.5 w-3.5 ${testing ? "animate-pulse" : ""}`} />
                             </Button>}
-                        {onRepairReasoning && canRepairReasoning && <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" disabled={testing || repairing} onClick={async () => {
+                        {onRepairReasoning && canRepairReasoning && <Button variant="ghost" size="icon" className="h-9 w-9 text-muted-foreground hover:text-primary" disabled={testing || repairing} onClick={async () => {
             await onRepairReasoning(modelRef);
           }} title={repairing ? t("components.models.ModelCardV2.reasoningRepairing") : t("components.models.ModelCardV2.reasoningRepairTitle")}>
 
@@ -461,7 +481,7 @@ export function ModelCardV2({
                             <Button
                               variant="ghost"
                               size="icon"
-                              className={`h-7 w-7 ${visibleRoute.providerHostedToolsEnabled ? "bg-violet-50 text-violet-700 hover:bg-violet-100 hover:text-violet-800 dark:bg-violet-500/15 dark:text-violet-200" : "text-muted-foreground hover:text-primary"}`}
+                              className={`h-9 w-9 ${visibleRoute.providerHostedToolsEnabled ? "bg-violet-50 text-violet-700 hover:bg-violet-100 hover:text-violet-800 dark:bg-violet-500/15 dark:text-violet-200" : "text-muted-foreground hover:text-primary"}`}
                               aria-pressed={visibleRoute.providerHostedToolsEnabled}
                               aria-label={visibleRoute.providerHostedToolsEnabled
                                 ? t("components.models.ModelCardV2.providerHostedToolsDisable")
@@ -475,7 +495,7 @@ export function ModelCardV2({
                           </AdminHoverInfo>}
                         {defaultCategoryOptions.length > 0 && onSetDefault && <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" title={defaultCategoryOptions.map((option) => t(option.labelKey)).join(" / ")}>
+                                    <Button variant="ghost" size="icon" className="h-9 w-9 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" title={defaultCategoryOptions.map((option) => t(option.labelKey)).join(" / ")}>
                                         <Star className="h-3.5 w-3.5" aria-hidden="true" />
                                     </Button>
                                 </DropdownMenuTrigger>
@@ -487,17 +507,20 @@ export function ModelCardV2({
                                         </DropdownMenuItem>)}
                                 </DropdownMenuContent>
                             </DropdownMenu>}
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t("components.models.ModelCardV2.ke0b2f296")}>
+                        <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t("components.models.ModelCardV2.ke0b2f296")}>
                             <Copy className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEdit(model)} title={t("components.models.ModelCardV2.k75997619")}>
+                        <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => onEdit(model)} title={t("components.models.ModelCardV2.k75997619")}>
                             <Edit2 className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => onDelete(model)} title={t("components.models.ModelCardV2.k626f35dc")}>
+                        <Button variant="ghost" size="icon" className="h-9 w-9 hover:text-destructive" onClick={() => onDelete(model)} title={t("components.models.ModelCardV2.k626f35dc")}>
                             <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                     </div>
                 </div>
             </CardContent>
-        </Card>;
+        </Card>
+        <dl className="space-y-2 text-[12px] leading-5 text-muted-foreground">{details.map((detail, index) => <div key={index} className="break-all">{detail}</div>)}</dl>
+    </DialogContent></Dialog>
+    </>;
 }

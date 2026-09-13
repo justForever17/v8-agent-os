@@ -3,6 +3,13 @@
   --v8-product-topbar-content-height: 25px;
   --v8-product-motion: cubic-bezier(0.32, 0.72, 0, 1);
   --v8-product-motion-heavy: cubic-bezier(0.19, 1, 0.22, 1);
+  --v8-product-motion-fast: 100ms;
+  --v8-product-motion-control: 140ms;
+  --v8-product-motion-panel: 180ms;
+  --v8-product-ease-out: cubic-bezier(.22, 1, .36, 1);
+  --v8-product-panel-radius: 12px;
+  --v8-product-control-radius: 8px;
+  --v8-product-settings-width: 1040px;
 }
 
 .v8-square-cropper {

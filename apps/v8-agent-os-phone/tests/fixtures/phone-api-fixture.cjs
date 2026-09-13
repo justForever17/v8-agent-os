@@ -1,7 +1,11 @@
 // Synthetic local HTTP fixture. It never reads application config or real tokens.
 const http = require("node:http");
 const port = Number(process.argv[2] || 22836);
-const counts = { requests: 0, activeStreams: 0, maximumStreams: 0, submits: 0 };
+const nativeFinal = process.argv.includes("--native-final");
+const counts = { requests: 0, activeStreams: 0, maximumStreams: 0, submits: 0, streamBytes: 0, streamConnections: 0, artifactDownloads: 0, terminalReads: [] };
+const controls = { holdSubmit: false, terminalEnabled: false, terminalReset: false, terminalGeneration: "fixture-generation-1", streamPaddingBytes: 0 };
+const submitReceipts = [];
+const longArtifactId = "artifact-" + "long-identity-".repeat(30);
 const accepted = new Map();
 const peers = Array.from({ length: 100 }, (_, i) => ({ linkId: `link-${i}`, peerId: `peer-${i}`, servingInstanceId: "fixture-A", sessionId: `network_neighbor_link-${i}`, sessionKind: "local_neighbor", displayName: `Supervisor ${String(i).padStart(3, "0")}`, online: i % 2 === 0, lastSeenAt: "2026-09-13T00:00:00Z", trustStatus: "trusted" }));
 const timestamp = "2026-09-13T00:00:00Z";
@@ -18,6 +22,10 @@ const server = http.createServer(async (req, res) => {
   const user = { id: "fixture-owner", login: "fixture", name: "Test owner", email: "fixture@invalid", role: "ADMIN" };
   const send = (payload, status = 200) => { res.statusCode = status; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(payload)); };
   if (route === "/fixture/metrics") return send(counts);
+  if (nativeFinal && route === "/fixture/control") {
+    if (req.method === "POST") Object.assign(controls, body);
+    return send({ ...controls, submitReceipts, longArtifactId });
+  }
   if (route.endsWith("/instance")) return send({ instanceId: `fixture-${profile}` });
   if (route.endsWith("/pairing/consume") || route.endsWith("/auth/refresh")) return send({ accessToken: `synthetic-access-${profile}`, refreshToken: `synthetic-refresh-${profile}`, user, instanceId: `fixture-${profile}`, adminBaseUrl: base, adminUrls: [base] });
   if (route.endsWith("/auth/me")) return send({ user });
@@ -25,8 +33,16 @@ const server = http.createServer(async (req, res) => {
   if (route.includes("/stream")) {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     counts.activeStreams++; counts.maximumStreams = Math.max(counts.maximumStreams, counts.activeStreams);
+    counts.streamConnections++;
     res.write(`event: ready\ndata: {"seq":0}\n\n`);
-    const timer = setInterval(() => res.write(`event: heartbeat\ndata: {"seq":0}\n\n`), 1000);
+    let ticks = 0;
+    const timer = setInterval(() => {
+      ticks++;
+      const padding = nativeFinal && !route.includes("session-activity") ? Math.min(32768, Number(controls.streamPaddingBytes) || 0) : 0;
+      if (!padding && ticks % 20 !== 0) return;
+      const frame = `event: heartbeat\ndata: ${JSON.stringify({ seq: 0, padding: "x".repeat(padding) })}\n\n`;
+      counts.streamBytes += Buffer.byteLength(frame); res.write(frame);
+    }, 50);
     res.on("close", () => { clearInterval(timer); counts.activeStreams--; }); return;
   }
   const sessions = Array.from({ length: 1000 }, (_, i) => ({ id: `session-${i + 1}`, sessionId: `session-${i + 1}`, title: `${profile} task ${i + 1}`, createdAt: timestamp, updatedAt: timestamp, historySortAt: timestamp,
@@ -47,12 +63,35 @@ const server = http.createServer(async (req, res) => {
     return send({ peer, items: [{ id: "message-1", body: "Synthetic neighbor transcript", seq: 1, fromNickname: peer.displayName, status: "delivered" }], previousCursor: null });
   }
   if (route.endsWith("/scope")) return send({ sessionId: route.split("/").at(-2), binding: { resolvedScope: "workspace", projectId: "fixture-project", workspaceId: "fixture-workspace", workspacePath: "E:/fixture" }, resolvedScope: "workspace", projectId: "fixture-project", workspaceId: "fixture-workspace", workspacePath: "E:/fixture" });
+  if (nativeFinal && route.includes("/artifacts")) {
+    const artifact = { id: longArtifactId, sessionId: "session-1", workspaceId: "fixture-workspace", title: "Long identity check", kind: "file", mimeType: "text/plain", createdAt: timestamp };
+    if (route.endsWith("/content")) {
+      counts.artifactDownloads++;
+      res.setHeader("Content-Type", "text/plain"); res.setHeader("Content-Disposition", 'attachment; filename="identity-check.txt"');
+      res.end("Synthetic long identity resource content.\n"); return;
+    }
+    if (route.includes("/artifacts/")) return send(artifact);
+    return send({ artifacts: [artifact] });
+  }
   if (route.includes("/turns") || route.includes("/timeline/sync")) return send({ sessionId: route.split("/")[4], messages: [{ id: "message-1", role: "assistant", content: `${profile} synthetic message`, ordinal: 1, createdAt: timestamp, turnId: "turn-1" }], deletions: [], syncCursor: `cursor-${profile}`, pageInfo: { hasOlder: false } });
-  if (route.endsWith("/processes")) return send({ processes: [], stale: false });
+  if (route.endsWith("/processes")) return send({ processes: nativeFinal && controls.terminalEnabled ? [{ processId: "fixture-process", sessionId: route.split("/").at(-2), status: "running", command: "synthetic terminal", outputUrl: "/api/client/bg_processes/fixture-process/output" }] : [], stale: false });
   if (route.includes("/snapshot") || /^\/api\/client\/conversations\/[^/]+$/.test(route)) return send({ conversation: sessions[0], session: sessions[0], runtime: { status: "idle", latestSeq: 0 }, messages: [], queuedMessages: [], controls: { canInterrupt: false }, latestSeq: 0, messagesOmitted: true });
   if (route.endsWith("/chat-submit") || route.endsWith("/chat/submit") || route.endsWith("/chat")) {
+    if (nativeFinal) {
+      submitReceipts.push({ clientMessageId: body.clientMessageId, profile, duplicate: accepted.has(body.clientMessageId) });
+      if (controls.holdSubmit) { counts.submits++; accepted.set(body.clientMessageId, { accepted: true, runId: "fixture-run" }); return; }
+    }
     counts.submits++; if (!accepted.has(body.clientMessageId)) accepted.set(body.clientMessageId, { accepted: true, runId: "fixture-run", userMessage: { id: body.clientMessageId, role: "user", content: body.message || body.content || "fixture" } });
     setTimeout(() => send(accepted.get(body.clientMessageId)), 1500); return;
+  }
+  if (nativeFinal && route.includes("/bg_processes/")) {
+    const text = "中文 prefix\nnew terminal line\n";
+    const cursor = Number(url.searchParams.get("cursor") || 0), output = Buffer.from(text);
+    counts.terminalReads.push({ cursor, reset: controls.terminalReset });
+    if (counts.terminalReads.length > 80) counts.terminalReads.shift();
+    if (controls.terminalReset && cursor > 0) return send({ output: "", outputReset: true, outputCursor: 0, outputGeneration: controls.terminalGeneration, process: { status: "running" } });
+    return send({ output: output.subarray(cursor).toString("utf8"), outputCursor: output.length, outputGeneration: controls.terminalGeneration,
+      outputHasMore: false, outputTotalBytes: output.length, process: { status: "running" } });
   }
   if (route.includes("/projects")) return send({ projects: [{ id: "fixture-project", name: "Fixture project", workspaceId: "fixture-workspace", workspacePath: "E:/fixture" }], mainWorkspacePath: "E:/fixture" });
   if (route.includes("/reasoning-effort")) return send({ levels: ["auto"], value: "auto", supported: false });

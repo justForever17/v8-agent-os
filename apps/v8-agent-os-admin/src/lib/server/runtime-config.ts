@@ -133,7 +133,8 @@ function getBridge() {
 }
 
 export function resolveEngineBaseUrl() {
-    return normalizeUrl(getBridge().engineBaseUrl, DEFAULT_ENGINE_BASE_URL);
+    const value = normalizeUrl(process.env.V8_ENGINE_BASE_URL || getBridge().engineBaseUrl, DEFAULT_ENGINE_BASE_URL);
+    return value.endsWith("/v1") ? value : `${value}/v1`;
 }
 
 export function resolveEngineOrigin() {

@@ -24,8 +24,10 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
                 "Content-Type": "application/json",
                 "x-v8-agent-os-secret": internalSecret,
                 "x-v8-agent-os-user-email": session.user.email,
+                "x-v8-terminal-origin": req.nextUrl.origin,
             },
             cache: "no-store",
+            signal: req.signal,
         };
         if (method === "POST") {
             const payload = await req.json().catch(() => ({}));

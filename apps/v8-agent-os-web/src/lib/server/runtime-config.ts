@@ -48,7 +48,8 @@ async function getResolvedBridge(): Promise<BridgeConfig> {
 
 export async function resolveEngineBaseUrl() {
     const bridge = await getResolvedBridge();
-    return normalizeUrl(bridge.engineBaseUrl, DEFAULT_ENGINE_BASE_URL);
+    const value = normalizeUrl(process.env.V8_ENGINE_BASE_URL || bridge.engineBaseUrl, DEFAULT_ENGINE_BASE_URL);
+    return value.endsWith("/v1") ? value : `${value}/v1`;
 }
 
 export async function resolveEngineRootUrl() {
@@ -80,6 +81,8 @@ export async function resolveEngineWsBaseUrl() {
 
 export async function resolveAdminApiBaseUrl() {
     const bridge = await getResolvedBridge();
+    const runtimeAdmin = String(process.env.V8_ADMIN_BASE_URL || "").trim().replace(/\/+$/, "");
+    if (runtimeAdmin) return runtimeAdmin.endsWith("/api") ? runtimeAdmin : `${runtimeAdmin}/api`;
     const explicitApiBase = String(bridge.adminApiBaseUrl || "").trim();
     if (explicitApiBase) {
         return normalizeUrl(explicitApiBase, DEFAULT_ADMIN_BASE_URL);

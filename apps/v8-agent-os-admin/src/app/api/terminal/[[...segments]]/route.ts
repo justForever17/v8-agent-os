@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { verifyServiceAuth } from "@/lib/service-auth";
-import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveEngineWsBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
-const ENGINE_URL = resolveEngineBaseUrl();
 
 function buildTarget(req: NextRequest, segments?: string[]) {
     const suffix = (segments || []).map((item) => encodeURIComponent(item)).join("/");
     const search = req.nextUrl.searchParams.toString();
-    return `${ENGINE_URL}/terminal${suffix ? `/${suffix}` : ""}${search ? `?${search}` : ""}`;
+    return `${resolveEngineBaseUrl()}/terminal${suffix ? `/${suffix}` : ""}${search ? `?${search}` : ""}`;
 }
 
 async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST") {
@@ -29,14 +28,17 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
                 "Content-Type": "application/json",
                 "x-v8-agent-os-secret": internalSecret,
                 "x-v8-agent-os-user-email": userEmail,
+                "x-v8-terminal-origin": req.headers.get("x-v8-terminal-origin") || "",
             },
             cache: "no-store",
+            signal: req.signal,
         };
         if (method === "POST") {
             init.body = JSON.stringify(await req.json().catch(() => ({})));
         }
         const response = await fetch(buildTarget(req, segments), init);
         const data = await response.json().catch(() => ({}));
+        if (response.ok && segments?.[2] === "ws-ticket" && data.ticket) data.wsUrl = `${resolveEngineWsBaseUrl()}/terminal/sessions/${encodeURIComponent(segments[1])}/ws?ticket=${encodeURIComponent(data.ticket)}`;
         return NextResponse.json(data, { status: response.status });
     } catch (error) {
         console.error("[Terminal Service Proxy] failed:", error);

@@ -105,6 +105,48 @@ def test_host_command_root_simple_access_reaches_safety(tmp_path, monkeypatch, t
     assert result["cwd"] == str(root.resolve())
 
 
+def test_workspace_absolute_and_relative_read_have_same_safety_scope(tmp_path, monkeypatch):
+    from core.tools.native.tool_governance import workspace_safety_decision
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=tmp_path / "main")
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"}
+    for target in ("parent-b.txt", str(root / "parent-b.txt")):
+        command = f'Get-Content -Path "{target}" -Raw'
+        preflight = preflight_command_workspace(command, runtime_context=context)
+        assert preflight["ok"] and preflight["cwd"] == str(root.resolve())
+        decision = workspace_safety_decision(
+            SafetyDecision(verdict="allow", risk_code="low", reason="Allowed read", allow_override=True),
+            preflight=preflight, runtime_context=context, tool_name="command_sync", arguments={"command": command},
+        )
+        assert decision.is_allow()
+        assert "hostAccess" not in preflight
+        assert not decision.details.get("exactApprovalRequired")
+        assert decision.details["operationArguments"]["cwd"] == str(root.resolve())
+
+
+def test_real_external_read_remains_safety_review_without_expanding_child_scope(tmp_path, monkeypatch):
+    from core.tools.native.tool_governance import workspace_safety_decision
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=root, main_root=root)
+    command = f'Get-Content -LiteralPath "{tmp_path / "outside.txt"}" -Raw'
+    context = {"workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor"}
+    preflight = preflight_command_workspace(command, runtime_context=context)
+    assert preflight["ok"] and preflight["hostAccess"]["action"] == "host_read"
+    decision = workspace_safety_decision(
+        SafetyDecision(verdict="allow", risk_code="low", reason="Allowed read", allow_override=True),
+        preflight=preflight, runtime_context=context, tool_name="command_sync", arguments={"command": command},
+    )
+    assert decision.is_review() and decision.risk_code == "workspace_external_access"
+    assert decision.details["exactApprovalRequired"] is True
+    child_context = {**context, "runtime_kind": "subagent", "agent_id": "child", "actor_role": "direct_subagent"}
+    child = preflight_command_workspace(command, runtime_context=child_context)
+    assert not child["ok"] and child["error"] == "workspace_command_path_violation"
+    assert "hostAccess" not in child
+    assert not workspace_capability_module.workspace_scope_reviewable(child, child_context)
+
+
 @pytest.mark.parametrize("overrides", [
     {"runtime_kind": "subagent", "agent_id": "worker", "actor_role": "direct_subagent"},
     {"runtime_kind": "delegation", "agent_id": "worker", "actor_role": "grandchild", "delegation_depth": 2},

@@ -440,6 +440,7 @@ def preflight_command_workspace(
         and str(context.get("engineering_capsule_mode") or context.get("engineeringCapsuleMode") or "none").lower() == "none"
         and not (context.get("delegation_id") or context.get("delegationId"))
     )
+    used_host_access = False
     expanded_command = _expand_command_path_variables(str(command or ""))
     if any(expanded_command[match.end():match.end() + 1] in {"\\", "/"} for match in _COMMAND_ENV_RE.finditer(expanded_command)):
         return {
@@ -463,6 +464,7 @@ def preflight_command_workspace(
                     )
                 continue
             if root_host_access:
+                used_host_access = True
                 continue
             violations.append(
                 {
@@ -492,5 +494,8 @@ def preflight_command_workspace(
         "ok": True,
         "cwd": str(cwd_result.get("resolvedPath") or binding.active_workspace_root),
         "binding": binding.as_dict(),
-        **({"hostAccess": {"action": host_access[0], "safetyAssessmentRequired": True}} if root_host_access else {}),
+        # The marker means a real outside path used the root-only exception.
+        # Absolute spelling alone must not turn an in-workspace read into a
+        # cross-workspace Safety approval request.
+        **({"hostAccess": {"action": host_access[0], "safetyAssessmentRequired": True}} if used_host_access else {}),
     }

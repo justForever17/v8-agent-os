@@ -719,7 +719,7 @@ export async function getConversationTimelineSync(authorizedFetch: AuthorizedFet
     );
 }
 
-export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: string) {
+export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: string, signal?: AbortSignal) {
     const payload = await authorizedJson<{
         sessionId?: string;
         currentRunId?: string | null;
@@ -733,7 +733,7 @@ export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: 
         authorizedFetch,
         `/api/client/sessions/${encodeURIComponent(id)}/processes`,
         translateCurrent("src.lib.phone_api.text_17"),
-        { cache: "no-store" },
+        { cache: "no-store", signal },
     );
     return {
         sessionId: String(payload.sessionId || id),

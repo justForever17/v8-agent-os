@@ -1,910 +1,321 @@
 import React from "react";
-import { AppState, Platform } from "react-native";
-import { translateCurrent } from "@/src/lib/locale";
-
-import {
-    buildAdminApiUrl,
-    normalizeAdminBaseUrl,
-    parseJsonSafe,
-    resolveAdminAssetUrl,
-    streamSse,
-    streamSseWithXmlHttpRequest,
-} from "@/src/lib/admin-client";
-import {
-    AdminConnectionProfile,
-    orderAdminBaseUrlCandidates,
-    readActiveAdminConnectionProfileId,
-    readAdminConnectionProfiles,
-    upsertAdminConnectionProfile,
-    writeActiveAdminConnectionProfileId,
-    writeAdminConnectionProfiles,
-} from "@/src/lib/admin-connection-profiles";
-import { ENGINE_NOW_HEADER, getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
-import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
+import { AppState, Platform, Pressable, Text, View } from "react-native";
+import { buildAdminApiUrl, normalizeAdminBaseUrl, parseJsonSafe, resolveAdminAssetUrl } from "@/src/lib/admin-client";
+import { type AdminConnectionProfile, type ProfileCredentials, orderAdminBaseUrlCandidates,
+    readActiveAdminConnectionProfileId, readAdminConnectionProfiles, readProfileCredentials,
+    forgetProfileCredentials, upsertAdminConnectionProfile, writeActiveAdminConnectionProfileId,
+    writeAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
+import { getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
+import { clearSessionStorage, getStoredValue, readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 import { cacheProfileAvatar } from "@/src/lib/profile-avatar-cache";
 import { cacheProfileBackground } from "@/src/lib/profile-background-cache";
 import { pairDevice as consumeDevicePairing, parseDevicePairingUri } from "@/src/lib/phone-api";
-import type { ConnectionSummary, DeviceConnectionEndpoint, DevicePairingInput, PhoneUser } from "@/src/types/admin";
-
-async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 4000): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const res = await fetch(url, { ...init, signal: controller.signal });
-        clearTimeout(timer);
-        return res;
-    } catch (err) {
-        clearTimeout(timer);
-        throw err;
-    }
-}
+import { phoneAuthorityKey } from "@/src/lib/phone-identity";
+import { PhoneTransport, abortError } from "@/src/lib/phone-transport";
+import { phoneDrafts } from "@/src/lib/phone-drafts";
+import type { DevicePairingInput, PhoneUser } from "@/src/types/admin";
 
 type SessionStatus = "booting" | "anonymous" | "authenticated";
-
 type SessionContextValue = {
-    status: SessionStatus;
-    user: PhoneUser | null;
-    userAvatarUri: string;
-    userBackgroundUri: string;
-    userBackgroundMediaType: "image" | "video";
-    adminBaseUrl: string;
-    accessToken: string;
-    activeConversationId: string | null;
-    sessionActivityVersion: number;
+    status: SessionStatus; user: PhoneUser | null; userAvatarUri: string; userBackgroundUri: string;
+    userBackgroundMediaType: "image" | "video"; adminBaseUrl: string; accessToken: string;
+    authorityKey: string; servingInstanceId: string; activeProfileId: string; newDraftId: string;
+    activeConversationId: string | null; sessionActivityVersion: number; connectionError: string;
     setAdminBaseUrl: (next: string) => Promise<void>;
     setActiveConversationId: (next: string | null) => Promise<void>;
+    createNewDraft: () => Promise<void>;
+    activateProfile: (profileId: string) => Promise<void>;
     pairDevice: (input: DevicePairingInput) => Promise<void>;
     signOut: () => Promise<void>;
     refreshUser: () => Promise<PhoneUser | null>;
     updateCurrentUser: (next: PhoneUser | null) => Promise<void>;
     authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>;
-    authorizedRealtimeStream: (
-        path: string,
-        onEvent: (eventName: string, payload: unknown) => void,
-        signal?: AbortSignal,
-    ) => Promise<void>;
-    engineClockOffsetMs: number;
-    getEngineNowMs: () => number;
+    authorizedRealtimeStream: (path: string, onEvent: (name: string, payload: unknown) => void, signal?: AbortSignal) => Promise<void>;
+    engineClockOffsetMs: number; getEngineNowMs: () => number;
 };
-
-type MobileAuthPayload = {
-    accessToken: string;
-    refreshToken: string;
-    user: PhoneUser;
-};
-
-const MIN_BOOTING_SCREEN_MS = 900;
-
-function normalizeProfileValue(value?: string | null) {
-    return String(value || "").trim();
-}
-
-function phoneUsersMatch(left?: PhoneUser | null, right?: PhoneUser | null) {
-    return normalizeProfileValue(left?.id) === normalizeProfileValue(right?.id)
-        && normalizeProfileValue(left?.login) === normalizeProfileValue(right?.login)
-        && normalizeProfileValue(left?.email) === normalizeProfileValue(right?.email)
-        && normalizeProfileValue(left?.name) === normalizeProfileValue(right?.name)
-        && normalizeProfileValue(left?.image) === normalizeProfileValue(right?.image)
-        && normalizeProfileValue(left?.role) === normalizeProfileValue(right?.role)
-        && normalizeProfileValue(left?.appearance?.lightBackgroundMedia || left?.appearance?.lightBackgroundImage)
-            === normalizeProfileValue(right?.appearance?.lightBackgroundMedia || right?.appearance?.lightBackgroundImage)
-        && normalizeProfileValue(left?.appearance?.lightBackgroundMediaType)
-            === normalizeProfileValue(right?.appearance?.lightBackgroundMediaType)
-        && Boolean(left?.appearance?.lightBackgroundEnabled) === Boolean(right?.appearance?.lightBackgroundEnabled);
-}
-
-function getBrowserAdminFallbackBaseUrls(currentBaseUrl: string) {
-    if (Platform.OS !== "web" || typeof window === "undefined") {
-        return [];
-    }
-    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
-    const hostname = window.location.hostname || "127.0.0.1";
-    const normalizedCurrent = normalizeAdminBaseUrl(currentBaseUrl);
-    return [
-        `${protocol}//${hostname}:9528`,
-        `${protocol}//127.0.0.1:9528`,
-        `${protocol}//localhost:9528`,
-    ]
-        .map((candidate) => normalizeAdminBaseUrl(candidate))
-        .filter((candidate, index, all) => Boolean(candidate) && candidate !== normalizedCurrent && all.indexOf(candidate) === index);
-}
-
-function getPreferredBrowserAdminBaseUrls(currentBaseUrl: string) {
-    const normalizedCurrent = normalizeAdminBaseUrl(currentBaseUrl);
-    if (Platform.OS !== "web" || typeof window === "undefined") {
-        return normalizedCurrent ? [normalizedCurrent] : [];
-    }
-
-    const browserLocalHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
-    let shouldPreferBrowserLocal = false;
-    try {
-        const currentUrl = new URL(normalizedCurrent);
-        shouldPreferBrowserLocal = browserLocalHosts.has(window.location.hostname || "")
-            && !browserLocalHosts.has(currentUrl.hostname || "");
-    } catch {
-        shouldPreferBrowserLocal = browserLocalHosts.has(window.location.hostname || "");
-    }
-
-    const browserFallbacks = getBrowserAdminFallbackBaseUrls(normalizedCurrent);
-    const candidates = shouldPreferBrowserLocal
-        ? [...browserFallbacks, normalizedCurrent]
-        : [normalizedCurrent, ...browserFallbacks];
-
-    return candidates.filter((candidate, index, all) => Boolean(candidate) && all.indexOf(candidate) === index);
-}
-
+type ActiveSession = { profile: AdminConnectionProfile; credentials: ProfileCredentials; authorityKey: string;
+    transport: PhoneTransport; conversationId: string | null; draftId: string };
 const SessionContext = React.createContext<SessionContextValue | null>(null);
-
-function findActiveProfile(profiles: AdminConnectionProfile[], activeProfileId?: string | null) {
-    if (activeProfileId) {
-        const active = profiles.find((profile) => profile.id === activeProfileId);
-        if (active) {
-            return active;
-        }
-    }
-    return profiles[0] || null;
-}
-
-function getConnectionCandidateBaseUrls(
-    currentBaseUrl: string,
-    profiles: AdminConnectionProfile[] = [],
-    activeProfileId?: string | null,
-) {
-    const activeProfile = findActiveProfile(profiles, activeProfileId);
-    const profileCandidates = orderAdminBaseUrlCandidates({
-        primary: currentBaseUrl || activeProfile?.adminBaseUrl || "",
-        adminUrls: activeProfile?.adminUrls || profiles.flatMap((profile) => profile.adminUrls || []),
-        lanUrls: activeProfile?.lanUrls || [],
-        tailscaleUrls: activeProfile?.tailscaleUrls || [],
-        cloudflareUrls: activeProfile?.cloudflareUrls || [],
-        endpoints: activeProfile?.endpoints || [],
-    });
-    const browserFallbacks = getPreferredBrowserAdminBaseUrls(currentBaseUrl);
-    return [...profileCandidates, ...browserFallbacks]
-        .filter((candidate, index, all) => Boolean(candidate) && all.indexOf(candidate) === index);
-}
-
-function getLocalConnectionCandidateBaseUrls(profile?: AdminConnectionProfile | null) {
-    if (!profile) return [];
-    return orderAdminBaseUrlCandidates({
-        lanUrls: profile.lanUrls || [],
-        endpoints: (profile.endpoints || []).filter((endpoint) => (
-            endpoint.scope === "local" || endpoint.kind === "lan" || endpoint.kind === "lan_ipv6"
-        )),
-        preferPrimary: false,
-    });
-}
-
-function promoteConnectionCandidate(candidates: string[], candidate: string) {
-    const normalized = normalizeAdminBaseUrl(candidate);
-    if (!normalized) return candidates;
-    return [normalized, ...candidates.filter((item) => normalizeAdminBaseUrl(item) !== normalized)];
-}
-
-async function persistSession(baseUrl: string, payload: MobileAuthPayload & {
-    instanceId?: string;
-    serverId?: string;
-    adminUrls?: string[];
-    pairingManifest?: {
-        lanUrls?: string[];
-        tailscaleUrls?: string[];
-        cloudflareUrls?: string[];
-        endpoints?: DeviceConnectionEndpoint[];
-    };
-    linkManifest?: {
-        admin?: { baseUrl?: string };
-        profiles?: Array<{ adminBaseUrl?: string }>;
-        endpoints?: DeviceConnectionEndpoint[];
-    };
-}) {
-    const profiles = await readAdminConnectionProfiles();
-    const { profile, profiles: nextProfiles } = upsertAdminConnectionProfile(profiles, {
-        adminBaseUrl: baseUrl,
-        serverId: payload.serverId || payload.instanceId || "",
-        instanceId: payload.instanceId || "",
-        adminUrls: [
-            ...(payload.adminUrls || []),
-            payload.linkManifest?.admin?.baseUrl || "",
-            ...((payload.linkManifest?.profiles || []).map((item) => item.adminBaseUrl || "")),
-        ],
-        lanUrls: payload.pairingManifest?.lanUrls || [],
-        tailscaleUrls: payload.pairingManifest?.tailscaleUrls || [],
-        cloudflareUrls: payload.pairingManifest?.cloudflareUrls || [],
-        endpoints: [
-            ...(payload.pairingManifest?.endpoints || []),
-            ...(payload.linkManifest?.endpoints || []),
-        ],
-        accessToken: payload.accessToken,
-        refreshToken: payload.refreshToken,
-    });
-    await Promise.all([
-        setStoredValue("adminBaseUrl", baseUrl),
-        setStoredValue("accessToken", payload.accessToken),
-        setStoredValue("refreshToken", payload.refreshToken),
-        setStoredValue("user", JSON.stringify(payload.user)),
-        writeAdminConnectionProfiles(nextProfiles),
-        writeActiveAdminConnectionProfileId(profile?.id || null),
-    ]);
-}
+const newDraftId = () => `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const viewKey = (authority: string) => `v8.phone.view.v2.${authority}`;
+const unavailableFetch = async (): Promise<Response> => { throw new Error("Pair a connection first."); };
+const unavailableStream = async () => { throw new Error("Pair a connection first."); };
 
 export function AppSessionProvider({ children }: { children: React.ReactNode }) {
     const [status, setStatus] = React.useState<SessionStatus>("booting");
-    const [adminBaseUrl, setAdminBaseUrlState] = React.useState("");
-    const [accessToken, setAccessToken] = React.useState("");
-    const [refreshToken, setRefreshToken] = React.useState("");
-    const [user, setUser] = React.useState<PhoneUser | null>(null);
+    const [active, setActive] = React.useState<ActiveSession | null>(null);
+    const activeRef = React.useRef<ActiveSession | null>(null);
+    const activationSeq = React.useRef(0);
+    const [baseUrl, setBaseUrl] = React.useState("");
+    const [connectionError, setConnectionError] = React.useState("");
     const [userAvatarUri, setUserAvatarUri] = React.useState("");
     const [userBackgroundUri, setUserBackgroundUri] = React.useState("");
-    const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
     const [sessionActivityVersion, setSessionActivityVersion] = React.useState(0);
     const [engineClockOffsetMs, setEngineClockOffsetMs] = React.useState(0);
-    const bootStartedAtRef = React.useRef(Date.now());
-    const statusRef = React.useRef<SessionStatus>("booting");
-    const userRef = React.useRef<PhoneUser | null>(null);
-    const connectionCandidatesRef = React.useRef<string[]>([]);
-    const localConnectionCandidatesRef = React.useRef<string[]>([]);
-    const adminBaseUrlRef = React.useRef("");
-    const activeInstanceIdRef = React.useRef("");
-    const localProbeInFlightRef = React.useRef<Promise<boolean> | null>(null);
-    const refreshUserInFlightRef = React.useRef<Promise<PhoneUser | null> | null>(null);
+    const [foreground, setForeground] = React.useState(AppState.currentState !== "background" && AppState.currentState !== "inactive");
+    const refreshUserInFlight = React.useRef<{ key: string; request: Promise<PhoneUser | null> } | null>(null);
 
-    React.useEffect(() => {
-        statusRef.current = status;
-    }, [status]);
-
-    React.useEffect(() => {
-        userRef.current = user;
-    }, [user]);
-
-    React.useEffect(() => {
-        adminBaseUrlRef.current = adminBaseUrl;
-    }, [adminBaseUrl]);
-
-    React.useEffect(() => {
-        const source = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
-        let cancelled = false;
-        if (!source) {
-            setUserAvatarUri("");
-            return () => { cancelled = true; };
-        }
-        if (Platform.OS === "web") {
-            setUserAvatarUri(source);
-            return () => { cancelled = true; };
-        }
-        setUserAvatarUri("");
-        void cacheProfileAvatar(source).then((cachedUri) => {
-            if (!cancelled) setUserAvatarUri(cachedUri);
-        });
-        return () => { cancelled = true; };
-    }, [adminBaseUrl, user?.image]);
-
-    const userBackgroundMediaType = user?.appearance?.lightBackgroundMediaType === "video"
-        || String(user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "").toLowerCase().endsWith(".mp4")
-        ? "video"
-        : "image";
-    React.useEffect(() => {
-        const media = user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "";
-        const source = user?.appearance?.lightBackgroundEnabled ? resolveAdminAssetUrl(adminBaseUrl, media) : "";
-        let cancelled = false;
-        if (!source) {
-            setUserBackgroundUri("");
-            return () => { cancelled = true; };
-        }
-        if (Platform.OS === "web") {
-            setUserBackgroundUri(source);
-            return () => { cancelled = true; };
-        }
-        setUserBackgroundUri("");
-        void cacheProfileBackground(source, userBackgroundMediaType).then((cachedUri) => {
-            if (!cancelled) setUserBackgroundUri(cachedUri);
-        });
-        return () => { cancelled = true; };
-    }, [adminBaseUrl, user?.appearance?.lightBackgroundEnabled, user?.appearance?.lightBackgroundImage, user?.appearance?.lightBackgroundMedia, userBackgroundMediaType]);
-
-    const awaitMinimumBootScreen = React.useCallback(async () => {
-        if (statusRef.current !== "booting") {
-            return;
-        }
-        const elapsed = Date.now() - bootStartedAtRef.current;
-        const remaining = MIN_BOOTING_SCREEN_MS - elapsed;
-        if (remaining > 0) {
-            await new Promise((resolve) => setTimeout(resolve, remaining));
-        }
-    }, []);
-
-    const activateConnectionCandidate = React.useCallback(async (candidate: string) => {
-        const normalized = normalizeAdminBaseUrl(candidate);
-        if (!normalized) return;
-        connectionCandidatesRef.current = promoteConnectionCandidate(connectionCandidatesRef.current, normalized);
-        if (adminBaseUrlRef.current === normalized) return;
-        adminBaseUrlRef.current = normalized;
-        setAdminBaseUrlState(normalized);
-        await setStoredValue("adminBaseUrl", normalized);
-    }, []);
-
-    const refreshSessionWithBaseUrl = React.useCallback(async (baseUrlInput: string, refreshTokenInput: string) => {
-        const baseUrl = normalizeAdminBaseUrl(baseUrlInput);
-        if (!baseUrl || !refreshTokenInput) {
-            return false;
-        }
-
-        const candidateBaseUrls = connectionCandidatesRef.current.length > 0
-            ? connectionCandidatesRef.current
-            : getPreferredBrowserAdminBaseUrls(baseUrl);
-        for (const candidateBaseUrl of candidateBaseUrls) {
+    const publish = React.useCallback((next: ActiveSession | null) => { activeRef.current = next; setActive(next); }, []);
+    const activateProfile = React.useCallback(async (profileId: string) => {
+        if (activeRef.current?.profile.id === profileId) return;
+        const seq = ++activationSeq.current;
+        await phoneDrafts.flushAll();
+        const profiles = await readAdminConnectionProfiles();
+        const profile = profiles.find((item) => item.id === profileId);
+        if (!profile) throw new Error("Connection no longer exists.");
+        const credentials = await readProfileCredentials(profile);
+        if (!credentials) throw new Error("This connection needs pairing again.");
+        const instanceId = profile.instanceId || profile.serverId || "";
+        if (!instanceId) throw new Error("The saved connection has no verified instance. Pair it again.");
+        if (!profile.user?.id) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 4_000);
             try {
-                const response = await fetchWithTimeout(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/refresh"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        refreshToken: refreshTokenInput,
-                        deviceName: `v8-phone-${Platform.OS}`,
-                    }),
-                }, 4000);
-                if (!response.ok) {
-                    continue;
-                }
-
-                const payload = await parseJsonSafe<MobileAuthPayload>(response);
-                if (!payload?.accessToken || !payload?.refreshToken || !payload.user) {
-                    continue;
-                }
-
-                await activateConnectionCandidate(candidateBaseUrl);
-                setAccessToken(payload.accessToken);
-                setRefreshToken(payload.refreshToken);
-                setUser(payload.user);
-                await awaitMinimumBootScreen();
-                setStatus("authenticated");
-                await persistSession(candidateBaseUrl, payload);
-                return true;
-            } catch {
-                // Try next browser-reachable candidate.
-            }
+                const response = await fetch(buildAdminApiUrl(profile.adminBaseUrl, "/api/client/auth/me"), {
+                    headers: { Authorization: `Bearer ${credentials.accessToken}` }, signal: controller.signal,
+                });
+                const payload = response.ok ? await parseJsonSafe<{ user: PhoneUser }>(response) : null;
+                if (!payload?.user?.id) throw new Error("This connection needs pairing again.");
+                profile.user = payload.user;
+                profile.principalId = payload.user.id;
+                await writeAdminConnectionProfiles(profiles);
+            } finally { clearTimeout(timer); }
         }
-        return false;
-    }, [activateConnectionCandidate, awaitMinimumBootScreen]);
-
-    const refreshSession = React.useCallback(async () => {
-        return refreshSessionWithBaseUrl(adminBaseUrl, refreshToken);
-    }, [adminBaseUrl, refreshToken, refreshSessionWithBaseUrl]);
-
-    const hydrate = React.useCallback(async () => {
-        const [storedBaseUrl, storedAccessToken, storedRefreshToken, storedUser, storedConversationId, profiles, activeProfileId] = await Promise.all([
-            getStoredValue("adminBaseUrl"),
-            getStoredValue("accessToken"),
-            getStoredValue("refreshToken"),
-            getStoredValue("user"),
-            getStoredValue("activeConversationId"),
-            readAdminConnectionProfiles(),
-            readActiveAdminConnectionProfileId(),
-        ]);
-
-        const normalizedBaseUrl = normalizeAdminBaseUrl(storedBaseUrl || "");
-        const activeProfile = findActiveProfile(profiles, activeProfileId);
-        activeInstanceIdRef.current = String(activeProfile?.instanceId || activeProfile?.serverId || "").trim();
-        localConnectionCandidatesRef.current = getLocalConnectionCandidateBaseUrls(activeProfile);
-        const preferredBaseUrl = getConnectionCandidateBaseUrls(
-            normalizedBaseUrl || activeProfile?.adminBaseUrl || "",
-            profiles,
-            activeProfileId,
-        )[0] || normalizedBaseUrl || activeProfile?.adminBaseUrl || "";
-        connectionCandidatesRef.current = getConnectionCandidateBaseUrls(preferredBaseUrl, profiles, activeProfileId);
-        adminBaseUrlRef.current = preferredBaseUrl;
-        setAdminBaseUrlState(preferredBaseUrl);
-        setAccessToken(storedAccessToken || "");
-        setRefreshToken(storedRefreshToken || "");
-        setActiveConversationIdState(storedConversationId || null);
-        if (preferredBaseUrl && preferredBaseUrl !== normalizedBaseUrl) {
-            await setStoredValue("adminBaseUrl", preferredBaseUrl);
-        }
-
-        let parsedStoredUser: PhoneUser | null = null;
-        if (storedUser) {
-            try {
-                parsedStoredUser = JSON.parse(storedUser) as PhoneUser;
-                setUser(parsedStoredUser);
-            } catch {
-                setUser(null);
-            }
-        }
-
-        if (!preferredBaseUrl || !storedAccessToken) {
-            await awaitMinimumBootScreen();
-            setStatus("anonymous");
-            return;
-        }
-
+        const authorityKey = phoneAuthorityKey({ instanceId, principalId: profile.user.id, profileId });
+        const rawView = await readMetadata(viewKey(authorityKey));
+        const view = rawView ? JSON.parse(rawView) as { conversationId?: string; draftId?: string } : {};
+        if (seq !== activationSeq.current) throw abortError();
+        let transport: PhoneTransport;
+        transport = new PhoneTransport({
+            endpoints: orderAdminBaseUrlCandidates({ primary: profile.adminBaseUrl, adminUrls: profile.adminUrls,
+                lanUrls: profile.lanUrls, tailscaleUrls: profile.tailscaleUrls, cloudflareUrls: profile.cloudflareUrls, endpoints: profile.endpoints }),
+            credentials, principalId: profile.user.id, native: Platform.OS !== "web",
+            persistRefresh: async (nextCredentials, user) => {
+                if (activeRef.current?.transport !== transport) throw abortError();
+                const latest = await readAdminConnectionProfiles();
+                const own = latest.find((item) => item.id === profileId);
+                if (!own) throw abortError();
+                Object.assign(own, nextCredentials, { user, principalId: user.id });
+                await writeAdminConnectionProfiles(latest);
+                if (activeRef.current?.transport !== transport) throw abortError();
+                publish({ ...activeRef.current, profile: own, credentials: nextCredentials });
+            },
+            onEndpoint: (endpoint) => {
+                if (activeRef.current?.transport !== transport) return;
+                setBaseUrl(endpoint);
+            },
+            onClock: (value) => {
+                if (activeRef.current?.transport !== transport) return;
+                const offset = toEngineClockOffsetMs(value);
+                if (offset !== null) setEngineClockOffsetMs((previous) => Math.abs(previous - offset) < 500 ? previous : offset);
+            },
+        });
         try {
-            const candidateBaseUrls = connectionCandidatesRef.current.length > 0
-                ? connectionCandidatesRef.current
-                : getPreferredBrowserAdminBaseUrls(preferredBaseUrl);
-            for (const candidateBaseUrl of candidateBaseUrls) {
-                try {
-                    const meResponse = await fetchWithTimeout(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/me"), {
-                        headers: { Authorization: `Bearer ${storedAccessToken}` },
-                    }, 4000);
-                    if (!meResponse.ok) {
-                        continue;
-                    }
-                    const mePayload = await parseJsonSafe<{ user: PhoneUser }>(meResponse);
-                    if (mePayload?.user) {
-                        await activateConnectionCandidate(candidateBaseUrl);
-                        setUser(mePayload.user);
-                        await awaitMinimumBootScreen();
-                        setStatus("authenticated");
-                        return;
-                    }
-                } catch {
-                    // Try next candidate.
-                }
-            }
-            const refreshed = await refreshSessionWithBaseUrl(preferredBaseUrl, storedRefreshToken || "");
-            if (!refreshed) {
-                if (parsedStoredUser) {
-                    await awaitMinimumBootScreen();
-                    setStatus("authenticated");
-                    return;
-                }
-                await awaitMinimumBootScreen();
-                setStatus("anonymous");
-            }
-        } catch {
-            await awaitMinimumBootScreen();
-            setStatus(parsedStoredUser ? "authenticated" : "anonymous");
-        }
-    }, [activateConnectionCandidate, awaitMinimumBootScreen, refreshSessionWithBaseUrl]);
+            await writeActiveAdminConnectionProfileId(profileId);
+            if (seq !== activationSeq.current) throw abortError();
+        } catch (error) { transport.dispose(); throw error; }
+        activeRef.current?.transport.dispose();
+        const next: ActiveSession = { profile, credentials, authorityKey, transport,
+            conversationId: view.conversationId || null, draftId: view.draftId || newDraftId() };
+        publish(next);
+        setBaseUrl(profile.adminBaseUrl);
+        setConnectionError("");
+        setEngineClockOffsetMs(0);
+        setStatus("authenticated");
+    }, [publish]);
 
     React.useEffect(() => {
-        void hydrate();
-    }, [hydrate]);
+        let cancelled = false;
+        void (async () => {
+            try {
+                const profiles = await readAdminConnectionProfiles();
+                const id = await readActiveAdminConnectionProfileId();
+                const profile = profiles.find((item) => item.id === id);
+                if (cancelled) return;
+                if (profile?.credentialRef) await activateProfile(profile.id);
+                else { setBaseUrl(await getStoredValue("adminBaseUrl") || ""); setStatus("anonymous"); }
+            } catch (error) {
+                if (!cancelled) { setConnectionError(error instanceof Error ? error.message : "Connection could not be restored."); setStatus("anonymous"); }
+            }
+        })();
+        return () => { cancelled = true; activeRef.current?.transport.dispose(); };
+    }, [activateProfile]);
 
-    const setAdminBaseUrl = React.useCallback(async (next: string) => {
-        const normalized = normalizeAdminBaseUrl(next);
-        adminBaseUrlRef.current = normalized;
-        setAdminBaseUrlState(normalized);
-        if (normalized) {
-            await setStoredValue("adminBaseUrl", normalized);
-            connectionCandidatesRef.current = getConnectionCandidateBaseUrls(normalized);
-        } else {
-            await removeStoredValue("adminBaseUrl");
-            connectionCandidatesRef.current = [];
-        }
+    React.useEffect(() => {
+        const subscription = AppState.addEventListener("change", (state) => {
+            const visible = state === "active";
+            setForeground(visible);
+            if (!visible) {
+                activeRef.current?.transport.stopStreams();
+                void phoneDrafts.flushAll().catch((error) => setConnectionError(error.message));
+            }
+        });
+        return () => subscription.remove();
     }, []);
 
-    const setActiveConversationId = React.useCallback(async (next: string | null) => {
-        setActiveConversationIdState(next);
-        if (next) {
-            await setStoredValue("activeConversationId", next);
-        } else {
-            await removeStoredValue("activeConversationId");
-        }
-    }, []);
+    const saveView = React.useCallback(async (conversationId: string | null, draftId?: string) => {
+        const current = activeRef.current;
+        if (!current) return;
+        if (current.conversationId === conversationId && !draftId) return;
+        await phoneDrafts.flushAll();
+        if (activeRef.current?.transport !== current.transport) throw abortError();
+        const next = { ...current, conversationId, draftId: draftId || current.draftId };
+        await writeMetadata(viewKey(current.authorityKey), JSON.stringify({ conversationId, draftId: next.draftId }));
+        if (activeRef.current?.transport !== current.transport) throw abortError();
+        publish(next);
+    }, [publish]);
+    const setActiveConversationId = React.useCallback((next: string | null) => saveView(next), [saveView]);
+    const createNewDraft = React.useCallback(() => saveView(null, newDraftId()), [saveView]);
 
     const pairDevice = React.useCallback(async (input: DevicePairingInput) => {
         const pairing = parseDevicePairingUri(input.pairingUri);
-        const payload = await consumeDevicePairing({
-            ...input,
-            deviceName: input.deviceName || `v8-phone-${Platform.OS}`,
-        });
-        const baseUrl = normalizeAdminBaseUrl(payload.adminBaseUrl || pairing.adminBaseUrl);
-        setAdminBaseUrlState(baseUrl);
-        adminBaseUrlRef.current = baseUrl;
-        activeInstanceIdRef.current = String(payload.instanceId || pairing.instanceId || payload.serverId || pairing.serverId || "").trim();
-        connectionCandidatesRef.current = orderAdminBaseUrlCandidates({
-            primary: baseUrl,
+        const payload = await consumeDevicePairing({ ...input, deviceName: input.deviceName || `v8-phone-${Platform.OS}` });
+        const profiles = await readAdminConnectionProfiles();
+        const { profile, profiles: next } = upsertAdminConnectionProfile(profiles, {
+            adminBaseUrl: payload.adminBaseUrl || pairing.adminBaseUrl,
+            instanceId: payload.instanceId || pairing.instanceId, serverId: payload.serverId || pairing.serverId,
             adminUrls: payload.adminUrls || pairing.adminUrls,
             lanUrls: payload.pairingManifest?.lanUrls || pairing.lanUrls,
             tailscaleUrls: payload.pairingManifest?.tailscaleUrls || pairing.tailscaleUrls,
             cloudflareUrls: payload.pairingManifest?.cloudflareUrls || pairing.cloudflareUrls,
             endpoints: payload.pairingManifest?.endpoints || pairing.endpoints,
+            accessToken: payload.accessToken, refreshToken: payload.refreshToken, user: payload.user,
         });
-        localConnectionCandidatesRef.current = orderAdminBaseUrlCandidates({
-            lanUrls: payload.pairingManifest?.lanUrls || pairing.lanUrls,
-            endpoints: (payload.pairingManifest?.endpoints || pairing.endpoints || []).filter((endpoint) => (
-                endpoint.scope === "local" || endpoint.kind === "lan" || endpoint.kind === "lan_ipv6"
-            )),
-            preferPrimary: false,
-        });
-        setAccessToken(payload.accessToken);
-        setRefreshToken(payload.refreshToken);
-        setUser(payload.user);
-        setStatus("authenticated");
-        await persistSession(baseUrl, payload);
-    }, []);
+        if (!profile) throw new Error("Pairing did not return a valid connection.");
+        await writeAdminConnectionProfiles(next);
+        await activateProfile(profile.id);
+    }, [activateProfile]);
 
     const signOut = React.useCallback(async () => {
-        const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-        if (baseUrl && refreshToken) {
-            try {
-                await fetch(buildAdminApiUrl(baseUrl, "/api/client/auth/logout"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ refreshToken }),
-                });
-            } catch {
-                // Best-effort logout.
-            }
+        const current = activeRef.current;
+        await phoneDrafts.flushAll();
+        if (current) {
+            // Only this pairing is revoked; other profiles and all drafts survive.
+            await current.transport.authorizedFetch("/api/client/auth/logout", { method: "POST",
+                headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refreshToken: current.credentials.refreshToken }) });
+            await forgetProfileCredentials(current.profile);
+            const profiles = await readAdminConnectionProfiles();
+            const own = profiles.find((profile) => profile.id === current.profile.id);
+            if (own) { delete own.credentialRef; await writeAdminConnectionProfiles(profiles); }
         }
+        await writeActiveAdminConnectionProfileId(null);
         await clearSessionStorage();
-        setAccessToken("");
-        setRefreshToken("");
-        setUser(null);
-        setUserAvatarUri("");
-        setUserBackgroundUri("");
-        setActiveConversationIdState(null);
-        setEngineClockOffsetMs(0);
-        adminBaseUrlRef.current = "";
-        activeInstanceIdRef.current = "";
-        connectionCandidatesRef.current = [];
-        localConnectionCandidatesRef.current = [];
+        activationSeq.current += 1;
+        current?.transport.dispose();
+        publish(null);
         setStatus("anonymous");
-    }, [adminBaseUrl, refreshToken]);
+    }, [publish]);
 
     const refreshUser = React.useCallback(async () => {
-        if (refreshUserInFlightRef.current) return refreshUserInFlightRef.current;
+        const current = activeRef.current;
+        if (!current) return null;
+        if (refreshUserInFlight.current?.key === current.authorityKey) return refreshUserInFlight.current.request;
         const request = (async () => {
-            const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-            if (!baseUrl || !accessToken) return null;
-            const response = await fetchWithTimeout(buildAdminApiUrl(baseUrl, "/api/client/auth/me"), {
-                headers: { Authorization: `Bearer ${accessToken}` },
-            }, 4000);
-            if (!response.ok) return null;
-            const payload = await parseJsonSafe<{ user?: PhoneUser }>(response);
-            if (!payload?.user) return null;
-            setUser((current) => phoneUsersMatch(current, payload.user) ? current : payload.user || null);
-            await setStoredValue("user", JSON.stringify(payload.user));
+            const response = await current.transport.authorizedFetch("/api/client/auth/me");
+            if (!response.ok) throw new Error("This connection needs pairing again.");
+            const payload = await parseJsonSafe<{ user: PhoneUser }>(response);
+            if (activeRef.current?.transport !== current.transport) throw abortError();
+            if (!payload?.user || payload.user.id !== current.profile.user?.id) throw new Error("The paired account changed. Pair this connection again.");
+            if (JSON.stringify(payload.user) !== JSON.stringify(activeRef.current.profile.user)) {
+                const profiles = await readAdminConnectionProfiles();
+                const own = profiles.find((profile) => profile.id === current.profile.id);
+                if (own) { own.user = payload.user; await writeAdminConnectionProfiles(profiles); }
+                if (activeRef.current?.transport === current.transport) publish({ ...activeRef.current, profile: { ...activeRef.current.profile, user: payload.user } });
+            }
+            setConnectionError("");
             return payload.user;
         })();
-        refreshUserInFlightRef.current = request;
-        try {
-            return await request;
-        } finally {
-            if (refreshUserInFlightRef.current === request) refreshUserInFlightRef.current = null;
-        }
-    }, [accessToken, adminBaseUrl]);
+        refreshUserInFlight.current = { key: current.authorityKey, request };
+        try { return await request; } finally { if (refreshUserInFlight.current?.request === request) refreshUserInFlight.current = null; }
+    }, [publish]);
+    React.useEffect(() => {
+        if (!active?.authorityKey || !foreground) return;
+        let cancelled = false;
+        void refreshUser().catch((error) => { if (!cancelled) setConnectionError(error.message); });
+        return () => { cancelled = true; };
+    }, [active?.authorityKey, foreground, refreshUser]);
+
+    const updateCurrentUser = React.useCallback(async (user: PhoneUser | null) => {
+        const current = activeRef.current;
+        if (!current || !user || user.id !== current.profile.user?.id) return;
+        const profiles = await readAdminConnectionProfiles();
+        const own = profiles.find((profile) => profile.id === current.profile.id);
+        if (!own) return;
+        own.user = user;
+        await writeAdminConnectionProfiles(profiles);
+        if (activeRef.current?.transport === current.transport) publish({ ...activeRef.current, profile: own });
+    }, [publish]);
+
+    const user = active?.profile.user || null;
+    const media = user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "";
+    const userBackgroundMediaType = user?.appearance?.lightBackgroundMediaType === "video" || media.toLowerCase().endsWith(".mp4") ? "video" : "image";
+    React.useEffect(() => {
+        let cancelled = false;
+        setUserAvatarUri(""); setUserBackgroundUri("");
+        if (!active) return;
+        const avatar = resolveAdminAssetUrl(baseUrl, user?.image || "");
+        const background = user?.appearance?.lightBackgroundEnabled ? resolveAdminAssetUrl(baseUrl, media) : "";
+        if (avatar) void cacheProfileAvatar(avatar, active.authorityKey).then((uri) => { if (!cancelled) setUserAvatarUri(uri); }).catch(() => undefined);
+        if (background) void cacheProfileBackground(background, userBackgroundMediaType, active.authorityKey).then((uri) => { if (!cancelled) setUserBackgroundUri(uri); }).catch(() => undefined);
+        return () => { cancelled = true; };
+    }, [active?.authorityKey, baseUrl, user?.image, user?.appearance?.lightBackgroundEnabled, media, userBackgroundMediaType]);
 
     React.useEffect(() => {
-        if (status !== "authenticated") return;
-        const refresh = () => { void refreshUser().catch(() => undefined); };
-        const subscription = AppState.addEventListener("change", (nextState) => {
-            if (nextState === "active") refresh();
-        });
-        const timer = setInterval(() => {
-            if (AppState.currentState === "active") refresh();
-        }, 10_000);
-        return () => {
-            subscription.remove();
-            clearInterval(timer);
-        };
-    }, [refreshUser, status]);
-
-    const probeLocalConnection = React.useCallback(async () => {
-        if (localProbeInFlightRef.current) return localProbeInFlightRef.current;
-        const request = (async () => {
-            if (!accessToken || statusRef.current !== "authenticated") return false;
-            const currentBaseUrl = normalizeAdminBaseUrl(adminBaseUrlRef.current);
-            let expectedInstanceId = activeInstanceIdRef.current;
-            if (!expectedInstanceId && currentBaseUrl) {
-                try {
-                    const response = await fetchWithTimeout(
-                        buildAdminApiUrl(currentBaseUrl, "/api/client/instance"),
-                        { cache: "no-store" },
-                        1800,
-                    );
-                    const payload = response.ok ? await parseJsonSafe<{ instanceId?: string }>(response) : null;
-                    expectedInstanceId = String(payload?.instanceId || "").trim();
-                    activeInstanceIdRef.current = expectedInstanceId;
-                } catch {
-                    return false;
-                }
-            }
-            if (!expectedInstanceId) return false;
-
-            const localCandidates = localConnectionCandidatesRef.current
-                .filter((candidate) => normalizeAdminBaseUrl(candidate) !== currentBaseUrl);
-            for (const candidate of localCandidates) {
-                try {
-                    const instanceResponse = await fetchWithTimeout(
-                        buildAdminApiUrl(candidate, "/api/client/instance"),
-                        { cache: "no-store" },
-                        1800,
-                    );
-                    const instancePayload = instanceResponse.ok
-                        ? await parseJsonSafe<{ instanceId?: string }>(instanceResponse)
-                        : null;
-                    if (String(instancePayload?.instanceId || "").trim() !== expectedInstanceId) continue;
-
-                    const connectionResponse = await fetchWithTimeout(
-                        buildAdminApiUrl(candidate, "/api/client/connection"),
-                        {
-                            cache: "no-store",
-                            headers: { Authorization: `Bearer ${accessToken}` },
-                        },
-                        2200,
-                    );
-                    if (!connectionResponse.ok) continue;
-                    const summary = await parseJsonSafe<ConnectionSummary>(connectionResponse);
-                    const returnedInstanceId = String(summary?.linkManifest?.instanceId || "").trim();
-                    if (returnedInstanceId && returnedInstanceId !== expectedInstanceId) continue;
-                    await activateConnectionCandidate(candidate);
-                    return true;
-                } catch {
-                    // A local route is optional; continue using the current remote route.
-                }
-            }
-            return false;
-        })();
-        localProbeInFlightRef.current = request;
-        try {
-            return await request;
-        } finally {
-            if (localProbeInFlightRef.current === request) localProbeInFlightRef.current = null;
-        }
-    }, [accessToken, activateConnectionCandidate]);
-
-    React.useEffect(() => {
-        if (status !== "authenticated") return;
-        const probe = () => { void probeLocalConnection().catch(() => undefined); };
-        probe();
-        const subscription = AppState.addEventListener("change", (nextState) => {
-            if (nextState === "active") probe();
-        });
-        const timer = setInterval(() => {
-            if (AppState.currentState === "active") probe();
-        }, 30_000);
-        return () => {
-            subscription.remove();
-            clearInterval(timer);
-        };
-    }, [probeLocalConnection, status]);
-
-    const updateCurrentUser = React.useCallback(async (next: PhoneUser | null) => {
-        const current = userRef.current;
-        setUser((previous) => phoneUsersMatch(previous, next) ? previous : next);
-        if (phoneUsersMatch(current, next)) {
-            return;
-        }
-        if (next) {
-            await setStoredValue("user", JSON.stringify(next));
-        } else {
-            await removeStoredValue("user");
-        }
-    }, []);
-
-    const syncEngineClockFromHeader = React.useCallback((headerValue?: string | null) => {
-        const nextOffset = toEngineClockOffsetMs(headerValue);
-        if (nextOffset === null) {
-            return;
-        }
-        setEngineClockOffsetMs((current) => (current === nextOffset ? current : nextOffset));
-    }, []);
-
-    const getEngineNowMs = React.useCallback(() => resolveEngineNowMs(engineClockOffsetMs), [engineClockOffsetMs]);
-
-    const performAuthorizedRequest = React.useCallback(async (
-        path: string,
-        init?: RequestInit,
-    ) => {
-        const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-        if (!baseUrl || !accessToken) {
-            throw new Error(translateCurrent("src.providers.app_session.admin"));
-        }
-
-        const doFetch = async (token: string, targetBaseUrl: string) =>
-            fetchWithTimeout(buildAdminApiUrl(targetBaseUrl, path), {
-                ...init,
-                headers: {
-                    ...(init?.headers || {}),
-                    Authorization: `Bearer ${token}`,
-                },
-            }, 15000) as Promise<Response>;
-        const attemptFetch = async (token: string) => {
-            const candidates = connectionCandidatesRef.current.length > 0
-                ? connectionCandidatesRef.current
-                : getPreferredBrowserAdminBaseUrls(baseUrl);
-            let lastError: unknown = null;
-            for (const candidateBaseUrl of candidates) {
-                try {
-                    const response = await doFetch(token, candidateBaseUrl);
-                    syncEngineClockFromHeader(response.headers.get(ENGINE_NOW_HEADER));
-                    await activateConnectionCandidate(candidateBaseUrl);
-                    return response;
-                } catch (error) {
-                    lastError = error;
-                }
-            }
-            throw lastError instanceof Error
-                ? new Error(translateCurrent("src.providers.app_session.unable_to_reach_admin", { baseUrl }))
-                : new Error(translateCurrent("src.providers.app_session.admin_2"));
-        };
-
-        let response = await attemptFetch(accessToken);
-        if (response.status !== 401) {
-            return response;
-        }
-
-        const refreshed = await refreshSession();
-        if (!refreshed) {
-            throw new Error(translateCurrent("src.providers.app_session.text_6"));
-        }
-
-        const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
-        response = await attemptFetch(nextAccessToken);
-        return response;
-    }, [accessToken, activateConnectionCandidate, adminBaseUrl, refreshSession, signOut, syncEngineClockFromHeader]);
-
-    const authorizedFetch = React.useCallback((path: string, init?: RequestInit) => {
-        return performAuthorizedRequest(path, init);
-    }, [performAuthorizedRequest]);
-
-    const authorizedRealtimeStream = React.useCallback(async (
-        path: string,
-        onEvent: (eventName: string, payload: unknown) => void,
-        signal?: AbortSignal,
-    ) => {
-        const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-        if (!baseUrl || !accessToken) {
-            throw new Error(translateCurrent("src.providers.app_session.admin"));
-        }
-
-        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
-        const streamCandidateBaseUrls = connectionCandidatesRef.current.length > 0
-            ? connectionCandidatesRef.current
-            : candidateBaseUrls;
-
-        const openStream = async (token: string) => {
-            let lastError: unknown = null;
-            for (const candidateBaseUrl of streamCandidateBaseUrls) {
-                try {
-                    if (Platform.OS === "web") {
-                        const response = await fetch(buildAdminApiUrl(candidateBaseUrl, path), {
-                            method: "GET",
-                            headers: {
-                                Authorization: `Bearer ${token}`,
-                                Accept: "text/event-stream",
-                            },
-                            signal,
-                        });
-                        if (!response.ok) {
-                            const error = new Error(
-                                translateCurrent("src.lib.admin_client.realtime_stream_failed_with_status", {
-                                    status: response.status,
-                                }),
-                            ) as Error & { status?: number };
-                            error.status = response.status;
-                            throw error;
-                        }
-                        syncEngineClockFromHeader(response.headers.get(ENGINE_NOW_HEADER));
-                        await streamSse(response, onEvent);
-                    } else {
-                        await streamSseWithXmlHttpRequest({
-                            url: buildAdminApiUrl(candidateBaseUrl, path),
-                            headers: {
-                                Authorization: `Bearer ${token}`,
-                                Accept: "text/event-stream",
-                            },
-                            signal,
-                            onEvent,
-                            onHeaders: (responseHeaders) => {
-                                syncEngineClockFromHeader(responseHeaders[ENGINE_NOW_HEADER]);
-                            },
-                        });
-                    }
-                    await activateConnectionCandidate(candidateBaseUrl);
-                    return;
-                } catch (error) {
-                    lastError = error;
-                    const status = typeof error === "object" && error && "status" in error
-                        ? Number((error as { status?: number }).status || 0)
-                        : 0;
-                    if (status === 401) {
-                        throw error;
-                    }
-                }
-            }
-            throw lastError instanceof Error
-                ? lastError
-                : new Error(translateCurrent("src.providers.app_session.unable_to_reach_admin", { baseUrl }));
-        };
-
-        try {
-            await openStream(accessToken);
-            return;
-        } catch (error) {
-            const status = typeof error === "object" && error && "status" in error
-                ? Number((error as { status?: number }).status || 0)
-                : 0;
-            if (status !== 401) {
-                throw error instanceof Error ? error : new Error(translateCurrent("src.providers.app_session.text_7"));
-            }
-        }
-
-        const refreshed = await refreshSession();
-        if (!refreshed) {
-            throw new Error(translateCurrent("src.providers.app_session.text_6"));
-        }
-
-        const nextAccessToken = (await getStoredValue("accessToken")) || accessToken;
-        await openStream(nextAccessToken);
-    }, [accessToken, activateConnectionCandidate, adminBaseUrl, refreshSession, signOut, syncEngineClockFromHeader]);
-
-    React.useEffect(() => {
-        if (status !== "authenticated") return;
-
+        if (!active || !foreground) return;
         let stopped = false;
-        let reconnectDelayMs = 500;
-        let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-        let controller: AbortController | null = null;
-
-        const scheduleRefresh = () => {
-            if (refreshTimer) clearTimeout(refreshTimer);
-            refreshTimer = setTimeout(() => {
-                refreshTimer = null;
-                if (!stopped) setSessionActivityVersion((current) => current + 1);
-            }, 120);
-        };
-
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const controller = new AbortController();
         const run = async () => {
+            let failures = 0;
             while (!stopped) {
-                controller = new AbortController();
+                const started = Date.now();
                 try {
-                    await authorizedRealtimeStream(
-                        "/api/client/realtime/session-activity/stream",
-                        (eventName) => {
-                            if (eventName === "ready" || eventName === "activity") {
-                                scheduleRefresh();
-                            }
-                        },
-                        controller.signal,
-                    );
-                    reconnectDelayMs = 500;
-                } catch {
-                    if (stopped || controller.signal.aborted) break;
-                }
+                    await active.transport.authorizedRealtimeStream("/api/client/realtime/session-activity/stream", () => {
+                        if (timer || stopped) return;
+                        timer = setTimeout(() => { timer = undefined; if (!stopped) setSessionActivityVersion((value) => value + 1); }, 180);
+                    }, controller.signal);
+                    if (Date.now() - started > 10_000) failures = 0;
+                } catch { if (controller.signal.aborted) break; }
                 if (stopped) break;
-                await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs));
-                reconnectDelayMs = Math.min(8_000, reconnectDelayMs * 2);
+                await new Promise<void>((resolve) => {
+                    const wait = setTimeout(done, Math.min(8_000, 500 * 2 ** Math.min(4, failures++)) + Math.random() * 250);
+                    function done() { clearTimeout(wait); controller.signal.removeEventListener("abort", done); resolve(); }
+                    controller.signal.addEventListener("abort", done, { once: true });
+                });
             }
         };
-
         void run();
-        return () => {
-            stopped = true;
-            controller?.abort();
-            if (refreshTimer) clearTimeout(refreshTimer);
-        };
-    }, [authorizedRealtimeStream, status]);
+        return () => { stopped = true; controller.abort(); if (timer) clearTimeout(timer); };
+    }, [active?.transport, foreground]);
 
-    const contextValue = React.useMemo<SessionContextValue>(() => ({
-        status,
-        user,
-        userAvatarUri,
-        userBackgroundUri,
-        userBackgroundMediaType,
-        adminBaseUrl,
-        accessToken,
-        activeConversationId,
-        sessionActivityVersion,
-        setAdminBaseUrl,
-        setActiveConversationId,
-        pairDevice,
-        signOut,
-        refreshUser,
-        updateCurrentUser,
-        authorizedFetch,
-        authorizedRealtimeStream,
-        engineClockOffsetMs,
-        getEngineNowMs,
-    }), [status, user, userAvatarUri, userBackgroundUri, userBackgroundMediaType, adminBaseUrl, accessToken, activeConversationId, sessionActivityVersion, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
-
-    return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
+    const setAdminBaseUrl = React.useCallback(async (next: string) => {
+        // Manual input belongs to a new pairing; it never redirects a live token.
+        const normalized = normalizeAdminBaseUrl(next);
+        if (activeRef.current) throw new Error("Use saved connections to switch, or pair another device.");
+        await writeMetadata("v8.phone.adminBaseUrl", normalized);
+        setBaseUrl(normalized);
+    }, []);
+    const getEngineNowMs = React.useCallback(() => resolveEngineNowMs(engineClockOffsetMs), [engineClockOffsetMs]);
+    const value = React.useMemo<SessionContextValue>(() => ({ status, user, userAvatarUri, userBackgroundUri, userBackgroundMediaType,
+        adminBaseUrl: baseUrl, accessToken: active?.credentials.accessToken || "", authorityKey: active?.authorityKey || "",
+        servingInstanceId: active?.profile.instanceId || active?.profile.serverId || "", activeProfileId: active?.profile.id || "",
+        activeConversationId: active?.conversationId || null, newDraftId: active?.draftId || "unpaired", sessionActivityVersion,
+        connectionError, setAdminBaseUrl, setActiveConversationId, createNewDraft, activateProfile, pairDevice, signOut, refreshUser, updateCurrentUser,
+        authorizedFetch: active?.transport.authorizedFetch || unavailableFetch,
+        authorizedRealtimeStream: active?.transport.authorizedRealtimeStream || unavailableStream,
+        engineClockOffsetMs, getEngineNowMs,
+    }), [status, active, user, userAvatarUri, userBackgroundUri, userBackgroundMediaType, baseUrl, sessionActivityVersion, connectionError,
+        setAdminBaseUrl, setActiveConversationId, createNewDraft, activateProfile, pairDevice, signOut, refreshUser, updateCurrentUser, engineClockOffsetMs, getEngineNowMs]);
+    return <SessionContext.Provider value={value}>
+        {connectionError ? <Pressable accessibilityRole="button" onPress={() => { void refreshUser().catch((error) => setConnectionError(error.message)); }}>
+            <Text style={{ color: "#B45309", paddingHorizontal: 16, paddingVertical: 8 }}>{connectionError}</Text>
+        </Pressable> : null}
+        <View key={active?.authorityKey || "unpaired"} style={{ flex: 1 }}>{children}</View>
+    </SessionContext.Provider>;
 }
 
 export function useAppSession() {
     const context = React.useContext(SessionContext);
-    if (!context) {
-        throw new Error("useAppSession must be used within AppSessionProvider");
-    }
+    if (!context) throw new Error("useAppSession must be used within AppSessionProvider");
     return context;
 }

@@ -23,18 +23,19 @@ import { deleteConversation, listConversations } from "@/src/lib/phone-api";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
-import { buildLocalSessionIndexNamespace, localDatabase } from "@/src/services/LocalDatabaseService";
+import { buildLocalSessionIndexNamespace, createLocalDatabase } from "@/src/services/LocalDatabaseService";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
 
 export default function SessionsScreen() {
-    const { status, user, userAvatarUri, adminBaseUrl, activeConversationId, sessionActivityVersion, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, user, userAvatarUri, authorityKey, servingInstanceId, createNewDraft, activeConversationId, sessionActivityVersion, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const sessionIndexNamespace = useMemo(
-        () => buildLocalSessionIndexNamespace(adminBaseUrl, user?.id || user?.email || user?.login || "local"),
-        [adminBaseUrl, user?.email, user?.id, user?.login],
+        () => authorityKey ? buildLocalSessionIndexNamespace(authorityKey, servingInstanceId) : "unpaired",
+        [authorityKey, servingInstanceId],
     );
+    const localDatabase = useMemo(() => createLocalDatabase(authorityKey, servingInstanceId), [authorityKey, servingInstanceId]);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -90,8 +91,8 @@ export default function SessionsScreen() {
     const createNew = async () => {
         setBusy(true);
         try {
-            await setActiveConversationId(null);
-            router.push("/chat?new=1" as Href);
+            await createNewDraft();
+            router.dismissTo("/chat?new=1" as Href);
         } catch (error) {
             Alert.alert(t("src.screens.sessionsscreen.create_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_create_a_new_conversation"));
         } finally {

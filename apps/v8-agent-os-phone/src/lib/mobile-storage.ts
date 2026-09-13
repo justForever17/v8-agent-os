@@ -1,4 +1,5 @@
 import * as SecureStore from "expo-secure-store";
+import Storage from "expo-sqlite/kv-store";
 import { Platform } from "react-native";
 
 const KEYS = {
@@ -17,61 +18,67 @@ const KEYS = {
     safetyApprovalMode: "v8.phone.safetyApprovalMode",
 } as const;
 
-export async function getStoredValue(key: keyof typeof KEYS) {
-    if (Platform.OS === "web" || typeof SecureStore.getItemAsync !== "function") {
-        try {
-            return globalThis.localStorage?.getItem(KEYS[key]) ?? null;
-        } catch {
-            return null;
-        }
-    }
+function webStorage() {
+    if (!globalThis.localStorage) throw new Error("Local storage is unavailable");
+    return globalThis.localStorage;
+}
+
+// Never log native exceptions: a storage implementation can include its value.
+export async function readSecureItem(key: string): Promise<string | null> {
     try {
-        return await SecureStore.getItemAsync(KEYS[key]);
-    } catch (error) {
-        console.warn(`[mobile-storage] Failed to get secure item for ${key}:`, error);
-        return null;
-    }
+        return Platform.OS === "web" ? webStorage().getItem(key) : await SecureStore.getItemAsync(key);
+    } catch { throw new Error("Secure storage could not be read. Unlock the phone and retry."); }
+}
+
+export async function writeSecureItem(key: string, value: string): Promise<void> {
+    try {
+        if (Platform.OS === "web") webStorage().setItem(key, value);
+        else await SecureStore.setItemAsync(key, value);
+    } catch { throw new Error("Credentials were not saved. Free storage or unlock the phone and retry."); }
+}
+
+export async function deleteSecureItem(key: string): Promise<void> {
+    try {
+        if (Platform.OS === "web") webStorage().removeItem(key);
+        else await SecureStore.deleteItemAsync(key);
+    } catch { throw new Error("Credentials could not be removed. Please retry."); }
+}
+
+export async function readMetadata(key: string): Promise<string | null> {
+    return Platform.OS === "web" ? webStorage().getItem(key) : Storage.getItem(key);
+}
+
+export async function writeMetadata(key: string, value: string): Promise<void> {
+    if (Platform.OS === "web") webStorage().setItem(key, value);
+    else await Storage.setItem(key, value);
+}
+
+export async function deleteMetadata(key: string): Promise<void> {
+    if (Platform.OS === "web") webStorage().removeItem(key);
+    else await Storage.removeItem(key);
+}
+
+// Legacy keys remain readable for profile migration. New credentials use small
+// secure items; non-secret metadata and preferences live in SQLite KV.
+export async function getStoredValue(key: keyof typeof KEYS) {
+    const value = await readMetadata(KEYS[key]);
+    return value ?? readSecureItem(KEYS[key]);
 }
 
 export async function setStoredValue(key: keyof typeof KEYS, value: string) {
-    if (Platform.OS === "web" || typeof SecureStore.setItemAsync !== "function") {
-        try {
-            globalThis.localStorage?.setItem(KEYS[key], value);
-        } catch {
-            // Best-effort web fallback.
-        }
-        return;
+    if (key === "accessToken" || key === "refreshToken" || key === "adminConnectionProfiles") {
+        return writeSecureItem(KEYS[key], value);
     }
-    try {
-        await SecureStore.setItemAsync(KEYS[key], value);
-    } catch (error) {
-        console.warn(`[mobile-storage] Failed to set secure item for ${key}:`, error);
-    }
+    await writeMetadata(KEYS[key], value);
 }
 
 export async function removeStoredValue(key: keyof typeof KEYS) {
-    if (Platform.OS === "web" || typeof SecureStore.deleteItemAsync !== "function") {
-        try {
-            globalThis.localStorage?.removeItem(KEYS[key]);
-        } catch {
-            // Best-effort web fallback.
-        }
-        return;
-    }
-    try {
-        await SecureStore.deleteItemAsync(KEYS[key]);
-    } catch (error) {
-        console.warn(`[mobile-storage] Failed to delete secure item for ${key}:`, error);
-    }
+    await deleteMetadata(KEYS[key]);
+    await deleteSecureItem(KEYS[key]);
 }
 
 export async function clearSessionStorage() {
-    await Promise.all([
-        removeStoredValue("accessToken"),
-        removeStoredValue("refreshToken"),
-        removeStoredValue("user"),
-        removeStoredValue("activeConversationId"),
-        removeStoredValue("userAvatarCache"),
-        removeStoredValue("userBackgroundCache"),
-    ]);
+    for (const key of ["accessToken", "refreshToken", "user", "activeConversationId", "userAvatarCache", "userBackgroundCache"] as const) {
+        await removeStoredValue(key);
+    }
 }

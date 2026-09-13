@@ -109,7 +109,8 @@ test("Phone applies only the current run terminal realtime and interrupt respons
 
 test("Phone rejects stale terminal events while a new run identity is awaiting acceptance", () => {
   assert.match(chatScreenSource, /pendingRunAcceptanceRef\.current = true;[\s\S]*?await submitChatMessage/);
-  assert.match(chatScreenSource, /finally \{\s*pendingRunAcceptanceRef\.current = false;\s*setSending\(false\)/);
+  // The receipt belongs to the captured view; its late finally cannot clear B's active send.
+  assert.match(chatScreenSource, /finally \{\s*if \(viewCurrent\(\)\) \{\s*pendingRunAcceptanceRef\.current = false;\s*sendingRef\.current = false;\s*setSending\(false\)/);
 });
 
 test("Phone composer and runtime stage share the complete active and terminal vocabulary", () => {

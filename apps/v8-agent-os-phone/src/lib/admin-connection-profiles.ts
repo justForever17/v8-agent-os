@@ -1,6 +1,6 @@
 import { normalizeAdminBaseUrl } from "@/src/lib/admin-client";
-import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
-import type { ConnectionSummary, DeviceConnectionEndpoint } from "@/src/types/admin";
+import { getStoredValue, readMetadata, writeMetadata, readSecureItem, writeSecureItem, deleteSecureItem } from "@/src/lib/mobile-storage";
+import type { ConnectionSummary, DeviceConnectionEndpoint, PhoneUser } from "@/src/types/admin";
 
 export type AdminConnectionProfile = {
     id: string;
@@ -23,6 +23,9 @@ export type AdminConnectionProfile = {
     version?: string;
     accessToken?: string;
     refreshToken?: string;
+    credentialRef?: string;
+    user?: PhoneUser;
+    principalId?: string;
     lastUsedAt: string;
 };
 
@@ -200,28 +203,74 @@ function sanitizeProfile(value: unknown): AdminConnectionProfile | null {
         version: typeof record.version === "string" ? record.version : "",
         accessToken: typeof record.accessToken === "string" ? record.accessToken : "",
         refreshToken: typeof record.refreshToken === "string" ? record.refreshToken : "",
+        credentialRef: typeof record.credentialRef === "string" ? record.credentialRef : undefined,
+        user: record.user && typeof record.user === "object" ? record.user as PhoneUser : undefined,
+        principalId: typeof record.principalId === "string" ? record.principalId : undefined,
         lastUsedAt: String(record.lastUsedAt || new Date(0).toISOString()),
     };
 }
 
 export async function readAdminConnectionProfiles() {
-    try {
-        const raw = await getStoredValue("adminConnectionProfiles");
-        const parsed = raw ? JSON.parse(raw) : [];
-        if (!Array.isArray(parsed)) {
-            return [] as AdminConnectionProfile[];
+    const current = await readMetadata(PROFILES_KEY);
+    const raw = current ?? await getStoredValue("adminConnectionProfiles");
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) throw new Error("Connection directory is damaged; saved data has been preserved.");
+    const profiles = parsed.map(sanitizeProfile).filter((item): item is AdminConnectionProfile => Boolean(item));
+    if (current === null && profiles.length) {
+        // Only the legacy active profile can prove ownership of global user / view.
+        const activeId = await readActiveAdminConnectionProfileId();
+        const oldUser = await getStoredValue("user");
+        const active = profiles.find((profile) => profile.id === activeId);
+        if (active && oldUser) {
+            active.user = JSON.parse(oldUser) as PhoneUser;
+            active.principalId = active.user.id;
         }
-        return parsed
-            .map((item) => sanitizeProfile(item))
-            .filter((item): item is AdminConnectionProfile => Boolean(item))
-            .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
-    } catch {
-        return [] as AdminConnectionProfile[];
+        await writeAdminConnectionProfiles(profiles);
+        return readAdminConnectionProfiles();
     }
+    return profiles.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
+}
+
+const PROFILES_KEY = "v8.phone.profiles.v2";
+export type ProfileCredentials = { accessToken: string; refreshToken: string };
+export async function readProfileCredentials(profile: AdminConnectionProfile): Promise<ProfileCredentials | null> {
+    if (!profile.credentialRef) return null;
+    const raw = await readSecureItem(profile.credentialRef);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as ProfileCredentials;
+    return value.accessToken && value.refreshToken ? value : null;
+}
+
+export async function forgetProfileCredentials(profile: AdminConnectionProfile) {
+    if (profile.credentialRef) await deleteSecureItem(profile.credentialRef);
 }
 
 export async function writeAdminConnectionProfiles(profiles: AdminConnectionProfile[]) {
-    await setStoredValue("adminConnectionProfiles", JSON.stringify(profiles));
+    const metadata: AdminConnectionProfile[] = [];
+    const createdRefs: string[] = [];
+    try {
+        for (const profile of profiles) {
+            const { accessToken, refreshToken, ...item } = profile;
+            if (accessToken && refreshToken) {
+                // New slot makes a failed directory write leave the previous credentials intact.
+                const credentialRef = `v8.phone.credential.${createProfileId()}`;
+                await writeSecureItem(credentialRef, JSON.stringify({ accessToken, refreshToken }));
+                createdRefs.push(credentialRef);
+                item.credentialRef = credentialRef;
+            }
+            metadata.push(item);
+        }
+        await writeMetadata(PROFILES_KEY, JSON.stringify(metadata));
+    } catch (error) {
+        for (const ref of createdRefs) await deleteSecureItem(ref).catch(() => undefined);
+        throw error;
+    }
+    // Keep the returned objects free of secrets and ready for subsequent metadata updates.
+    profiles.forEach((profile, index) => {
+        profile.credentialRef = metadata[index].credentialRef;
+        delete profile.accessToken;
+        delete profile.refreshToken;
+    });
 }
 
 export async function readActiveAdminConnectionProfileId() {
@@ -229,7 +278,7 @@ export async function readActiveAdminConnectionProfileId() {
 }
 
 export async function writeActiveAdminConnectionProfileId(profileId: string | null | undefined) {
-    await setStoredValue("activeAdminConnectionProfileId", profileId ? String(profileId) : "");
+    await writeMetadata("v8.phone.activeAdminConnectionProfileId", profileId ? String(profileId) : "");
 }
 
 export function upsertAdminConnectionProfile(
@@ -250,6 +299,7 @@ export function upsertAdminConnectionProfile(
         endpoints?: DeviceConnectionEndpoint[] | null;
         accessToken?: string | null;
         refreshToken?: string | null;
+        user?: PhoneUser;
     },
 ) {
     const adminBaseUrl = normalizeAdminBaseUrl(input.adminBaseUrl);
@@ -257,10 +307,7 @@ export function upsertAdminConnectionProfile(
         return { profile: null, profiles };
     }
     const summaryConnection = input.summary?.connection || {};
-    const existing = profiles.find((profile) =>
-        (input.profileId && profile.id === input.profileId)
-        || normalizeAdminBaseUrl(profile.adminBaseUrl) === adminBaseUrl,
-    );
+    const existing = input.profileId ? profiles.find((profile) => profile.id === input.profileId) : undefined;
     const summaryRecord = (input.summary || {}) as Record<string, unknown>;
     const summaryConnectionRecord = summaryConnection as Record<string, unknown>;
     const version = typeof summaryRecord.version === "string"
@@ -306,6 +353,9 @@ export function upsertAdminConnectionProfile(
         version,
         accessToken: input.accessToken || existing?.accessToken || "",
         refreshToken: input.refreshToken || existing?.refreshToken || "",
+        credentialRef: existing?.credentialRef,
+        user: input.user || existing?.user,
+        principalId: input.user?.id || existing?.principalId,
         lastUsedAt: new Date().toISOString(),
     };
     const nextProfiles = [

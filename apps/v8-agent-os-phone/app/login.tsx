@@ -11,7 +11,7 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { Redirect, useLocalSearchParams, type Href } from "expo-router";
+import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Linking from "expo-linking";
 import { LinearGradient } from "expo-linear-gradient";
@@ -32,7 +32,7 @@ export default function LoginScreen() {
     const { t } = useUiPrefs();
     const incomingUrl = Linking.useURL();
     const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-    const { pairingUri: pairingUriParam } = useLocalSearchParams<{ pairingUri?: string }>();
+    const { pairingUri: pairingUriParam, add } = useLocalSearchParams<{ pairingUri?: string; add?: string }>();
     const [pairingUri, setPairingUri] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
@@ -58,6 +58,7 @@ export default function LoginScreen() {
         setError("");
         try {
             await pairDevice({ pairingUri: nextPairingUri });
+            router.dismissTo("/chat" as Href);
         } catch (nextError) {
             attemptedPairingUriRef.current = "";
             if (options?.revealManualOnError && Platform.OS === "web") {
@@ -81,7 +82,7 @@ export default function LoginScreen() {
         void connectWithPairingUri(nextPairingUri, { revealManualOnError: Platform.OS === "web" });
     }, [connectWithPairingUri, incomingUrl, pairingUriParam]);
 
-    if (status === "authenticated") {
+    if (status === "authenticated" && add !== "1") {
         return <Redirect href={"/chat" as Href} />;
     }
 
@@ -140,6 +141,9 @@ export default function LoginScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea}>
+                <Pressable accessibilityRole="button" style={{ padding: 16 }} onPress={() => router.dismissTo("/connect" as Href)}>
+                    <Text style={{ color: colors.primary }}>{t("phone.devices.profiles")}</Text>
+                </Pressable>
                 <KeyboardAvoidingView
                     style={styles.keyboard}
                     behavior={Platform.OS === "ios" ? "padding" : undefined}

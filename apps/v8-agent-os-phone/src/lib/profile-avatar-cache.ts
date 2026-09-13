@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 
-import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
+import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 
 type AvatarCacheRecord = {
     source: string;
@@ -39,18 +39,19 @@ async function localFileExists(uri: string) {
  * new filename, so the source URL is also the cache version and never needs a
  * stale-time heuristic.
  */
-export async function cacheProfileAvatar(source: string): Promise<string> {
+export async function cacheProfileAvatar(source: string, authorityKey: string): Promise<string> {
     const normalizedSource = String(source || "").trim();
     if (!normalizedSource || Platform.OS === "web") return normalizedSource;
     const root = FileSystem.cacheDirectory || FileSystem.documentDirectory;
     if (!root || !/^https?:\/\//i.test(normalizedSource)) return normalizedSource;
 
-    const stored = parseStoredRecord(await getStoredValue("userAvatarCache"));
+    if (!authorityKey) return normalizedSource;
+    const stored = parseStoredRecord(await readMetadata(`v8.phone.avatar.${authorityKey}`));
     if (stored?.source === normalizedSource && await localFileExists(stored.localUri)) {
         return stored.localUri;
     }
 
-    const directory = `${root}v8-profile-avatar/`;
+    const directory = `${root}v8-profile-avatar/${encodeURIComponent(authorityKey)}/`;
     const localUri = `${directory}avatar-${stableHash(normalizedSource)}.webp`;
     await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);
     if (!await localFileExists(localUri)) {
@@ -68,7 +69,7 @@ export async function cacheProfileAvatar(source: string): Promise<string> {
         }
     }
 
-    await setStoredValue("userAvatarCache", JSON.stringify({ source: normalizedSource, localUri } satisfies AvatarCacheRecord));
+    await writeMetadata(`v8.phone.avatar.${authorityKey}`, JSON.stringify({ source: normalizedSource, localUri } satisfies AvatarCacheRecord));
     const files = await FileSystem.readDirectoryAsync(directory).catch(() => [] as string[]);
     await Promise.all(files
         .filter((name) => name !== localUri.slice(directory.length))

@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 
-import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
+import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 
 type BackgroundCacheRecord = {
     source: string;
@@ -34,18 +34,19 @@ async function localFileExists(uri: string) {
     return Boolean(info?.exists && !info.isDirectory);
 }
 
-export async function cacheProfileBackground(source: string, mediaType: "image" | "video"): Promise<string> {
+export async function cacheProfileBackground(source: string, mediaType: "image" | "video", authorityKey: string): Promise<string> {
     const normalizedSource = String(source || "").trim();
     if (!normalizedSource || Platform.OS === "web") return normalizedSource;
     const root = FileSystem.cacheDirectory || FileSystem.documentDirectory;
     if (!root || !/^https?:\/\//i.test(normalizedSource)) return normalizedSource;
 
-    const stored = parseStoredRecord(await getStoredValue("userBackgroundCache"));
+    if (!authorityKey) return normalizedSource;
+    const stored = parseStoredRecord(await readMetadata(`v8.phone.background.${authorityKey}`));
     if (stored?.source === normalizedSource && await localFileExists(stored.localUri)) {
         return stored.localUri;
     }
 
-    const directory = `${root}v8-profile-background/`;
+    const directory = `${root}v8-profile-background/${encodeURIComponent(authorityKey)}/`;
     const extension = mediaType === "video" ? "mp4" : "webp";
     const localUri = `${directory}background-${stableHash(normalizedSource)}.${extension}`;
     await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);
@@ -62,7 +63,7 @@ export async function cacheProfileBackground(source: string, mediaType: "image" 
         }
     }
 
-    await setStoredValue("userBackgroundCache", JSON.stringify({ source: normalizedSource, localUri } satisfies BackgroundCacheRecord));
+    await writeMetadata(`v8.phone.background.${authorityKey}`, JSON.stringify({ source: normalizedSource, localUri } satisfies BackgroundCacheRecord));
     const files = await FileSystem.readDirectoryAsync(directory).catch(() => [] as string[]);
     await Promise.all(files
         .filter((name) => name !== localUri.slice(directory.length))

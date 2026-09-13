@@ -1,13 +1,11 @@
 import { useCallback } from "react";
 import { router, type Href } from "expo-router";
 
-import { useAppSession } from "@/src/providers/app-session";
+import { phoneDrafts } from "@/src/lib/phone-drafts";
 
 export function useGoHomeToChat() {
-    const { setActiveConversationId } = useAppSession();
-
     return useCallback(async () => {
-        await setActiveConversationId(null);
-        router.replace("/chat" as Href);
-    }, [setActiveConversationId]);
+        await phoneDrafts.flushAll();
+        router.dismissTo("/chat" as Href);
+    }, []);
 }

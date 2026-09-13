@@ -135,7 +135,10 @@ import {
     type SupervisorReasoningEffortControl,
 } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
-import { buildLocalSessionIndexNamespace, localDatabase } from "@/src/services/LocalDatabaseService";
+import { buildLocalSessionIndexNamespace, createLocalDatabase } from "@/src/services/LocalDatabaseService";
+import { phoneSessionKey } from "@/src/lib/phone-identity";
+import { phoneDrafts } from "@/src/lib/phone-drafts";
+import { usePhoneDraftField, usePhoneDraftStatus } from "@/src/hooks/use-phone-draft";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type {
@@ -2044,6 +2047,10 @@ export default function ChatScreen() {
         adminBaseUrl,
         accessToken,
         activeConversationId,
+        authorityKey,
+        servingInstanceId,
+        newDraftId,
+        createNewDraft,
         sessionActivityVersion,
         setActiveConversationId,
         authorizedFetch,
@@ -2060,9 +2067,12 @@ export default function ChatScreen() {
         t,
     } = useUiPrefs();
     const sessionIndexNamespace = useMemo(
-        () => buildLocalSessionIndexNamespace(adminBaseUrl, user?.id || user?.email || user?.login || "local"),
-        [adminBaseUrl, user?.email, user?.id, user?.login],
+        () => authorityKey ? buildLocalSessionIndexNamespace(authorityKey, servingInstanceId) : "unpaired",
+        [authorityKey, servingInstanceId],
     );
+    const localDatabase = useMemo(() => createLocalDatabase(authorityKey, servingInstanceId), [authorityKey, servingInstanceId]);
+    const draftKey = authorityKey ? phoneSessionKey(authorityKey, servingInstanceId, activeConversationId || newDraftId) : "unpaired-draft";
+    const draftStatus = usePhoneDraftStatus(draftKey);
 
     const realtimeAbortRef = useRef<AbortController | null>(null);
     const realtimeConversationIdRef = useRef<string | null>(null);
@@ -2158,8 +2168,8 @@ export default function ChatScreen() {
         }
     }, [status]);
 
-    const [input, setInput] = useState("");
-    const [pendingContextSessionRefs, setPendingContextSessionRefs] = useState<ContextSessionReference[]>(() => (
+    const [input, setInput] = usePhoneDraftField(draftKey, "input", "");
+    const [pendingContextSessionRefs, setPendingContextSessionRefs] = usePhoneDraftField<ContextSessionReference[]>(draftKey, "contextSessionRefs", () => (
         newConversationIntent && CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)
             ? [{ sessionId: contextSessionIdParam, source: "history_menu" }]
             : []
@@ -2207,10 +2217,10 @@ export default function ChatScreen() {
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [askUserInteractions, setAskUserInteractions] = useState<AskUserInteraction[]>([]);
-    const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+    const [queuedMessages, setQueuedMessages] = usePhoneDraftField<QueuedChatMessage[]>(draftKey, "queue", []);
     const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
-    const [editingQueuedMessage, setEditingQueuedMessage] = useState<QueuedChatMessage | null>(null);
-    const [queuedMessageEditText, setQueuedMessageEditText] = useState("");
+    const [editingQueuedMessage, setEditingQueuedMessage] = usePhoneDraftField<QueuedChatMessage | null>(draftKey, "editingQueue", null);
+    const [queuedMessageEditText, setQueuedMessageEditText] = usePhoneDraftField(draftKey, "queueEditText", "");
     const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
@@ -2231,15 +2241,15 @@ export default function ChatScreen() {
     const [skills, setSkills] = useState<SkillReferenceSummary[]>([]);
     const [subagentFamilies, setSubagentFamilies] = useState<SubagentFamilySummary[]>([]);
     const [plugins, setPlugins] = useState<PluginReferenceSummary[]>([]);
-    const [uploadedFiles, setUploadedFiles] = useState<UploadedWorkspaceFile[]>([]);
-    const [selectedCommand, setSelectedCommand] = useState<CommandPresetSummary | null>(null);
-    const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
-    const [selectedSubagentFamilies, setSelectedSubagentFamilies] = useState<SubagentFamilySummary[]>([]);
-    const [selectedPlugins, setSelectedPlugins] = useState<PluginReferenceSummary[]>([]);
+    const [uploadedFiles, setUploadedFiles] = usePhoneDraftField<UploadedWorkspaceFile[]>(draftKey, "files", []);
+    const [selectedCommand, setSelectedCommand] = usePhoneDraftField<CommandPresetSummary | null>(draftKey, "command", null);
+    const [selectedSkills, setSelectedSkills] = usePhoneDraftField<SkillReferenceSummary[]>(draftKey, "skills", []);
+    const [selectedSubagentFamilies, setSelectedSubagentFamilies] = usePhoneDraftField<SubagentFamilySummary[]>(draftKey, "families", []);
+    const [selectedPlugins, setSelectedPlugins] = usePhoneDraftField<PluginReferenceSummary[]>(draftKey, "plugins", []);
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
-    const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 });
-    const [specModeEnabled, setSpecModeEnabled] = useState(false);
+    const [composerSelection, setComposerSelection] = usePhoneDraftField(draftKey, "selection", { start: 0, end: 0 });
+    const [specModeEnabled, setSpecModeEnabled] = usePhoneDraftField(draftKey, "specMode", false);
     const [safetyApprovalMode, setSafetyApprovalModeState] = useState<SafetyApprovalMode>("reduced");
     const [reasoningEffortControl, setReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortLevel>("auto");
@@ -3316,36 +3326,32 @@ export default function ChatScreen() {
 
     const activateCreatedConversation = useCallback(async (created: ConversationSummary) => {
         const createdSessionId = created.sessionId || created.id;
+        await phoneDrafts.flush(draftKey);
+        const targetDraftKey = phoneSessionKey(authorityKey, servingInstanceId, createdSessionId);
+        await phoneDrafts.hydrate(targetDraftKey);
+        phoneDrafts.compareAndSet(targetDraftKey, phoneDrafts.get(targetDraftKey).composerRevision, phoneDrafts.get(draftKey).values);
+        await phoneDrafts.flush(targetDraftKey);
         stopRealtime();
         optimisticSeedConversationIdRef.current = createdSessionId;
         activeConversationIdRef.current = createdSessionId;
         hydratedConversationIdRef.current = null;
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
-        setInput("");
-        setComposerSelection({ start: 0, end: 0 });
         setActiveQueryMode(null);
         setActiveQueryText("");
         clearActiveConversationViewState();
-        setUploadedFiles([]);
-        setSelectedCommand(null);
-        setSelectedSkills([]);
-        setSelectedSubagentFamilies([]);
-        setSelectedPlugins([]);
-        setSpecModeEnabled(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
         setScopeBindingState(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
-        setPendingContextSessionRefs([]);
         clearNewConversationIntent();
         setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
         await setActiveConversationId(createdSessionId);
         router.replace(`/chat?id=${encodeURIComponent(createdSessionId)}` as Href);
         await loadSessionScope(createdSessionId);
-    }, [clearActiveConversationViewState, clearNewConversationIntent, loadSessionScope, setActiveConversationId, stopRealtime]);
+    }, [authorityKey, servingInstanceId, draftKey, clearActiveConversationViewState, clearNewConversationIntent, loadSessionScope, setActiveConversationId, stopRealtime]);
 
     const createBoundConversation = useCallback(async (draft: WorkspaceBindingDraft) => {
         if (workspaceChooserBusy) {
@@ -3562,39 +3568,16 @@ export default function ChatScreen() {
     }, [authorizedFetch, createProjectConversationAtPath, loadFolderRoots, newFolderName, selectedFolderPath, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
-        const cachedConversations = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace);
+        const cachedConversations = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace).catch(() => []);
         sessionIndexReadyRef.current = true;
-        if (cachedConversations.length > 0) {
-            setConversations(sortSessionHistory(cachedConversations));
-        }
-        const skillScope = {
-            sessionId: activeConversationIdRef.current || undefined,
-            workspacePath: scopeBinding?.workspacePath || undefined,
-            workspaceId: scopeBinding?.workspaceId || undefined,
-            projectId: scopeBinding?.projectId || undefined,
-        };
-        const [nextConversations, nextCommands, nextReferences, nextPlugins] = await Promise.all([
-            listConversations(authorizedFetch),
-            listCommandPresets(authorizedFetch).catch(() => []),
-            listSkillsAndSubagentFamilies(authorizedFetch, skillScope).catch(() => ({ skills: [], subagentFamilies: [] })),
-            listPlugins(authorizedFetch).catch(() => []),
-        ]);
-
-        setConversations(nextConversations);
+        if (cachedConversations.length > 0) setConversations(sortSessionHistory(cachedConversations));
+        // Chat hydration starts independently. Catalogs never hold its first frame.
+        void listCommandPresets(authorizedFetch).then(setCommands).catch(() => undefined);
+        void loadProjects().catch(() => undefined);
+        const nextConversations = await listConversations(authorizedFetch);
+        setConversations(sortSessionHistory(nextConversations));
         await localDatabase.setSessionIndex(sessionIndexNamespace, nextConversations);
-        setCommands(nextCommands);
-        setSkills(nextReferences.skills);
-        setSubagentFamilies(nextReferences.subagentFamilies);
-        setPlugins(nextPlugins);
-        await loadProjects();
-
-        if (
-            activeConversationIdRef.current
-            && !nextConversations.some((item) => (item.sessionId || item.id) === activeConversationIdRef.current)
-        ) {
-            await setActiveConversationId(null);
-        }
-    }, [authorizedFetch, loadProjects, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, sessionIndexNamespace, setActiveConversationId]);
+    }, [authorizedFetch, loadProjects, localDatabase, sessionIndexNamespace]);
 
     const refreshConversationIndex = useCallback((): Promise<void> => {
         if (conversationIndexRefreshRef.current) {
@@ -3638,9 +3621,9 @@ export default function ChatScreen() {
     }, [conversations, sessionIndexNamespace, status]);
 
     useEffect(() => {
-        if (status !== "authenticated" || sessionActivityVersion <= 0) return;
+        if (status !== "authenticated" || !isFocused || !appVisible || sessionActivityVersion <= 0) return;
         void refreshConversationIndex();
-    }, [refreshConversationIndex, sessionActivityVersion, status]);
+    }, [refreshConversationIndex, sessionActivityVersion, status, isFocused, appVisible]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const profileStartedAt = getPerfNowMs();
@@ -4971,11 +4954,10 @@ export default function ChatScreen() {
             const syncPromise = syncCursor
                 ? getConversationTimelineSync(authorizedFetch, conversationId, syncCursor)
                 : Promise.resolve({ messages: [], deletions: [], syncCursor: "", sessionId: conversationId });
-            const [detail, turnPage, syncData, processSurface] = await Promise.all([
+const [detail, turnPage, syncData] = await Promise.all([
                 getConversationDetail(authorizedFetch, conversationId, true),
                 getConversationTurnPage(authorizedFetch, conversationId, { limit: 1 }),
                 syncPromise,
-                getSessionProcesses(authorizedFetch, conversationId).catch(() => ({ processes: [] as AdminProcessRef[], stale: true })),
             ]);
             if (
                 activeConversationIdRef.current !== conversationId
@@ -5028,11 +5010,10 @@ export default function ChatScreen() {
             messagesRef.current = normalized;
             messageConversationIdRef.current = conversationId;
             setMessages(normalized);
-            setQueuedMessages(extractQueuedMessages(detail) || []);
+            const queue = extractQueuedMessages(detail);
+            if (queue !== null) setQueuedMessages(queue);
             applyConversationProjection(detail);
-            if (Array.isArray(processSurface.processes) && (processSurface.processes.length > 0 || processSurface.stale)) {
-                applySessionProcessSurface(processSurface.processes, { stale: processSurface.stale });
-            }
+
             lastAppliedSnapshotSeqRef.current = buildSnapshotSequence(detail);
             lastAppliedSnapshotFingerprintRef.current = buildMessagesFingerprint(normalized);
             lastRealtimeSnapshotAtRef.current = Date.now();
@@ -5106,100 +5087,26 @@ export default function ChatScreen() {
     closeDesktopPreviewRef.current = closeDesktopPreview;
 
     useEffect(() => {
-        if (!activeConversationId) {
-            applySessionProcessSurface([], { forceClear: true });
-            return;
-        }
-
-        applySessionProcessSurface([], { forceClear: true });
-        const initialProcessPollStartedAt = getPerfNowMs();
-        void getSessionProcesses(authorizedFetch, activeConversationId)
-            .then((payload) => {
-                applySessionProcessSurface(payload.processes || [], { stale: payload.stale });
-                debugPerfTrace("process-poll", {
-                    sessionId: activeConversationId,
-                    elapsedMs: Math.round(getPerfNowMs() - initialProcessPollStartedAt),
-                    processCount: payload.processes?.length || 0,
-                    runtimeEventCount: runtimeTimelineRef.current.length,
-                    messageCount: messagesRef.current.length,
-                    stale: payload.stale || false,
-                    cacheAgeMs: payload.cacheAgeMs ?? undefined,
-                    processPanelError: payload.processPanelError,
-                    phase: "initial",
-                });
-            })
-            .catch((error) => {
-                console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
-                debugPerfTrace("process-poll", {
-                    sessionId: activeConversationId,
-                    elapsedMs: Math.round(getPerfNowMs() - initialProcessPollStartedAt),
-                    processCount: processesRef.current.length,
-                    runtimeEventCount: runtimeTimelineRef.current.length,
-                    messageCount: messagesRef.current.length,
-                    stale: true,
-                    processPanelError: error instanceof Error ? error.message : String(error),
-                    phase: "initial_error",
-                });
-            });
-
-        const normalizedRuntimeStatusForPolling = String(runtime.status || "").trim().toLowerCase();
-        const pollIntervalMs = runtimePanelOpen
-            || normalizedRuntimeStatusForPolling === "running"
-            || normalizedRuntimeStatusForPolling === "waiting_input"
-            || normalizedRuntimeStatusForPolling === "waiting_approval"
-            ? 9000
-            : 20000;
-        const timer = setInterval(() => {
-            const runtimeStatus = String(runtimeRef.current.status || "").trim().toLowerCase();
-            const shouldPollProcesses = Boolean(
-                sendingRef.current
-                || processesRef.current.length > 0
-                || runtimeStatus === "running"
-                || runtimeStatus === "waiting_input"
-                || runtimeStatus === "waiting_approval"
-            );
-            if (!shouldPollProcesses) {
-                return;
-            }
-            const pollStartedAt = getPerfNowMs();
-            void getSessionProcesses(authorizedFetch, activeConversationId)
-                .then((payload) => {
-                    if (activeConversationIdRef.current === activeConversationId) {
-                        applySessionProcessSurface(payload.processes || [], { stale: payload.stale });
-                        debugPerfTrace("process-poll", {
-                            sessionId: activeConversationId,
-                            elapsedMs: Math.round(getPerfNowMs() - pollStartedAt),
-                            processCount: payload.processes?.length || 0,
-                            runtimeEventCount: runtimeTimelineRef.current.length,
-                            messageCount: messagesRef.current.length,
-                            stale: payload.stale || false,
-                            cacheAgeMs: payload.cacheAgeMs ?? undefined,
-                            processPanelError: payload.processPanelError,
-                            phase: "interval",
-                        });
-                    }
-                })
-                .catch((error) => {
-                    if (activeConversationIdRef.current === activeConversationId) {
-                        console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
-                        debugPerfTrace("process-poll", {
-                            sessionId: activeConversationId,
-                            elapsedMs: Math.round(getPerfNowMs() - pollStartedAt),
-                            processCount: processesRef.current.length,
-                            runtimeEventCount: runtimeTimelineRef.current.length,
-                            messageCount: messagesRef.current.length,
-                            stale: true,
-                            processPanelError: error instanceof Error ? error.message : String(error),
-                            phase: "interval_error",
-                        });
-                    }
-                });
-        }, pollIntervalMs);
-
-        return () => {
-            clearInterval(timer);
+        if (!activeConversationId || !isFocused || !appVisible) return;
+        const controller = new AbortController();
+        let polling = false;
+        const current = () => !controller.signal.aborted && activeConversationIdRef.current === activeConversationId;
+        const poll = async () => {
+            if (polling || !current()) return;
+            polling = true;
+            const token = conversationTransitionTokenRef.current;
+            try {
+                const payload = await getSessionProcesses(authorizedFetch, activeConversationId, controller.signal);
+                if (current() && conversationTransitionTokenRef.current === token) applySessionProcessSurface(payload.processes || [], { stale: payload.stale });
+            } catch { /* Preserve this session's last known process surface on network failure. */ }
+            finally { polling = false; }
         };
-    }, [activeConversationId, applySessionProcessSurface, authorizedFetch, runtime.status, runtimePanelOpen]);
+        void poll();
+        const timer = setInterval(() => {
+            if (runtimePanelOpen || isQueueEligibleRunStatus(runtimeRef.current.status) || processesRef.current.length) void poll();
+        }, 12_000);
+        return () => { controller.abort(); clearInterval(timer); };
+    }, [activeConversationId, applySessionProcessSurface, authorizedFetch, isFocused, appVisible, runtimePanelOpen]);
 
     useEffect(() => {
         if (status !== "authenticated" || !isPhonePerfAuditEnabled()) {
@@ -5215,7 +5122,7 @@ export default function ChatScreen() {
     }, [authorizedFetch, status]);
 
     useEffect(() => {
-        if (status !== "authenticated") {
+        if (status !== "authenticated" || !isFocused || !appVisible) {
             stopRealtimeRef.current();
             if (status !== "booting") {
                 setLoading(false);
@@ -5238,7 +5145,7 @@ export default function ChatScreen() {
         return () => {
             cancelled = true;
         };
-    }, [status]);
+    }, [status, isFocused, appVisible]);
 
     useEffect(() => {
         scopeRequestSeqRef.current += 1;
@@ -5258,7 +5165,7 @@ export default function ChatScreen() {
     }, [activeConversationId, loadSessionScope, status]);
 
     useEffect(() => {
-        if (status !== "authenticated") {
+        if (status !== "authenticated" || !isFocused || !appVisible || !skillPickerOpen) {
             return;
         }
         const skillScope = {
@@ -5292,7 +5199,7 @@ export default function ChatScreen() {
         scopeBinding?.projectId,
         scopeBinding?.workspaceId,
         scopeBinding?.workspacePath,
-        status,
+        status, isFocused, appVisible, skillPickerOpen,
     ]);
 
     useEffect(() => {
@@ -5315,6 +5222,12 @@ export default function ChatScreen() {
     }, [activeConversationId, clearNewConversationIntent, newConversationIntent, status]);
 
     useEffect(() => {
+        if (!isFocused || !appVisible) {
+            conversationTransitionTokenRef.current += 1;
+            stopRealtimeRef.current();
+            void phoneDrafts.flush(draftKey).catch(() => undefined);
+            return;
+        }
         if (status !== "authenticated") {
             conversationTransitionTokenRef.current += 1;
             previousConversationIdRef.current = null;
@@ -5358,7 +5271,7 @@ export default function ChatScreen() {
                 return;
             }
             const loaded = await loadConversationRef.current(activeConversationId, {
-                force: conversationChanged,
+                force: true,
                 token: transitionToken,
             });
             if (
@@ -5374,8 +5287,9 @@ export default function ChatScreen() {
         })();
         return () => {
             cancelled = true;
+            stopRealtimeRef.current();
         };
-    }, [activeConversationId, clearActiveConversationViewState, status]);
+    }, [activeConversationId, clearActiveConversationViewState, status, isFocused, appVisible]);
 
     useEffect(() => {
         setSpeakingId("");
@@ -5406,23 +5320,15 @@ export default function ChatScreen() {
     const handleSelectConversation = useCallback(async (item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
         setHistoryOpen(false);
-        setInput("");
-        setComposerSelection({ start: 0, end: 0 });
+        if (canonicalSessionId === activeConversationIdRef.current) return;
+        await phoneDrafts.flush(draftKey);
         setActiveQueryMode(null);
         setActiveQueryText("");
-        setUploadedFiles([]);
-        setSelectedCommand(null);
-        setSelectedSkills([]);
-        setSelectedPlugins([]);
-        setSpecModeEnabled(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
-        setPendingContextSessionRefs([]);
         clearNewConversationIntent();
-        if (canonicalSessionId === activeConversationIdRef.current) {
-            return;
-        }
+        conversationTransitionTokenRef.current += 1;
         stopRealtimeRef.current();
         optimisticSeedConversationIdRef.current = null;
         hydratedConversationIdRef.current = null;
@@ -5430,34 +5336,27 @@ export default function ChatScreen() {
         clearActiveConversationViewState();
         await setActiveConversationId(canonicalSessionId);
         router.replace("/chat" as Href);
-    }, [clearActiveConversationViewState, clearNewConversationIntent, setActiveConversationId]);
+    }, [clearActiveConversationViewState, clearNewConversationIntent, draftKey, setActiveConversationId]);
 
     const handleNewConversation = useCallback(async () => {
+        await phoneDrafts.flush(draftKey);
         stopRealtime();
         optimisticSeedConversationIdRef.current = null;
         hydratedConversationIdRef.current = null;
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
-        setInput("");
-        setComposerSelection({ start: 0, end: 0 });
         setActiveQueryMode(null);
         setActiveQueryText("");
         clearActiveConversationViewState();
-        setUploadedFiles([]);
-        setSelectedCommand(null);
-        setSelectedSkills([]);
-        setSelectedPlugins([]);
-        setSpecModeEnabled(false);
         setWorkspaceInfoOpen(false);
         setWorkspaceChooserVisible(true);
         setNewProjectPath("");
         setScopeBindingState(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
-        setPendingContextSessionRefs([]);
-        await setActiveConversationId(null);
+        await createNewDraft();
         router.replace("/chat?new=1" as Href);
-    }, [clearActiveConversationViewState, setActiveConversationId, stopRealtime]);
+    }, [clearActiveConversationViewState, createNewDraft, draftKey, stopRealtime]);
 
     const handleContinueConversation = useCallback(async (item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
@@ -5470,31 +5369,12 @@ export default function ChatScreen() {
     }, [handleNewConversation]);
 
     const handleBrandPress = useCallback(async () => {
-        stopRealtime();
-        optimisticSeedConversationIdRef.current = null;
-        hydratedConversationIdRef.current = null;
-        loadingConversationIdRef.current = null;
         setHistoryOpen(false);
-        setInput("");
-        setComposerSelection({ start: 0, end: 0 });
-        setActiveQueryMode(null);
-        setActiveQueryText("");
-        clearActiveConversationViewState();
-        setUploadedFiles([]);
-        setSelectedCommand(null);
-        setSelectedSkills([]);
-        setSpecModeEnabled(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
-        setNewProjectPath("");
-        setScopeBindingState(null);
         setRuntimePanelOpen(false);
-        setSelectedRuntimeId("chat");
-        setPendingContextSessionRefs([]);
-        await setActiveConversationId(null);
         clearNewConversationIntent();
-        router.replace("/chat" as Href);
-    }, [clearActiveConversationViewState, clearNewConversationIntent, setActiveConversationId, stopRealtime]);
+    }, [clearNewConversationIntent]);
 
     const handleDeleteConversation = useCallback((item: ConversationSummary) => {
         const canonicalSessionId = item.sessionId || item.id;
@@ -6513,6 +6393,16 @@ export default function ChatScreen() {
     ]);
 
     const handleSend = useCallback(async (options: SendComposerOptions = {}) => {
+        if (sendingRef.current) return;
+        const submittedRevision = phoneDrafts.get(draftKey).composerRevision;
+        const transitionToken = conversationTransitionTokenRef.current;
+        const viewCurrent = () => conversationTransitionTokenRef.current === transitionToken;
+        const acknowledgeComposer = () => {
+            if (!options.preserveComposer) phoneDrafts.compareAndSet(draftKey, submittedRevision, {
+                input: "", selection: { start: 0, end: 0 }, command: null, skills: [], families: [], plugins: [],
+                contextSessionRefs: [], specMode: false, ...(Array.isArray(options.files) ? {} : { files: [] }),
+            });
+        };
         const pendingSupervisorRuntimeMode = supervisorRuntimeModeRef.current;
         const hasExplicitFiles = Array.isArray(options.files);
         const preserveComposer = Boolean(options.preserveComposer);
@@ -6546,12 +6436,11 @@ export default function ChatScreen() {
                 if (result.accepted === false) {
                     throw new Error(result.summary || t("src.screens.chatscreen.memory_failed"));
                 }
+                acknowledgeComposer();
+                if (!viewCurrent()) return;
                 if (!preserveComposer) {
-                    setInput("");
                     setActiveQueryMode(null);
                     setActiveQueryText("");
-                    setSelectedCommand(null);
-                    setComposerSelection({ start: 0, end: 0 });
                 }
                 Alert.alert(t("src.screens.chatscreen.memory_title"), result.summary || t("src.screens.chatscreen.memory_started"));
             } catch (error) {
@@ -6572,7 +6461,6 @@ export default function ChatScreen() {
         const pendingSpecModeEnabled = specModeEnabled;
         const pendingSafetyApprovalMode = safetyApprovalMode;
         if (pendingSpecModeEnabled) {
-            setSpecModeEnabled(false);
         }
         const previewText = displayText.trim() || (
             pendingFiles.length === 1
@@ -6588,8 +6476,10 @@ export default function ChatScreen() {
         let optimisticAssistantMessageId = "";
         let localQueueId = "";
         let submittedClientMessageId = "";
+        sendingRef.current = true;
         setSending(true);
         try {
+            await phoneDrafts.flush(draftKey);
             const historyMessages = messagesRef.current
                 .filter((message) => !message.uiEphemeral)
                 .map((message) => ({
@@ -6613,7 +6503,13 @@ export default function ChatScreen() {
                 contextSessionRefs: pendingSessionRefs,
                 composerPresentation: pendingComposerPresentation,
             }, engineNowMs);
-            const clientMessageId = userMessage.id;
+            const intentFingerprint = JSON.stringify([text, pendingCommand, pendingSkills, pendingSubagentFamilies, pendingPlugins, pendingFiles, pendingSessionRefs]);
+            const priorIntent = phoneDrafts.get(draftKey).values.pendingIntent as { fingerprint?: string; clientMessageId?: string; state?: string } | undefined;
+            const clientMessageId = priorIntent?.state === "acceptance_unknown" && priorIntent.fingerprint === intentFingerprint
+                ? priorIntent.clientMessageId || userMessage.id : userMessage.id;
+            userMessage.id = clientMessageId;
+            phoneDrafts.set(draftKey, "pendingIntent", { clientMessageId, fingerprint: intentFingerprint, state: "submitting" });
+            await phoneDrafts.flush(draftKey);
             submittedClientMessageId = clientMessageId;
             const queueEligible = isQueueEligibleRunStatus(projection.runControlState.status);
             const activeRunId = String(projection.runControlState.runId || activeRunIdRef.current || "").trim();
@@ -6636,17 +6532,10 @@ export default function ChatScreen() {
                     label: t("src.screens.chatscreen.message_queued"),
                 }));
                 if (!preserveComposer) {
-                    setInput("");
                     setActiveQueryMode(null);
                     setActiveQueryText("");
-                    setSelectedCommand(null);
-                    setSelectedSkills([]);
-                    setSelectedSubagentFamilies([]);
-                    setSelectedPlugins([]);
-                    setComposerSelection({ start: 0, end: 0 });
                 }
                 if (!hasExplicitFiles) {
-                    setUploadedFiles([]);
                 }
 
                 if (previewText) {
@@ -6712,7 +6601,10 @@ export default function ChatScreen() {
                     throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
                 }
                 submissionAccepted = true;
-                setPendingContextSessionRefs([]);
+                phoneDrafts.set(draftKey, "pendingIntent", { clientMessageId, state: "accepted" });
+                acknowledgeComposer();
+                await phoneDrafts.flush(draftKey);
+                if (!viewCurrent()) return;
                 router.replace("/chat" as Href);
                 setQueuedMessages((current) => current.filter((item) => item.id !== localQueueId));
                 if (submitResult.queued && submitResult.queuedMessage) {
@@ -6801,17 +6693,10 @@ export default function ChatScreen() {
                 status: "running",
             }));
             if (!preserveComposer) {
-                setInput("");
                 setActiveQueryMode(null);
                 setActiveQueryText("");
-                setSelectedCommand(null);
-                setSelectedSkills([]);
-                setSelectedSubagentFamilies([]);
-                setSelectedPlugins([]);
-                setComposerSelection({ start: 0, end: 0 });
             }
             if (!hasExplicitFiles) {
-                setUploadedFiles([]);
             }
 
             if (previewText) {
@@ -6877,7 +6762,10 @@ export default function ChatScreen() {
                 throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
             }
             submissionAccepted = true;
-            setPendingContextSessionRefs([]);
+                phoneDrafts.set(draftKey, "pendingIntent", { clientMessageId, state: "accepted" });
+                acknowledgeComposer();
+                await phoneDrafts.flush(draftKey);
+                if (!viewCurrent()) return;
             router.replace("/chat" as Href);
             if (submitResult.queued && submitResult.queuedMessage) {
                 upsertQueuedMessage(submitResult.queuedMessage);
@@ -6916,15 +6804,10 @@ export default function ChatScreen() {
                 });
             }
             if (!preserveComposer) {
-                setSelectedCommand(null);
-                setSelectedSkills([]);
-                setSelectedSubagentFamilies([]);
-                setSelectedPlugins([]);
                 setActiveQueryMode(null);
                 setActiveQueryText("");
             }
             if (!hasExplicitFiles) {
-                setUploadedFiles([]);
             }
 
             const submittedRunId = String(
@@ -6971,17 +6854,9 @@ export default function ChatScreen() {
 
         } catch (error) {
             if (!submissionAccepted) {
-                if (!preserveComposer) {
-                    setInput(displayText);
-                    setComposerSelection({ start: displayText.length, end: displayText.length });
-                    setSelectedCommand(pendingCommand);
-                    setSelectedSkills(pendingSkills);
-                    setSelectedSubagentFamilies(pendingSubagentFamilies);
-                    setSelectedPlugins(pendingPlugins);
-                }
-                if (!hasExplicitFiles) {
-                    setUploadedFiles(pendingFiles);
-                }
+                const pending = phoneDrafts.get(draftKey).values.pendingIntent as Record<string, unknown> | undefined;
+                if (pending) phoneDrafts.set(draftKey, "pendingIntent", { ...pending, state: "acceptance_unknown" });
+                if (!viewCurrent()) return;
                 setQueuedMessages((current) => current.filter((item) =>
                     item.id !== localQueueId && item.clientMessageId !== submittedClientMessageId,
                 ));
@@ -7005,13 +6880,17 @@ export default function ChatScreen() {
             }
             Alert.alert(t("src.screens.chatscreen.send_failed"), errorMessage);
         } finally {
-            pendingRunAcceptanceRef.current = false;
-            setSending(false);
+            if (viewCurrent()) {
+                pendingRunAcceptanceRef.current = false;
+                sendingRef.current = false;
+                setSending(false);
+            }
         }
     }, [
         authorizedFetch,
         clearNewConversationIntent,
         composerReferences,
+        draftKey,
         getEngineNowMs,
         input,
         projection.runControlState.runId,
@@ -7103,6 +6982,7 @@ export default function ChatScreen() {
     const hudBottomOffset = accessoryBottomOffset + 10;
     const pickerBottomOffset = accessoryBottomOffset;
     const visibleQueuedMessages = queuedMessages.filter((item) => {
+        if (item.sessionId && item.sessionId !== activeConversationId) return false;
         const state = String(item.state || "pending").trim().toLowerCase();
         return state === "pending" || state === "promoted";
     });
@@ -7319,6 +7199,10 @@ export default function ChatScreen() {
                 </View>
             ) : null}
             {activeConversationId ? (
+                <>
+                {draftStatus.error ? <Pressable accessibilityRole="button" onPress={() => void phoneDrafts.flush(draftKey).catch(() => undefined)}>
+                    <Text style={{ color: "#B45309", padding: 8 }}>{draftStatus.error}</Text>
+                </Pressable> : null}
                 <Composer
                     bodyValue={input}
                     onChangeBody={handleBodyInputChange}
@@ -7361,6 +7245,7 @@ export default function ChatScreen() {
                     recording={recorderState.isRecording}
                     transcribing={transcribing}
                 />
+                </>
             ) : (
                 <GlassCard style={[styles.workspaceHintCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
                     <Text style={[styles.workspaceHintText, { color: palette.textMuted }]}>

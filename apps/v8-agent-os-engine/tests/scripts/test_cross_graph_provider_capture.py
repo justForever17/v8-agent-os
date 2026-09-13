@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import json
 from pathlib import Path
 import sys
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage
 
 
 MODULE_PATH = Path(__file__).with_name("run_cross_graph_provider_capture.py")
@@ -81,3 +82,128 @@ def test_actual_native_sdk_binding_preserves_delegation_union_required_fields():
     assert len(local["properties"]) > 5
     assert adapter.bind_tools([])._bound_model is None
     assert _tool_schema_hash([supervisor_delegation_broker])
+
+
+def test_raw_invalid_arguments_and_metadata_never_save_private_values(tmp_path):
+    from types import SimpleNamespace
+    capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")
+    private = '{"mode":"dispatch", "goal":"PRIVATE ARGUMENT", "任务":"秘密"'
+    capture.request({"messages": [{"content": capture.marker}], "max_tokens": 1024,
+                     "max_completion_tokens": 2048, "extra_body": {"max_tokens": 512, "credential": "NEVER SAVE"}})
+    capture.response(SimpleNamespace(tool_calls=[], tool_call_chunks=[], additional_kwargs={},
+        invalid_tool_calls=[{"name": "delegation_broker", "args": private, "error": "PRIVATE ERROR BODY"}],
+        usage_metadata=None, response_metadata={"finish_reason": "length", "token_usage": {
+            "completion_tokens": 1024, "completion_tokens_details": {"reasoning_tokens": 200, "secret": "PRIVATE USAGE"}}}))
+    text = capture.output.read_text(encoding="utf-8")
+    for secret in ("PRIVATE ARGUMENT", "秘密", "PRIVATE ERROR BODY", "PRIVATE USAGE", "NEVER SAVE"):
+        assert secret not in text
+    request, response = [json.loads(line) for line in text.splitlines()]
+    assert request["outputCaps"]["topLevel.max_tokens"] == {"present": True, "value": 1024}
+    assert request["outputCaps"]["topLevel.max_completion_tokens"]["value"] == 2048
+    assert request["outputCaps"]["extra_body.max_tokens"]["value"] == 512
+    assert response["finishReason"] == "length" and response["usageReported"]
+    args = response["argumentViews"]["invalid_tool_calls"][0]["arguments"]
+    assert args["chars"] == len(private) and args["utf8Bytes"] > len(private)
+    assert args["sha256"] == capture_module._hash(private)
+    assert args["errorCategory"] == "JSONDecodeError" and not args["completeObject"]
+    capture.request({"messages": [{"content": "unrelated task"}]})
+    capture.response(SimpleNamespace(tool_calls=[], usage_metadata={"total_tokens": 99}))
+    assert capture.output.read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("outcome", ["complete", "incomplete", "interrupted"])
+def test_capture_real_sdk_and_adapter_boundaries_preserve_stream_and_rejection(tmp_path, monkeypatch, asynchronous, outcome):
+    from langchain_openai import ChatOpenAI
+    from core.llm_chat_adapter import V8ChatModelAdapter
+    from core.llm_exceptions import V8LLMStructuredOutputError
+    from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
+    from core.tools.native.delegation_surface import supervisor_delegation_broker
+
+    capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")
+    fragments = ['{"mode":', '"dispatch"']
+    if outcome == "complete":
+        fragments[-1] += '}'
+
+    def fake_stream(model, messages, **kwargs):
+        model._get_request_payload(messages, **kwargs)
+        for index, fragment in enumerate(fragments):
+            function = {"arguments": fragment}
+            call = {"index": 0, "function": function}
+            if index == 0:
+                function["name"] = "delegation_broker"
+                call.update({"id": "fixture-call", "type": "function"})
+            yield model._convert_chunk_to_generation_chunk(
+                {"choices": [{"index": 0, "delta": {"tool_calls": [call]}, "finish_reason": None}]}, AIMessageChunk, None)
+        if outcome == "interrupted":
+            raise TimeoutError("PRIVATE NETWORK ERROR")
+        yield model._convert_chunk_to_generation_chunk(
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}, AIMessageChunk, None)
+        if outcome == "complete":
+            yield model._convert_chunk_to_generation_chunk(
+                {"choices": [], "usage": {"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27}}, AIMessageChunk, None)
+
+    async def fake_astream(model, messages, **kwargs):
+        for chunk in fake_stream(model, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(ChatOpenAI, "_stream", fake_stream)
+    monkeypatch.setattr(ChatOpenAI, "_astream", fake_astream)
+    # Capture monkey-patches are process local; restore every installed method.
+    for owner, names in ((V8OpenAICompatibleChatModel, ("_stream", "_astream", "_get_request_payload", "_create_chat_result", "_convert_chunk_to_generation_chunk")),
+                         (V8ChatModelAdapter, ("_prepare_prompt_cache_request", "_validate_complete_tool_response"))):
+        for name in names:
+            monkeypatch.setattr(owner, name, getattr(owner, name))
+    capture.install()
+    model = V8OpenAICompatibleChatModel(model="offline-fixture", api_key="test-only-not-a-credential")
+    adapter = V8ChatModelAdapter(model_id="offline-fixture", provider_standard="openai", role="supervisor",
+        meta={"model_record": {"outputTokenMode": "fixed", "maxTokens": 4000},
+              "capabilityClass": "chat_tool_calling", "capabilities": {"supportsTools": True, "supportsStreaming": True}},
+        model_kwargs={}, builder=lambda: model).bind_tools([supervisor_delegation_broker])
+    messages = [HumanMessage(content=capture.marker)]
+    def consume():
+        if not asynchronous:
+            return list(adapter.stream(messages, max_tokens=1200))
+        async def collect():
+            return [chunk async for chunk in adapter.astream(messages, max_tokens=1200)]
+        return asyncio.run(collect())
+    if outcome == "complete":
+        assert consume()
+    elif outcome == "incomplete":
+        with pytest.raises(V8LLMStructuredOutputError):
+            consume()
+    else:
+        with pytest.raises(Exception):
+            consume()
+    text = capture.output.read_text(encoding="utf-8")
+    assert "PRIVATE NETWORK ERROR" not in text
+    rows = [json.loads(line) for line in text.splitlines()]
+    request = next(row for row in rows if row["boundary"] == "openai_final_request_payload")
+    assert request["outputTokenPolicy"] == {"mode": "fixed", "maxTokens": 1200, "source": "request_budget"}
+    caps = request["outputCaps"]
+    assert caps["topLevel.max_completion_tokens"] == {"present": True, "value": 1200}
+    assert caps["topLevel.max_tokens"]["present"] is False
+    result = next(row for row in rows if row["boundary"] == "openai_sdk_assembled_response")
+    assert result["toolCallsView"] == "sdk_parsed_may_repair_incomplete_json_not_wire_arguments"
+    raw = result["argumentViews"]["tool_call_chunks"][0]["arguments"]
+    assert raw["chars"] == len(''.join(fragments)) and raw["sha256"] == capture_module._hash(''.join(fragments))
+    assert raw["completeObject"] == (outcome == "complete")
+    deltas = [row for row in rows if row["boundary"] == "openai_sdk_input_delta_conversion"]
+    assert sum(arg["arguments"]["chars"] for row in deltas for choice in row["choices"] for arg in choice["toolArguments"]) == raw["chars"]
+    validations = [row for row in rows if row["boundary"] == "v8_adapter_complete_response_validation"]
+    if outcome == "interrupted":
+        assert result["streamEnd"] == "interrupted" and result["exceptionCategory"] == "TimeoutError"
+        assert result["finishReason"] is None and not validations
+    else:
+        assert result["streamEnd"] == "completed" and result["finishReason"] == "tool_calls"
+        assert validations[-1]["accepted"] == (outcome == "complete")
+        assert validations[-1]["captureId"] == request["captureId"]
+    if outcome == "incomplete":
+        # This is the v7 counterexample: SDK parsed calls look usable while
+        # the actual assembled JSON is incomplete and must remain rejected.
+        assert result["toolCalls"][0]["arguments"]["mode"]["value"] == "dispatch"
+        assert raw["jsonErrorOffset"] == len(''.join(fragments))
+        assert result["usageReported"] is False and result["usage"] == {}
+        assert validations[-1]["reason"] == "incomplete_tool_arguments"
+    if outcome == "complete":
+        assert result["usage"] == {"input_tokens": 20, "output_tokens": 7, "total_tokens": 27, "input_token_details": {}, "output_token_details": {}}

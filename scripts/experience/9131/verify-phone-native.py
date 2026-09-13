@@ -28,7 +28,9 @@ class NativeReview:
         self.out.mkdir(parents=True, exist_ok=True)
         self.report = {
             "candidate": args.candidate, "platform": "Android emulator release x86_64",
-            "serial": args.serial, "physicalPhone": False, "fixture": "82ed1c88 phone-api-fixture.cjs on 22836",
+            "serial": args.serial, "physicalPhone": False,
+            "fixture": f"{args.fixture_commit} phone-api-fixture.cjs on 22836",
+            "realtimePackageHandoff": args.realtime_version,
             "checks": [], "limitations": [
                 "UIAutomator observations are not native frame timings or physical-device evidence.",
                 "Pairing, sessions and messages use public synthetic fixture data only.",
@@ -242,6 +244,8 @@ if __name__ == "__main__":
     parser.add_argument("--live", action="store_true", required=True)
     parser.add_argument("--serial", required=True)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--fixture-commit", default="82ed1c88f04881dcde5932bf39bd70cb0497c3e2")
+    parser.add_argument("--realtime-version", default="not independently supplied")
     parser.add_argument("--apk", required=True)
     parser.add_argument("--apk-sha256", required=True)
     parser.add_argument("--out", required=True)

@@ -27,4 +27,6 @@ Phone原生独立阻断见 `PHONE-82ED1C88-REVIEW.md`：同会话/跨会话草�
 
 Admin+Extensions共享包组合验收见 `INTEGRATION-C03B7EBB-REVIEW.md`：22938只使用公开合成owner，22928保留协调模型live。两脚本支持`--url`并记录实际target/build；`admin-surface-observation.mjs`跨脚本对照真实shell/CSS。新增X15捕获祖先overflow裁切下根scrollWidth不变的窄屏不可达按钮，不用shell一致的通过项抵消该故障。
 
+Phone新release定向闭环见 `PHONE-6111D7C6-REVIEW.md`：实际AVD ABABA及A/B分别活动态进程重启保留身份/消息/草稿，原切换崩溃不再复现。S06对照82ed失败/6111通过，验证submitting恢复unknown而保留消息ID/指纹/新输入；native、存储替身、作者terminal/长流和物理机仍分层陈述。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

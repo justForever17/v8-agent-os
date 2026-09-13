@@ -12,6 +12,7 @@ const repo=path.resolve(import.meta.dirname,'../../..');
 const args=process.argv.slice(2);
 const candidate=args[args.indexOf('--candidate')+1];
 assert(args.includes('--candidate') && /^[0-9a-f]{8,40}$/.test(candidate));
+const only=args.includes('--only')?args[args.indexOf('--only')+1].split(','):[];
 const require=createRequire(path.join(repo,'apps/v8-agent-os-admin/package.json'));
 const ts=require('typescript');
 const plain=value=>JSON.parse(JSON.stringify(value));
@@ -61,7 +62,7 @@ function environment(){
 }
 
 const rows=[];
-async function check(id,fn){const env=environment();try{rows.push({id,status:'PASS',evidence:await fn(env)});}catch(error){rows.push({id,status:error.code==='ERR_ASSERTION'?'FAIL':'HARNESS_ERROR',error:String(error)});}finally{env.sql.close();}}
+async function check(id,fn){if(only.length&&!only.some(prefix=>id.startsWith(prefix)))return;const env=environment();try{rows.push({id,status:'PASS',evidence:await fn(env)});}catch(error){rows.push({id,status:error.code==='ERR_ASSERTION'?'FAIL':'HARNESS_ERROR',error:String(error)});}finally{env.sql.close();}}
 const directoryKey='v8.phone.profiles.v2';
 const activeKey='v8.phone.activeAdminConnectionProfileId';
 const profile=id=>({id,label:`Synthetic ${id}`,instanceId:`instance-${id}`,principalId:'principal-same',
@@ -130,9 +131,27 @@ await check('S05-real-sql-identity-cursor-tombstone-isolation',async env=>{
   assert.equal(await handles[0].getSyncCursor('session-1'),'');assert.equal(await handles[1].getSyncCursor('session-1'),'cursor-1');
   return {sameSessionAndMessageIds:true,caseRetained:true,tombstonePreventsOnlyAResurrection:true,cursorsIndependent:true,deleteALeavesB:true};
 });
+await check('S06-submitting-restart-preserves-intent-identity',async env=>{
+  const {PhoneDraftStore}=env.load('lib/phone-drafts');
+  const intent={state:'submitting',clientMessageId:'synthetic-stable-message-id',fingerprint:'synthetic-exact-fingerprint',sessionKey:'synthetic-A-session-1',composerRevision:5,future:{zero:0,flag:false}};
+  const saved=JSON.stringify({revision:9,composerRevision:5,values:{input:'PREVIOUS INPUT',pendingIntent:intent,plugins:['synthetic-plugin']}});
+  let releaseRead,persisted;
+  const deferred=new Promise(resolve=>{releaseRead=resolve;});
+  const store=new PhoneDraftStore({read:async()=>deferred,write:async(_key,value)=>{persisted=value;}});
+  const loading=store.hydrate('synthetic-A-session-1');
+  store.set('synthetic-A-session-1','input','NEW INPUT WHILE HYDRATING');releaseRead(saved);await loading;
+  const restored=plain(store.get('synthetic-A-session-1').values);
+  assert.equal(restored.input,'NEW INPUT WHILE HYDRATING');
+  assert.deepEqual(restored.pendingIntent,{...intent,state:'acceptance_unknown'});
+  assert.deepEqual(restored.plugins,['synthetic-plugin']);
+  await store.flush('synthetic-A-session-1');
+  assert.deepEqual(JSON.parse(persisted).values.pendingIntent,{...intent,state:'acceptance_unknown'});
+  return {unknownAcceptanceVisible:true,clientMessageIdPreserved:true,fingerprintAndSessionPreserved:true,newInputPreserved:true,recoveredStatePersisted:true,networkSubmission:false};
+});
 
 const report={candidate,level:'BOUNDARY_EXECUTED',node:process.version,
   qualification:'Frozen actual production modules. Native storage APIs are controlled fakes; SQL runs in real SQLite :memory:. No Android Keystore/physical OS fault injection.',
   sourceFiles:[...sources.keys()],rows};
-fs.writeFileSync(path.join(repo,`scripts/experience/9131/reports/phone-storage-${candidate.slice(0,8)}.json`),JSON.stringify(report,null,2)+'\n');
+const suffix=only.length?'-'+only.join('-'):'';
+fs.writeFileSync(path.join(repo,`scripts/experience/9131/reports/phone-storage-${candidate.slice(0,8)}${suffix}.json`),JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify(rows));process.exitCode=rows.some(row=>row.status!=='PASS')?1:0;

@@ -1,0 +1,77 @@
+{
+  "candidate": "6111d7c6088c2c7d42beb7aee7dfa82f552558df",
+  "platform": "Android emulator release x86_64",
+  "serial": "emulator-5586",
+  "physicalPhone": false,
+  "fixture": "a7155d620a103e4c5b83a8411c50f58006454855 phone-api-fixture.cjs on 22836",
+  "realtimePackageHandoff": "0.0.46",
+  "checks": [
+    {
+      "id": "P05",
+      "status": "PASS",
+      "evidence": {
+        "collidingFixtureIds": [
+          "session-1",
+          "message-1",
+          "fixture-owner"
+        ],
+        "observations": [
+          {
+            "authority": "B",
+            "draft": "Independent_B1_9131_UNSENT",
+            "message": "B synthetic message"
+          },
+          {
+            "authority": "A",
+            "draft": "Independent_A1_9131_UNSENT",
+            "message": "A synthetic message"
+          },
+          {
+            "authority": "B",
+            "draft": "Independent_B1_9131_UNSENT",
+            "message": "B synthetic message"
+          },
+          {
+            "authority": "A",
+            "draft": "Independent_A1_9131_UNSENT",
+            "message": "A synthetic message"
+          }
+        ],
+        "notCovered": [
+          "tombstone",
+          "resource cache",
+          "offline cache"
+        ]
+      },
+      "automationElapsedSeconds": 97.33
+    },
+    {
+      "id": "P10",
+      "status": "PASS",
+      "evidence": {
+        "restartActiveA": "Independent_A1_9131_UNSENT",
+        "restartActiveB": "Independent_B1_9131_UNSENT",
+        "retainedA2": "Independent_A2_9131_UNSENT",
+        "pairingReentered": false,
+        "clearedData": false
+      },
+      "automationElapsedSeconds": 85.97
+    }
+  ],
+  "limitations": [
+    "UIAutomator observations are not native frame timings or physical-device evidence.",
+    "Pairing, sessions and messages use public synthetic fixture data only.",
+    "The APK-to-source relationship is the build owner's handoff; file and installed hashes are independently compared.",
+    "Restart follows observed stable UI and completed navigation; it does not test termination during a pending SQLite write."
+  ],
+  "apkSha256": "7392bcf2fb0fa77b6389f4e306962202001760a16d9f4719e31536b26da04a21",
+  "installedApkSha256": "7392bcf2fb0fa77b6389f4e306962202001760a16d9f4719e31536b26da04a21",
+  "os": "14",
+  "abi": "x86_64",
+  "screenshotHashes": {
+    "P05-A1-after-ABABA.png": "f9a07300c257346adb1ecc05dde5bd234fe1cd69f2ad76798883c34e72640366",
+    "P10-native-restart-A-restored.png": "9b321b1367b09244ee31b3513654ae8d290f13e66ffded641dc2689fd26d1bb5"
+  },
+  "adbReleasedToPhone": true,
+  "sourceQualification": "APK/source and realtime package relationship supplied by Phone build owner; file/installed APK hashes and native UI observations independently verified."
+}

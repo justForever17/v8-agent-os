@@ -81,6 +81,54 @@ def assert_expected_model(model, expected_ref: str) -> dict:
     return {"canonicalModelRef": canonical_ref, "nativeModelId": str(model.model_id)}
 
 
+def raw_argument_presence(result: dict) -> dict:
+    views = result.get("argumentViews") or {}
+    raw = [item for source in ("tool_call_chunks", "additional_kwargs.tool_calls", "invalid_tool_calls")
+           for item in views.get(source, [])]
+    return {"toolArgumentsPresent": bool(raw),
+            "rawArgumentsComplete": all(item["arguments"].get("completeObject") is True for item in raw) if raw else None}
+
+
+def flatten_public_task_schema(public_schema: dict) -> dict:
+    """Diagnostic candidate: factor identical fields out of the existing union.
+
+    Keep both variants' required fields and property constraints. This changes
+    provider representation only; production schema/validator are not edited.
+    """
+    candidate = deepcopy(public_schema)
+    tasks = candidate["function"]["parameters"]["properties"]["tasks"]
+    array = next(item for item in tasks["anyOf"] if item.get("type") == "array")
+    variants = array["items"]["anyOf"]
+    if len(variants) != 2 or any(item.get("type") != "object" for item in variants):
+        raise ValueError("expected_public_local_external_union")
+    properties = [item["properties"] for item in variants]
+    if set(properties[0]) != set(properties[1]):
+        raise ValueError("variant_field_sets_differ")
+    common = {key: value for key, value in properties[0].items() if value == properties[1][key]}
+    conditions = []
+    for variant in variants:
+        condition = {"required": variant["required"]}
+        distinct = {key: value for key, value in variant["properties"].items() if key not in common}
+        if distinct:
+            condition["properties"] = distinct
+        if any(key not in {"type", "title", "properties", "required"} for key in variant):
+            raise ValueError("unsupported_variant_keywords")
+        conditions.append(condition)
+    flat_properties = {}
+    for key in properties[0]:
+        if key in common:
+            flat_properties[key] = common[key]
+            continue
+        types = {item[key].get("type") for item in properties}
+        if len(types) != 1 or None in types:
+            raise ValueError("variant_property_types_differ")
+        # Declare selectors next to the other fields; variant-specific enum /
+        # minLength constraints remain in the two small conditions below.
+        flat_properties[key] = {"type": types.pop()}
+    array["items"] = {"type": "object", "properties": flat_properties, "anyOf": conditions}
+    return candidate
+
+
 def run_comparison(args, public_schema: dict) -> dict:
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -97,7 +145,10 @@ def run_comparison(args, public_schema: dict) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=False)
     capture = ScopedCapture(args.marker, args.output_dir / "capture.jsonl")
     capture.install()
-    schemas = {"capturedPublic": public_schema, "internal": internal_schema}
+    comparison = getattr(args, "comparison", "internal")
+    other_group = "factoredPublic" if comparison == "factored" else "internal"
+    schemas = {"capturedPublic": public_schema,
+               other_group: flatten_public_task_schema(public_schema) if comparison == "factored" else internal_schema}
     expected = {"mode": "dispatch", "tasks": [{"targetAgentName": "Verification Engineer", "taskBriefId": "schema-probe-A",
                 "goal": "Read the synthetic input and return a verification summary.", "expectedOutputs": ["Verification summary"],
                 "acceptanceContract": ["Report actual read evidence"], "readOnly": True, "writeRequired": False,
@@ -111,7 +162,7 @@ def run_comparison(args, public_schema: dict) -> dict:
               "schemaSha256": {key: _hash(json.dumps(value, ensure_ascii=False, sort_keys=True)) for key, value in schemas.items()}}
     report_path = args.output_dir / "result.json"
     for repetition in range(3):
-        for group in ("capturedPublic", "internal"):
+        for group in ("capturedPublic", other_group):
             started = time.monotonic()
             row = {"group": group, "repetition": repetition + 1}
             try:
@@ -149,13 +200,13 @@ def run_comparison(args, public_schema: dict) -> dict:
                 capture_id = (capture.invocation.get() or {}).get("captureId")
                 row["captureId"] = capture_id
                 row["rawArgumentsComplete"] = None
+                row["toolArgumentsPresent"] = None
                 if capture_id and capture.output.exists():
                     captured = [json.loads(line) for line in capture.output.read_text(encoding="utf-8").splitlines()]
                     result = next((item for item in reversed(captured) if item.get("captureId") == capture_id
                                    and item.get("boundary") == "openai_sdk_assembled_response"), None)
                     if result:
-                        raw = result.get("argumentViews", {}).get("tool_call_chunks", [])
-                        row["rawArgumentsComplete"] = bool(raw) and all(item["arguments"].get("completeObject") for item in raw)
+                        row.update(raw_argument_presence(result))
                         row["finishReason"] = result.get("finishReason")
                         row["usage"] = result.get("usage")
                         row["streamEnd"] = result.get("streamEnd")
@@ -175,6 +226,8 @@ def main(argv=None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-model", required=True)
     parser.add_argument("--marker", required=True)
+    parser.add_argument("--comparison", choices=("internal", "factored"), default="internal",
+                        help="factored changes only the captured public task-union representation; never production validation")
     args = parser.parse_args(argv)
     try:
         schema = guard(args)

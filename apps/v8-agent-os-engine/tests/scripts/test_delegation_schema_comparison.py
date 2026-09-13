@@ -56,7 +56,8 @@ def test_probe_rejects_inconsistent_captured_public_schemas(tmp_path, monkeypatc
         probe.guard(args)
 
 
-def test_probe_six_sequential_fresh_samples_without_retry_or_tool_execution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("comparison", ["internal", "factored"])
+def test_probe_six_sequential_fresh_samples_without_retry_or_tool_execution(tmp_path, monkeypatch, comparison):
     from core.llm_factory import llm_factory
     from core.llm_exceptions import V8LLMStructuredOutputError
     from core.tools.native.delegation import delegation_broker
@@ -64,6 +65,7 @@ def test_probe_six_sequential_fresh_samples_without_retry_or_tool_execution(tmp_
     from langchain_core.utils.function_calling import convert_to_openai_tool
     from tests.scripts.run_cross_graph_provider_capture import ScopedCapture
     args = fixture_args(tmp_path, monkeypatch)
+    args.comparison = comparison
     probe.guard(args)
     schema = convert_to_openai_tool(supervisor_delegation_broker)
     monkeypatch.setattr(ScopedCapture, "install", lambda _self: None)
@@ -102,7 +104,10 @@ def test_probe_six_sequential_fresh_samples_without_retry_or_tool_execution(tmp_
     assert all(prompt == prompts[0] for prompt in prompts)
     assert all(call == [schema] for call in calls[::2])
     assert all(call == calls[1] for call in calls[1::2]) and calls[0] != calls[1]
-    assert [row["group"] for row in report["results"]] == ["capturedPublic", "internal"] * 3
+    assert [row["group"] for row in report["results"]] == ["capturedPublic", "factoredPublic" if comparison == "factored" else "internal"] * 3
+    if comparison == "factored":
+        assert calls[1] == [probe.flatten_public_task_schema(schema)]
+        assert calls[1][0]["function"]["description"] == schema["function"]["description"]
     assert report["results"][1]["adapterAccepted"] is False
     assert all(row["publicValid"] and row["internalValid"] and row["matchesExplicitTask"] for row in report["results"] if row["adapterAccepted"])
     assert "PRIVATE ERROR" not in (args.output_dir / "result.json").read_text(encoding="utf-8")
@@ -143,3 +148,53 @@ def test_real_factory_native_id_matches_qualified_ref_without_network(monkeypatc
     model.model_id = "unannounced-wire-change"
     with pytest.raises(ValueError, match="configured_model_changed"):
         probe.assert_expected_model(model, canonical)
+
+
+def test_no_tool_arguments_is_absence_not_an_incomplete_response():
+    empty = {"argumentViews": {"tool_call_chunks": [], "additional_kwargs.tool_calls": [], "invalid_tool_calls": []}}
+    assert probe.raw_argument_presence(empty) == {"toolArgumentsPresent": False, "rawArgumentsComplete": None}
+    invalid = {"argumentViews": {"invalid_tool_calls": [{"arguments": {"completeObject": False}}]}}
+    assert probe.raw_argument_presence(invalid) == {"toolArgumentsPresent": True, "rawArgumentsComplete": False}
+
+
+def test_factored_candidate_preserves_public_union_constraints_without_field_duplication():
+    from copy import deepcopy
+    from jsonschema import Draft202012Validator
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    from core.tools.native.delegation_surface import supervisor_delegation_broker
+    original = convert_to_openai_tool(supervisor_delegation_broker)
+    snapshot = deepcopy(original)
+    candidate = probe.flatten_public_task_schema(original)
+    assert original == snapshot
+    assert candidate["function"]["description"] == original["function"]["description"]
+    before = Draft202012Validator(original["function"]["parameters"])
+    after = Draft202012Validator(candidate["function"]["parameters"])
+    task = {"taskBriefId": "fixture", "goal": "Read evidence", "expectedOutputs": ["Report"],
+            "acceptanceContract": ["Trace the evidence"], "targetAgentName": "Fixture Agent",
+            "readOnly": True, "writeRequired": False, "writeSet": [], "readSet": ["input.txt"]}
+    cases = [(task, True), ({k: v for k, v in task.items() if k != "targetAgentName"}, False)]
+    for name in ("", "   ", 17):
+        cases.append(({**task, "targetAgentName": name}, False))
+    for lane in ("auto", "subagent", "external_worker"):
+        cases.append(({**task, "executionLaneHint": lane}, True))
+    external = {k: v for k, v in task.items() if k != "targetAgentName"}
+    cases.extend([({**external, "executionLaneHint": "external_worker"}, True),
+                  ({**external, "targetAgentName": "", "executionLaneHint": "external_worker"}, True),
+                  ({**external, "executionLaneHint": "subagent"}, False),
+                  ({**task, "executionLaneHint": "wrong"}, False)])
+    for key, bad in (("readOnly", "true"), ("writeRequired", "false"), ("readSet", {"item": "input"}),
+                     ("expectedOutputs", {"item": "Report"}), ("writeSet", [17]), ("allowChildDelegation", "false")):
+        cases.append(({**task, key: bad}, False))
+    for key in ("taskBriefId", "goal", "expectedOutputs", "acceptanceContract"):
+        cases.append(({k: v for k, v in task.items() if k != key}, False))
+    for value, valid in cases:
+        args = {"mode": "dispatch", "tasks": [value]}
+        assert before.is_valid(args) == after.is_valid(args) == valid
+    # The candidate remains the same union; shared typed fields occur once.
+    array = next(item for item in candidate["function"]["parameters"]["properties"]["tasks"]["anyOf"] if item.get("type") == "array")
+    assert "expectedOutputs" in array["items"]["properties"]
+    assert {"targetAgentName", "executionLaneHint"} <= array["items"]["properties"].keys()
+    original_array = next(item for item in original["function"]["parameters"]["properties"]["tasks"]["anyOf"] if item.get("type") == "array")
+    assert list(array["items"]["properties"]) == list(original_array["items"]["anyOf"][0]["properties"])
+    assert all("expectedOutputs" not in condition.get("properties", {}) for condition in array["items"]["anyOf"])
+    assert len(json.dumps(candidate)) < len(json.dumps(original)) * .75

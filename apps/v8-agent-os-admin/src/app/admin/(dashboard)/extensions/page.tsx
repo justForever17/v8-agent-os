@@ -240,6 +240,8 @@ type McpInstallFormState = {
   argsText: string;
   envText: string;
   headersText: string;
+  baseConfig?: Record<string, unknown>;
+  clearedCredentials?: string[];
 };
 type McpFormMode = "create" | "edit";
 type TranslateFn = (value: string, params?: Record<string, string | number>) => string;
@@ -454,6 +456,8 @@ function mcpFormFromServerConfig(name: string, server: Record<string, unknown>):
   return {
     name,
     type,
+    baseConfig: structuredClone(server),
+    clearedCredentials: [],
     command: typeof server.command === "string" ? server.command : "",
     url: typeof server.url === "string" ? server.url : "",
     argsText: formatMcpArgsText(server.args),
@@ -470,7 +474,14 @@ function buildMcpFormPayload(form: McpInstallFormState, t: TranslateFn): Record<
   if (!type) {
     throw new Error(t("app.admin.dashboard.extensions.page.mcpTypeRequired"));
   }
-  const server: Record<string, unknown> = { type };
+  const server: Record<string, unknown> = { ...structuredClone(form.baseConfig || {}), type };
+  const refs = { ...(server["x-v8-credential-refs"] as Record<string, unknown> || {}) };
+  for (const key of form.clearedCredentials || []) {
+    if (key === "endpointRef") { delete server.endpointRef; delete server.endpointHost; }
+    else delete refs[key];
+  }
+  server["x-v8-credential-refs"] = refs;
+  if (form.baseConfig) server["x-v8-edit-base"] = form.baseConfig;
   if (type === "stdio") {
     const command = form.command.trim();
     if (!command) {
@@ -478,19 +489,16 @@ function buildMcpFormPayload(form: McpInstallFormState, t: TranslateFn): Record<
     }
     server.command = command;
     const args = parseMcpArgs(form.argsText);
-    if (args.length > 0)
     server.args = args;
     const env = parseMcpKeyValueLines(form.envText, t("app.admin.dashboard.extensions.page.mcpEnv"), t);
-    if (Object.keys(env).length > 0)
     server.env = env;
   } else {
     const url = form.url.trim();
-    if (!url) {
+    if (!url && !server.endpointRef) {
       throw new Error(t("app.admin.dashboard.extensions.page.mcpUrlRequired"));
     }
-    server.url = url;
+    if (url) server.url = url;
     const headers = parseMcpKeyValueLines(form.headersText, t("app.admin.dashboard.extensions.page.mcpHeaders"), t);
-    if (Object.keys(headers).length > 0)
     server.headers = headers;
   }
   return { mcpServers: { [name]: server } };
@@ -531,10 +539,10 @@ function validateMcpJsonInput(raw: string, t: TranslateFn): {
     if (!disabled && type === "stdio" && !command) {
       throw new Error(t("app.admin.dashboard.extensions.page.mcpCommandRequired"));
     }
-    if (!disabled && (type === "http" || type === "sse") && !url) {
+    if (!disabled && (type === "http" || type === "sse") && !url && !server.endpointRef) {
       throw new Error(t("app.admin.dashboard.extensions.page.mcpUrlRequired"));
     }
-    if (!disabled && !command && !url) {
+    if (!disabled && !command && !url && !server.endpointRef) {
       throw new Error(t("app.admin.dashboard.extensions.page.ke81bbcc1", {
         name: name
       }));
@@ -570,7 +578,8 @@ export default function ExtensionsPage() {
       skillSafetyReviews: Array.isArray(skillSafetyPayload?.items) ? skillSafetyPayload.items : [],
     };
   });
-  const [catalog, setCatalog] = useState<ExtensionCatalogResponse | null>(initialState.catalog);
+  const [catalogSnapshot, setCatalog] = useState<ExtensionCatalogResponse | null>(initialState.catalog);
+  const catalog = useMemo<ExtensionCatalogResponse>(() => catalogSnapshot || { summary: { skillCount: 0, mcpServerCount: 0, connectedMcpServerCount: 0, mcpToolCount: 0 }, mcp: { servers: [] } }, [catalogSnapshot]);
   const [health, setHealth] = useState<ExtensionHealthResponse | null>(initialState.health);
   const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(initialState.configEnvelope);
   const [models, setModels] = useState<SysModel[]>(initialState.models);
@@ -597,20 +606,20 @@ export default function ExtensionsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [mcpFormMode, setMcpFormMode] = useState<McpFormMode>("create");
+  const [sectionLoadError, setSectionLoadError] = useState(false);
+  const [policyOpen, setPolicyOpen] = useState(false);
+  useEffect(() => {
+    if (policyOpen) void fetchAdminJson<SysModel[]>("/api/models").then(setModels).catch(() => setSectionLoadError(true));
+  }, [policyOpen]);
   const loadData = useCallback(async (force = false) => {
     try {
-      const [healthPayload, config, modelList, skillSafetyPayload, catalogPayload] = await Promise.all([
-      fetchAdminJson<ExtensionHealthResponse>("/api/extensions/health", { force }),
-      fetchConfigDomain<ExtensionsConfigData>("extensions", { force }),
-      fetchAdminJson<SysModel[]>("/api/models", { force }),
-      fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100", { force }),
-      fetchAdminJson<ExtensionCatalogResponse>("/api/extensions/catalog", { force })]
-      );
-      setCatalog(catalogPayload);
-      setHealth(healthPayload);
-      setConfigEnvelope(config);
-      setModels(Array.isArray(modelList) ? modelList : []);
-      setSkillSafetyReviews(Array.isArray(skillSafetyPayload?.items) ? skillSafetyPayload.items : []);
+      const outcomes = await Promise.allSettled([
+        fetchAdminJson<ExtensionHealthResponse>("/api/extensions/health", { force }).then(setHealth),
+        fetchConfigDomain<ExtensionsConfigData>("extensions", { force }).then(setConfigEnvelope),
+        fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100", { force }).then(data => setSkillSafetyReviews(data.items || [])),
+        fetchAdminJson<ExtensionCatalogResponse>("/api/extensions/catalog", { force }).then(data => { setCatalog(data); setLoading(false); }),
+      ]);
+      setSectionLoadError(outcomes.some(outcome => outcome.status === "rejected"));
     } finally
     {
       setLoading(false);
@@ -657,10 +666,13 @@ export default function ExtensionsPage() {
     try {
       const next = await saveConfigDomain<ExtensionsConfigData>("extensions", {
         data: {
+          ...configEnvelope.data,
           prefilterPolicy: {
+            ...configEnvelope.data?.prefilterPolicy,
             enabled: Boolean(configEnvelope.data?.prefilterPolicy?.enabled),
             mode: "two_stage",
             skills: {
+              ...configEnvelope.data?.prefilterPolicy?.skills,
               stage1Enabled: Boolean(configEnvelope.data?.prefilterPolicy?.skills?.stage1Enabled ?? true),
               stage1TopK: Number(configEnvelope.data?.prefilterPolicy?.skills?.stage1TopK || 20),
               llmEnabled: Boolean(configEnvelope.data?.prefilterPolicy?.skills?.llmEnabled ?? true),
@@ -668,6 +680,7 @@ export default function ExtensionsPage() {
               llmTimeoutSeconds: Number(configEnvelope.data?.prefilterPolicy?.skills?.llmTimeoutSeconds || 5)
             },
             mcp: {
+              ...configEnvelope.data?.prefilterPolicy?.mcp,
               stage1Enabled: Boolean(configEnvelope.data?.prefilterPolicy?.mcp?.stage1Enabled ?? true),
               stage1TopK: Number(configEnvelope.data?.prefilterPolicy?.mcp?.stage1TopK || 20),
               llmEnabled: Boolean(configEnvelope.data?.prefilterPolicy?.mcp?.llmEnabled ?? true),
@@ -675,7 +688,7 @@ export default function ExtensionsPage() {
               llmTimeoutSeconds: Number(configEnvelope.data?.prefilterPolicy?.mcp?.llmTimeoutSeconds || 5)
             }
           },
-          modelBindings: { prefilterModel: String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim() }
+          modelBindings: { ...configEnvelope.data?.modelBindings, prefilterModel: String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim() }
         }
       });
       setConfigEnvelope(next);
@@ -977,14 +990,14 @@ export default function ExtensionsPage() {
       setDeletingSkillId("");
     }
   };
-  if (loading || !catalog || !health || !configEnvelope) {
+  if (loading && !catalogSnapshot) {
     return <div className="flex min-h-[320px] items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>;
   }
   const clampRange = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
   const prefilterEnabled = Boolean(prefilterPolicy?.enabled);
-  const prefilterModel = String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim();
+  const prefilterModel = String(configEnvelope?.data?.modelBindings?.prefilterModel || "").trim();
   const skillsStage1Enabled = Boolean(skillsPrefilter.stage1Enabled ?? true);
   const skillsStage1TopK = Number(skillsPrefilter.stage1TopK || 20);
   const skillsLlmEnabled = Boolean(skillsPrefilter.llmEnabled ?? true);
@@ -998,15 +1011,16 @@ export default function ExtensionsPage() {
   const skillSafetyDisabledCount = skillSafetyReviews.filter((item) => item.disabled).length;
   const skillSafetyReviewCount = skillSafetyReviews.filter((item) => String(item.effective_verdict || "").toLowerCase() === "review" && !item.disabled).length;
   const skillSafetyApprovedCount = skillSafetyReviews.filter((item) => String(item.user_override || "").toLowerCase() === "approved" && !item.disabled).length;
-  const runtimeStartupState = String(health.runtime?.startupState || catalog.startupState || "cold").trim().toLowerCase();
-  const snapshotFreshness = String(health.runtime?.snapshotFreshness || catalog.snapshotFreshness || "cold").trim().toLowerCase();
+  const runtimeStartupState = String(health?.runtime?.startupState || catalog.startupState || "cold").trim().toLowerCase();
+  const snapshotFreshness = String(health?.runtime?.snapshotFreshness || catalog.snapshotFreshness || "cold").trim().toLowerCase();
   const skillsPolicyBadge = skillsStage1Enabled ?
   skillsLlmEnabled ? `${skillsStage1TopK} → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : `${skillsStage1TopK}` :
   skillsLlmEnabled ? `full → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : t("admin.pages.extensions.prefilter.fullInventory");
   const mcpPolicyBadge = mcpStage1Enabled ?
   mcpLlmEnabled ? `${mcpStage1TopK} → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : `${mcpStage1TopK}` :
   mcpLlmEnabled ? `full → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : t("admin.pages.extensions.prefilter.fullInventory");
-  return <AdminPageShell>
+  return <AdminPageShell className="max-w-[var(--v8-product-settings-width,1040px)] gap-4">
+            {sectionLoadError && <p role="alert" className="text-sm text-destructive">{t("extensions.store.sectionFailed")}</p>}
             <AdminPageHeader title={"app.admin.dashboard.extensions.page.k5b035c36"} description={"app.admin.dashboard.extensions.page.k042a5a79"} actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} label={t("app.admin.dashboard.extensions.page.kcc06e009")} />
                         <Button variant="outline" asChild>
@@ -1015,7 +1029,7 @@ export default function ExtensionsPage() {
                                 {t("app.admin.dashboard.extensions.page.storeEntry")}
                             </Link>
                         </Button>
-                        <Button onClick={() => void handleSaveConfig()} disabled={saving}>
+                        <Button onClick={() => void handleSaveConfig()} disabled={saving || !configEnvelope}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.extensions.page.k6010e1ed")}
                         </Button>
@@ -1033,9 +1047,11 @@ export default function ExtensionsPage() {
             {runtimeStartupState === "refreshing" ? <StatusNotice title={"app.admin.dashboard.extensions.page.ke3fbd37c"} description={t("app.admin.dashboard.extensions.page.k575262a6", {
       snapshotFreshness_live_live_snapshotFreshness_cached: snapshotFreshness === "live" ? "live" : "cached"
     })} tone="info" /> : null}
-            {runtimeStartupState === "error" ? <StatusNotice title={"app.admin.dashboard.extensions.page.kc3221dca"} description={health.lastRefreshError || catalog.lastRefreshError || t("app.admin.dashboard.extensions.page.ka1c8eb51")} tone="warning" /> : null}
+            {runtimeStartupState === "error" ? <StatusNotice title={"app.admin.dashboard.extensions.page.kc3221dca"} description={health?.lastRefreshError || catalog.lastRefreshError || t("app.admin.dashboard.extensions.page.ka1c8eb51")} tone="warning" /> : null}
 
-            <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"}>
+            <details className="rounded-xl border p-3" open={policyOpen} onToggle={event => setPolicyOpen(event.currentTarget.open)}>
+            <summary className="cursor-pointer text-sm font-medium">{t("app.admin.dashboard.extensions.page.kcc06e009")}</summary>
+            {policyOpen && <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"} footer={<Button onClick={() => void handleSaveConfig()} disabled={saving || !configEnvelope}>{t("app.admin.dashboard.extensions.page.k6010e1ed")}</Button>}>
                 <div className="space-y-5">
                     <div className="space-y-5">
                         <SettingToggleCard
@@ -1123,7 +1139,8 @@ export default function ExtensionsPage() {
                     </div>
 
                 </div>
-            </ConfigCard>
+            </ConfigCard>}
+            </details>
 
             <ConfigCard title={tg(t, "75497cb2")} description={tg(t, "ee842ada")} variant="list">
                 <div className="space-y-4">
@@ -1148,7 +1165,8 @@ export default function ExtensionsPage() {
             <div className="grid auto-rows-fr gap-4 xl:grid-cols-2">
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kec74feaf"} description={"app.admin.dashboard.extensions.page.kcc79174f"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">
                     <div className="space-y-3">
-                        <div className="space-y-3 rounded-2xl border border-border bg-muted/80 px-4 py-3 text-sm text-muted-foreground">
+                        <details className="space-y-3 rounded-xl border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                            <summary className="cursor-pointer">{t("extensions.store.inventoryDetails")}</summary>
                             <div>
                                 {t("app.admin.dashboard.extensions.page.k99bf9749")}
                                 <span className="font-medium break-all text-foreground">{catalog.skills?.root || "—"}</span>
@@ -1195,8 +1213,8 @@ export default function ExtensionsPage() {
                                             {root.projectId ? <div className="mt-1 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{root.projectId}</div> : null}
                                         </div>)}
                             </div>
-                        </div>
-                        {(catalog.skills?.items || []).length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.k8f2a9946")} description={t("app.admin.dashboard.extensions.page.kd9677b98")} /> : (catalog.skills?.items || []).map((skill) => <div key={skill.skillId || `${skill.name}:${skill.path}`} className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+                        </details>
+                        {(catalog.skills?.items || []).length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.k8f2a9946")} description={t("app.admin.dashboard.extensions.page.kd9677b98")} /> : (catalog.skills?.items || []).map((skill) => <div key={skill.skillId || `${skill.name}:${skill.path}`} className="rounded-xl border border-border bg-card p-3">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0 space-y-2">
                                             <div className="flex items-center gap-2">
@@ -1339,9 +1357,9 @@ export default function ExtensionsPage() {
                 <ConfigCard title={"app.admin.dashboard.extensions.page.k8a16c8db"} description={"app.admin.dashboard.extensions.page.kf25b7ed0"} variant="editor" bodyHeight="clamp" bodyScroll="auto" className="h-full">
                     <div className="space-y-4">
                         <div className="grid gap-3 md:grid-cols-3">
-                            <StatPill label={t("app.admin.dashboard.extensions.page.kb54e7c93")} value={health.mcp.statusBreakdown.connected || 0} />
-                            <StatPill label={t("app.admin.dashboard.extensions.page.k68ea0239")} value={health.mcp.statusBreakdown.disabled || 0} />
-                            <StatPill label={t("app.admin.dashboard.extensions.page.k51f11e87")} value={health.mcp.statusBreakdown.error || 0} />
+                            <StatPill label={t("app.admin.dashboard.extensions.page.kb54e7c93")} value={health?.mcp?.statusBreakdown?.connected || 0} />
+                            <StatPill label={t("app.admin.dashboard.extensions.page.k68ea0239")} value={health?.mcp?.statusBreakdown?.disabled || 0} />
+                            <StatPill label={t("app.admin.dashboard.extensions.page.k51f11e87")} value={health?.mcp?.statusBreakdown?.error || 0} />
                         </div>
                         <div className="flex flex-wrap gap-3">
                         <Dialog open={mcpFormDialogOpen} onOpenChange={(open) => {
@@ -1355,12 +1373,16 @@ export default function ExtensionsPage() {
                                 <Plus className="mr-2 h-4 w-4" />
                                 {t("app.admin.dashboard.extensions.page.mcpFormInstall")}
                             </Button>
-                            <DialogContent className="max-w-3xl">
+                            <DialogContent className="grid max-h-[88dvh] max-w-3xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
                                 <DialogHeader>
                                     <DialogTitle>{mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpFormEdit") : t("app.admin.dashboard.extensions.page.mcpFormInstall")}</DialogTitle>
                                     <DialogDescription>{mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpFormEditDescription") : t("app.admin.dashboard.extensions.page.mcpFormInstallDescription")}</DialogDescription>
                                 </DialogHeader>
-                                <div className="space-y-4 py-4">
+                                <div className="min-h-0 space-y-4 overflow-y-auto py-4">
+                                    {mcpInstallForm.baseConfig && <div className="space-y-2 rounded-lg border p-3 text-xs">
+                                      <p>{t("extensions.store.credentialsKept")}</p>
+                                      {[...(mcpInstallForm.baseConfig.endpointRef ? ["endpointRef"] : []), ...Object.keys(mcpInstallForm.baseConfig["x-v8-credential-refs"] as Record<string, unknown> || {})].map(key => <Label key={key} className="flex items-center gap-2"><input type="checkbox" checked={mcpInstallForm.clearedCredentials?.includes(key) || false} onChange={event => setMcpInstallForm(previous => ({ ...previous, clearedCredentials: event.target.checked ? [...(previous.clearedCredentials || []), key] : (previous.clearedCredentials || []).filter(value => value !== key) }))} />{t("extensions.store.clearCredential", { name: key })}</Label>)}
+                                    </div>}
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.extensions.page.mcpServerName")}</Label>
                                         <Input value={mcpInstallForm.name} onChange={(event) => {
@@ -1407,7 +1429,7 @@ export default function ExtensionsPage() {
                                         </> : <>
                                             <div className="space-y-2">
                                                 <Label>{t("app.admin.dashboard.extensions.page.mcpUrl")}</Label>
-                                                <Input value={mcpInstallForm.url} onChange={(event) => {
+                                                <Input type="password" autoComplete="off" value={mcpInstallForm.url} onChange={(event) => {
                           setMcpInstallForm((previous) => ({ ...previous, url: event.target.value }));
                           if (mcpValidationError)
                           setMcpValidationError("");

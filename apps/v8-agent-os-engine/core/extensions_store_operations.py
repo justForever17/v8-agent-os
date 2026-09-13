@@ -21,6 +21,7 @@ from core.interprocess_lock import interprocess_file_lock
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 _POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="extensions-install")
+_ADMISSION = threading.BoundedSemaphore(9)  # Three workers plus at most six waiting inputs.
 _INSTANCE = uuid4().hex
 _CURRENT = contextvars.ContextVar("extension_operation", default="")
 _LOCK = threading.RLock()
@@ -28,6 +29,10 @@ _TERMINAL = {"completed", "failed", "cancelled", "interrupted", "awaiting_input"
 
 
 class InstallCancelled(ValueError):
+    pass
+
+
+class InstallBusy(ValueError):
     pass
 
 
@@ -92,6 +97,8 @@ def cancel_operation(operation_id: str) -> dict[str, Any]:
 
 
 def start_operation(kind: str, payload: dict[str, Any], installer: Callable) -> dict[str, Any]:
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
+        raise ValueError("安装参数超过 64 KiB 限制。")
     provider = str(payload.get("provider") or "international")
     item_id = str(payload.get("id") or payload.get("skillId") or "")
     source = str(payload.get("source") or "")
@@ -121,12 +128,18 @@ def start_operation(kind: str, payload: dict[str, Any], installer: Callable) -> 
                   "candidateId": str(payload.get("candidateId") or ""),
                   "status": "running", "phase": "queued", "canCancel": kind == "skills",
                   "owner": _INSTANCE, "createdAt": time.time()}
-        _save(record)
         if kind == "mcp" and payload.get("waitForInput"):
             record.update(status="awaiting_input", phase="awaiting_input", canCancel=False,
                           message="请在来源页面完成服务配置，再回到此操作继续连接。")
             _save(record)
             return get_operation(operation_id)
+        if not _ADMISSION.acquire(blocking=False):
+            raise InstallBusy("已有 9 个安装正在处理或排队，请等待现有操作完成后重试。")
+        try:
+            _save(record)
+        except Exception:
+            _ADMISSION.release()
+            raise
 
         def run() -> None:
             token = _CURRENT.set(operation_id)
@@ -150,5 +163,12 @@ def start_operation(kind: str, payload: dict[str, Any], installer: Callable) -> 
                 current.update(**final, canCancel=False)
                 _save(current)
 
-        _POOL.submit(run)
+        try:
+            future = _POOL.submit(run)
+            future.add_done_callback(lambda _: _ADMISSION.release())
+        except Exception:
+            _ADMISSION.release()
+            record.update(status="failed", phase="failed", canCancel=False, message="安装执行器未启动，请重试。")
+            _save(record)
+            raise
         return get_operation(operation_id)

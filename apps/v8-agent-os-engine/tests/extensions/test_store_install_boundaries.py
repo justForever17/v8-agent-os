@@ -102,6 +102,16 @@ def test_root_package_complete_stable_identity_and_rollback(isolated, monkeypatc
     assert not list(tmp_path.glob(".v8-skill-install-*"))
 
 
+def test_invalid_manifest_does_not_claim_installed(isolated, tmp_path):
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w") as handle:
+        handle.writestr("SKILL.md", "---\nname: [invalid\n---\ntext")
+    with pytest.raises(skills.SkillInstallValidationError) as error:
+        skills.install_skills_from_zip("bad.zip", data.getvalue())
+    assert error.value.code == "invalid_manifest"
+    assert not list((tmp_path / "installed").glob("*/SKILL.md"))
+
+
 def test_endpoint_and_secret_keep_replace_clear_and_failure(isolated, monkeypatch):
     marker = "SYNTHETIC_ENDPOINT_SECRET"
     config = {"type": "http", "url": f"https://fixture.invalid/dedicated/{marker}", "headers": {"Authorization": marker},
@@ -276,3 +286,88 @@ def test_private_transport_logger_strips_url_payload_and_traceback():
         assert record.exc_info is None
     finally:
         private_transport.reset(token)
+
+
+def test_httpx_actual_request_logging_does_not_emit_private_path(caplog):
+    import httpx
+    import logging
+    from runtimes.extensions.mcp.transport_logging import private_transport
+    caplog.set_level(logging.DEBUG)
+    marker = "SYNTHETIC_PRIVATE_PATH"
+    token = private_transport.set(True)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(401))) as client:
+            response = client.get(f"https://fixture.invalid/{marker}")
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError:
+                logging.getLogger("mcp.client.sse").exception("transport rejected")
+        assert marker not in caplog.text
+    finally:
+        private_transport.reset(token)
+
+
+def test_admission_bounds_waiting_payloads_and_duplicate_target(isolated):
+    release = threading.Event()
+    calls = []
+    def installer(payload):
+        calls.append(payload["skillId"])
+        assert release.wait(3)
+        return {"installed": [], "skipped": [{}]}
+    accepted = []
+    try:
+        for index in range(9):
+            accepted.append(operations.start_operation("skills", {
+                "provider": "modelscope", "skillId": f"fixture/item-{index}"}, installer))
+        assert len(calls) <= 3
+        with pytest.raises(operations.InstallBusy):
+            operations.start_operation("skills", {"provider": "modelscope", "skillId": "fixture/overflow"}, installer)
+        duplicate = operations.start_operation("skills", {
+            "provider": "modelscope", "skillId": "fixture/item-0", "id": "fake-alias", "source": "fake-source"}, installer)
+        assert duplicate["operationId"] == accepted[0]["operationId"]
+        assert len(list(operations._root().glob("*.json"))) == 9
+    finally:
+        release.set()
+        for record in accepted:
+            assert wait_done(record["operationId"])["status"] == "completed"
+    followup = operations.start_operation("skills", {"provider": "modelscope", "skillId": "fixture/followup"}, installer)
+    assert wait_done(followup["operationId"])["status"] == "completed"
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_mcp_conflict_is_rejected_before_dependency_preparation(isolated, monkeypatch, replace):
+    from core import mcp_dependency_setup as dependencies
+    current = {"type": "stdio", "command": "existing-command"}
+    monkeypatch.setattr(store.storage, "get_mcp_config", lambda: {"mcpServers": {"fixture": current}})
+    candidate = {"serverName": "fixture", "_serverConfig": {"type": "stdio", "command": "npx", "args": ["fixture"]}}
+    monkeypatch.setattr(store, "_candidate_by_id", lambda *a: candidate)
+    monkeypatch.setattr(dependencies, "prepare_stdio", lambda *a, **k: pytest.fail("must reject before downloading"))
+    with pytest.raises(store.ExtensionStoreError) as error:
+        store.install_store_mcp({"id": "author/fixture", "candidateId": "candidate", "replace": replace,
+                                 "configRevision": mcp.mcp_config_revision(None)})
+    assert error.value.code == ("config_conflict" if replace else "config_exists")
+
+
+def test_mcp_commit_still_checks_revision_after_dependency_preparation(isolated, monkeypatch):
+    from core import mcp_dependency_setup as dependencies
+    state = {"mcpServers": {}}
+    monkeypatch.setattr(store.storage, "get_mcp_config", lambda: state)
+    monkeypatch.setattr(store.storage, "save_mcp_config", lambda payload: pytest.fail("must not overwrite concurrent edit"))
+    monkeypatch.setattr(store, "_candidate_by_id", lambda *a: {"serverName": "fixture", "_serverConfig": {
+        "type": "stdio", "command": "npx", "args": ["fixture"]}})
+    def prepare(config, **kwargs):
+        state["mcpServers"]["fixture"] = {"type": "stdio", "command": "concurrent-edit"}
+        return config
+    monkeypatch.setattr(dependencies, "prepare_stdio", prepare)
+    with pytest.raises(mcp.McpConfigValidationError) as error:
+        store.install_store_mcp({"id": "author/fixture", "candidateId": "candidate"})
+    assert error.value.code == "config_conflict"
+    assert state["mcpServers"]["fixture"]["command"] == "concurrent-edit"
+
+
+def test_modelscope_install_result_keeps_official_source_link(isolated, monkeypatch):
+    candidate = {"id": "candidate", "serverName": "fixture", "_serverConfig": {"type": "http", "url": "https://fixture.invalid/mcp"}}
+    monkeypatch.setattr(modelscope, "mcp_detail", lambda *a, **k: {"candidates": [candidate]})
+    monkeypatch.setattr(store, "install_mcp_server_config", lambda *a, **k: {"status": "success"})
+    result = store.install_store_mcp({"provider": "modelscope", "id": "@author/fixture", "candidateId": "candidate"})
+    assert result["store"]["detailUrl"] == "https://modelscope.cn/mcp/servers/@author/fixture"

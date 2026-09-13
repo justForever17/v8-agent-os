@@ -21,5 +21,6 @@ class PrivateTransportFilter(logging.Filter):
         return True
 
 
-for logger_name in ("httpx", "mcp.client.streamable_http", "mcp.client.sse", "mcp.shared.session"):
+for logger_name in ("httpx", "httpcore.http11", "httpcore.http2", "httpcore.connection", "httpcore.proxy",
+                    "mcp.client.streamable_http", "mcp.client.sse", "mcp.shared.session"):
     logging.getLogger(logger_name).addFilter(PrivateTransportFilter())

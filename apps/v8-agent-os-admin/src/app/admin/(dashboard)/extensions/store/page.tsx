@@ -1,622 +1,218 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
-import Image from "next/image";
-import ReactMarkdown from "react-markdown";
-import { Blocks, Bot, Loader2, RefreshCw, Search, Server, Sparkles, Star } from "lucide-react";
-
+import { Blocks, Loader2, RefreshCw, Search } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
-import { EmptyState } from "@/components/admin-shell/EmptyState";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useToast } from "@/components/ui/use-toast";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
-import { cn } from "@/lib/utils";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
+import { StoreRequestOwner, storeTarget, type StoreKind, type StoreProvider } from "@/lib/extensions-store-state";
 
-type StoreTab = "skills" | "mcp";
-
-type StoreListResponse<T> = {
-    items: T[];
-    warnings?: string[];
-};
-
-type SkillStoreItem = {
-    id: string;
-    name: string;
-    source: string;
-    skillId: string;
-    installs: number;
-    description?: string;
-    detailUrl: string;
-    installed?: boolean;
-};
-
-type SkillDetail = {
-    name: string;
-    source: string;
-    skillId: string;
-    description: string;
-    markdown: string;
-    detailUrl: string;
-};
-
-type McpStoreItem = {
-    id: string;
-    name: string;
-    title: string;
-    description: string;
-    repositoryUrl: string;
-    detailUrl: string;
-    stars: number;
-    avatarUrl?: string;
-    language: string;
-    license: string;
-    topics?: string[];
-    updatedAt?: string;
-    serverName: string;
-    installed?: boolean;
-};
-
-type McpRequirement = {
-    key: string;
-    target: "env" | "header" | "url" | "arg" | string;
-    name: string;
-    label: string;
-    placeholder: string;
-    required: boolean;
-    secret: boolean;
-    valueTemplate: string;
-};
-
-type McpCandidate = {
-    id: string;
-    label: string;
-    serverName: string;
-    transport: string;
-    source: string;
-    command?: string;
-    url?: string;
-    args?: string[];
-    envKeys?: string[];
-    headerKeys?: string[];
-    requirements?: McpRequirement[];
-};
-
-type McpDetail = {
-    id: string;
-    detailUrl: string;
-    repositoryUrl: string;
-    description?: string;
-    markdown?: string;
-    candidates: McpCandidate[];
-    canInstall: boolean;
-    warnings?: string[];
-};
-
-function errorMessage(payload: unknown, fallback: string) {
-    if (payload && typeof payload === "object") {
-        const record = payload as Record<string, unknown>;
-        const detail = record.detail;
-        if (detail && typeof detail === "object") {
-            const detailRecord = detail as Record<string, unknown>;
-            if (typeof detailRecord.message === "string") return detailRecord.message;
-        }
-        if (typeof record.error === "string") return record.error;
-        if (typeof detail === "string") return detail;
-    }
-    return fallback;
-}
-
-function formatCompactNumber(value: number) {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
-    return String(value || 0);
-}
-
-function ownerFromName(value: string) {
-    return String(value || "").split("/")[0] || "";
-}
-
-function targetLabel(target: string) {
-    if (target === "env") return "ENV";
-    if (target === "header") return "Header";
-    if (target === "url") return "URL";
-    if (target === "arg") return "Arg";
-    return target || "Value";
-}
-
-function StoreIcon({ item }: { item: McpStoreItem }) {
-    const title = item.title || item.name || "M";
-    if (item.avatarUrl) {
-        return <Image src={item.avatarUrl} alt="" width={44} height={44} className="h-11 w-11 rounded-xl border border-border bg-card object-cover p-1 dark:border-white/10 dark:bg-card" unoptimized />;
-    }
-    return (
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-sm font-semibold text-foreground dark:border-white/10 dark:bg-card dark:text-foreground">
-            {title.charAt(0).toUpperCase()}
-        </div>
-    );
+const Markdown = dynamic(() => import("react-markdown"));
+type Item = { id: string; name: string; source: string; skillId: string; description?: string; detailUrl: string; installed?: boolean; revision?: string };
+type List = { items: Item[]; warnings?: string[]; hasMore?: boolean; sourceCoverage?: string };
+type Candidate = { id: string; label: string; serverName: string; transport: string; command?: string; args?: string[];
+    requirements?: { key: string; label: string; name: string; required: boolean; secret: boolean; target: string }[] };
+type Detail = { markdown?: string; description?: string; candidates?: Candidate[]; configRevision?: string;
+    configRevisions?: Record<string, string>; configured?: boolean; configuredServers?: string[]; isHosted?: boolean; setupUrl?: string; revision?: string };
+type Selection = { item: Item; kind: StoreKind; provider: StoreProvider; target: string };
+type Operation = { operationId: string; target: string; itemId: string; skillId?: string; candidateId?: string; source: string; kind: StoreKind; provider: StoreProvider; updatedAt?: number;
+    status: string; phase: string; canCancel: boolean; message?: string; choices?: { name: string; folder: string }[]; result?: { installed?: unknown[]; skipped?: unknown[]; conflicts?: unknown[] } };
+const SOURCE_KEY = "v8os.extensions.store.provider";
+async function post<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`/api/extensions/store/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail?.message || data.detail || data.error || `HTTP ${response.status}`);
+    return data;
 }
 
 export default function ExtensionsStorePage() {
     const t = useT();
-    const { toast } = useToast();
-    const cachedSkills = peekAdminJsonCache<StoreListResponse<SkillStoreItem>>("/api/extensions/store/skills?limit=30");
-    const cachedMcp = peekAdminJsonCache<StoreListResponse<McpStoreItem>>("/api/extensions/store/mcp?limit=30");
-    const [activeTab, setActiveTab] = useState<StoreTab>("skills");
-    const [isSwitcherVisible, setIsSwitcherVisible] = useState(true);
+    const [provider, setProvider] = useState<StoreProvider>("international");
+    const [ready, setReady] = useState(false);
+    const [kind, setKind] = useState<StoreKind>("skills");
     const [query, setQuery] = useState("");
-    const [debouncedQuery, setDebouncedQuery] = useState("");
-    const [skills, setSkills] = useState<StoreListResponse<SkillStoreItem> | null>(cachedSkills || null);
-    const [mcp, setMcp] = useState<StoreListResponse<McpStoreItem> | null>(cachedMcp || null);
+    const [search, setSearch] = useState("");
+    const [composing, setComposing] = useState(false);
+    const [page, setPage] = useState(1);
+    const [list, setList] = useState<List>({ items: [] });
     const [loading, setLoading] = useState(false);
-    const [refreshing, setRefreshing] = useState(false);
-    const [loadError, setLoadError] = useState("");
-    const [selectedSkill, setSelectedSkill] = useState<SkillStoreItem | null>(null);
-    const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
-    const [skillDetailLoading, setSkillDetailLoading] = useState(false);
-    const [skillDetailError, setSkillDetailError] = useState("");
-    const [installingSkillId, setInstallingSkillId] = useState("");
-    const [selectedMcp, setSelectedMcp] = useState<McpStoreItem | null>(null);
-    const [mcpDetail, setMcpDetail] = useState<McpDetail | null>(null);
-    const [mcpDetailLoading, setMcpDetailLoading] = useState(false);
-    const [mcpDetailError, setMcpDetailError] = useState("");
-    const [selectedCandidateId, setSelectedCandidateId] = useState("");
-    const [requirementValues, setRequirementValues] = useState<Record<string, string>>({});
-    const [installingMcp, setInstallingMcp] = useState(false);
-
+    const [error, setError] = useState("");
+    const [refresh, setRefresh] = useState(0);
+    const listOwner = useRef(new StoreRequestOwner());
+    const detailOwner = useRef(new StoreRequestOwner());
+    const detailAbort = useRef<AbortController | null>(null);
+    const submitting = useRef(new Set<string>());
+    const [pending, setPending] = useState<Record<string, boolean>>({});
+    const [operations, setOperations] = useState<Record<string, Operation>>({});
+    const [selection, setSelection] = useState<Selection | null>(null);
+    const [detail, setDetail] = useState<Detail | null>(null);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [detailError, setDetailError] = useState("");
+    const [candidateId, setCandidateId] = useState("");
+    const [values, setValues] = useState<Record<string, string>>({});
+    const [docs, setDocs] = useState(false);
+    const [replace, setReplace] = useState(false);
+    const [mirror, setMirror] = useState(false);
+    const [connection, setConnection] = useState("");
+    const [selectedSkill, setSelectedSkill] = useState("");
     useEffect(() => {
-        const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 320);
-        return () => window.clearTimeout(timer);
-    }, [query]);
-
-    useEffect(() => {
-        let lastScrollTop = 0;
-        let ticking = false;
-
-        const handleScroll = (event: Event) => {
-            const target = event.target as HTMLElement;
-            if (!target || target.scrollHeight === undefined) return;
-            const scrollTop = target.scrollTop || 0;
-            if (!ticking) {
-                window.requestAnimationFrame(() => {
-                    if (scrollTop < 15) {
-                        setIsSwitcherVisible(true);
-                    } else if (scrollTop > lastScrollTop) {
-                        setIsSwitcherVisible(false);
-                    } else {
-                        setIsSwitcherVisible(true);
-                    }
-                    lastScrollTop = scrollTop;
-                    ticking = false;
-                });
-                ticking = true;
-            }
-        };
-
-        window.addEventListener("scroll", handleScroll, true);
-        return () => window.removeEventListener("scroll", handleScroll, true);
+        let saved = "international";
+        try { saved = localStorage.getItem(SOURCE_KEY) || saved; } catch { /* storage can be unavailable */ }
+        const params = new URLSearchParams(window.location.search);
+        setProvider(saved === "modelscope" ? "modelscope" : "international");
+        setKind(params.get("kind") === "mcp" ? "mcp" : "skills");
+        setQuery(params.get("query") || ""); setSearch(params.get("query") || ""); setReady(true);
+        const details = detailOwner.current, lists = listOwner.current;
+        return () => { detailAbort.current?.abort(); details.invalidate(); lists.invalidate(); };
     }, []);
-
-    const loadStore = useCallback(async (refresh = false) => {
-        const params = new URLSearchParams();
-        if (debouncedQuery) params.set("query", debouncedQuery);
-        params.set("limit", "30");
-        const path = activeTab === "skills" ? "skills" : "mcp";
-        const cacheUrl = `/api/extensions/store/${path}?${params.toString()}`;
-        const cached = peekAdminJsonCache<StoreListResponse<SkillStoreItem | McpStoreItem>>(cacheUrl);
-        setLoadError("");
-        if (refresh) setRefreshing(true);
-        else if (!cached) setLoading(true);
-        try {
-            let data: StoreListResponse<SkillStoreItem | McpStoreItem>;
-            if (refresh) {
-                const refreshParams = new URLSearchParams(params);
-                refreshParams.set("refresh", "true");
-                data = await fetchAdminJson<StoreListResponse<SkillStoreItem | McpStoreItem>>(`/api/extensions/store/${path}?${refreshParams.toString()}`, { force: true });
-                primeAdminJsonCache(cacheUrl, data);
-            } else {
-                data = await fetchAdminJson<StoreListResponse<SkillStoreItem | McpStoreItem>>(cacheUrl);
-            }
-            if (activeTab === "skills") setSkills(data as StoreListResponse<SkillStoreItem>);
-            else setMcp(data as StoreListResponse<McpStoreItem>);
-        } catch (error) {
-            setLoadError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.store.page.loadFailed"));
-        } finally {
-            setLoading(false);
-            setRefreshing(false);
-        }
-    }, [activeTab, debouncedQuery, t]);
-
     useEffect(() => {
-        void loadStore(false);
-    }, [loadStore]);
-
-    const selectedCandidate = useMemo(
-        () => (mcpDetail?.candidates || []).find((candidate) => candidate.id === selectedCandidateId) || mcpDetail?.candidates?.[0],
-        [mcpDetail, selectedCandidateId],
-    );
-
-    const openSkillDetail = useCallback(async (item: SkillStoreItem, refresh = false) => {
-        setSelectedSkill(item);
-        setSkillDetail(null);
-        setSkillDetailError("");
-        setSkillDetailLoading(true);
+        if (composing) return;
+        const timer = setTimeout(() => { setSearch(query.trim()); setPage(1); }, 320);
+        return () => clearTimeout(timer);
+    }, [query, composing]);
+    useEffect(() => {
+        if (!ready) return;
+        window.history.replaceState(null, "", `${window.location.pathname}?${new URLSearchParams({ kind, query: search })}`);
+        const url = `/api/extensions/store/${kind}?${new URLSearchParams({ provider, query: search, limit: "30", page: String(page) })}`;
+        const owner = listOwner.current, generation = owner.begin(url);
+        const cached = peekAdminJsonCache<List>(url);
+        setLoading(true); setError("");
+        if (page === 1) setList(cached || { items: [] });
+        void fetchAdminJson<List>(refresh ? `${url}&refresh=true` : url, { force: Boolean(refresh) }).then(data => {
+            if (!owner.accepts(generation)) return;
+            setList(previous => ({ ...data, items: page === 1 ? data.items : [...previous.items, ...data.items.filter(item => !previous.items.some(old => old.id === item.id))] }));
+        }).catch(err => { if (owner.accepts(generation)) setError(String(err.message || err)); })
+          .finally(() => { if (owner.accepts(generation)) setLoading(false); });
+        return () => owner.invalidate();
+    }, [kind, provider, search, page, refresh, ready]);
+    const mergeOperation = useCallback((op: Operation) => setOperations(previous => ({ ...previous, [op.target]: op })), []);
+    const hasRunning = Object.values(operations).some(op => op.status === "running");
+    useEffect(() => {
+        let active = true;
+        let timer: ReturnType<typeof setTimeout>;
+        const load = async () => {
+            try {
+                const data = await fetchAdminJson<{ operations: Operation[] }>("/api/extensions/store/operations", { force: true });
+                if (active) setOperations(previous => {
+                    const next = { ...previous };
+                    for (const op of data.operations) if (!next[op.target] || (op.updatedAt || 0) >= (next[op.target].updatedAt || 0)) next[op.target] = op;
+                    return next;
+                });
+            } catch { /* list remains usable, explicit submit errors are shown */ }
+            if (active && hasRunning) timer = setTimeout(load, document.hidden ? 10000 : 1500);
+        };
+        void load();
+        return () => { active = false; clearTimeout(timer); };
+    }, [hasRunning]);
+    const closeDetail = () => { detailAbort.current?.abort(); detailOwner.current.invalidate(); setSelection(null); setValues({}); };
+    const switchProvider = () => {
+        const next = provider === "international" ? "modelscope" : "international";
+        listOwner.current.invalidate(); closeDetail(); setList({ items: [] }); setProvider(next); setPage(1); setRefresh(0);
+        try { localStorage.setItem(SOURCE_KEY, next); } catch { /* preference persistence is optional */ }
+    };
+    const openDetail = async (item: Item, source = provider, tab = kind) => {
+        detailAbort.current?.abort();
+        const chosen = { item, provider: source, kind: tab, target: storeTarget(source, tab, item) };
+        const generation = detailOwner.current.begin(chosen.target);
+        const controller = new AbortController(); detailAbort.current = controller;
+        setSelection(chosen); setDetail(null); setDetailLoading(true); setDetailError(""); setValues({});
+        setCandidateId(""); setDocs(false); setReplace(false); setMirror(false); setConnection("");
+        setSelectedSkill("");
+        const params = new URLSearchParams(tab === "skills" ? { source: item.source, skillId: item.skillId, provider: source } : { id: item.id, provider: source });
         try {
-            const params = new URLSearchParams({ source: item.source, skillId: item.skillId });
-            if (refresh) params.set("refresh", "true");
-            const res = await fetch(`/api/extensions/store/skills/detail?${params.toString()}`, { cache: "no-store" });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(errorMessage(data, t("app.admin.dashboard.extensions.store.page.detailFailed")));
-            setSkillDetail(data as SkillDetail);
-        } catch (error) {
-            setSkillDetailError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.store.page.detailFailed"));
-        } finally {
-            setSkillDetailLoading(false);
-        }
-    }, [t]);
-
-    const openMcpDetail = useCallback(async (item: McpStoreItem, refresh = false) => {
-        setSelectedMcp(item);
-        setMcpDetail(null);
-        setMcpDetailError("");
-        setSelectedCandidateId("");
-        setRequirementValues({});
-        setMcpDetailLoading(true);
+            const response = await fetch(`/api/extensions/store/${tab}/detail?${params}`, { signal: controller.signal });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${response.status}`);
+            if (detailOwner.current.accepts(generation)) { setDetail(data); setCandidateId(operations[chosen.target]?.candidateId || data.candidates?.[0]?.id || ""); }
+        } catch (err) { if (detailOwner.current.accepts(generation) && !controller.signal.aborted) setDetailError((err as Error).message); }
+        finally { if (detailOwner.current.accepts(generation)) setDetailLoading(false); }
+    };
+    const candidate = detail?.candidates?.find(item => item.id === candidateId);
+    const chosenOperation = selection ? operations[selection.target] : undefined;
+    const busy = selection ? pending[selection.target] || chosenOperation?.status === "running" : false;
+    const install = async () => {
+        if (!selection || !detail || detailLoading || !detailOwner.current.isCurrent(selection.target)) return;
+        if (selection.kind === "mcp" && !candidate) return;
+        const chosen = selection;
+        const generation = detailOwner.current.capture();
+        if (submitting.current.has(chosen.target)) return;
+        submitting.current.add(chosen.target); setPending(old => ({ ...old, [chosen.target]: true })); setDetailError("");
         try {
-            const params = new URLSearchParams({ id: item.id });
-            if (refresh) params.set("refresh", "true");
-            const res = await fetch(`/api/extensions/store/mcp/detail?${params.toString()}`, { cache: "no-store" });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(errorMessage(data, t("app.admin.dashboard.extensions.store.page.detailFailed")));
-            const detail = data as McpDetail;
-            setMcpDetail(detail);
-            setSelectedCandidateId(detail.candidates?.[0]?.id || "");
-        } catch (error) {
-            setMcpDetailError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.store.page.detailFailed"));
-        } finally {
-            setMcpDetailLoading(false);
-        }
-    }, [t]);
-
-    const installSkill = useCallback(async (item: SkillStoreItem) => {
-        setInstallingSkillId(item.id);
-        try {
-            const res = await fetch("/api/extensions/store/skills/install", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ source: item.source, skillId: item.skillId }),
+            const operation = await post<Operation>(`operations/${chosen.kind}`, {
+                provider: chosen.provider, source: chosen.item.source, skillId: chosen.item.skillId, id: chosen.item.id,
+                candidateId: candidate?.id, values, overwrite: replace, replace, revision: detail.revision || chosen.item.revision,
+                selectedSkill: selectedSkill || undefined,
+                retry: Boolean(chosenOperation), configRevision: detail.configRevision || detail.configRevisions?.[candidate?.serverName || ""],
+                packageSource: mirror ? "domestic" : "original",
             });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(errorMessage(data, t("app.admin.dashboard.extensions.store.page.installFailed")));
-            toast({
-                title: t("app.admin.dashboard.extensions.store.page.skillInstalled"),
-                description: t("app.admin.dashboard.extensions.store.page.skillInstalledDescription", { name: item.name }),
+            mergeOperation(operation);
+        } catch (err) { if (detailOwner.current.accepts(generation)) setDetailError((err as Error).message); }
+        finally { submitting.current.delete(chosen.target); setPending(old => ({ ...old, [chosen.target]: false })); }
+    };
+    const statusLabel = (op?: Operation) => {
+        if (!op) return "";
+        if (op.status === "completed") return t(op.result?.conflicts?.length ? "extensions.store.partial" : op.kind === "mcp" ? "extensions.store.configured" : !op.result?.installed?.length && op.result?.skipped?.length ? "extensions.store.unchanged" : "extensions.store.installed");
+        return t(`extensions.store.${op.status === "running" ? op.phase : op.status}`);
+    };
+    const cancel = (op: Operation) => void post<Operation>(`operations/${op.operationId}/cancel`, {}).then(mergeOperation).catch(err => setError(err.message));
+    const waitForSetup = () => {
+        if (!selection) return;
+        const chosen = selection;
+        void post<Operation>("operations/mcp", { provider: chosen.provider, id: chosen.item.id, source: chosen.item.source,
+            candidateId, waitForInput: true, retry: true }).then(mergeOperation).catch(err => {
+                if (detailOwner.current.isCurrent(chosen.target)) setDetailError(err.message);
             });
-            setSelectedSkill(null);
-            await loadStore(true);
-        } catch (error) {
-            toast({
-                title: t("app.admin.dashboard.extensions.store.page.installFailed"),
-                description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.store.page.installFailed"),
-                variant: "destructive",
-            });
-        } finally {
-            setInstallingSkillId("");
-        }
-    }, [loadStore, t, toast]);
-
-    const installMcp = useCallback(async () => {
-        if (!mcpDetail || !selectedCandidate) return;
-        setInstallingMcp(true);
-        try {
-            const res = await fetch("/api/extensions/store/mcp/install", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ id: mcpDetail.id, candidateId: selectedCandidate.id, values: requirementValues }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(errorMessage(data, t("app.admin.dashboard.extensions.store.page.installFailed")));
-            toast({
-                title: t("app.admin.dashboard.extensions.store.page.mcpInstalled"),
-                description: t("app.admin.dashboard.extensions.store.page.mcpInstalledDescription", { name: selectedCandidate.serverName }),
-            });
-            setSelectedMcp(null);
-            setMcpDetail(null);
-            await loadStore(true);
-        } catch (error) {
-            toast({
-                title: t("app.admin.dashboard.extensions.store.page.installFailed"),
-                description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.store.page.installFailed"),
-                variant: "destructive",
-            });
-        } finally {
-            setInstallingMcp(false);
-        }
-    }, [loadStore, mcpDetail, requirementValues, selectedCandidate, t, toast]);
-
-    const itemsCount = activeTab === "skills" ? skills?.items.length || 0 : mcp?.items.length || 0;
-    const warnings = activeTab === "skills" ? skills?.warnings || [] : mcp?.warnings || [];
-
-    return (
-        <div className="relative min-h-full pb-20">
-            <AdminPageShell className="max-w-[1500px] gap-8">
-                <AdminPageHeader
-                    title="app.admin.dashboard.extensions.store.page.title"
-                    description="app.admin.dashboard.extensions.store.page.description"
-                    actions={
-                        <>
-                            <Button variant="outline" asChild>
-                                <Link href="/admin/extensions">
-                                    <Blocks className="mr-2 h-4 w-4" />
-                                    {t("app.admin.dashboard.extensions.store.page.backToExtensions")}
-                                </Link>
-                            </Button>
-                            <Button variant="outline" onClick={() => void loadStore(true)} disabled={refreshing || loading}>
-                                {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                                {t("app.admin.dashboard.extensions.store.page.refresh")}
-                            </Button>
-                        </>
-                    }
-                />
-
-                <div className="mx-auto w-full max-w-xl">
-                    <div className="relative">
-                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/80" />
-                        <Input
-                            value={query}
-                            onChange={(event) => setQuery(event.target.value)}
-                            placeholder={activeTab === "skills" ? t("app.admin.dashboard.extensions.store.page.searchSkills") : t("app.admin.dashboard.extensions.store.page.searchMcp")}
-                            className="h-12 rounded-lg border-input bg-card pl-11 text-base shadow-sm dark:border-white/10 dark:bg-slate-950"
-                        />
-                    </div>
-                </div>
-
-                <main className="space-y-6">
-                    <div className="flex flex-wrap items-center gap-3">
-                        <h2 className="text-2xl font-semibold tracking-tight text-foreground dark:text-slate-100">
-                            {activeTab === "skills" ? t("app.admin.dashboard.extensions.store.page.allSkills") : t("app.admin.dashboard.extensions.store.page.allMcp")}
-                        </h2>
-                        <Badge variant="secondary" className="rounded-full">{itemsCount}</Badge>
-                    </div>
-
-                    {loadError ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{loadError}</div> : null}
-                    {warnings.map((warning) => <div key={warning} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{warning}</div>)}
-
-                    <div className="grid gap-5 md:grid-cols-2 2xl:grid-cols-3">
-                        {loading ? Array.from({ length: 9 }).map((_, index) => (
-                            <div key={index} className="h-48 animate-pulse rounded-2xl border border-border bg-card/70 dark:border-white/10 dark:bg-card/10" />
-                        )) : null}
-
-                        {!loading && itemsCount === 0 ? (
-                            <div className="md:col-span-2 2xl:col-span-3">
-                                <EmptyState title={t("app.admin.dashboard.extensions.store.page.emptyTitle")} description={t("app.admin.dashboard.extensions.store.page.emptyDescription")} />
-                            </div>
-                        ) : null}
-
-                        {!loading && activeTab === "skills" ? (skills?.items || []).map((item) => (
-                            <article
-                                key={item.id}
-                                className="flex min-h-48 flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-input hover:shadow-md dark:border-white/10 dark:bg-slate-950 dark:hover:border-white/20"
-                            >
-                                <div className="space-y-4">
-                                    <div className="flex items-start justify-between gap-4">
-                                        <div className="min-w-0">
-                                            <h3 className="truncate text-xl font-semibold text-foreground dark:text-slate-100">{item.name}</h3>
-                                        </div>
-                                        <Button size="sm" onClick={() => void installSkill(item)} disabled={installingSkillId === item.id}>
-                                            {installingSkillId === item.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                            {item.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
-                                        </Button>
-                                    </div>
-                                    <p className="line-clamp-3 text-base leading-7 text-foreground dark:text-slate-300">{item.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</p>
-                                </div>
-                                <div className="mt-6 flex items-center justify-between gap-3 text-sm text-muted-foreground dark:text-muted-foreground/80">
-                                    <span>{t("app.admin.dashboard.extensions.store.page.installs", { count: formatCompactNumber(item.installs) })}</span>
-                                    <button type="button" onClick={() => void openSkillDetail(item)} className="font-medium text-foreground hover:text-foreground dark:text-slate-300 dark:hover:text-white">
-                                        {t("app.admin.dashboard.extensions.store.page.openDetail")}
-                                    </button>
-                                </div>
-                            </article>
-                        )) : null}
-
-                        {!loading && activeTab === "mcp" ? (mcp?.items || []).map((item) => (
-                            <article
-                                key={item.id}
-                                className="flex min-h-48 flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-input hover:shadow-md dark:border-white/10 dark:bg-slate-950 dark:hover:border-white/20"
-                            >
-                                <div className="space-y-4">
-                                    <div className="flex items-start justify-between gap-4">
-                                        <div className="flex min-w-0 items-center gap-4">
-                                            <StoreIcon item={item} />
-                                            <div className="min-w-0">
-                                                <h3 className="truncate text-xl font-semibold text-foreground dark:text-slate-100">{item.title || item.name}</h3>
-                                                <div className="mt-1 text-sm font-medium text-muted-foreground dark:text-muted-foreground/80">{t("app.admin.dashboard.extensions.store.page.byOwner", { owner: ownerFromName(item.name) })}</div>
-                                            </div>
-                                        </div>
-                                        <Button size="sm" onClick={() => void openMcpDetail(item)}>
-                                            {item.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
-                                        </Button>
-                                    </div>
-                                    <p className="line-clamp-3 text-base leading-7 text-foreground dark:text-slate-300">{item.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</p>
-                                </div>
-                                <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground/80">
-                                    <Star className="h-4 w-4" />
-                                    <span>{formatCompactNumber(item.stars)}</span>
-                                </div>
-                            </article>
-                        )) : null}
-                    </div>
-                </main>
-            </AdminPageShell>
-
-            <div
-                className={cn(
-                    "fixed bottom-6 left-1/2 z-50 -translate-x-1/2 transition-all duration-300 ease-in-out",
-                    isSwitcherVisible ? "translate-y-0 scale-100 opacity-100" : "pointer-events-none translate-y-20 scale-95 opacity-0",
-                )}
-            >
-                <div className="relative flex items-center rounded-full border border-border/80 bg-card/75 p-1 shadow-[0_8px_30px_rgba(0,0,0,0.12)] backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-900/75">
-                    <div
-                        className="absolute bottom-1 top-1 rounded-full bg-slate-950 shadow-sm transition-all duration-300 ease-out dark:bg-muted"
-                        style={{
-                            left: activeTab === "skills" ? "4px" : "calc(50% + 2px)",
-                            width: "calc(50% - 6px)",
-                        }}
-                    />
-                    <button
-                        type="button"
-                        onClick={() => setActiveTab("skills")}
-                        className={cn(
-                            "relative z-10 flex items-center gap-1.5 rounded-full px-5 py-2 text-xs font-semibold transition-colors duration-300",
-                            activeTab === "skills" ? "text-white dark:text-slate-950" : "text-muted-foreground hover:text-foreground dark:text-muted-foreground/80 dark:hover:text-slate-200",
-                        )}
-                    >
-                        <Sparkles className="h-3.5 w-3.5" />
-                        {t("app.admin.dashboard.extensions.store.page.skills")}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setActiveTab("mcp")}
-                        className={cn(
-                            "relative z-10 flex items-center gap-1.5 rounded-full px-5 py-2 text-xs font-semibold transition-colors duration-300",
-                            activeTab === "mcp" ? "text-white dark:text-slate-950" : "text-muted-foreground hover:text-foreground dark:text-muted-foreground/80 dark:hover:text-slate-200",
-                        )}
-                    >
-                        <Bot className="h-3.5 w-3.5" />
-                        {t("app.admin.dashboard.extensions.store.page.mcp")}
-                    </button>
-                </div>
+    };
+    const operationSourceUrl = (op: Operation) => op.provider === "modelscope"
+        ? `https://modelscope.cn/${op.kind === "skills" ? "skills" : "mcp/servers"}/${op.itemId}`
+        : op.kind === "skills" ? `https://skills.sh/${op.source}/${op.skillId}` : `https://github.com/mcp/${op.itemId}`;
+    return <AdminPageShell className="max-w-[var(--v8-product-settings-width,1040px)] gap-4">
+        <AdminPageHeader title="app.admin.dashboard.extensions.store.page.title" actions={<Button size="sm" variant="outline" asChild><Link href="/admin/extensions"><Blocks className="mr-2 h-4 w-4" />{t("extensions.store.manage")}</Link></Button>} />
+        <div className="sticky top-0 z-10 space-y-3 bg-background py-2">
+            <div className="flex flex-wrap items-center gap-2">
+                <div className="flex gap-1" aria-label={t("extensions.store.kind")}>{(["skills", "mcp"] as const).map(value => <Button key={value} size="sm" variant={kind === value ? "default" : "ghost"} aria-pressed={kind === value} onClick={() => { listOwner.current.invalidate(); closeDetail(); setList({ items: [] }); setKind(value); setPage(1); setRefresh(0); }}>{value === "skills" ? "Skills" : "MCP"}</Button>)}</div>
+                <div className="relative min-w-48 flex-1"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input aria-label={t("extensions.store.search")} className="h-10 pl-9" value={query} placeholder={t("extensions.store.search")} onChange={event => setQuery(event.target.value)} onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)} onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { setSearch(query.trim()); setPage(1); } }} /></div>
+                <Button size="icon" variant="outline" aria-label={t("extensions.store.refresh")} title={t("extensions.store.refresh")} onClick={() => { setPage(1); setRefresh(Date.now()); }} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} /></Button>
             </div>
-
-            <Dialog open={Boolean(selectedSkill)} onOpenChange={(open) => {
-                if (!open) {
-                    setSelectedSkill(null);
-                    setSkillDetail(null);
-                    setSkillDetailError("");
-                }
-            }}>
-                <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
-                    {selectedSkill ? (
-                        <>
-                            <DialogHeader>
-                                <DialogTitle>{skillDetail?.name || selectedSkill.name}</DialogTitle>
-                                <DialogDescription>{skillDetail?.description || selectedSkill.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</DialogDescription>
-                            </DialogHeader>
-                            {skillDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 p-4 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
-                            {skillDetailError ? <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{skillDetailError}</div> : null}
-                            {skillDetail?.markdown ? (
-                                <div className="rounded-xl border border-border bg-muted/50 p-5 text-sm leading-7 text-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
-                                    <ReactMarkdown>{skillDetail.markdown}</ReactMarkdown>
-                                </div>
-                            ) : null}
-                            <DialogFooter>
-                                <Button onClick={() => void installSkill(selectedSkill)} disabled={Boolean(installingSkillId)}>
-                                    {installingSkillId === selectedSkill.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                    {selectedSkill.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
-                                </Button>
-                            </DialogFooter>
-                        </>
-                    ) : null}
-                </DialogContent>
-            </Dialog>
-
-            <Dialog open={Boolean(selectedMcp)} onOpenChange={(open) => {
-                if (!open) {
-                    setSelectedMcp(null);
-                    setMcpDetail(null);
-                    setMcpDetailError("");
-                    setRequirementValues({});
-                }
-            }}>
-                <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
-                    {selectedMcp ? (
-                        <>
-                            <DialogHeader>
-                                <DialogTitle>{selectedMcp.title || selectedMcp.name}</DialogTitle>
-                                <DialogDescription>{mcpDetail?.description || selectedMcp.description || selectedMcp.name}</DialogDescription>
-                            </DialogHeader>
-                            {mcpDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 p-4 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
-                            {mcpDetailError ? <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{mcpDetailError}</div> : null}
-                            {mcpDetail?.warnings?.map((warning) => <div key={warning} className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{warning}</div>)}
-                            {mcpDetail?.markdown ? (
-                                <div className="rounded-xl border border-border bg-muted/50 p-5 text-sm leading-7 text-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
-                                    <ReactMarkdown>{mcpDetail.markdown}</ReactMarkdown>
-                                </div>
-                            ) : null}
-
-                            {mcpDetail && mcpDetail.candidates.length > 0 ? (
-                                <div className="space-y-4 rounded-xl border border-border bg-card p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                                    <div className="space-y-2">
-                                        <Label>{t("app.admin.dashboard.extensions.store.page.installMethod")}</Label>
-                                        <Select value={selectedCandidate?.id || ""} onValueChange={(value) => {
-                                            setSelectedCandidateId(value);
-                                            setRequirementValues({});
-                                        }}>
-                                            <SelectTrigger>
-                                                <SelectValue />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {mcpDetail.candidates.map((candidate) => (
-                                                    <SelectItem key={candidate.id} value={candidate.id}>
-                                                        {candidate.label} · {candidate.serverName}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-
-                                    {selectedCandidate ? (
-                                        <>
-                                            <div className="grid gap-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground dark:bg-white/[0.04] dark:text-slate-300">
-                                                <div><span className="font-medium">{t("app.admin.dashboard.extensions.store.page.serverName")}</span> {selectedCandidate.serverName}</div>
-                                                <div><span className="font-medium">{t("app.admin.dashboard.extensions.store.page.transport")}</span> {selectedCandidate.transport}</div>
-                                            </div>
-
-                                            {(selectedCandidate.requirements || []).length > 0 ? (
-                                                <div className="grid gap-3">
-                                                    {(selectedCandidate.requirements || []).map((requirement) => (
-                                                        <div key={requirement.key} className="space-y-2">
-                                                            <Label className="flex flex-wrap items-center gap-2">
-                                                                <span>{requirement.label || requirement.name}</span>
-                                                                <Badge variant="outline">{targetLabel(requirement.target)}</Badge>
-                                                                {requirement.required ? <Badge variant="secondary">{t("app.admin.dashboard.extensions.store.page.required")}</Badge> : null}
-                                                            </Label>
-                                                            <Input
-                                                                type={requirement.secret ? "password" : "text"}
-                                                                autoComplete="off"
-                                                                value={requirementValues[requirement.key] || ""}
-                                                                onChange={(event) => setRequirementValues((current) => ({ ...current, [requirement.key]: event.target.value }))}
-                                                                placeholder={requirement.name || requirement.placeholder}
-                                                            />
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <div className="rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
-                                                    {t("app.admin.dashboard.extensions.store.page.noRequirements")}
-                                                </div>
-                                            )}
-                                        </>
-                                    ) : null}
-                                </div>
-                            ) : null}
-                            <DialogFooter>
-                                <Button onClick={() => void installMcp()} disabled={!selectedCandidate || installingMcp}>
-                                    {installingMcp ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Server className="mr-2 h-4 w-4" />}
-                                    {selectedMcp.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
-                                </Button>
-                            </DialogFooter>
-                        </>
-                    ) : null}
-                </DialogContent>
-            </Dialog>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge variant="secondary">{t(provider === "international" ? "extensions.store.international" : "extensions.store.domestic")}</Badge><Button size="sm" variant="ghost" onClick={switchProvider}>{t(provider === "international" ? "extensions.store.toDomestic" : "extensions.store.toInternational")}</Button><span>{t("extensions.store.manualSource")}</span></div>
         </div>
-    );
+        {error && <p role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
+        {list.warnings?.map(warning => <p key={warning} className="text-sm text-muted-foreground">{warning}</p>)}
+        {loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />{t("extensions.store.loading")}</p>}
+        <div className="grid gap-2 sm:grid-cols-2" aria-busy={loading}>{list.items.map(item => {
+            const target = storeTarget(provider, kind, item), op = operations[target];
+            return <article key={target} className="flex min-h-24 items-center gap-3 rounded-[var(--v8-product-panel-radius,12px)] border border-border bg-card px-3 py-2"><button className="min-w-0 flex-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void openDetail(item)}><span className="block truncate text-sm font-medium">{item.name}</span><span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.description || item.source || item.id}</span><span className="mt-1 block truncate text-[11px] text-muted-foreground">{item.source || item.id}</span></button><Button size="sm" variant="outline" className="max-w-32 shrink-0" onClick={() => void openDetail(item)}><span className="truncate">{statusLabel(op) || t(item.installed ? "extensions.store.view" : kind === "skills" ? "extensions.store.install" : "extensions.store.setup")}</span></Button></article>;
+        })}</div>
+        {!loading && !list.items.length && !error && <p className="py-8 text-center text-sm text-muted-foreground">{t("extensions.store.empty")}</p>}
+        <div className="flex items-center justify-between text-xs text-muted-foreground"><span>{t("extensions.store.count", { count: list.items.length })} · {t(list.sourceCoverage === "catalog" ? "extensions.store.catalog" : "extensions.store.curated")}</span>{list.hasMore && <Button size="sm" variant="outline" disabled={loading} onClick={() => { setRefresh(0); setPage(value => value + 1); }}>{t("extensions.store.more")}</Button>}</div>
+        {Object.values(operations).length > 0 && <details className="rounded-lg border p-3 text-sm" open={hasRunning}><summary className="cursor-pointer">{t("extensions.store.operations")}</summary><div className="mt-2 max-h-48 space-y-2 overflow-auto">{Object.values(operations).map(op => <div key={op.operationId} className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate">{op.itemId}</span><span className="text-xs text-muted-foreground">{statusLabel(op)}</span>{op.canCancel && <Button size="sm" variant="ghost" onClick={() => cancel(op)}>{t("extensions.store.cancel")}</Button>}<Button size="sm" variant="ghost" onClick={() => void openDetail({ id: op.itemId, name: op.itemId, source: op.source, skillId: op.skillId || op.itemId, detailUrl: operationSourceUrl(op) }, op.provider, op.kind)}>{t("extensions.store.continue")}</Button></div>)}</div></details>}
+        <Dialog open={Boolean(selection)} onOpenChange={open => { if (!open) closeDetail(); }}><DialogContent className="grid max-h-[88dvh] w-[calc(100%-2rem)] max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0">
+            <DialogHeader className="border-b px-5 py-4 pr-12"><DialogTitle className="truncate">{selection?.item.name}</DialogTitle><DialogDescription className="truncate">{selection?.item.source || selection?.item.id}</DialogDescription></DialogHeader>
+            <div className="min-h-0 overflow-y-auto overscroll-contain p-5"><div className="mb-4 flex gap-2"><Button size="sm" variant={!docs ? "secondary" : "ghost"} onClick={() => setDocs(false)}>{t("extensions.store.setup")}</Button><Button size="sm" variant={docs ? "secondary" : "ghost"} onClick={() => setDocs(true)}>{t("extensions.store.docs")}</Button><Button size="sm" variant="ghost" asChild><a href={selection?.item.detailUrl} target="_blank" rel="noreferrer">{t("extensions.store.source")}</a></Button></div>
+                {detailLoading && <p role="status">{t("extensions.store.loading")}</p>}{detailError && <p role="alert" className="mb-3 text-sm text-destructive">{detailError}</p>}
+                {detail && docs && <div className="max-w-none break-words text-sm leading-relaxed [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-5 [&_h2]:font-semibold [&_p]:my-2 [&_pre]:overflow-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_a]:underline [&_ul]:list-disc [&_ul]:pl-5"><Markdown>{detail.markdown || detail.description || ""}</Markdown></div>}
+                {chosenOperation?.choices?.length ? <Label className="block space-y-2">{t("extensions.store.chooseSkill")}<select className="h-10 w-full rounded-md border bg-background px-3" value={selectedSkill} onChange={event => setSelectedSkill(event.target.value)}><option value="">{t("extensions.store.chooseSkill")}</option>{chosenOperation.choices.map(choice => <option key={choice.folder} value={choice.folder}>{choice.name}</option>)}</select></Label> : null}
+                {detail && !docs && <div className="space-y-4 text-sm">{selection?.kind === "skills" ? <><p>{t("extensions.store.skillContents")}</p><p className="text-xs text-muted-foreground">{t("extensions.store.skillReady")}</p><Label className="flex items-center gap-2"><input type="checkbox" checked={replace} onChange={event => setReplace(event.target.checked)} />{t("extensions.store.overwrite")}</Label></> : <>
+                    <Label htmlFor="store-candidate">{t("extensions.store.execution")}</Label><select id="store-candidate" className="h-10 w-full rounded-md border border-input bg-background px-3" value={candidateId} onChange={event => { setCandidateId(event.target.value); setValues({}); }} disabled={busy}>{detail.candidates?.map(choice => <option value={choice.id} key={choice.id}>{choice.label}</option>)}</select>
+                    {detail.isHosted && <div className="rounded-lg bg-muted/40 p-3"><p>{t("extensions.store.hostedStep")}</p><a className="mt-2 inline-block underline underline-offset-4" href={detail.setupUrl} target="_blank" rel="noreferrer" onClick={waitForSetup}>{t("extensions.store.goConfigure")}</a></div>}
+                    <p className="text-xs text-muted-foreground">{t(candidate?.transport === "stdio" ? "extensions.store.localExecution" : "extensions.store.cloudExecution")}</p>
+                    {candidate?.requirements?.map(field => <div key={field.key} className="space-y-1.5"><Label htmlFor={`store-${field.key}`}>{field.label || field.name}{field.required ? " *" : ""}</Label><Input id={`store-${field.key}`} type={field.secret || field.target === "url" ? "password" : "text"} autoComplete="off" value={values[field.key] || ""} onChange={event => setValues(old => ({ ...old, [field.key]: event.target.value }))} disabled={busy} /></div>)}
+                    {candidate?.transport === "stdio" && <><Label className="flex items-center gap-2"><input type="checkbox" checked={mirror} onChange={event => setMirror(event.target.checked)} />{t("extensions.store.mirror")}</Label><p className="text-xs text-muted-foreground">{t("extensions.store.mirrorLimit")}</p><details><summary className="cursor-pointer">{t("extensions.store.command")}</summary><pre className="mt-2 overflow-auto rounded bg-muted p-2 text-xs">{candidate.command} {candidate.args?.join(" ")}</pre></details></>}
+                    {(detail.configured || detail.configuredServers?.includes(candidate?.serverName || "")) && <Label className="flex items-center gap-2"><input type="checkbox" checked={replace} onChange={event => setReplace(event.target.checked)} />{t("extensions.store.replace")}</Label>}{!candidate && <p>{t("extensions.store.noCandidate")}</p>}
+                </>}{chosenOperation && <div role="status" className="rounded-lg border p-3"><p>{statusLabel(chosenOperation)}</p>{chosenOperation.message && <p className="mt-1 text-xs text-muted-foreground">{chosenOperation.message}</p>}</div>}{connection && <p role="status">{connection}</p>}</div>}
+            </div>
+            <DialogFooter className="flex-wrap border-t bg-background px-5 py-3">{chosenOperation && <span role="status" className="mr-auto self-center text-xs text-muted-foreground">{statusLabel(chosenOperation)}</span>}{chosenOperation?.canCancel && <Button variant="outline" onClick={() => cancel(chosenOperation)}>{t("extensions.store.cancel")}</Button>}
+                {selection?.kind === "mcp" && candidate && <Button variant="outline" onClick={async () => { const target = selection.target; try { const data = await post<{ connection: { status: string; lastError?: string } }>("mcp/check", { serverName: candidate.serverName }); if (detailOwner.current.isCurrent(target)) setConnection(data.connection.lastError || t(data.connection.status === "connected" ? "extensions.store.connected" : "extensions.store.connecting")); } catch (err) { if (detailOwner.current.isCurrent(target)) setDetailError((err as Error).message); } }}>{t("extensions.store.check")}</Button>}
+                <Button disabled={Boolean(busy || !detail || detailLoading || selection?.kind === "mcp" && !candidate)} onClick={() => void install()}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" />}{t(chosenOperation ? "extensions.store.continue" : selection?.kind === "mcp" ? "extensions.store.connect" : "extensions.store.install")}</Button>
+            </DialogFooter>
+        </DialogContent></Dialog>
+    </AdminPageShell>;
 }

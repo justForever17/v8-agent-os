@@ -206,13 +206,18 @@ async def get_store_operations():
 
 @router.post("/extensions/store/operations/{kind}")
 async def create_store_operation(kind: str, payload: dict = Body(...)):
-    from core.extensions_store_operations import start_operation
+    from core.extensions_store_operations import start_operation, InstallBusy
     if kind not in {"skills", "mcp"}:
         raise HTTPException(status_code=400, detail="无效扩展类型。")
     if payload.get("provider", "international") not in {"international", "modelscope"}:
         raise HTTPException(status_code=400, detail="无效来源。")
-    return await asyncio.to_thread(start_operation, kind, payload,
-                                  install_store_skill if kind == "skills" else install_store_mcp)
+    try:
+        return await asyncio.to_thread(start_operation, kind, payload,
+                                      install_store_skill if kind == "skills" else install_store_mcp)
+    except InstallBusy as exc:
+        raise HTTPException(status_code=429, detail={"code": "install_queue_full", "message": str(exc)}) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_install", "message": str(exc)}) from None
 
 
 @router.post("/extensions/store/operations/{operation_id}/cancel")
@@ -231,7 +236,7 @@ async def check_store_mcp(payload: dict = Body(...)):
     snapshot = await asyncio.to_thread(mcp_runtime_status_snapshot)
     server_name = str(payload.get("serverName") or "")
     status = (snapshot.get("servers") or {}).get(server_name) or {"status": "pending"}
-    return {"serverName": server_name, "connection": status, "businessReachability": "not_checked", "authorized": False}
+    return {"serverName": server_name, "connection": status, "businessReachability": "not_checked", "authorization": "per_task"}
 
 
 @router.delete("/extensions/skills/{skill_id}")

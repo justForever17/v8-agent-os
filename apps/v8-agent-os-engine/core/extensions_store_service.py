@@ -574,6 +574,12 @@ def _page(items: list[dict[str, Any]], page: int, limit: int, provider: str, kin
             "nextCursor": str(page + 1) if more else None, "page": page, "sourceCoverage": "curated"}
 
 
+def _skill_page(items: list[dict[str, Any]], page: int, limit: int) -> dict[str, Any]:
+    result = _page(sorted(items, key=_skill_sort_key), page, limit, "international", "skills")
+    result["items"] = _decorate_skill_items(result["items"], limit=limit)
+    return result
+
+
 def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False,
                       provider: str = "international", page: int = 1) -> dict[str, Any]:
     _validate_provider(provider)
@@ -611,7 +617,7 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
             "sourceUrl": _SKILLS_HOME_URL,
             "query": normalized_query,
             "freshness": freshness,
-            **_page(_decorate_skill_items(items, limit=len(items)), page, safe_limit, "international", "skills"),
+            **_skill_page(items, page, safe_limit),
             "warnings": warnings,
         }
 
@@ -644,7 +650,7 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
         "sourceUrl": _SKILLS_HOME_URL,
         "query": normalized_query,
         "freshness": freshness,
-        **_page(_decorate_skill_items(items, limit=len(items)), page, safe_limit, "international", "skills"),
+        **_skill_page(items, page, safe_limit),
         "warnings": warnings,
     }
 
@@ -998,6 +1004,8 @@ def _candidate_from_config(
     input_defs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     server_config = _sanitize_server_config(config)
+    if Path(str(server_config.get("command") or "")).stem.lower() in {"bash", "sh", "powershell", "pwsh", "cmd", "curl", "wget"}:
+        return None
     if not server_config.get("command") and not server_config.get("url"):
         return None
     candidate_hash = _stable_hash({"serverName": server_name, "config": server_config})[:12]
@@ -1397,6 +1405,7 @@ def _compiled_mcp_server_config(candidate: dict[str, Any], values: dict[str, Any
     replacements: dict[str, str] = {}
     direct_env: dict[str, str] = {}
     direct_headers: dict[str, str] = {}
+    secret_env_names: list[str] = []
     for requirement in requirements:
         if not isinstance(requirement, dict):
             continue
@@ -1416,6 +1425,8 @@ def _compiled_mcp_server_config(candidate: dict[str, Any], values: dict[str, Any
         if requirement.get("secret") and target == "arg" and value:
             raise ExtensionStoreError("secret_in_argv", "此来源要求命令行秘密参数，请改用服务支持的环境变量或凭据配置。")
         name = str(requirement.get("name") or "").strip()
+        if requirement.get("secret") and target == "env":
+            secret_env_names.append(name)
         template = str(requirement.get("valueTemplate") or "")
         if target == "env" and name and not _placeholder_names(template):
             direct_env[name] = value
@@ -1431,6 +1442,8 @@ def _compiled_mcp_server_config(candidate: dict[str, Any], values: dict[str, Any
         if isinstance(config["headers"], dict):
             config["headers"].update(direct_headers)
     config = _sanitize_server_config(config)
+    if secret_env_names:
+        config["x-v8-secret-env-inputs"] = secret_env_names
     return str(candidate.get("serverName") or "mcp-server"), config
 
 
@@ -1453,6 +1466,12 @@ def install_store_mcp(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         candidate = _candidate_by_id(mcp_id, candidate_id)
     server_name, server_config = _compiled_mcp_server_config(candidate, values)
+    servers = (storage.get_mcp_config() or {}).get("mcpServers", {})
+    expected = payload.get("configRevision") or mcp_config_revision(None)
+    if server_name in servers and not payload.get("replace"):
+        raise ExtensionStoreError("config_exists", "已存在同名 MCP，请明确选择替换并核对当前配置。", status_code=409)
+    if mcp_config_revision(servers.get(server_name)) != expected:
+        raise ExtensionStoreError("config_conflict", "该 MCP 配置已变化，请检查当前配置后重试。", status_code=409)
     server_config["x-v8-store"] = {"provider": provider, "id": mcp_id, "candidateId": candidate_id}
     if payload.get("packageSource") == "domestic":
         server_config["x-v8-package-source"] = "domestic"
@@ -1466,11 +1485,6 @@ def install_store_mcp(payload: dict[str, Any]) -> dict[str, Any]:
             message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else connection_failure(exc)
             raise ExtensionStoreError("dependency_preparation_failed", message, status_code=400) from None
     server_config, created_refs = secure_mcp_config(server_config)
-    servers = (storage.get_mcp_config() or {}).get("mcpServers", {})
-    expected = payload.get("configRevision") or mcp_config_revision(None)
-    if server_name in servers and not payload.get("replace"):
-        discard_credentials(created_refs)
-        raise ExtensionStoreError("config_exists", "已存在同名 MCP，请明确选择替换并核对当前配置。", status_code=409)
     checkpoint("saving_config", can_cancel=False)
     try:
         result = install_mcp_server_config(
@@ -1490,6 +1504,6 @@ def install_store_mcp(payload: dict[str, Any]) -> dict[str, Any]:
         "id": mcp_id,
         "candidateId": candidate_id,
         "serverName": server_name,
-        "detailUrl": f"{_GITHUB_MCP_URL}/{quote(mcp_id, safe='/._-')}",
+        "detailUrl": f"https://modelscope.cn/mcp/servers/{quote(mcp_id, safe='/@._-')}" if provider == "modelscope" else f"{_GITHUB_MCP_URL}/{quote(mcp_id, safe='/._-')}",
     }
     return result

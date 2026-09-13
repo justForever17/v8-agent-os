@@ -15,8 +15,11 @@ _SECRET = re.compile(r"token|secret|password|api.?key|authorization|credential",
 def secure_mcp_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     result = deepcopy(config)
     created: list[str] = []
+    secret_env_names = result.pop("x-v8-secret-env-inputs", [])
     try:
         endpoint = result.pop("url", "")
+        if endpoint == "********" and result.get("endpointRef"):
+            endpoint = ""
         if endpoint:
             parsed = urlsplit(endpoint)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -32,7 +35,7 @@ def secure_mcp_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]
                 if bound and (not value or value == "********"):
                     del result[field][name]
                     continue
-                if value and (field == "headers" or _SECRET.search(name)):
+                if value and (field == "headers" or _SECRET.search(name) or name in secret_env_names):
                     reference = credential_ref_store.put(str(value))
                     created.append(reference)
                     for key in bound:

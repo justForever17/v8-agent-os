@@ -62,6 +62,7 @@ class SkillManifest:
     name: str
     description: str
     source_dir: Path
+    relative_path: str = ""
 
 
 def get_skill_dependency_policy() -> dict[str, Any]:
@@ -80,7 +81,8 @@ def _parse_yaml_frontmatter(content: str) -> dict[str, Any]:
     if len(parts) < 3:
         return {}
     try:
-        return yaml.safe_load(parts[1]) or {}
+        parsed = yaml.safe_load(parts[1]) or {}
+        return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
 
@@ -340,12 +342,8 @@ def _discover_skill_manifests(root: Path) -> list[SkillManifest]:
             candidates.append(skill_md)
 
     manifests: list[SkillManifest] = []
-    seen_folders: set[str] = set()
     for skill_md in candidates:
         folder = skill_md.parent.name
-        if folder in seen_folders:
-            continue
-        seen_folders.add(folder)
         content = skill_md.read_text(encoding="utf-8", errors="ignore")
         frontmatter = _parse_yaml_frontmatter(content)
         manifests.append(
@@ -354,6 +352,7 @@ def _discover_skill_manifests(root: Path) -> list[SkillManifest]:
                 name=str(frontmatter.get("name") or folder),
                 description=str(frontmatter.get("description") or ""),
                 source_dir=skill_md.parent,
+                relative_path=skill_md.parent.relative_to(root).as_posix(),
             )
         )
     return manifests
@@ -367,7 +366,7 @@ def _select_manifests(manifests: list[SkillManifest], *, skill_name: str | None)
     selected = [
         manifest
         for manifest in manifests
-        if manifest.folder.lower() == normalized or manifest.name.strip().lower() == normalized
+        if manifest.relative_path.lower() == normalized or manifest.folder.lower() == normalized or manifest.name.strip().lower() == normalized
     ]
     if not selected:
         raise ValueError(f"未在来源仓库中找到名为 `{skill_name}` 的 Skill。")
@@ -391,8 +390,15 @@ def _install_manifests(
         from core.extensions_store_operations import checkpoint
         checkpoint("staging")
         content = (manifest.source_dir / "SKILL.md").read_text(encoding="utf-8")
-        if not content.startswith("---") or len(content.split("---", 2)) != 3 or not isinstance(_parse_yaml_frontmatter(content), dict):
+        parts = content.split("---", 2)
+        if not content.startswith("---") or len(parts) != 3:
             raise SkillInstallValidationError("invalid_manifest", "SKILL.md 缺少有效的 YAML frontmatter。")
+        try:
+            metadata = yaml.safe_load(parts[1]) or {}
+        except yaml.YAMLError:
+            raise SkillInstallValidationError("invalid_manifest", "SKILL.md 的 YAML frontmatter 无法解析。") from None
+        if not isinstance(metadata, dict):
+            raise SkillInstallValidationError("invalid_manifest", "SKILL.md 的 YAML frontmatter 必须为对象。")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", manifest.folder) or manifest.folder in {".", ".."}:
             raise SkillInstallValidationError("invalid_target", "Skill 安装目录名无效。")
         target_dir = target_root / manifest.folder
@@ -581,7 +587,7 @@ def install_skills_from_zip(file_name: str, content: bytes, *, identity: dict[st
         if identity:
             if len(manifests) != 1:
                 raise SkillInstallValidationError("select_skill", "该合集包含多个 Skill，请选择后安装。",
-                    {"skills": [{"name": m.name, "folder": m.folder} for m in manifests]})
+                    {"skills": [{"name": m.name, "folder": m.relative_path or m.folder} for m in manifests]})
             provider, item_id = identity["provider"], identity["itemId"]
             old = get_skill_receipt(provider, item_id)
             slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", item_id).strip("-.")[:70]

@@ -23,10 +23,10 @@ function setup({ role = "ADMIN", authenticated = true, links = [], mutateStatus 
   };
   function load(relative) {
     const source = fs.readFileSync(path.join(root, relative), "utf8");
-    const module = { exports: {} };
+    const compiledModule = { exports: {} };
     const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-    new Function("require", "module", "exports", code)((name) => mocks[name] || require(name), module, module.exports);
-    return module.exports;
+    new Function("require", "module", "exports", code)((name) => mocks[name] || require(name), compiledModule, compiledModule.exports);
+    return compiledModule.exports;
   }
   mocks["@/lib/server/client-supervisor-peers"] = load("src/lib/server/client-supervisor-peers.ts");
   return { calls, load };

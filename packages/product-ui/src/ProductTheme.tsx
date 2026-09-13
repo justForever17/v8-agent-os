@@ -146,8 +146,20 @@ function ProductThemeSync({
     };
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibility);
+    // Electron resident views can switch without DOM focus/visibility events.
+    // Read the existing canonical owner when the host activates this surface.
+    const host = window as Window & {
+      v8osShell?: { onSurfaceVisibilityChange?: (callback: (state: { visible: boolean }) => void) => (() => void) };
+    };
+    let shellVisible: boolean | undefined;
+    const unsubscribeShell = host.v8osShell?.onSurfaceVisibilityChange?.((state) => {
+      const activated = state.visible && shellVisible !== true;
+      shellVisible = state.visible;
+      if (activated) void refreshThemeRef.current();
+    });
     return () => {
       requestSequence.current += 1;
+      unsubscribeShell?.();
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibility);
     };

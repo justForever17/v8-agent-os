@@ -15,6 +15,12 @@ export function useComposerDraft(key: string) {
     }, [key]);
     return record;
 }
+export function useDraftHydrated(key: string) {
+    const subscribe = useCallback((listener: () => void) => subscribeDraft(key, listener), [key]);
+    const snapshot = useCallback(() => readDraft(key).hydrated, [key]);
+    // History needs the read boundary, not every composer text update.
+    return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
 export function useDraftField<T>(key: string, field: string, initial: T): [T, (value: T | ((previous: T) => T)) => void] {
     const initialRef = useRef(initial);
     const subscribe = useCallback((listener: () => void) => subscribeDraft(key, listener), [key]);

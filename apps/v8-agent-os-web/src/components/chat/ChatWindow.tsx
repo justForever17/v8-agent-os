@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 // import { LoadingBubble } from "./LoadingBubble";
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { readDraft, setDraftField } from "@/lib/composer-drafts";
-import { useDraftField } from "@/hooks/use-composer-draft";
+import { useDraftHydrated, useDraftField } from "@/hooks/use-composer-draft";
 import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
 import { ChatTurnIndexEntry, TurnNavigator } from "./TurnNavigator";
@@ -92,12 +92,13 @@ export function ChatWindow({
     });
 
     // Scroll state
+    const draftHydrated = useDraftHydrated(viewKey);
     const [savedScroll] = useDraftField<{ turnId: string; offset: number; bottom: boolean; top: number } | undefined>(viewKey, "scroll", undefined);
     const [isAtBottom, setIsAtBottom] = useState(savedScroll?.bottom ?? true);
     const restoredRef = useRef(false);
     useLayoutEffect(() => {
         const container = scrollContainerRef.current;
-        if (restoredRef.current || !container || !messages.length || !viewKey) return;
+        if (restoredRef.current || !container || !messages.length || !viewKey || !draftHydrated) return;
         const saved = readDraft(viewKey).values.scroll as typeof savedScroll;
         if (saved) {
             const target = Array.from(container.querySelectorAll<HTMLElement>("[data-turn-id]")).find((element) => element.dataset.turnId === saved.turnId);
@@ -105,7 +106,7 @@ export function ChatWindow({
             setIsAtBottom(saved.bottom); setShowScrollButton(!saved.bottom);
         }
         if (!saved || saved.bottom || Array.from(container.querySelectorAll<HTMLElement>("[data-turn-id]")).some((element) => element.dataset.turnId === saved.turnId)) restoredRef.current = true;
-    }, [messages.length, viewKey, savedScroll]);
+    }, [messages.length, viewKey, savedScroll, draftHydrated]);
     const [showScrollButton, setShowScrollButton] = useState(false);
     const [activeVisibleTurnId, setActiveVisibleTurnId] = useState("");
 
@@ -133,6 +134,7 @@ export function ChatWindow({
     const lastMessageId = messages[messages.length - 1]?.id || "";
 
     useEffect(() => {
+        if (viewKey && !draftHydrated) return;
         const previous = scrollStateRef.current;
         const nextState = {
             messageCount: messages.length,
@@ -172,7 +174,7 @@ export function ChatWindow({
         }
 
         commit();
-    }, [isAtBottom, isLoading, lastMessageId, messages.length, scrollToBottom, savedScroll?.bottom]);
+    }, [isAtBottom, isLoading, lastMessageId, messages.length, scrollToBottom, savedScroll?.bottom, draftHydrated, viewKey]);
 
     useEffect(() => {
         if (!focusedTurnId || typeof window === "undefined") {
@@ -205,7 +207,7 @@ export function ChatWindow({
     }, [isLoadingOlderTurns, messages.length]);
 
     useEffect(() => {
-        if (!isLoading || !isAtBottom || typeof window === "undefined" || typeof ResizeObserver === "undefined") {
+        if ((viewKey && !draftHydrated) || !isLoading || !isAtBottom || typeof window === "undefined" || typeof ResizeObserver === "undefined") {
             return;
         }
 
@@ -236,7 +238,7 @@ export function ChatWindow({
                 window.cancelAnimationFrame(frameId);
             }
         };
-    }, [isAtBottom, isLoading, scrollToBottom]);
+    }, [isAtBottom, isLoading, scrollToBottom, draftHydrated, viewKey]);
 
     const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
         const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
@@ -245,7 +247,7 @@ export function ChatWindow({
 
         setIsAtBottom(isBottom);
         setShowScrollButton(!isBottom);
-        if (viewKey) {
+        if (viewKey && readDraft(viewKey).hydrated && restoredRef.current) {
             const rect = e.currentTarget.getBoundingClientRect();
             const anchor = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[data-turn-id]")).find((element) => element.getBoundingClientRect().bottom >= rect.top);
             setDraftField(viewKey, "scroll", { turnId: anchor?.dataset.turnId || "", offset: anchor ? anchor.getBoundingClientRect().top - rect.top : 0, bottom: isBottom, top: scrollTop }, null);

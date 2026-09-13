@@ -9,15 +9,19 @@ const listeners = new Map<string, Set<() => void>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const pending = new Map<string, Promise<void>>();
 const loads = new Map<string, Promise<void>>();
+// Replay only edits made before the first read, against the durable values.
+// Functional edits (for example appending an attachment) need that same base.
+const earlyEdits = new Map<string, Map<string, (previous: unknown) => unknown>>();
+const generations = new Map<string, number>();
 const RETENTION_MS = 30 * 86400_000;
 let database: Promise<IDBDatabase> | undefined;
 function db() {
-    return database ??= new Promise((resolve, reject) => {
+    return database ??= new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("v8-composer-drafts-v1", 1);
         request.onupgradeneeded = () => request.result.createObjectStore("drafts", { keyPath: "key" });
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => { database = undefined; reject(request.error); };
-    });
+    }).catch((error) => { database = undefined; throw error; });
 }
 export function draftOwnerKey(instance: string, principal: string, workspace: string, session: string) {
     return instance && principal && workspace && session ? JSON.stringify([instance, principal, workspace, session]) : "";
@@ -40,7 +44,16 @@ export function setDraftField<T>(key: string, field: string, value: T | ((previo
     const record = readDraft(key);
     const previous = (record.values[field] ?? initial) as T;
     const next = typeof value === "function" ? (value as (previous: T) => T)(previous) : value;
-    if (Object.is(previous, next)) return;
+    if (Object.is(previous, next) && record.hydrated) return;
+    if (!record.hydrated) {
+        const edits = earlyEdits.get(key) ?? new Map();
+        const previousEdit = edits.get(field);
+        const edit = (previous: unknown) => typeof value === "function" ? (value as (previous: T) => T)((previous ?? initial) as T) : value;
+        // Repeated text/selection values replace earlier assignments. Compose
+        // functional updates so they retain unseen durable list entries.
+        edits.set(field, typeof value === "function" && previousEdit ? (previous: unknown) => edit(previousEdit(previous)) : edit);
+        earlyEdits.set(key, edits);
+    }
     publish({ ...record, values: { ...record.values, [field]: next }, revision: record.revision + 1, contentRevision: (record.contentRevision || 0) + (["selection", "scroll", "uploading"].includes(field) ? 0 : 1), updatedAt: Date.now(), saved: false });
     clearTimeout(timers.get(key));
     timers.set(key, setTimeout(() => { timers.delete(key); void flushDraft(key); }, 300));
@@ -55,20 +68,26 @@ export function persistentDraft(record: DraftRecord) {
 }
 export function flushDraft(key: string): Promise<void> {
     clearTimeout(timers.get(key)); timers.delete(key);
+    const generation = generations.get(key);
     const work = (pending.get(key) ?? Promise.resolve()).then(async () => {
+        if (!key || generations.get(key) !== generation) return;
+        await hydrateDraft(key);
         const record = readDraft(key);
-        if (!key || record.saved) return;
+        // A failed read leaves unknown durable fields. Retain editable memory
+        // and retry the read; never put a partial record over unknown content.
+        if (!record.hydrated || record.saved || generations.get(key) !== generation) return;
         try {
             const connection = await db();
+            if (generations.get(key) !== generation) return;
             await new Promise<void>((resolve, reject) => {
                 const tx = connection.transaction("drafts", "readwrite");
                 tx.objectStore("drafts").put(persistentDraft(record));
                 tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
             });
             const current = readDraft(key);
-            if (current.revision === record.revision) publish({ ...current, saved: true, error: false });
+            if (generations.get(key) === generation && current.revision === record.revision) publish({ ...current, saved: true, error: false });
         } catch {
-            publish({ ...readDraft(key), error: true });
+            if (generations.get(key) === generation) publish({ ...readDraft(key), error: true });
         }
     });
     pending.set(key, work);
@@ -78,7 +97,7 @@ export function flushDraft(key: string): Promise<void> {
 export function hydrateDraft(key: string): Promise<void> {
     if (!key || readDraft(key).hydrated) return Promise.resolve();
     if (loads.has(key)) return loads.get(key)!;
-    const revision = readDraft(key).revision;
+    const generation = generations.get(key);
     const work = (async () => {
         try {
             const connection = await db();
@@ -86,14 +105,24 @@ export function hydrateDraft(key: string): Promise<void> {
                 const request = connection.transaction("drafts").objectStore("drafts").get(key);
                 request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
             });
+            if (generations.get(key) !== generation) return;
             const current = readDraft(key);
-            if (saved && saved.key === key && Date.now() - saved.updatedAt < RETENTION_MS && current.revision === revision) {
-                publish({ ...saved, hydrated: true, error: false, saved: true });
-            } else publish({ ...current, hydrated: true });
-        } catch { publish({ ...readDraft(key), hydrated: true, error: true }); }
+            if (saved && saved.key === key && Date.now() - saved.updatedAt < RETENTION_MS) {
+                const values = { ...saved.values };
+                for (const [field, edit] of earlyEdits.get(key) || []) values[field] = edit(values[field]);
+                publish({ ...saved, values, revision: saved.revision + current.revision,
+                    contentRevision: (saved.contentRevision || 0) + (current.contentRevision || 0),
+                    updatedAt: current.updatedAt || saved.updatedAt,
+                    submission: current.submission ? { ...current.submission, revision: (saved.contentRevision || 0) + current.submission.revision } : current.contentRevision ? undefined : saved.submission,
+                    hydrated: true, error: false, saved: current.saved });
+            } else publish({ ...current, hydrated: true, error: false });
+            earlyEdits.delete(key);
+        } catch {
+            if (generations.get(key) === generation) publish({ ...readDraft(key), error: true });
+        }
     })();
     loads.set(key, work);
-    void work.finally(() => loads.delete(key));
+    void work.finally(() => { if (loads.get(key) === work) loads.delete(key); });
     return work;
 }
 export function beginDraftSubmission(key: string) {
@@ -112,15 +141,22 @@ export function acknowledgeDraft(key: string, revision: number) {
 }
 export async function removeDrafts(predicate: (key: string) => boolean) {
     for (const key of records.keys()) if (predicate(key)) {
+        generations.set(key, (generations.get(key) || 0) + 1);
         clearTimeout(timers.get(key)); timers.delete(key);
+        earlyEdits.delete(key);
+        // Clear the visible snapshot immediately. An older read/write cannot
+        // republish it after logout while the deletion transaction is pending.
+        publish({ key, values: {}, revision: 0, updatedAt: 0, saved: true, error: false, hydrated: true });
         await pending.get(key);
-        records.delete(key); listeners.get(key)?.forEach((listener) => listener());
     }
     try {
         const connection = await db();
-        const tx = connection.transaction("drafts", "readwrite");
-        const cursor = tx.objectStore("drafts").openCursor();
-        cursor.onsuccess = () => { const entry = cursor.result; if (!entry) return; if (predicate(String(entry.key)) || Date.now() - entry.value.updatedAt >= RETENTION_MS) entry.delete(); entry.continue(); };
+        await new Promise<void>((resolve, reject) => {
+            const tx = connection.transaction("drafts", "readwrite");
+            const cursor = tx.objectStore("drafts").openCursor();
+            cursor.onsuccess = () => { const entry = cursor.result; if (!entry) return; if (predicate(String(entry.key)) || Date.now() - entry.value.updatedAt >= RETENTION_MS) entry.delete(); entry.continue(); };
+            tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+        });
     } catch { /* Memory was already cleared. Persistence failure stays local. */ }
 }
 export function flushAllDrafts() { return Promise.all([...records.keys()].map(flushDraft)); }

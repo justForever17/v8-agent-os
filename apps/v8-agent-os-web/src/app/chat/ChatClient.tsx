@@ -1073,10 +1073,28 @@ export default function ChatClient() {
     const draftKey = draftOwnerKey(instanceId, String(session?.user?.id || ""), scopeOwner === activeConversationId ? String(scopeBinding?.workspaceId || scopeBinding?.workspacePath || "") : "", activeConversationId || "");
     const previousPrincipalRef = useRef("");
     useEffect(() => {
-        const principal = status === "authenticated" ? String(session?.user?.id || "") : "";
+        // Session refresh/initialization is not a confirmed logout.
+        if (status === "loading" || (status === "authenticated" && !session?.user?.id)) return;
         const previous = previousPrincipalRef.current;
-        if (previous && previous !== principal) void removeDrafts((key) => { try { return JSON.parse(key)[1] === previous; } catch { return false; } });
-        previousPrincipalRef.current = principal;
+        if (status === "authenticated") {
+            const principal = String(session?.user?.id || "");
+            if (previous && previous !== principal) void removeDrafts((key) => { try { return JSON.parse(key)[1] === previous; } catch { return false; } });
+            previousPrincipalRef.current = principal;
+            return;
+        }
+        if (!previous || status !== "unauthenticated") return;
+        // NextAuth also returns null after a failed session fetch. Only a
+        // successful, empty session response confirms this destructive cleanup.
+        const controller = new AbortController();
+        void fetch("/api/auth/session", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+            if (!response.ok) return;
+            const confirmed = await response.json();
+            if (controller.signal.aborted || previousPrincipalRef.current !== previous) return;
+            if (confirmed !== null && (typeof confirmed !== "object" || Array.isArray(confirmed) || Object.keys(confirmed).length > 0)) return;
+            previousPrincipalRef.current = "";
+            await removeDrafts((key) => { try { return JSON.parse(key)[1] === previous; } catch { return false; } });
+        }).catch(() => undefined);
+        return () => controller.abort();
     }, [status, session?.user?.id]);
     const [, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);

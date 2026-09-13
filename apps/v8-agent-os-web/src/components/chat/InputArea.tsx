@@ -1461,7 +1461,7 @@ export function InputArea({
             )}
             style={{ backdropFilter: 'blur(16px) saturate(120%)' }}
         >
-            {draft.error ? <div role="alert" className="px-3 pt-2 text-xs text-destructive">草稿保存失败，内容仍在此页，请复制备份。<button type="button" className="ml-2 underline" onClick={() => void flushDraft(draftKey)}>重试保存</button></div> : null}
+            {draft.error ? <div role="alert" className="px-3 pt-2 text-xs text-destructive">{draft.hydrated ? "草稿保存失败，内容仍在此页，请复制备份。" : "草稿读取失败，已保存内容尚未恢复。当前输入会保留，重试后合并。"}<button type="button" className="ml-2 underline" onClick={() => void flushDraft(draftKey)}>{draft.hydrated ? "重试保存" : "重试恢复"}</button></div> : null}
             {files.some((file, index) => !(file instanceof Blob) && !uploadedSources[index]?.id && !uploadedSources[index]?.sourceId) ? <div role="status" className="px-3 pt-2 text-xs text-amber-600">未完成上传的附件需要移除并重新选择。</div> : null}
             {/* Unified Input Box Top Area: File Previews (if any) */}
             {files.length > 0 && (
@@ -1570,12 +1570,12 @@ export function InputArea({
                             data-v8os-chat-composer="true"
                             ref={textareaRef}
                             value={input}
-                            disabled={!draftKey || !draft.hydrated}
+                            disabled={!draftKey || (!draft.hydrated && !draft.error)}
                             onChange={handleComposerInputChange}
-                            onSelect={(event) => setSelectionRange({
+                            onSelect={(event) => { if (draft.hydrated || draft.error) setSelectionRange({
                                 start: event.currentTarget.selectionStart,
                                 end: event.currentTarget.selectionEnd,
-                            })}
+                            }); }}
                             onScroll={(event) => {
                                 if (inputMirrorRef.current) inputMirrorRef.current.scrollTop = event.currentTarget.scrollTop;
                             }}

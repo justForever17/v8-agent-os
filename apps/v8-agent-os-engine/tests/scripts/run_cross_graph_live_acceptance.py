@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import time
@@ -48,10 +49,13 @@ def main(argv=None):
     parser.add_argument("--web-url", required=True)
     parser.add_argument("--state-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--workspace-name", default="", help="Optional unique synthetic name for scoped provider capture")
     parser.add_argument("--max-wait", type=float, default=420)
     args = parser.parse_args(argv)
     if not args.live or not args.allow_side_effects:
         parser.error("--live and --allow-side-effects are required before imports or network calls")
+    if args.workspace_name and not re.fullmatch(r"cross-graph-live-[A-Za-z0-9_-]+", args.workspace_name):
+        parser.error("workspace-name must be a single synthetic cross-graph-live name")
     state = args.state_root.resolve()
     configured_state = Path(os.environ.get("V8_AGENT_OS_HOME", "")).resolve()
     if state != configured_state or state == (Path.home() / ".v8-agent-os").resolve():
@@ -66,7 +70,11 @@ def main(argv=None):
     from core.database import db
     from tests.scripts.live_web_activity_audit import WebActivityAuditObserver
 
-    workspace = Path(tempfile.mkdtemp(prefix="cross-graph-live-", dir=state))
+    if args.workspace_name:
+        workspace = state / args.workspace_name
+        workspace.mkdir()  # Never reuse another run's files or overwrite its proof.
+    else:
+        workspace = Path(tempfile.mkdtemp(prefix="cross-graph-live-", dir=state))
     trusted, _ = audit._ensure_explicit_live_workspace_trusted(workspace)
     if not trusted:
         raise RuntimeError("isolated_workspace_trust_unverified")

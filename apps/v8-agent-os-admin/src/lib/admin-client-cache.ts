@@ -106,14 +106,11 @@ const ROUTE_DATA_PREFETCH: Record<string, RoutePrefetchTarget[]> = {
   "/admin/extensions": [
     "/api/extensions/health",
     "/api/config-registry/extensions",
-    "/api/models",
     "/api/skills/safety/reviews?limit=100",
     ["/api/extensions/catalog", 15_000],
   ],
-  "/admin/extensions/store": [
-    "/api/extensions/store/skills?limit=30",
-    "/api/extensions/store/mcp?limit=30",
-  ],
+  // The store resolves the user's selected source and tab before fetching.
+  "/admin/extensions/store": [],
   "/admin/research-runtime": [
     "/api/research-runtime?view=source-providers",
     "/api/research-runtime?view=ledger&scope=global&limit=30",

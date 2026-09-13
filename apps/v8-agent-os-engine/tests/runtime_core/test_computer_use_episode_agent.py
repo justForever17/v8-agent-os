@@ -957,13 +957,15 @@ def test_computer_use_storage_replace_retries_transient_windows_lock(
     def _replace(current: Path, destination: Path) -> None:
         attempts.append(len(attempts) + 1)
         if len(attempts) < 3:
-            raise PermissionError("transient Windows file lock")
+            error = PermissionError("transient Windows file lock")
+            error.winerror = 32
+            raise error
         real_replace(current, destination)
 
     monkeypatch.setattr("core.storage.os.replace", _replace)
     monkeypatch.setattr("core.storage.time.sleep", lambda _seconds: None)
 
-    StorageManager._replace_computer_use_file(source, target)
+    StorageManager._replace_json_file(source, target)
 
     assert attempts == [1, 2, 3]
     assert target.read_text(encoding="utf-8") == "payload"

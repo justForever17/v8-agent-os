@@ -1475,7 +1475,7 @@ class StorageManager:
             f.flush()
             os.fsync(f.fileno())
         try:
-            self._replace_computer_use_file(temp_path, filepath)
+            self._replace_json_file(temp_path, filepath)
         finally:
             if temp_path.exists():
                 try:
@@ -1489,7 +1489,7 @@ class StorageManager:
                 backup_file.write(serialized)
                 backup_file.flush()
                 os.fsync(backup_file.fileno())
-            self._replace_computer_use_file(backup_temp_path, backup_path)
+            self._replace_json_file(backup_temp_path, backup_path)
         finally:
             if backup_temp_path.exists():
                 try:
@@ -1498,13 +1498,20 @@ class StorageManager:
                     pass
 
     @staticmethod
-    def _replace_computer_use_file(source: Path, target: Path) -> None:
+    def _replace_json_file(source: Path, target: Path) -> None:
+        """Publish atomically after a short Windows reader releases its handle.
+
+        A handle without FILE_SHARE_DELETE can produce WinError 5 on rename,
+        even when the target is writable. Keep the previous file in place and
+        retry this same publication for at most 1.24 seconds; persistent access
+        denial still propagates. Never unlink or truncate the live document.
+        """
         for attempt in range(6):
             try:
                 os.replace(source, target)
                 return
-            except PermissionError:
-                if attempt >= 5:
+            except PermissionError as error:
+                if getattr(error, "winerror", None) not in {5, 32, 33} or attempt >= 5:
                     raise
                 time.sleep(0.04 * (2 ** attempt))
 
@@ -1985,7 +1992,7 @@ class StorageManager:
                 f.flush()
                 os.fsync(f.fileno())
             try:
-                os.replace(temp_path, filepath)
+                self._replace_json_file(temp_path, filepath)
             finally:
                 if temp_path.exists():
                     try:
@@ -2024,7 +2031,7 @@ class StorageManager:
             f.flush()
             os.fsync(f.fileno())
         try:
-            os.replace(temp_path, filepath)
+            self._replace_json_file(temp_path, filepath)
         finally:
             if temp_path.exists():
                 try:
@@ -2038,7 +2045,7 @@ class StorageManager:
                 backup_file.write(serialized)
                 backup_file.flush()
                 os.fsync(backup_file.fileno())
-            os.replace(backup_temp_path, backup_path)
+            self._replace_json_file(backup_temp_path, backup_path)
         finally:
             if backup_temp_path.exists():
                 try:
@@ -2091,7 +2098,7 @@ class StorageManager:
                     backup_file.write(previous)
                     backup_file.flush()
                     os.fsync(backup_file.fileno())
-                os.replace(temp_path, target)
+                self._replace_json_file(temp_path, target)
             finally:
                 if temp_path.exists():
                     try:

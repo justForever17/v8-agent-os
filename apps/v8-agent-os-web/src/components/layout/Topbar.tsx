@@ -9,12 +9,12 @@ import {
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
-import { BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
+import { BackgroundPlaybackControls, BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ShellWindowControls } from "./ShellWindowControls";
 import { RpaTopbarOverlay } from "./RpaTopbarOverlay";
 
-const ADMIN_SURFACE_URL = "http://localhost:9528/admin";
+const ADMIN_SURFACE_URL = "/api/connection?open=admin";
 
 const subscribeToShellSurface = () => () => {};
 const readShellSurface = () => Boolean(window.v8osShell?.isShell);

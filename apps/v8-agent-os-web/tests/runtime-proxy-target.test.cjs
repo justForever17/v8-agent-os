@@ -8,5 +8,8 @@ test('one built runtime resolver follows two isolated Admin and Engine targets w
  assert.equal(await (await fetch(await exports.resolveEngineRootUrl())).text(),'A');assert.equal(await exports.resolveAdminApiBaseUrl(),a+'/api');
  bridge={adminBaseUrl:b,engineBaseUrl:b+'/v1'};
  assert.equal(await (await fetch(await exports.resolveEngineRootUrl())).text(),'B');assert.equal(await exports.resolveAdminApiBaseUrl(),b+'/api');
+ assert.equal(exports.resolveLocalAdminRootUrl(),b);
+ const login={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.resolve(__dirname,'../src/lib/local-admin-connection.ts'),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports:login,URL,fetch:async(url)=>{assert.equal(url,'/api/connection?local=1');return {ok:true,json:async()=>({connection:{adminBaseUrl:b}})}}});
+ assert.equal(await login.readLocalAdminBaseUrl(),b,'new browser without a cookie receives the canonical instance URL');
  for(const app of ['web','admin']){const next=fs.readFileSync(path.resolve(__dirname,`../../v8-agent-os-${app}/next.config.ts`),'utf8');assert.doesNotMatch(next,/9530|readBridgeConfig|homedir/);}
 });

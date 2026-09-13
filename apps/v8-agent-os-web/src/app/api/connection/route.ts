@@ -9,10 +9,13 @@ import {
     type AdminConnection,
 } from "@/lib/server/admin-connection";
 import { shouldUseSecureCookies } from "@/lib/server/cookie-policy";
+import { resolveLocalAdminRootUrl } from "@/lib/server/runtime-config";
 
-export async function GET() {
-    const current = await getActiveAdminConnection();
-    return NextResponse.json({ connection: current });
+export async function GET(req: NextRequest) {
+    const local = resolveLocalAdminRootUrl();
+    if (req.nextUrl.searchParams.get("open") === "admin") return NextResponse.redirect(`${local}/admin`);
+    const current = req.nextUrl.searchParams.get("local") === "1" ? null : await getActiveAdminConnection();
+    return NextResponse.json({ connection: current || { adminBaseUrl: local, adminApiBaseUrl: `${local}/api`, bridgeMode: "admin_only" } });
 }
 
 export async function POST(req: NextRequest) {

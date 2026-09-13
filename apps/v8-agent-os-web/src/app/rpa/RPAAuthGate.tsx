@@ -1,4 +1,5 @@
 "use client";
+import { readLocalAdminBaseUrl } from "@/lib/local-admin-connection";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, LoaderCircle, RefreshCw } from "lucide-react";
@@ -21,16 +22,17 @@ export function RPAAuthGate() {
         setBusy(true);
         setError("");
         try {
+            const localAdminBaseUrl = await readLocalAdminBaseUrl();
             const connectionResponse = await fetch("/api/connection", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ adminBaseUrl: "http://127.0.0.1:9528", persist: true }),
+                body: JSON.stringify({ adminBaseUrl: localAdminBaseUrl, persist: true }),
             });
             const connectionPayload = await connectionResponse.json().catch(() => ({}));
             if (!connectionResponse.ok) throw new Error(connectionPayload?.error || t("web.rpa.connectFailed"));
             const result = await signIn("credentials", {
                 localSession: "1",
-                adminBaseUrl: "http://127.0.0.1:9528",
+                adminBaseUrl: localAdminBaseUrl,
                 redirect: false,
             });
             if (result?.error) throw new Error(result.error);

@@ -113,7 +113,7 @@ const GovernanceApprovalModal = dynamic(
     { ssr: false }
 );
 
-const DEFAULT_LOCAL_ADMIN_BASE_URL = "http://127.0.0.1:9528";
+import { readLocalAdminBaseUrl } from "@/lib/local-admin-connection";
 
 interface ProjectDescriptor {
     id: string;
@@ -3240,10 +3240,12 @@ export default function ChatClient() {
         let cancelled = false;
         void (async () => {
             try {
+                const localAdminBaseUrl = await readLocalAdminBaseUrl();
+                if (cancelled) return;
                 const connectionResponse = await fetch("/api/connection", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ adminBaseUrl: DEFAULT_LOCAL_ADMIN_BASE_URL, persist: true }),
+                    body: JSON.stringify({ adminBaseUrl: localAdminBaseUrl, persist: true }),
                 });
                 if (!connectionResponse.ok) {
                     const payload = await connectionResponse.json().catch(() => null);
@@ -3252,7 +3254,7 @@ export default function ChatClient() {
 
                 const result = await signIn("credentials", {
                     localSession: "1",
-                    adminBaseUrl: DEFAULT_LOCAL_ADMIN_BASE_URL,
+                    adminBaseUrl: localAdminBaseUrl,
                     redirect: false,
                 });
                 if (result?.error) {
@@ -4237,7 +4239,7 @@ export default function ChatClient() {
                     </p>
                 </div>
                 {localConnectError && (
-                    <Button className="mt-5 rounded-2xl" onClick={() => window.open(`${DEFAULT_LOCAL_ADMIN_BASE_URL}/admin`, "_blank", "noopener,noreferrer")}>
+                    <Button className="mt-5 rounded-2xl" onClick={() => window.open("/api/connection?open=admin", "_blank", "noopener,noreferrer")}>
                         {t("web.generated.a5aa32a989")}
                     </Button>
                 )}

@@ -2,6 +2,7 @@ import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { authConfig } from "./auth.config";
 import { shouldUseSecureCookies } from "./server/cookie-policy";
+import { resolveLocalAdminRootUrl } from "./server/runtime-config";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
     ...authConfig,
@@ -32,7 +33,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             async authorize(credentials) {
                 const localSession = String(credentials?.localSession || "").trim() === "1";
                 if (!localSession) return null;
-                const adminBaseUrl = String(credentials?.adminBaseUrl || "http://127.0.0.1:9528").trim().replace(/\/+$/, "");
+                const adminBaseUrl = String(credentials?.adminBaseUrl || resolveLocalAdminRootUrl()).trim().replace(/\/+$/, "");
                 if (!adminBaseUrl) return null;
                 try {
                     const response = await fetch(`${adminBaseUrl}/api/client/auth/local-session`, {

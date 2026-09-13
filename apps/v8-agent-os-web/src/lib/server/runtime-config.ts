@@ -108,6 +108,11 @@ export async function resolveAdminRootUrl() {
     }
 }
 
+export function resolveLocalAdminRootUrl() {
+    const bridge = getBridge();
+    return normalizeUrl(process.env.V8_ADMIN_BASE_URL || bridge.adminBaseUrl || bridge.adminApiBaseUrl, DEFAULT_ADMIN_BASE_URL).replace(/\/api$/, "");
+}
+
 export async function resolveInternalSecret() {
     const bridge = await getResolvedBridge();
     return String(bridge.internalSecret || "").trim();

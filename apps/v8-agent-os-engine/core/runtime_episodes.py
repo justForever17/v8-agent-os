@@ -8,6 +8,7 @@ from erc.runtime_context import get_runtime_context
 from core.time_truth import utc_now_iso
 from core.database import (
     RUNTIME_HANDOFF_SCHEMA_VERSION,
+    TERMINAL_EPISODE_STATES,
     RuntimeEpisodeHandoffConflict,
     RuntimeEpisodeIdempotencyConflict,
     db,
@@ -27,7 +28,6 @@ ACTIVE_EPISODE_STATES = {
     "waiting_approval",
     "waiting_input",
 }
-TERMINAL_EPISODE_STATES = {"completed", "degraded", "failed", "merged", "cancelled"}
 
 TYPED_HANDOFF_KINDS = {
     "research": "research_evidence_bundle",

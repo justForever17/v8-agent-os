@@ -41,6 +41,7 @@ def inspect_episode(episode_id: str, *, session_id: str, run_id: str, detail: bo
     return {
         "episodeId": episode_id, "state": episode["state"],
         "executionTerminal": episode["state"] in TERMINAL_EPISODE_STATES,
+        "completedAt": episode.get("completed_at"),
         "phase": (observation.get("progress") or {}).get("stage") or episode["state"],
         "progress": observation.get("progress") or {},
         "blockingReason": episode.get("error_message") or "",

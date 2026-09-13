@@ -50,6 +50,45 @@ def _create_binding(database: DatabaseManager, *, session_id: str, run_id: str) 
     )
 
 
+@pytest.mark.parametrize("final_state", ["degraded", "completed", "failed", "cancelled", "waiting_input"])
+def test_episode_settlement_timestamp_matches_lease_queue_and_inspect(tmp_path, monkeypatch, final_state):
+    import core.runtime_episode_control as controls
+    database = DatabaseManager(tmp_path / "settlement.db")
+    _create_binding(database, session_id="settlement-session", run_id="settlement-run")
+    database.upsert_runtime_episode_record(
+        _episode(episode_id="settlement-episode", key="settlement-call"),
+        session_id="settlement-session", run_id="settlement-run", enqueue=True,
+    )
+    claimed = database.claim_runtime_episode(worker_id="settlement-owner", lease_seconds=300)
+    assert claimed and claimed["completed_at"] is None
+    result = database.complete_runtime_episode(
+        "settlement-episode", state=final_state, worker_id="settlement-owner",
+        lease_generation=claimed["leaseGeneration"], result_ref="settlement-handoff",
+    )
+    assert result and result["state"] == final_state
+    is_terminal = final_state != "waiting_input"
+    assert bool(result["completed_at"]) == is_terminal
+    assert result["worker_id"] is None and result["lease_expires_at"] is None
+    with database.get_connection() as conn:
+        queue = conn.execute("SELECT state,locked_by,lease_expires_at FROM runtime_episode_queue WHERE episode_id=?", ("settlement-episode",)).fetchone()
+        lease = conn.execute("SELECT state,released_at FROM runtime_episode_leases WHERE episode_id=?", ("settlement-episode",)).fetchone()
+    assert queue["state"] == final_state and queue["locked_by"] is None and queue["lease_expires_at"] is None
+    assert lease["state"] == final_state and lease["released_at"]
+    if is_terminal:
+        assert result["completed_at"] == lease["released_at"]
+    # The old owner cannot overwrite an already settled record or timestamp.
+    assert database.complete_runtime_episode(
+        "settlement-episode", state="completed", worker_id="settlement-owner",
+        lease_generation=claimed["leaseGeneration"],
+    ) is None
+    reopened = DatabaseManager(database.db_path)
+    monkeypatch.setattr(controls, "db", reopened)
+    observed = controls.inspect_episode("settlement-episode", session_id="settlement-session", run_id="settlement-run")
+    assert observed["executionTerminal"] == is_terminal
+    assert observed["completedAt"] == result["completed_at"]
+    assert observed["state"] == final_state
+
+
 @pytest.mark.parametrize(
     ("handoff_status", "episode_state"),
     [("degraded", "degraded"), ("cancelled", "cancelled")],

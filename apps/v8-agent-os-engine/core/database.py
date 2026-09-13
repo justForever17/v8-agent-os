@@ -24,6 +24,10 @@ from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 DATABASE_SCHEMA_VERSION = 3
 
+# Persistence owns the episode settlement contract; runtime projections import
+# this same set so a degraded handoff has the same terminal truth everywhere.
+TERMINAL_EPISODE_STATES = frozenset({"completed", "degraded", "failed", "merged", "cancelled"})
+
 
 class RuntimeEpisodeIdempotencyConflict(ValueError):
     """The same episode idempotency key was reused for a different payload."""
@@ -6510,7 +6514,7 @@ class DatabaseManager:
         lease_generation: Optional[int] = None,
         expected_state: Optional[str] = None,
     ) -> bool:
-        terminal = state in {"completed", "failed", "cancelled", "merged"}
+        terminal = state in TERMINAL_EPISODE_STATES
         release_lease = state != "active"
         fenced = worker_id is not None or lease_generation is not None
         if fenced and (not worker_id or lease_generation is None):

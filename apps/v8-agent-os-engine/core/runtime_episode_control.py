@@ -224,6 +224,32 @@ def reconcile_episode_attention(episode: dict[str, Any]) -> None:
                 "handoffRefId": handoff["handoffRefId"], "outputKey": handoff["outputKey"],
                 "version": handoff["version"], "usableFor": handoff["usableFor"],
             })
+    reconcile_partial_invalidations(episode)
+
+
+def reconcile_partial_invalidations(episode: dict[str, Any]) -> None:
+    """Derive invalidations from committed outputs and acceptance receipts."""
+    episode_id = str(episode.get("episodeId") or episode.get("id") or "")
+    handoffs = [dict(row.get("payload") or row) for row in db.list_runtime_episode_handoffs(episode_id)]
+    positions = {item.get("handoffRefId"): index for index, item in enumerate(handoffs)}
+    cursor = 0
+    while receipts := db.list_runtime_episode_messages(run_id=str(episode.get("run_id") or ""), recipient=f"partial:{episode_id}", pending_only=False, after_seq=cursor):
+        for receipt in receipts:
+            if receipt["kind"] != "accept_partial" or receipt["deliveryState"] != "processed":
+                continue
+            index = positions.get(receipt["content"]["handoffRefId"])
+            if index is None:
+                continue
+            accepted = handoffs[index]
+            successor = next((item for item in handoffs[index + 1:] if item.get("outputKey") == accepted.get("outputKey")), None)
+            if successor:
+                # The first superseding immutable version gives retries and
+                # recovery exactly the same event identity, even after v20.
+                publish_attention(episode, kind="partial_invalidated", detail={
+                    "handoffRefId": accepted["handoffRefId"], "supersededBy": successor["handoffRefId"],
+                    "consumers": receipt["content"]["consumers"], "acceptanceId": receipt["messageId"],
+                })
+        cursor = receipts[-1]["deliverySeq"]
 
 
 def acknowledge_parent_messages(state: dict[str, Any], *, run_id: str) -> None:
@@ -277,24 +303,7 @@ def publish_partial(episode_id: str, *, handoff: dict[str, Any], worker_id: str,
                                            worker_id=worker_id, lease_generation=lease_generation)
     if not result:
         raise ValueError("partial_stale_lease")
-    cursor = 0
-    while accepted := db.list_runtime_episode_messages(run_id=str(episode.get("run_id") or ""), recipient=f"partial:{episode_id}", pending_only=False, after_seq=cursor):
-        for receipt in accepted:
-            if receipt["kind"] == "accept_partial" and receipt["deliveryState"] == "processed" and receipt["content"]["handoffRefId"] != result["handoffRefId"]:
-                previous = next((dict(row.get("payload") or row) for row in db.list_runtime_episode_handoffs(episode_id)
-                                 if dict(row.get("payload") or row).get("handoffRefId") == receipt["content"]["handoffRefId"]), {})
-                if previous.get("outputKey") == handoff["outputKey"]:
-                    with db.get_connection() as conn:
-                        invalidation_exists = conn.execute(
-                            "SELECT 1 FROM runtime_episode_events WHERE episode_id=? AND topic='runtime.episode.message' "
-                            "AND json_extract(payload_json,'$.kind')='partial_invalidated' "
-                            "AND json_extract(payload_json,'$.content.acceptanceId')=? LIMIT 1", (episode_id, receipt["messageId"]),
-                        ).fetchone()
-                    if invalidation_exists:
-                        continue
-                    publish_attention(episode, kind="partial_invalidated", detail={"handoffRefId": previous["handoffRefId"],
-                        "supersededBy": result["handoffRefId"], "consumers": receipt["content"]["consumers"], "acceptanceId": receipt["messageId"]})
-        cursor = accepted[-1]["deliverySeq"]
+    reconcile_partial_invalidations(episode)
     publish_attention(episode, kind="partial", detail={"handoffRefId": result["handoffRefId"],
                                                       "outputKey": handoff["outputKey"], "version": handoff["version"],
                                                       "usableFor": handoff["usableFor"]})
@@ -304,27 +313,14 @@ def publish_partial(episode_id: str, *, handoff: dict[str, Any], worker_id: str,
 
 def accept_partial(episode_id: str, *, session_id: str, run_id: str, handoff_id: str,
                    consumers: list[str], reason: str, request_id: str) -> dict[str, Any]:
-    snapshot = inspect_episode(episode_id, session_id=session_id, run_id=run_id, detail=True)
-    handoffs = [dict(item.get("payload") or item) for item in snapshot["handoffs"]]
-    selected = next((item for item in handoffs if item.get("handoffRefId") == handoff_id), None)
-    if not selected or selected.get("status") != "partial":
-        raise ValueError("partial_handoff_not_found")
-    latest = [item for item in handoffs if item.get("outputKey") == selected.get("outputKey")]
-    if latest[-1].get("handoffRefId") != handoff_id:
-        raise ValueError("partial_version_superseded")
-    if not consumers or not reason.strip() or not set(consumers).issubset(selected.get("usableFor") or []):
-        raise ValueError("partial_acceptance_requires_reason_and_declared_consumers")
-    receipt = db.append_runtime_episode_message(
-        episode_id=episode_id, session_id=session_id, run_id=run_id, recipient=f"partial:{episode_id}",
-        kind="accept_partial", request_id=request_id, content={"handoffRefId": handoff_id, "consumers": consumers,
-                                                               "reason": reason, "version": selected["version"]},
+    receipt = db.accept_runtime_episode_partial(
+        episode_id=episode_id, session_id=session_id, run_id=run_id, handoff_id=handoff_id,
+        consumers=consumers, reason=reason, request_id=request_id,
     )
-    db.acknowledge_runtime_episode_message(receipt["messageId"], recipient=f"partial:{episode_id}", state="processed",
-                                          result={"acceptedFor": consumers, "finalAcceptance": False})
     # Reuse the dependency queue; its normal claim gate rechecks the version.
     from core.runtime_episode_runner import runtime_episode_runner
     runtime_episode_runner._resume_cross_episode_dependents(db.get_runtime_episode(episode_id))
-    return {**receipt, "deliveryState": "processed", "finalAcceptance": False}
+    return receipt
 
 
 def accepted_partial_for(episode: dict[str, Any], *, consumer_task_ids: set[str]) -> dict[str, Any] | None:

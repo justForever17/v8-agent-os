@@ -7014,6 +7014,7 @@ class DatabaseManager:
     def append_runtime_episode_message(
         self, *, episode_id: str, session_id: str, run_id: str,
         recipient: str, kind: str, request_id: str, content: Dict[str, Any],
+        _connection: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, Any]:
         """Durable control/attention delivery in the episode event ledger.
 
@@ -7024,8 +7025,9 @@ class DatabaseManager:
         event_id = f"episode_message:{run_id}:{request_id}"
 
         def _write():
-            with self.get_connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+            with (nullcontext(_connection) if _connection is not None else self.get_connection()) as conn:
+                if _connection is None:
+                    conn.execute("BEGIN IMMEDIATE")
                 episode = conn.execute(
                     "SELECT id, state FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
                     (episode_id, session_id, run_id),
@@ -7059,8 +7061,53 @@ class DatabaseManager:
                     "VALUES (?, ?, ?, ?, 'runtime.episode.message', 'pending', ?, ?)",
                     (event_id, episode_id, session_id, run_id, json.dumps(payload, ensure_ascii=False), utc_now_iso()),
                 )
-                conn.commit()
+                if _connection is None:
+                    conn.commit()
                 return {**payload, "deliveryState": "pending"}
+
+        return _write() if _connection is not None else self._run_write_with_retry(_write)
+
+    def accept_runtime_episode_partial(
+        self, *, episode_id: str, session_id: str, run_id: str, handoff_id: str,
+        consumers: list[str], reason: str, request_id: str,
+    ) -> Dict[str, Any]:
+        """Check the immutable current output and accept in one writer transaction."""
+        if not request_id or not consumers or not reason.strip():
+            raise ValueError("partial_acceptance_requires_reason_and_declared_consumers")
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                episode = conn.execute("SELECT id FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
+                                       (episode_id, session_id, run_id)).fetchone()
+                if not episode:
+                    raise ValueError("episode_scope_mismatch")
+                row = conn.execute("SELECT * FROM runtime_episode_handoffs WHERE episode_id=? AND id=?", (episode_id, handoff_id)).fetchone()
+                selected = self._hydrate_runtime_handoff_row(dict(row)) if row else {}
+                payload = dict(selected.get("payload") or {})
+                if selected.get("payloadCorrupted") or payload.get("status") != "partial":
+                    raise ValueError("partial_handoff_not_found")
+                latest = conn.execute(
+                    "SELECT id FROM runtime_episode_handoffs WHERE episode_id=? "
+                    "AND json_extract(payload_json,'$.outputKey')=? ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (episode_id, payload.get("outputKey")),
+                ).fetchone()
+                if not latest or latest["id"] != handoff_id:
+                    raise ValueError("partial_version_superseded")
+                if not set(consumers).issubset(payload.get("usableFor") or []):
+                    raise ValueError("partial_acceptance_requires_reason_and_declared_consumers")
+                receipt = self.append_runtime_episode_message(
+                    episode_id=episode_id, session_id=session_id, run_id=run_id, recipient=f"partial:{episode_id}",
+                    kind="accept_partial", request_id=request_id, content={"handoffRefId": handoff_id, "consumers": consumers,
+                        "reason": reason, "version": payload["version"]}, _connection=conn,
+                )
+                acceptance = {"acceptedFor": consumers, "finalAcceptance": False, "at": utc_now_iso()}
+                conn.execute(
+                    "UPDATE runtime_episode_events SET state='processed', payload_json=json_set(payload_json,'$.receipt',json(?)) WHERE id=?",
+                    (json.dumps(acceptance), receipt["messageId"]),
+                )
+                conn.commit()
+                return {**receipt, "deliveryState": "processed", "receipt": acceptance, "finalAcceptance": False}
 
         return self._run_write_with_retry(_write)
 

@@ -4,6 +4,7 @@ import asyncio
 import threading
 import sys
 import time
+import sqlite3
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -716,3 +717,71 @@ def test_parked_parent_wakes_for_durable_user_guidance_even_when_signal_is_lost(
     assert runtime.consume_control_signal("run") == {"command": "cancel"}
     assert database.get_runtime_episode("A")["state"] == "active"
     assert len(database.list_runtime_episodes(run_id="run")) == 1
+
+
+def test_partial_acceptance_rechecks_current_version_after_inspection_gap(database, monkeypatch):
+    enqueue(database)
+    claim = database.claim_runtime_episode(worker_id="producer", lease_seconds=30)
+    output = {"outputKey": "report", "version": "v1", "sourceVersion": "s1", "usableFor": ["B"], "compactSummary": "first", "proofRefs": ["proof:1"]}
+    v1 = control.publish_partial("A", handoff=output, worker_id="producer", lease_generation=claim["leaseGeneration"])
+    assert control.inspect_episode("A", session_id="session", run_id="run")["handoffs"][-1]["version"] == "v1"
+    accept_transaction = database.accept_runtime_episode_partial
+    def interleaved_accept(**kwargs):
+        control.publish_partial("A", handoff={**output, "version": "v2", "sourceVersion": "s2"}, worker_id="producer", lease_generation=claim["leaseGeneration"])
+        return accept_transaction(**kwargs)
+    monkeypatch.setattr(database, "accept_runtime_episode_partial", interleaved_accept)
+    with pytest.raises(ValueError, match="superseded"):
+        control.accept_partial("A", session_id="session", run_id="run", handoff_id=v1["handoffRefId"], consumers=["B"], reason="use inspected result", request_id="stale-accept")
+    assert database.list_runtime_episode_messages(run_id="run", recipient="partial:A", pending_only=False) == []
+
+
+def test_partial_version_check_and_acceptance_append_hold_one_db_writer(database, monkeypatch):
+    enqueue(database)
+    claim = database.claim_runtime_episode(worker_id="producer", lease_seconds=30)
+    output = {"outputKey": "report", "version": "v1", "sourceVersion": "s1", "usableFor": ["B"], "compactSummary": "first", "proofRefs": ["proof:1"]}
+    v1 = control.publish_partial("A", handoff=output, worker_id="producer", lease_generation=claim["leaseGeneration"])
+    append = database.append_runtime_episode_message
+    observed = []
+    def at_append(**kwargs):
+        if kwargs["kind"] == "accept_partial":
+            assert kwargs["_connection"].in_transaction
+            # Deterministic injection exactly after the latest check and
+            # before append: a competing writer cannot publish in this gap.
+            with sqlite3.connect(database.db_path, timeout=0) as competitor:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    competitor.execute("BEGIN IMMEDIATE")
+            observed.append("producer fenced until acceptance commit")
+        return append(**kwargs)
+    monkeypatch.setattr(database, "append_runtime_episode_message", at_append)
+    accepted = control.accept_partial("A", session_id="session", run_id="run", handoff_id=v1["handoffRefId"], consumers=["B"], reason="use v1", request_id="accept-v1")
+    assert observed and accepted["deliveryState"] == "processed"
+    control.publish_partial("A", handoff={**output, "version": "v2"}, worker_id="producer", lease_generation=claim["leaseGeneration"])
+    invalidations = [item for item in database.list_runtime_parent_attention("run") if item["kind"] == "partial_invalidated"]
+    assert len(invalidations) == 1 and invalidations[0]["content"]["acceptanceId"] == accepted["messageId"]
+
+
+def test_restart_rebuilds_invalidation_after_canonical_partial_commit_crash(database, monkeypatch):
+    enqueue(database)
+    claim = database.claim_runtime_episode(worker_id="producer", lease_seconds=30)
+    output = {"outputKey": "report", "version": "v1", "sourceVersion": "s1", "usableFor": ["B"], "compactSummary": "first", "proofRefs": ["proof:1"]}
+    v1 = control.publish_partial("A", handoff=output, worker_id="producer", lease_generation=claim["leaseGeneration"])
+    accepted = control.accept_partial("A", session_id="session", run_id="run", handoff_id=v1["handoffRefId"], consumers=["B"], reason="use v1", request_id="accept-before-crash")
+    def crash_after_handoff(_episode):
+        raise RuntimeError("crash after canonical handoff commit")
+    with monkeypatch.context() as crash:
+        crash.setattr(control, "reconcile_partial_invalidations", crash_after_handoff)
+        with pytest.raises(RuntimeError, match="canonical"):
+            control.publish_partial("A", handoff={**output, "version": "v2"}, worker_id="producer", lease_generation=claim["leaseGeneration"])
+    assert not [item for item in database.list_runtime_parent_attention("run") if item["kind"] == "partial_invalidated"]
+    restored = DatabaseManager(database.db_path)
+    monkeypatch.setattr(control, "db", restored)
+    for _ in range(2): control.reconcile_episode_attention(restored.get_runtime_episode("A"))
+    pending = restored.list_runtime_parent_attention("run")
+    invalidated = [item for item in pending if item["kind"] == "partial_invalidated"]
+    assert len(invalidated) == 1 and invalidated[0]["content"]["acceptanceId"] == accepted["messageId"]
+    assert invalidated[0]["content"]["handoffRefId"] == v1["handoffRefId"]
+    assert len(restored.list_runtime_episode_handoffs("A")) == 2
+    messages = control.parent_attention_messages({"messages": []}, run_id="run")
+    control.acknowledge_parent_messages({"messages": messages}, run_id="run")
+    control.reconcile_episode_attention(restored.get_runtime_episode("A"))
+    assert restored.list_runtime_parent_attention("run") == []

@@ -31,4 +31,6 @@ Phone新release定向闭环见 `PHONE-6111D7C6-REVIEW.md`：实际AVD ABABA及A/
 
 扩展管理动作行闭环见 `INTEGRATION-829B34A3-REVIEW.md`：原X15裁切判据在两主题390/桌面通过，保存状态单行；X16以实际坐标点击保存/刷新并观察合成响应反馈，X05/footer和X14/header定向回归通过。原c03失败记录保留，不重写成首轮全绿。
 
+真实桌面Preview见 `SHELL-PRODUCTION-FIRST-REVIEW.md`：指定preview-state-1真实Electron/服务，30轮按钮往返保留文档/草稿/选择/滚动；发现CLI活进程误删账、public snapshot丢queue、驻留主题不同步。`seed-shell-review.py`只为本任务API创建会话写合成数据且不建run；`shell-resident-scenario.mjs`为实跑判据，`verify-shell-production.mjs`用于后续queue/theme定向复验，绝不mock成功或烧模型。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

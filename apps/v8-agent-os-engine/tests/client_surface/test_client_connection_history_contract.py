@@ -85,7 +85,11 @@ def _run_phone_behavior(pattern: str, filename: str = "phone-transport-boundary.
     )
     assert result.returncode == 0, result.stdout + result.stderr
     executed = re.search(r"^# pass (\d+)\s*$", result.stdout, re.MULTILINE)
-    assert executed and int(executed.group(1)) > 0, f"No Phone behavior matched {pattern!r}: {result.stdout}"
+    # Node may count the file itself as one pass when its selected test plan is empty.
+    names = re.findall(r"^# Subtest: (.+)$", result.stdout, re.MULTILINE)
+    assert executed and int(executed.group(1)) > 0 and any(re.search(pattern, name) for name in names), (
+        f"No Phone behavior matched {pattern!r}: {result.stdout}"
+    )
 
 
 def test_local_trusted_client_boundary_is_documented() -> None:

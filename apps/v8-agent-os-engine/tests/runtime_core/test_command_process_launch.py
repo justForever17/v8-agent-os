@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from api import ops_routes
 from core.tools.native import command as command_module
+from erc.safety_guardian import SafetyDecision
 
 
 def _allow_command_launch(monkeypatch, tmp_path) -> None:
@@ -24,7 +25,7 @@ def _allow_command_launch(monkeypatch, tmp_path) -> None:
         "preflight_command_workspace",
         lambda *_args, **_kwargs: {"ok": True, "cwd": str(tmp_path), "binding": {}},
     )
-    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: SafetyDecision())
     monkeypatch.setattr(command_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(command_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
     monkeypatch.setattr(command_module, "_sandbox_launch", lambda _context, argv: (list(argv), None))
@@ -41,7 +42,7 @@ def _allow_native_command_launch(monkeypatch, tmp_path) -> None:
         "preflight_command_workspace",
         lambda *_args, **_kwargs: {"ok": True, "cwd": str(tmp_path), "binding": {}},
     )
-    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: SafetyDecision())
     monkeypatch.setattr(command_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(command_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
     monkeypatch.setattr(command_module, "_sandbox_launch", lambda _context, argv: (list(argv), None))
@@ -258,7 +259,7 @@ def test_windows_sync_cmd_preserves_nested_quotes(monkeypatch, tmp_path) -> None
         "preflight_command_workspace",
         lambda *_args, **_kwargs: {"ok": True, "cwd": str(tmp_path), "binding": {}},
     )
-    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: SafetyDecision())
     monkeypatch.setattr(command_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(command_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
     monkeypatch.setattr(command_module, "mark_workspace_state_stale", lambda *_args, **_kwargs: None)
@@ -768,7 +769,7 @@ def test_explicit_pipe_rejects_known_interactive_command() -> None:
 
 def test_explicit_pty_forces_terminal_backend_for_unrecognized_command(monkeypatch, tmp_path) -> None:
     _allow_command_launch(monkeypatch, tmp_path)
-    monkeypatch.setattr(command_module.safety_guardian, "assess_background_command", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(command_module.safety_guardian, "assess_background_command", lambda *_args, **_kwargs: SafetyDecision())
     captured: dict[str, object] = {}
 
     class FakeBackgroundProcess:

@@ -22,6 +22,14 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\agent_quality -q
 ```
 
+CI 使用四个互斥且并集完整的文件分片；本地可复现其中一个分片：
+
+```powershell
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_pytest_shard.py --shard-index 0 --shard-count 4
+```
+
+分片器每次自动发现全部 `tests/**/test_*.py`，按统一换行后的文件大小确定性均衡，Windows 与 Linux 的 Git 换行转换不会改变分片；它不改变普通 pytest 的离线边界，也不替代发布前按需执行的 live/Preview/物理机验收。
+
 涉及真实模型、联网、媒体生成、Android 设备、桌面动作或高成本 benchmark 的脚本必须显式带 `--live` 或等价开关；普通 pytest 默认不得烧额度。
 
 ## 测试目录地图

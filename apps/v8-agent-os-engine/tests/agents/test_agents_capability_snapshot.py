@@ -233,11 +233,16 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             stage="evidence_plan",
             stage_prompt="Return the verified evidence plan.",
         )
-        self.assertIn("Hard rejection floor: 4 readable selected sources", runtime_prompt)
-        self.assertIn("1200 effective non-URL answer characters", runtime_prompt)
-        self.assertIn("Normal delivery target: at least 8 sources", runtime_prompt)
-        self.assertIn("8 supported conclusions", runtime_prompt)
-        self.assertIn("5000 effective answer characters", runtime_prompt)
+        self.assertIn("Source/host/claim/word counts are descriptive or advisory", runtime_prompt)
+        self.assertIn("one relevant primary document may suffice", runtime_prompt)
+        for retired_hard_gate in (
+            "Hard rejection floor",
+            "1200 effective non-URL answer characters",
+            "Normal delivery target: at least 8 sources",
+            "8 supported conclusions",
+            "5000 effective answer characters",
+        ):
+            self.assertNotIn(retired_hard_gate, runtime_prompt)
         self.assertIn("Never pad with repetition", runtime_prompt)
         self.assertIn("Research Runtime owns search", runtime_prompt)
         self.assertIn("explicitly undated source paired with retrieval time", runtime_prompt)

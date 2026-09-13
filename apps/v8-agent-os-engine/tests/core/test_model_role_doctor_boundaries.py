@@ -3,7 +3,7 @@ from __future__ import annotations
 from core.model_role_doctor import diagnose_model_role
 
 
-def test_model_role_doctor_blocks_text_roles_without_long_context():
+def test_model_role_doctor_warns_without_blocking_usable_text_context():
     diagnostic = diagnose_model_role(
         {
             "type": "TEXT",
@@ -14,8 +14,9 @@ def test_model_role_doctor_blocks_text_roles_without_long_context():
         role="supervisor",
     )
 
-    assert diagnostic["blocking"] is True
-    assert diagnostic["issues"][0]["code"] == "below_min_context_window"
+    assert diagnostic["blocking"] is False
+    assert diagnostic["issues"] == []
+    assert diagnostic["warnings"][0]["code"] == "context_budget_below_recommended"
 
 
 def test_model_role_doctor_treats_retrieval_context_as_input_window():

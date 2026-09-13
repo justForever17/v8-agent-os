@@ -1060,7 +1060,6 @@ class CreativeMediaRuntime:
                 "supervisorToolSurface": False,
                 "managedToolGroups": ["creative_media.core"],
                 "managedToolNames": [
-                    "creative_media_capabilities",
                     "creative_media_plan",
                     "creative_media_assets",
                     "creative_media_jobs",

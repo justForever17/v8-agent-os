@@ -32,24 +32,6 @@ if "chromadb" not in sys.modules:
 
     sys.modules["chromadb"] = SimpleNamespace(PersistentClient=_FakeChromaClient)
 
-if "bs4" not in sys.modules:
-    fake_bs4 = ModuleType("bs4")
-    fake_bs4.BeautifulSoup = object
-    fake_bs4.__spec__ = importlib.machinery.ModuleSpec("bs4", loader=None)
-    sys.modules["bs4"] = fake_bs4
-
-if "scrapling.core.storage" not in sys.modules:
-    fake_scrapling_storage = ModuleType("scrapling.core.storage")
-    fake_scrapling_storage.SQLiteStorageSystem = object
-    fake_scrapling_storage.__spec__ = importlib.machinery.ModuleSpec("scrapling.core.storage", loader=None)
-    sys.modules["scrapling.core.storage"] = fake_scrapling_storage
-
-if "scrapling.parser" not in sys.modules:
-    fake_scrapling_parser = ModuleType("scrapling.parser")
-    fake_scrapling_parser.Selector = object
-    fake_scrapling_parser.__spec__ = importlib.machinery.ModuleSpec("scrapling.parser", loader=None)
-    sys.modules["scrapling.parser"] = fake_scrapling_parser
-
 if "langgraph.checkpoint.sqlite" not in sys.modules and importlib.util.find_spec("langgraph.checkpoint.sqlite") is None:
     fake_langgraph_sqlite = ModuleType("langgraph.checkpoint.sqlite")
     fake_langgraph_sqlite.__spec__ = importlib.machinery.ModuleSpec("langgraph.checkpoint.sqlite", loader=None)

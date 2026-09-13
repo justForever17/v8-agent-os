@@ -10,6 +10,8 @@ import pytest
 from core.interprocess_lock import InterProcessLockTimeout, interprocess_file_lock
 from core.process_launch import popen_windowless
 
+ENGINE_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_interprocess_lock_serializes_processes_with_damaged_coordination_file(tmp_path: Path) -> None:
     lock_path = tmp_path / "shared.lock"
@@ -38,6 +40,7 @@ with interprocess_file_lock(lock_path, timeout_seconds=5):
             stdout=-1,
             stderr=-1,
             text=True,
+            cwd=str(ENGINE_ROOT),
         )
         for index in range(2)
     ]
@@ -93,6 +96,7 @@ with interprocess_file_lock(Path(sys.argv[1]), timeout_seconds=2):
         stdout=-1,
         stderr=-1,
         text=True,
+        cwd=str(ENGINE_ROOT),
     )
     output = process.communicate(timeout=10)
     assert process.returncode == 23, output

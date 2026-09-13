@@ -249,7 +249,7 @@ def _accepted_research_payload(
     sources = [
         {
             "sourceId": f"source-{index}",
-            "citationKey": f"[S{index}]",
+            "citationKey": f"S{index}",
             "title": f"Selected source {index}",
             "url": url,
             "selectedForEvidence": True,
@@ -295,7 +295,7 @@ def _accepted_research_payload(
         "criticalMissingEvidence": [],
         "recommendedNextQueries": [],
     }
-    citations = " ".join(source["citationKey"] for source in sources)
+    citations = " ".join(f"[{source['citationKey']}]" for source in sources)
     subjects = ("scope", "mechanism", "dataset", "comparison", "risk", "verification")
     aspects = ("source authority", "time boundary", "applicability", "counterevidence", "user impact", "failure mode")
     paragraphs = [
@@ -308,7 +308,7 @@ def _accepted_research_payload(
         for aspect in aspects
     ]
     paragraphs = [
-        f"{paragraph.rstrip('.')} {sources[index % len(sources)]['citationKey']}."
+        f"{paragraph.rstrip('.')} [{sources[index % len(sources)]['citationKey']}]."
         for index, paragraph in enumerate(paragraphs)
     ]
     answer = f"Answer for {question}. {citations}\n\n" + "\n\n".join(paragraphs)

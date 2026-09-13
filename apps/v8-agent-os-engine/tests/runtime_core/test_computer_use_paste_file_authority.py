@@ -10,6 +10,7 @@ from core import creative_media_resource_authority as authority_module
 from core.database import DatabaseManager
 from core.tools.native import computer_use as native
 from core.tools.native import desktop_governance
+from erc import safety_guardian as safety_module
 from erc.safety_guardian import DEFAULT_SAFETY_GUARDIAN_CONFIG, safety_guardian
 from runtimes.computer_use.runtime import ComputerUseRuntime
 
@@ -142,6 +143,25 @@ def test_regular_workspace_database_is_not_a_core_state_database(fixture, monkey
     file = write_fixture(fixture.workspace / "application.sqlite")
     assert json.loads(paste([str(file)]))["ok"]
     assert len(fixture.effects) == 2
+
+
+@pytest.mark.parametrize("name", ["state.db", "state.db-wal", "config.json", "core/oauth/session.json"])
+def test_workspace_ancestor_does_not_grant_live_runtime_files(fixture, monkeypatch, name):
+    runtime_home = fixture.workspace / "runtime-state"
+    runtime_paths = [runtime_home / item for item in ("state.db", "state.db-wal", "config.json", "core")]
+    monkeypatch.setattr(safety_module, "protected_runtime_paths", lambda: [str(path) for path in runtime_paths])
+    config = copy.deepcopy(safety_guardian._config())
+    config["fileRules"]["protectedPaths"] = [str(path) for path in runtime_paths]
+    monkeypatch.setattr(safety_guardian, "_config", lambda: config)
+    good = write_fixture(fixture.workspace / "ordinary.txt")
+    protected = write_fixture(runtime_home / name)
+
+    paste([str(good), str(protected)])
+
+    assert fixture.decisions[-1].risk_code == "computer_use_sensitive_file_payload"
+    assert fixture.decisions[-1].verdict == "block"
+    assert not fixture.decisions[-1].allow_override
+    assert fixture.effects == []
 
 
 @pytest.mark.parametrize("field", ["file_paths", "file_path", "attachment_paths", "paths"])

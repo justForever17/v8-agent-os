@@ -387,7 +387,7 @@ def test_approve_stage_prefers_latest_pending_approval(monkeypatch: Any) -> None
     assert approved == ["approval-new"]
 
 
-def test_auto_respond_patches_missing_spec_context_for_spec_question(monkeypatch: Any) -> None:
+def test_auto_respond_patches_missing_spec_context_for_spec_question(monkeypatch: Any, tmp_path: Path) -> None:
     patched: dict[str, Any] = {}
 
     def fake_list_ask_user_interactions(session_id: str, status: str) -> list[dict[str, Any]]:
@@ -421,7 +421,7 @@ def test_auto_respond_patches_missing_spec_context_for_spec_question(monkeypatch
         stage="requirements",
         marker="SPEC_LIVE_TEST",
         target_rel=".v8/live-audit/spec-mode-v2/test",
-        workspace=Path("E:/Projects/test3"),
+        workspace=tmp_path,
     )
 
     assert patched["interactionId"] == "ask-missing-context"
@@ -429,7 +429,7 @@ def test_auto_respond_patches_missing_spec_context_for_spec_question(monkeypatch
         "kind": "spec_clarification",
         "featureName": "spec-mode-live-counter",
         "stage": "requirements",
-        "workspacePath": "E:\\Projects\\test3",
+        "workspacePath": str(tmp_path),
     }
     assert responses[0]["status"] == "responded"
     assert result.key_events[0]["askUserSpecContextPatched"]["interactionId"] == "ask-missing-context"

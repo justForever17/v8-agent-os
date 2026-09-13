@@ -37,6 +37,8 @@ PLAINTEXT_SECRET_KEYS = {
     "secret",
     "token",
 }
+SEMVER_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
+COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,31 @@ def _walk_json(value: object, *, path: str = "catalog") -> list[tuple[str, objec
         for index, nested in enumerate(value):
             rows.extend(_walk_json(nested, path=f"{path}[{index}]"))
     return rows
+
+
+def managed_cli_skill_is_pinned(
+    skill: dict[str, object], source_profile: dict[str, object], *, repo_root: Path | None = None,
+) -> bool:
+    """Validate the immutable revision using the owning install transport."""
+    revision = str(skill.get("revision") or "")
+    if str(source_profile.get("ownership") or "") != "managed":
+        return False
+    install = source_profile.get("install") if isinstance(source_profile.get("install"), dict) else {}
+    install_argv = list(install.get("argv") or [])
+    is_npm_install = len(install_argv) >= 2 and install_argv[:2] == ["npm", "install"]
+    if is_npm_install:
+        package_ref = str(install_argv[-1] if install_argv else "")
+        return bool(SEMVER_PATTERN.fullmatch(revision) and package_ref.endswith(f"@{revision}"))
+    # The existing GDA installer owns the package pin; the Skill SHA records
+    # reviewed source provenance. Unknown transports do not prove a pin.
+    installer_path = "runtimes/plugin_manager/gda_installer.py"
+    if install_argv != ["{enginePython}", f"{{engineRoot}}/{installer_path}", "install", "--plugin-root", "{pluginRoot}"]:
+        return False
+    installer = (repo_root or _repo_root()) / "apps/v8-agent-os-engine" / installer_path
+    if not installer.is_file():
+        return False
+    package = re.search(r'''(?m)^GDA_PACKAGE\s*=\s*["']gda==([^"']+)["']\s*$''', installer.read_text(encoding="utf-8"))
+    return bool(COMMIT_SHA_PATTERN.fullmatch(revision) and package and SEMVER_PATTERN.fullmatch(package.group(1)))
 
 
 def scan_runtime_surface_residue(repo_root: Path) -> list[Violation]:
@@ -88,13 +115,7 @@ def scan_runtime_surface_residue(repo_root: Path) -> list[Violation]:
             elif source_kind == "managed_cli":
                 source_component_id = str(skill.get("sourceComponentId") or "")
                 source_profile = cli_profiles.get(source_component_id) or {}
-                install_argv = list((source_profile.get("install") or {}).get("argv") or [])
-                package_ref = str(install_argv[-1] if install_argv else "")
-                if (
-                    not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", revision)
-                    or str(source_profile.get("ownership") or "") != "managed"
-                    or not package_ref.endswith(f"@{revision}")
-                ):
+                if not managed_cli_skill_is_pinned(skill, source_profile, repo_root=root):
                     violations.append(
                         Violation(
                             "unpinned_managed_cli_skill",

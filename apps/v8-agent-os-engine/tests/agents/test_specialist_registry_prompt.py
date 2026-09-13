@@ -225,11 +225,11 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("Passive/support runtimes are not ordinary execution targets", system_content)
         self.assertIn("user/client approval gates are blocking and cannot be self-approved", system_content)
         self.assertIn(
-            "`delegation_broker` is your direct, governed entry for a genuinely distinct role",
+            "`delegation_broker` is your direct, governed entry for requested help, a distinct role",
             system_content,
         )
-        self.assertIn("It is not an alternate execution route for a rejected Engineering contract", system_content)
-        self.assertIn("Do not use it as a shortcut for internal runtimes", system_content)
+        self.assertIn("not an alternate route for a rejected or already-owned Engineering contract", system_content)
+        self.assertIn("cannot recursively bypass an owned runtime", system_content)
         self.assertIn("Git is optional isolation, never an Engineering prerequisite", system_content)
         self.assertIn("retry a single low-risk write serially", system_content)
         self.assertIn("never initialize Git yourself", system_content)
@@ -275,7 +275,7 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("Choose one exact name", specialist_context)
         self.assertIn("task.targetAgentName", specialist_context)
         self.assertIn("`delegation_broker` is your direct, governed entry", system_content)
-        self.assertIn("Do not use it as a shortcut for internal runtimes", system_content)
+        self.assertIn("cannot recursively bypass an owned runtime", system_content)
         self.assertIn("- delegation_broker: Dispatch subagents.", system_content)
 
 

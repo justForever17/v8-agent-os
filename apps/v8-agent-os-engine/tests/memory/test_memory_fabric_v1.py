@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from core.database import db
 from core.native_tools import memory_broker
 from core.tools.research_broker import research_broker
 from core.tools.research_ledger import promote_experience_pack, store_evidence_bundle
@@ -10,6 +11,7 @@ from core.tools.research_quality import (
     build_research_review_binding,
     research_high_quality_issues,
 )
+from erc.runtime_context import bind_runtime_context
 
 
 class _FakeMemoryRuntime:
@@ -187,6 +189,8 @@ def test_memory_broker_route_returns_compact_evidence_pack(monkeypatch, tmp_path
 
 def test_low_quality_research_pack_requires_refresh(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("V8_RESEARCH_LEDGER_PATH", str(tmp_path / "research_ledger.json"))
+    session_id = "low-quality-research-pack-fixture"
+    db.create_or_update_session(session_id, "Low quality research fixture", user_id="fixture-owner")
     store_evidence_bundle(
         {
             "evidenceBundleId": "bundle-noisy-youtube",
@@ -204,16 +208,17 @@ def test_low_quality_research_pack_requires_refresh(monkeypatch, tmp_path) -> No
             ],
         },
         ttl_seconds=3600,
-        scope="global",
+        scope=session_id,
     )
 
-    payload = json.loads(
-        research_broker.func(
-            mode="search_experience",
-            query="Research the external facts needed before implementation.",
-            includeArchived=True,
+    with bind_runtime_context(session_id=session_id, user_id="fixture-owner", runtime_kind="chat"):
+        payload = json.loads(
+            research_broker.func(
+                mode="search_experience",
+                query="Research the external facts needed before implementation.",
+                includeArchived=True,
+            )
         )
-    )
 
     assert payload["ok"] is True
     assert payload["items"] == []

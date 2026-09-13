@@ -810,6 +810,10 @@ def test_allowlisted_auto_fetch_prioritizes_headless_profile_before_public_stati
     monkeypatch.setattr(web_fetcher, "_try_import_static_fetcher", lambda: (_UnexpectedStaticFetcher, None))
     monkeypatch.setattr(web_fetcher, "_try_import_dynamic_fetcher", lambda: (_DynamicFetcher, None))
     monkeypatch.setattr(web_fetcher, "_try_import_stealth_fetcher", lambda: (None, "stealth not needed"))
+    monkeypatch.setattr(
+        web_fetcher, "_fetch_with_reader_fallback",
+        lambda *_args, **_kwargs: pytest.fail("governed profile fixture must not reach the network reader"),
+    )
     from runtimes.computer_use.browser_automation import agent_browser_automation
     def read_profile(**kwargs):
         response = _DynamicFetcher.fetch(kwargs["url"], timeout_seconds=kwargs["timeout_seconds"])

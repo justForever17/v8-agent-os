@@ -2,8 +2,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 from tests.scripts import export_spec_runtime_distribution_dry_run as dry_run
+
+
+def test_standalone_export_keeps_configured_state_untouched(tmp_path, monkeypatch) -> None:
+    configured_state = tmp_path / "configured-state"
+    monkeypatch.setenv("V8_AGENT_OS_HOME", str(configured_state))
+    output = tmp_path / "distribution.json"
+
+    result = subprocess.run(
+        [sys.executable, str(Path(dry_run.__file__)), "--output", str(output)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["passed"] is True
+    assert not configured_state.exists()
 
 
 def _has_mojibake_marker(text: str) -> bool:

@@ -28,8 +28,9 @@
 | `export_prompt_cache_dry_run_matrix.py` | 导出 Prompt Cache provider patch / segment hash / cache decision 空运行矩阵。 | 写本地报告。 |
 | `export_reasoning_effort_request_dry_run.py` | 导出 Supervisor 临时推理强度控制的 provider 请求格式空运行矩阵，覆盖 OpenAI/OpenRouter、Anthropic、Gemini。 | 写本地报告；不调用模型、不联网、不消耗额度。 |
 | `export_runtime_deep_observation_matrix.py` | 导出 supervisor / subagent / registry / extensions / memory governance 深度观察矩阵。 | 写本地报告。 |
+| `run_pytest_shard.py` | 为 CI 自动发现全部 `test_*.py`，生成确定性、互斥且并集完整的均衡文件分片并运行普通 pytest。 | 不启用 live；测试副作用仍由根 `conftest.py` 隔离。 |
 | `export_skill_tool_output_surface_dry_run.py` | 导出 `fetch_skill_instructions` 原始输出与 agent 可见输出，检查 SKILL.md 完整优先、相对路径续读、入口元数据降噪。 | 写本地报告；不调用模型、不写 DB、不改持久工作区。 |
-| `export_spec_runtime_distribution_dry_run.py` | 导出已审批 Spec → runtime/subagent 任务分发空运行矩阵，验证 Kiro-style requirements/design/tasks 可追踪到 agent 可见片段、frameworkDigest、detailRef 和 compact tool surface。 | 可写 `docs/chatruntime/runtime_deep_observation_reports/`；不调用模型、不写 DB、不改持久工作区。 |
+| `export_spec_runtime_distribution_dry_run.py` | 导出已审批 Spec → runtime/subagent 任务分发空运行矩阵，验证 Kiro-style requirements/design/tasks 可追踪到 agent 可见片段、frameworkDigest、detailRef 和 compact tool surface。 | 可写 `docs/chatruntime/runtime_deep_observation_reports/`；不调用模型；独立运行使用临时状态库，session/run/episode 在返回前清理，不打开用户状态库。 |
 | `export_supervisor_first_contract_dry_run.py` | 导出 Supervisor First / Runtime Grounded 系统提示词和关键工具说明空运行门禁。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `explain_safety_command_dry_run.py` | 解释 SafetyRuntime 对命令的规范化、解码、路径面和 verdict；不执行命令。 | 无真实命令副作用。 |
 | `run_bocha_provider_live_audit.py --live --config <existing-config.json>` | 只读指定配置的 Bocha 域，以内存凭据向官方 Web Search API 查一个公开技术问题；输出 HTTP 状态、结果数量、耗时和错误类别。 | 显式联网并可能计费；无 `--live` 不读配置、不导入 provider。不会写回配置、复制密钥、输出响应正文或请求头；403 不直接认定为无效 key。 |

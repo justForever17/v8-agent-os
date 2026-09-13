@@ -42,12 +42,20 @@ def test_creative_media_agent_surface_is_exactly_six_facades() -> None:
 
 
 def test_supervisor_receives_only_readonly_media_discovery_by_default() -> None:
+    # Register the real runtime descriptor before taking the snapshot. This
+    # reproduces production startup order instead of relying on test ordering.
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    assert creative_media_runtime.kind == "creative_media"
     assert _RUNTIME_ROUTE_DEFAULT_GROUPS["creative_media"] == []
+    snapshot = build_supervisor_tool_policy_snapshot(None)
     default_names = {
         item["name"]
-        for item in build_supervisor_tool_policy_snapshot(None)["lockedNativeTools"]
+        for item in snapshot["lockedNativeTools"]
     }
+    runtime_managed_names = {item["name"] for item in snapshot["runtimeManagedTools"]}
     assert default_names & EXPECTED == {"creative_media_capabilities"}
+    assert runtime_managed_names & EXPECTED == EXPECTED - {"creative_media_capabilities"}
     assert "browser_broker" not in default_names
 
 

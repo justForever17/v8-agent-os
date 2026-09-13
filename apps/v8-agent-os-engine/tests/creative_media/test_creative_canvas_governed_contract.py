@@ -17,6 +17,13 @@ from runtimes.chat.runtime import ChatRuntime
 from runtimes.creative_media.runtime import creative_media_runtime
 
 
+@pytest.fixture(autouse=True)
+def _isolate_canvas_contracts_from_model_hub(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests exercise Canvas lineage and execution contracts. Model Hub
+    # resolution has a separate contract suite and must not use local config.
+    monkeypatch.setattr(ChatRuntime, "_resolve_engine_config", lambda _self, _request: None)
+
+
 def test_canvas_operation_mention_becomes_authoritative_runtime_lineage(monkeypatch) -> None:
     runtime = ChatRuntime()
     request = ChatRequest.model_validate(

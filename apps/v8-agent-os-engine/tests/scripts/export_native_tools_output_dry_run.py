@@ -122,6 +122,7 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "config_broker": {"mode": "inventory", "limit": 5, "offset": 0},
     "plugin_broker": {"mode": "list"},
     "spec_broker": {"mode": "brief", "workspace_path": ""},
+    "system_operations": {"action": "status"},
     "rpa_list_robot_scripts": {"limit": 5},
     "creative_media_capabilities": {"action": "describe", "request": {}},
     "creative_media_plan": {"action": "list_work_orders", "request": {"limit": 10}},

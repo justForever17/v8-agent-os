@@ -2583,7 +2583,7 @@
   "app.admin.dashboard.subagents.page.k2b7b1954": "当前没有可选 skills。",
   "app.admin.dashboard.subagents.page.k2ba9f8cf": "名称必填",
   "app.admin.dashboard.subagents.page.k32187022": "来自 engine 当前 canonical surface 的基础读写、共享、命令、检索、媒体理解与 broker 化网络能力。",
-  "app.admin.dashboard.subagents.page.k3b6c2a75": "子 Agent 会继承 Supervisor 当轮 route 已筛出的 skills、MCP、PluginHost 候选，再按 delegated task 继续收窄。同时 baseline system tools 默认常开。",
+  "app.admin.dashboard.subagents.page.k3b6c2a75": "子 Agent 会继承 Supervisor 当轮 route 已筛出的 skills、MCP 和明确授权的插件能力，再按 delegated task 继续收窄。同时 baseline system tools 默认常开。",
   "app.admin.dashboard.subagents.page.k372414e4": "最大反思次数",
   "app.admin.dashboard.subagents.page.k4218ea5a": "职责说明",
   "app.admin.dashboard.subagents.page.k45e15cc8": "工具执行失败或效果不佳时，允许子 Agent 做受控反思。",

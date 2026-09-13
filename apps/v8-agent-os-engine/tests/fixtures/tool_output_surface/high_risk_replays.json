@@ -12,7 +12,7 @@
   "groups": [
     {
       "name": "browser_scoped_observation",
-      "tools": ["browser_broker"],
+      "tools": ["browser_broker", "browser_capabilities"],
       "payload": {
         "ok": true,
         "status": "observed",

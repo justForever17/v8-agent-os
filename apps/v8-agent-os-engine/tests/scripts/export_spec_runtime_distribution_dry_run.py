@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
+import os
 import sys
 import tempfile
+import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# The standalone diagnostic needs real session/run foreign keys, but must not
+# open the user's state database. Imported pytest calls use tests/conftest.py.
+if __name__ == "__main__":
+    _standalone_state = tempfile.TemporaryDirectory(prefix="v8os-spec-dry-run-state-")
+    os.environ["V8_AGENT_OS_HOME"] = _standalone_state.name
+    atexit.register(_standalone_state.cleanup)
 
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
 if str(ENGINE_ROOT) not in sys.path:
@@ -14,6 +25,7 @@ if str(ENGINE_ROOT) not in sys.path:
 
 from core.native_tools import runtime_broker
 from core.native_tools import NATIVE_TOOLS
+from core.database import db
 from core.system_tools.baseline import select_baseline_system_tools
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
@@ -287,28 +299,42 @@ def _build_supervisor_owned_surfaces(worker_briefs: list[dict[str, Any]]) -> dic
     }
 
 
+@contextmanager
+def _durable_route_fixture():
+    fixture_suffix = uuid.uuid4().hex
+    session_id = f"dry-run-spec-distribution-{fixture_suffix}"
+    run_id = f"run-dry-run-spec-distribution-{fixture_suffix}"
+    db.create_or_update_session(session_id, "Spec distribution dry run", user_id="fixture-owner")
+    try:
+        db.create_run_record(run_id, session_id, user_id="fixture-owner", status="running")
+        yield fixture_suffix, session_id, run_id
+    finally:
+        db.delete_session(session_id)
+
+
 def build_export(*, sample_spec_dir: Path | None = None) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="v8os-spec-distribution-") as tmp:
         workspace = Path(tmp).resolve()
         spec_id, sample_source = _create_approved_demo_spec(workspace, sample_spec_dir=sample_spec_dir)
-        with bind_runtime_context(
-            runtime_kind="chat",
-            session_id="dry-run-spec-distribution",
-            run_id="run-dry-run-spec-distribution",
-            rootRunId="root-dry-run-spec-distribution",
-            workspace_path=str(workspace),
-        ):
-            command = runtime_broker.func(
-                mode="route",
-                runtime_kind="engineering",
-                need={
-                    "kind": "engineering",
-                    "reason": "approved_spec_runtime_execution",
-                    "specId": spec_id,
-                },
-                state={"current_route_context": {}},
-                tool_call_id="call-dry-run-spec-distribution",
-            )
+        with _durable_route_fixture() as (fixture_suffix, session_id, run_id):
+            with bind_runtime_context(
+                runtime_kind="chat",
+                session_id=session_id,
+                run_id=run_id,
+                rootRunId=run_id,
+                workspace_path=str(workspace),
+            ):
+                command = runtime_broker.func(
+                    mode="route",
+                    runtime_kind="engineering",
+                    need={
+                        "kind": "engineering",
+                        "reason": "approved_spec_runtime_execution",
+                        "specId": spec_id,
+                    },
+                    state={"current_route_context": {}},
+                    tool_call_id=f"call-dry-run-spec-distribution-{fixture_suffix}",
+                )
 
         route_context = dict((getattr(command, "update", None) or {}).get("current_route_context") or {})
         episode = dict((route_context.get("capabilityEpisodes") or [{}])[-1])
@@ -381,7 +407,7 @@ def _write_default_reports(payload: dict[str, Any]) -> dict[str, str]:
     md_path.write_text(
         f"""# Spec Runtime Distribution Dry Run
 
-No model call, no database write, no persistent workspace mutation.
+No model call, no persistent database record, no persistent workspace mutation.
 
 ## Result
 

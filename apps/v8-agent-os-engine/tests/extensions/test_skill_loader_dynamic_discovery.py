@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.workspace_authority import WorkspaceAuthorityDescriptor
 from erc.runtime_context import bind_runtime_context
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
@@ -339,18 +342,22 @@ def test_run_skill_script_allows_selected_global_skill_but_blocks_unrelated_exte
                 }
             )
         with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
-            blocked = fetch_skill_instructions.invoke(
-                {
-                    "skill_name": "external-script-skill",
-                    "mode": "run_script",
-                    "relative_path": "scripts/report.py",
-                    "script_args": [str(unrelated)],
-                }
-            )
+            with pytest.raises(ModelGovernanceInterventionRequired) as blocked:
+                fetch_skill_instructions.invoke(
+                    {
+                        "skill_name": "external-script-skill",
+                        "mode": "run_script",
+                        "relative_path": "scripts/report.py",
+                        "script_args": [str(unrelated)],
+                    }
+                )
 
     assert "Status: completed" in success
     assert "report:ok" in success
     assert str(global_skill_root) not in success
-    assert "Status: failed" in blocked
-    assert "Active Workspace Root" in blocked or "工作区" in blocked
-    assert str(unrelated) not in blocked
+    approval = blocked.value.to_request_payload()
+    assert blocked.value.approval_kind == "safety_review"
+    assert approval["riskCode"] == "workspace_external_access"
+    operation_arguments = approval["safety"]["details"]["operationArguments"]
+    assert str(unrelated) in operation_arguments["resolvedTargets"]
+    assert str(unrelated) not in str(blocked.value)

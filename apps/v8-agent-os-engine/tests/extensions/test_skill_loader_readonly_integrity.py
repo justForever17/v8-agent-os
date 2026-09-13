@@ -76,7 +76,7 @@ def test_safety_reviews_global_skill_file_write():
     assert decision.risk_code == "protected_skill_root_write"
 
 
-def test_safety_blocks_skill_root_destructive_command(tmp_path):
+def test_safety_reviews_bulk_workspace_skill_root_deletion(tmp_path):
     workspace = tmp_path / "workspace"
     command = f"Remove-Item -LiteralPath '{workspace / '.agents' / 'skills'}' -Recurse -Force"
 
@@ -85,8 +85,8 @@ def test_safety_blocks_skill_root_destructive_command(tmp_path):
         runtime_context={"workspace_path": str(workspace)},
     )
 
-    assert decision.verdict == "block"
-    assert decision.risk_code == "protected_skill_root_destructive_command"
+    assert decision.verdict == "review"
+    assert decision.risk_code == "bulk_skill_mutation"
 
 
 def test_safety_allows_regular_workspace_file_write(tmp_path):

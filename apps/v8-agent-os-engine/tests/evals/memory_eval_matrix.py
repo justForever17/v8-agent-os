@@ -354,40 +354,48 @@ def workflow_learning_case() -> dict[str, Any]:
     suffix = uuid.uuid4().hex[:10]
     candidate_ids: list[str] = []
     episode_ids: list[str] = []
-    with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_workflow_test_config()):
-        verified = workflow_memory_service.record_engineering_proof_episode(
-            proof_entry=_proof_entry(
-                proof_id=f"proof_eval_verified_{suffix}",
-                verification_status="verified",
-                extra={"scope": f"workspace:eval-verified-{suffix}"},
-            ),
-            workset_observations=[],
-        )
-        failed = workflow_memory_service.record_engineering_proof_episode(
-            proof_entry=_proof_entry(
-                proof_id=f"proof_eval_failed_{suffix}",
-                verification_status="failed_verification",
-                extra={"scope": f"workspace:eval-failed-{suffix}"},
-            ),
-            workset_observations=[],
-        )
-        risky = workflow_memory_service.record_engineering_proof_episode(
-            proof_entry=_proof_entry(
-                proof_id=f"proof_eval_risky_{suffix}",
-                verification_status="verified",
-                extra={
-                    "scope": f"workspace:eval-risky-{suffix}",
-                    "diagnostics": {
-                        "worksetCorrelation": {
-                            "risk": "outside_write_set",
-                            "outsideWriteSetFiles": ["apps/v8-agent-os-admin/src/app/page.tsx"],
-                            "manualOverride": {"present": True},
-                        }
-                    }
-                },
-            ),
-            workset_observations=[],
-        )
+    with tempfile.TemporaryDirectory(prefix="v8os-workflow-eval-") as temp_dir:
+        workspace_root = Path(temp_dir)
+        workspaces = {
+            name: workspace_root / name
+            for name in ("verified", "failed", "risky")
+        }
+        for workspace in workspaces.values():
+            workspace.mkdir()
+        with patch("runtimes.memory.workflow_service.workflow_memory_config", return_value=_workflow_test_config()):
+            verified = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=_proof_entry(
+                    proof_id=f"proof_eval_verified_{suffix}",
+                    verification_status="verified",
+                    extra={"workspaceRoot": str(workspaces["verified"])},
+                ),
+                workset_observations=[],
+            )
+            failed = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=_proof_entry(
+                    proof_id=f"proof_eval_failed_{suffix}",
+                    verification_status="failed_verification",
+                    extra={"workspaceRoot": str(workspaces["failed"])},
+                ),
+                workset_observations=[],
+            )
+            risky = workflow_memory_service.record_engineering_proof_episode(
+                proof_entry=_proof_entry(
+                    proof_id=f"proof_eval_risky_{suffix}",
+                    verification_status="verified",
+                    extra={
+                        "workspaceRoot": str(workspaces["risky"]),
+                        "diagnostics": {
+                            "worksetCorrelation": {
+                                "risk": "outside_write_set",
+                                "outsideWriteSetFiles": ["apps/v8-agent-os-admin/src/app/page.tsx"],
+                                "manualOverride": {"present": True},
+                            }
+                        },
+                    },
+                ),
+                workset_observations=[],
+            )
     for result in (verified, failed, risky):
         episode_ids.append(result["episode"]["id"])
         candidate_ids.append(result["candidate"]["id"])

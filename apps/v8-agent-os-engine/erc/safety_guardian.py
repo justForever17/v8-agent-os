@@ -2566,8 +2566,19 @@ class SafetyGuardian:
                 sensitive = path is None or self._matches_path_patterns(path, config["fileRules"]["blockedPathPatterns"])
                 if path is not None:
                     sensitive = sensitive or self._is_sensitive_system_path(path, include_application_roots=False)
+                    sensitive = sensitive or any(
+                        self._is_path_within_root(path, Path(runtime_path))
+                        for runtime_path in protected_runtime_paths()
+                    )
                     protected = self._is_under_protected_path(path)
-                    in_workspace = self._is_user_workspace_write_path(path, runtime_context)
+                    # Workspace containment and generic protected-root policy
+                    # are separate facts. A project can legitimately live
+                    # below a protected parent. Canonical runtime state and
+                    # credential/system paths remain sensitive above.
+                    in_workspace = any(
+                        self._is_path_within_root(path, root)
+                        for root in self._workspace_roots_from_context(runtime_context)
+                    )
                     sensitive = sensitive or (protected and not in_workspace and path.suffix.lower() in set(config["fileRules"]["protectedFileExtensions"]))
                     if protected and not sensitive and not in_workspace:
                         # A registered screenshot/upload grants one exact file, never

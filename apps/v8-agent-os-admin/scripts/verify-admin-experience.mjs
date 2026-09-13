@@ -58,7 +58,13 @@ try {
     await page.locator('aside nav a').first().click({ button: 'right' });
     assert.equal(await page.evaluate(() => window.__adminRightClickPrevented), true);
     for (const label of ['概览', '模型', '智能体', '扩展', '记忆与资料', '任务', '设备', '设置']) assert.equal(await page.locator('aside nav').getByRole('link', { name: label, exact: true }).isVisible(), true);
-    evidence.push({ route: '/admin/system-base', navigationRightClickSuppressed: true, eightPrimaryGroupsVisible: true });
+    const collapse = page.locator('aside > button');
+    await collapse.click();
+    assert.equal(await page.locator('aside nav').count(), 0);
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement?.closest('aside nav') !== null), false);
+    await collapse.click();
+    evidence.push({ route: '/admin/system-base', navigationRightClickSuppressed: true, eightPrimaryGroupsVisible: true, collapsedNavigationAbsent: true });
     for (const width of [1440, 768, 390]) {
         await page.setViewportSize({ width, height: 900 });
         const save = page.locator('#admin-save-actions button').first();

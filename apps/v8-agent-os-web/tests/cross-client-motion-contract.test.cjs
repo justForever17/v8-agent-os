@@ -43,12 +43,14 @@ test("Phone drawers defer Modal unmount until their symmetric exit completes", (
   assert.match(overview, /panelWidth \* \(1 - progress\.value\)/);
 });
 
-test("Admin sidebar keeps its content inert while the shell transition completes", () => {
+test("Admin sidebar removes collapsed navigation from focus and pointer targeting", () => {
   const sidebar = readText("apps/v8-agent-os-admin/src/components/layout/Sidebar.tsx");
 
-  assert.match(sidebar, /\[transition-duration:220ms\]/);
-  assert.match(sidebar, /transition-\[opacity,transform\]/);
-  assert.match(sidebar, /inert=\{isCollapsed\}/);
+  // The compact sidebar no longer retains an animated hidden subtree.
+  // Unmounting is the interaction boundary; an opacity-only replacement fails.
+  assert.match(sidebar, /\{!isCollapsed \? navigation : null\}/);
+  assert.match(sidebar, /<Dialog open=\{mobileOpen\} onOpenChange=\{setMobileOpen\}/);
+  assert.doesNotMatch(sidebar, /forceMount/);
 });
 
 test("Desktop Pet menu closes through its own origin-aware transition before unmount", () => {

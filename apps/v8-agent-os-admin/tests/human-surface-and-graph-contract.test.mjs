@@ -31,26 +31,24 @@ test("primary runtime cards keep exact identifiers behind technical details", ()
 
 test("knowledge graph uses clustered spacing, drag, subtle motion, and reduced-motion support", () => {
     const graph = read("src/components/memory/GraphViewer.tsx");
-
-    assert.match(graph, /graphClusterKey/);
-    assert.match(graph, /graphScreenRadius/);
-    assert.match(graph, /forceCollide/);
-    assert.match(graph, /focusPrimaryGraph/);
-    assert.match(graph, /centerAt/);
-    assert.match(graph, /enableNodeDrag/);
+    const canvas = read("src/components/memory/GalaxyCanvas.tsx");
+    const geometry = read("src/components/memory/galaxy-layout.ts");
+    // The scoped galaxy replaces force layout and the duplicate motion timer.
+    // Keep the user behavior sentinels; geometry and browser tests exercise it.
+    assert.match(geometry, /allocateOrbits/);
+    assert.match(geometry, /clusterCenter/);
+    assert.match(canvas, /inverseNode\(world\(point\)/);
+    assert.match(canvas, /setPointerCapture\(event.pointerId\)/);
+    assert.match(canvas, /releasePointerCapture\(event.pointerId\)/);
     assert.match(graph, /prefers-reduced-motion: reduce/);
-    assert.match(graph, /requestAnimationFrame/);
-    assert.match(graph, /setInterval\(refreshVisibleGraph, 5_000\)/);
-    assert.match(graph, /document\.visibilityState === "visible"/);
-    assert.match(graph, /loadGraph\(\{ silent: true \}\)/);
-    assert.doesNotMatch(graph, /denseCore/);
-    assert.doesNotMatch(graph, /2200/);
-    assert.match(graph, /menuMode === "summary"/);
-    assert.match(graph, /SelectTrigger/);
-    assert.match(graph, /SelectContent/);
-    assert.doesNotMatch(graph, /<select/);
-    assert.doesNotMatch(graph, /enableNodeDrag=\{false\}/);
-    assert.doesNotMatch(graph, /zoomToFit/);
+    assert.match(canvas, /!paused && !reduced/);
+    assert.match(canvas, /visible && !document.hidden/);
+    assert.match(canvas, /cancelAnimationFrame\(frame\)/);
+    assert.match(canvas, /IntersectionObserver/);
+    assert.doesNotMatch(graph, /setInterval|setMotionClock/);
+    assert.match(graph, /mode === "summary"/);
+    assert.match(graph, /admin.galaxy.chooseWorkspace/);
+    assert.match(graph, /admin.galaxy.pause/);
 });
 
 test("Source Router stays compact until the user expands its configuration", () => {

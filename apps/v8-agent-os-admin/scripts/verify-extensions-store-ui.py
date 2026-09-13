@@ -121,7 +121,7 @@ async def main():
         await page.wait_for_timeout(700)
         assert await page.get_by_text("当前：魔搭国内源", exact=True).is_visible()
         assert await page.get_by_role("alert").get_by_text("Synthetic source offline", exact=True).is_visible()
-        assert "[object Object]" not in (await page.get_by_role("alert").inner_text())
+        assert "[object Object]" not in " ".join(await page.get_by_role("alert").all_text_contents())
         await page.get_by_role("button", name="切回国际源", exact=True).click()
         await search.fill("")
         await page.wait_for_timeout(700)

@@ -435,7 +435,8 @@ def test_catalog_does_not_follow_windows_junction(scoped_service, tmp_path: Path
     completed = subprocess.run(
         ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
         capture_output=True,
-        text=True,
+        # cmd uses the Windows console code page even when Python enables UTF-8.
+        # The oracle consumes the return code and filesystem, not localized text.
         creationflags=subprocess.CREATE_NO_WINDOW,
         check=False,
     )

@@ -1,11 +1,12 @@
 """Model-facing manual dispatch contract; execution remains in delegation_broker."""
 
 from typing import Annotated, Any, Literal
+import json
 
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 from typing_extensions import Required
 
 from core.tools.native.delegation import DelegationTaskInput, delegation_broker
@@ -18,6 +19,30 @@ class ManualLocalDelegationTask(DelegationTaskInput, total=False):
 
 class ManualExternalDelegationTask(DelegationTaskInput, total=False):
     executionLaneHint: Required[Literal["external_worker"]]
+
+
+def delegation_parameter_repair(invalid_fields: list[str]) -> tuple[str, list[str]]:
+    """Explain the current public union without exposing Pydantic branch names."""
+    local_required = TypeAdapter(ManualLocalDelegationTask).json_schema().get("required", [])
+    external_required = TypeAdapter(ManualExternalDelegationTask).json_schema().get("required", [])
+    fields = list(dict.fromkeys(field.replace(".ManualLocalDelegationTask.", ".").replace(".ManualExternalDelegationTask.", ".")
+                                for field in invalid_fields))
+    example = {
+        "mode": "dispatch",
+        "tasks": [{"taskBriefId": "<retain task id>", "targetAgentName": "<exact registered name from agent_broker(mode='list')>",
+                   "goal": "<retain authorized goal>", "expectedOutputs": ["<concrete result>"],
+                   "acceptanceContract": ["<observable acceptance check>"]}],
+    }
+    return "\n".join([
+        "Delegation parameters were rejected before execution; no episode or worker was dispatched by this call.",
+        "Invalid field paths: " + ", ".join(fields),
+        "For a local registered Agent, tasks[i] requires: " + ", ".join(local_required) + ".",
+        "Set tasks[i].targetAgentName to the exact name from the visible registry or agent_broker(mode='list'). A family or preferredAgentId does not replace targetAgentName.",
+        "For an explicitly requested external worker only, tasks[i] instead requires: " + ", ".join(external_required) + "; executionLaneHint must be 'external_worker'.",
+        "These are alternative task variants. Do not switch a local task to external_worker to bypass a missing name. Do not add the validation branch class names as JSON fields.",
+        "Preserve the authorized goal, evidence, outputs, acceptance, read/write boundaries and task IDs; repair this call's fields without widening permissions. Omit unused optional fields, including null lane/selector values.",
+        "Local shape (replace placeholders; do not copy a made-up Agent name): " + json.dumps(example, ensure_ascii=False),
+    ]), fields
 
 
 @tool("delegation_broker")

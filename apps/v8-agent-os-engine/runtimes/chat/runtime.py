@@ -8840,13 +8840,21 @@ class ChatRuntime:
                 # an expected approval/ask_user pause is not a failed tool result.
                 return emitted_events
             error_type = type(error).__name__ if isinstance(error, BaseException) else "ToolExecutionError"
+            from graph.tool_routing import tool_input_validation_fields
+            invalid_fields = tool_input_validation_fields(error, name)
+            input_rejected = invalid_fields is not None
+            if input_rejected and name == "delegation_broker":
+                from core.tools.native.delegation_surface import delegation_parameter_repair
+                _, invalid_fields = delegation_parameter_repair(invalid_fields)
             callback_id = str(event.get("run_id") or "")
             tool_call_id = str(data.get("tool_call_id") or stream_state.tool_call_id_by_callback_run_id.get(callback_id) or callback_id)
             return await self.handle_stream_event(chat_run, stream_state, {
                 **event, "event": "on_tool_end", "data": {**data, "output": ToolMessage(content=json.dumps({
-                    "ok": False, "kind": "tool_execution_error", "error": error_type,
-                    "summary": "工具调用异常退出；是否已产生副作用尚未确认。检查已有结果后再决定重试。",
-                    "executionOutcome": "unverified",
+                    "ok": False, "kind": "tool_parameter_repair" if input_rejected else "tool_execution_error", "error": error_type,
+                    "summary": ("工具参数未通过校验，本次调用尚未执行。请修正所列字段后重试。" if input_rejected
+                                else "工具调用异常退出；是否已产生副作用尚未确认。检查已有结果后再决定重试。"),
+                    "executionOutcome": "not_executed" if input_rejected else "unverified",
+                    **({"invalidFields": invalid_fields} if input_rejected else {}),
                 }, ensure_ascii=False), name=name, tool_call_id=tool_call_id, status="error")},
             })
 

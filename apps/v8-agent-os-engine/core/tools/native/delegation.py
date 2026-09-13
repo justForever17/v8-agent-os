@@ -2650,13 +2650,11 @@ def delegation_broker(
                                 exampleTasks=[
                                     {
                                         "taskBriefId": "child-check-1",
+                                        **({"targetAgentName": "<exact registered Agent name from agent_broker(mode='list')>"} if caller.is_supervisor else {}),
                                         "goal": "Independently inspect the assigned evidence and return the requested fact.",
                                         "expectedOutputs": ["result", "evidence", "limitations"],
                                         "acceptanceContract": "Return a compact result with evidence and limitations.",
-                                        "toolPolicy": {
-                                            "mode": "allowlist",
-                                            "allowedTools": ["read_native_file"],
-                                        },
+                                        "toolPolicy": {"mode": "default"},
                                     }
                                 ],
                             ),

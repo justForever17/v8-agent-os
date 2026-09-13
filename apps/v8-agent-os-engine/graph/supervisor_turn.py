@@ -742,6 +742,8 @@ def _delegation_orchestration_guidance(*, correction: bool = False) -> SystemMes
         "[Required Delegation Dispatch]\n"
         + ("This is the single correction attempt. " if correction else "")
         + "The next user-requested execution is delegation_broker(mode='dispatch'), not a runtime_broker route. "
+        "If the exact registered Agent name or capability is not clear, first use agent_broker(mode='list'/'inspect'/'validate'). "
+        "Registry reads are preparation only: they do not dispatch work or complete the pending delegation. "
         "You may first read the received Research handoff's exact rawRef with tool_observation_detail, or its evidenceBundleId with research_broker(mode='get_evidence'), when needed to prepare an accurate task. "
         "This is evidence preparation, not completion of the requested delegation; do not restart Research or fetch unrelated material. "
         "Use the exact Agent identity from the visible registry, never guess a family name. "
@@ -1623,6 +1625,23 @@ def _retry_runtime_route_compiler_once(
             f"{corrected_error}"
         )
     return corrected
+
+
+def _is_required_orchestration_preparation(response, required_kind: str, handoff_read_targets: dict) -> bool:
+    if is_research_handoff_read(response, handoff_read_targets):
+        return True
+    if required_kind != "delegation":
+        return False
+    calls = list(getattr(response, "tool_calls", None) or [])
+    # Registry observations supply identities/capabilities, never an episode or
+    # delivery receipt. A mixed call containing a write is not a registry read.
+    return bool(calls) and all(
+        isinstance(call, dict)
+        and call.get("name") == "agent_broker"
+        and str(_coerce_json_mapping(call.get("args")).get("mode") or "list").strip().lower()
+        in {"list", "inspect", "validate"}
+        for call in calls
+    )
 
 
 def _delegation_dispatch_contract_error(response) -> str | None:
@@ -3494,7 +3513,10 @@ def execute_supervisor_turn(
         else ""
     )
     handoff_read_targets = research_handoff_read_targets(state, user_query=user_query) if required_orchestration_kind == "delegation" else {}
-    orchestration_tool_choice = "required" if handoff_read_targets else required_orchestration_tool or None
+    orchestration_tool_choice = (
+        "required" if handoff_read_targets or required_orchestration_kind == "delegation"
+        else required_orchestration_tool or None
+    )
     if _is_network_supervisor_compat_transport(state) and compat_diagnostics.get("requestedExternalToolChoice"):
         orchestration_tool_choice = str(compat_diagnostics["requestedExternalToolChoice"])
     explicit_coordination_send = (
@@ -3630,6 +3652,8 @@ def execute_supervisor_turn(
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, {"memory_broker"})
         if pending_required_runtime_kinds:
             orchestration_tool_names = {required_orchestration_tool, *handoff_read_targets}
+            if required_orchestration_kind == "delegation":
+                orchestration_tool_names.add("agent_broker")
             filtered_supervisor_tools = [
                 tool_ref
                 for tool_ref in list(filtered_supervisor_tools or [])
@@ -4025,7 +4049,7 @@ def execute_supervisor_turn(
             sanitized_response = _normalize_runtime_broker_response_arguments(
                 sanitize_response_tool_calls(candidate_response)
             )
-            if is_research_handoff_read(sanitized_response, handoff_read_targets):
+            if _is_required_orchestration_preparation(sanitized_response, required_orchestration_kind, handoff_read_targets):
                 return None
             routed_kinds = _response_runtime_route_kinds(sanitized_response)
             required_attempt = _response_has_required_broker_attempt(
@@ -4186,7 +4210,7 @@ def execute_supervisor_turn(
                 )
             if not use_runtime_route_compiler and (
                 required_kind not in _response_runtime_route_kinds(response)
-                and not is_research_handoff_read(response, handoff_read_targets)
+                and not _is_required_orchestration_preparation(response, required_kind, handoff_read_targets)
                 and not _response_has_required_broker_attempt(
                     response,
                     required_orchestration_tool,
@@ -4221,7 +4245,7 @@ def execute_supervisor_turn(
                 )
                 if (
                     required_kind not in _response_runtime_route_kinds(response)
-                    and not is_research_handoff_read(response, handoff_read_targets)
+                    and not _is_required_orchestration_preparation(response, required_kind, handoff_read_targets)
                     and not _response_has_required_broker_attempt(
                         response,
                         required_orchestration_tool,

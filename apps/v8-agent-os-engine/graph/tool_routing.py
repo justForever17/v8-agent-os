@@ -1008,7 +1008,35 @@ def _validation_error_fields(error_text: str) -> list[str]:
     return fields[:8]
 
 
-def _runtime_parameter_repair_message(request: Any, error_text: str) -> ToolMessage | None:
+def tool_input_validation_fields(error: Any, tool_name: str) -> list[str] | None:
+    """Distinguish BaseTool input rejection from validation inside a tool body."""
+    from pydantic import ValidationError
+    from langgraph.prebuilt.tool_node import ToolInvocationError
+    if isinstance(error, ToolInvocationError):
+        if error.tool_name != tool_name:
+            return None
+        # ToolNode wraps every Pydantic error, including tool-body errors. Its
+        # class name alone does not prove that invocation never began.
+        error = error.source
+    if not isinstance(error, ValidationError):
+        return None
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if (frame.f_globals.get("__name__") == "langchain_core.tools.base"
+                and frame.f_code.co_name == "_parse_input"
+                and str(getattr(frame.f_locals.get("self"), "name", "")) == tool_name):
+            return list(dict.fromkeys(
+                ".".join(str(part) for part in item["loc"])
+                for item in error.errors(include_url=False, include_input=False)
+            ))[:8]
+        traceback = traceback.tb_next
+    return None
+
+
+def _runtime_parameter_repair_message(
+    request: Any, error_text: str, *, input_validation_fields: list[str] | None = None,
+) -> ToolMessage | None:
     """Turn broker schema failures into model-teachable feedback.
 
     LangGraph validates a tool's args schema before entering the function body,
@@ -1019,6 +1047,14 @@ def _runtime_parameter_repair_message(request: Any, error_text: str) -> ToolMess
 
     tool_call = dict(getattr(request, "tool_call", {}) or {})
     tool_name = str(tool_call.get("name") or "").strip()
+    if tool_name == "delegation_broker" and input_validation_fields is not None:
+        from core.tools.native.delegation_surface import delegation_parameter_repair, supervisor_delegation_broker
+        if getattr(getattr(request, "tool", None), "func", None) is not supervisor_delegation_broker.func:
+            return None
+        content, fields = delegation_parameter_repair(input_validation_fields)
+        return ToolMessage(content=content, name=tool_name, tool_call_id=str(tool_call.get("id") or ""), status="error",
+                           additional_kwargs={"riskCode": "delegation_parameter_repair", "invalidFields": fields,
+                                              "executionOutcome": "not_executed", "recommendedNextAction": "repair_same_delegation_call"})
     if tool_name != "runtime_broker":
         return None
     text = str(error_text or "")
@@ -1189,8 +1225,14 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
                 f"External client tool bridge hard stop for '{tool_name}': missing LangGraph interrupt context "
                 "(__pregel_scratchpad). The model must not retry this network_* tool in the same run."
             ) from execution_err
-        parameter_repair = _runtime_parameter_repair_message(request, error_msg)
-        if parameter_repair is None:
+        input_fields = tool_input_validation_fields(execution_err, tool_name)
+        from pydantic import ValidationError
+        from langgraph.prebuilt.tool_node import ToolInvocationError
+        internal_validation = isinstance(execution_err, (ValidationError, ToolInvocationError)) and input_fields is None
+        parameter_repair = None if internal_validation else _runtime_parameter_repair_message(
+            request, error_msg, input_validation_fields=input_fields,
+        )
+        if parameter_repair is None and not internal_validation:
             parameter_repair = _generic_parameter_repair_message(request, error_msg)
         if parameter_repair is not None:
             return apply_tool_surface_budget(
@@ -1217,7 +1259,9 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
     except Exception as hook_err:
         _raise_runtime_governance_exception_if_needed(hook_err)
 
-    return apply_agent_visible_budget(result, budget_meta)
+    # Command-returning tools may omit ToolMessage.name. The request still owns
+    # the tool identity; retain it when selecting the repair/result renderer.
+    return apply_agent_visible_budget(result, budget_meta, tool_name=tool_name)
 
 
 def create_routed_tool_node(tools, name, fallback_goto):

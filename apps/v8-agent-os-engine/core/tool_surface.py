@@ -2229,6 +2229,13 @@ def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> 
     missing = payload.get("missingTasks") or payload.get("missing_tasks")
     if missing:
         lines.append(f"Missing tasks: {_short_text(missing, 260)}")
+    if payload.get("ok") is False and isinstance(payload.get("exampleTasks"), list):
+        lines.append("Repair example (replace placeholders with the authorized task; nothing has been dispatched):")
+        lines.append(json.dumps({"mode": "dispatch", "tasks": payload["exampleTasks"]}, ensure_ascii=False))
+    if payload.get("ok") is False and payload.get("repairFields"):
+        lines.append("Repair fields: " + ", ".join(str(field) for field in payload["repairFields"]))
+    if payload.get("ok") is False and payload.get("repairInstruction"):
+        lines.append("Repair: " + str(payload["repairInstruction"]))
 
     tasks = (
         payload.get("tasks")
@@ -3393,7 +3400,9 @@ def apply_tool_surface_budget(
     return _copy_tool_message_with_budget(message, content_str, budget_meta)
 
 
-def apply_command_tool_surface_budget(command: Command, budget_meta: dict[str, Any] | None = None) -> Command:
+def apply_command_tool_surface_budget(
+    command: Command, budget_meta: dict[str, Any] | None = None, *, tool_name: str | None = None,
+) -> Command:
     update = getattr(command, "update", None)
     if not isinstance(update, dict):
         return command
@@ -3405,7 +3414,9 @@ def apply_command_tool_surface_budget(command: Command, budget_meta: dict[str, A
     next_messages = []
     for message in messages:
         if isinstance(message, ToolMessage):
-            truncated = apply_tool_surface_budget(message, dict(budget_meta or {}))
+            truncated = apply_tool_surface_budget(
+                message, dict(budget_meta or {}), tool_name=getattr(message, "name", None) or tool_name,
+            )
             changed = changed or truncated is not message
             next_messages.append(truncated)
         else:
@@ -3422,9 +3433,11 @@ def apply_command_tool_surface_budget(command: Command, budget_meta: dict[str, A
     )
 
 
-def apply_agent_visible_budget(result: Any, budget_meta: dict[str, Any] | None = None):
+def apply_agent_visible_budget(
+    result: Any, budget_meta: dict[str, Any] | None = None, *, tool_name: str | None = None,
+):
     if isinstance(result, ToolMessage):
-        return apply_tool_surface_budget(result, budget_meta)
+        return apply_tool_surface_budget(result, budget_meta, tool_name=getattr(result, "name", None) or tool_name)
     if isinstance(result, Command):
-        return apply_command_tool_surface_budget(result, budget_meta)
+        return apply_command_tool_surface_budget(result, budget_meta, tool_name=tool_name)
     return result

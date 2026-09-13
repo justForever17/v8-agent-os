@@ -6,6 +6,10 @@ import { useT } from "@/components/providers/LocaleProvider";
 
 type ShellWindowApi = {
     isShell: true;
+    onSurfaceVisibilityChange?: (callback: (state: { visible: boolean }) => void) => () => void;
+    onNavigateSession?: (callback: (state: { sessionId: string }) => void) => () => void;
+    onAdminSessionLockChange?: (callback: (state: { locked: boolean }) => void) => () => void;
+    getAdminSessionLock?: () => Promise<{ locked: boolean }>;
     minimize: () => void;
     toggleMaximize: () => void;
     getWindowState: () => Promise<{ isMaximized?: boolean }>;

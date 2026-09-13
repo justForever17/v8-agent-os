@@ -101,14 +101,14 @@ test('the real bootstrap GPU event records exits and one governed recovery reque
 test('the actual renderer event records sanitized surface and forwards recovery', (t) => {
   const f = fixture(t);
   const source = fs.readFileSync(path.join(shellRoot, 'electron/main.cjs'), 'utf8');
-  const start = source.indexOf("mainWindow.webContents.on('render-process-gone'");
-  const end = source.indexOf("mainWindow.webContents.on('did-fail-load'", start);
+  const start = source.indexOf("contents.on('render-process-gone'");
+  const end = source.indexOf("contents.on('did-fail-load'", start);
   assert.ok(start > 0 && end > start);
   const webContents = new EventEmitter();
   webContents.getURL = () => 'http://127.0.0.1:9527/chat?id=PRIVATE-FIXTURE';
   const recoveries = [];
   vm.runInNewContext(source.slice(start, end), {
-    mainWindow: { webContents }, shellControl: { setSurfaceStatus() {} },
+    contents: webContents, mainWindow: { webContents }, shellControl: { setSurfaceStatus() {} },
     coreServicesReady: true, webBaseUrl: 'http://127.0.0.1:9527', adminBaseUrl: 'http://127.0.0.1:9528',
     classifyProductSurface: require('../lib/readiness-probe.cjs').classifyProductSurface,
     recordDesktopFault: f.record, scheduleSurfaceRecovery: (...args) => recoveries.push(args),

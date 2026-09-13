@@ -1,7 +1,23 @@
 const { contextBridge, ipcRenderer } = require("electron");
+let surfaceVisible = true;
+let pendingSession = null;
+ipcRenderer.on("v8os-shell:surface-visibility", (_event, state) => { surfaceVisible = state?.visible === true; });
+ipcRenderer.on("v8os-shell:navigate-session", (_event, state) => { pendingSession = state?.sessionId || null; });
 
 contextBridge.exposeInMainWorld("v8osShell", {
   isShell: true,
+  onSurfaceVisibilityChange: (callback) => {
+    const listener = (_event, state) => callback?.({ visible: state?.visible === true });
+    ipcRenderer.on("v8os-shell:surface-visibility", listener);
+    callback?.({ visible: surfaceVisible });
+    return () => ipcRenderer.off("v8os-shell:surface-visibility", listener);
+  },
+  onNavigateSession: (callback) => {
+    const listener = (_event, state) => { callback?.(state); pendingSession = null; };
+    ipcRenderer.on("v8os-shell:navigate-session", listener);
+    if (pendingSession) { callback?.({ sessionId: pendingSession }); pendingSession = null; }
+    return () => ipcRenderer.off("v8os-shell:navigate-session", listener);
+  },
   minimize: () => ipcRenderer.send("v8os-shell:minimize"),
   toggleMaximize: () => ipcRenderer.send("v8os-shell:toggle-maximize"),
   getWindowState: () => ipcRenderer.invoke("v8os-shell:get-window-state"),

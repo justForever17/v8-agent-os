@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Notification, Tray, dialog, nativeImage, ipcMain, net, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, dialog, nativeImage, ipcMain, net, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('node:url');
@@ -9,6 +9,7 @@ const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { hasServiceEvidence, waitForServiceHandoff } = require('../lib/service-liveness.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 const { loadUrlSafely } = require('../lib/navigation-load.cjs');
+const { createResidentSurfaces } = require('../lib/resident-surfaces.cjs');
 const { recordDesktopFault } = require('../lib/desktop-fault-log.cjs');
 const {
   classifyWindowOpen,
@@ -55,6 +56,7 @@ const updateChecksEnabled = app.isPackaged && process.env.V8OS_DISABLE_UPDATE_CH
 const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 20_000;
 
 let mainWindow = null;
+let residentSurfaces = null;
 let tray = null;
 let quitting = false;
 let desktopPetState = 'stopped';
@@ -81,7 +83,6 @@ let lastPublishedControlStatus = '';
 let surfaceRecoveryTimer = null;
 let surfaceStabilityTimer = null;
 let surfaceRecoveryTimes = [];
-let surfaceNavigationSequence = 0;
 let updateStatus = { state: updateChecksEnabled ? 'idle' : 'disabled' };
 let updateCheckPromise = null;
 let manualUpdateDialogRequested = false;
@@ -109,7 +110,7 @@ function currentDesktopPetStatus() {
 
 function emitDesktopPetStatus() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send('v8os-shell:desktop-pet-state', currentDesktopPetStatus());
+  residentSurfaces?.broadcast('v8os-shell:desktop-pet-state', currentDesktopPetStatus());
 }
 
 function publishShellControlStatus() {
@@ -189,7 +190,7 @@ function currentWindowState() {
 
 function emitWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send('v8os-shell:window-state', currentWindowState());
+  residentSurfaces?.broadcast('v8os-shell:window-state', currentWindowState());
 }
 
 function adminLoginUrl() {
@@ -206,7 +207,7 @@ function setAdminSessionLocked(locked, reason) {
   adminSessionLocked = next;
   reportSurfaceStage('admin_session_lock_changed', { locked: next, reason });
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('v8os-shell:admin-session-lock', currentAdminSessionLock());
+    residentSurfaces?.broadcast('v8os-shell:admin-session-lock', currentAdminSessionLock());
   }
   updateTrayMenu();
   return currentAdminSessionLock();
@@ -224,7 +225,7 @@ function guardedSurfaceUrl(url) {
   return adminSessionLocked && isWebSurfaceUrl(url) ? adminLoginUrl() : url;
 }
 
-function loadInMainWindow(url) {
+function loadInMainWindow(url, options = {}) {
   const targetUrl = guardedSurfaceUrl(url);
   pendingSurfaceUrl = targetUrl;
   shellControl?.setSurfaceStatus({ surfaceReady: false });
@@ -238,13 +239,18 @@ function loadInMainWindow(url) {
   }
   pendingSurfaceUrl = null;
   return loadUrlSafely(
-    () => mainWindow.loadURL(targetUrl),
-    (error) => scheduleSurfaceRecovery(`navigation: ${error?.message || 'load failed'}`, targetUrl),
-  );
+    () => residentSurfaces.open(targetUrl, options),
+    (error) => scheduleSurfaceRecovery(`navigation: ${error?.message || 'load failed'}`, targetUrl, residentSurfaces.activeContents()),
+  ).then((loaded) => {
+    const active = residentSurfaces?.activeContents();
+    const entry = active && residentSurfaces.entryFor(active);
+    if (loaded && entry?.ready) shellControl?.setSurfaceStatus({ surfaceReady: true, surfaceKind: classifyProductSurface({ coreServicesReady, loadedUrl: active.getURL(), webBaseUrl, adminBaseUrl }) });
+    return loaded;
+  });
 }
 
 async function openAdmin() {
-  return loadInMainWindow(adminSessionLocked ? adminLoginUrl() : `${adminBaseUrl}/admin`);
+  return loadInMainWindow(adminSessionLocked ? adminLoginUrl() : `${adminBaseUrl}/admin`, { resume: !adminSessionLocked });
 }
 
 async function openDesktopPetSettings() {
@@ -253,12 +259,12 @@ async function openDesktopPetSettings() {
 
 async function openWeb() {
   const chatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
-  return loadInMainWindow(chatUrl);
+  return loadInMainWindow(chatUrl, { resume: true });
 }
 
 async function openWebSession(sessionId) {
   if (!isValidSessionId(sessionId)) return false;
-  return loadInMainWindow(`${webBaseUrl}/chat?id=${encodeURIComponent(sessionId)}`);
+  return loadInMainWindow(`${webBaseUrl}/chat?id=${encodeURIComponent(sessionId)}`, { sessionId });
 }
 
 function handleShellDeepLink(rawUrl) {
@@ -637,8 +643,9 @@ function isLocalProductSurface(url) {
 function isTrustedShellIpc(event, options = {}) {
   const frame = event?.senderFrame;
   const mainFrame = event?.sender?.mainFrame;
+  if (adminSessionLocked && isWebSurfaceUrl(frame?.url)) return false;
   return isTrustedIpcSource({
-    senderMatches: Boolean(mainWindow && !mainWindow.isDestroyed() && event?.sender === mainWindow.webContents),
+    senderMatches: Boolean(residentSurfaces?.owns(event?.sender, frame?.url, options.allowStartup === true)),
     isMainFrame: Boolean(frame
       && mainFrame
       && frame.processId === mainFrame.processId
@@ -653,7 +660,7 @@ function isTrustedAdminAuthIpc(event) {
   const frame = event?.senderFrame;
   const mainFrame = event?.sender?.mainFrame;
   return isTrustedAdminAuthIpcSource({
-    senderMatches: Boolean(mainWindow && !mainWindow.isDestroyed() && event?.sender === mainWindow.webContents),
+    senderMatches: Boolean(residentSurfaces?.owns(event?.sender, frame?.url)),
     isMainFrame: Boolean(frame
       && mainFrame
       && frame.processId === mainFrame.processId
@@ -685,7 +692,27 @@ function handleTrustedAdminAuthIpc(channel, listener) {
   });
 }
 
-function scheduleSurfaceRecovery(reason, targetUrl = '') {
+function scheduleSurfaceRecovery(reason, targetUrl = '', contents = mainWindow?.webContents) {
+  if (contents && residentSurfaces?.entryFor(contents) && isLocalProductSurface(targetUrl)) {
+    const entry = residentSurfaces.entryFor(contents);
+    if (entry.recoveryTimer || quitting) return;
+    const now = Date.now();
+    entry.recoveries = (entry.recoveries || []).filter((time) => now - time < SURFACE_RECOVERY_WINDOW_MS);
+    entry.loaded = false;
+    if (entry.recoveries.length >= MAX_SURFACE_RECOVERY_ATTEMPTS) {
+      void contents.loadURL(errorDataUrl('此界面恢复失败，请重试 / Surface recovery failed. Retry.')).catch(() => undefined);
+      return;
+    }
+    entry.recoveries.push(now);
+    entry.recoveryTimer = setTimeout(() => {
+      entry.recoveryTimer = null;
+      if (!contents.isDestroyed() && !quitting) {
+        if (adminSessionLocked && isWebSurfaceUrl(targetUrl)) { void openAdmin(); return; }
+        void contents.loadURL(targetUrl).then(() => { entry.loaded = true; }).catch(() => scheduleSurfaceRecovery(reason, targetUrl, contents));
+      }
+    }, 700);
+    return;
+  }
   shellControl?.setSurfaceStatus({ surfaceReady: false });
   if (quitting || !mainWindow || mainWindow.isDestroyed() || surfaceRecoveryTimer) return;
   const now = Date.now();
@@ -748,7 +775,7 @@ async function performInitialSurfaceLoad() {
     pendingSurfaceUrl = null;
     let navigationError = null;
     const loaded = await loadUrlSafely(
-      () => mainWindow.loadURL(targetUrl),
+      () => residentSurfaces.open(targetUrl),
       (error) => { navigationError = error; },
     );
     if (!loaded && navigationError) {
@@ -921,7 +948,7 @@ function setUpdateStatus(nextStatus) {
   updateStatus = nextStatus;
   updateTrayMenu();
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('v8os-shell:update-status', publicUpdateStatus());
+    residentSurfaces?.broadcast('v8os-shell:update-status', publicUpdateStatus());
   }
 }
 
@@ -1410,15 +1437,38 @@ function createMainWindow() {
   mainWindow.on('maximize', emitWindowState);
   mainWindow.on('unmaximize', emitWindowState);
   mainWindow.on('restore', emitWindowState);
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+  residentSurfaces = createResidentSurfaces({
+    baseContents: mainWindow.webContents,
+    createAdminView: () => new WebContentsView({ webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
+      session: mainWindow.webContents.session,
+    } }),
+    attachView: (view) => mainWindow.contentView.addChildView(view),
+    getBounds: () => { const [width, height] = mainWindow.getContentSize(); return { x: 0, y: 0, width, height }; },
+    webOrigin: () => new URL(webBaseUrl).origin, adminOrigin: () => new URL(adminBaseUrl).origin,
+    observe: observeSurfaceContents,
+  });
+  for (const event of ['show', 'hide', 'minimize', 'restore']) mainWindow.on(event, () => residentSurfaces?.visibility(mainWindow.isVisible() && !mainWindow.isMinimized()));
+  mainWindow.on('resize', () => residentSurfaces?.resize());
+  mainWindow.on('closed', () => { residentSurfaces?.dispose(); residentSurfaces = null; mainWindow = null; });
+  observeSurfaceContents(mainWindow.webContents);
+  void loadUrlSafely(
+    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web... / Starting Engine, Admin, and Web...')),
+    (error) => console.error('[v8os-shell] failed to show startup surface', error),
+  ).finally(() => { void loadInitialSurface(); });
+}
+
+function observeSurfaceContents(contents) {
+  let surfaceNavigationSequence = 0;
+  contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame !== false && !isInPlace) surfaceNavigationSequence += 1;
   });
-  mainWindow.webContents.on('will-navigate', (event, targetUrl, _isInPlace, isMainFrame) => {
+  contents.on('will-navigate', (event, targetUrl, _isInPlace, isMainFrame) => {
     const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const destination = event.url || targetUrl;
     if (mainFrameNavigation !== false && isTrustedProductDownloadUrl(destination, productOrigins)) {
       event.preventDefault();
-      mainWindow.webContents.downloadURL(destination);
+      contents.downloadURL(destination);
       return;
     }
     if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
@@ -1427,8 +1477,11 @@ function createMainWindow() {
       return;
     }
     if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
+    else if (mainFrameNavigation !== false && !residentSurfaces?.owns(contents, destination)) {
+      event.preventDefault(); void loadInMainWindow(destination, { resume: true });
+    }
   });
-  mainWindow.webContents.on('will-redirect', (event, targetUrl, _isInPlace, isMainFrame) => {
+  contents.on('will-redirect', (event, targetUrl, _isInPlace, isMainFrame) => {
     const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const destination = event.url || targetUrl;
     if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
@@ -1437,11 +1490,14 @@ function createMainWindow() {
       return;
     }
     if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
+    else if (mainFrameNavigation !== false && !residentSurfaces?.owns(contents, destination)) {
+      event.preventDefault(); void loadInMainWindow(destination, { resume: true });
+    }
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  contents.setWindowOpenHandler(({ url }) => {
     const route = classifyWindowOpen(url, productOrigins);
     if (route === 'download') {
-      mainWindow.webContents.downloadURL(url);
+      contents.downloadURL(url);
     } else if (route === 'product') {
       void loadInMainWindow(url);
     } else if (route === 'external') {
@@ -1451,24 +1507,25 @@ function createMainWindow() {
     }
     return { action: 'deny' };
   });
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+  contents.on('render-process-gone', (_event, details) => {
     if (details?.reason === 'clean-exit') return;
     recordDesktopFault('renderer-process-exited', {
       reason: details?.reason,
       exitCode: details?.exitCode,
-      surface: classifyProductSurface({ coreServicesReady, loadedUrl: mainWindow?.webContents.getURL(), webBaseUrl, adminBaseUrl }) || 'startup',
+      surface: classifyProductSurface({ coreServicesReady, loadedUrl: contents.getURL(), webBaseUrl, adminBaseUrl }) || 'startup',
     });
     shellControl?.setSurfaceStatus({ surfaceReady: false });
-    scheduleSurfaceRecovery(`renderer ${details?.reason || 'gone'} (${details?.exitCode ?? 'unknown'})`, mainWindow?.webContents.getURL());
+    scheduleSurfaceRecovery(`renderer ${details?.reason || 'gone'} (${details?.exitCode ?? 'unknown'})`, contents.getURL(), contents);
   });
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+  contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 || !isLocalProductSurface(validatedUrl)) return;
     shellControl?.setSurfaceStatus({ surfaceReady: false });
-    scheduleSurfaceRecovery(`load ${errorCode}: ${errorDescription}`, validatedUrl);
+    scheduleSurfaceRecovery(`load ${errorCode}: ${errorDescription}`, validatedUrl, contents);
   });
-  mainWindow.webContents.on('did-finish-load', () => {
-    const contents = mainWindow?.webContents;
+  contents.on('did-finish-load', () => {
     const loadedUrl = contents?.getURL() || '';
+    const entry = residentSurfaces?.entryFor(contents);
+    if (entry && isLocalProductSurface(loadedUrl)) entry.lastProductUrl = loadedUrl;
     const loadedNavigationSequence = surfaceNavigationSequence;
     const surfaceKind = classifyProductSurface({
       coreServicesReady,
@@ -1479,12 +1536,11 @@ function createMainWindow() {
     if (surfaceKind === 'admin-login') {
       setAdminSessionLocked(true, 'admin_login_loaded');
     } else if (surfaceKind === 'admin') {
-      setAdminSessionLocked(true, 'admin_surface_auth_probe');
       void resolveAdminSurfaceAuthentication({
         surfaceKind,
         probeAuthenticated: isAdminSessionAuthenticated,
         isCurrent: () => !contents?.isDestroyed()
-          && mainWindow?.webContents === contents
+          && residentSurfaces?.entryFor(contents)
           && surfaceNavigationSequence === loadedNavigationSequence
           && contents.getURL() === loadedUrl,
       }).then((authentication) => {
@@ -1514,13 +1570,13 @@ function createMainWindow() {
         timeoutMs: PRODUCT_SURFACE_READINESS_TIMEOUT_MS,
         intervalMs: 100,
         isCancelled: () => contents.isDestroyed()
-          || mainWindow?.webContents !== contents
+          || !residentSurfaces?.entryFor(contents)
           || surfaceNavigationSequence !== loadedNavigationSequence
           || contents.getURL() !== loadedUrl,
       },
     ).then((domReady) => {
       if (contents.isDestroyed()
-        || mainWindow?.webContents !== contents
+        || !residentSurfaces?.entryFor(contents)
         || surfaceNavigationSequence !== loadedNavigationSequence
         || contents.getURL() !== loadedUrl) return;
       const currentUrl = contents.getURL() || '';
@@ -1531,7 +1587,8 @@ function createMainWindow() {
         adminBaseUrl,
       });
       const surfaceReady = domReady && currentSurfaceKind === surfaceKind && currentUrl === loadedUrl;
-      shellControl?.setSurfaceStatus({
+      if (entry) entry.ready = surfaceReady;
+      if (residentSurfaces?.activeContents() === contents) shellControl?.setSurfaceStatus({
         surfaceReady,
         surfaceKind: surfaceReady ? surfaceKind : null,
       });
@@ -1540,7 +1597,7 @@ function createMainWindow() {
         domReady: surfaceReady,
       });
       if (!surfaceReady) {
-        scheduleSurfaceRecovery('product DOM marker missing', currentUrl);
+        scheduleSurfaceRecovery('product DOM marker missing', currentUrl, contents);
         return;
       }
       scheduleAutomaticUpdateCheck();
@@ -1551,12 +1608,6 @@ function createMainWindow() {
         surfaceStabilityTimer = null;
       }, 15_000);
     });
-  });
-  void loadUrlSafely(
-    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web... / Starting Engine, Admin, and Web...')),
-    (error) => console.error('[v8os-shell] failed to show startup surface', error),
-  ).finally(() => {
-    void loadInitialSurface();
   });
 }
 
@@ -1590,8 +1641,12 @@ onTrustedShellIpc('v8os-shell:open-web', () => {
   void openWeb();
 });
 
-onTrustedShellIpc('v8os-shell:retry-startup', () => {
-  void retryInitialSurface();
+onTrustedShellIpc('v8os-shell:retry-startup', (event) => {
+  const entry = residentSurfaces?.entryFor(event.sender);
+  if (coreServicesReady && entry?.lastProductUrl) {
+    entry.recoveries = [];
+    void loadInMainWindow(entry.lastProductUrl);
+  } else void retryInitialSurface();
 }, { allowStartup: true });
 
 onTrustedShellIpc('v8os-shell:open-admin', () => {
@@ -1770,6 +1825,7 @@ app.on('open-url', (event, url) => {
 });
 
 app.on('will-quit', () => {
+  residentSurfaces?.dispose();
   if (automaticUpdateCheckTimer) clearTimeout(automaticUpdateCheckTimer);
   desktopPetShutdown.cancelAll();
   void shellControl?.stop();

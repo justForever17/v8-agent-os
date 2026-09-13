@@ -98,7 +98,7 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(mainSource, /payload\?\.kind !== 'v8_instance_manifest'/);
   assert.match(mainSource, /typeof payload\?\.initialized !== 'boolean'/);
   assert.match(mainSource, /initialProductSurfaceUrl\(\{/);
-  assert.match(mainSource, /async function openWeb\(\)[\s\S]*?return loadInMainWindow\(chatUrl\)/);
+  assert.match(mainSource, /async function openWeb\(\)[\s\S]*?return loadInMainWindow\(chatUrl, \{ resume: true \}\)/);
   assert.match(mainSource, /mainWindow\.once\('ready-to-show',[\s\S]*?showMainWindow\(\)/);
   const preloadSource = fs.readFileSync(path.join(shellRoot, 'electron', 'preload.cjs'), 'utf8');
   assert.match(preloadSource, /retryStartup/);

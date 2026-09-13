@@ -34,11 +34,15 @@ def test_capture_scopes_payload_and_never_saves_goal_or_other_values(tmp_path):
     calls = [{"function": {"name": "delegation_broker", "arguments": json.dumps({"mode": "dispatch", "tasks": [{
         "goal": "PRIVATE TASK BODY", "targetAgentName": "Named Agent", "executionLaneHint": None,
         "context": {"password": "NEVER CAPTURE THIS"}, "expectedOutputs": ["private-output"]}]})}}]
+    calls[0]["id"] = "synthetic-call"
     capture.request({"messages": [{"role": "user", "content": "cross-graph-live-synthetic: hidden prompt"},
-                                  {"role": "assistant", "tool_calls": calls}],
+                                  {"role": "system", "content": "[registeredAgentIndex] PRIVATE REGISTRY BODY"},
+                                  {"role": "assistant", "tool_calls": calls},
+                                  {"role": "tool", "tool_call_id": "synthetic-call", "content": "PRIVATE REPLY targetAgentName expectedOutputs acceptanceContract agent_broker"}],
+                     "tool_choice": "required",
                      "headers": {"Authorization": "DO NOT SAVE"}, "tools": [{"function": {"name": "delegation_broker", "description": "Delegate", "parameters": {"type": "object"}}}]})
     text = output.read_text(encoding="utf-8")
-    for sensitive in ("PRIVATE TASK BODY", "NEVER CAPTURE THIS", "private-output", "hidden prompt", "DO NOT SAVE", "Authorization"):
+    for sensitive in ("PRIVATE TASK BODY", "NEVER CAPTURE THIS", "private-output", "hidden prompt", "DO NOT SAVE", "Authorization", "PRIVATE REGISTRY BODY", "PRIVATE REPLY"):
         assert sensitive not in text
     row = json.loads(text)
     assert row["boundary"] == "openai_final_request_payload"
@@ -46,19 +50,25 @@ def test_capture_scopes_payload_and_never_saves_goal_or_other_values(tmp_path):
     assert task["targetAgentName"]["value"] == "Named Agent"
     assert task["goal"]["length"] == len("PRIVATE TASK BODY") and task["goal"]["sha256"]
     assert task["executionLaneHint"] == {"type": "null"}
+    assert row["toolChoice"] == "required" and row["availableToolNames"] == ["delegation_broker"]
+    assert row["promptFacts"]["registeredAgentIndexPresent"] is True
+    assert row["delegationReplyFacts"][0]["targetAgentNamePresent"] is True
 
 
 def test_actual_native_sdk_binding_preserves_delegation_union_required_fields():
     from core.llm_chat_adapter import V8ChatModelAdapter
     from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
     from core.tools.native.delegation_surface import supervisor_delegation_broker
+    from core.tools.native.agent import agent_broker
     from core.prompt_cache_gateway import _tool_schema_hash
     model = V8OpenAICompatibleChatModel(model="offline-fixture", api_key="test-only-not-a-credential")
     adapter = V8ChatModelAdapter(model_id="offline-fixture", provider_standard="openai", role="supervisor",
         meta={"capabilityClass": "chat_tool_calling", "capabilities": {"supportsTools": True, "supportsStreaming": True}},
-        model_kwargs={}, builder=lambda: model).bind_tools([supervisor_delegation_broker])
+        model_kwargs={}, builder=lambda: model).bind_tools([supervisor_delegation_broker, agent_broker], tool_choice="required")
     bound = adapter._get_runtime_model()
     payload = model._get_request_payload([HumanMessage(content="offline fixture")], **bound.kwargs)
+    assert payload["tool_choice"] == "required"
+    assert {tool["function"]["name"] for tool in payload["tools"]} == {"delegation_broker", "agent_broker"}
     function = payload["tools"][0]["function"]
     assert "targetAgentName" in function["description"]
     tasks = function["parameters"]["properties"]["tasks"]

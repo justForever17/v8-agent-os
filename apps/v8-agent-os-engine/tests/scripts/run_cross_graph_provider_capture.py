@@ -96,8 +96,24 @@ class ScopedCapture:
                    if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
                    and tool["function"].get("name") == "delegation_broker"]
         schemas = [{key: schema[key] for key in ("name", "description", "parameters") if key in schema} for schema in schemas]
+        messages = [message for message in payload.get("messages", []) if isinstance(message, dict)]
+        system_text = "\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system")
+        delegation_call_ids = {call.get("id") for message in messages for call in message.get("tool_calls", [])
+                               if isinstance(call, dict) and (call.get("function") or {}).get("name") == "delegation_broker"}
+        replies = [str(message.get("content") or "") for message in messages
+                   if message.get("role") == "tool" and message.get("tool_call_id") in delegation_call_ids]
         self.write({"boundary": "openai_final_request_payload", "captureId": context["captureId"], "tools": schemas,
                     "schemaSha256": _hash(json.dumps(schemas, sort_keys=True, ensure_ascii=False)),
+                    "toolChoice": payload.get("tool_choice"),
+                    "availableToolNames": [tool["function"].get("name") for tool in payload.get("tools", [])
+                                           if isinstance(tool, dict) and isinstance(tool.get("function"), dict)],
+                    "promptFacts": {"registeredAgentIndexPresent": "[registeredAgentIndex]" in system_text,
+                                    "requiredDelegationGuidancePresent": "[Required Delegation Dispatch]" in system_text},
+                    "delegationReplyFacts": [{"length": len(reply), "sha256": _hash(reply),
+                                              "targetAgentNamePresent": "targetAgentName" in reply,
+                                              "expectedOutputsPresent": "expectedOutputs" in reply,
+                                              "acceptanceContractPresent": "acceptanceContract" in reply,
+                                              "agentDiscoveryPresent": "agent_broker" in reply} for reply in replies],
                     "serializedHistoryToolCalls": [item for message in payload.get("messages", [])
                         if isinstance(message, dict) and message.get("role") == "assistant"
                         for item in summarize_calls(message.get("tool_calls") or [])]})

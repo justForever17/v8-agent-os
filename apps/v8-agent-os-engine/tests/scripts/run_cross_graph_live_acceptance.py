@@ -138,6 +138,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workspace-name", default="", help="Optional unique synthetic name for scoped provider capture")
     parser.add_argument("--max-wait", type=float, default=420)
+    parser.add_argument("--engine-only-diagnostic", action="store_true", help="Diagnose Engine without a browser; never passes the combined acceptance gate")
     args = parser.parse_args(argv)
     if not args.live or not args.allow_side_effects:
         parser.error("--live and --allow-side-effects are required before imports or network calls")
@@ -200,14 +201,16 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
     result = audit._submit_case(args.engine_url, case=case, model_profile="engine-configured-default",
         timestamp=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f"), workspace=str(workspace))
     print(json.dumps({"phase": "submitted", "runId": result.run_id, "sessionId": result.session_id}), flush=True)
-    observer = WebActivityAuditObserver(web_url=args.web_url, session_id=result.session_id, headless=True)
+    observer = None if args.engine_only_diagnostic else WebActivityAuditObserver(web_url=args.web_url, session_id=result.session_id, headless=True)
     observation = {"performed": False, "errors": []}
     try:
         if result.status == "failed":
             raise RuntimeError("live_submission_failed")
-        observer.start()
-        result = audit._poll_case(args.engine_url, result, max_wait=args.max_wait, sample_web_activity=observer.sample_live)
-        observation = observer.finish()
+        if observer:
+            observer.start()
+        result = audit._poll_case(args.engine_url, result, max_wait=args.max_wait, sample_web_activity=observer.sample_live if observer else None)
+        if observer:
+            observation = observer.finish()
     except BaseException:
         if result.run_id:
             try:
@@ -217,7 +220,8 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
                 print(json.dumps({"cleanupRequestFailed": True, "runId": result.run_id}), flush=True)
         raise
     finally:
-        observer.close()
+        if observer:
+            observer.close()
         audit._cancel_timed_out_case(args.engine_url, result)
 
     events, error = audit._load_durable_runtime_events(result)
@@ -276,12 +280,15 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
             and observation.get("liveSubagentIds") and all((observation.get("parity") or {}).get(key) is True
                 for key in ("runtimeCards", "subagentCards", "renderedNarratives"))),
     }
-    report = {"passed": all(checks.values()), "checks": checks, "runId": result.run_id,
+    report = {"passed": not args.engine_only_diagnostic and all(checks.values()),
+        "diagnosticOnly": args.engine_only_diagnostic,
+        "engineChecksPassed": all(value for key, value in checks.items() if key != "WebLiveAndReloadAgree"),
+        "checks": checks, "runId": result.run_id,
         "sessionId": result.session_id, "workspace": str(workspace), "status": result.status,
         "parentWriteCount": len(set(parent_writes)), "delegationIntervals": intervals, "processProof": process_proof,
         "fixtureContract": "readonly child command + one partial readiness handoff + parent native write",
         "tools": result.actual_tools, "topics": result.observed_topics, "web": observation,
-        "evidenceClass": "configured provider + isolated Engine/DB + real files + browser"}
+        "evidenceClass": "configured provider + isolated Engine/DB + real files" + ("; diagnostic only, browser not performed" if args.engine_only_diagnostic else " + browser")}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(audit._redact(report) + "\n", encoding="utf-8")
     print(json.dumps({"passed": report["passed"], "checks": checks, "report": str(args.output)}), flush=True)

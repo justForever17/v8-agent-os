@@ -1,9 +1,10 @@
 // Fixed observations on an existing, already-authorized Playwright page.
 // The caller owns session/target/lease, Safety, cancellation and artifacts.
+import { captureMediaAudio } from "./browser_media_audio.mjs";
 const activePages = new WeakSet();
 function fail(code) { throw new Error(code); }
 function publicError(error) {
-  const code = String(error?.message || "").match(/\b(video_(?:not_found|ambiguous|not_loaded|target_changed|sample_out_of_range_or_live|seek_failed|seek_timeout|observation_timeout|playback_changed_during_observation|changed_during_capture)|target_is_not_video|drm_video_observation_unsupported)\b/)?.[1];
+  const code = String(error?.message || "").match(/\b(video_(?:not_found|ambiguous|not_loaded|target_changed|sample_out_of_range_or_live|seek_failed|seek_timeout|observation_timeout|observation_cancelled|playback_changed_during_observation|changed_during_capture)|target_is_not_video|drm_video_observation_unsupported)\b/)?.[1];
   return new Error(code || (error?.name === "TimeoutError" ? "video_observation_timeout" : "video_observation_failed"));
 }
 
@@ -55,6 +56,11 @@ async function restore(state, timeoutMs) {
 export async function observeAgentMedia(page, spec = {}) {
   const selector = String(spec.selector || "video").trim();
   const times = spec.sampleTimes;
+  const audioRange = spec.audioRange;
+  if (audioRange !== undefined && (!Array.isArray(audioRange) || audioRange.length !== 2
+      || audioRange.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0)
+      || audioRange[1] <= audioRange[0] || audioRange[1] - audioRange[0] > 10)) fail("invalid_audio_range_max_10_seconds");
+  if (spec.signal?.aborted) fail("video_observation_cancelled");
   if (!selector || selector.length > 1000) fail("invalid_video_selector");
   if (times !== undefined && (!Array.isArray(times) || !times.length || times.length > 8
       || times.some((time) => typeof time !== "number" || !Number.isFinite(time) || time < 0))) fail("invalid_video_sample_times");
@@ -67,6 +73,8 @@ export async function observeAgentMedia(page, spec = {}) {
   activePages.add(page);
   let video, state, changed = false;
   let result, error;
+  const abort = () => { if (state) void state.evaluate((saved) => { saved.cancelled = true; }).catch(() => {}); };
+  spec.signal?.addEventListener("abort", abort, { once: true });
   try {
     const candidates = page.locator(selector).filter({ visible: true });
     const count = await candidates.count();
@@ -103,10 +111,12 @@ export async function observeAgentMedia(page, spec = {}) {
         cuesTruncated: cueCount < totalCues || chars >= limits.maxTextChars, inputTrust: "untrusted_media_observation" };
     }, { maxCues, maxTextChars });
     if (times && (metadata.duration === null || times.some((time) => time >= metadata.duration))) fail("video_sample_out_of_range_or_live");
+    if (audioRange && (metadata.duration === null || audioRange[1] > metadata.duration)) fail("video_sample_out_of_range_or_live");
     changed = true;
     await state.evaluate((saved) => saved.element.pause());
     const frames = [];
     for (const requestedTime of times || [metadata.currentTime]) {
+      if (spec.signal?.aborted || await state.evaluate((saved) => !!saved.cancelled)) fail("video_observation_cancelled");
       await seek(state, requestedTime, remaining());
       const before = await state.evaluate((saved) => {
         if (!saved.element.isConnected || saved.element.currentSrc !== saved.source || saved.element.srcObject !== saved.sourceObject) throw new Error("video_target_changed");
@@ -115,18 +125,49 @@ export async function observeAgentMedia(page, spec = {}) {
       });
       if (!before.paused) fail("video_playback_changed_during_observation");
       if (Math.abs(before.time - requestedTime) > 0.1) fail("video_seek_failed");
+      const frameTiming = await state.evaluate(async (saved) => {
+        const video = saved.element;
+        if (typeof video.requestVideoFrameCallback !== "function") return null;
+        return await Promise.race([
+          new Promise((resolve) => video.requestVideoFrameCallback((_now, metadata) => resolve({
+            mediaTime: Number.isFinite(metadata.mediaTime) ? metadata.mediaTime : null,
+            presentedFrames: metadata.presentedFrames ?? null,
+          }))),
+          new Promise((resolve) => setTimeout(() => resolve(null), 500)),
+        ]);
+      });
       const data = await video.screenshot({ type: "jpeg", quality: 65, timeout: remaining() });
+      if (spec.signal?.aborted || await state.evaluate((saved) => !!saved.cancelled)) fail("video_observation_cancelled");
       const after = await state.evaluate((saved) => ({ current: saved.element.isConnected && saved.element.currentSrc === saved.source && saved.element.srcObject === saved.sourceObject,
         time: saved.element.currentTime, paused: saved.element.paused }));
       if (!after.current || !after.paused || Math.abs(after.time - before.time) > 0.025) fail("video_changed_during_capture");
-      frames.push({ index: frames.length + 1, requestedTime, currentTime: after.time, capturedAt: Date.now(),
+      frames.push({ index: frames.length + 1, requestedTime, currentTime: after.time,
+        mediaTime: frameTiming?.mediaTime ?? after.time, presentedFrames: frameTiming?.presentedFrames ?? null,
+        timeAccuracy: frameTiming?.mediaTime === null || frameTiming === null ? "element_current_time_approximate" : "request_video_frame_callback",
+        capturedAt: Date.now(),
         mimeType: "image/jpeg", data: data.toString("base64") });
     }
-    result = { ok: true, ...metadata, frames, observationsOnly: true, wholeVideoReviewed: false };
+    let audio = { status: "not_requested" };
+    if (audioRange) {
+      if (spec.signal?.aborted) fail("video_observation_cancelled");
+      await seek(state, audioRange[0], remaining());
+      audio = await captureMediaAudio(state, audioRange, Math.max(1, deadline - Date.now()));
+    }
+    const entries = frames.map((frame) => ({ kind: "frame", startTime: frame.mediaTime, endTime: frame.mediaTime, frameIndex: frame.index,
+      timeAccuracy: frame.timeAccuracy }));
+    metadata.tracks.forEach((track, trackIndex) => track.cues.forEach((cue, cueIndex) => entries.push({ kind: "subtitle", startTime: cue.startTime, endTime: cue.endTime, trackIndex, cueIndex })));
+    if (audio.status === "captured") entries.push({ kind: "audio", startTime: audio.startTime, endTime: audio.endTime });
+    entries.sort((left, right) => left.startTime - right.startTime);
+    result = { ok: true, ...metadata, frames, audio, timeline: { timebase: "media_seconds", entries,
+      wholeVideoReviewed: false, gaps: audio.status === "unavailable" ? [{ kind: "audio", range: audioRange, reason: audio.reason }] : [] },
+      observationsOnly: true, wholeVideoReviewed: false };
   } catch (caught) {
     error = publicError(caught);
   } finally {
-    if (state && changed) {
+    spec.signal?.removeEventListener("abort", abort);
+    const userChanged = state && await state.evaluate((saved) => !!saved.userChanged).catch(() => false);
+    if (userChanged && result) result.playbackRestoration = { ok: false, reason: "user_interrupted_not_overwritten" };
+    if (state && changed && !userChanged) {
       try { const playbackRestoration = await restore(state, 2000); if (result) result.playbackRestoration = playbackRestoration; }
       catch { error = new Error("video_playback_restore_failed"); }
     }

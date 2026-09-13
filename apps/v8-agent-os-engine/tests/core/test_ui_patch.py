@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import os
 import threading
 from dataclasses import dataclass
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -752,3 +753,83 @@ def test_react_dynamic_inline_style_stays_read_only(scoped_service):
 
     assert all(item["sourceKind"] != "react_inline_style" for item in mapped["sourceCandidates"])
     assert any(item["sourceKind"] == "component_text" for item in mapped["sourceCandidates"])
+
+
+def _cache_preview(service, workspace):
+    item = ui_patch.PreviewSession(
+        patch_session_id="cache-preview", session_id="cache-session", workspace_root=workspace,
+        mode="project", entry_path="", target_url="http://127.0.0.1:4317",
+        parent_origin="http://127.0.0.1:9527", process=SimpleNamespace(poll=lambda: 0),
+        port=0, preview_url="", runtime_dir=workspace / "unused", project_path=".",
+    )
+    service._sessions[item.patch_session_id] = item
+    return item
+
+
+@pytest.mark.parametrize("kind", ["inline", "text"])
+def test_scan_cache_does_not_pair_stale_offsets_with_new_content_hash(scoped_service, monkeypatch, kind):
+    service, workspace = scoped_service
+    item = _cache_preview(service, workspace)
+    monkeypatch.setattr(service, "_cleanup_expired_locked", lambda: None)
+    source = workspace / "App.tsx"
+    original = 'export const App = () => <div className="card" style={{ width: "100px" }}>Hello</div>;'
+    source.write_text(original, encoding="utf-8")
+    selection = {"selector": ".card", "textContent": "Hello", "inlineStyle": {"width": "100px"}, "rules": []}
+    service.map_selection(session_id=item.session_id, patch_session_id=item.patch_session_id, selection=selection)
+    changed = "// external edit changes source offsets\n" + original
+    source.write_text(changed, encoding="utf-8")
+    mapped = service.map_selection(session_id=item.session_id, patch_session_id=item.patch_session_id, selection=selection)
+    candidate_kind = "react_inline_style" if kind == "inline" else "component_text"
+    candidate = next(row for row in mapped["sourceCandidates"] if row["sourceKind"] == candidate_kind)
+    commit = service.commit(
+        session_id=item.session_id, patch_session_id=item.patch_session_id,
+        selection_ref=mapped["selectionRef"], candidate_id=candidate["candidateId"],
+        changes={"width": "144px"} if kind == "inline" else {"__text_content": "Goodbye"},
+    )
+    expected = changed.replace('width: "100px"', 'width: "144px"') if kind == "inline" else changed.replace("Hello", "Goodbye")
+    assert source.read_text(encoding="utf-8-sig") == expected
+    service.undo(session_id=item.session_id, transaction_id=commit["transactionId"])
+    assert source.read_text(encoding="utf-8") == changed
+
+
+def test_scan_cache_reuses_parsing_but_rechecks_bytes_and_added_files(scoped_service, monkeypatch):
+    service, workspace = scoped_service
+    item = _cache_preview(service, workspace)
+    source = workspace / "App.tsx"
+    source.write_text('<div className="card">Hello</div>', encoding="utf-8")
+    original_parser = ui_patch._find_static_component_text_spans
+    calls = []
+    def parse(text, selector):
+        calls.append(text)
+        return original_parser(text, selector)
+    monkeypatch.setattr(ui_patch, "_find_static_component_text_spans", parse)
+    first = service._scan_workspace_for_component_text(item, ".card", "Hello")
+    assert service._scan_workspace_for_component_text(item, ".card", "Hello") == first
+    assert len(calls) == 1
+    stat = source.stat()
+    source.write_text('<div className="card">World</div>', encoding="utf-8")
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert service._scan_workspace_for_component_text(item, ".card", "Hello") == []
+    assert len(calls) == 2  # Same size/mtime is not proof of the same content.
+    source.write_text('<div className="card">Hello</div>', encoding="utf-8")
+    service._scan_workspace_for_component_text(item, ".card", "Hello")
+    duplicate = workspace / "Other.tsx"
+    duplicate.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    assert len(service._scan_workspace_for_component_text(item, ".card", "Hello")) == 2
+    duplicate.unlink()
+    assert len(service._scan_workspace_for_component_text(item, ".card", "Hello")) == 1
+
+
+def test_scan_cache_keys_use_full_text_and_release_closed_sessions(scoped_service, monkeypatch):
+    service, workspace = scoped_service
+    item = _cache_preview(service, workspace)
+    text = "x" * 320 + "first"
+    (workspace / "App.tsx").write_text(f'<div className="card">{text}</div>', encoding="utf-8")
+    assert service._scan_workspace_for_component_text(item, ".card", text)
+    assert service._scan_workspace_for_component_text(item, ".card", "x" * 320 + "other") == []
+    monkeypatch.setattr(ui_patch, "MAX_SOURCE_SCAN_CACHE_ENTRIES", 3)
+    for index in range(10):
+        service._scan_workspace_for_component_text(item, f".other{index}", "")
+    assert len(service._source_scan_cache) == 3
+    service.close_preview(session_id=item.session_id, patch_session_id=item.patch_session_id)
+    assert service._source_scan_cache == {}

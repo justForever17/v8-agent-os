@@ -1648,6 +1648,11 @@ class BrowserAutomationProvider:
                 message = "browser_proxy_error"
             raise BrowserSessionError("browser_proxy_error", message, status_code=503) from exc
 
+    def cancel_agent_request(self, *, target_id: str, target_port: int) -> None:
+        """Interrupt a dispatched long media request through its owned proxy."""
+        self._ensure_proxy(target_port=target_port)
+        self._request_json("POST", "/agent/cancel", params={"target": str(target_id)}, timeout_seconds=2.0)
+
     def open_agent_page(self, *, url: str) -> Dict[str, Any]:
         prepared = self.prepare_workbench_browser()
         opened = self.agent_request_json("POST", "/agent/new", target_port=int(prepared["targetPort"]), body={"url": url})

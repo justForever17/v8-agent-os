@@ -33,13 +33,10 @@ ENGINEERING_PARENT_REPAIR_CASE_ID = "engineering_parent_acceptance_repair"
 ENGINEERING_LIVE_CASE_IDS = {ENGINEERING_LONG_WRITE_CASE_ID, ENGINEERING_PARENT_REPAIR_CASE_ID}
 ENGINEERING_BOARD_FILE = "task-board.html"
 ENGINEERING_TAIL_CANARY = "V8OS-LONG-WRITE-END"
-PURE_RESEARCH_MIN_EFFECTIVE_CHARS = 3_000
-PURE_RESEARCH_MIN_SOURCE_COUNT = 5
 PURE_RESEARCH_TARGET_EFFECTIVE_CHARS = 5_000
 PURE_RESEARCH_TARGET_SOURCE_COUNT = 8
 PURE_RESEARCH_TARGET_DISTINCT_HOST_COUNT = 5
 PURE_RESEARCH_TARGET_CLAIM_COUNT = 8
-PURE_RESEARCH_TARGET_DATED_SOURCE_COUNT = 5
 SUPERVISOR_DIRECT_WEB_TOOLS = {"web_search", "web_broker", "web_read", "web_fetch", "web_extract"}
 
 if str(ENGINE_ROOT) not in sys.path:
@@ -145,7 +142,7 @@ def _saved_research_case(experience_id: str, evidence_id: str) -> LiveCaseSpec:
             "不允许它再委派。实读原始证据，至少复核3个关键结论；用表格列出原始claimId、[S#]、完整实际URL、"
             "来源载体身份、正式或草案状态、核验结论。不要重编号或替换转载URL。"
             "收到回流后明确ACCEPT或具体缺口，按这份保存答案的原题用中文交付具体答案，保留关键日期、适用条件、"
-            "限制和至少5个实际来源。正文回答问题，不仅仅描述过程，不照抄内部JSON。"
+            "限制和支撑结论的实读来源；来源数量、篇幅和日期数量仅作建议。正文回答问题，不仅仅描述过程，不照抄内部JSON。"
         ),
         expected_all_tools=["research_broker", "delegation_broker"],
         expected_episode_kinds=["delegation"], source_required=True,
@@ -172,13 +169,14 @@ def _audit_saved_research_verification(result: LiveCaseResult, bundle: dict[str,
                         if row["claimId"] in verified_ids}
     from core.tools.research_quality import research_selected_sources
     source_urls = {str(item.get("url") or item.get("sourceUrl") or "") for item in research_selected_sources(bundle)}
-    retained = sorted(set(_visible_source_urls(result.final_text)) & source_urls)
+    visible = set(_visible_source_urls(result.final_text))
+    retained = sorted(visible & source_urls)
     web = result.web_activity_audit or {}
     checks = {
         "completedRun": result.status == "completed",
         "workerReadEvidence": bool(verified_sources) and verified_sources.issubset(actual_reads),
         "workerExactBindings": bool(binding.get("passed")),
-        "fiveOriginalSourcesInDelivery": len(retained) >= min(5, len(source_urls)) and bool(source_urls),
+        "originalSourcesInDelivery": bool(retained) and not (visible - source_urls),
         "noFreshResearchOrEngineering": not any(item.get("kind") in {"research", "engineering"} for item in result.episodes),
         "webParity": bool(web.get("performed") and web.get("parity")) and all(web.get("parity", {}).values()) and not web.get("errors"),
         "parentAcceptedVerification": any(
@@ -187,6 +185,7 @@ def _audit_saved_research_verification(result: LiveCaseResult, bundle: dict[str,
         ),
     }
     return {"checks": checks, "bindingAudit": binding, "sourceReads": result.saved_source_reads, "retainedSourceUrls": retained,
+            "qualityRecommendations": ["retained_source_count_below_recommendation:5"] if len(retained) < 5 else [],
             "referenceBundleId": bundle.get("evidenceBundleId"), "semanticTruthAssessed": False}
 
 
@@ -403,8 +402,8 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
                     "透明度/版权/模型文档义务、既有模型过渡规则、GPAI Code of Practice 的法律作用及执法罚则"
                     "分别是什么？请严格区分法规原文、欧盟委员会或 AI Office 后续指南、行业实践和仍待明确事项，"
                     "并给出面向 2026 年下半年准备上线或继续运营模型团队的可执行清单。最终回答必须真正回答问题，"
-                    "提供明确的截至日期和时效证据；至少保留 5 个可访问来源。正常目标是 8 个独立可读来源、"
-                    "8 条来源支撑的关键结论；字数仅为推荐指标，按证据自然长短，不能因偏短而拒收或要求凑字。"
+                    "解释证据的适用时间与不确定性；来源数、字数和日期数量仅为建议，不因篇幅短、来源少或"
+                    "适用的资料较旧而拒收。保留真正支撑结论的实读来源，按证据自然长短，不凑字或凑来源。"
                     "关键证据不够才继续获取，不得重复或捏造。Supervisor 应直接消费深度调研回流的完整"
                     "证据答案，不要再自行调用 web_search/web_broker/web_read 做二次搜索。本次是实际 live 验收，"
                     "不得复用既有经验包；深度调研运行必须在 inputs 或 taskBrief context 中设置 "
@@ -426,7 +425,7 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
                     "核查截至 2026 年 9 月 3 日，中国面向公众提供生成式人工智能服务时，"
                     "《生成式人工智能服务管理暂行办法》《互联网信息服务深度合成管理规定》"
                     "《人工智能生成合成内容标识办法》及配套强制性国家标准之间的适用关系、关键日期、"
-                    "提供者义务和上线检查清单。至少保留 5 个实际读取并可追溯的官方来源，逐项绑定结论，"
+                    "提供者义务和上线检查清单。保留实际读取并可追溯的官方来源，来源数量仅作建议，逐项绑定结论，"
                     "不得把搜索摘要当作网页证据。深度调研证据回流后，必须由 Supervisor 再调用"
                     " delegation_broker，委派 Verification Engineer 做一个独立、只读验证子任务："
                     "核对法规层级、关键日期、关键义务以及每个来源是否真的支持对应结论；验证者不得写文件、"
@@ -1357,7 +1356,7 @@ def _effective_answer_chars(text: str) -> int:
 
 
 def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> dict[str, Any]:
-    from core.tools.research_quality import research_acceptance_metrics, research_high_quality_issues
+    from core.tools.research_quality import research_acceptance_metrics, research_answer_integrity_issues
 
     task_results = [item for item in list(payload.get("taskBriefResults") or []) if isinstance(item, dict)]
     primary_result = task_results[0] if len(task_results) == 1 else {}
@@ -1465,7 +1464,8 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         },
     }
     recomputed_metrics = research_acceptance_metrics(verification_payload)
-    recomputed_issues = research_high_quality_issues(verification_payload)
+    # Reuse the provenance/integrity owner, not the retired writer's quotas.
+    recomputed_issues = research_answer_integrity_issues(verification_payload)
     metric_mismatches = {
         key: {"advertised": advertised_metrics.get(key), "recomputed": value}
         for key, value in recomputed_metrics.items()
@@ -1532,28 +1532,12 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         "review_accepted": review_decision == "accept",
         "quality_tier_high": str(payload.get("qualityTier") or primary_result.get("qualityTier") or "").strip().lower()
         == "high_quality",
-        "recomputed_high_quality": not recomputed_issues,
+        "answer_integrity_verified": not recomputed_issues,
         "advertised_metrics_match_recomputed": not metric_mismatches,
-        "sources_at_target": int(recomputed_metrics.get("selectedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "distinct_hosts_at_target": int(recomputed_metrics.get("distinctHostCount") or 0)
-        >= PURE_RESEARCH_TARGET_DISTINCT_HOST_COUNT,
-        "claims_at_target": int(recomputed_metrics.get("uniqueClaimCount") or 0)
-        >= PURE_RESEARCH_TARGET_CLAIM_COUNT,
         "supported_claims_complete": int(recomputed_metrics.get("supportedClaimCount") or 0)
         == int(recomputed_metrics.get("claimCount") or 0),
         "evidence_verified_claims_complete": int(recomputed_metrics.get("evidenceVerifiedClaimCount") or 0)
         == int(recomputed_metrics.get("claimCount") or 0),
-        "claim_source_coverage_at_target": int(recomputed_metrics.get("claimSupportedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "answer_body_citations_at_target": int(recomputed_metrics.get("answerCitedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "answer_body_citation_spread_at_target": int(recomputed_metrics.get("answerCitedContentUnitCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "retrieved_sources_at_target": int(recomputed_metrics.get("retrievedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
-        "read_verified_sources_at_target": int(recomputed_metrics.get("readVerifiedSourceCount") or 0)
-        >= PURE_RESEARCH_TARGET_SOURCE_COUNT,
         "independent_review_accepted": recomputed_metrics.get("independentReviewAccepted") is True,
         "review_binding_complete": binding_keys.issubset(independent_review),
         "reviewer_model_consistent": reviewer_model_consistent,
@@ -1563,15 +1547,21 @@ def _research_handoff_assessment(payload: dict[str, Any], *, question: str) -> d
         "answer_digest_matches": answer_digest_matches,
         "as_of_valid": recomputed_metrics.get("asOfValid") is True,
         "no_critical_missing_evidence": not critical_missing,
-        "no_recommended_queries": not recommended_queries,
     }
-    if independent_review.get("reviewContract") == "research-agent-review.v1":
-        # Case-specific user requirements are checked by that case's oracle.
-        # Source/host/claim/citation-spread targets are not universal quality gates.
-        checks = {key: value for key, value in checks.items() if not key.endswith("_at_target")}
+    recommendations = [
+        f"{metric}_below_recommendation:{target}"
+        for metric, target in (
+            ("effectiveAnswerChars", PURE_RESEARCH_TARGET_EFFECTIVE_CHARS),
+            ("selectedSourceCount", PURE_RESEARCH_TARGET_SOURCE_COUNT),
+            ("distinctHostCount", PURE_RESEARCH_TARGET_DISTINCT_HOST_COUNT),
+            ("uniqueClaimCount", PURE_RESEARCH_TARGET_CLAIM_COUNT),
+        )
+        if int(recomputed_metrics.get(metric) or 0) < target
+    ]
     return {
         "highQuality": all(checks.values()),
         "failedChecks": [name for name, passed in checks.items() if not passed],
+        "qualityRecommendations": recommendations,
         "effectiveAnswerChars": int(recomputed_metrics.get("effectiveAnswerChars") or 0),
         "sourceCount": int(recomputed_metrics.get("selectedSourceCount") or 0),
         "sourceUrls": sorted(set(source_urls)),
@@ -1744,17 +1734,16 @@ def _pure_research_diagnostic(result: LiveCaseResult) -> dict[str, Any]:
     exact_handoff_answer_preserved = final_answer_digest_matches_handoff or any(
         answer in result.final_text for answer in accepted_answers
     )
-    required_date_overlap = 3
-    final_fact_retention = bool(
-        exact_handoff_answer_preserved
-        or (
-            accepted_answers
-            and all(final_semantic_coverage.values())
-            and bool(expected_as_of_dates & final_dates)
-            and len(handoff_dates & final_dates) >= required_date_overlap
-            and int(final_citation_metrics.get("answerCitedSourceCount") or 0)
-            >= PURE_RESEARCH_MIN_SOURCE_COUNT
-        )
+    # Topic words and a citation prove neither entailment nor retained conditions.
+    # Exact preservation proves transport only; paraphrase needs source-based review.
+    final_coverage_passed = bool(accepted_answers and all(final_semantic_coverage.values()))
+    final_bound_citations = bool(
+        final_identities & accepted_identities
+        and int(final_citation_metrics.get("answerCitedSourceCount") or 0) > 0
+    )
+    final_fact_retention = (
+        False if not final_coverage_passed or not final_bound_citations
+        else True if exact_handoff_answer_preserved else None
     )
     readability_issues: list[str] = []
     stripped = result.final_text.strip()
@@ -1772,10 +1761,6 @@ def _pure_research_diagnostic(result: LiveCaseResult) -> dict[str, Any]:
         re.I,
     ):
         readability_issues.append("runtime_handoff_leaked_to_user")
-    if result.final_text and not (expected_as_of_dates & final_dates):
-        readability_issues.append("exact_as_of_date_missing")
-    if result.final_text and len(handoff_dates & final_dates) < required_date_overlap:
-        readability_issues.append("key_timeline_dates_not_preserved")
     return {
         "finalEffectiveAnswerChars": _effective_answer_chars(result.final_text),
         "finalVisibleSourceCount": len(final_identities),
@@ -1795,10 +1780,21 @@ def _pure_research_diagnostic(result: LiveCaseResult) -> dict[str, Any]:
         "finalAnswerDigestMatchesHandoff": final_answer_digest_matches_handoff,
         "exactHandoffAnswerPreserved": exact_handoff_answer_preserved,
         "finalFactRetention": final_fact_retention,
+        "finalCoveragePassed": final_coverage_passed,
+        "finalBoundCitations": final_bound_citations,
+        "semanticTruthAssessed": False,
+        "semanticReviewRequired": final_fact_retention is None,
         "researchCompletedSeq": result.research_completed_seq,
         "supervisorDirectWebCalls": supervisor_web_calls,
         "postResearchHandoffWebCalls": post_handoff_web_calls,
         "readabilityIssues": readability_issues,
+        "qualityRecommendations": [
+            *([f"visible_source_count_below_recommendation:{len(final_identities)}/{PURE_RESEARCH_TARGET_SOURCE_COUNT}"] if len(final_identities) < PURE_RESEARCH_TARGET_SOURCE_COUNT else []),
+            *([f"handoff_source_overlap_below_recommendation:{len(final_identities & accepted_identities)}/{PURE_RESEARCH_TARGET_SOURCE_COUNT}"] if accepted and len(final_identities & accepted_identities) < PURE_RESEARCH_TARGET_SOURCE_COUNT else []),
+            *([f"body_citation_spread_below_recommendation:{int(final_citation_metrics.get('answerCitedContentUnitCount') or 0)}/{PURE_RESEARCH_TARGET_SOURCE_COUNT}"] if int(final_citation_metrics.get("answerCitedContentUnitCount") or 0) < PURE_RESEARCH_TARGET_SOURCE_COUNT else []),
+            *(["handoff_date_evidence_below_recommendation"] if len(handoff_dates) < 3 else []),
+            *(["paraphrase_fact_retention_requires_source_review"] if final_fact_retention is None else []),
+        ],
     }
 
 
@@ -1863,7 +1859,7 @@ def _pure_research_findings(result: LiveCaseResult) -> list[AuditFinding]:
             "Research episode 未产出可识别的 high_quality/accept typed handoff。",
             (
                 "只有 coverageComplete、acceptancePassed、reviewDecision=accept、qualityTier=high_quality，"
-                "且达到 5000/8/8 claims、独立复核和当前时效指标的 handoff 才允许消费。"
+                "并核对独立复核、实读快照和引用绑定；不以字数、来源数或日期数量作为拒收条件。"
             ),
             evidence={"researchHandoffs": diagnostic.get("researchHandoffs")},
             modules=["core/runtime_episode_runner.py", "core/tools/research_quality.py", "core/tools/research_broker.py"],
@@ -1882,60 +1878,6 @@ def _pure_research_findings(result: LiveCaseResult) -> list[AuditFinding]:
             regression_test="tests/runtime_core/test_runtime_episode_runner.py",
         )
 
-    visible_sources = int(diagnostic.get("finalVisibleSourceCount") or 0)
-    if visible_sources < PURE_RESEARCH_MIN_SOURCE_COUNT:
-        _add(
-            "P0",
-            f"Supervisor 最终答案低于 {PURE_RESEARCH_MIN_SOURCE_COUNT} 个可访问来源硬门槛：{visible_sources}。",
-            "最终答案必须保留 handoff 中经过选择的来源 URL 和就近引用。",
-        )
-    elif visible_sources < PURE_RESEARCH_TARGET_SOURCE_COUNT:
-        _add(
-            "P1",
-            f"Supervisor 最终答案仅越过最低来源线，未达到 {PURE_RESEARCH_TARGET_SOURCE_COUNT} 来源目标：{visible_sources}。",
-            "不要把 Research 已验证的 8 个独立来源压缩丢失。",
-        )
-
-    if int(diagnostic.get("highQualityResearchHandoffCount") or 0) > 0:
-        source_overlap = int(diagnostic.get("finalHandoffSourceOverlap") or 0)
-        if source_overlap < PURE_RESEARCH_MIN_SOURCE_COUNT:
-            _add(
-                "P0",
-                f"最终答案与已接受 Research handoff 的来源交集不足，无法证明消费回流证据：{source_overlap}。",
-                "以 typed handoff 的 answer/sources 为事实输入成稿，不要另起无绑定来源列表。",
-            )
-        elif source_overlap < PURE_RESEARCH_TARGET_SOURCE_COUNT:
-            _add(
-                "P1",
-                f"Supervisor 只保留 {source_overlap} 个 handoff 来源，未达到完整消费 8 来源目标。",
-                "保留所有支撑关键结论的已验证来源，避免过度摘要。",
-            )
-
-    final_body_citations = int(diagnostic.get("finalBodyCitedSourceCount") or 0)
-    final_body_spread = int(diagnostic.get("finalBodyCitedContentUnitCount") or 0)
-    if final_body_citations < PURE_RESEARCH_MIN_SOURCE_COUNT or final_body_spread < PURE_RESEARCH_MIN_SOURCE_COUNT:
-        _add(
-            "P0",
-            (
-                "Supervisor 最终正文没有达到来源就近引用硬门槛："
-                f"正文来源 {final_body_citations}，分散引用内容单元 {final_body_spread}。"
-            ),
-            "不能只在末尾堆来源列表；至少 5 个来源必须在回答事实的正文单元中就近出现。",
-            evidence={
-                "finalBodyCitedSourceCount": final_body_citations,
-                "finalBodyCitedContentUnitCount": final_body_spread,
-            },
-        )
-    elif final_body_citations < PURE_RESEARCH_TARGET_SOURCE_COUNT or final_body_spread < PURE_RESEARCH_TARGET_SOURCE_COUNT:
-        _add(
-            "P1",
-            (
-                "Supervisor 最终正文虽过最低引用线，但未保留 8 来源目标："
-                f"正文来源 {final_body_citations}，分散引用内容单元 {final_body_spread}。"
-            ),
-            "保留 Research answer 已有的逐结论引用，不要在 Supervisor 成稿时退化成来源附录。",
-        )
-
     semantic_coverage = dict(diagnostic.get("finalSemanticCoverage") or {})
     missing_semantics = [name for name, covered in semantic_coverage.items() if covered is not True]
     if missing_semantics:
@@ -1945,18 +1887,11 @@ def _pure_research_findings(result: LiveCaseResult) -> list[AuditFinding]:
             "完整保留 GPAI 范围、时间线、系统性风险门槛、透明/版权/文档、过渡、准则、罚则、来源层级和行动清单。",
             evidence={"missingSemantics": missing_semantics, "coverage": semantic_coverage},
         )
-    if len(list(diagnostic.get("handoffDateEvidence") or [])) < 3:
-        _add(
-            "P0",
-            "已接受的 Research handoff 本身没有给出足够的合规关键日期。",
-            "Research answer 除精确 as-of 外，必须明确列出至少两个适用/过渡/执法时间点并绑定来源。",
-            evidence={"handoffDateEvidence": diagnostic.get("handoffDateEvidence")},
-        )
-    if diagnostic.get("finalFactRetention") is not True:
+    if diagnostic.get("finalFactRetention") is False:
         _add(
             "P0",
             "无法证明 Supervisor 最终正文保留了 Research handoff 的关键事实。",
-            "优先原样消费完整 handoff answer；若重写，必须同时保留问题语义、精确 as-of、至少三个关键日期及来源绑定。",
+            "保留问题要求的核心结论、适用条件、限制与真实来源绑定；允许忠实改写，不要求原文复制或固定日期数量。",
             evidence={
                 "exactHandoffAnswerPreserved": diagnostic.get("exactHandoffAnswerPreserved"),
                 "dateOverlap": diagnostic.get("finalHandoffDateOverlap"),
@@ -1987,7 +1922,7 @@ def _pure_research_findings(result: LiveCaseResult) -> list[AuditFinding]:
         _add(
             "P0",
             "Supervisor 最终答案不是可直接交付给用户的时效调研正文。",
-            "将 handoff 事实转成可读正文并显式说明截至日期；不得输出 raw JSON 或 runtime 内部字段。",
+            "将 handoff 事实转成可读正文并说明必要适用条件；不得输出 raw JSON 或 runtime 内部字段。",
             evidence={"issues": diagnostic.get("readabilityIssues"), "finalText": result.final_text[:1200]},
         )
     return findings
@@ -2059,26 +1994,28 @@ def _delegated_research_delivery_coverage(text: str, source_urls: list[str]) -> 
         "obligations": bool(re.search(r"义务|应当|必须|须", text)),
         "checklist": bool(re.search(r"清单|检查项", text)),
         "limitations": bool(re.search(r"不确定|未核实|未读|缺口|限制|待核", text)),
-        "asOf": "2026-09-03" in _normalized_date_evidence(text),
     }
     visible = set(_visible_source_urls(text))
-    # This case explicitly requests five actually read official sources.
     retained = sorted(url for url in set(source_urls) & visible
                       if re.match(r"https?://[^/]+\.gov\.cn/", url, re.I))
-    return {"coverage": coverage, "retainedOfficialUrls": retained,
+    unbound = sorted(visible - set(source_urls))
+    return {"coverage": coverage, "retainedOfficialUrls": retained, "unboundUrls": unbound,
+            "dateEvidence": sorted(_normalized_date_evidence(text)),
+            "qualityRecommendations": ["official_source_count_below_recommendation:5"] if len(retained) < 5 else [],
             "semanticTruthAssessed": False,
-            "passed": all(coverage.values()) and len(retained) >= 5}
+            "passed": all(coverage.values()) and bool(retained) and not unbound}
 
 
 def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[str, Any]:
     research_payloads = _research_handoff_payloads(result)
+    research_assessments = [_research_handoff_assessment(payload, question=result.spec.prompt) for payload in research_payloads]
     research_answers = [_research_handoff_answer(payload) for payload in research_payloads]
     research_answers = [answer for answer in research_answers if answer]
     research_source_urls = sorted(
         {
             url
-            for payload in research_payloads
-            for url in _research_handoff_assessment(payload, question=result.spec.prompt).get("sourceUrls", [])
+            for assessment in research_assessments
+            for url in assessment.get("sourceUrls", [])
             if str(url).strip()
         }
     )
@@ -2175,6 +2112,8 @@ def _delegated_research_verification_diagnostic(result: LiveCaseResult) -> dict[
     }
     return {
         "researchEvidenceBundleCount": len(research_payloads),
+        "researchIntegrityPassed": bool(research_assessments) and all(item.get("highQuality") is True for item in research_assessments),
+        "researchAssessments": research_assessments,
         "researchSourceCount": len(research_source_urls),
         "researchSourceUrls": research_source_urls,
         "researchCompletedSeq": result.research_completed_seq,
@@ -2256,7 +2195,7 @@ def _delegated_research_verification_findings(result: LiveCaseResult) -> list[Au
     )
     checks = [
         (diagnostic["researchEvidenceBundleCount"] > 0, "Research 未产出可审计 evidence bundle。"),
-        (diagnostic["researchSourceCount"] >= 5, "Research evidence bundle 缺少至少 5 个实际来源。"),
+        (diagnostic["researchIntegrityPassed"], "Research evidence bundle 未通过实读、引用绑定和独立审核的完整性检查。"),
         (diagnostic["delegationEpisodeCount"] > 0, "Research 回流后没有创建独立验证委派。"),
         (diagnostic["delegationHandoffCount"] > 0, "验证委派没有可消费的 durable handoff。"),
         (diagnostic["delegationAfterResearch"], "验证委派没有发生在 Research 完成之后。"),
@@ -2266,7 +2205,6 @@ def _delegated_research_verification_findings(result: LiveCaseResult) -> list[Au
         (diagnostic["delegationTerminal"], "验证委派未以成功终态结束。"),
         (diagnostic["engineeringEpisodeCount"] == 0, "只读调研任务错误激活了 Engineering。"),
         (diagnostic["finalEffectiveAnswerChars"] > 0, "Supervisor 最终交付缺失。"),
-        (diagnostic["finalVisibleSourceCount"] >= 3, "Supervisor 最终交付没有保留足够的可见来源。"),
         (diagnostic["finalMentionsReview"], "Supervisor 最终交付没有说明独立复核结论。"),
         (not diagnostic["providerToolMarkupVisible"], "Supervisor 用户交付泄露工具协议文本，不能作为合格答案。"),
         (diagnostic["finalPreservesResearch"], "Supervisor 最终交付未保留 Research 的主要证据。"),

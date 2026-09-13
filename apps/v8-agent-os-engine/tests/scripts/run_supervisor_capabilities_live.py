@@ -222,10 +222,10 @@ def apply_tool_evidence(checks: dict, events: list[dict], kind: str, *, resumed:
 def latest_video_samples(events: list[dict]) -> list[tuple[float, str]]:
     samples = []
     for body in completed_tool_results(events, "browser_broker"):
-        if not body.startswith("Browser media: completed"):
+        if not body.startswith(("Browser media: completed", "Browser media: partial")):
             continue
         frames = [(float(time), path.strip()) for time, path in re.findall(
-            r"^Frame \d+ at ([0-9.]+)s; vision file_path: (.+)$", body, re.MULTILINE)]
+            r"^Frame \d+ at ([0-9.]+)s(?: \([^)]*\))?; vision file_path: (.+)$", body, re.MULTILINE)]
         if len({time for time, _ in frames}) >= 3:
             samples = frames
     return samples
@@ -395,7 +395,7 @@ def main(argv=None) -> int:
             for event in events:
                 tool = (event.get("payload") or {}).get("tool") or {}
                 content = tool.get("agentVisibleResult") or tool.get("result") or ""
-                if tool.get("toolName") == "browser_broker" and isinstance(content, str) and content.startswith("Browser media: completed"):
+                if tool.get("toolName") == "browser_broker" and isinstance(content, str) and content.startswith(("Browser media: completed", "Browser media: partial")):
                     media_observations.append(content)
             checks["sampledActualVideo"] = any(content.count("; vision file_path:") >= 3 for content in media_observations)
             if prior:

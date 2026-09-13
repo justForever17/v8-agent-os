@@ -322,7 +322,7 @@ def test_fixed_assessment_rejects_deterministic_fallback_even_when_quality_metri
         "independentReviewerModelCount": 2,
     }
     monkeypatch.setattr(quality, "research_acceptance_metrics", lambda _result: dict(metrics))
-    monkeypatch.setattr(quality, "research_high_quality_issues", lambda _result: [])
+    monkeypatch.setattr(quality, "research_answer_integrity_issues", lambda _result: [])
     monkeypatch.setattr(quality, "research_review_decision", lambda _result: "accept")
 
     assessment = audit._result_assessment(
@@ -349,7 +349,7 @@ def test_fixed_assessment_accepts_two_independent_reviews_from_same_configured_m
         "independentReviewerModelCount": 1,
     }
     monkeypatch.setattr(quality, "research_acceptance_metrics", lambda _result: dict(metrics))
-    monkeypatch.setattr(quality, "research_high_quality_issues", lambda _result: [])
+    monkeypatch.setattr(quality, "research_answer_integrity_issues", lambda _result: [])
     monkeypatch.setattr(quality, "research_review_decision", lambda _result: "accept")
 
     assessment = audit._result_assessment(
@@ -357,6 +357,39 @@ def test_fixed_assessment_accepts_two_independent_reviews_from_same_configured_m
     )
 
     assert assessment["highQualityIssues"] == []
+
+
+def test_fixed_metric_targets_are_recommendations_and_do_not_reject_short_evidence(monkeypatch):
+    import core.tools.research_quality as quality
+
+    monkeypatch.setattr(quality, "research_acceptance_metrics", lambda _result: {
+        "effectiveAnswerChars": 420,
+        "answerCitedSourceCount": 1,
+        "distinctHostCount": 1,
+        "independentReviewCount": 1,
+    })
+    monkeypatch.setattr(quality, "research_answer_integrity_issues", lambda _result: [])
+    monkeypatch.setattr(quality, "research_review_decision", lambda _result: "accept")
+
+    assessment = audit._result_assessment({"modelSynthesis": {"writerMode": "single", "writerSectionCount": 0}})
+
+    assert assessment["highQualityIssues"] == []
+    assert len(assessment["qualityRecommendations"]) == 3
+
+
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_agent_writer_assessment_has_consistent_recommendations_and_requires_review_execution(monkeypatch, reviewed):
+    import core.tools.research_quality as quality
+
+    monkeypatch.setattr(quality, "research_acceptance_metrics", lambda _: {"answerCitedSourceCount": 1, "distinctHostCount": 1, "independentReviewCount": 1})
+    monkeypatch.setattr(quality, "research_answer_integrity_issues", lambda _: [])
+    monkeypatch.setattr(quality, "research_review_decision", lambda _: "accept")
+    assessment = audit._result_assessment({"modelSynthesis": {
+        "writerMode": "agent", "modelId": "writer", "reviewerModelId": "reviewer",
+        "trace": [{"stage": "review"}] if reviewed else [],
+    }})
+    assert len(assessment["qualityRecommendations"]) == 3
+    assert ("independent_review_execution_missing" in assessment["highQualityIssues"]) is not reviewed
 
 
 def test_first_and_second_qualified_attempt_replay_to_streak_two():

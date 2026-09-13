@@ -12,7 +12,7 @@ import pytest
 
 import core.database as database_module
 from core.tools.research_quality import research_acceptance_metrics
-from tests.runtime_core.test_runtime_episode_runner import _accepted_research_payload
+from tests.runtime_core.test_runtime_episode_runner import _accepted_research_payload, _rebind_accepted_research_review
 from tests.scripts import run_supervisor_runtime_skill_live_audit as audit
 
 
@@ -601,6 +601,7 @@ def test_delegated_research_diagnostic_requires_sequential_durable_truth(monkeyp
         audit,
         "_research_handoff_assessment",
         lambda _payload, *, question: {
+            "highQuality": True,
             "sourceUrls": [f"https://official-{index}.gov.cn/policy" for index in range(1, 6)]
         },
     )
@@ -612,6 +613,13 @@ def test_delegated_research_diagnostic_requires_sequential_durable_truth(monkeyp
     assert diagnostic["verificationIdentityPresent"] is True
     assert diagnostic["delegationTerminal"] is True
     assert findings == [], (diagnostic, [item.summary for item in findings])
+    # The orchestration fixture mocks the separate integrity owner. Reject its
+    # failure explicitly; a completed run and many URLs cannot override it.
+    with monkeypatch.context() as incomplete:
+        incomplete.setattr(audit, "_research_handoff_assessment", lambda *_args, **_kwargs: {
+            "highQuality": False, "sourceUrls": [f"https://official-{index}.gov.cn/policy" for index in range(1, 6)],
+        })
+        assert any("完整性检查" in finding.summary for finding in audit._delegated_research_verification_findings(result))
 
     # A worker name or an exception wrapper mentioning verification is not a
     # verification result, even if legacy lifecycle metadata says completed.
@@ -955,8 +963,13 @@ def test_delivery_coverage_accepts_paraphrase_but_rejects_missing_domains_and_un
     report = audit._delegated_research_delivery_coverage(text, urls)
     assert report["passed"] is True
     assert report["semanticTruthAssessed"] is False
-    for removed in ("生成式人工智能服务管理暂行办法", "GB 45438-2025", "未核实", "上线清单", urls[0]):
+    for removed in ("生成式人工智能服务管理暂行办法", "GB 45438-2025", "未核实", "上线清单"):
         assert audit._delegated_research_delivery_coverage(text.replace(removed, ""), urls)["passed"] is False
+    short = text.replace("截至2026年9月3日，", "")
+    for url in urls[1:]:
+        short = short.replace(url, "")
+    assert audit._delegated_research_delivery_coverage(short, urls[:1])["passed"] is True
+    assert audit._delegated_research_delivery_coverage(short, urls[:1])["qualityRecommendations"]
     assert audit._delegated_research_delivery_coverage(text, urls[1:])["passed"] is False
     assert audit._delegated_research_delivery_coverage("全文见Research。" + "\n".join(urls), urls)["passed"] is False
 
@@ -1016,19 +1029,30 @@ def test_research_handoff_assessment_recomputes_instead_of_trusting_forged_metri
     assessment = audit._research_handoff_assessment(payload, question="current compliance facts")
 
     assert assessment["highQuality"] is False
-    assert "recomputed_high_quality" in assessment["failedChecks"]
+    assert "answer_integrity_verified" in assessment["failedChecks"]
     assert "advertised_metrics_match_recomputed" in assessment["failedChecks"]
     assert assessment["qualityIssues"]
     assert assessment["advertisedMetricMismatches"]
 
 
-def test_research_handoff_assessment_accepts_complete_projected_review_binding():
+@pytest.mark.parametrize("short", [False, True])
+def test_research_handoff_assessment_accepts_complete_projected_review_binding(short):
     question = "Verify the current compliance timeline with fresh primary evidence."
     raw = _accepted_research_payload(
         "bundle-valid",
         question,
         fixture_time=datetime.now(timezone.utc),
     )
+    # The current agent contract stores citation keys without display brackets.
+    for source in raw["researchAnswerPack"]["sources"]:
+        source["citationKey"] = source["citationKey"].strip("[]")
+    if short:
+        raw["researchAnswerPack"]["answer"] = "适用条件和关键事实均来自此处的实读材料。[S1]"
+        raw["researchAnswerPack"]["sources"] = raw["researchAnswerPack"]["sources"][:1]
+        raw["researchAnswerPack"]["claimTable"] = raw["researchAnswerPack"]["claimTable"][:1]
+        # Old but applicable evidence is not made invalid by a fresh retrieval.
+        raw["researchAnswerPack"]["sources"][0]["updatedAt"] = "2021-01-01"
+    _rebind_accepted_research_review(raw)
     answer = raw["researchAnswerPack"]["answer"]
     sources = raw["researchAnswerPack"]["sources"]
     claims = raw["researchAnswerPack"]["claimTable"]
@@ -1084,6 +1108,52 @@ def test_research_handoff_assessment_accepts_complete_projected_review_binding()
     assert assessment["failedChecks"] == []
     assert assessment["qualityIssues"] == []
     assert assessment["advertisedMetricMismatches"] == {}
+    assert bool(assessment["qualityRecommendations"]) is short
+
+    unread = deepcopy(payload)
+    unread["sources"][0].pop("readEvidence")
+    rejected = audit._research_handoff_assessment(unread, question=question)
+    assert rejected["highQuality"] is False
+    assert "read_evidence_missing" in rejected["qualityIssues"]
+
+
+def test_pure_research_short_delivery_keeps_coverage_and_does_not_claim_semantic_truth(monkeypatch):
+    spec = audit._case_specs(audit.PURE_RESEARCH_CASE_ID)[0]
+    url = "https://example.org/official-act"
+    answer = (
+        "GPAI 的合规时间线须按适用角色区分。系统性风险门槛须核验计算量与指定程序；透明度、版权、"
+        "模型文档义务须分别履行。既有模型有过渡规则；Code of Practice 是合规证明路径，不能代替法规原文。"
+        "欧盟委员会指南与行业实践的层级不同，罚款执法仍有待澄清事项；上线前可执行清单应逐项核对。[S1]\n"
+        + url
+    )
+    payload = {"answer": answer, "sources": [{"citationKey": "S1", "url": url, "selectedForEvidence": True}]}
+    monkeypatch.setattr(audit, "_research_handoff_payloads", lambda _: [payload])
+    monkeypatch.setattr(audit, "_research_handoff_assessment", lambda *_args, **_kwargs: {
+        "highQuality": True, "sourceIdentities": audit._source_identities_from_urls([url], question=spec.prompt),
+        "answerSha256": hashlib.sha256(answer.encode()).hexdigest(),
+    })
+    monkeypatch.setattr(audit, "_has_research_evidence_path", lambda _: True)
+    result = audit.LiveCaseResult(spec=spec, final_text=answer, research_completed_seq=3)
+    diagnostic = audit._pure_research_diagnostic(result)
+    assert diagnostic["finalFactRetention"] is True
+    assert diagnostic["semanticTruthAssessed"] is False
+    assert diagnostic["qualityRecommendations"]
+    assert audit._pure_research_findings(result) == []
+
+    result.final_text = answer.replace("版权、", "")
+    diagnostic = audit._pure_research_diagnostic(result)
+    assert diagnostic["finalFactRetention"] is False
+    assert any("关键法律语义" in finding.summary for finding in audit._pure_research_findings(result))
+    result.final_text = answer.replace(url, "https://unread.example/fabricated")
+    assert audit._pure_research_diagnostic(result)["finalFactRetention"] is False
+
+    # Even with every topic word and a real reference, a new prose rewrite is
+    # not a proven retention of all facts/conditions. Keep it explicitly unknown.
+    result.final_text = "我重新整理如下。" + answer.replace("须按适用角色区分", "按照不同主体适用")
+    diagnostic = audit._pure_research_diagnostic(result)
+    assert diagnostic["finalCoveragePassed"] is True
+    assert diagnostic["finalFactRetention"] is None
+    assert diagnostic["semanticReviewRequired"] is True
 
 
 def test_pure_research_audit_recognizes_exact_dates_semantics_and_all_direct_web_tools():

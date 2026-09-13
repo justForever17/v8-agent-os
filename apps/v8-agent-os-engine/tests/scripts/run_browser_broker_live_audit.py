@@ -62,7 +62,8 @@ def main(argv=None):
             raise RuntimeError("ffmpeg is required for the synthetic video fixture")
         subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=320x180:d=2:r=10",
                         "-f", "lavfi", "-i", "color=c=green:s=320x180:d=2:r=10", "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=2:r=10",
-                        "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p[v]", "-map", "[v]", "-c:v", "libx264",
+                        "-f", "lavfi", "-i", "aevalsrc=sin(2*PI*(440+220*floor(t/2))*t):s=16000:d=6",
+                        "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p[v]", "-map", "[v]", "-map", "3:a", "-c:a", "aac", "-c:v", "libx264",
                         "-movflags", "+faststart", str(workspace / "fixture.mp4")], check=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         (workspace / "fixture.vtt").write_text("WEBVTT\n\n00:00.000 --> 00:02.000\nFirst red frame\n\n00:02.000 --> 00:04.000\nSecond green frame\n\n00:04.000 --> 00:06.000\nThird blue frame\n", encoding="utf-8")
         fixture_html = HTML.replace("</main>", '<video id="clip" src="fixture.mp4" width="320" height="180" muted controls preload="auto"><track kind="captions" src="fixture.vtt" srclang="en" default></video><video id="other-clip" src="fixture.mp4" width="160" height="90" muted preload="auto"></video></main>')
@@ -168,22 +169,36 @@ def main(argv=None):
         if args.video:
             candidates = await call("observe", browser_session_id=ids["browser_session_id"], selector="video")
             assert "Matched 2 elements" in candidates and "selector=video >> nth=0" in candidates, candidates
-            media_result = await call("media", **ids, selector="video >> nth=0", sample_times=[0.5, 2.5, 4.5])
+            media_result = await call("media", **ids, selector="video >> nth=0", sample_times=[0.5, 2.5, 4.5], audio_range=[2.2, 3.2])
             assert "Browser media: completed" in media_result, media_result
             assert "playbackRestored=True" in media_result and "First red frame" in media_result, media_result
-            frames = re.findall(r"Frame (\d+) at ([0-9.]+)s; vision file_path: (.+)", media_result)
-            report["sampleObservations"] = [{"index": index, "time": timestamp} for index, timestamp, _ in frames]
+            frames = re.findall(r"Frame (\d+) at ([0-9.]+)s \(([^)]+)\); vision file_path: (.+)", media_result)
+            report["sampleObservations"] = [{"index": index, "time": timestamp, "accuracy": accuracy} for index, timestamp, accuracy, _ in frames]
             from PIL import Image, ImageStat
             # Verify actual decoded pixels rather than trusting requested timestamps.
             channels = []
-            for index, timestamp, path in frames:
+            for index, timestamp, _accuracy, path in frames:
                 assert abs(float(timestamp) - [0.5, 2.5, 4.5][int(index) - 1]) < 0.1, f"Frame {index}: actual timestamp {timestamp} did not match requested time"
                 with Image.open(path.strip()) as image:
                     width, height = image.size
                     mean = ImageStat.Stat(image.convert("RGB").crop((width//3, height//4, width*2//3, height//2))).mean
                 channels.append(max(range(3), key=lambda index: mean[index]))
             assert channels == [0, 1, 2], channels
-            report["video"] = {"frameCount": len(frames), "actualPixelChannels": channels, "subtitlesRead": True, "playbackRestored": True}
+            audio_match = re.search(r"Audio \[([0-9.]+)-([0-9.]+)\]s; file_path: (.+)", media_result)
+            assert audio_match, media_result
+            assert abs(float(audio_match[1]) - 2.2) < 0.1 and 3.2 <= float(audio_match[2]) <= 3.5
+            pcm = subprocess.run([ffmpeg, "-v", "error", "-i", audio_match[3].strip(), "-f", "f32le", "-ac", "1", "-ar", "16000", "pipe:1"],
+                                 capture_output=True, check=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout
+            import numpy as np
+            samples = np.frombuffer(pcm, dtype="<f4")
+            assert 0.8 <= len(samples)/16000 <= 1.5
+            assert float(np.sqrt(np.mean(samples**2))) > 0.1, "Silent recording must not pass as audio evidence"
+            spectrum = np.abs(np.fft.rfft(samples * np.hanning(len(samples))))
+            frequency = float(np.fft.rfftfreq(len(samples), 1/16000)[np.argmax(spectrum)])
+            assert abs(frequency - 660) < 10, f"Wrong audio segment: {frequency}Hz; green interval must be 660Hz"
+            report["video"] = {"frameCount": len(frames), "actualPixelChannels": channels, "subtitlesRead": True, "playbackRestored": True,
+                               "audioMediaRange": [float(audio_match[1]), float(audio_match[2])], "audioDominantHz": round(frequency, 2),
+                               "audioSeconds": len(samples)/16000, "speechTranscription": "not_tested_tone_fixture"}
             await call("observe", browser_session_id=ids["browser_session_id"])
         old = dict(ids)
         filled = await call("fill", **ids, role="textbox", name="Title", text="Native browser verified")
@@ -206,16 +221,17 @@ def main(argv=None):
         await call("observe", browser_session_id=ids["browser_session_id"])
         assert "Browser close: completed" in await call("close", **ids)
         artifacts = db.list_runtime_artifacts(session_id="browser-live")
+        screenshots = [item for item in artifacts if Path(item["sourcePath"]).suffix == ".jpg"]
         report["screenshots"] = [{"artifactId": item["artifactId"], "sha256": hashlib.sha256(Path(item["sourcePath"]).read_bytes()).hexdigest()}
-                                 for item in artifacts]
-        assert len(artifacts) == (5 if args.video else 2)
+                                 for item in screenshots]
+        assert len(artifacts) == (6 if args.video else 2)
         from core.tools.vision_image_inputs import prepare_ordered_images
-        prepared = prepare_ordered_images([{"file_path": item["sourcePath"]} for item in artifacts],
+        prepared = prepare_ordered_images([{"file_path": item["sourcePath"]} for item in screenshots],
                                            runtime_context={"session_id": "browser-live", "workspace_path": str(workspace)},
                                            remote_guard=lambda _url: (_ for _ in ()).throw(AssertionError("local screenshots must not use a remote request")))
         report["visionRead"] = {"imageCount": len(prepared), "resourceKinds": [item["source"]["resourceKind"] for item in prepared],
                                 "sha256": [item["source"]["sourceSha256"] for item in prepared], "modelInvoked": False}
-        assert report["visionRead"]["resourceKinds"] == ["artifact"] * len(artifacts)
+        assert report["visionRead"]["resourceKinds"] == ["artifact"] * len(screenshots)
 
     try:
         with bind_runtime_context(session_id="browser-live", run_id="browser-live-run", user_id="fixture-owner",

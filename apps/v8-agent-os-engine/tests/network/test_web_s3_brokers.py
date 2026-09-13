@@ -224,44 +224,22 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertIn("verification_or_anti_crawl", " ".join(payload["warnings"]))
 
     def test_web_read_auto_uses_allowlisted_agent_browser_profile_without_explicit_flag(self):
-        captured_browser_kwargs = {}
-
-        class _StaticFetcher:
-            @staticmethod
-            def get(_url, **_kwargs):
-                return type(
-                    "Response",
-                    (),
-                    {
-                        "html_content": "<html><head><title>Login required</title></head><body>请登录后继续访问</body></html>",
-                        "url": "https://example.com/private",
-                        "status": 403,
-                    },
-                )()
-
-        class _DynamicFetcher:
-            @staticmethod
-            def fetch(url, **kwargs):
-                captured_browser_kwargs.update(kwargs)
-                return type(
-                    "Response",
-                    (),
-                    {
-                        "html_content": (
-                            "<html><head><title>Private page</title></head><body><main>"
-                            "<h1>Private page</h1>"
-                            "<p>This login-backed content is now available from the Agent browser profile. "
-                            "The page includes enough private article text to pass the normal extraction "
-                            "quality gate after static fetching reports a login challenge. This proves that "
-                            "allowlisted web and research reads can reuse the dedicated browser session without "
-                            "requiring every caller to pass an explicit useAgentBrowserProfile flag. The content "
-                            "stays inside browser-backed fetching and cookies are not exported to the model.</p>"
-                            "</main></body></html>"
-                        ),
-                        "url": url,
-                        "status": 200,
-                    },
-                )()
+        profile_page = {
+            "contextReused": True,
+            "html": (
+                "<html><head><title>Private page</title></head><body><main>"
+                "<h1>Private page</h1>"
+                "<p>This login-backed content is now available from the Agent browser profile. "
+                "The page includes enough private article text to pass the normal extraction "
+                "quality gate after static fetching reports a login challenge. This proves that "
+                "allowlisted web and research reads can reuse the dedicated browser session without "
+                "requiring every caller to pass an explicit useAgentBrowserProfile flag. The content "
+                "stays inside browser-backed fetching and cookies are not exported to the model.</p>"
+                "</main></body></html>"
+            ),
+            "url": "https://example.com/private",
+            "status": 200,
+        }
 
         with patch(
             "core.tools.web_fetcher.get_web_fetch_config",
@@ -274,11 +252,19 @@ class WebAndS3BrokerTests(unittest.TestCase):
                 "profileDir": "E:/tmp/v8-agent-browser-profile/edge",
             },
         ), patch(
+            "runtimes.computer_use.browser_automation.agent_browser_automation.read_profile_page",
+            return_value=profile_page,
+        ) as profile_read, patch(
+            "runtimes.computer_use.browser_automation.agent_browser_automation.configure",
+        ), patch(
+            "core.tools.web_fetcher._fetch_with_reader_fallback",
+            side_effect=AssertionError("authenticated read must not fall through to a public reader"),
+        ) as public_reader, patch(
             "core.tools.web_fetcher._try_import_static_fetcher",
-            return_value=(_StaticFetcher, None),
+            return_value=(None, "fixture has no public fetcher"),
         ), patch(
             "core.tools.web_fetcher._try_import_dynamic_fetcher",
-            return_value=(_DynamicFetcher, None),
+            return_value=(None, "fixture has no separate browser"),
         ), patch(
             "core.tools.web_fetcher._resolve_verify_candidates",
             return_value=[("default", True)],
@@ -290,8 +276,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
         # An enabled and allowlisted profile goes straight to the headless
         # authenticated lane so the browser session is actually reusable.
         self.assertEqual(payload["attemptedModes"], ["dynamic"])
-        self.assertEqual(captured_browser_kwargs["cdp_url"], "ws://127.0.0.1:9222/devtools/browser/test")
-        self.assertNotIn("user_data_dir", captured_browser_kwargs)
+        profile_read.assert_called_once()
+        self.assertEqual(profile_read.call_args.kwargs["url"], "https://example.com/private")
+        public_reader.assert_not_called()
         self.assertTrue(payload["agentBrowserProfile"]["used"])
         self.assertEqual(payload["agentBrowserProfile"]["matchedHost"], "example.com")
         self.assertEqual(payload["agentBrowserProfile"]["profile"]["browserKind"], "edge")

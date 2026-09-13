@@ -39,6 +39,7 @@ const pages = new Map();
 const pageIds = new WeakMap();
 const cdpSessions = new Map();
 const screencasts = new Map();
+const agentMediaCancels = new Map();
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload ?? {}, null, 2);
@@ -421,12 +422,23 @@ async function route(req, res) {
       const body = JSON.parse(await readBody(req) || "{}");
       if (url.pathname === "/agent/media") {
         await actOnAgentPage(page, { ...body, action: "inspect" });
-        try { return sendJson(res, 200, { targetId, ...await observeAgentMedia(page, body) }); }
-        finally { await invalidateAgentObservation(page); }
+        const controller = new AbortController();
+        const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        res.once("close", disconnected);
+        agentMediaCancels.set(targetId, controller);
+        try { return sendJson(res, 200, { targetId, ...await observeAgentMedia(page, { ...body, signal: controller.signal }) }); }
+        finally { agentMediaCancels.delete(targetId); res.removeListener("close", disconnected); await invalidateAgentObservation(page); }
       }
       const result = url.pathname === "/agent/observe" ? await observeAgentPage(page, body)
         : url.pathname === "/agent/close" ? await closeAgentPage(page, body) : await actOnAgentPage(page, body);
       return sendJson(res, 200, { targetId, ...result });
+    }
+
+    if (url.pathname === "/agent/cancel" && req.method === "POST") {
+      const targetId = String(url.searchParams.get("target") || "").trim();
+      const controller = agentMediaCancels.get(targetId);
+      if (controller) { controller.abort(); return sendJson(res, 200, { targetId, cancelled: true }); }
+      return sendJson(res, 200, { targetId, cancelled: false, reason: "no_active_media_request" });
     }
 
     if (url.pathname === "/new" && req.method === "GET") {

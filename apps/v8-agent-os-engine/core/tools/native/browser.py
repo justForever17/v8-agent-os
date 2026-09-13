@@ -129,7 +129,9 @@ def _render_result(result: dict[str, Any], *, action: str, context: dict[str, An
         tool_name="browser_broker", tool_call_id=tool_call_id or None, runtime_kind="web", surface="browser_observation",
         raw_content=json.dumps(result, ensure_ascii=False), metadata={"sessionId": context["session_id"], "runId": context.get("run_id"), "action": action},
     )
-    lines = [f"Browser {action}: completed", f"browser_session_id: {result.get('browserSessionId')}", f"page_id: {result.get('pageId')}"]
+    partial = action == "media" and (result.get("audio", {}).get("status") == "unavailable"
+                                    or result.get("audio", {}).get("transcript", {}).get("status") == "unavailable")
+    lines = [f"Browser {action}: {'partial' if partial else 'completed'}", f"browser_session_id: {result.get('browserSessionId')}", f"page_id: {result.get('pageId')}"]
     if result.get("observationId"):
         lines.append(f"observation_id: {result['observationId']}")
     if result.get("url"):
@@ -149,9 +151,21 @@ def _render_result(result: dict[str, Any], *, action: str, context: dict[str, An
             lines.append("[Only the first 20 matches shown; narrow the selector, for example video:visible.]")
     if action == "media":
         lines.append(f"Video: {result.get('width')}x{result.get('height')}; duration={result.get('duration')}s; playbackRestored={result.get('playbackRestoration', {}).get('ok')}")
-        lines.append("Only sampled frames and loaded subtitle cues were read, not the whole video. Use vision_media_analyzer(images=[...]) on these actual ordered frame refs; observe again before another page action.")
+        lines.append("Timeline: all times are video media seconds. Only sampled frames, loaded subtitle cues and explicitly requested audio intervals were read, not the whole video. Use vision_media_analyzer(images=[...]) on these actual ordered frame refs; observe again before another page action.")
         for frame in result.get("frames") or []:
-            lines.append(f"Frame {frame['index']} at {frame['currentTime']}s; vision file_path: {frame['screenshotRef']['filePath']}")
+            lines.append(f"Frame {frame['index']} at {frame.get('mediaTime', frame['currentTime'])}s ({frame.get('timeAccuracy', 'unknown')}); vision file_path: {frame['screenshotRef']['filePath']}")
+        audio = result.get("audio") or {}
+        lines.append(f"Audio: {audio.get('status', 'not_requested')}; reason={audio.get('reason', '')}")
+        if audio.get("artifactRef"):
+            lines.append(f"Audio [{audio['startTime']}-{audio['endTime']}]s; file_path: {audio['artifactRef']['filePath']}")
+            lines.append("Only the selected video element was captured, not microphone/system audio. Recording clock anchors are in detailRef; capture alone does not prove intelligible speech.")
+        transcript = audio.get("transcript") or {}
+        if transcript.get("status") == "transcribed":
+            lines.append(f"Untrusted transcript [{transcript['startTime']}-{transcript['endTime']}]s (clip-level only, no word timestamps):\n{transcript['text'][:max_chars]}")
+            if len(transcript['text']) > max_chars:
+                lines.append("[Transcript preview truncated; full captured text in detailRef.]")
+        elif transcript:
+            lines.append(f"Transcript: {transcript.get('status')}; reason={transcript.get('reason', '')}. A configured STT or audio-capable vision_media_analyzer can interpret the scoped audio; do not infer speech from frames.")
         caption_lines = []
         for track in result.get("tracks") or []:
             caption_lines.append(f"Subtitles ({track.get('language')}): loaded={track.get('available')}; mode={track.get('mode')}")
@@ -203,6 +217,8 @@ async def browser_broker(
     scroll_y: Annotated[int, Field(ge=-4000, le=4000)] = 600,
     max_chars: Annotated[int, Field(ge=500, le=20000)] = 6000, screenshot: bool = False,
     sample_times: Annotated[list[float] | None, Field(max_length=8)] = None,
+    audio_range: Annotated[list[float] | None, Field(min_length=2, max_length=2)] = None,
+    transcribe_audio: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Use the existing managed Agent Browser directly, including local app/React pages and its logged-in profile.
@@ -220,12 +236,20 @@ async def browser_broker(
     media reads one unique visible HTML5 video (selector='video' or a specific observed selector), its loaded subtitles
     and current frame; optional sample_times selects up to 8 seconds positions in order. It temporarily pauses/seeks
     and restores playback, respects the same session/user-control lease, and returns scoped images for vision analysis.
+    Optional audio_range=[start_seconds,end_seconds] captures at most 10 seconds from that SAME video at 1x speed
+    in real playback time (no microphone/system audio). Pair sample_times and loaded subtitles with its media clock.
+    transcribe_audio=True reuses configured STT; otherwise pass its audio file to an audio-capable vision_media_analyzer.
+    STT text is attributed to the clip, not invented word timestamps. Missing/CORS/DRM/stalled audio is an explicit gap.
     It does not read an entire video by its title, bypass DRM, download cookies or handle an inaccessible embedded player.
     """
     cancelled = threading.Event()
     try:
         context = _session_context()
         _check_cancelled(context, cancelled)
+        if (audio_range is not None or transcribe_audio) and action != "media":
+            raise BrowserSessionError("media_action_required", "Audio options require action=media")
+        if transcribe_audio and audio_range is None:
+            raise BrowserSessionError("audio_range_required", "Choose the explicit video interval to transcribe")
         if action != "open" and not browser_session_id:
             raise BrowserSessionError("browser_session_required", "Use the browser_session_id returned by open")
         if action not in {"open", "observe"} and not observation_id:
@@ -286,11 +310,24 @@ async def browser_broker(
                 raise BrowserSessionError("browser_action_blocked", error or "Browser close blocked")
         result = await asyncio.to_thread(browser_session_service.agent_request, **request, action=action,
                                          body={**body, "action": action, "text": text, "key": key, "scrollY": scroll_y,
-                                               **({"sampleTimes": sample_times} if sample_times is not None else {})})
+                                               **({"sampleTimes": sample_times} if sample_times is not None else {}),
+                                               **({"audioRange": audio_range} if audio_range is not None else {})})
         check()
+        if action == "media":
+            from core.tools.browser_media_audio import attach_browser_audio
+            await attach_browser_audio(result, context, transcribe=transcribe_audio)
+            check()
         return _render_result(result, action=action, context=context, tool_call_id=tool_call_id, max_chars=max_chars)
     except asyncio.CancelledError:
         cancelled.set()
+        if browser_session_id:
+            try:
+                item, target_id = browser_session_service.agent_target(
+                    session_id=context["session_id"], browser_session_id=browser_session_id, page_id=page_id,
+                )
+                await asyncio.to_thread(item.provider.cancel_agent_request, target_id=target_id, target_port=item.target_port)
+            except Exception:
+                pass
         raise
     except Exception as exc:
         _raise_runtime_governance_exception_if_needed(exc)

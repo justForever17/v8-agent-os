@@ -636,7 +636,7 @@ def _result_assessment(result: dict[str, Any]) -> dict[str, Any]:
         sys.path.insert(0, str(ENGINE_ROOT))
     from core.tools.research_quality import (
         research_acceptance_metrics,
-        research_high_quality_issues,
+        research_answer_integrity_issues,
         research_review_decision,
     )
 
@@ -646,7 +646,16 @@ def _result_assessment(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(result.get("modelSynthesis"), dict)
         else {}
     )
-    issues = list(research_high_quality_issues(result))
+    issues = list(research_answer_integrity_issues(result))
+    quality_recommendations: list[str] = []
+    for metric_name, target, label in (
+        ("answerCitedSourceCount", FIXED_TARGET_CITED_SOURCES, "cited_source_target_below_recommendation"),
+        ("distinctHostCount", FIXED_TARGET_DISTINCT_HOSTS, "distinct_host_target_below_recommendation"),
+        ("independentReviewCount", FIXED_TARGET_REVIEW_COUNT, "review_count_below_recommendation"),
+    ):
+        value = metrics.get(metric_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < target:
+            quality_recommendations.append(f"{label}:{target}")
     writer_mode = str(model_synthesis.get("writerMode") or "").strip()
     if writer_mode == "agent":
         trace = model_synthesis.get("trace") or []
@@ -654,6 +663,7 @@ def _result_assessment(result: dict[str, Any]) -> dict[str, Any]:
             issues.append("independent_review_execution_missing")
         return {
             "reviewDecision": research_review_decision(result), "highQualityIssues": issues,
+            "qualityRecommendations": quality_recommendations,
             "qualityMetrics": metrics, "writerMode": writer_mode, "writerSectionCount": 0,
             "providerModels": [model_synthesis.get("modelId"), model_synthesis.get("reviewerModelId")],
         }
@@ -667,18 +677,10 @@ def _result_assessment(result: dict[str, Any]) -> dict[str, Any]:
         or writer_section_count < (0 if single_writer else 2)
     ):
         issues.append("fixed_writer_section_count_invalid")
-    fixed_metric_floors = (
-        ("answerCitedSourceCount", FIXED_TARGET_CITED_SOURCES, "fixed_cited_source_target_not_met"),
-        ("distinctHostCount", FIXED_TARGET_DISTINCT_HOSTS, "fixed_host_target_not_met"),
-        ("independentReviewCount", FIXED_TARGET_REVIEW_COUNT, "fixed_review_count_not_met"),
-    )
-    for metric_name, floor, issue_name in fixed_metric_floors:
-        value = metrics.get(metric_name)
-        if isinstance(value, bool) or not isinstance(value, int) or value < floor:
-            issues.append(f"{issue_name}:{floor}")
     return {
         "reviewDecision": research_review_decision(result),
         "highQualityIssues": list(dict.fromkeys(issues)),
+        "qualityRecommendations": quality_recommendations,
         "qualityMetrics": metrics,
         "writerMode": writer_mode,
         "writerSectionCount": writer_section_count,
@@ -751,6 +753,7 @@ def run_attempt(
         "reviewDecision": "",
         "highQualityIssues": ["result_missing"],
         "qualityMetrics": {},
+        "qualityRecommendations": [],
         "providerModels": [],
         "writerMode": "",
         "writerSectionCount": None,
@@ -787,6 +790,7 @@ def run_attempt(
         "terminalStatus": terminal_status,
         "reviewDecision": assessment["reviewDecision"],
         "highQualityIssues": assessment["highQualityIssues"],
+        "qualityRecommendations": assessment["qualityRecommendations"],
         "qualityMetrics": assessment["qualityMetrics"],
         "writerMode": assessment["writerMode"],
         "writerSectionCount": assessment["writerSectionCount"],

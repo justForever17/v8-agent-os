@@ -34,6 +34,8 @@ PROJECT_DEV_START_TIMEOUT_SECONDS = 25.0
 PROJECT_PROBE_TIMEOUT_SECONDS = 0.8
 PREVIEW_SESSION_TTL_SECONDS = 4 * 60 * 60
 SELECTION_TTL_SECONDS = 30 * 60
+SOURCE_SCAN_CACHE_TTL_SECONDS = 2.0
+MAX_SOURCE_SCAN_CACHE_ENTRIES = 64
 
 ALLOWED_STYLE_PROPERTIES = frozenset(
     {
@@ -716,6 +718,9 @@ class UiPatchService:
         self._selections: dict[str, SelectionRecord] = {}
         self._runtime_root = Path(storage.base_dir) / "runtime" / "ui-patch"
         self._transactions_root = self._runtime_root / "transactions"
+        # Cache parsing, never freshness: inventory and bytes are checked on each
+        # scan, including new files that could make a formerly unique match ambiguous.
+        self._source_scan_cache: dict[tuple[str, str, str], tuple[float, tuple[Any, ...], list[Any]]] = {}
 
     def _workspace_root(self, session_id: str) -> Path:
         authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=session_id)
@@ -1176,6 +1181,9 @@ class UiPatchService:
         return item
 
     def _close_locked(self, patch_session_id: str) -> bool:
+        for key in list(self._source_scan_cache):
+            if key[0] == patch_session_id:
+                self._source_scan_cache.pop(key, None)
         item = self._sessions.pop(patch_session_id, None)
         if not item:
             return False
@@ -1284,11 +1292,46 @@ class UiPatchService:
             return len(_matching_rule_spans(text[start:end], selector)) == 1
         return len(_matching_rule_spans(text, selector)) == 1
 
-    def _scan_workspace_for_selector(self, item: PreviewSession, selector: str) -> list[tuple[Path, str, int | None]]:
-        matches: list[tuple[Path, str, int | None]] = []
-        for resolved_path in self._iter_source_files(item, _STYLE_SOURCE_SUFFIXES):
+    def _source_scan_inputs(self, item: PreviewSession, suffixes: frozenset[str]) -> list[tuple[Path, str]]:
+        # Do not retain hundreds of full source bodies just to fingerprint the
+        # inventory. A cache miss reparses files one at a time below.
+        sources = []
+        for path in self._iter_source_files(item, suffixes):
             try:
-                _, text, _ = self._read_source(resolved_path)
+                raw, _text, _ = self._read_source(path)
+                sources.append((path, _sha256_bytes(raw)))
+            except (OSError, UnicodeError, ValueError):
+                continue
+        return sources
+
+    def _cached_scan(self, key: tuple[str, str, str], sources: list[tuple[Path, str]]) -> list[Any] | None:
+        now = time.monotonic()
+        for stale_key, value in list(self._source_scan_cache.items()):
+            if now - value[0] > SOURCE_SCAN_CACHE_TTL_SECONDS:
+                self._source_scan_cache.pop(stale_key, None)
+        cached = self._source_scan_cache.get(key)
+        signature = tuple(sources)
+        return list(cached[2]) if cached and cached[1] == signature else None
+
+    def _cache_scan(self, key: tuple[str, str, str], sources: list[tuple[Path, str]], matches: list[Any]) -> None:
+        self._source_scan_cache.pop(key, None)
+        while len(self._source_scan_cache) >= MAX_SOURCE_SCAN_CACHE_ENTRIES:
+            self._source_scan_cache.pop(next(iter(self._source_scan_cache)))
+        self._source_scan_cache[key] = (
+            time.monotonic(), tuple(sources), list(matches),
+        )
+
+    def _scan_workspace_for_selector(self, item: PreviewSession, selector: str) -> list[tuple[Path, str, int | None, str]]:
+        cache_key = (item.patch_session_id, "style", _normalize_selector(selector))
+        sources = self._source_scan_inputs(item, _STYLE_SOURCE_SUFFIXES)
+        cached = self._cached_scan(cache_key, sources)
+        if cached is not None:
+            return cached
+        matches: list[tuple[Path, str, int | None, str]] = []
+        for resolved_path, _digest in sources:
+            try:
+                raw, text, _ = self._read_source(resolved_path)
+                digest = _sha256_bytes(raw)
                 suffix = resolved_path.suffix.lower()
                 if suffix in {".css", ".scss", ".sass", ".less"}:
                     source_selector = selector
@@ -1297,14 +1340,15 @@ class UiPatchService:
                         source_selector = self._css_module_source_selector(text, selector)
                         rule_matches = _matching_rule_spans(text, source_selector) if source_selector else []
                     if len(rule_matches) == 1:
-                        matches.append((resolved_path, "css", None))
+                        matches.append((resolved_path, "css", None, digest))
                 else:
                     for style_index, (start, end, _lang) in enumerate(_style_block_spans(text)):
                         source_selector = _strip_vue_scope_selector(selector) if suffix == ".vue" else selector
                         if len(_matching_rule_spans(text[start:end], source_selector)) == 1:
-                            matches.append((resolved_path, "vue_style" if suffix == ".vue" else "html_style", style_index))
+                            matches.append((resolved_path, "vue_style" if suffix == ".vue" else "html_style", style_index, digest))
             except (OSError, UnicodeError, ValueError):
                 continue
+        self._cache_scan(cache_key, sources, matches)
         return matches
 
     @staticmethod
@@ -1341,15 +1385,22 @@ class UiPatchService:
         self,
         item: PreviewSession,
         selector: str,
-    ) -> list[tuple[Path, str, int, int, dict[str, str]]]:
-        matches: list[tuple[Path, str, int, int, dict[str, str]]] = []
-        for resolved in self._iter_source_files(item, _COMPONENT_SOURCE_SUFFIXES):
+    ) -> list[tuple[Path, str, int, int, dict[str, str], str]]:
+        cache_key = (item.patch_session_id, "inline", _normalize_selector(selector))
+        sources = self._source_scan_inputs(item, _COMPONENT_SOURCE_SUFFIXES)
+        cached = self._cached_scan(cache_key, sources)
+        if cached is not None:
+            return cached
+        matches: list[tuple[Path, str, int, int, dict[str, str], str]] = []
+        for resolved, _digest in sources:
             try:
-                _, text, _ = self._read_source(resolved)
+                raw, text, _ = self._read_source(resolved)
+                digest = _sha256_bytes(raw)
                 for body_start, body_end, _attribute_start, _attribute_end, declarations in _find_react_inline_style_spans(text, selector):
-                    matches.append((resolved, "react_inline_style", body_start, body_end, declarations))
+                    matches.append((resolved, "react_inline_style", body_start, body_end, declarations, digest))
             except (OSError, UnicodeError, ValueError):
                 continue
+        self._cache_scan(cache_key, sources, matches)
         return matches
 
     def _scan_workspace_for_component_text(
@@ -1357,17 +1408,24 @@ class UiPatchService:
         item: PreviewSession,
         selector: str,
         expected_text: str,
-    ) -> list[tuple[Path, int, int, str]]:
-        matches: list[tuple[Path, int, int, str]] = []
-        for resolved in self._iter_source_files(item, _COMPONENT_SOURCE_SUFFIXES):
+    ) -> list[tuple[Path, int, int, str, str]]:
+        cache_key = (item.patch_session_id, "text", _normalize_selector(selector) + "\0" + _sha256_bytes(expected_text.strip().encode("utf-8")))
+        sources = self._source_scan_inputs(item, _COMPONENT_SOURCE_SUFFIXES)
+        cached = self._cached_scan(cache_key, sources)
+        if cached is not None:
+            return cached
+        matches: list[tuple[Path, int, int, str, str]] = []
+        for resolved, _digest in sources:
             try:
-                _, text, _ = self._read_source(resolved)
+                raw, text, _ = self._read_source(resolved)
+                digest = _sha256_bytes(raw)
                 for start, end, value in _find_static_component_text_spans(text, selector):
                     if expected_text.strip() and value.strip() != expected_text.strip():
                         continue
-                    matches.append((resolved, start, end, value))
+                    matches.append((resolved, start, end, value, digest))
             except (OSError, UnicodeError, ValueError):
                 continue
+        self._cache_scan(cache_key, sources, matches)
         return matches
 
     def map_selection(
@@ -1398,16 +1456,16 @@ class UiPatchService:
                     if str(key).strip().lower() in ALLOWED_STYLE_PROPERTIES
                 }
                 path_item, source_kind, style_index = self._source_from_hint(item, dict(raw_rule.get("sourceHint") or {}))
-                mapped: list[tuple[Path, str, int | None, str]] = []
+                mapped: list[tuple[Path, str, int | None, str, str | None]] = []
                 source_selector = self._source_selector(path_item, source_kind, rule_selector) if path_item else rule_selector
                 if path_item and self._rule_exists(path_item, source_kind=source_kind, style_index=style_index, selector=source_selector):
-                    mapped.append((path_item, source_kind, style_index, "matched_local_stylesheet"))
+                    mapped.append((path_item, source_kind, style_index, "matched_local_stylesheet", None))
                 else:
                     fallback = self._scan_workspace_for_selector(item, rule_selector)
                     if len(fallback) == 1:
-                        fallback_path, fallback_kind, fallback_index = fallback[0]
-                        mapped.append((fallback_path, fallback_kind, fallback_index, "unique_workspace_selector_match"))
-                for mapped_path, mapped_kind, mapped_index, reason in mapped:
+                        fallback_path, fallback_kind, fallback_index, digest = fallback[0]
+                        mapped.append((fallback_path, fallback_kind, fallback_index, "unique_workspace_selector_match", digest))
+                for mapped_path, mapped_kind, mapped_index, reason, digest in mapped:
                     workspace_path = mapped_path.relative_to(item.workspace_root).as_posix()
                     candidate_selector = self._source_selector(mapped_path, mapped_kind, rule_selector)
                     identity = (workspace_path, _normalize_selector(candidate_selector), mapped_index)
@@ -1423,7 +1481,7 @@ class UiPatchService:
                         selector=candidate_selector,
                         source_kind=mapped_kind,
                         style_index=mapped_index,
-                        source_hash=_sha256_bytes(source_raw),
+                        source_hash=digest or _sha256_bytes(source_raw),
                         declarations=declarations,
                         reason=reason,
                         runtime_selector=rule_selector if candidate_selector != rule_selector else None,
@@ -1435,13 +1493,12 @@ class UiPatchService:
             }
             if inline_style and item.mode in {"project", "dev"}:
                 inline_matches = self._scan_workspace_for_inline_style(item, selector)
-                for path_item, source_kind, body_start, body_end, declarations in (inline_matches if len(inline_matches) == 1 else []):
+                for path_item, source_kind, body_start, body_end, declarations, digest in (inline_matches if len(inline_matches) == 1 else []):
                     workspace_path = path_item.relative_to(item.workspace_root).as_posix()
                     identity = (workspace_path, "react_inline_style", body_start)
                     if identity in seen:
                         continue
                     seen.add(identity)
-                    source_raw = path_item.read_bytes()
                     candidate_id = f"source_{uuid.uuid4().hex}"
                     candidates[candidate_id] = SourceCandidate(
                         candidate_id=candidate_id,
@@ -1450,7 +1507,7 @@ class UiPatchService:
                         selector=selector,
                         source_kind=source_kind,
                         style_index=None,
-                        source_hash=_sha256_bytes(source_raw),
+                        source_hash=digest,
                         declarations=declarations,
                         reason="matched_unique_react_inline_style",
                         source_start=body_start,
@@ -1459,13 +1516,12 @@ class UiPatchService:
             text_content = str(selection.get("textContent") or "").replace("\x00", "")[:2000]
             if text_content.strip() and item.mode in {"project", "dev"}:
                 text_matches = self._scan_workspace_for_component_text(item, selector, text_content)
-                for path_item, body_start, body_end, source_text in (text_matches if len(text_matches) == 1 else []):
+                for path_item, body_start, body_end, source_text, digest in (text_matches if len(text_matches) == 1 else []):
                     workspace_path = path_item.relative_to(item.workspace_root).as_posix()
                     identity = (workspace_path, "component_text", body_start)
                     if identity in seen:
                         continue
                     seen.add(identity)
-                    source_raw = path_item.read_bytes()
                     candidate_id = f"source_{uuid.uuid4().hex}"
                     candidates[candidate_id] = SourceCandidate(
                         candidate_id=candidate_id,
@@ -1474,7 +1530,7 @@ class UiPatchService:
                         selector=selector,
                         source_kind="component_text",
                         style_index=None,
-                        source_hash=_sha256_bytes(source_raw),
+                        source_hash=digest,
                         declarations={},
                         reason="matched_unique_component_text",
                         source_start=body_start,

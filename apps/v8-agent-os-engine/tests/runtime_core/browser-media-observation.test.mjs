@@ -63,6 +63,48 @@ test("default captures one current frame and keeps originally paused video pause
   assert.equal(f.events.includes("play"), false);
 });
 
+test("media timeline sorts actual frame and subtitle times, without fabricated audio", async () => {
+  const f = fixture();
+  const result = await observeAgentMedia(f.page, { sampleTimes: [5, 1, 5], audioRange: [1, 2] });
+  assert.equal(result.audio.status, "unavailable");
+  assert.equal(result.audio.reason, "audio_capture_unsupported");
+  assert.equal(result.timeline.timebase, "media_seconds");
+  assert.deepEqual(result.timeline.entries.map((entry) => [entry.kind, entry.startTime]), [["subtitle", 0], ["frame", 1], ["subtitle", 4], ["frame", 5], ["frame", 5]]);
+  assert.deepEqual(result.timeline.entries.filter((entry) => entry.kind === "frame").map((entry) => entry.frameIndex), [2, 1, 3]);
+  assert.deepEqual(result.timeline.gaps, [{ kind: "audio", range: [1, 2], reason: "audio_capture_unsupported" }]);
+  assert.equal(f.video.currentTime, 3);
+});
+
+test("audio intervals and pre-cancel reject before changing playback", async () => {
+  for (const range of [[-1, 2], [1, 1], [3, 2], [0, 11], [0, NaN], [1], ["0", 2]]) {
+    const f = fixture();
+    await assert.rejects(observeAgentMedia(f.page, { audioRange: range }), /invalid_audio_range/);
+    assert.equal(f.events.includes("pause"), false);
+  }
+  const f = fixture();
+  await assert.rejects(observeAgentMedia(f.page, { signal: AbortSignal.abort() }), /video_observation_cancelled/);
+  assert.equal(f.events.includes("pause"), false);
+});
+
+test("cancellation during frame capture reaches the observation and restores playback", async () => {
+  const f = fixture();
+  let release, started;
+  const began = new Promise((resolve) => { started = resolve; });
+  f.elementHandle.screenshot = async () => {
+    started();
+    await new Promise((resolve) => { release = resolve; });
+    return Buffer.from("late-frame");
+  };
+  const controller = new AbortController();
+  const pending = observeAgentMedia(f.page, { sampleTimes: [1], signal: controller.signal });
+  await began;
+  controller.abort();
+  release();
+  await assert.rejects(pending, /video_observation_cancelled/);
+  assert.equal(f.video.currentTime, 3);
+  assert.equal(f.video.paused, false);
+});
+
 test("unavailable, ambiguous, unloaded, non-video and DRM targets produce no fake frame", async () => {
   for (const [fault, code] of [["none", "video_not_found"], ["many", "video_ambiguous"],
     ["unloaded", "video_not_loaded"], ["other", "target_is_not_video"], ["drm", "drm_video_observation_unsupported"]]) {

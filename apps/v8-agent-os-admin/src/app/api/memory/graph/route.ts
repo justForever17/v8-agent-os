@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
         const { searchParams } = new URL(req.url);
         if (searchParams.get("overview") === "1") {
             const query = new URLSearchParams();
-            for (const key of ["offset", "limit", "clusterId", "entity", "relationOffset"]) {
+            for (const key of ["offset", "limit", "clusterId", "entity", "relationOffset", "workspaceQuery"]) {
                 const value = searchParams.get(key);
                 if (value !== null) query.set(key, value);
             }

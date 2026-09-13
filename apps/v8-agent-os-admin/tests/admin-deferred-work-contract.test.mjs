@@ -34,7 +34,11 @@ test("chat runtime secondary tabs do not fan out subagent data on hover or focus
     const source = read("src", "app", "admin", "(dashboard)", "chat-runtime", "page.tsx");
 
     assert.doesNotMatch(source, /prefetchAdminRouteData|onPointerEnter|onFocus/);
-    assert.match(source, /onClick=\{\(\) => setCurrentTab\("subagents"\)\}/);
+    // The tab is now a deep link. Pinning the retired local setter would reject
+    // the query/back fix while still failing to observe a real prefetch.
+    assert.match(source, /href="\/admin\/chat-runtime\?tab=subagents"/);
+    assert.match(source, /useSearchParams\(\)\.get\("tab"\)/);
+    assert.match(source, /tab === "supervisor" \? <SupervisorPage\/> : <SubagentsPage\/>/);
 });
 
 test("runtime broker and contextual tool mode copy have bilingual labels", () => {

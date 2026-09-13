@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 
 const adminRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("admin sidebar keeps navigation groups visible without per-group collapse controls", () => {
+test("admin sidebar exposes task groups with discoverable primary and secondary entries", () => {
     const source = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Sidebar.tsx"), "utf8");
 
-    assert.match(source, /ADMIN_NAV_GROUPS\.map/);
+    assert.match(source, /ADMIN_TASK_NAV\.map/);
     assert.match(source, /\{t\(group\.title\)\}/);
-    assert.doesNotMatch(source, /openGroups|setOpenGroups|isGroupActive/);
+    assert.match(source, /href=\{item\.href\} prefetch=\{false\}/);
+    assert.match(source, /group\.items\.slice\(1\)\.map/);
+    assert.match(source, /<Dialog open=\{mobileOpen\}/);
 });
 
 test("admin sidebar navigation does not expose text or link context menus", () => {
@@ -27,7 +29,7 @@ test("admin sidebar omits the redundant return rail and uses an unframed collaps
 
     assert.doesNotMatch(source, /WEB_CHAT_URL|backToChat|ArrowLeft/);
     assert.doesNotMatch(source, /rounded-full border border-border bg-background/);
-    assert.match(source, /hover:text-foreground hover:opacity-100/);
+    assert.match(source, /onClick=\{toggleCollapse\}[\s\S]*focus-visible:ring-2/);
 });
 
 test("admin sidebar group labels are localized in Chinese", () => {

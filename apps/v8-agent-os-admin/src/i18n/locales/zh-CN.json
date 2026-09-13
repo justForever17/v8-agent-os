@@ -1,4 +1,8 @@
 {
+  "admin.experience.discardDraft": "放弃尚未保存的修改并关闭？",
+  "admin.galaxy.workspaceSearch": "查找全部工作区",
+  "admin.galaxy.createInWorkspace": "在工作区新建连接",
+  "admin.galaxy.chooseWorkspace": "选择写入工作区",
   "admin.experience.loadFailed": "暂时无法读取配置，现有设置未更改。",
   "admin.experience.saveFailed": "保存未确认，修改已保留。",
   "admin.experience.retry": "重试",

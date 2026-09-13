@@ -27,6 +27,13 @@ def test_exact_clusters_do_not_repeat_global_or_merge_relations(graph):
     assert graph.get_full_graph(scopes=["workspace:a"])["meta"]["totalRelations"] == 2
 
 
+def test_scope_oracle_detects_the_old_implicit_global_mutant(graph, monkeypatch):
+    original = graph._active_graph_relations_sql
+    monkeypatch.setattr(graph, "_active_graph_relations_sql", lambda **kwargs: original(**(kwargs | {"include_global": True})))
+    with pytest.raises(AssertionError):
+        test_exact_clusters_do_not_repeat_global_or_merge_relations(graph)
+
+
 def test_empty_and_wildcard_scope_never_expand_authority(graph):
     for scopes in [[], ["*"]]:
         with pytest.raises(ValueError):
@@ -85,5 +92,9 @@ def test_overview_pages_global_once_and_rejects_forged_cluster(graph, monkeypatc
     assert len(second["items"]) == 8 and all(item["scopeKind"] == "workspace" for item in second["items"])
     assert first["nextOffset"] == 8 and second["nextOffset"] == 16
     assert all(item["meta"]["totalRelations"] == 1 for item in first["items"])
+    found = service.get_graph_overview(workspace_query="Workspace 20")
+    assert found["totalWorkspaces"] == 21 and found["matchingWorkspaces"] == 1
+    assert [item["label"] for item in found["items"]] == ["Global", "Workspace 20"]
+    assert found["nextOffset"] is None
     with pytest.raises(ValueError, match="not_found"):
         service.get_graph_overview(cluster_id='["workspace","unregistered"]')

@@ -21,6 +21,10 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
         orbitsRef.current = orbits;
         const ids = new Set(clusters.flatMap(cluster => cluster.nodes.map(node => visualNodeId(cluster.clusterId, node.id))));
         for (const key of offsets.current.keys()) if (!ids.has(key)) offsets.current.delete(key);
+        for (const cluster of clusters) {
+            const orbit = orbits.find(item => item.id === cluster.clusterId)!;
+            cluster.nodes.forEach((node, index) => { const key = visualNodeId(cluster.clusterId, node.id); if (!offsets.current.has(key)) offsets.current.set(key, localNode(index, cluster.nodes.length, orbit.radius)); });
+        }
         let width = 1, height = 1, visible = true, frame = 0, last = 0, painted = 0;
         let hover: { id: string; entered: number; entry: Point; origin: Camera; zoomed: boolean } | null = null;
         let manual = false;

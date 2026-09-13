@@ -897,11 +897,12 @@ async def get_graph_overview(
     offset: int = Query(default=0, ge=0), limit: int = Query(default=8, ge=1, le=8),
     cluster_id: str | None = Query(default=None, alias="clusterId"),
     entity: str | None = Query(default=None), relation_offset: int = Query(default=0, alias="relationOffset", ge=0),
+    workspace_query: str = Query(default="", alias="workspaceQuery", max_length=200),
 ):
     from runtimes.memory.knowledge_service import knowledge_service
     try:
         return await asyncio.to_thread(knowledge_service.get_graph_overview, offset=offset, limit=limit,
-                                       cluster_id=cluster_id, entity=entity, relation_offset=relation_offset)
+                                       cluster_id=cluster_id, entity=entity, relation_offset=relation_offset, workspace_query=workspace_query)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 

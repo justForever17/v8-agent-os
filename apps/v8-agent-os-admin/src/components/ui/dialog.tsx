@@ -5,6 +5,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useT } from "@/components/providers/LocaleProvider"
 
 const Dialog = DialogPrimitive.Root
 
@@ -33,12 +34,23 @@ const DialogContent = React.forwardRef<
     React.ElementRef<typeof DialogPrimitive.Content>,
     React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
         showCloseButton?: boolean
+        guardUnsaved?: boolean
     }
->(({ className, children, showCloseButton = true, ...props }, ref) => (
+>(({ className, children, showCloseButton = true, guardUnsaved = false, onOpenAutoFocus, onChangeCapture, onEscapeKeyDown, onPointerDownOutside, ...props }, ref) => {
+    const dirty = React.useRef(false)
+    const t = useT()
+    const guardDismiss = (event: { preventDefault(): void; defaultPrevented: boolean }) => {
+        if (!event.defaultPrevented && guardUnsaved && dirty.current && !window.confirm(t("admin.experience.discardDraft"))) event.preventDefault()
+    }
+    return (
     <DialogPortal>
         <DialogOverlay />
         <DialogPrimitive.Content
             ref={ref}
+            onOpenAutoFocus={(event) => { dirty.current = false; onOpenAutoFocus?.(event) }}
+            onChangeCapture={(event) => { dirty.current = true; onChangeCapture?.(event) }}
+            onEscapeKeyDown={(event) => { onEscapeKeyDown?.(event); guardDismiss(event) }}
+            onPointerDownOutside={(event) => { onPointerDownOutside?.(event); guardDismiss(event) }}
             className={cn(
                 "admin-dialog fixed left-[50%] top-[50%] z-50 grid w-[calc(100%-24px)] max-w-lg max-h-[calc(100dvh-24px)] overflow-y-auto translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl border bg-background p-5 shadow-lg data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
                 className
@@ -47,14 +59,15 @@ const DialogContent = React.forwardRef<
         >
             {children}
             {showCloseButton ? (
-                <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+                <DialogPrimitive.Close onClick={guardDismiss} className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
                     <X className="h-4 w-4" />
                     <span className="sr-only">Close</span>
                 </DialogPrimitive.Close>
             ) : null}
         </DialogPrimitive.Content>
     </DialogPortal>
-))
+    )
+})
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 const DialogHeader = ({

@@ -376,7 +376,7 @@ export function ModelCardV2({
         <div className="flex items-center gap-2">
           {modelIcon ? <Image src={modelIcon} alt="" width={28} height={28} className="h-9 w-9 shrink-0 object-contain" unoptimized/> : <Brain size={24}/>}
           <div className="min-w-0 flex-1"><button type="button" onClick={() => setDetailsOpen(true)} className="block max-w-full truncate text-left text-[14px] font-semibold hover:text-primary" title={providerModelLabel}>{providerModelLabel}</button><div className="truncate text-[12px] text-muted-foreground">{model.provider?.name || t("components.models.ModelCardV2.k4f162e67")}</div></div>
-          <Button variant="ghost" size="sm" onClick={() => setDetailsOpen(true)}>{t("admin.experience.adjust")}</Button>
+          <Button variant="ghost" size="sm" title={t("components.models.ModelCardV2.k75997619")} onClick={() => onEdit(model)}>{t("admin.experience.adjust")}</Button>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
           {defaultBadges.slice(0, 2).map(category => <span key={category.key} className="text-primary">{defaultCategoryLabel(category, t)}</span>)}
@@ -510,7 +510,7 @@ export function ModelCardV2({
                         <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t("components.models.ModelCardV2.ke0b2f296")}>
                             <Copy className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => onEdit(model)} title={t("components.models.ModelCardV2.k75997619")}>
+                        <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => { setDetailsOpen(false); onEdit(model); }} title={t("components.models.ModelCardV2.k75997619")}>
                             <Edit2 className="h-3.5 w-3.5" />
                         </Button>
                         <Button variant="ghost" size="icon" className="h-9 w-9 hover:text-destructive" onClick={() => onDelete(model)} title={t("components.models.ModelCardV2.k626f35dc")}>

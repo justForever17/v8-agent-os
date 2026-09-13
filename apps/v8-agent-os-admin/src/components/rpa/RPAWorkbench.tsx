@@ -2840,9 +2840,7 @@ export function RPAWorkbench() {
                                                                 setAppPickerOpen(current => !current);
                                                                 void loadComputerApps(false, appSearch);
                                                             }} className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-2.5 text-left text-xs transition hover:border-primary/40">
-                                                                <AdminHoverInfo content={selectedStepComputerAppLabel} panelClassName="w-auto max-w-[28rem] whitespace-normal">
-                                                                    <span className="min-w-0 max-w-full truncate">{selectedStepComputerAppLabel}</span>
-                                                                </AdminHoverInfo>
+                                                                <span className="min-w-0 max-w-full break-words">{selectedStepComputerAppLabel}</span>
                                                                 <Search className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                                             </button>
                                                             {appPickerOpen ? <div className="absolute right-0 top-10 z-30 w-[min(32rem,calc(100vw-3rem))] min-w-full rounded-xl border border-border/70 bg-popover p-2 shadow-xl">
@@ -2860,9 +2858,7 @@ export function RPAWorkbench() {
                                                                                                 setAppSearch("");
                                                                                                 setAppPickerOpen(false);
                                                                                             }} className={`rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-muted ${selectedStepAppId === item.id ? "bg-primary/10 text-primary" : ""}`}>
-                                                                                                <AdminHoverInfo content={item.label} panelClassName="w-auto max-w-[28rem] whitespace-normal">
-                                                                                                    <div className="truncate font-medium">{item.label}</div>
-                                                                                                </AdminHoverInfo>
+                                                                                                <div className="break-words font-medium">{item.label}</div>
                                                                                                 <div className="truncate text-[11px] text-muted-foreground">{item.subtitle || item.id}</div>
                                                                                             </button>)}
                                                                                     </div>

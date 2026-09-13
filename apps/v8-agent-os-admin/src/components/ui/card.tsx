@@ -8,6 +8,7 @@ const Card = React.forwardRef<
 >(({ className, ...props }, ref) => (
     <div
         ref={ref}
+        data-v8-panel
         className={cn(
             "rounded-lg border bg-card text-card-foreground shadow-sm dark:border-border dark:bg-card dark:text-card-foreground",
             className

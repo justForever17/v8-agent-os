@@ -1,4 +1,8 @@
 {
+  "admin.experience.discardDraft": "Discard unsaved changes and close?",
+  "admin.galaxy.workspaceSearch": "Find any workspace",
+  "admin.galaxy.createInWorkspace": "Connect in a workspace",
+  "admin.galaxy.chooseWorkspace": "Choose the destination workspace",
   "admin.experience.loadFailed": "Could not load configuration. Existing settings are unchanged.",
   "admin.experience.saveFailed": "Save unconfirmed. Your changes are retained.",
   "admin.experience.retry": "Retry",

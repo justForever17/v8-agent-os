@@ -2016,7 +2016,7 @@ export default function SubagentsPage() {
 
 
             <Dialog open={globalConfigDialog === "research"} onOpenChange={(open) => setGlobalConfigDialog(open ? "research" : null)}>
-                <DialogContent className="max-w-2xl">
+                <DialogContent guardUnsaved className="max-w-2xl">
                     <DialogHeader>
                         <DialogTitle>{tg(t, "ed0fa816")}</DialogTitle>
                     </DialogHeader>
@@ -2064,7 +2064,7 @@ export default function SubagentsPage() {
             </Dialog>
 
             <Dialog open={globalConfigDialog === "recursive"} onOpenChange={(open) => setGlobalConfigDialog(open ? "recursive" : null)}>
-                <DialogContent className="max-w-2xl">
+                <DialogContent guardUnsaved className="max-w-2xl">
                     <DialogHeader>
                         <DialogTitle>{t("admin.pages.subagents.recursive.title")}</DialogTitle>
                     </DialogHeader>
@@ -2115,7 +2115,7 @@ export default function SubagentsPage() {
             </Dialog>
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-                <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">
+                <DialogContent guardUnsaved className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">
                     <DialogHeader className="shrink-0 border-b border-border px-6 py-5">
                         <DialogTitle>{editingAgent ? t("app.admin.dashboard.subagents.page.k74a55357") : t("app.admin.dashboard.subagents.page.k5ae562aa")}</DialogTitle>
                     </DialogHeader>

@@ -364,10 +364,14 @@ class KnowledgeService:
         }
 
     def get_graph_overview(self, *, offset: int = 0, limit: int = 8, cluster_id: Optional[str] = None,
-                           entity: Optional[str] = None, relation_offset: int = 0) -> Dict:
+                           entity: Optional[str] = None, relation_offset: int = 0, workspace_query: str = "") -> Dict:
         """Admin observation only; reuse the current workspace catalog authority."""
         catalog = self._build_graph_workspace_catalog()
         workspaces = sorted(list(catalog.get("items") or []), key=lambda item: str(item.get("workspaceKey") or ""))
+        total_workspaces = len(workspaces)
+        if workspace_query and cluster_id is None:
+            needle = workspace_query.strip().casefold()
+            workspaces = [item for item in workspaces if needle in str(item.get("label") or "").casefold() or needle in str(item.get("workspaceKey") or "").casefold()]
         clusters = [{"clusterId": "global", "scopeKind": "global", "label": "Global", "workspaceKey": None,
                      "_scopes": ["global"], "writeScope": None}]
         for item in workspaces:
@@ -391,7 +395,7 @@ class KnowledgeService:
             graph = knowledge_db.get_graph_cluster(scopes=item["_scopes"], node_limit=80 if item["scopeKind"] == "global" or cluster_id else 30,
                                                    edge_limit=160 if item["scopeKind"] == "global" or cluster_id else 60)
             items.append({key: value for key, value in item.items() if not key.startswith("_")} | graph)
-        return {"items": items, "totalWorkspaces": len(workspaces), "offset": offset,
+        return {"items": items, "totalWorkspaces": total_workspaces, "matchingWorkspaces": len(workspaces), "offset": offset,
                 "nextOffset": offset + limit if not cluster_id and offset + limit < len(workspaces) else None,
                 "partial": not cluster_id and offset + limit < len(workspaces)}
 

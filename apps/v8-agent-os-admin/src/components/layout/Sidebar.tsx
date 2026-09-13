@@ -70,7 +70,7 @@ export function Sidebar() {
         }
     };
 
-    const navigation = <nav aria-label={t("admin.experience.navigation")} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
+    const navigation = <nav data-v8-context-menu-ignore onContextMenu={(event) => event.preventDefault()} aria-label={t("admin.experience.navigation")} className="flex min-h-0 flex-1 flex-col gap-1 select-none overflow-y-auto px-3 py-4">
         {ADMIN_TASK_NAV.map(group => {
             const item = group.items[0];
             const active = group.items.some(entry => pathname === entry.href || (entry.href !== "/admin" && pathname.startsWith(entry.href)));

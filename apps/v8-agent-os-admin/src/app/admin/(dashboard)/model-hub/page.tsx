@@ -1068,8 +1068,15 @@ export default function ModelHubPage() {
         if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
     }, [ttsPreviewUrl]);
     const filteredModels = models.filter((model) => modelMatchesTab(model, activeTab));
+    const entitySaveBusy = useRef(false);
+    const [entitySaving, setEntitySaving] = useState(false);
+    const [entitySaveError, setEntitySaveError] = useState("");
     const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+        if (entitySaveBusy.current) return;
+        entitySaveBusy.current = true;
+        setEntitySaving(true); setEntitySaveError("");
+        try {
         const formData = new FormData(event.currentTarget);
         const payload: Record<string, unknown> = Object.fromEntries(formData.entries());
         if (providerType === "API") {
@@ -1116,6 +1123,8 @@ export default function ModelHubPage() {
         setIsProviderDialogOpen(false);
         setEditingProvider(null);
         await fetchData(true);
+        } catch (error) { setEntitySaveError(`${t("admin.experience.saveFailed")} ${String(error)}`); }
+        finally { entitySaveBusy.current = false; setEntitySaving(false); }
     };
     const platformProviderSelected = providerType === "PLATFORM";
     const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
@@ -1125,6 +1134,10 @@ export default function ModelHubPage() {
     const localBackendConfig = getLocalBackendPresetConfig(localBackendPreset);
     const handleSaveModel = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+        if (entitySaveBusy.current) return;
+        entitySaveBusy.current = true;
+        setEntitySaving(true); setEntitySaveError("");
+        try {
         const formData = new FormData(event.currentTarget);
         const payload: Record<string, unknown> = {
             ...Object.fromEntries(formData.entries()),
@@ -1206,6 +1219,8 @@ export default function ModelHubPage() {
         setIsModelDialogOpen(false);
         setEditingModel(null);
         await fetchData(true);
+        } catch (error) { setEntitySaveError(`${t("admin.experience.saveFailed")} ${String(error)}`); }
+        finally { entitySaveBusy.current = false; setEntitySaving(false); }
     };
     const handleSetReasoningLevel = async (model: AIModel, controlMeta: ControlPlaneModel | null, level: string) => {
         const supportsNoThink = Boolean(controlMeta?.thinkingControl?.supportsNoThink);
@@ -3165,12 +3180,12 @@ export default function ModelHubPage() {
 
             {hubEnvelope ? (<SourceMetaRow source={hubEnvelope.source} savePath={hubEnvelope.savePath} reloadRequired={hubEnvelope.reloadRequired}/>) : null}
 
-            <Dialog open={isProviderDialogOpen} onOpenChange={setIsProviderDialogOpen}>
-                <DialogContent className="admin-editor-modal sm:max-w-2xl">
+            <Dialog open={isProviderDialogOpen} onOpenChange={open => { if (!entitySaveBusy.current) { setIsProviderDialogOpen(open); if (open) setEntitySaveError(""); } }}>
+                <DialogContent guardUnsaved className="admin-editor-modal sm:max-w-2xl">
                     <DialogHeader>
                         <DialogTitle>{editingProvider ? t("app.admin.dashboard.model.hub.page.k03d9a3c5") : t("app.admin.dashboard.model.hub.page.k9e31d9ed")}</DialogTitle>
                     </DialogHeader>
-                    <form key={editingProvider?.id || "new"} onSubmit={handleSaveProvider} className="admin-editor-form"><div className="admin-editor-body space-y-4">
+                    <form key={editingProvider?.id || "new"} onSubmit={handleSaveProvider} className="admin-editor-form"><fieldset disabled={entitySaving} className="admin-editor-body space-y-4">
                         <div className="space-y-2">
                             <Label htmlFor="provider-name">{t("app.admin.dashboard.model.hub.page.kd00c0239")}</Label>
                             <Input id="provider-name" name="name" defaultValue={editingProvider?.name || ""} required/>
@@ -3421,17 +3436,17 @@ export default function ModelHubPage() {
                                 <Input id="provider-api-key" name="apiKey" type="password" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}/>
                                 {providerType === "LOCAL" ? (<p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>) : null}
                             </div>)}
-                        </div><div className="admin-editor-footer"><Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.k93b84c67")}</Button></div>
+                        </fieldset><div className="admin-editor-footer">{entitySaveError ? <p role="alert" className="text-sm text-destructive">{entitySaveError}</p> : null}<Button type="submit" disabled={entitySaving} className="w-full">{t("app.admin.dashboard.model.hub.page.k93b84c67")}</Button></div>
                     </form>
                 </DialogContent>
             </Dialog>
 
-            <Dialog open={isModelDialogOpen} onOpenChange={setIsModelDialogOpen}>
-                <DialogContent className="admin-editor-modal">
+            <Dialog open={isModelDialogOpen} onOpenChange={open => { if (!entitySaveBusy.current) { setIsModelDialogOpen(open); if (open) setEntitySaveError(""); } }}>
+                <DialogContent guardUnsaved className="admin-editor-modal">
                     <DialogHeader>
                         <DialogTitle>{editingModel ? t("app.admin.dashboard.model.hub.page.k37053cf7") : t("app.admin.dashboard.model.hub.page.k82b1063c")}</DialogTitle>
                     </DialogHeader>
-                    <form onSubmit={handleSaveModel} className="admin-editor-form"><div className="admin-editor-body space-y-4">
+                    <form onSubmit={handleSaveModel} className="admin-editor-form"><fieldset disabled={entitySaving} className="admin-editor-body space-y-4">
                         {providers.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k5ca95d1d")} description={t("app.admin.dashboard.model.hub.page.k4119e026")}/>) : null}
                         <div className="space-y-2">
                             <Label htmlFor="model-provider">{t("app.admin.dashboard.model.hub.page.kc9371614")}</Label>
@@ -3693,7 +3708,7 @@ export default function ModelHubPage() {
                                 </p>
                             </div>
                         ) : null}
-                        </div><div className="admin-editor-footer"><Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button></div>
+                        </fieldset><div className="admin-editor-footer">{entitySaveError ? <p role="alert" className="text-sm text-destructive">{entitySaveError}</p> : null}<Button type="submit" disabled={entitySaving} className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button></div>
                     </form>
                 </DialogContent>
             </Dialog>

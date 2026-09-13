@@ -12,6 +12,9 @@
     font-size: 14px;
 }
 .admin-content { max-width: 1408px; width: 100%; margin-inline: auto; }
+.admin-app [data-v8-panel], .admin-dialog [data-v8-panel] { border-radius: var(--v8-product-panel-radius, 12px); }
+.admin-button { border-radius: var(--v8-product-control-radius, 8px); }
+.admin-app input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]):not([type=file]), .admin-dialog input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]):not([type=file]), .admin-app [role=combobox], .admin-dialog [role=combobox] { border-radius: var(--v8-product-control-radius, 8px); min-height: 36px; }
 .admin-content .text-sm { font-size: 14px; line-height: 22px; }
 .admin-content .text-xs { font-size: 12px; line-height: 18px; }
 .admin-page-header { position: sticky; top: -20px; z-index: 20; padding-block: 12px; background: hsl(var(--background)); }
@@ -38,7 +41,7 @@
     .admin-help-trigger { min-height: 32px; min-width: 32px; }
 }
 @media (prefers-reduced-motion: reduce) {
-    .admin-app *, .admin-help-panel, .admin-dialog, .admin-dialog-overlay, [data-radix-popper-content-wrapper] * { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    .admin-app *, .admin-help-panel, .admin-dialog, .admin-dialog *, .admin-dialog-overlay, .admin-node-menu *, [data-radix-popper-content-wrapper] * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
 
 @layer base {

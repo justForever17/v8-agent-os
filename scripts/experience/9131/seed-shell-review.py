@@ -56,7 +56,8 @@ def main():
             message_id = f"experience-{session_id}-{ordinal}"
             db.create_chat_canonical_message(message_id=message_id, session_id=session_id,
                 run_id=None, ordinal=ordinal, role=role, state="completed",
-                nodes=[{"id": message_id + "-text", "kind": "narrative", "content": content, "finalized": True}],
+                nodes=[{"id": message_id + "-text", "kind": "narrative", "role": role,
+                        "content": content, "timestamp": 1789257600000, "finalized": True}],
                 content_text=content, metadata={"experienceFixture": "9131-shell", "synthetic": True})
         queues = []
         for index in range(1, 3 if label == "A" else 2):

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -21,6 +22,92 @@ from urllib.parse import urlsplit
 
 def parent_write_during_episode(write_time: float, intervals: list[tuple[float, float]]) -> bool:
     return any(start <= write_time < end for start, end in intervals)
+
+
+def _fixture_command(command: str, worker: Path) -> bool:
+    """Accept a Python invocation of this exact fixture, never a shell recipe."""
+    if any(char in command for char in (";", "|", "\n", "\r", ">", "<", "`")):
+        return False
+    try:
+        parts = [item.strip("\"'") for item in shlex.split(command, posix=False)]
+        if parts and parts[0] == "&":
+            parts.pop(0)
+        if len(parts) != 4 or set(parts[1:3]) != {"-B", "-u"}:
+            return False
+        executable = parts[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        target = Path(parts[-1])
+        if not target.is_absolute():
+            target = worker.parent / target
+        return executable in {"python", "python.exe", "python3", "python3.exe"} and target.resolve() == worker.resolve()
+    except ValueError:
+        return False
+
+
+def _decoded(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            pass
+    return value
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def worker_stdout_proof(events, worker: Path, marker: str):
+    """Bind process stdout to a child command receipt, excluding model prose."""
+    starts, commands, observations = {}, set(), {}
+    for event in events:
+        payload = _decoded(event.get("payload")) or {}
+        if not isinstance(payload, dict):
+            continue
+        topic = str(event.get("topic") or event.get("event_type") or "")
+        tool = payload.get("tool") or {}
+        name = tool.get("toolName")
+        call_id = tool.get("toolCallId") or payload.get("toolCallId")
+        is_child = payload.get("ownerAgentKind") in {"subagent", "child"} or topic.startswith("subagent.")
+        if not is_child or name not in {"run_system_command", "command_session_broker", "read_background_output"}:
+            continue
+        if topic.endswith("tool.started"):
+            args = tool.get("args") or {}
+            if _fixture_command(str(args.get("command") or ""), worker):
+                starts[call_id] = "start"
+            elif str(args.get("command_id") or args.get("session_id") or "") in commands:
+                starts[call_id] = "observe"
+        elif topic.endswith("tool.finished") and call_id in starts:
+            result = _decoded(tool.get("result"))
+            if not isinstance(result, dict) or result.get("ok") is False or tool.get("resultStatus") in {"failed", "cancelled", "blocked"}:
+                continue
+            command_id = str(result.get("commandId") or result.get("sessionId") or "")
+            if starts[call_id] == "start" and command_id:
+                commands.add(command_id)
+            if command_id not in commands:
+                continue
+            for text in _strings(result):
+                for match in re.finditer(r"CROSS_GRAPH_(READY|DONE) (\{[^\r\n]*\})", text):
+                    try:
+                        record = json.loads(match[2])
+                    except ValueError:
+                        continue
+                    if record.get("marker") != marker:
+                        continue
+                    if match[1] == "DONE" and result.get("returnCode") != 0:
+                        continue
+                    observations[(command_id, match[1])] = record
+    for command_id in commands:
+        ready, done = observations.get((command_id, "READY")), observations.get((command_id, "DONE"))
+        if ready and done and ready.get("pid") == done.get("pid") and ready.get("started") == done.get("started"):
+            return {"commandId": command_id, "ready": ready, "done": done}
+    return {}
 
 
 def _time(value):
@@ -82,26 +169,30 @@ def main(argv=None):
     worker = workspace / "validate_a.py"
     worker_source = '''import hashlib, json, os, pathlib, time
 root = pathlib.Path(__file__).resolve().parent
-(root / "a-start.json").write_text(json.dumps({"pid": os.getpid(), "started": time.time()}))
+receipt = {"marker": root.name, "pid": os.getpid(), "started": time.time(), "scriptSha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()}
+print("CROSS_GRAPH_READY " + json.dumps(receipt), flush=True)
 deadline = time.monotonic() + 180
 while not (root / "parent-b.txt").is_file():
     if time.monotonic() >= deadline:
         raise TimeoutError("parent independent work was not delivered during A")
     time.sleep(0.1)
 data = (root / "parent-b.txt").read_bytes()
-(root / "a-done.json").write_text(json.dumps({"sha256": hashlib.sha256(data).hexdigest(), "finished": time.time()}))
-print("Validated parent work: " + hashlib.sha256(data).hexdigest())
+print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data).hexdigest(), "finished": time.time()}), flush=True)
 '''
     worker.write_text(worker_source, encoding="utf-8")
     original_worker_hash = hashlib.sha256(worker.read_bytes()).hexdigest()
     prompt = (
         "这是已授权的真实协作验收，工作区只有本次合成文件。请只委派一个已注册的工程或验证子代理执行A，禁止继续委派。"
-        f"A在绑定工作区直接执行现成脚本 validate_a.py，Python解释器为 {sys.executable}；不改脚本。"
-        "A只可写a-start.json与a-done.json，其脚本会等待父级B文件然后验证。"
-        "派发A后，你作为Supervisor在A仍运行期间独立完成B：使用原生文件工具写parent-b.txt，"
+        "A必须是readOnly=true、writeRequired=false、writeSet=[]，仅可读validate_a.py和parent-b.txt；脚本完全只读，不能更改任何文件。"
+        "A先读取现成脚本，然后在绑定工作区用run_system_command以mode='session'、terminal_mode='pipe'、timeout_seconds=210运行精确命令 python -B -u validate_a.py。"
+        "取得真实commandId和CROSS_GRAPH_READY输出后，A用delegation_broker(mode='publish_partial')发布一次a-ready中间成果："
+        f"outputKey='a-ready', version='v1', sourceVersion='{original_worker_hash}', usableFor=['parent-independent-b']，"
+        "compactSummary包含实际进程启动时间与commandId，proofRefs引用本次命令；然后继续观察原命令到退出码0与CROSS_GRAPH_DONE，禁止提前结束任务或重启脚本。"
+        "派发A后，你作为Supervisor先await该episode，收到a-ready后inspect并用accept_partial接受此版本仅用于parent-independent-b，"
+        "随即在A真实进程仍运行期间独立完成B：使用原生文件工具写parent-b.txt，"
         f"内容严格为 {marker}，不加换行。B不依赖A的结果，不得委派B，也不能等待A完成才做B。"
         "A的等待是验收夹具内部行为，不需要任何Agent循环轮询。你可按需inspect，完成B后按具体episode await。"
-        "待A真实结束后读取a-done.json并验收摘要与B一致，再向用户交付。不要修改配置、调用外网或操作本工作区以外文件。"
+        "待A真实结束后核对command stdout的CROSS_GRAPH_DONE摘要与B一致，再验收交付。不要修改配置、调用外网或操作本工作区以外文件。"
     )
     case = audit.LiveCaseSpec(case_id="cross_graph_parent_work", title="Parent works during background A",
                               prompt=prompt, expected_all_tools=["delegation_broker"])
@@ -154,24 +245,40 @@ print("Validated parent work: " + hashlib.sha256(data).hexdigest())
         if episode_id in starts and end is not None and episode.get("kind") == "delegation":
             intervals.append((starts[episode_id], end))
     target = workspace / "parent-b.txt"
-    completion = workspace / "a-done.json"
     body = target.read_bytes() if target.is_file() else b""
-    proof = json.loads(completion.read_text()) if completion.is_file() else {}
+    process_proof = worker_stdout_proof(events, worker, workspace.name)
+    proof = process_proof.get("done") or {}
+    process_interval = [(proof["started"], proof["finished"])] if "started" in proof and "finished" in proof else []
+    ready_refs, accepted_ready_refs = set(), set()
+    for episode in episodes:
+        episode_id = episode.get("episodeId") or episode.get("id")
+        for row in db.list_runtime_episode_handoffs(episode_id):
+            handoff = row.get("payload") or row
+            if handoff.get("status") == "partial" and handoff.get("outputKey") == "a-ready" and handoff.get("sourceVersion") == original_worker_hash:
+                ready_refs.add(handoff["handoffRefId"])
+        for receipt in db.list_runtime_episode_messages(run_id=result.run_id, recipient=f"partial:{episode_id}", pending_only=False):
+            content = receipt.get("content") or {}
+            if receipt.get("kind") == "accept_partial" and receipt.get("deliveryState") == "processed" and content.get("consumers") == ["parent-independent-b"]:
+                accepted_ready_refs.add(content.get("handoffRefId"))
     checks = {
         "runCompleted": result.status == "completed",
         "backgroundDelegationRecorded": bool(intervals),
         "parentOwnedWriteRecorded": bool(parent_writes),
         "BWrittenWhileARunning": target.is_file() and parent_write_during_episode(target.stat().st_mtime, intervals),
+        "BWrittenDuringActualChildProcess": target.is_file() and parent_write_during_episode(target.stat().st_mtime, process_interval),
         "BContentsExact": body == marker.encode(),
         "WorkerVerifiedB": proof.get("sha256") == hashlib.sha256(body).hexdigest() and bool(body),
-        "WorkerUnmodified": hashlib.sha256(worker.read_bytes()).hexdigest() == original_worker_hash,
+        "ReadyPartialPublishedAndAccepted": bool(ready_refs & accepted_ready_refs),
+        "WorkerUnmodified": hashlib.sha256(worker.read_bytes()).hexdigest() == original_worker_hash and proof.get("scriptSha256") == original_worker_hash,
+        "WorkerReadOnly": sorted(path.name for path in workspace.iterdir() if path.is_file()) == ["parent-b.txt", "validate_a.py"],
         "WebLiveAndReloadAgree": bool(observation.get("performed") and not observation.get("errors")
             and observation.get("liveSubagentIds") and all((observation.get("parity") or {}).get(key) is True
                 for key in ("runtimeCards", "subagentCards", "renderedNarratives"))),
     }
     report = {"passed": all(checks.values()), "checks": checks, "runId": result.run_id,
         "sessionId": result.session_id, "workspace": str(workspace), "status": result.status,
-        "parentWriteCount": len(set(parent_writes)), "delegationIntervals": intervals,
+        "parentWriteCount": len(set(parent_writes)), "delegationIntervals": intervals, "processProof": process_proof,
+        "fixtureContract": "readonly child command + one partial readiness handoff + parent native write",
         "tools": result.actual_tools, "topics": result.observed_topics, "web": observation,
         "evidenceClass": "configured provider + isolated Engine/DB + real files + browser"}
     args.output.parent.mkdir(parents=True, exist_ok=True)

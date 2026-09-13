@@ -2314,6 +2314,59 @@ def _generic_json_items(payload: Any) -> list[Any]:
     return []
 
 
+def _render_agent_registry_surface(payload: dict[str, Any], raw_ref: str) -> str | None:
+    if payload.get("mode") not in {"list", "inspect", "validate"}:
+        return None
+    lines = ["Agent registry", f"Mode: {payload['mode']}"]
+    if payload.get("status") or payload.get("ok") is False:
+        lines.append(f"Status: {_short_text(payload.get('status') or 'failed', 100)}")
+    if payload.get("summary"):
+        lines.append(_short_text(payload["summary"], 500))
+    if payload.get("error"):
+        lines.append(f"Error: {_short_text(payload['error'], 150)}")
+    items = payload.get("items") if isinstance(payload.get("items"), list) else [payload.get("item")]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("agentId") or "").strip()
+        lines.append(f"Agent: {_short_text(name, 160)}")
+        for key in ("agentId", "description", "family", "toolMode"):
+            if item.get(key):
+                lines.append(f"  {key}: {_short_text(item[key], 500)}")
+        if isinstance(item.get("enabled"), bool):
+            lines.append(f"  enabled: {str(item['enabled']).lower()}")
+        model_id = item.get("effectiveModelId") or item.get("modelId")
+        lines.append(f"  Model binding: {_short_text(model_id, 200) if model_id else 'inherits default; use validate to resolve'}")
+        if payload["mode"] == "validate":
+            lines.append(f"  Model readiness: {_short_text(payload.get('status') or 'unknown', 100)}")
+        else:
+            lines.append("  Model readiness: not validated")
+        for key in ("domainTags", "operationCapabilities", "artifactCapabilities"):
+            values = item.get(key)
+            if isinstance(values, list):
+                labels = [_short_text(value, 140) for value in values if isinstance(value, str)]
+                if labels:
+                    lines.append(f"  {key}: {', '.join(labels)}")
+        for binding in item.get("runtimeBindings") or []:
+            if not isinstance(binding, dict):
+                continue
+            groups = [value for value in binding.get("grantGroups") or [] if isinstance(value, str)]
+            lines.append(f"  runtimeBindings: {_short_text(binding.get('runtimeKind') or '', 100)}"
+                         + (f"; grantGroups={', '.join(_short_text(value, 140) for value in groups)}" if groups else ""))
+    if payload.get("mode") == "list":
+        lines.append("Next: choose the matching exact name; use agent_broker(mode='inspect', agentName=...) for one entry. Narrow long lists with family.")
+    elif payload.get("mode") == "inspect":
+        lines.append("Next: use this exact name in task.targetAgentName; agent_broker(mode='validate', agentName=...) resolves model readiness when needed.")
+    elif payload.get("nextAction"):
+        lines.append(f"Next: {_short_text(payload['nextAction'], 300)}")
+    lines.append("Registry bindings describe capabilities; dispatch still applies the task's permissions and tool policy.")
+    if raw_ref:
+        # Selection evidence is inline. Do not direct a required-delegation
+        # turn to an observation reader that is absent from its tool surface.
+        lines.append(f"Raw: {raw_ref}")
+    return "\n".join(lines)
+
+
 def _render_generic_json_surface(tool_name: str, payload: Any, raw_ref: str, *, budget: int) -> str | None:
     if not isinstance(payload, (dict, list)):
         return None
@@ -2702,6 +2755,8 @@ def _decision_agent_visible_surface(
     renderer_result: str | None = None
     if tool_name == "runtime_broker":
         renderer_result = _render_runtime_broker_surface(payload, raw_ref)
+    elif tool_name == "agent_broker":
+        renderer_result = _render_agent_registry_surface(payload, raw_ref)
     elif tool_name == "config_broker":
         renderer_result = _render_config_broker_surface(payload, raw_ref)
     elif tool_name == "plugin_broker":

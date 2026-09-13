@@ -215,6 +215,17 @@ class NativeReview:
         return {"restartActiveA": A1, "restartActiveB": B1, "retainedA2": A2,
                 "pairingReentered": False, "clearedData": False}
 
+    def p10a(self):
+        self.expect_draft(A1)
+        self.expect_authority_message("A")
+        self.adb("shell", "am", "force-stop", PACKAGE)
+        self.adb("shell", "am", "start", "-n", f"{PACKAGE}/.MainActivity")
+        self.expect_draft(A1)
+        self.expect_authority_message("A")
+        self.capture("P10A-one-native-restart")
+        return {"restarts": 1, "activeAuthority": "A", "draft": A1,
+                "pairingReentered": False, "clearedData": False}
+
     def run(self):
         self.preflight()
         try:

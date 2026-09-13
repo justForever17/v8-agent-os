@@ -35,4 +35,6 @@ Phone新release定向闭环见 `PHONE-6111D7C6-REVIEW.md`：实际AVD ABABA及A/
 
 第二次真实Preview见 `SHELL-7F69D6BB-REVIEW.md`：主题双向及重复激活、已有queue冷加载/编辑/取消已闭环；新草稿反例证明同一IDB身份键中已落盘text在reload后被scroll-only记录覆盖，继续阻断。旧组合测试FAIL不改写，新增独立draft/cold-draft入口供修后验证。
 
+Phone传输后续候选见 `PHONE-49DB49EA-REVIEW.md`：独立原生ABABA及协调要求的一次A重启通过；P10A单次判据不替换原P10，传输故障/LAN/长流作者证据与本lane最窄主流程分别保留。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

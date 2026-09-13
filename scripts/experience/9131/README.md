@@ -23,4 +23,6 @@ Admin后续定向闭环见 `ADMIN-251D31E6-REVIEW.md`：焦点、相机过渡、
 
 Extensions定向闭环见 `EXTENSIONS-84959E0F-REVIEW.md`：X10可读错误和F03精确argv在生产UI/冻结函数边界分别通过，保留整合与真实安装验收限制。
 
+Phone原生独立阻断见 `PHONE-82ED1C88-REVIEW.md`：同会话/跨会话草稿通过，原生配对B及B切回A均触发VideoPlayer已释放错误。`verify-phone-native.py`只接受显式`--live`及移交的合成AVD，核对安装APK与文件hash；首次配对用例要求仅已有A，后续P05/P10要求已有A/B及本脚本草稿。`verify-phone-storage-boundary.mjs --candidate <commit>`执行冻结生产模块与内存SQLite反例，结果不能替代原生UI或OS故障注入。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

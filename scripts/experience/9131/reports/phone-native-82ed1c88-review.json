@@ -1,0 +1,58 @@
+{
+  "candidate": "82ed1c88f04881dcde5932bf39bd70cb0497c3e2",
+  "platform": "Android emulator release x86_64",
+  "physicalPhone": false,
+  "apkSha256": "a58e5bd339b96af9a914c0197ade8625e18621be70fd1ceed8f88125096a7888",
+  "installedApkSha256": "a58e5bd339b96af9a914c0197ade8625e18621be70fd1ceed8f88125096a7888",
+  "os": "14",
+  "abi": "x86_64",
+  "validRuns": [
+    {
+      "file": "native-P01.json",
+      "checks": [
+        {
+          "id": "P01",
+          "status": "PASS",
+          "evidence": {
+            "sameSession": "Independent_A1_9131_UNSENT",
+            "session2": "Independent_A2_9131_UNSENT",
+            "returnedSession1": "Independent_A1_9131_UNSENT"
+          },
+          "automationElapsedSeconds": 72.27
+        }
+      ]
+    },
+    {
+      "file": "native-P04-P05-P10.json",
+      "checks": [
+        {
+          "id": "P04",
+          "status": "FAIL",
+          "error": "Missing editor; visible=['Something went wrong', \"Error: Call to function 'VideoPlayer.pause' has been rejected.\\n→ Caused by: The 1st argument cannot be cast to type expo.modules.video.player.VideoPlayer (received class java.lang.Integer)\\n→ Caused by: Cannot use shared object that was already released\", 'Retry', 'Retry']"
+        }
+      ]
+    },
+    {
+      "file": "native-R04.json",
+      "checks": [
+        {
+          "id": "R04",
+          "status": "FAIL",
+          "error": "Missing editor; visible=['Something went wrong', \"Error: Call to function 'VideoPlayer.pause' has been rejected.\\n→ Caused by: The 1st argument cannot be cast to type expo.modules.video.player.VideoPlayer (received class java.lang.Integer)\\n→ Caused by: Cannot use shared object that was already released\", 'Retry', 'Retry']"
+        }
+      ]
+    }
+  ],
+  "notRun": [
+    "P05 complete ABABA",
+    "P10 restart active A and B"
+  ],
+  "harnessCorrection": "First R04 awaited editor on the normal new-profile home screen. Corrected to select B task1. Second R04 observed B message/input then reproduced released VideoPlayer on switching A.",
+  "screenshots": {
+    "P01-A1-retained.png": "c519797dc373c35444937525ead48b0f0e4fc5e6b2218cd6ee7f923a03898335",
+    "P04-failure.png": "a4ecb6bc9907af0c54fb25bdd568d15630bf6bd7ee27d9964d6908edc0a2126d",
+    "R04-B-after-Retry.png": "83abee672bdc6fbc0ab51dd46916ab01c71c6d546a8daac17404f24f1e4ef294",
+    "R04-failure.png": "19532f5a1f64d75e6f642df2d4aa261cf04afe54bd08de562c7e461465427cfe"
+  },
+  "adbReleasedToPhone": true
+}

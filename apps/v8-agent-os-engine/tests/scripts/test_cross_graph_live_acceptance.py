@@ -30,6 +30,26 @@ def test_completion_after_the_worker_finishes_is_not_concurrent_parent_work():
     assert not observed(15, [])
 
 
+def test_parent_B_needs_a_successful_exact_native_writer_receipt(tmp_path):
+    spec = importlib.util.spec_from_file_location("cross_graph_native_write", SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = tmp_path / "parent-b.txt"
+    def event(topic, **fields):
+        return {"topic": topic, "payload": {"ownerRuntimeId": "chat", "ownerAgentKind": "supervisor",
+            "tool": {"toolName": "write_native_file", "toolCallId": "native-B", **fields}}}
+    events = [event("tool.started", args={"path": str(target)}),
+        event("tool.finished", resultStatus="completed", result=f"Successfully Created/Overwritten file: {target} (12 chars written)\nContent version: fixture-version; same-actor consecutive edits can reuse this receipt.")]
+    assert module.parent_native_write_receipts(events, target) == ["native-B"]
+    assert not module.parent_native_write_receipts(events[:1], target)
+    assert not module.parent_native_write_receipts(events, tmp_path / "other.txt")
+    events[-1]["payload"]["tool"]["resultStatus"] = "failed"
+    assert not module.parent_native_write_receipts(events, target)
+    events[-1]["payload"]["tool"]["resultStatus"] = "completed"
+    events[-1]["payload"]["ownerAgentKind"] = "subagent"
+    assert not module.parent_native_write_receipts(events, target)
+
+
 def test_readonly_worker_proof_requires_a_real_child_command_and_zero_exit(tmp_path):
     spec = importlib.util.spec_from_file_location("cross_graph_stdout", SOURCE)
     module = importlib.util.module_from_spec(spec)

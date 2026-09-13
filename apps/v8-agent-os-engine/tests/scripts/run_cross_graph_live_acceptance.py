@@ -63,6 +63,35 @@ def _strings(value):
             yield from _strings(item)
 
 
+def parent_native_write_receipts(events, target: Path):
+    """Bind B to the canonical writer's successful receipt, not a requested call."""
+    target = target.resolve()
+    starts, receipts = set(), set()
+    for event in events:
+        payload = _decoded(event.get("payload")) or {}
+        if not isinstance(payload, dict) or payload.get("ownerRuntimeId") != "chat" or payload.get("ownerAgentKind") != "supervisor":
+            continue
+        tool = payload.get("tool") or {}
+        if tool.get("toolName") != "write_native_file":
+            continue
+        call_id = tool.get("toolCallId") or payload.get("toolCallId")
+        topic = event.get("topic") or event.get("event_type")
+        if topic == "tool.started":
+            value = str((tool.get("args") or {}).get("path") or "")
+            path = Path(value)
+            if value and (path if path.is_absolute() else target.parent / path).resolve() == target:
+                starts.add(call_id)
+        elif topic == "tool.finished" and call_id in starts and tool.get("resultStatus") == "completed":
+            raw = tool.get("result")
+            result = _decoded(raw)
+            text_receipt = isinstance(raw, str) and any(raw.startswith(f"Successfully {operation} file: {target} (")
+                for operation in ("Created/Overwritten", "Appended")) and "\nContent version: " in raw
+            patch_receipt = isinstance(result, dict) and result.get("ok") is True and result.get("contentVersion") and Path(str(result.get("path") or "")).resolve() == target
+            if text_receipt or patch_receipt:
+                receipts.add(call_id)
+    return sorted(receipts)
+
+
 def worker_stdout_proof(events, worker: Path, marker: str):
     """Bind process stdout to a child command receipt, excluding model prose."""
     starts, commands, observations = {}, set(), {}
@@ -229,7 +258,6 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
         raise RuntimeError("durable_live_evidence_unavailable")
     episodes = db.list_runtime_episodes(run_id=result.run_id, limit=500)
     starts = {}
-    parent_writes = []
     for event in events:
         topic, payload = audit._event_topic(event), audit._event_payload(event)
         if not isinstance(payload, dict):
@@ -239,10 +267,6 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
         episode_id = episode.get("episodeId") or episode.get("id") or payload.get("episodeId")
         if topic == "runtime.episode.started" and timestamp is not None and episode_id:
             starts.setdefault(episode_id, timestamp)
-        invocation = audit._tool_invocation_from_event(event)
-        if invocation and audit._is_supervisor_owned_invocation(invocation) and "parent-b.txt" in json.dumps(payload):
-            if invocation["toolName"] in {"write_native_file", "write_workspace_file", "workspace_file", "file_broker"}:
-                parent_writes.append(invocation["toolCallId"])
     intervals = []
     for episode in episodes:
         episode_id = episode.get("episodeId") or episode.get("id")
@@ -250,6 +274,7 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
         if episode_id in starts and end is not None and episode.get("kind") == "delegation":
             intervals.append((starts[episode_id], end))
     target = workspace / "parent-b.txt"
+    parent_writes = parent_native_write_receipts(events, target)
     body = target.read_bytes() if target.is_file() else b""
     process_proof = worker_stdout_proof(events, worker, workspace.name)
     proof = process_proof.get("done") or {}

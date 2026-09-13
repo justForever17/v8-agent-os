@@ -1705,7 +1705,10 @@ test('memory knowledge graph stays visible without advanced mode', () => {
     path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'src', 'components', 'memory', 'MemorySectionNav.tsx'),
     'utf8',
   );
-  assert.match(navSource, /!\["logs", "runtime", "config"\]\.includes\(item\.key\)/);
-  assert.match(navSource, /key: "graph"/);
-  assert.doesNotMatch(navSource, /"logs", "runtime", "config", "graph"/);
+  // Structural sentinel only: the complete memory menu is now available without
+  // an advanced-mode filter. Browser acceptance verifies the rendered graph link.
+  assert.match(navSource, /const visibleItems = MEMORY_SECTION_ITEMS;/);
+  assert.match(navSource, /key: "graph", href: "\/admin\/memory\?tab=graph"/);
+  assert.match(navSource, /visibleItems\.map/);
+  assert.doesNotMatch(navSource, /advancedMode|visibleItems\s*=.*\.filter/);
 });

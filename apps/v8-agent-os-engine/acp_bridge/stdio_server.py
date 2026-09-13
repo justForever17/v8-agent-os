@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from typing import TextIO
 
 from .bridge import AcpBridge
@@ -73,6 +74,15 @@ def run_stdio_server(*, stdin: TextIO | None = None, stdout: TextIO | None = Non
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     bridge = bridge or AcpBridge()
+    write_lock = threading.Lock()
+    workers: dict[str, threading.Thread] = {}
+
+    def send(message, framing):
+        with write_lock:
+            _write_stdio_message(stdout, message.as_dict(), framing)
+
+    def handle_prompt(payload, framing):
+        bridge.handle_json_rpc(payload, emit=lambda message: send(message, framing))
 
     while True:
         framing = _FRAMING_NEWLINE
@@ -84,19 +94,43 @@ def run_stdio_server(*, stdin: TextIO | None = None, stdout: TextIO | None = Non
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 raise JsonRpcError(-32600, "JSON-RPC message must be an object.")
-            messages = bridge.handle_json_rpc(payload)
+            # Keep the reader available for permission replies and cancel while
+            # a prompt is streaming. At most one prompt worker per session.
+            if payload.get("method") == "session/prompt" and payload.get("id") is not None:
+                session_id = str((payload.get("params") or {}).get("sessionId") or "")
+                workers = {key: worker for key, worker in workers.items() if worker.is_alive()}
+                if session_id in workers or len(workers) >= 8:
+                    messages = [error_response(payload["id"], JsonRpcError(-32000, "ACP prompt capacity is busy; wait or cancel the active prompt."))]
+                else:
+                    worker = threading.Thread(target=handle_prompt, args=(payload, framing), daemon=True)
+                    workers[session_id] = worker
+                    worker.start()
+                    messages = []
+            else:
+                messages = bridge.handle_json_rpc(payload)
         except JsonRpcError as exc:
             messages = [error_response(None, exc)]
         except Exception as exc:
             messages = [error_response(None, JsonRpcError(-32700, f"Invalid JSON-RPC payload: {exc}"))]
         for message in messages:
-            _write_stdio_message(stdout, message.as_dict(), framing)
+            send(message, framing)
+    # A client disconnect is not permission to leave an invisible run working.
+    # The Engine cancellation endpoint remains the only cancellation owner.
+    for session_id, worker in workers.items():
+        if worker.is_alive():
+            try:
+                bridge.session_cancel({"sessionId": session_id})
+            except Exception:
+                print("ACP disconnect: Engine cancellation could not be confirmed.", file=sys.stderr)
+    for worker in workers.values():
+        worker.join(timeout=5)
     return 0
 
 
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass

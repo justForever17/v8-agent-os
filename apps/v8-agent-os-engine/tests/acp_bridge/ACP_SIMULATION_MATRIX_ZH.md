@@ -1,88 +1,47 @@
-# V8OS ACP 标准接入仿真测试矩阵
+# ACP 接入验收
 
-更新时间：2026-07-03
+核对日期：2026-09-13。ACP 是本机编辑器到 V8OS Supervisor 的协议适配；运行、工作区、审批、历史仍由现有 Admin/Engine 管理。
 
-## 官方事实边界
+## 协议依据与入口
 
-本轮只采用官方或一手来源作为依据：
+- [ACP v1 Prompt Turn](https://agentclientprotocol.com/protocol/v1/prompt-turn)：提示为 ContentBlock 数组，输出为 session/update，完成必须有 stopReason；submit accepted 不能替代终态。
+- [Session Setup](https://agentclientprotocol.com/protocol/v1/session-setup)：cwd 固定；load 必须重放历史。使用持久 Engine sessionId，不能生成进程退出就丢失的别名。
+- [Tool Calls](https://agentclientprotocol.com/protocol/v1/tool-calls)：工具结果保留实际调用身份、完整可见内容与状态；审批回复必须送回执行 owner。
+- [Elicitation](https://agentclientprotocol.com/protocol/v1/elicitation)：仅在客户端声明 form 后使用 elicitation/create；ask_user 不是安全授权。Spec 阶段决策仍转 Admin，不冒充普通工具授权。
 
-- ACP 官方介绍：[Agent Client Protocol Introduction](https://agentclientprotocol.com/get-started/introduction)
-- ACP 官方协议概览：[Protocol Overview](https://agentclientprotocol.com/protocol/v1/overview)
-- ACP 官方传输页：[Transports](https://agentclientprotocol.com/protocol/v1/transports)
-- ACP 官方 Schema：[Protocol Schema](https://agentclientprotocol.com/protocol/v1/schema)
-- ACP 官方客户端页：[Clients](https://agentclientprotocol.com/get-started/clients)
-- ACP 官方 Agent 清单：[Agents](https://agentclientprotocol.com/get-started/agents)
-- ACP 官方仓库：[zed-industries/agent-client-protocol](https://github.com/zed-industries/agent-client-protocol)
-- Zed 官方 ACP 页面：[Zed Agent Client Protocol](https://zed.dev/acp)
-- Zed 官方文章：[Bring Your Own Agent to Zed](https://zed.dev/blog/bring-your-own-agent-to-zed)
-- JetBrains 官方 ACP 页面：[JetBrains Agent Client Protocol](https://www.jetbrains.com/acp/)
-- JetBrains IDE 帮助页：[Agent Client Protocol in JetBrains AI Assistant](https://www.jetbrains.com/help/ai-assistant/acp.html)
+编辑器配置：command 为 `v8os`，args 为 `["acp"]`。先启动本机 V8OS；需要自定义端口时设置非秘密的 `V8OS_ADMIN_URL`。ACP 从 loopback Admin 的现有 local-session 入口取得内存会话，不使用 Network API key，不要求在 argv/env 中复制 token。
 
-结论：
+明确的 cwd 与普通 `v8os chat --workspace` 一样，经 `/api/client/projects` 确认项目，再创建绑定会话；不修改全局默认工作区。会话模式 manual/reduced/minimal 通过标准 session/set_mode 映射既有 safetyApprovalMode；工具、Capsule、OS/V8 核心边界不由 ACP 重写。
 
-1. ACP 是第三方编辑器 / Agent Client 和 Agent 之间的外部标准入口，不是 V8OS 内部运行协议。
-2. V8OS 内部仍保持 Supervisor、runtime episode、Phone/Web 时间线、Spec、Memory、Artifact、Approval 体系。
-3. V8OS ACP bridge 的验收重点是 stdio JSON-RPC framing、session 生命周期、workspace 边界、permission / ask_user / Spec approval 分离、客户端可读输出面和取消/终端映射。
-4. 未能用官方页面确认的“已支持 ACP”平台不进入本轮支持方验收清单，只列为后续人工核验项。
+## 自动化分层
 
-传输细节需要分开表述：
-
-- ACP v1 官方 stdio 传输是 newline-delimited JSON-RPC。
-- V8OS 同时保留 `Content-Length` framing 作为兼容扩展，用于兼容 LSP 风格或历史 smoke 客户端；它不是 V8OS 内部协议，也不应在用户可见页面当作 ACP 官方必需项宣传。
-
-## 支持方核验清单
-
-| 平台 / 来源 | 本轮状态 | 进入矩阵 | 说明 |
-| --- | --- | --- | --- |
-| ACP 官方协议站点与仓库 | 已核验 | 是 | 作为协议行为、Schema 和术语来源 |
-| Zed / Zed Industries | 已核验官方 ACP 页面和 Zed 文章 | 是 | 用于定义“第三方编辑器连接 V8OS”的产品边界 |
-| JetBrains | 已核验官方 ACP 页面和 IDE 帮助页 | 是 | 用于确认 ACP 不只是单一编辑器私有协议 |
-| ACP 官方 Agents 清单中的 Agent | 已核验官方清单存在 | 部分 | 作为后续真实客户端/Agent 适配候选，不等于 V8OS 已端到端兼容每个 Agent |
-| GitHub issue、社区文章、Marketplace、Reddit 中声称支持 ACP 的项目 | 非官方或非一手实现声明 | 否 | 不写入通过项，后续单独核验 |
-
-## 不影响主链路的测试策略
-
-本轮新增测试只使用 `MatrixBackend` / fake backend：
-
-- 不访问 Admin BFF。
-- 不访问 Engine DB。
-- 不创建真实 Phone/Web/CyberCore 会话。
-- 不消费模型额度。
-- 不触发 runtime episode。
-- 不修改 workspace 文件。
-
-因此它只能证明 ACP bridge 的协议适配和投影边界，不代表真实 Zed / JetBrains 客户端已经端到端联通。
-
-## 仿真矩阵
-
-| 用例 | 维度 | 风险 | 验收方式 |
-| --- | --- | --- | --- |
-| `transport.content_length.multi_frame` | transport | 部分编辑器桥接会使用 LSP 风格 framed stdio；解析错误会让兼容客户端卡死 | 连续两个 `Content-Length` 请求能返回两个 framed 响应 |
-| `transport.content_length.parse_error` | transport | malformed framed input 不应崩溃或泄漏栈 | invalid JSON 返回 framed JSON-RPC parse error |
-| `session.lifecycle.external_scope` | session | ACP session 不应污染普通 V8OS 会话真相 | `session/new -> prompt -> cancel` 全程带 `acp_bridge` 外部标记 |
-| `workspace.absolute_boundary` | workspace | 第三方客户端不能绕过 workspace trust | 相对路径在 backend 前被拒绝 |
-| `permission.separation` | permission | 安全授权、用户补充问题、Spec 审批不能混成一种事件 | 只有 safety/file/command permission 映射成 ACP permission |
-| `surface.raw_suppression` | surface | 外部客户端不应看到 provider raw JSON、ledger、fingerprint | summary 为 raw JSON 时退回紧凑 topic，并保留 `detailRef` |
-| `terminal.escape_sequences` | terminal | Ctrl+C、Esc、方向键如果被清洗，终端不可用 | 控制字符和 ANSI escape sequence 原样传给 terminal broker |
-| `errors.unknown_method` | error | 未支持方法不应产生副作用 | 返回 `-32601`，backend 无 create/prompt/cancel |
-
-## 当前已覆盖文件
-
-- `apps/v8-agent-os-engine/tests/acp_bridge/test_acp_bridge.py`
-- `apps/v8-agent-os-engine/tests/acp_bridge/test_acp_simulation_matrix.py`
-
-运行：
+在 Engine 目录执行：
 
 ```powershell
-apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\acp_bridge -q
+.venv/Scripts/python.exe -X utf8 -m pytest tests/acp_bridge -q
 ```
 
-## 仍需真实客户端验收的部分
+| 层 | 文件 | 必须杀死的错误实现 |
+| --- | --- | --- |
+| 纯合同 | test_acp_bridge.py | prompt 数组变 Python repr；输出/工具内容被暗裁；EOF、failed、waiting 冒充成功；load 改 cwd；历史工具与正文乱序 |
+| framing | test_acp_simulation_matrix.py | UTF-8 编码漂移；非 JSON stdout；错误消息令进程退出；通知收到非法 response |
+| 真实 CLI + HTTP fixture | test_acp_stdio_integration.py | Node 命令不存在；token 配错；prompt 阻塞取消；审批只更新内存未 POST；ask_user 冒充授权；SSE 恢复重复答案、混入其他 run |
 
-1. `v8os acp` 是否在安装包 / PATH / token 注入上形成普通用户可用的一键链路。
-2. Zed / JetBrains 等真实 ACP 客户端启动、握手、prompt、cancel 的端到端行为。
-3. 官方 ACP Schema 后续变更导致的方法名、ContentBlock、permission 结构漂移。
-4. 长会话 streaming 性能与 backpressure。
-5. 文件 diff、artifact preview、diagnostic projection 在真实编辑器 UI 中的可用性。
+HTTP fixture 是实际 Node/Python 子进程、socket 与协议，但不是模型或真实 Engine。只在下面入口明确 `--live` 时使用本机配置的真实 Supervisor：
 
-这些不应由当前 fake backend 测试冒充通过。
+```powershell
+.venv/Scripts/python.exe -X utf8 tests/scripts/run_acp_live_audit.py --live --case prompt
+.venv/Scripts/python.exe -X utf8 tests/scripts/run_acp_live_audit.py --live --case ask
+.venv/Scripts/python.exe -X utf8 tests/scripts/run_acp_live_audit.py --live --case cancel
+.venv/Scripts/python.exe -X utf8 tests/scripts/run_acp_live_audit.py --live --case approval
+```
+
+live 创建专用临时工作区/会话。approval 只删除脚本刚创建的一份可丢弃临时文件，须真正收到审批且确认文件副作用；口令出现在答案不算动作成功。报告仅保留 session/run、时长、事件数、答案 hash 和断言，不输出秘密、原始事件或真实配置。
+
+## 仍需补齐的能力与验收
+
+- 非空客户端 mcpServers 明确报不支持，避免无声忽略；这意味着尚不能宣称完整 ACP v1 合规（标准要求 stdio MCP）。需复用 V8OS Plugin Manager 的任务级注册与授权，不直接启动未经治理的客户端命令。
+- 图像/音频输入未接附件 owner，初始化明确声明 false；内嵌文本资源可用。
+- 原生 IDE（Zed/JetBrains 等）、安装包 PATH、多平台和长会话背压尚需各自真实验收，不能由 Node subprocess 替代。
+- Spec 决策留在 Admin；原生编辑器的文件 diff/产物预览需继续核对实际 UI。
+- 单次真实 live 时长只能证明这次链路和测点；不能当 P95 或跨版本性能结论。

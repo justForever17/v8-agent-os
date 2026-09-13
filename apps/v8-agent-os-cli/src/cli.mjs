@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { commandAcp } from "./acp_commands.mjs";
 import { ALL_COMPONENTS, parseComponentSelection } from "./components.mjs";
 import { interactiveChat, sendChatMessage } from "./chat_commands.mjs";
 import {
@@ -74,6 +75,7 @@ Usage:
   v8os restart [--only engine,admin]
   v8os status [--json]
   v8os chat "message" [--session id] [--workspace path] [--safety-approval manual|reduced|minimal] [--interactive]
+  v8os acp
   v8os sessions list|show|turns|open|resume [--json]
   v8os inbox list|approve|reject|answer [--json]
   v8os workspace show|doctor|create|select|open [--json]
@@ -263,6 +265,7 @@ export async function main(argv) {
   }
   if (command === "status") return commandStatus(args);
   if (command === "chat") return commandChat(args);
+  if (command === "acp") return commandAcp(args);
   if (command === "sessions") return commandSessions(args);
   if (command === "inbox") return commandInbox(args);
   if (command === "workspace") return commandWorkspace(args);

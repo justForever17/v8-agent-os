@@ -806,6 +806,9 @@ class ConfigBrokerService:
 
     @staticmethod
     def _target_snapshot(target_kind: str, target_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        if target_kind == "network_settings":
+            from core.network_config_broker import settings_snapshot
+            return settings_snapshot(config)
         if target_kind == "model_snapshot_restore":
             return _model_snapshot_authority_projection(config)
         if target_kind in _MODEL_CONTROL_PLANE_TARGET_KINDS:
@@ -928,6 +931,8 @@ class ConfigBrokerService:
 
     @staticmethod
     def _target_config(target_kind: str) -> dict[str, Any]:
+        if target_kind == "network_settings":
+            return deepcopy(storage.get_network_supervisor_runtime_config())
         if target_kind == "mcp":
             return deepcopy(storage.get_mcp_config() or {"mcpServers": {}})
         if target_kind == "creative_media_operation":
@@ -3466,6 +3471,28 @@ class ConfigBrokerService:
             "nextAction": "提交配置事务。",
         }
 
+    def network_status(self) -> dict[str, Any]:
+        return {"ok": True, "mode": "network_status", "settings": self._target_snapshot(
+            "network_settings", "network", self._target_config("network_settings")),
+            "activation": "Compat settings apply on next request; discovery/listener changes require runtime reload."}
+
+    def prepare_network(self, *, settings: dict[str, Any], owner_id: str, session_id: str, run_id: str) -> dict[str, Any]:
+        from core.network_config_broker import apply_patch, settings_snapshot, validate_patch
+        try:
+            patch = validate_patch(settings)
+            before = self._target_config("network_settings")
+            after = apply_patch(before, patch)
+        except (ValueError, TypeError):
+            raise ConfigBrokerError("网络配置字段无效；身份和凭据须经原有配对入口。", code="network_settings_invalid") from None
+        transaction = self._insert_transaction(
+            target_kind="network_settings", target_id="network", operation="patch", state="ready_to_commit",
+            owner_id=_session_owner(session_id, owner_id), session_id=session_id, run_id=run_id,
+            before=settings_snapshot(before), proposed={"settings": patch}, validation={"targetSettings": settings_snapshot(after)},
+        )
+        return {"ok": True, "mode": "network_prepare", "state": transaction["state"],
+                "transactionId": transaction["transactionId"], "planDigest": transaction["planDigest"],
+                "summary": "网络设置已准备；提交后核对运行状态。", "nextAction": "commit"}
+
     def _credentialize_mcp_config(self, raw: dict[str, Any]) -> dict[str, Any]:
         safe = deepcopy(raw or {"mcpServers": {}})
         servers = dict(safe.get("mcpServers") or {})
@@ -4503,6 +4530,18 @@ class ConfigBrokerService:
                     ).get("exists"):
                         raise ConfigBrokerError("Custom Provider 删除投影不一致。", code="catalog_projection_mismatch")
                     public_result = {"providerId": provider_id, "deleted": True}
+                elif transaction["targetKind"] == "network_settings":
+                    from core.network_config_broker import apply_patch
+                    def _mutate_network(current: dict[str, Any]) -> dict[str, Any]:
+                        self._assert_target_revision_in_config(transaction, current)
+                        candidate = apply_patch(current, dict(proposed.get("settings") or {}))
+                        _capture_planned_target(candidate)
+                        return candidate
+                    saved = storage.mutate_config_domain("networkSupervisorRuntime", _mutate_network)
+                    target_mutated = True
+                    _capture_working_target(saved)
+                    public_result = {"settings": self._target_snapshot("network_settings", "network", saved),
+                                     "runtimeReloadRequired": bool(set(proposed.get("settings") or {}) - {"openaiCompat"})}
                 elif transaction["targetKind"] == "mcp":
                     server_name = str(proposed.get("name") or "")
 
@@ -4738,6 +4777,13 @@ class ConfigBrokerService:
                     return config
 
                 model_control_plane.mutate_config(_restore_model_config)
+                target_restored = True
+            elif target_kind == "network_settings":
+                from core.network_config_broker import apply_patch
+                def _restore_network(current: dict[str, Any]) -> dict[str, Any]:
+                    _assert_restore_revision(current)
+                    return apply_patch(current, before_target)
+                storage.mutate_config_domain("networkSupervisorRuntime", _restore_network)
                 target_restored = True
             elif target_kind == "model_policy_bundle":
                 def _restore_model_policy(config: dict[str, Any]) -> dict[str, Any]:

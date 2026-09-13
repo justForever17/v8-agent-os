@@ -23,10 +23,12 @@ def main():
     parser.add_argument("--live", action="store_true", required=True)
     parser.add_argument("--admin-url", default="http://127.0.0.1:9528")
     parser.add_argument("--case", choices=["prompt", "ask", "cancel", "approval", "approval-external"], default="prompt")
+    parser.add_argument("--approval-decision", choices=["approve", "reject"], default="approve")
     args = parser.parse_args()
     engine = Path(__file__).resolve().parents[2]
     workspace = Path(tempfile.mkdtemp(prefix="v8os-acp-live-"))
     approval_case = args.case.startswith("approval")
+    rejection_case = approval_case and args.approval_decision == "reject"
     approval_root = Path(tempfile.mkdtemp(prefix="v8os-acp-approval-target-")) if args.case == "approval-external" else workspace
     approval_target = approval_root / "acceptance.txt" if approval_case else None
     if approval_target:
@@ -110,8 +112,9 @@ def main():
                 # test cases never authorize unexpected actions.
                 target = str((tool.get("rawInput") or {}).get("target") or tool.get("title") or "")
                 allowed = approval_case and str(approval_target).replace("/", "\\").casefold() in target.replace("/", "\\").casefold()
-                report.setdefault("approvalDecisions", []).append({"exactFixtureTargetPresent": allowed, "fileExistedBeforeApproval": approval_target.exists() if approval_target else None})
-                child.stdin.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {"outcome": {"outcome": "selected", "optionId": "approve" if allowed else "deny"}}})+"\n")
+                selected = "approve" if allowed and not rejection_case else "deny"
+                report.setdefault("approvalDecisions", []).append({"exactFixtureTargetPresent": allowed, "fileExistedBeforeApproval": approval_target.exists() if approval_target else None, "selectedOption": selected})
+                child.stdin.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {"outcome": {"outcome": "selected", "optionId": selected}}})+"\n")
                 child.stdin.flush()
             if message.get("id") == 3:
                 report.update({"elapsedMs": round((time.monotonic()-started)*1000), "firstUpdateMs": first_ms,
@@ -121,22 +124,28 @@ def main():
                                "permissionObserved": permission,
                                "result": message.get("result"), "error": message.get("error")})
                 assert "error" not in message, "prompt_failed"
-                assert message["result"]["stopReason"] == ("cancelled" if args.case == "cancel" else "end_turn"), "wrong_stop_reason"
-                assert args.case == "cancel" or nonce in text, "answer_missing"
-                assert args.case == "cancel" or text.count(nonce) == 1, "answer_duplicated"
+                assert message["result"]["stopReason"] == ("cancelled" if args.case == "cancel" else "refusal" if rejection_case else "end_turn"), "wrong_stop_reason"
+                assert args.case == "cancel" or rejection_case or nonce in text, "answer_missing"
+                assert args.case == "cancel" or rejection_case or text.count(nonce) == 1, "answer_duplicated"
                 assert args.case != "ask" or interaction, "ask_user_not_forwarded"
                 if approval_case:
                     assert permission, "approval_not_requested"
-                    assert not approval_target.exists(), "approved_fixture_delete_not_completed"
-                    report["fixtureSideEffectVerified"] = True
+                    if rejection_case:
+                        assert approval_target.exists(), "rejected_operation_still_executed"
+                        report["rejectedOperationDidNotExecute"] = True
+                    else:
+                        assert not approval_target.exists(), "approved_fixture_delete_not_completed"
+                        report["fixtureSideEffectVerified"] = True
                 break
         else:
             raise TimeoutError("prompt_timeout")
         send("session/load", {"sessionId": session_id, "cwd": str(workspace), "mcpServers": []}, 4)
         replay = receive_response(4, time.monotonic()+30)
         replay_text = "".join(m["params"]["update"]["content"]["text"] for m in replay if m.get("method") == "session/update" and m["params"]["update"]["sessionUpdate"] == "agent_message_chunk")
-        report["historyAnswerPresent"] = args.case == "cancel" or nonce in replay_text
-        assert report["historyAnswerPresent"], "history_replay_missing_answer"
+        answer_expected = args.case != "cancel" and not rejection_case
+        report["historyAnswerPresent"] = nonce in replay_text if answer_expected else None
+        if answer_expected:
+            assert report["historyAnswerPresent"], "history_replay_missing_answer"
         # Read only identity/terminal fields from the canonical authenticated
         # session. Do not retain provider configuration or response bodies.
         import sys
@@ -150,9 +159,12 @@ def main():
         report["model"] = metadata.get("model")
         report["persistedRunStatus"] = run.get("status")
         report["persistedSafetyMode"] = metadata.get("safetyApprovalMode")
+        if args.case == "cancel":
+            assert run.get("status") in {"cancelled", "canceled"}, "history_cancel_not_confirmed"
         if approval_case:
             assert metadata.get("safetyApprovalMode") == "manual", "manual_mode_not_persisted"
-            assert run.get("status") == "completed", "engine_did_not_complete_approved_run"
+            if not rejection_case:
+                assert run.get("status") == "completed", "engine_did_not_complete_approved_run"
         report["passed"] = True
     except Exception as exc:
         report["failure"] = str(exc) if isinstance(exc, AssertionError) else type(exc).__name__

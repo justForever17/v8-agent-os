@@ -19,6 +19,8 @@ import { useToast } from "@/components/ui/use-toast";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import type { CanonicalConfigDiagnostics, LegacyPortNotice } from "@/lib/server/bridge-config";
+import { NetworkTransportSetup } from "./NetworkTransportSetup";
+import { mergeNeighborTimeline } from "./neighbor-timeline";
 type PeerItem = {
     peerId: string;
     displayName: string;
@@ -125,6 +127,7 @@ type RuntimeConfig = {
         peerId: string;
         advertisedBaseUrl: string;
         advertisedWsUrl: string;
+        peerBaseUrl: string;
     };
     discovery: {
         lanEnabled: boolean;
@@ -357,6 +360,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
         peerId: "",
         advertisedBaseUrl: "http://127.0.0.1:9530",
         advertisedWsUrl: "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+        peerBaseUrl: "",
     },
     discovery: {
         lanEnabled: true,
@@ -459,7 +463,6 @@ const EMPTY_PEERS: PeersPayload = { items: [], trustedItems: [], discoveredItems
 const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", wsUrl: "", publicKey: "", allowedScopes: "", allowedWorkspaces: "", peerToken: "", transportProfileId: "", peerBaseUrl: "", deviceClass: "", requiresApproval: false };
 const EMPTY_DIAG: DiagState = { peerId: "", note: "", task: "", result: "" };
 const EMPTY_NEIGHBOR_STATUS: NeighborStatus = { enabled: false, started: false, links: [], discovery: { candidateCount: 0, connectedCount: 0 } };
-const EMPTY_NEIGHBOR_TASK_SETTINGS: NeighborTaskSettings = { resultWakePolicy: "inbox" };
 const NETWORK_DATA_URLS = {
     config: "/api/config-registry/network-supervisor-runtime",
     status: "/api/network-supervisor/status",
@@ -606,17 +609,24 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const [neighborCandidates, setNeighborCandidates] = React.useState<NeighborCandidate[]>(() => Array.isArray(cachedNeighborCandidates?.items) ? cachedNeighborCandidates.items : []);
     const [neighborLinks, setNeighborLinks] = React.useState<NeighborLink[]>(initialNeighborLinks);
     const [selectedNeighborLinkId, setSelectedNeighborLinkId] = React.useState(initialNeighborLinks[0]?.linkId || "");
-    const [pairingInvite, setPairingInvite] = React.useState<{ code: string; expiresAt: string; inviteId: string } | null>(null);
+    const [pairingInvite, setPairingInvite] = React.useState<{ code: string; expiresAt: string; inviteId: string; invitation?: string } | null>(null);
+    const [connectionInvitation, setConnectionInvitation] = React.useState("");
     const [pairingPeerId, setPairingPeerId] = React.useState("");
     const [pairingCode, setPairingCode] = React.useState("");
     const [neighborTimeline, setNeighborTimeline] = React.useState<NeighborMessage[]>([]);
+    const [previousTimelineCursor, setPreviousTimelineCursor] = React.useState<string | null>(null);
+    const [loadingEarlierTimeline, setLoadingEarlierTimeline] = React.useState(false);
+    const timelineLink = React.useRef("");
+    const timelineHasPage = React.useRef(false);
     const [neighborMessage, setNeighborMessage] = React.useState("");
+    const neighborSendDraft = React.useRef<{ linkId: string; messageId: string; body: string; wakeSupervisor: boolean } | null>(null);
+    const timelineRequest = React.useRef<AbortController | null>(null);
     const [neighborBusy, setNeighborBusy] = React.useState("");
     const [neighborTaskSettings, setNeighborTaskSettings] = React.useState<NeighborTaskSettings>(() => ({ resultWakePolicy: cachedNeighborTaskSettings?.resultWakePolicy === "per_result" ? "per_result" : "inbox" }));
     const [neighborTasks, setNeighborTasks] = React.useState<NeighborTaskItem[]>(() => Array.isArray(cachedNeighborTasks?.items) ? cachedNeighborTasks.items : []);
     const [neighborTaskBody, setNeighborTaskBody] = React.useState("");
     const [neighborTaskCapabilities, setNeighborTaskCapabilities] = React.useState("");
-    const [linkDraft, setLinkDraft] = React.useState<{ localNickname: string; remoteNickname: string; localRole: "primary" | "companion"; capabilityTags: string; description: string }>({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "" });
+    const [linkDraft, setLinkDraft] = React.useState<{ localNickname: string; remoteNickname: string; localRole: "primary" | "companion"; capabilityTags: string; description: string; localWorkspacePath: string }>({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "", localWorkspacePath: "" });
     const [peerForm, setPeerForm] = React.useState<PeerForm>(EMPTY_PEER_FORM);
     const [diag, setDiag] = React.useState<DiagState>(EMPTY_DIAG);
     const [loading, setLoading] = React.useState(cachedConfig === undefined || cachedStatus === undefined || cachedPeers === undefined);
@@ -671,7 +681,6 @@ response = client.chat.completions.create(
 ANTHROPIC_AUTH_TOKEN=${primaryApiKey}
 ANTHROPIC_MODEL=${primaryModelAlias}`;
     const acpCommand = "v8os acp";
-    const acpSourceCommand = "python apps/v8-agent-os-engine/scripts/v8os_acp_agent.py";
     const thirdPartyConnectionCards = [
         {
             title: "OpenAI-compatible",
@@ -702,15 +711,11 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             purpose: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.thirdParty.acpPurpose"),
             endpointLabel: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.thirdParty.command"),
             endpoint: acpCommand,
-            credentialLabel: "V8OS_CLIENT_TOKEN",
-            credential: primaryApiKey,
+            credentialLabel: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.thirdParty.acpAuthentication"),
+            credential: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.thirdParty.acpLocalSession"),
             modelLabel: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.thirdParty.agent"),
             model: "V8OS Agent",
-            example: `command: ${acpCommand}
-source checkout: ${acpSourceCommand}
-env:
-  V8OS_ADMIN_URL=${adminOrigin}
-  V8OS_CLIENT_TOKEN=${primaryApiKey}`,
+            example: JSON.stringify({ command: "v8os", args: ["acp"], env: { V8OS_ADMIN_URL: adminOrigin } }, null, 2),
             canonicalId: "acp_bridge",
         },
     ];
@@ -898,29 +903,63 @@ env:
         finally {
             setLoading(false);
         }
-    }, [neighborCopy, t, toast]);
+    }, [t, toast]);
     React.useEffect(() => {
         void loadAll();
     }, [loadAll]);
-    const loadNeighborTimeline = React.useCallback(async (linkId: string) => {
+    const loadNeighborTimeline = React.useCallback(async (linkId: string, before?: string) => {
+        if (timelineLink.current !== linkId) {
+            timelineRequest.current?.abort();
+            timelineRequest.current = null;
+            timelineLink.current = linkId;
+            timelineHasPage.current = false;
+            setNeighborTimeline([]);
+            setPreviousTimelineCursor(null);
+            setLoadingEarlierTimeline(false);
+        }
+        // Keep one request per selected device so a refresh cannot race an older page.
+        if (timelineRequest.current) return;
+        const controller = new AbortController();
+        timelineRequest.current = controller;
         if (!linkId) {
             setNeighborTimeline([]);
+            timelineRequest.current = null;
             return;
         }
+        if (before) setLoadingEarlierTimeline(true);
         try {
-            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(linkId)}/timeline`, { cache: "no-store" });
+            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(linkId)}/timeline?limit=100${before ? `&before=${encodeURIComponent(before)}` : ""}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorTimelineRead));
-            setNeighborTimeline(Array.isArray((payload as { items?: NeighborMessage[] }).items) ? (payload as { items: NeighborMessage[] }).items : []);
+            if (!controller.signal.aborted && timelineLink.current === linkId) {
+                const items = Array.isArray(payload.items) ? payload.items as NeighborMessage[] : [];
+                setNeighborTimeline(current => mergeNeighborTimeline(current, items));
+                if (before || !timelineHasPage.current) setPreviousTimelineCursor(payload.previousCursor ? String(payload.previousCursor) : null);
+                timelineHasPage.current = true;
+            }
         } catch (error) {
+            if (controller.signal.aborted) return;
             toast({ variant: "destructive", title: neighborCopy.errorTimelineRead, description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            if (timelineRequest.current === controller) {
+                timelineRequest.current = null;
+                setLoadingEarlierTimeline(false);
+            }
         }
     }, [neighborCopy, toast]);
     React.useEffect(() => {
+        if (!selectedNeighborLinkId) return;
+        const timer = setInterval(() => {
+            if (document.visibilityState === "visible") void loadNeighborTimeline(selectedNeighborLinkId);
+        }, 4000);
+        return () => { clearInterval(timer); timelineRequest.current?.abort(); timelineRequest.current = null; };
+    }, [loadNeighborTimeline, selectedNeighborLinkId]);
+    React.useEffect(() => {
         if (!selectedNeighborLink) {
-            setLinkDraft({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "" });
+            setLinkDraft({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "", localWorkspacePath: "" });
             setNeighborTimeline([]);
+            void loadNeighborTimeline("");
             return;
         }
         setLinkDraft({
@@ -929,6 +968,7 @@ env:
             localRole: selectedNeighborLink.localRole || "primary",
             capabilityTags: joinCsv(selectedNeighborLink.capabilityTags),
             description: selectedNeighborLink.description || "",
+            localWorkspacePath: String(selectedNeighborLink.workspaceBinding?.workspacePath || selectedNeighborLink.workspaceBinding?.localWorkspacePath || ""),
         });
         void loadNeighborTimeline(selectedNeighborLink.linkId);
     }, [loadNeighborTimeline, selectedNeighborLink]);
@@ -961,7 +1001,7 @@ env:
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorInvite));
-            setPairingInvite(payload as { code: string; expiresAt: string; inviteId: string });
+            setPairingInvite(payload as { code: string; expiresAt: string; inviteId: string; invitation?: string });
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorInvite, description: error instanceof Error ? error.message : String(error) });
         } finally {
@@ -970,7 +1010,7 @@ env:
     }, [neighborCopy, neighborStatus.node?.displayName, toast]);
     const consumePairingInvite = React.useCallback(async () => {
         const peerId = pairingPeerId.trim();
-        if (!peerId || !pairingCode.trim()) {
+        if (!connectionInvitation.trim() && (!peerId || !pairingCode.trim())) {
             toast({ variant: "destructive", title: neighborCopy.errorMissingPairing });
             return;
         }
@@ -979,20 +1019,21 @@ env:
             const response = await fetch("/api/network-supervisor/neighbors/pairing/consume", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ peerId, code: pairingCode.trim(), localNickname: neighborStatus.node?.displayName || "" }),
+                body: JSON.stringify({ ...(connectionInvitation.trim() ? { invitation: connectionInvitation.trim() } : { peerId, code: pairingCode.trim() }), localNickname: neighborStatus.node?.displayName || "" }),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorPair));
             setPairingCode("");
             setPairingPeerId("");
+            setConnectionInvitation("");
             await loadAll(true);
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorPair, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [loadAll, neighborCopy, neighborStatus.node?.displayName, pairingCode, pairingPeerId, toast]);
+    }, [loadAll, neighborCopy, neighborStatus.node?.displayName, pairingCode, pairingPeerId, connectionInvitation, toast]);
     const saveNeighborLink = React.useCallback(async () => {
         if (!selectedNeighborLink)
             return;
@@ -1001,7 +1042,7 @@ env:
             const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(selectedNeighborLink.linkId)}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(linkDraft),
+                body: JSON.stringify({ ...linkDraft, workspaceBinding: { localWorkspacePath: linkDraft.localWorkspacePath.trim() } }),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
@@ -1031,23 +1072,44 @@ env:
         if (!selectedNeighborLink || !neighborMessage.trim())
             return;
         setNeighborBusy(wakeSupervisor ? "sendWake" : "send");
+        const body = neighborMessage.trim();
+        if (neighborSendDraft.current?.linkId !== selectedNeighborLink.linkId || neighborSendDraft.current?.body !== body || neighborSendDraft.current?.wakeSupervisor !== wakeSupervisor) {
+            neighborSendDraft.current = { linkId: selectedNeighborLink.linkId, messageId: `nmsg_${crypto.randomUUID()}`, body, wakeSupervisor };
+        }
         try {
             const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(selectedNeighborLink.linkId)}/messages`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ body: neighborMessage.trim(), wakeSupervisor }),
+                body: JSON.stringify(neighborSendDraft.current),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorSendMessage));
-            setNeighborMessage("");
-            await loadNeighborTimeline(selectedNeighborLink.linkId);
+            if (timelineLink.current === selectedNeighborLink.linkId) {
+                setNeighborMessage(current => current.trim() === body ? "" : current);
+                neighborSendDraft.current = null;
+            }
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorSendMessage, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
+            if (timelineLink.current === selectedNeighborLink.linkId) await loadNeighborTimeline(selectedNeighborLink.linkId);
         }
     }, [loadNeighborTimeline, neighborCopy, neighborMessage, selectedNeighborLink, toast]);
+    const retryNeighborMessage = React.useCallback(async (messageId: string) => {
+        if (!selectedNeighborLink) return;
+        setNeighborBusy("retry");
+        try {
+            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(selectedNeighborLink.linkId)}/messages/${encodeURIComponent(messageId)}/retry`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            if (!response.ok) throw Error(neighborCopy.errorSendMessage);
+            const result = await response.json();
+            if (timelineLink.current === selectedNeighborLink.linkId && result.message?.messageId === messageId) {
+                setNeighborTimeline(current => mergeNeighborTimeline(current, [result.message as NeighborMessage]));
+            }
+        } catch (error) {
+            toast({ variant: "destructive", title: neighborCopy.errorSendMessage, description: error instanceof Error ? error.message : String(error) });
+        } finally { setNeighborBusy(""); if (timelineLink.current === selectedNeighborLink.linkId) await loadNeighborTimeline(selectedNeighborLink.linkId); }
+    }, [selectedNeighborLink, neighborCopy, toast, loadNeighborTimeline]);
     const saveNeighborTaskSettings = React.useCallback(async (resultWakePolicy: NeighborTaskSettings["resultWakePolicy"]) => {
         setNeighborTaskSettings({ resultWakePolicy });
         try {
@@ -1466,6 +1528,7 @@ env:
                     </div>
                 </ConfigCard>) : null}
 
+            <NetworkTransportSetup node={config.node} onChange={setNode} />
             <ConfigCard title={neighborCopy.title} description={neighborCopy.description} variant="editor" bodyHeight="auto">
                 <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
                     <div className="space-y-4">
@@ -1510,6 +1573,7 @@ env:
                                 <div className="mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
                                     <div className="font-mono text-2xl font-semibold tracking-[0.3em] text-emerald-800 dark:text-emerald-200">{pairingInvite.code}</div>
                                     <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">{pairingInvite.expiresAt}</div>
+                                    {pairingInvite.invitation ? <><Textarea readOnly rows={2} className="mt-2" aria-label={t("networkTransport.copyInvitation")} value={pairingInvite.invitation} /><Button variant="outline" size="sm" className="mt-3" onClick={async () => { try { await navigator.clipboard.writeText(pairingInvite.invitation || ""); } catch { toast({ variant: "destructive", title: t("networkTransport.copyFailed") }); } }}>{t("networkTransport.copyInvitation")}</Button></> : <p className="mt-2 text-xs">{t("networkTransport.invitationNeedsAddress")}</p>}
                                 </div>
                             ) : null}
                         </div>
@@ -1536,13 +1600,21 @@ env:
                             ) : (
                                 <div className="rounded-2xl bg-muted/35 px-3 py-4 text-sm text-muted-foreground">{neighborCopy.noCandidates}</div>
                             )}
+                            <div className="mt-3 space-y-2">
+                                <Label htmlFor="network-connection-invitation">{t("networkTransport.pasteInvitation")}</Label>
+                                <Textarea id="network-connection-invitation" rows={2} value={connectionInvitation} maxLength={8192} onChange={event => setConnectionInvitation(event.target.value)} placeholder={t("networkTransport.invitationPlaceholder")} />
+                                <p className="text-xs text-muted-foreground">{t("networkTransport.invitationConfirm")}</p>
+                                <Button onClick={() => void consumePairingInvite()} disabled={!connectionInvitation.trim() || neighborBusy === "pair"}>{t("networkTransport.trustConnect")}</Button>
+                            </div>
+                            <details className="mt-3 text-sm"><summary className="cursor-pointer text-muted-foreground">{t("networkTransport.shortCodeAlternative")}</summary>
                             <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_0.7fr_auto]">
-                                <Input value={pairingPeerId} onChange={(event) => setPairingPeerId(event.target.value)} placeholder="peer_xxx"/>
-                                <Input value={pairingCode} onChange={(event) => setPairingCode(event.target.value.toUpperCase())} placeholder="CODE"/>
+                                <Input value={pairingPeerId} onChange={(event) => { setPairingPeerId(event.target.value); setConnectionInvitation(""); }} placeholder="peer_xxx"/>
+                                <Input value={pairingCode} onChange={(event) => { setPairingCode(event.target.value.toUpperCase()); setConnectionInvitation(""); }} placeholder="CODE"/>
                                 <Button onClick={() => void consumePairingInvite()} disabled={neighborBusy === "pair"}>
                                     {neighborCopy.consumeCode}
                                 </Button>
                             </div>
+                            </details>
                         </div>
                     </div>
 
@@ -1606,6 +1678,11 @@ env:
                                         <Input value={linkDraft.description} onChange={(event) => setLinkDraft((prev) => ({ ...prev, description: event.target.value }))} placeholder={neighborCopy.descriptionPlaceholder}/>
                                     </div>
                                 </div>
+                                <div className="mt-3 grid gap-2">
+                                    <Label htmlFor="network-local-workspace">{t("networkTransport.localWorkspace")}</Label>
+                                    <Input id="network-local-workspace" value={linkDraft.localWorkspacePath} onChange={event => setLinkDraft(previous => ({ ...previous, localWorkspacePath: event.target.value }))} placeholder={t("networkTransport.defaultWorkspace")} />
+                                    <p className="text-xs text-muted-foreground">{t("networkTransport.localWorkspaceHint")}</p>
+                                </div>
                                 <div className="mt-3 flex justify-end gap-2">
                                     <Button variant="outline" onClick={() => void revokeNeighborLink(selectedNeighborLink.linkId)} disabled={neighborBusy === "revoke"}>{neighborCopy.revoke}</Button>
                                     <Button onClick={() => void saveNeighborLink()} disabled={neighborBusy === "link"}>{neighborCopy.save}</Button>
@@ -1616,10 +1693,13 @@ env:
                         <div className="rounded-3xl border border-border bg-card p-4">
                             <div className="mb-3 text-sm font-semibold text-foreground">{neighborCopy.timeline}</div>
                             <div className="max-h-72 space-y-2 overflow-auto rounded-2xl bg-muted/35 p-3">
+                                {previousTimelineCursor ? <Button variant="outline" size="sm" disabled={loadingEarlierTimeline} onClick={() => void loadNeighborTimeline(selectedNeighborLinkId, previousTimelineCursor)}>{t(loadingEarlierTimeline ? "networkTransport.loadingEarlier" : "networkTransport.loadEarlier")}</Button> : null}
                                 {neighborTimeline.length ? neighborTimeline.map((message) => (
-                                    <div key={message.messageId} className={`rounded-2xl px-3 py-2 text-sm text-foreground ${message.direction === "outbound" ? "ml-8 border border-primary/30 bg-primary/10" : "mr-8 border border-border bg-card"}`}>
+                                    <div key={message.messageId} data-message-id={message.messageId} className={`rounded-2xl px-3 py-2 text-sm text-foreground ${message.direction === "outbound" ? "ml-8 border border-primary/30 bg-primary/10" : "mr-8 border border-border bg-card"}`}>
                                         <div className="text-xs opacity-70">{message.fromNickname || message.role || message.status}</div>
                                         <div className="mt-1 whitespace-pre-wrap break-words">{message.preview || message.body}</div>
+                                        {message.status && ["pending", "queued", "delivered", "published", "failed", "received"].includes(message.status) ? <div className="mt-2 text-xs">{t(`networkTransport.${message.status}`)}</div> : null}
+                                        {message.direction === "outbound" && message.status === "failed" ? <Button size="sm" variant="outline" className="mt-2" disabled={Boolean(neighborBusy)} onClick={() => void retryNeighborMessage(message.messageId)}>{t("networkTransport.retry")}</Button> : null}
                                     </div>
                                 )) : (
                                     <div className="py-8 text-center text-sm text-muted-foreground">{neighborCopy.timeline}</div>

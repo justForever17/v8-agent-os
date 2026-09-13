@@ -4,6 +4,8 @@ import asyncio
 import json
 import sys
 import unittest
+from contextlib import contextmanager
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, TypedDict
@@ -64,6 +66,20 @@ from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop, Comp
 from runtimes.network_supervisor.models import NetworkSupervisorRuntimeConfig  # noqa: E402
 from runtimes.network_supervisor.service import network_supervisor_service  # noqa: E402
 from graph.supervisor_turn import _filter_network_supervisor_compat_tools, _should_force_memory_broker_first  # noqa: E402
+
+
+@contextmanager
+def _pending_state_fixture(state):
+    from core.database import DatabaseManager
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        legacy = root / "network.json"
+        legacy.write_text(json.dumps(state), encoding="utf-8")
+        database = DatabaseManager(root / "state.db")
+        with patch("runtimes.network_supervisor.service.db", database), patch(
+            "runtimes.network_supervisor.service.NETWORK_SUPERVISOR_STATE_PATH", legacy
+        ):
+            yield
 
 
 class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
@@ -399,22 +415,18 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 }
             }
         }
-        written: list[dict] = []
-        with patch.object(network_supervisor_service, "read_state", return_value=state), patch.object(
-            network_supervisor_service,
-            "write_state",
-            side_effect=lambda payload: written.append(payload),
-        ):
+        with _pending_state_fixture(state):
             claim = network_supervisor_service.claim_external_tool_results(
                 protocol="openai",
                 wire_tool_call_ids=["call_wire_1"],
                 tool_results=[{"wireToolCallId": "call_wire_1", "content": "created"}],
             )
+            stored = network_supervisor_service.pending_external_tools_snapshot()
 
         self.assertIsNone(claim["resumeRunId"])
         self.assertIsNone(claim["resumeValue"])
         self.assertEqual(claim["matched"][0]["externalWireName"], "Write")
-        self.assertEqual(written[0]["pendingExternalTools"]["openai:global:call_wire_1"]["status"], "external_tool_result_received")
+        self.assertEqual(stored["openai:global:call_wire_1"]["status"], "external_tool_result_received")
 
     def test_external_tool_result_claim_builds_resume_value_for_checkpoint_pending(self):
         state = {
@@ -432,10 +444,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 }
             }
         }
-        with patch.object(network_supervisor_service, "read_state", return_value=state), patch.object(
-            network_supervisor_service,
-            "write_state",
-        ):
+        with _pending_state_fixture(state):
             claim = network_supervisor_service.claim_external_tool_results(
                 protocol="openai",
                 wire_tool_call_ids=["call_wire_1"],
@@ -462,8 +471,8 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 }
             }
         }
-        with patch.object(network_supervisor_service, "_complete_abandoned_external_tool_run") as complete_abandoned:
-            pending = network_supervisor_service._prune_pending_external_tools(state)
+        with _pending_state_fixture(state), patch.object(network_supervisor_service, "_complete_abandoned_external_tool_run") as complete_abandoned:
+            pending = network_supervisor_service.pending_external_tools_snapshot()
 
         self.assertEqual(pending["openai:global:call_wire_1"]["status"], "external_tool_abandoned")
         self.assertEqual(pending["openai:global:call_wire_1"]["lastReason"], "expired_waiting_for_client_tool_result")
@@ -537,10 +546,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             }
         }
 
-        with patch.object(network_supervisor_service, "read_state", return_value=state), patch.object(
-            network_supervisor_service,
-            "write_state",
-        ), patch(
+        with _pending_state_fixture(state), patch(
             "runtimes.network_supervisor.service.get_recent_compat_ingress_events",
             return_value=[
                 {
@@ -601,6 +607,9 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             return_value={
                 "peerId": "peer_1",
                 "displayName": "Peer",
+                "advertisedBaseUrl": "http://127.0.0.1:9530",
+                "advertisedWsUrl": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+                "peerBaseUrl": "",
                 "publicKeyFingerprint": "pk",
                 "localPeerTokenFingerprint": "tok",
             },
@@ -827,7 +836,8 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             def transition(self, status: str, *, reason: str, node: str = "run_manager"):
                 transitions.append((status, reason))
 
-        chat_run = SimpleNamespace(active_run_id="run_waiting", run_handle=FakeRunHandle())
+        waiting_events = []
+        chat_run = SimpleNamespace(active_run_id="run_waiting", run_handle=FakeRunHandle(), emit_runtime_event=lambda topic, payload: waiting_events.append((topic, payload)))
         events = ChatRuntime().finalize_interrupted_run(
             chat_run,
             {
@@ -838,6 +848,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
 
         self.assertEqual(transitions, [("waiting_external_tool", "external_tool_requested")])
         self.assertEqual(events[0]["status"], "waiting_external_tool")
+        self.assertEqual(waiting_events, [("network.external_tool.waiting", {"toolCallId": "call_1", "internalAliasName": ""})])
 
     def test_approval_interrupt_preserves_approval_id_for_compat_notice(self):
         chat_run = SimpleNamespace(active_run_id="run_waiting_approval")

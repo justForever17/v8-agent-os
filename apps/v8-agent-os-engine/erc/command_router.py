@@ -305,6 +305,7 @@ class RuntimeCommandRouter:
         return EngineConfig(
             provider=str(metadata.get("provider") or ""),
             model_name=str(metadata.get("model") or ""),
+            external_tools=list(dict(metadata.get("compatContext") or {}).get("externalTools") or []) or None,
         )
 
     def _chat_messages_from_session(self, session_id: str) -> list[ChatMessage]:
@@ -366,6 +367,7 @@ class RuntimeCommandRouter:
         )
 
     def _build_resume_chat_request(self, approval: Dict[str, Any], response: Dict[str, Any] | None = None) -> ChatRequest | None:
+        from runtimes.network_supervisor.compat_run_control import resume_data
         run_record = db.get_run_record(approval.get("run_id", ""))
         if not run_record:
             return None
@@ -385,9 +387,11 @@ class RuntimeCommandRouter:
             scope_mode=scope_payload.get("scope_mode") or "explicit",
             resume_run_id=run_record["id"],
             resume_value=resume_value,
+            data=resume_data(run_record),
         )
 
     def _build_resume_chat_request_from_ask_user(self, interaction: Dict[str, Any], response: Dict[str, Any] | None = None) -> ChatRequest | None:
+        from runtimes.network_supervisor.compat_run_control import resume_data
         run_record = db.get_run_record(interaction.get("run_id", ""))
         if not run_record:
             return None
@@ -411,6 +415,7 @@ class RuntimeCommandRouter:
             scope_mode=scope_payload.get("scope_mode") or "explicit",
             resume_run_id=run_record["id"],
             resume_value=resume_value,
+            data=resume_data(run_record),
         )
 
     def _build_spec_revision_chat_request(

@@ -2,45 +2,26 @@
 
 Network Supervisor Runtime connects multiple V8 Agent OS nodes through observable, approvable, and recoverable collaboration. It is not a raw remote shell, and it never changes VPN, route, DNS, or firewall settings automatically.
 
-## Terms
+## Start collaborating between two devices
 
-- **Connection profile**: the route Phone, Admin, Engine, or peers use to reach this node, such as LAN, Tailscale, Headscale, or a manual URL.
-- **Recommended URL**: a URL V8 derives from current diagnostics. It is only a suggestion and is never applied automatically.
-- **Candidate node**: a node discovered through LAN, Tailscale, or Headscale. It can fill the peer form but cannot become trusted automatically.
-- **Trusted node**: a V8 node that has passed token, public key, and challenge checks.
-- **One-time join key**: a short-lived single-use Headscale preauth key. It is shown once.
+Both devices must run V8OS. Phone pairing is a separate connection flow; signing in on a phone does not make it a task execution peer.
 
-## LAN access
+1. Open Network Runtime in Admin on both devices and enable device collaboration.
+2. Under “Device connection”, choose a detected Admin address, such as `http://192.168.1.10:9528`. Across networks, use a signed-in Tailscale address or a stable HTTPS tunnel to Admin.
+3. Click “Check connection”, then “Save address”. This checks the route from the current device only; complete pairing to verify the other device. A route check is not task completion.
+4. Generate a code on one device and copy its connection invite. Paste it on the other device, confirm that it came from a device you trust, and click “Trust and connect”. The invite contains a code, address, public key and expiry, not a peer token. It works without multicast discovery and requires no manual peer ID, public key or secret fields.
+5. Select the connected device and optionally set “Local execution directory”. Incoming tasks run there on this machine; this does not set or expose the other machine's actual directory.
+6. Describe a task, choose the device and send it. Check the task result: “Received by device” proves message delivery, not completed execution.
 
-LAN is the default stable path. If Phone and Admin/Engine are on the same network, prefer LAN.
+Generate a new invite when it expires. Discovered LAN devices can still use “Use a code with a discovered device”. Discovery alone does not establish trust.
 
-1. Confirm the Admin URL is reachable from the phone, for example:
+## Address and authentication
 
-```text
-http://192.168.1.10:9528
-```
-
-2. Save that URL as a Phone connection profile.
-3. Keep LAN discovery enabled in Network Runtime if you want local peer discovery.
-4. Ignore Mesh Providers entirely if you do not need Tailscale, Headscale, or WireGuard.
-
-The LAN profile is not downgraded or replaced just because Tailscale is available.
-
-## Tailscale access
-
-Tailscale is useful when you want to reach Admin/Engine across networks.
-
-1. Log in to Tailscale on the machine running V8 Engine/Admin.
-2. Refresh diagnostics in Remote Link or Network Runtime.
-3. Copy the recommended Tailscale Admin URL, for example:
-
-```text
-http://your-node.tailnet.ts.net:9528
-```
-
-4. Add it as a separate Phone connection profile.
-
-V8 only reads Tailscale state and recommends URLs. It does not switch the active profile automatically and does not change routes, DNS, MTU, or keys.
+- Normally configure one **Admin origin**. Engine may keep listening on loopback; ordinary Engine APIs do not need direct LAN or public exposure.
+- Admin's `/v1/network-supervisor/peer/*` is a restricted device HTTP proxy. Engine independently checks peer tokens, signatures, target identity and expiry; pairing additionally checks the short code. It does not require or forward the browser's Admin cookie.
+- Do not advertise `127.0.0.1`, `localhost` or `0.0.0.0` to another device. Suggested addresses have not been verified from the other device; multiple adapters, VPNs and firewalls can affect reachability.
+- LAN discovery requires multicast on the same network. Tailscale/Headscale usually do not forward it; use a connection invite. V8 does not alter VPN routes, DNS, MTU or firewall settings.
+- This Admin proxy supports HTTP, not WebSocket upgrades. A separately hosted static Web page is not a peer or WebSocket server either. The advanced WS address is only for a separately configured direct Engine WebSocket route; normal neighbor pairing, messages and tasks do not require it.
 
 ## Headscale access
 
@@ -56,27 +37,13 @@ Agents do not get raw Headscale management tools.
 
 ## Phone connection
 
-Phone consumes connection profiles and the link manifest.
+Phone keeps its own scan/paste pairing flow and connection profiles. A neighbor invite cannot sign in a Phone, and Phone credentials are not peer tokens. Sharing a LAN or VPN does not automatically grant trust.
 
-- Same network: LAN URL.
-- Remote access: Tailscale or Headscale URL.
-- Temporary debugging: manual URL.
+## Cloudflare Tunnel versus Relay
 
-All remote connections still require normal V8 authentication. Being inside a mesh network is not enough to become trusted.
+**Tunnel** forwards a stable HTTPS domain, such as `https://v8.example.com`, to local Admin. The other device still calls this node's peer routes directly; no mailbox is added. If Cloudflare Access blocks that route, a browser login does not authenticate peer requests. The user must configure the peer route policy while retaining V8's signed device authentication. Temporary `trycloudflare.com` URLs are not used for persistent device invites.
 
-## Candidate to trusted peer
-
-Tailscale and Headscale nodes appear as **candidate nodes**, not trusted peers.
-
-Flow:
-
-1. Click “Fill peer form” on a candidate.
-2. Add peer token, public key, allowed scopes, and allowed workspaces.
-3. Save the peer.
-4. Run challenge.
-5. Only after a successful challenge should the node be treated as trusted for wake and delegation.
-
-Phone nodes are marked as requiring approval because a regular phone is not automatically a V8OS peer. It needs dedicated V8 Phone peer support plus token, public key, and challenge success.
+**V8 Relay** is a separate mailbox service reached by both nodes. It helps devices that cannot connect directly, does not replace pairing, and its Worker URL must not be mistaken for an Admin origin.
 
 ## Public connection / V8 Relay
 
@@ -85,8 +52,7 @@ V8 Relay carries neighbor messages when two devices are not on the same LAN or m
 ### When to use it
 
 - Two V8 devices cannot connect directly, but both can reach the same public relay.
-- You want offline delivery without depending on a WebSocket staying connected.
-- You want the option to switch between self-hosted Relay, Cloudflare Relay, and future V8 Cloud Relay.
+- You want temporary offline storage within the message's validity period, without a continuously connected WebSocket.
 
 If LAN, Tailscale, or Headscale is already reliable, prefer direct connection.
 
@@ -126,7 +92,7 @@ Recommended flow:
 5. Return to the Admin “Public connection (V8 Relay)” card and choose Cloudflare Relay.
 6. Fill in the public Relay URL, Worker name, Queue name, and Durable Object namespace.
 7. Save the configuration.
-8. Both devices still need normal neighbor short-code pairing first; Relay does not establish trust automatically.
+8. Both devices still need connection-invite pairing through a reachable route first; Relay does not establish trust automatically.
 
 ### Self-hosted adapter
 
@@ -141,10 +107,12 @@ When “Self-hosted Relay” is selected, the service only needs to implement th
 ### Verification
 
 - Admin status shows Relay as ready.
-- When sending a neighbor message, local outbox does not stay in `queued`, `retry`, or `leased` for long.
+- `queued` means waiting to send locally; `published` means accepted by the relay only. Neither proves receipt by the target device or task completion.
 - The target device sees the message in the neighbor conversation timeline.
 - After target ACK, the Relay mailbox does not redeliver the message.
 - After WebSocket disconnects, scheduled pull can still receive messages.
+
+Offline storage is bounded by both Relay TTL and the signed envelope's `expiresAt`, whichever is shorter. Current delivery does not guarantee execution after arbitrarily long offline periods. Expiry must remain an explicit failure; inspect the other device's outcome before deciding to resend. Extending an old signature is not a valid recovery.
 
 ### Common errors
 
@@ -173,6 +141,22 @@ Network Runtime exposes OpenAI and Anthropic compatible endpoints:
 
 These endpoints go through the Admin relay. External tools remain external; V8 does not silently replace them with local file or shell tools.
 
+Enable the compatible API in the unified access card, create an access key, and copy the displayed address and key into your client. A neighbor invitation or Admin password is not an API key.
+
+Clients that support pauses can inspect `v8os_run` in the response. `waiting_input` needs an answer; `waiting_approval` needs approval in V8OS. Neither means completion. With the same access key, POST this optional extension to the original protocol endpoint to inspect the existing run without replaying the task:
+
+```json
+{"v8os_control":{"runId":"runId from the response","action":"status"}}
+```
+
+Other actions are `answer` (with `interactionId` and a nonempty `answer`) and `cancel`. An API key cannot use this extension to self-approve local Safety operations. Tool results must retain the original call ID and thread/session identity; mismatched identities and consumed results are rejected.
+
+## Local ACP access
+
+Start V8OS and complete Admin initialization, then configure an ACP editor to launch `v8os acp`. It authenticates with the local Admin without copying an API key. Use `V8OS_ADMIN_URL` for a different local port; automatic authentication currently requires a loopback address.
+
+The editor's selected directory becomes the session's trusted local project without changing the global workspace. Text, embedded text resources, streaming, session loading, cancellation, questions and permissions are supported. Unsupported image/audio input and external MCP lists produce explicit errors. The editor must implement the corresponding permission and elicitation capabilities; a paused task must not be presented as complete.
+
 ## Artifact preview
 
 Artifacts follow the current connection entrypoint.
@@ -192,12 +176,10 @@ V8 does not globally rewrite LAN artifact links to mesh URLs because a mesh prof
 ## Common actions
 
 - Copy compat URL: use with OpenAI or Anthropic compatible clients.
-- Copy recommended peer URL: use as another node’s peerBaseUrl.
-- Test connection: check whether Admin, Engine, or a peer is reachable.
-- Fill peer form from candidate: copies fields only; it does not trust the peer.
-- Challenge: verifies token, public key, and route.
-- Wake: wakes a trusted peer.
-- Delegate: delegates a task to a trusted peer.
+- Copy connection invite: pair another V8OS device after explicit confirmation.
+- Check connection: test the peer HTTP route from this device; this does not replace pairing or task acceptance.
+- Load earlier messages: read history beyond the latest 100 entries.
+- Retry delivery: resend the same message identity without creating a new task. Inspect the other device first if execution may already have happened.
 
 ## Troubleshooting
 
@@ -213,12 +195,12 @@ V8 does not globally rewrite LAN artifact links to mesh URLs because a mesh prof
 - Confirm Network Runtime is enabled.
 - LAN discovery requires multicast on the same network.
 - Mesh candidates only mean the node is visible on the network; it is not a trusted V8 peer yet.
+- Paste a connection invite when no candidate is listed; multicast discovery is not required.
 
 ### Challenge fails
 
-- Check peer token.
-- Check public key.
-- Check whether peerBaseUrl is reachable from the current node.
+- Check the other device's Admin origin, listener, firewall and Tunnel peer route.
+- Use matching versions on both devices. If identity changed, revoke the old connection and pair again instead of manually replacing an unknown key.
 - Inspect the failure class: `peer_unreachable`, `route_conflict`, `auth_failed`, or `mesh_provider_unconfigured`.
 
 ### Artifact preview fails

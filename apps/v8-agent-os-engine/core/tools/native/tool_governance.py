@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from typing import Any
 
 from langgraph.types import Interrupt as LangGraphInterrupt
@@ -199,8 +200,37 @@ def _safety_operation_fingerprint(
         )
     if include_tool_call_id:
         payload["toolCallId"] = str(tool_call_id or "").strip()
+    if "operationArguments" in details:
+        payload["operationArguments"] = details["operationArguments"]
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"safety:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+
+
+def workspace_safety_decision(
+    decision: SafetyDecision, *, preflight: dict[str, Any], runtime_context: dict[str, Any],
+    tool_name: str, arguments: dict[str, Any],
+) -> SafetyDecision:
+    """Bind one native invocation to Safety without changing its workspace or grants."""
+    from core.workspace_capability import extract_absolute_paths_from_command, resolve_workspace_tool_path
+
+    context = dict(runtime_context)
+    paths = [str(preflight.get("resolvedPath") or "")]
+    if "command" in arguments:
+        paths = [str(resolve_workspace_tool_path(path, runtime_context=context).get("resolvedPath") or path)
+                 for path in extract_absolute_paths_from_command(str(arguments["command"]))]
+    cwd = str(preflight.get("resolvedCwd") or preflight.get("cwd") or context.get("command_cwd") or "")
+    scope = {"tool": tool_name, **arguments, "resolvedTargets": paths, "cwd": cwd}
+    details = {**decision.details, "runtime_context": context, "operationArguments": scope}
+    outside = not preflight.get("ok") or bool(preflight.get("hostAccess"))
+    if outside:
+        details["exactApprovalRequired"] = True
+        details["workspaceAccess"] = {"targets": paths, "cwd": cwd, "activeWorkspaceRoot": preflight.get("binding", {}).get("activeWorkspaceRoot")}
+        if decision.is_allow() or (decision.is_review() and not safety_review_is_hard_stop(decision)):
+            details.pop("eventSummary", None)
+            return safety_guardian._decision(verdict="review", risk_code="workspace_external_access",
+                governance_target="external_workspace", reason="本次操作访问当前工作区以外的路径，请确认具体目标和参数。",
+                posture=decision.posture, details=details)
+    return replace(decision, details=details)
 
 
 def _is_safety_operation_previously_approved(
@@ -253,7 +283,13 @@ def _enforce_safety_decision(
     if decision.is_block() or not decision.allow_override:
         return False, f"Safety Guardian 已阻止该操作：{decision.reason}"
 
-    controlled_operation = bool((decision.details or {}).get("operationId"))
+    controlled_operation = bool((decision.details or {}).get("operationId") or (decision.details or {}).get("exactApprovalRequired"))
+    if (decision.details or {}).get("exactApprovalRequired"):
+        context = (decision.details or {}).get("runtime_context") or {}
+        run_id = str(context.get("run_id") or context.get("runId") or "")
+        run = db.get_run_record(run_id) if run_id else None
+        if run and str(run.get("status") or "") in {"cancelled", "aborted", "failed", "error"}:
+            return False, "当前执行已经结束或取消，未执行跨工作区操作。"
     allowlist_entry = None if controlled_operation else safety_guardian.is_allowlisted(decision)
     if allowlist_entry:
         safety_guardian.log_decision_event(

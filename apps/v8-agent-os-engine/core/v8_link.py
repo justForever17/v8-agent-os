@@ -186,6 +186,8 @@ def _is_usable_client_ip(value: str) -> bool:
 
         normalized = str(value or "").split("%", 1)[0]
         ip = ipaddress.ip_address(normalized)
+        if ip.version == 4 and ip in ipaddress.ip_network("198.18.0.0/15"):
+            return False  # Benchmark/fake-IP tunnel addresses are not peer ingress.
         return not bool(ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local)
     except Exception:
         return False
@@ -194,12 +196,29 @@ def _is_usable_client_ip(value: str) -> bool:
 def _candidate_ips() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    # Hostname DNS may resolve through a fake-IP proxy and omit real NICs.
+    # psutil is already a base dependency; read configured, active interfaces.
+    try:
+        import psutil
+        stats = psutil.net_if_stats()
+        for interface, addresses in psutil.net_if_addrs().items():
+            if interface in stats and not stats[interface].isup:
+                continue
+            for address in addresses:
+                ip = str(address.address)
+                if address.family not in {socket.AF_INET, socket.AF_INET6} or ip in seen or not _is_usable_client_ip(ip):
+                    continue
+                seen.add(ip)
+                items.append({"address": ip, "family": "ipv6" if address.family == socket.AF_INET6 else "ipv4", "private": _is_private_ip(ip)})
+        return sorted(items, key=lambda item: (item["family"] != "ipv4", not item["private"], item["address"]))[:12]
+    except (ImportError, OSError):
+        pass
     hostnames = {socket.gethostname()}
     try:
         hostnames.add(socket.getfqdn())
     except Exception:
         pass
-    for host in hostnames:
+    for host in sorted(hostnames):
         try:
             infos = socket.getaddrinfo(host, None)
         except Exception:
@@ -254,7 +273,8 @@ def _vpn_presence() -> dict[str, Any]:
 def _url_scheme_host_port(value: str, fallback_port: int) -> tuple[str, int]:
     parsed = urlparse(strip_api_suffix(value))
     scheme = parsed.scheme or "http"
-    port = int(parsed.port or fallback_port)
+    default_port = (443 if scheme == "https" else 80) if parsed.hostname else fallback_port
+    port = int(parsed.port or default_port)
     return scheme, port
 
 
@@ -686,6 +706,8 @@ def resolve_peer_transport_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
         warnings.append("resolved_from_transport_profile")
     if not base_url:
         warnings.append("missing_peer_base_url")
+    elif _host_is_loopback(urlparse(base_url).hostname or ""):
+        warnings.append("peer_address_is_loopback")
     transport_kind = normalize_transport_kind((profile or {}).get("kind") or current.get("transportKind"))
     current["configuredBaseUrl"] = str(current.get("baseUrl") or "").strip()
     current["baseUrl"] = base_url
@@ -693,6 +715,10 @@ def resolve_peer_transport_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
     current["transportProfileId"] = profile_id or str((profile or {}).get("id") or "").strip()
     current["transportKind"] = transport_kind
     current["routeWarnings"] = warnings
-    if base_url and not str(current.get("wsUrl") or "").strip():
+    admin_only = profile and not profile.get("peerBaseUrl") and not profile.get("engineBaseUrl") and profile.get("adminBaseUrl")
+    if admin_only:
+        current["wsUrl"] = ""
+        warnings.append("admin_peer_http_only")
+    elif base_url and not str(current.get("wsUrl") or "").strip():
         current["wsUrl"] = derive_ws_url(base_url)
     return current

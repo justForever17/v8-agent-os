@@ -11,13 +11,12 @@ from fastapi import HTTPException
 
 from api.models import ChatRequest
 from core.database import db
+from core.network_neighbor_delivery import message_text as _message_text
 from runtimes.network_supervisor.models import NetworkEnvelope, NetworkTraceContext
 from runtimes.network_supervisor.neighbor_workspace import resolve_network_neighbor_workspace_binding
 from runtimes.network_supervisor.service import network_supervisor_service
 
 
-TASK_MESSAGE_BODY_MAX_CHARS = 65536
-TASK_MESSAGE_PREVIEW_CHARS = 800
 TASK_WAKE_INBOX = "inbox"
 TASK_WAKE_PER_RESULT = "per_result"
 TASK_WAKE_POLICIES = {TASK_WAKE_INBOX, TASK_WAKE_PER_RESULT}
@@ -52,14 +51,6 @@ def _normalize_tags(value: Any, *, limit: int = 12) -> list[str]:
     return tags
 
 
-def _message_text(value: Any) -> tuple[str, str, bool]:
-    raw = str(value or "")
-    truncated = len(raw) > TASK_MESSAGE_BODY_MAX_CHARS
-    body = raw[:TASK_MESSAGE_BODY_MAX_CHARS]
-    preview = body[:TASK_MESSAGE_PREVIEW_CHARS]
-    if len(body) > TASK_MESSAGE_PREVIEW_CHARS:
-        preview += "…"
-    return body, preview, truncated
 
 
 def _result_id(task_id: str, assignment_id: str, peer_id: str, status: str) -> str:
@@ -223,7 +214,7 @@ class NetworkNeighborTaskService:
         max_assignments: int = 1,
         depth: int = 0,
     ) -> dict[str, Any]:
-        body_text = _text(body, limit=TASK_MESSAGE_BODY_MAX_CHARS)
+        body_text = _text(body)
         if not body_text:
             raise HTTPException(status_code=400, detail="Task body is required")
         required = _normalize_tags(required_capabilities)
@@ -237,7 +228,10 @@ class NetworkNeighborTaskService:
             max_assignments=max_assignments,
         )
         resolved_task_id = _text(task_id) or f"ntask_{uuid.uuid4().hex}"
-        task = db.upsert_network_neighbor_task(
+        task = db.get_network_neighbor_task(resolved_task_id)
+        if task and (task.get("body") != body_text or task.get("targetMode") == "inbound"):
+            raise HTTPException(status_code=409, detail="Task ID already belongs to different content or a remote origin")
+        task = task or db.upsert_network_neighbor_task(
             task_id=resolved_task_id,
             title=_text(title, limit=120) or body_text[:80],
             body=body_text,
@@ -256,11 +250,14 @@ class NetworkNeighborTaskService:
         )
 
         assignments: list[dict[str, Any]] = []
-        identity = network_supervisor_service.ensure_local_identity()
         for link in selected:
             link_id_value = str(link.get("linkId") or link.get("id") or "")
             assignment_id = _assignment_id(resolved_task_id, link_id_value, int(depth or 0), parent_assignment_id)
-            assignment = db.upsert_network_neighbor_assignment(
+            prior = db.get_network_neighbor_assignment(assignment_id)
+            if prior and prior.get("status") not in {"failed", "queued"}:
+                assignments.append({**prior, "delivery": {"status": prior["status"], "duplicate": True}})
+                continue
+            assignment = prior or db.upsert_network_neighbor_assignment(
                 assignment_id=assignment_id,
                 task_id=resolved_task_id,
                 link_id=link_id_value,
@@ -272,25 +269,6 @@ class NetworkNeighborTaskService:
                 required_capabilities=required,
                 wake_policy=policy,
                 metadata={"targetMode": target_mode},
-            )
-            local_body, preview, truncated = _message_text(f"任务：{task.get('title') or body_text[:80]}\n\n{body_text}")
-            db.add_network_neighbor_message(
-                message_id=f"nmsg_{uuid.uuid4().hex}",
-                link_id=link_id_value,
-                direction="outbound",
-                from_peer_id=str(identity.get("peerId") or ""),
-                from_nickname=str(link.get("localNickname") or identity.get("displayName") or "本机"),
-                role=str(link.get("localRole") or "primary"),
-                body=local_body,
-                preview=preview,
-                status="sent",
-                workspace_binding=workspace_binding or {},
-                metadata={
-                    "kind": "neighbor.task.assign",
-                    "taskId": resolved_task_id,
-                    "assignmentId": assignment_id,
-                    "bodyTruncated": truncated,
-                },
             )
             envelope = network_supervisor_service.build_envelope(
                 message_type="neighbor.task.assign",
@@ -312,44 +290,22 @@ class NetworkNeighborTaskService:
                 trace=NetworkTraceContext(source_run_id=origin_run_id, source_session_id=origin_session_id, delegation_id=resolved_task_id),
                 expires_in_seconds=300,
             )
-            delivery: dict[str, Any]
+            from runtimes.network_supervisor.neighbor import network_neighbor_service
             try:
-                from runtimes.network_supervisor.relay_runtime import network_relay_worker_service
-            except Exception:
-                network_relay_worker_service = None
-            if network_relay_worker_service is not None and network_relay_worker_service.relay_available():
-                queued = network_relay_worker_service.enqueue_outbox(
-                    target_peer_id=str(link.get("peerId") or ""),
-                    link_id=link_id_value,
-                    local_message_id=assignment_id,
-                    envelope=envelope,
+                delivered = await network_neighbor_service.send_message(
+                    link_id=link_id_value, message_id=assignment_id,
+                    body=f"任务：{task.get('title') or body_text[:80]}\n\n{body_text}",
+                    workspace_binding=workspace_binding or {}, source="supervisor", transport_envelope=envelope,
                 )
-                db.update_network_neighbor_assignment_status(assignment_id, status="queued_via_relay")
-                delivery = {"status": "queued_via_relay", "outboxId": queued.get("outboxId")}
-            else:
-                try:
-                    ack = await network_supervisor_service._post_peer(str(link.get("peerId") or ""), "peer/neighbors/tasks", envelope)
-                    db.update_network_neighbor_assignment_status(assignment_id, status="sent")
-                    delivery = {"status": "sent", "ack": ack}
-                except Exception as exc:
-                    if network_relay_worker_service is not None and network_relay_worker_service.relay_available():
-                        queued = network_relay_worker_service.enqueue_outbox(
-                            target_peer_id=str(link.get("peerId") or ""),
-                            link_id=link_id_value,
-                            local_message_id=assignment_id,
-                            envelope=envelope,
-                        )
-                        db.update_network_neighbor_assignment_status(assignment_id, status="queued_via_relay")
-                        delivery = {"status": "queued_via_relay", "outboxId": queued.get("outboxId"), "directError": str(exc)}
-                    else:
-                        db.update_network_neighbor_assignment_status(assignment_id, status="failed", error=str(exc), completed=True)
-                        delivery = {"status": "failed", "error": str(exc)}
+                delivery = delivered["delivery"]
+                next_status = "sent" if delivery.get("status") == "delivered" else "queued_via_relay"
+                db.update_network_neighbor_assignment_status(assignment_id, status=next_status, only_without_result=True)
+            except Exception as exc:
+                db.update_network_neighbor_assignment_status(assignment_id, status="failed", error=str(exc), completed=True, only_without_result=True)
+                delivery = {"status": "failed", "error": str(exc)}
             assignments.append({**(db.get_network_neighbor_assignment(assignment_id) or assignment), "delivery": delivery})
 
-        if all(str(item.get("status") or "") == "failed" for item in assignments):
-            db.update_network_neighbor_task_status(resolved_task_id, status="failed", completed=True)
-        else:
-            db.update_network_neighbor_task_status(resolved_task_id, status="assigned")
+        self._recompute_task_status(resolved_task_id)
         return {"ok": True, "task": db.get_network_neighbor_task(resolved_task_id), "assignments": assignments}
 
     def list_tasks(self, *, limit: int = 50) -> dict[str, Any]:
@@ -386,7 +342,9 @@ class NetworkNeighborTaskService:
         return {"ok": True, "tasks": tasks, "results": results[: max(1, min(int(limit or 20), 100))]}
 
     async def handle_task_envelope(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
-        network_supervisor_service.verify_envelope(envelope)
+        if not getattr(network_supervisor_service.get_config_model(), "enabled", False):
+            raise HTTPException(status_code=403, detail="Neighbor runtime is disabled")
+        network_supervisor_service.verify_envelope(envelope, mark_nonce_seen=False)
         message_type = str(envelope.message_type or "").strip()
         if message_type == "neighbor.task.assign":
             return await self._handle_assign(envelope)
@@ -398,7 +356,7 @@ class NetworkNeighborTaskService:
             return network_supervisor_service.build_envelope(
                 message_type="neighbor.task.ack",
                 to_peer_id=envelope.from_peer_id,
-                payload={"status": "ack_seen"},
+                payload={"status": "ack_seen", "requestMessageId": envelope.message_id},
                 trace=envelope.trace,
                 expires_in_seconds=60,
             )
@@ -406,29 +364,42 @@ class NetworkNeighborTaskService:
 
     async def _handle_assign(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
         from runtimes.network_supervisor.neighbor import network_neighbor_service
+        from core.network_neighbor_delivery import receive_message, _digest
 
         link = db.get_network_neighbor_link_by_peer(envelope.from_peer_id)
         if not link:
-            raise HTTPException(status_code=404, detail=f"Neighbor link not found for peer: {envelope.from_peer_id}")
+            raise HTTPException(status_code=404, detail="Neighbor link not found")
         payload = dict(envelope.payload or {})
-        task_id = _text(payload.get("taskId")) or f"ntask_{uuid.uuid4().hex}"
-        assignment_id = _text(payload.get("assignmentId")) or _assignment_id(task_id, str(link.get("linkId") or ""), int(payload.get("depth") or 0))
+        task_id, assignment_id = _text(payload.get("taskId")), _text(payload.get("assignmentId"))
+        body = _text(payload.get("body"))
+        depth = int(payload.get("depth") or 0)
+        if not task_id or not assignment_id or not body or depth not in (0, 1):
+            raise HTTPException(status_code=400, detail="Task requires stable taskId/assignmentId, a body and depth 0 or 1")
+        existing_assignment = db.get_network_neighbor_assignment(assignment_id)
+        task = db.get_network_neighbor_task(task_id)
+        digest = _digest(payload)
+        if existing_assignment and (
+            existing_assignment.get("peerId") != envelope.from_peer_id
+            or existing_assignment.get("taskId") != task_id
+            or existing_assignment.get("linkId") != link["linkId"]
+            or (existing_assignment.get("metadata") or {}).get("payloadDigest") != digest
+        ):
+            raise HTTPException(status_code=409, detail="Assignment identity or content conflicts with stored task")
+        if task and (task.get("metadata") or {}).get("fromPeerId") != envelope.from_peer_id:
+            raise HTTPException(status_code=409, detail="Task identity belongs to another origin")
+        if task and task.get("body") != body:
+            raise HTTPException(status_code=409, detail="Task identity reused with different content")
         binding_payload = payload.get("workspaceBinding") if isinstance(payload.get("workspaceBinding"), dict) else {}
         workspace_binding = resolve_network_neighbor_workspace_binding(
-            peer_id=envelope.from_peer_id,
-            local_role=str(link.get("localRole") or ""),
+            peer_id=envelope.from_peer_id, local_role=str(link.get("localRole") or ""),
             remote_project_id=_text(binding_payload.get("projectId") or binding_payload.get("remoteProjectId")) or None,
             remote_workspace_id=_text(binding_payload.get("workspaceId") or binding_payload.get("remoteWorkspaceId")) or None,
             remote_workspace_path=_text(binding_payload.get("workspacePath") or binding_payload.get("remoteWorkspacePath")) or None,
             configured_binding=dict(link.get("workspaceBinding") or {}),
         )
-        body = _text(payload.get("body"), limit=TASK_MESSAGE_BODY_MAX_CHARS)
-        task = db.upsert_network_neighbor_task(
-            task_id=task_id,
-            title=_text(payload.get("title"), limit=120) or body[:80],
-            body=body,
-            status="received",
-            target_mode="inbound",
+        task_seed = dict(
+            task_id=task_id, title=_text(payload.get("title"), limit=120) or body[:80], body=body,
+            status="received", target_mode="inbound",
             origin_session_id=_text(payload.get("originSessionId")) or None,
             origin_run_id=_text(payload.get("originRunId")) or None,
             wake_policy=_wake_policy(payload.get("wakePolicy")),
@@ -436,68 +407,29 @@ class NetworkNeighborTaskService:
             workspace_binding=workspace_binding,
             metadata={"source": "peer", "fromPeerId": envelope.from_peer_id},
         )
-        assignment = db.upsert_network_neighbor_assignment(
-            assignment_id=assignment_id,
-            task_id=task_id,
-            link_id=str(link.get("linkId") or ""),
-            peer_id=envelope.from_peer_id,
+        assignment_seed = dict(
+            assignment_id=assignment_id, task_id=task_id, link_id=link["linkId"], peer_id=envelope.from_peer_id,
             parent_assignment_id=_text(payload.get("parentAssignmentId")) or None,
-            depth=int(payload.get("depth") or 0),
-            status="received",
-            body=body,
+            depth=depth, status="received", body=body,
             required_capabilities=_normalize_tags(payload.get("requiredCapabilities")),
             wake_policy=_wake_policy(payload.get("wakePolicy")),
-            metadata={"handoffDepthRemaining": int(payload.get("handoffDepthRemaining") or 0)},
+            metadata={"handoffDepthRemaining": max(0, 1 - depth), "payloadDigest": digest},
         )
-        message_body, preview, truncated = _message_text(f"任务：{task.get('title') or body[:80]}\n\n{body}")
-        stored = db.add_network_neighbor_message(
-            message_id=f"nmsg_{uuid.uuid4().hex}",
-            link_id=str(link.get("linkId") or ""),
-            direction="inbound",
-            from_peer_id=envelope.from_peer_id,
-            from_nickname=str(link.get("remoteNickname") or envelope.from_peer_id),
-            role=str(link.get("remoteRole") or "primary"),
-            body=message_body,
-            preview=preview,
-            status="received",
-            workspace_binding=workspace_binding,
-            metadata={
-                "kind": "neighbor.task.assign",
-                "taskId": task_id,
-                "assignmentId": assignment_id,
-                "bodyTruncated": truncated,
-            },
+        message_body, preview, truncated = _message_text(f"任务：{task_seed['title']}\n\n{body}")
+        receipt = receive_message(
+            db, link=link, envelope=envelope, body=message_body, preview=preview,
+            workspace_binding=workspace_binding, business_id=assignment_id,
+            metadata={"kind": "neighbor.task.assign", "taskId": task_id, "assignmentId": assignment_id, "bodyTruncated": truncated},
+            wake_payload={"kind": "neighbor_task_assignment"}, task_seed=task_seed, assignment_seed=assignment_seed,
         )
-        run_id = f"run_{uuid.uuid4().hex}"
-        queue_item = db.add_network_neighbor_wake_queue_item(
-            queue_id=f"nwake_{uuid.uuid4().hex}",
-            link_id=str(link.get("linkId") or ""),
-            message_id=str(stored.get("messageId") or stored.get("id") or ""),
-            run_id=run_id,
-            payload={
-                "kind": "neighbor_task_assignment",
-                "link": link,
-                "task": task,
-                "assignment": assignment,
-                "inboundMessage": stored,
-                "workspaceBinding": workspace_binding,
-                "sourcePeerId": envelope.from_peer_id,
-            },
-        )
+        queue = receipt["queue"]
         network_neighbor_service._kick_wake_queue_processing()
         return network_supervisor_service.build_envelope(
-            message_type="neighbor.task.ack",
-            to_peer_id=envelope.from_peer_id,
-            payload={
-                "taskId": task_id,
-                "assignmentId": assignment_id,
-                "status": "received",
-                "runScheduled": True,
-                "runId": run_id,
-                "queueId": queue_item.get("queueId"),
-            },
-            trace=envelope.trace,
-            expires_in_seconds=60,
+            message_type="neighbor.task.ack", to_peer_id=envelope.from_peer_id,
+            payload={"requestMessageId": envelope.message_id, "taskId": task_id, "assignmentId": assignment_id,
+                     "status": "duplicate" if receipt["duplicate"] else "received",
+                     "runScheduled": True, "runId": queue["runId"], "queueId": queue["queueId"]},
+            trace=envelope.trace, expires_in_seconds=60,
         )
 
     async def execute_assignment(
@@ -514,7 +446,19 @@ class NetworkNeighborTaskService:
 
         assignment_id = str(assignment.get("assignmentId") or assignment.get("id") or "")
         task_id = str(task.get("taskId") or task.get("id") or "")
-        db.update_network_neighbor_assignment_status(assignment_id, status="running", run_id=run_id)
+        cached = [row for row in db.list_network_neighbor_task_results(assignment_id=assignment_id)
+                  if (row.get("metadata") or {}).get("direction") == "outbound"]
+        if cached:
+            result = cached[-1]
+            if result.get("status") == "handoff_requested":
+                await self._send_handoff_request(link=link, task=task, assignment=assignment,
+                    reason=result["body"], requested_capabilities=result.get("requestedCapabilities") or [],
+                    workspace_binding=workspace_binding, run_id=run_id)
+            else:
+                await self._send_result(link=link, task=task, assignment=assignment, status=result["status"],
+                    body=result["body"], workspace_binding=workspace_binding, run_id=run_id)
+            return
+        db.update_network_neighbor_assignment_status(assignment_id, status="running")
         session_id = network_neighbor_service._ensure_neighbor_session(link, workspace_binding)
         request = ChatRequest.model_validate(
             {
@@ -542,13 +486,19 @@ class NetworkNeighborTaskService:
             }
         )
         aggregated = ""
-        status = "completed"
+        status = "failed"
+        run_bound = False
         try:
             async for event in _get_chat_runtime().stream_legacy_events(request, transport="network_neighbor_task", run_id=run_id):
+                if not run_bound and db.get_run_record(run_id):
+                    db.update_network_neighbor_assignment_status(assignment_id, status="running", run_id=run_id)
+                    run_bound = True
                 event_type = str(event.get("type") or "").strip()
                 if event_type == "text_chunk":
                     aggregated += str(event.get("content") or "")
                 elif event_type == "done":
+                    terminal = str(event.get("status") or "finished")
+                    status = "completed" if terminal in {"finished", "completed", "success"} else (terminal if terminal in {"waiting_approval", "waiting_input", "cancelled"} else "failed")
                     break
                 elif event_type == "error":
                     aggregated = f"邻居任务处理失败：{event.get('error') or 'unknown error'}"
@@ -558,6 +508,8 @@ class NetworkNeighborTaskService:
             aggregated = f"邻居任务处理失败：{exc}"
             status = "failed"
         aggregated = aggregated.strip()
+        if not aggregated and not status.startswith("waiting_"):
+            status = "failed"
         handoff = _handoff_parse(aggregated) if status != "failed" else None
         if handoff:
             await self._send_handoff_request(
@@ -579,6 +531,11 @@ class NetworkNeighborTaskService:
             workspace_binding=workspace_binding,
             run_id=run_id,
         )
+        if status in {"waiting_input", "waiting_approval"}:
+            from core.network_neighbor_delivery import NeighborExecutionPaused
+            raise NeighborExecutionPaused(status)
+        if status != "completed":
+            raise RuntimeError(f"Neighbor task ended as {status}")
 
     async def _send_result(
         self,
@@ -606,38 +563,7 @@ class NetworkNeighborTaskService:
             body=body,
             metadata={"runId": run_id, "direction": "outbound"},
         )
-        db.update_network_neighbor_assignment_status(assignment_id, status=status, result_id=result_id, completed=True)
-        message_body, preview, truncated = _message_text(body)
-        timeline_metadata = {"kind": "neighbor.task.result", "taskId": task_id, "assignmentId": assignment_id, "resultId": result_id, "bodyTruncated": truncated}
-        try:
-            db.add_network_neighbor_message(
-                message_id=f"nmsg_{uuid.uuid4().hex}",
-                link_id=str(link.get("linkId") or ""),
-                direction="outbound",
-                from_peer_id=str(identity.get("peerId") or ""),
-                from_nickname=str(link.get("localNickname") or identity.get("displayName") or "本机"),
-                role=str(link.get("localRole") or "companion"),
-                body=message_body,
-                preview=preview,
-                status="sent",
-                run_id=run_id,
-                workspace_binding=workspace_binding,
-                metadata=timeline_metadata,
-            )
-        except Exception as exc:
-            db.add_network_neighbor_message(
-                message_id=f"nmsg_{uuid.uuid4().hex}",
-                link_id=str(link.get("linkId") or ""),
-                direction="outbound",
-                from_peer_id=str(identity.get("peerId") or ""),
-                from_nickname=str(link.get("localNickname") or identity.get("displayName") or "本机"),
-                role=str(link.get("localRole") or "companion"),
-                body=message_body,
-                preview=preview,
-                status="sent",
-                workspace_binding=workspace_binding,
-                metadata={**timeline_metadata, "runIdProjectionError": str(exc)[:300]},
-            )
+        db.update_network_neighbor_assignment_status(assignment_id, status=status, result_id=result_id, completed=status in {"completed", "failed", "cancelled"})
         envelope = network_supervisor_service.build_envelope(
             message_type="neighbor.task.result",
             to_peer_id=str(link.get("peerId") or ""),
@@ -653,19 +579,11 @@ class NetworkNeighborTaskService:
             trace=NetworkTraceContext(source_run_id=run_id, delegation_id=task_id),
             expires_in_seconds=300,
         )
-        try:
-            from runtimes.network_supervisor.relay_runtime import network_relay_worker_service
-        except Exception:
-            network_relay_worker_service = None
-        if network_relay_worker_service is not None and network_relay_worker_service.relay_available():
-            network_relay_worker_service.enqueue_outbox(
-                target_peer_id=str(link.get("peerId") or ""),
-                link_id=str(link.get("linkId") or ""),
-                local_message_id=result_id,
-                envelope=envelope,
-            )
-            return
-        await network_supervisor_service._post_peer(str(link.get("peerId") or ""), "peer/neighbors/tasks", envelope)
+        from runtimes.network_supervisor.neighbor import network_neighbor_service
+        await network_neighbor_service.send_message(
+            link_id=link["linkId"], message_id=result_id, body=body,
+            workspace_binding=workspace_binding, source="supervisor", transport_envelope=envelope,
+        )
 
     async def _send_handoff_request(
         self,
@@ -711,25 +629,24 @@ class NetworkNeighborTaskService:
             trace=NetworkTraceContext(source_run_id=run_id, delegation_id=task_id),
             expires_in_seconds=300,
         )
-        try:
-            from runtimes.network_supervisor.relay_runtime import network_relay_worker_service
-        except Exception:
-            network_relay_worker_service = None
-        if network_relay_worker_service is not None and network_relay_worker_service.relay_available():
-            network_relay_worker_service.enqueue_outbox(
-                target_peer_id=str(link.get("peerId") or ""),
-                link_id=str(link.get("linkId") or ""),
-                local_message_id=result_id,
-                envelope=envelope,
-            )
-            return
-        await network_supervisor_service._post_peer(str(link.get("peerId") or ""), "peer/neighbors/tasks", envelope)
+        from runtimes.network_supervisor.neighbor import network_neighbor_service
+        await network_neighbor_service.send_message(
+            link_id=link["linkId"], message_id=result_id, body=reason,
+            workspace_binding=workspace_binding, source="supervisor", transport_envelope=envelope,
+        )
 
     async def _handle_result(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
         return await self._store_inbound_result(envelope, handoff=False)
 
     async def _handle_handoff_request(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
         response = await self._store_inbound_result(envelope, handoff=True)
+        if response.payload.get("status") == "duplicate":
+            # Receipt may have committed immediately before a process crash.
+            # Repair the missing handoff, but never dispatch existing children twice.
+            parent_id = _text(envelope.payload.get("assignmentId"))
+            children = db.list_network_neighbor_assignments(task_id=_text(envelope.payload.get("taskId")), limit=500)
+            if any(row.get("parentAssignmentId") == parent_id for row in children):
+                return response
         payload = dict(envelope.payload or {})
         assignment = db.get_network_neighbor_assignment(_text(payload.get("assignmentId")))
         link = db.get_network_neighbor_link_by_peer(envelope.from_peer_id)
@@ -764,82 +681,79 @@ class NetworkNeighborTaskService:
         return response
 
     async def _store_inbound_result(self, envelope: NetworkEnvelope, *, handoff: bool) -> NetworkEnvelope:
+        from core.network_neighbor_delivery import receive_message
+        from runtimes.network_supervisor.neighbor import network_neighbor_service
+
         link = db.get_network_neighbor_link_by_peer(envelope.from_peer_id)
         if not link:
-            raise HTTPException(status_code=404, detail=f"Neighbor link not found for peer: {envelope.from_peer_id}")
+            raise HTTPException(status_code=404, detail="Neighbor link not found")
         payload = dict(envelope.payload or {})
-        task_id = _text(payload.get("taskId"))
-        assignment_id = _text(payload.get("assignmentId"))
-        if not task_id or not assignment_id:
-            raise HTTPException(status_code=400, detail="Task result is missing taskId or assignmentId")
+        task_id, assignment_id = _text(payload.get("taskId")), _text(payload.get("assignmentId"))
         task = db.get_network_neighbor_task(task_id)
         assignment = db.get_network_neighbor_assignment(assignment_id)
-        status = "handoff_requested" if handoff else (_text(payload.get("status")) or "completed")
+        if not task or not assignment:
+            raise HTTPException(status_code=404, detail="Unknown task or assignment")
+        if (assignment.get("taskId"), assignment.get("peerId"), assignment.get("linkId")) != (task_id, envelope.from_peer_id, link["linkId"]):
+            raise HTTPException(status_code=403, detail="Result sender does not own this assignment")
+        if task.get("targetMode") == "inbound":
+            raise HTTPException(status_code=403, detail="Peer cannot submit a result for its own inbound request")
+        status = "handoff_requested" if handoff else _text(payload.get("status"))
+        if status not in {"completed", "failed", "cancelled", "waiting_input", "waiting_approval", "handoff_requested"}:
+            raise HTTPException(status_code=400, detail="Task result requires an explicit supported status")
+        body = _text(payload.get("body") or payload.get("reason"))
+        if status == "completed" and not body:
+            raise HTTPException(status_code=400, detail="Completed task has no result")
         result_id = _text(payload.get("resultId")) or _result_id(task_id, assignment_id, envelope.from_peer_id, status)
         existing = db.get_network_neighbor_task_result(result_id)
-        body = _text(payload.get("body") or payload.get("reason"), limit=TASK_MESSAGE_BODY_MAX_CHARS)
+        if existing and (existing.get("taskId"), existing.get("assignmentId"), existing.get("peerId"), existing.get("status"), existing.get("body")) != (task_id, assignment_id, envelope.from_peer_id, status, body):
+            raise HTTPException(status_code=409, detail="Result identity reused with different content or owner")
+        # A delayed waiting message cannot turn a terminal result back to running.
+        if assignment.get("status") in {"completed", "failed", "cancelled"} and assignment.get("resultId") and not existing:
+            raise HTTPException(status_code=409, detail="Assignment already has a terminal result")
+        if existing and assignment.get("status") in {"completed", "failed", "cancelled"} and assignment.get("resultId") != result_id:
+            return network_supervisor_service.build_envelope(
+                message_type="neighbor.task.ack", to_peer_id=envelope.from_peer_id,
+                payload={"requestMessageId": envelope.message_id, "taskId": task_id, "assignmentId": assignment_id,
+                         "resultId": result_id, "status": "duplicate"}, trace=envelope.trace, expires_in_seconds=60,
+            )
         summary = _text(payload.get("summary") or body[:280], limit=500)
-        requested = _normalize_tags(payload.get("requestedCapabilities"))
-        result = db.add_network_neighbor_task_result(
-            result_id=result_id,
-            task_id=task_id,
-            assignment_id=assignment_id,
-            link_id=str(link.get("linkId") or ""),
-            peer_id=envelope.from_peer_id,
-            status=status,
-            summary=summary,
-            body=body,
-            needs_attention=handoff,
-            requested_capabilities=requested,
+        result_seed = dict(
+            result_id=result_id, task_id=task_id, assignment_id=assignment_id,
+            link_id=link["linkId"], peer_id=envelope.from_peer_id, status=status, summary=summary, body=body,
+            needs_attention=handoff or status.startswith("waiting_"),
+            requested_capabilities=_normalize_tags(payload.get("requestedCapabilities")),
             handoff_reason=_text(payload.get("reason"), limit=2000) if handoff else None,
             metadata={"direction": "inbound", "remoteMessageId": envelope.message_id},
         )
-        terminal = status in {"completed", "failed", "cancelled"}
-        db.update_network_neighbor_assignment_status(
-            assignment_id,
-            status=status,
-            result_id=result_id,
-            error=body if status == "failed" else None,
-            completed=terminal,
-        )
+        policy = _wake_policy(task.get("wakePolicy"), _wake_policy(self.settings_payload().get("resultWakePolicy")))
+        should_wake = not handoff and policy == TASK_WAKE_PER_RESULT and bool(task.get("originSessionId"))
         message_body, preview, truncated = _message_text(body or summary)
-        db.add_network_neighbor_message(
-            message_id=f"nmsg_{uuid.uuid4().hex}",
-            link_id=str(link.get("linkId") or ""),
-            direction="inbound",
-            from_peer_id=envelope.from_peer_id,
-            from_nickname=str(link.get("remoteNickname") or envelope.from_peer_id),
-            role=str(link.get("remoteRole") or "companion"),
-            body=message_body,
-            preview=preview,
-            status="received",
-            workspace_binding=payload.get("workspaceBinding") if isinstance(payload.get("workspaceBinding"), dict) else {},
-            metadata={
-                "kind": "neighbor.task.handoff_request" if handoff else "neighbor.task.result",
-                "taskId": task_id,
-                "assignmentId": assignment_id,
-                "resultId": result_id,
-                "bodyTruncated": truncated,
-            },
+        receipt = receive_message(
+            db, link=link, envelope=envelope, body=message_body, preview=preview,
+            workspace_binding=dict(task.get("workspaceBinding") or {}), business_id=result_id,
+            metadata={"kind": envelope.message_type, "taskId": task_id, "assignmentId": assignment_id,
+                      "resultId": result_id, "bodyTruncated": truncated},
+            wake_payload={"kind": "neighbor_task_result", "task": task, "assignment": assignment} if should_wake else None,
+            result_seed=result_seed,
         )
-        self._recompute_task_status(task_id)
-        if not existing and not handoff:
-            policy = _wake_policy((task or {}).get("wakePolicy") if task else None, _wake_policy(self.settings_payload().get("resultWakePolicy")))
-            if policy == TASK_WAKE_PER_RESULT:
-                self._schedule_origin_wake(task, assignment, result)
+        if not receipt["duplicate"]:
+            self._recompute_task_status(task_id)
+        if receipt["queue"]:
+            network_neighbor_service._kick_wake_queue_processing()
         return network_supervisor_service.build_envelope(
-            message_type="neighbor.task.ack",
-            to_peer_id=envelope.from_peer_id,
-            payload={"taskId": task_id, "assignmentId": assignment_id, "resultId": result_id, "status": "received"},
-            trace=envelope.trace,
-            expires_in_seconds=60,
+            message_type="neighbor.task.ack", to_peer_id=envelope.from_peer_id,
+            payload={"requestMessageId": envelope.message_id, "taskId": task_id, "assignmentId": assignment_id,
+                     "resultId": result_id, "status": "duplicate" if receipt["duplicate"] else "received"},
+            trace=envelope.trace, expires_in_seconds=60,
         )
 
     def _recompute_task_status(self, task_id: str) -> None:
         assignments = db.list_network_neighbor_assignments(task_id=task_id, limit=500)
         if not assignments:
             return
-        statuses = {str(item.get("status") or "") for item in assignments}
+        superseded = {str(item.get("parentAssignmentId") or "") for item in assignments if item.get("parentAssignmentId")}
+        statuses = {str(item.get("status") or "") for item in assignments
+                    if str(item.get("assignmentId") or "") not in superseded}
         terminal = {"completed", "failed", "cancelled", "handoff_no_candidate", "handoff_review_required"}
         if statuses and statuses.issubset(terminal):
             if statuses == {"completed"}:
@@ -853,22 +767,11 @@ class NetworkNeighborTaskService:
         else:
             db.update_network_neighbor_task_status(task_id, status="assigned")
 
-    def _schedule_origin_wake(self, task: dict[str, Any] | None, assignment: dict[str, Any] | None, result: dict[str, Any]) -> None:
-        task = dict(task or {})
-        origin_session_id = _text(task.get("originSessionId"))
-        if not origin_session_id:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._wake_origin_supervisor(task=task, assignment=dict(assignment or {}), result=dict(result or {})))
 
-    async def _wake_origin_supervisor(self, *, task: dict[str, Any], assignment: dict[str, Any], result: dict[str, Any]) -> None:
+    async def _wake_origin_supervisor(self, *, task: dict[str, Any], assignment: dict[str, Any], result: dict[str, Any], run_id: str) -> None:
         origin_session_id = _text(task.get("originSessionId"))
         if not origin_session_id:
             return
-        run_id = f"run_{uuid.uuid4().hex}"
         body = (
             "邻居任务结果已返回。\n"
             f"taskId: {task.get('taskId')}\n"
@@ -887,12 +790,18 @@ class NetworkNeighborTaskService:
                 "sessionLanePolicy": "queue",
             }
         )
-        try:
-            async for event in _get_chat_runtime().stream_legacy_events(request, transport="network_neighbor_result", run_id=run_id):
-                if str(event.get("type") or "") in {"done", "error"}:
-                    break
-        except Exception:
-            return
+        async for event in _get_chat_runtime().stream_legacy_events(request, transport="network_neighbor_result", run_id=run_id):
+            if str(event.get("type") or "") == "error":
+                raise RuntimeError(str(event.get("error") or "Neighbor result continuation failed"))
+            if str(event.get("type") or "") == "done":
+                state = str(event.get("status") or "finished")
+                if state in {"waiting_input", "waiting_approval"}:
+                    from core.network_neighbor_delivery import NeighborExecutionPaused
+                    raise NeighborExecutionPaused(state)
+                if state in {"finished", "completed", "success"}:
+                    return
+                raise RuntimeError(f"Neighbor result continuation ended as {state}")
+        raise RuntimeError("Neighbor result continuation ended without terminal event")
 
 
 network_neighbor_task_service = NetworkNeighborTaskService()

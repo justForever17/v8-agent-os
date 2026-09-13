@@ -34,7 +34,7 @@ class FakeNetworkSupervisorService:
         self.reload_count = 0
         self.stop_count = 0
         self.config = SimpleNamespace(
-            enabled=False,
+            enabled=True,
             discovery=SimpleNamespace(lan_enabled=False),
             node=SimpleNamespace(display_name="Main Device"),
         )
@@ -233,6 +233,13 @@ def test_pairing_consume_writes_trust_link_and_roles(neighbor_service):
     assert link["localRole"] == "primary"
     assert link["remoteRole"] == "companion"
     assert link["remoteNickname"] == "Remote"
+    # A lost pairing ACK is recoverable only for the exact signed consumer.
+    retried = svc.handle_pairing_consume(envelope)
+    assert retried.payload["peerToken"] == response.payload["peerToken"]
+    assert len(temp_db.list_network_neighbor_links()) == 1
+    altered = envelope.model_copy(update={"payload": {**envelope.payload, "peerToken": "changed-token"}})
+    with pytest.raises(Exception):
+        svc.handle_pairing_consume(altered)
 
 
 def test_remote_workspace_path_maps_to_local_compatible_workspace(monkeypatch, tmp_path):
@@ -274,6 +281,48 @@ def test_neighbor_message_pool_truncates_preview_not_body(neighbor_service):
     assert len(timeline["items"]) == 1
     assert timeline["items"][0]["body"] == body
     assert len(timeline["items"][0]["preview"]) < len(body)
+
+
+def test_neighbor_message_delivery_status_is_truthful(neighbor_service):
+    svc, _fake_network, temp_db, _tmp_path = neighbor_service
+    link = temp_db.upsert_network_neighbor_link(
+        link_id="nlink_status",
+        peer_id="peer_remote",
+        local_nickname="Main",
+        remote_nickname="Remote",
+        local_role="primary",
+        remote_role="companion",
+        workspace_binding={},
+    )
+    result = asyncio.run(svc.send_message(link_id=link["linkId"], body="delivery"))
+    assert result["delivery"]["status"] == "delivered"
+    assert result["message"]["status"] == "delivered"
+
+
+def test_duplicate_peer_message_is_acknowledged_without_second_queue(monkeypatch, neighbor_service):
+    svc, _fake_network, temp_db, _tmp_path = neighbor_service
+    link = temp_db.upsert_network_neighbor_link(
+        link_id="nlink_duplicate",
+        peer_id="peer_remote",
+        local_nickname="Main",
+        remote_nickname="Remote",
+        local_role="primary",
+        remote_role="companion",
+        workspace_binding={},
+    )
+    monkeypatch.setattr(svc, "_kick_wake_queue_processing", lambda: None)
+    envelope = NetworkEnvelope.model_validate({
+        "version": "1", "messageId": "env_duplicate", "messageType": "neighbor.message",
+        "sentAt": "2026-07-02T00:00:00Z", "expiresAt": "2026-07-02T00:05:00Z",
+        "fromPeerId": "peer_remote", "toPeerId": "peer_local", "nonce": "nonce_duplicate", "signature": "sig", "trace": {},
+        "payload": {"messageId": "remote_stable_id", "body": "once", "wakeSupervisor": True, "fromNickname": "Remote", "role": "primary"},
+    })
+    first = asyncio.run(svc.handle_peer_message(envelope))
+    second = asyncio.run(svc.handle_peer_message(envelope))
+    assert first.payload["status"] == "received"
+    assert second.payload["status"] == "duplicate"
+    assert len(temp_db.list_network_neighbor_messages(link_id=link["linkId"])) == 1
+    assert len(temp_db.list_network_neighbor_wake_queue(states=["queued"])) == 1
 
 
 def test_send_message_queues_relay_when_relay_available(monkeypatch, neighbor_service):
@@ -365,7 +414,7 @@ def test_wake_supervisor_message_schedules_run(monkeypatch, neighbor_service):
     assert temp_db.list_network_neighbor_messages(link_id=link["linkId"])[0]["direction"] == "inbound"
 
 
-def test_wake_queue_failure_retries_without_losing_item(monkeypatch, neighbor_service):
+def test_wake_failure_retains_error_without_repeating_unknown_side_effect(monkeypatch, neighbor_service):
     svc, _fake_network, temp_db, _tmp_path = neighbor_service
     link = temp_db.upsert_network_neighbor_link(
         link_id="nlink_retry",
@@ -397,7 +446,9 @@ def test_wake_queue_failure_retries_without_losing_item(monkeypatch, neighbor_se
         max_attempts=2,
     )
 
+    effects = []
     async def fail_execute(**_kwargs):
+        effects.append("write completed before crash")
         raise RuntimeError("boom")
 
     monkeypatch.setattr(svc, "_execute_neighbor_supervisor_message", fail_execute)
@@ -405,6 +456,8 @@ def test_wake_queue_failure_retries_without_losing_item(monkeypatch, neighbor_se
     processed = asyncio.run(svc.process_wake_queue_once(worker_id="test-worker"))
 
     assert processed is True
-    retry = temp_db.list_network_neighbor_wake_queue(states=["retry"])
+    retry = temp_db.list_network_neighbor_wake_queue(states=["failed"])
     assert len(retry) == 1
     assert retry[0]["lastError"] == "boom"
+    assert asyncio.run(svc.process_wake_queue_once(worker_id="replacement")) is False
+    assert len(effects) == 1

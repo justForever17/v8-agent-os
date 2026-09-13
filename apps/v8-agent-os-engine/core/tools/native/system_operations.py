@@ -55,12 +55,12 @@ def system_operations(
             if not command.strip() or len(command) > 32768 or "\x00" in command:
                 raise SystemOperationError("system_command_invalid", "请提供完整、有效的指定命令。", 422)
             from core.tools.native.command import _engineering_command_scope_block, _resolve_shell_dialect, _shell_command_argv, _sandbox_launch
-            from core.workspace_capability import preflight_command_workspace
+            from core.workspace_capability import preflight_command_workspace, workspace_scope_reviewable
             capsule_block = _engineering_command_scope_block(context, operation="system_operation", command=command)
             if capsule_block:
                 return json.dumps(capsule_block, ensure_ascii=False)
             workspace = preflight_command_workspace(command, cwd=cwd or None, runtime_context=context)
-            if not workspace.get("ok"):
+            if not workspace.get("ok") and not workspace_scope_reviewable(workspace, context):
                 return json.dumps(workspace, ensure_ascii=False)
             dialect = _resolve_shell_dialect(command, shell_dialect)
             # Keep argv typed until the native platform serializes it. The
@@ -70,12 +70,16 @@ def system_operations(
             if not executable:
                 raise SystemOperationError("system_shell_unavailable", "当前命令环境的 shell 不存在。")
             argv[0] = str(Path(executable).resolve(strict=True))
-            resolved_cwd = str(Path(workspace.get("cwd") or Path.cwd()).resolve(strict=True))
+            resolved_cwd = str(Path(workspace.get("resolvedCwd") or workspace.get("cwd") or Path.cwd()).resolve(strict=True))
             payload.update({"command": command, "argv": argv, "cwd": resolved_cwd, "timeoutSeconds": timeout_seconds})
 
         def authorize(operation: dict) -> None:
             assessment_context = {**context, "command_cwd": payload.get("cwd", "")}
             decision = safety_guardian.assess_system_command(command, runtime_context=assessment_context) if action == "run_privileged" else SafetyDecision()
+            if action == "run_privileged":
+                from core.tools.native.tool_governance import workspace_safety_decision
+                decision = workspace_safety_decision(decision, preflight=workspace, runtime_context=assessment_context,
+                    tool_name="system_operations", arguments={"command": command, "argv": payload["argv"], "timeoutSeconds": timeout_seconds})
             # Core/explicit deny remains a deny. All remaining privileged actions
             # ask once in manual/reduced mode, even if the ordinary command allows.
             if decision.is_allow():

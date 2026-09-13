@@ -70,6 +70,9 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 脚本 | 用途 | 关键开关 |
 | --- | --- | --- |
 | `run_agent_quality_live_audit.py` | Agent Quality Matrix live 深度审计。 | `--live --matrix all --write-report` |
+| `run_network_compat_live_audit.py` | 真实已配置 Supervisor provider，经独立本机 Engine HTTP 验证 OpenAI/Anthropic compat、外部工具长尾、身份拒绝、ask_user 同 run 恢复。OpenAI 另核 Safety 审批前不外发动作与取消；模型未触发目标分支必须记录缺口。源码配置只读入内存，测试配置改变经 config_broker，不输出密钥。 | `--live --isolated-root <不存在目录> --port <空闲端口> [--protocol anthropic]`；OpenAI 可用 `--approval-only` 验证原生批准到原 run 交付，或 `--tool-only` 用两次模型调用验证坏请求重试、完整结果 receipt 和交付 ID；不替代 Admin relay/UI 或外部设备实测。 |
+| `run_network_peer_live_audit.py` | 签名 HTTP 配对 → 真实 Supervisor 读取专用 input.txt → 写 output.txt 并读回 → 验签结果和 ACK → 重复任务不重写。回调对端是协议 fixture，不是第二台物理机或第二个模型。配置经 config_broker。 | `--live --isolated-root <不存在目录> --port <空闲端口>`；真实 provider、临时本机服务和专用文件副作用。 |
+| `run_acp_live_audit.py` | 真实 Node CLI ACP stdio → Admin → Supervisor；核对文本、ask_user、取消、审批及 session/load 回放。审批 case 只删除本轮新建的 acceptance.txt，必须同时验审批事件和文件结果；approval-external 验外部临时目录，reject 验拒绝不执行。 | `--live --case prompt|ask|cancel|approval|approval-external [--approval-decision approve|reject]`；需要已运行的本机 Admin，创建专用会话和工作区，不代表 Zed/JetBrains 编辑器实测。 |
 | `run_boundary_fast_response_live_audit.py` | 任务边界和 Supervisor 快速首轮响应 live 验收。 | `--live` |
 | `run_browser_broker_live_audit.py` | 真实本地托管浏览器：自有表单动作、原 context 登录读取、旧观察/歧义/用户接管反例；`--video` 加多播放器候选及真实红绿蓝帧/时间/字幕校验。隔离 profile/端口/状态，不调用模型，不清理用户浏览器。 | `--live --isolated-root <新目录>`；缺 `--live` 不读配置、不创建状态、不启动浏览器。视频 fixture 需 FFmpeg。 |
 | `run_supervisor_capabilities_live.py` | 真实配置 Supervisor 的应用/媒体发现、专用 GUI、浏览器表单、单张生成、指定两子代理、授权视频网站任务；记录实际回执/产物、模型时间及 Web live/reload。工具失败、没有关页、视觉仅被调用均不能算完整成功，内容仍须人工核实。 | `--live --case ... --web-url ... --output-dir <新目录>`；GUI/网页/媒体/视频另须 `--allow-side-effects`，视频须明确授权 URL；desktop 需解锁，只操作自建窗口。`--resume-report` 仅复用本 harness 的 media/video 会话。 |

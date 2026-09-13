@@ -360,6 +360,7 @@ def _filter_completion_truth_correction_tools(tools, state):
 
 
 _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
+    "ask_user",
     "memory_broker",
     "research_broker",
     "tool_observation_detail",
@@ -3494,6 +3495,8 @@ def execute_supervisor_turn(
     )
     handoff_read_targets = research_handoff_read_targets(state, user_query=user_query) if required_orchestration_kind == "delegation" else {}
     orchestration_tool_choice = "required" if handoff_read_targets else required_orchestration_tool or None
+    if _is_network_supervisor_compat_transport(state) and compat_diagnostics.get("requestedExternalToolChoice"):
+        orchestration_tool_choice = str(compat_diagnostics["requestedExternalToolChoice"])
     explicit_coordination_send = (
         False
         if completion_truth_correction
@@ -4089,6 +4092,14 @@ def execute_supervisor_turn(
         response = _normalize_runtime_broker_response_arguments(
             sanitize_response_tool_calls(response)
         )
+        requested_external_tool = compat_diagnostics.get("requestedExternalToolChoice") if _is_network_supervisor_compat_transport(state) else None
+        if requested_external_tool not in {None, "", "auto", "none"}:
+            returned_names = {str(call.get("name") or "") for call in list(getattr(response, "tool_calls", []) or []) if isinstance(call, dict)}
+            required_present = (any(name.startswith("network_") for name in returned_names)
+                                if requested_external_tool == "required" else requested_external_tool in returned_names)
+            if not required_present:
+                from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
+                raise CompatBridgeHardStop("Configured provider did not return the required external tool", failure_class="compat_required_tool_not_returned")
         if use_runtime_route_compiler:
             # Compiler prose is an internal routing representation. Its stream
             # is suppressed by metadata; clear the aggregate as a second guard

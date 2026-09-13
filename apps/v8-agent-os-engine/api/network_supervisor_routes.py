@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import hashlib
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -35,8 +36,10 @@ from runtimes.network_supervisor.openai_compat import (
     extract_external_tool_calls_from_events,
     normalize_openai_compat_model_aliases,
     wire_tool_call_id,
+    required_tool_choice_failure,
 )
 from runtimes.network_supervisor.compat_model_budget import resolve_compat_model_budget
+from runtimes.network_supervisor.compat_run_control import compat_owner, control_request, run_surface, remember_context
 from runtimes.network_supervisor.compat_wire_emitter import (
     AnthropicStreamTimelineEmitter,
     OpenAIStreamTimelineEmitter,
@@ -300,7 +303,7 @@ def _approval_notice_text(event: dict[str, Any], *, run_id: str) -> str:
     ]
     if approval_ref:
         parts.append(f"approvalRef={approval_ref}")
-    parts.append("审批完成后，外部客户端可继续发送下一轮消息，V8OS 会尝试恢复该 run。")
+    parts.append("审批由 V8OS 界面处理；外部客户端使用 v8os_control 的 runId 查询原任务，不重放原请求。")
     return "\n".join(parts)
 
 
@@ -348,6 +351,13 @@ def _trim_events_after_first_external_tool(
     if not events:
         return []
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(external_tools)
+    terminal = next((event for event in reversed(events) if isinstance(event, dict) and event.get("type") == "done"), {})
+    if str(terminal.get("status") or "") not in {"tool_calls_requested", "waiting_external_tool"}:
+        # A model request is not authorization to execute the external tool.
+        # Safety review/block/cancel happens after tool_start; never expose a
+        # runnable wire call until the runtime confirms external-tool handoff.
+        return [event for event in events if not (isinstance(event, dict) and event.get("type") == "tool_start"
+                and internal_to_wire.get(str((event.get("tool") or {}).get("toolName") or "")))]
     trimmed: list[dict[str, Any]] = []
     found_external_tool = False
     for event in list(events or []):
@@ -436,25 +446,16 @@ async def _stream_anthropic_background_message(*, response_model_name: str, text
 
 
 def _openai_tool_result_ids(payload: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
-    for item in list(payload.get("messages") or []):
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("role") or "").strip().lower() != "tool":
-            continue
-        wire_id = str(item.get("tool_call_id") or item.get("toolCallId") or "").strip()
-        if wire_id:
-            ids.append(wire_id)
-    return ids
+    return [item["wireToolCallId"] for item in _openai_tool_results(payload)]
 
 
 def _openai_tool_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for item in list(payload.get("messages") or []):
+    for item in reversed(list(payload.get("messages") or [])):
         if not isinstance(item, dict):
             continue
         if str(item.get("role") or "").strip().lower() != "tool":
-            continue
+            break
         wire_id = str(item.get("tool_call_id") or item.get("toolCallId") or "").strip()
         if not wire_id:
             continue
@@ -466,29 +467,16 @@ def _openai_tool_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "content": item.get("content"),
             }
         )
-    return results
+    return list(reversed(results))
 
 
 def _anthropic_tool_result_ids(payload: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
-    for message in list(payload.get("messages") or []):
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        for block in content if isinstance(content, list) else []:
-            if not isinstance(block, dict):
-                continue
-            if str(block.get("type") or "").strip().lower() != "tool_result":
-                continue
-            wire_id = str(block.get("tool_use_id") or "").strip()
-            if wire_id:
-                ids.append(wire_id)
-    return ids
+    return [item["wireToolCallId"] for item in _anthropic_tool_results(payload)]
 
 
 def _anthropic_tool_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for message in list(payload.get("messages") or []):
+    for message in list(payload.get("messages") or [])[-1:]:
         if not isinstance(message, dict):
             continue
         content = message.get("content")
@@ -543,18 +531,20 @@ async def _stream_openai_chat_completion(
     allow_memory_persist: bool = False,
     compat_request_lease: dict[str, Any] | None = None,
     request_timeout_seconds: int | float | None = None,
+    origin_token_hash: str = "",
+    delivery_run_id: str | None = None,
 ) -> StreamingResponse:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
 
     async def _generator():
-        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
+        run_id = chat_request.resume_run_id or delivery_run_id or f"run_{uuid.uuid4().hex}"
         events: list[dict[str, Any]] = []
         emitter = OpenAIStreamTimelineEmitter(response_id=response_id, model_name=response_model_name, created=created)
         emitted_tool_call_ids: set[str] = set()
+        pending_wire_calls: dict[str, dict[str, Any]] = {}
         tool_calls_seen = False
-        external_tool_stop_requested = False
         try:
             async for event in _iterate_chat_events_with_timeout(
                 chat_request,
@@ -583,8 +573,6 @@ async def _stream_openai_chat_completion(
                     }
                     _record_openai_memory_adapter_status(failed)
                     raise RuntimeError(message)
-                if external_tool_stop_requested and event_type != "done":
-                    continue
                 if event_type == "text_chunk":
                     content = str(event.get("content") or "")
                     for frame in emitter.text_delta(content):
@@ -605,34 +593,29 @@ async def _stream_openai_chat_completion(
                     wire_id = wire_tool_call_id(internal_tool_call_id, wire_name=wire_name)
                     if wire_id in emitted_tool_call_ids:
                         continue
-                    network_supervisor_service.record_pending_external_tool(
-                        protocol="openai",
-                        run_id=run_id,
-                        wire_tool_call_id=wire_id,
-                        internal_alias_name=internal_name,
-                        external_wire_name=wire_name,
-                        compat_session_id=chat_request.session_id,
-                        external_thread_id=external_thread_id,
-                        external_user_id=external_user_id,
-                    )
-                    tool_index = len(emitted_tool_call_ids)
-                    emitted_tool_call_ids.add(wire_id)
-                    tool_calls_seen = True
-                    args_payload = tool_payload.get("args")
-                    if isinstance(args_payload, str):
-                        arguments = args_payload
-                    else:
-                        arguments = json.dumps(args_payload or {}, ensure_ascii=False)
-                    for frame in emitter.tool_call_delta(
-                        index=tool_index,
-                        wire_id=wire_id,
-                        wire_name=wire_name,
-                        arguments=arguments,
-                    ):
-                        yield frame
-                    external_tool_stop_requested = True
+                    pending_wire_calls[wire_id] = {"wireName": wire_name, "internalName": internal_name, "args": tool_payload.get("args")}
                     continue
                 if event_type == "done":
+                    if required_tool_choice_failure(events, _compat_ingress_diagnostics(chat_request).get("requestedExternalToolChoice")):
+                        raise ValueError("compat_required_tool_not_returned")
+                    remember_context(chat_request, run_id=run_id, protocol="openai", origin_token_hash=origin_token_hash, external_thread_id=external_thread_id)
+                    if str(event.get("status") or "") in {"tool_calls_requested", "waiting_external_tool"}:
+                        for wire_id, pending in pending_wire_calls.items():
+                            network_supervisor_service.record_pending_external_tool(
+                                protocol="openai", run_id=run_id, wire_tool_call_id=wire_id,
+                                internal_alias_name=pending["internalName"], external_wire_name=pending["wireName"],
+                                compat_session_id=chat_request.session_id, external_thread_id=external_thread_id,
+                                external_user_id=external_user_id, origin_token_hash=origin_token_hash,
+                            )
+                            arguments = pending["args"] if isinstance(pending["args"], str) else json.dumps(pending["args"] or {}, ensure_ascii=False)
+                            for frame in emitter.tool_call_delta(index=len(emitted_tool_call_ids), wire_id=wire_id, wire_name=pending["wireName"], arguments=arguments):
+                                yield frame
+                            emitted_tool_call_ids.add(wire_id)
+                            tool_calls_seen = True
+                            break
+                    yield openai_sse_frame({"id": response_id, "object": "chat.completion.chunk", "created": created,
+                        "model": response_model_name, "choices": [],
+                        "v8os_run": run_surface(run_id, fallback_status=str(event.get("status") or "unknown"), session_id=chat_request.session_id)})
                     if _is_waiting_approval_event(event):
                         notice = _approval_notice_text(event, run_id=run_id)
                         for frame in emitter.approval_notice(notice):
@@ -747,15 +730,18 @@ async def _stream_anthropic_message(
     external_user_id: str | None = None,
     compat_request_lease: dict[str, Any] | None = None,
     request_timeout_seconds: int | float | None = None,
+    origin_token_hash: str = "",
+    delivery_run_id: str | None = None,
 ) -> StreamingResponse:
     response_id = f"msg_{uuid.uuid4().hex}"
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
 
     async def _generator():
-        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
+        run_id = chat_request.resume_run_id or delivery_run_id or f"run_{uuid.uuid4().hex}"
         emitter = AnthropicStreamTimelineEmitter(response_id=response_id, model_name=response_model_name, emit_inline_thinking=include_thinking)
+        events: list[dict[str, Any]] = []
         tool_uses_seen = False
-        external_tool_stop_requested = False
+        pending_wire_call: dict[str, Any] | None = None
         yield emitter.message_start()
         try:
             async for event in _iterate_chat_events_with_timeout(
@@ -768,10 +754,9 @@ async def _stream_anthropic_message(
                     continue
                 event = _mark_engine_yield(event)
                 event_type = str(event.get("type") or "").strip()
+                events.append(event)
                 if event_type == "error":
                     raise RuntimeError(str(event.get("error") or "Anthropic compat execution failed"))
-                if external_tool_stop_requested and event_type != "done":
-                    continue
                 if event_type == "reasoning_chunk" and include_thinking:
                     content = str(event.get("content") or "")
                     for frame in emitter.thinking_delta(content):
@@ -788,7 +773,6 @@ async def _stream_anthropic_message(
                     wire_name = internal_to_wire.get(internal_name)
                     if not wire_name:
                         continue
-                    tool_uses_seen = True
                     args_payload = tool_payload.get("args")
                     if isinstance(args_payload, str):
                         try:
@@ -800,28 +784,31 @@ async def _stream_anthropic_message(
                     else:
                         parsed_args = {}
                     wire_id = anthropic_wire_tool_use_id(str(tool_payload.get("toolCallId") or "").strip(), wire_name=wire_name)
-                    network_supervisor_service.record_pending_external_tool(
-                        protocol="anthropic",
-                        run_id=run_id,
-                        wire_tool_call_id=wire_id,
-                        internal_alias_name=internal_name,
-                        external_wire_name=wire_name,
-                        compat_session_id=chat_request.session_id,
-                        external_thread_id=external_thread_id,
-                        external_user_id=external_user_id,
-                    )
-                    for frame in emitter.tool_use(wire_id=wire_id, wire_name=wire_name, input_payload=parsed_args):
-                        yield frame
-                    external_tool_stop_requested = True
+                    pending_wire_call = {"wireId": wire_id, "wireName": wire_name, "internalName": internal_name, "args": parsed_args}
                     continue
                 if event_type == "done":
+                    if required_tool_choice_failure(events, _compat_ingress_diagnostics(chat_request).get("requestedExternalToolChoice")):
+                        raise ValueError("compat_required_tool_not_returned")
+                    remember_context(chat_request, run_id=run_id, protocol="anthropic", origin_token_hash=origin_token_hash, external_thread_id=external_thread_id)
+                    if pending_wire_call and str(event.get("status") or "") in {"tool_calls_requested", "waiting_external_tool"}:
+                        pending = pending_wire_call
+                        network_supervisor_service.record_pending_external_tool(
+                            protocol="anthropic", origin_token_hash=origin_token_hash, run_id=run_id,
+                            wire_tool_call_id=pending["wireId"], internal_alias_name=pending["internalName"], external_wire_name=pending["wireName"],
+                            compat_session_id=chat_request.session_id, external_thread_id=external_thread_id, external_user_id=external_user_id,
+                        )
+                        for frame in emitter.tool_use(wire_id=pending["wireId"], wire_name=pending["wireName"], input_payload=pending["args"]):
+                            yield frame
+                        tool_uses_seen = True
                     if _is_waiting_approval_event(event):
                         notice = _approval_notice_text(event, run_id=run_id)
                         for frame in emitter.approval_notice(notice):
                             yield frame
+                        yield ("event: message_delta\ndata: " + json.dumps({"type": "message_delta", "delta": {}, "usage": {"output_tokens": 0}, "v8os_run": run_surface(run_id, fallback_status="waiting_approval", session_id=chat_request.session_id)}, ensure_ascii=False) + "\n\n").encode()
                         for frame in emitter.finish("end_turn"):
                             yield frame
                         return
+                    yield ("event: message_delta\ndata: " + json.dumps({"type": "message_delta", "delta": {}, "usage": {"output_tokens": 0}, "v8os_run": run_surface(run_id, fallback_status=str(event.get("status") or "unknown"), session_id=chat_request.session_id)}, ensure_ascii=False) + "\n\n").encode()
                     stop_reason = "tool_use" if tool_uses_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "end_turn"
                     for frame in emitter.finish(stop_reason):
                         yield frame
@@ -840,6 +827,37 @@ async def _stream_anthropic_message(
             network_supervisor_service.finish_openai_compat_request(compat_request_lease)
 
     return _compat_streaming_response(_generator())
+
+
+@router.get("/network-supervisor/neighbors/setup")
+async def get_network_neighbor_transport_setup():
+    from runtimes.network_supervisor.transport_setup import connection_setup
+    return await asyncio.to_thread(connection_setup, network_supervisor_service)
+
+
+@router.post("/network-supervisor/neighbors/setup/probe")
+async def probe_network_neighbor_transport(payload: dict[str, Any]):
+    from runtimes.network_supervisor.transport_setup import probe_peer_origin
+    return await probe_peer_origin(str(payload.get("origin") or ""))
+
+
+@router.post("/network-supervisor/neighbors/setup")
+async def save_network_neighbor_transport(payload: dict[str, Any]):
+    from runtimes.network_supervisor.transport_setup import normalize_peer_origin
+    origin = normalize_peer_origin(str(payload.get("origin") or ""))
+    ws_url = str(payload.get("wsUrl") or "").strip()
+    if ws_url:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(ws_url)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise HTTPException(status_code=400, detail="peer_websocket_url_invalid")
+    config = network_supervisor_service.get_config_model()
+    config.node.advertised_base_url = origin
+    config.node.peer_base_url = origin
+    config.node.advertised_ws_url = ws_url
+    network_supervisor_service.save_config_model(config)
+    await network_supervisor_service.reload()
+    return {"ok": True, "origin": origin, "wsUrl": ws_url}
 
 
 @router.get("/network-supervisor/status")
@@ -904,6 +922,7 @@ async def post_network_supervisor_neighbors_pairing_consume(payload: dict[str, A
         peer_id=str(body.get("peerId") or "").strip(),
         code=str(body.get("code") or "").strip(),
         local_nickname=str(body.get("localNickname") or "").strip() or None,
+        **({"invitation": body["invitation"]} if "invitation" in body else {}),
     )
 
 
@@ -970,9 +989,15 @@ async def post_network_supervisor_neighbor_message(link_id: str, payload: dict[s
 async def get_network_supervisor_neighbor_timeline(
     link_id: str,
     cursor: str | None = Query(default=None),
+    before: str | None = Query(default=None),
     limit: int = Query(default=50),
 ):
-    return network_neighbor_service.timeline(link_id, cursor=cursor, limit=limit)
+    return network_neighbor_service.timeline(link_id, cursor=cursor, before=before, limit=limit)
+
+
+@router.post("/network-supervisor/neighbors/{link_id}/messages/{message_id}/retry")
+async def retry_network_neighbor_message(link_id: str, message_id: str):
+    return await network_neighbor_service.retry_message(link_id=link_id, message_id=message_id)
 
 
 @router.get("/network-supervisor/openai/compat/tokens")
@@ -1255,20 +1280,19 @@ async def post_network_supervisor_openai_chat_completions(
     _verify_admin_relay_secret(x_v8_agent_os_secret)
     bearer_token = extract_bearer_token(authorization)
     token_entry = network_supervisor_service.verify_openai_compat_token(bearer_token)
+    origin_token_hash = hashlib.sha256(bearer_token.encode()).hexdigest()
     compat_config = network_supervisor_service.get_config_model().openai_compat
     payload = await _read_compat_json_payload(request, compat_config=compat_config)
+    controlled = control_request(payload, origin_token_hash=origin_token_hash)
+    if controlled is not None:
+        return JSONResponse({"v8os_run": controlled})
     allow_memory_persist = _compat_memory_persist_allowed(x_v8_compat_memory) and network_supervisor_service.openai_compat_token_has_permission(
         token_entry,
         "memory:persist",
     )
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
-    external_tool_claim = network_supervisor_service.claim_external_tool_results(
-        protocol="openai",
-        wire_tool_call_ids=_openai_tool_result_ids(payload),
-        tool_results=_openai_tool_results(payload),
-        external_thread_id=external_thread_id,
-    )
+    tool_result_ids = _openai_tool_result_ids(payload)
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
         budget = resolve_compat_model_budget(payload.get("model"), aliases=aliases, compat_config=compat_config)
@@ -1290,12 +1314,12 @@ async def post_network_supervisor_openai_chat_completions(
             budget_diagnostics=budget.as_diagnostics(),
             v8_main_chain_mode=bool(compat_config.v8_main_chain_mode_enabled),
         )
-        _apply_external_tool_resume_claim(chat_request, external_tool_claim)
+        chat_request.user_id = compat_owner(origin_token_hash)
     except ValueError as exc:
         status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
-    background_kind = _compat_background_request_kind(chat_request)
+    background_kind = None if tool_result_ids else _compat_background_request_kind(chat_request)
     if background_kind:
         background_text = _compat_background_text(background_kind)
         if bool(payload.get("stream")):
@@ -1305,7 +1329,7 @@ async def post_network_supervisor_openai_chat_completions(
             )
         return _openai_background_completion(response_model_name=response_model_name, text=background_text)
 
-    minimal_kind = _compat_minimal_reply_kind(chat_request)
+    minimal_kind = None if tool_result_ids else _compat_minimal_reply_kind(chat_request)
     if minimal_kind:
         if bool(payload.get("stream")):
             return await _stream_openai_background_completion(
@@ -1314,8 +1338,25 @@ async def post_network_supervisor_openai_chat_completions(
             )
         return _openai_background_completion(response_model_name=response_model_name, text="OK")
 
+    # Validate the request and acquire admission before consuming its one-shot
+    # results. A bad alias/schema or a 429 must leave them available to retry.
+    compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
+    delivery_run_id = f"run_{uuid.uuid4().hex}"
+    try:
+        external_tool_claim = network_supervisor_service.claim_external_tool_results(
+            protocol="openai", wire_tool_call_ids=tool_result_ids, tool_results=_openai_tool_results(payload),
+            external_thread_id=external_thread_id, origin_token_hash=origin_token_hash, delivery_run_id=delivery_run_id,
+        )
+        if external_tool_claim.get("unmatchedIds"):
+            raise HTTPException(status_code=409, detail={"code": "external_tool_result_not_pending",
+                "reason": external_tool_claim.get("pendingMissReason"),
+                "message": "No pending call owned by this API identity/thread; inspect any stored receipt before retrying.",
+                "receipts": external_tool_claim.get("receivedReceipts") or []})
+        _apply_external_tool_resume_claim(chat_request, external_tool_claim)
+    except BaseException:
+        network_supervisor_service.finish_openai_compat_request(compat_request_lease)
+        raise
     if bool(payload.get("stream")):
-        compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
         return await _stream_openai_chat_completion(
             payload,
             chat_request=chat_request,
@@ -1328,11 +1369,12 @@ async def post_network_supervisor_openai_chat_completions(
             allow_memory_persist=allow_memory_persist,
             compat_request_lease=compat_request_lease,
             request_timeout_seconds=compat_config.request_timeout_seconds,
+            origin_token_hash=origin_token_hash,
+            delivery_run_id=delivery_run_id,
         )
 
-    compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
     try:
-        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
+        run_id = chat_request.resume_run_id or delivery_run_id
         events: list[dict[str, Any]] = []
         async for event in _iterate_chat_events_with_timeout(
             chat_request,
@@ -1355,6 +1397,9 @@ async def post_network_supervisor_openai_chat_completions(
         external_tools=chat_request.config.external_tools,
         protocol="openai",
     )
+    if required_tool_choice_failure(events, _compat_ingress_diagnostics(chat_request).get("requestedExternalToolChoice")):
+        return _openai_compat_error_response("Configured provider did not return the required external tool", status_code=502, code="compat_required_tool_not_returned")
+    remember_context(chat_request, run_id=run_id, protocol="openai", origin_token_hash=origin_token_hash, external_thread_id=external_thread_id)
     wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
     for tool_call in extract_external_tool_calls_from_events(visible_events, external_tools=chat_request.config.external_tools):
         function_payload = dict(tool_call.get("function") or {})
@@ -1368,6 +1413,7 @@ async def post_network_supervisor_openai_chat_completions(
             compat_session_id=chat_request.session_id,
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
+            origin_token_hash=origin_token_hash,
         )
     approval_event = next((event for event in reversed(visible_events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
     if approval_event:
@@ -1407,6 +1453,7 @@ async def post_network_supervisor_openai_chat_completions(
         allow_persist=allow_memory_persist,
     )
     _record_openai_memory_adapter_status(adapter_result)
+    response_payload["v8os_run"] = run_surface(run_id, fallback_status=str(next((e.get("status") for e in reversed(events) if e.get("type") == "done"), "unknown")), session_id=chat_request.session_id)
     return JSONResponse(response_payload)
 
 
@@ -1420,16 +1467,15 @@ async def post_network_supervisor_anthropic_messages(
 ):
     _verify_admin_relay_secret(x_v8_agent_os_secret)
     token_entry = network_supervisor_service.verify_openai_compat_token(extract_anthropic_api_key(authorization, x_api_key))
+    origin_token_hash = hashlib.sha256(extract_anthropic_api_key(authorization, x_api_key).encode()).hexdigest()
     compat_config = network_supervisor_service.get_config_model().openai_compat
     payload = await _read_compat_json_payload(request, compat_config=compat_config)
+    controlled = control_request(payload, origin_token_hash=origin_token_hash)
+    if controlled is not None:
+        return JSONResponse({"v8os_run": controlled})
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
-    external_tool_claim = network_supervisor_service.claim_external_tool_results(
-        protocol="anthropic",
-        wire_tool_call_ids=_anthropic_tool_result_ids(payload),
-        tool_results=_anthropic_tool_results(payload),
-        external_thread_id=external_thread_id,
-    )
+    tool_result_ids = _anthropic_tool_result_ids(payload)
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
         budget = resolve_compat_model_budget(payload.get("model"), aliases=aliases, compat_config=compat_config)
@@ -1451,12 +1497,12 @@ async def post_network_supervisor_anthropic_messages(
             budget_diagnostics=budget.as_diagnostics(),
             v8_main_chain_mode=bool(compat_config.v8_main_chain_mode_enabled),
         )
-        _apply_external_tool_resume_claim(chat_request, external_tool_claim)
+        chat_request.user_id = compat_owner(origin_token_hash)
     except ValueError as exc:
         status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
-    background_kind = _compat_background_request_kind(chat_request)
+    background_kind = None if tool_result_ids else _compat_background_request_kind(chat_request)
     if background_kind:
         background_text = _compat_background_text(background_kind)
         if bool(payload.get("stream")):
@@ -1466,7 +1512,7 @@ async def post_network_supervisor_anthropic_messages(
             )
         return _anthropic_background_message(response_model_name=response_model_name, text=background_text)
 
-    minimal_kind = _compat_minimal_reply_kind(chat_request)
+    minimal_kind = None if tool_result_ids else _compat_minimal_reply_kind(chat_request)
     if minimal_kind:
         if bool(payload.get("stream")):
             return await _stream_anthropic_background_message(
@@ -1476,10 +1522,26 @@ async def post_network_supervisor_anthropic_messages(
         return _anthropic_background_message(response_model_name=response_model_name, text="OK")
 
     include_thinking = wants_anthropic_thinking(payload)
+    compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
+    delivery_run_id = f"run_{uuid.uuid4().hex}"
+    try:
+        external_tool_claim = network_supervisor_service.claim_external_tool_results(
+            protocol="anthropic", wire_tool_call_ids=tool_result_ids, tool_results=_anthropic_tool_results(payload),
+            external_thread_id=external_thread_id, origin_token_hash=origin_token_hash, delivery_run_id=delivery_run_id,
+        )
+        if external_tool_claim.get("unmatchedIds"):
+            raise HTTPException(status_code=409, detail={"code": "external_tool_result_not_pending",
+                "reason": external_tool_claim.get("pendingMissReason"),
+                "message": "No pending call owned by this API identity/thread; inspect any stored receipt before retrying.",
+                "receipts": external_tool_claim.get("receivedReceipts") or []})
+        _apply_external_tool_resume_claim(chat_request, external_tool_claim)
+    except BaseException:
+        network_supervisor_service.finish_openai_compat_request(compat_request_lease)
+        raise
     if bool(payload.get("stream")):
-        compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
         return await _stream_anthropic_message(
             payload,
+            origin_token_hash=origin_token_hash,
             chat_request=chat_request,
             response_model_name=response_model_name,
             include_thinking=include_thinking,
@@ -1487,11 +1549,11 @@ async def post_network_supervisor_anthropic_messages(
             external_user_id=external_user_id,
             compat_request_lease=compat_request_lease,
             request_timeout_seconds=compat_config.request_timeout_seconds,
+            delivery_run_id=delivery_run_id,
         )
 
-    compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
     try:
-        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
+        run_id = chat_request.resume_run_id or delivery_run_id
         events: list[dict[str, Any]] = []
         async for event in _iterate_chat_events_with_timeout(
             chat_request,
@@ -1514,11 +1576,15 @@ async def post_network_supervisor_anthropic_messages(
         external_tools=chat_request.config.external_tools,
         protocol="anthropic",
     )
+    if required_tool_choice_failure(events, _compat_ingress_diagnostics(chat_request).get("requestedExternalToolChoice")):
+        return _anthropic_compat_error_response("Configured provider did not return the required external tool", status_code=502, error_type="compat_required_tool_not_returned")
+    remember_context(chat_request, run_id=run_id, protocol="anthropic", origin_token_hash=origin_token_hash, external_thread_id=external_thread_id)
     wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
     for tool_use in extract_anthropic_tool_use_blocks_from_events(visible_events, external_tools=chat_request.config.external_tools):
         external_wire_name = str(tool_use.get("name") or "").strip()
         network_supervisor_service.record_pending_external_tool(
             protocol="anthropic",
+            origin_token_hash=origin_token_hash,
             run_id=run_id,
             wire_tool_call_id=str(tool_use.get("id") or "").strip(),
             internal_alias_name=wire_to_internal.get(external_wire_name, external_wire_name),
@@ -1540,14 +1606,15 @@ async def post_network_supervisor_anthropic_messages(
                 "stop_sequence": None,
                 "usage": {"input_tokens": 0, "output_tokens": 0},
                 "v8os_status": "waiting_approval",
+                "v8os_run": run_surface(run_id, fallback_status="waiting_approval", session_id=chat_request.session_id),
             }
         )
-    return JSONResponse(
-        compat_wire_emitter.anthropic_message(
+    response_payload = compat_wire_emitter.anthropic_message(
             response_id=f"msg_{uuid.uuid4().hex}",
             model_name=response_model_name,
             events=visible_events,
             external_tools=chat_request.config.external_tools,
             include_thinking=include_thinking,
         )
-    )
+    response_payload["v8os_run"] = run_surface(run_id, fallback_status=str(next((e.get("status") for e in reversed(events) if e.get("type") == "done"), "unknown")), session_id=chat_request.session_id)
+    return JSONResponse(response_payload)

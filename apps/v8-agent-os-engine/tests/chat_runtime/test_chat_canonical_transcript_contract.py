@@ -1046,7 +1046,8 @@ class AttachmentPreflightContractTest(unittest.TestCase):
                 events = asyncio.run(collect_events())
 
         self.assertEqual([event["topic"] for event in events], ["tool.started", "tool.finished"])
-        invoke.assert_called_once_with({"path": str(note_path)})
+        invoke.assert_called_once_with({"name": "read_native_file", "args": {"path": str(note_path)},
+            "id": events[0]["payload"]["tool"]["toolCallId"], "type": "tool_call"})
         final_user_content = chat_run.lc_messages[-1].content
         self.assertIn("[Supervisor attachment opening tool results]", final_user_content)
         self.assertIn("Original user text: 请总结这个文件", final_user_content)
@@ -1288,7 +1289,8 @@ class AttachmentPreflightContractTest(unittest.TestCase):
         )
         self.assertGreaterEqual(max_active, 2)
         self.assertEqual(fake_vision_tool.invoke.call_count, 2)
-        fake_read_tool.invoke.assert_called_once_with({"path": str(note_path)})
+        fake_read_tool.invoke.assert_called_once_with({"name": "read_native_file", "args": {"path": str(note_path)},
+            "id": events[2]["payload"]["tool"]["toolCallId"], "type": "tool_call"})
         result_names = [event["payload"]["tool"]["args"]["attachment"] for event in events[3:]]
         self.assertEqual(result_names, ["sample.png", "voice.mp3", "Example.java"])
 

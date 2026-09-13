@@ -8368,6 +8368,13 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                existing = conn.execute('SELECT * FROM network_neighbor_messages WHERE id = ?', (message_id,)).fetchone()
+                if existing:
+                    if (existing['link_id'], existing['direction'], existing['from_peer_id'], existing['body']) != (link_id, direction, from_peer_id, body):
+                        raise ValueError('Neighbor message identity conflict')
+                    conn.commit()
+                    return int(existing['seq'])
                 seq = self._next_network_neighbor_message_seq(conn, link_id)
                 conn.execute(
                     '''
@@ -8393,7 +8400,9 @@ class DatabaseManager:
                         now_iso,
                     ),
                 )
-                conn.execute('UPDATE network_neighbor_links SET updated_at = ?, last_seen_at = ? WHERE id = ?', (now_iso, now_iso, link_id))
+                conn.execute('UPDATE network_neighbor_links SET updated_at = ? WHERE id = ?', (now_iso, link_id))
+                if direction == 'inbound':
+                    conn.execute('UPDATE network_neighbor_links SET last_seen_at = ? WHERE id = ?', (now_iso, link_id))
                 conn.commit()
                 return seq
 
@@ -8410,18 +8419,53 @@ class DatabaseManager:
         link_id: str,
         after_seq: Optional[int] = None,
         limit: int = 50,
+        before_seq: Optional[int] = None,
+        latest: bool = False,
     ) -> List[Dict[str, Any]]:
         params: list[Any] = [link_id]
         query = 'SELECT * FROM network_neighbor_messages WHERE link_id = ?'
         if after_seq is not None:
             query += ' AND seq > ?'
             params.append(int(after_seq))
-        query += ' ORDER BY seq ASC LIMIT ?'
+        if before_seq is not None:
+            query += ' AND seq < ?'
+            params.append(int(before_seq))
+        descending = latest or before_seq is not None
+        query += ' ORDER BY seq ' + ('DESC' if descending else 'ASC') + ' LIMIT ?'
         params.append(max(1, min(int(limit or 50), 200)))
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            return [self._hydrate_network_neighbor_message_row(dict(row)) for row in cursor.fetchall()]
+            rows = [self._hydrate_network_neighbor_message_row(dict(row)) for row in cursor.fetchall()]
+            return list(reversed(rows)) if descending else rows
+
+
+    def update_network_neighbor_message_status(self, message_id: str, status: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(message_id or "").strip()
+        normalized_status = str(status or "").strip() or "stored"
+        if not normalized_id:
+            return None
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    'UPDATE network_neighbor_messages SET status = ?, received_at = ? WHERE id = ?',
+                    (normalized_status, now_iso, normalized_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_messages WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_message_row(dict(row)) if row else None
+
+    def get_network_neighbor_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute('SELECT * FROM network_neighbor_messages WHERE id = ?', (message_id,)).fetchone()
+            return self._hydrate_network_neighbor_message_row(dict(row)) if row else None
 
     def _hydrate_network_neighbor_wake_queue_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(row)
@@ -8489,6 +8533,7 @@ class DatabaseManager:
             row = cursor.fetchone()
             return self._hydrate_network_neighbor_wake_queue_row(dict(row)) if row else None
 
+
     def claim_next_network_neighbor_wake_item(
         self,
         *,
@@ -8500,23 +8545,44 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                # An expired execution may already have performed side effects.
+                # Keep it visible for reconciliation; never blindly rerun it.
+                expired = conn.execute("SELECT payload_json FROM network_neighbor_wake_queue WHERE state = 'leased' AND lease_expires_at <= ?", (now_iso,)).fetchall()
+                for row in expired:
+                    payload = json.loads(row['payload_json'] or '{}')
+                    if payload.get('kind') == 'neighbor_task_assignment':
+                        conn.execute("""UPDATE network_neighbor_assignments SET status='failed',
+                                     error='execution_interrupted: inspect effects before retry', updated_at=?
+                                     WHERE id=? AND result_id IS NULL""",
+                                     (now_iso, payload.get('assignment', {}).get('assignmentId') or ''))
+                        task_id = payload.get('task', {}).get('taskId') or ''
+                        states = {item['status'] for item in conn.execute('SELECT status FROM network_neighbor_assignments WHERE task_id=?', (task_id,)).fetchall()}
+                        if states and states <= {'completed', 'failed', 'cancelled', 'handoff_no_candidate', 'handoff_review_required'}:
+                            state = 'completed' if states == {'completed'} else ('degraded' if 'completed' in states else 'failed')
+                            conn.execute('UPDATE network_neighbor_tasks SET status=?, updated_at=?, completed_at=? WHERE id=?', (state, now_iso, now_iso, task_id))
+                conn.execute(
+                    """UPDATE network_neighbor_wake_queue SET state = 'failed',
+                       last_error = 'execution_interrupted: outcome requires review before retry',
+                       failed_at = ?, updated_at = ?, lease_expires_at = NULL
+                       WHERE state = 'leased' AND lease_expires_at <= ?""",
+                    (now_iso, now_iso, now_iso),
+                )
                 cursor = conn.cursor()
                 cursor.execute(
                     '''
                     SELECT *
                     FROM network_neighbor_wake_queue
                     WHERE attempt_count < max_attempts
-                      AND (
-                        (state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?))
-                        OR (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
-                      )
+                      AND state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?)
                     ORDER BY created_at ASC
                     LIMIT 1
                     ''',
-                    (now_iso, now_iso),
+                    (now_iso,),
                 )
                 row = cursor.fetchone()
                 if not row:
+                    conn.commit()
                     return None
                 queue_id = row["id"]
                 cursor.execute(
@@ -8529,12 +8595,9 @@ class DatabaseManager:
                         updated_at = ?
                     WHERE id = ?
                       AND attempt_count < max_attempts
-                      AND (
-                        (state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?))
-                        OR (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
-                      )
+                      AND state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?)
                     ''',
-                    (worker_id, lease_expires_at, now_iso, queue_id, now_iso, now_iso),
+                    (worker_id, lease_expires_at, now_iso, queue_id, now_iso),
                 )
                 if cursor.rowcount != 1:
                     conn.commit()
@@ -8616,15 +8679,40 @@ class DatabaseManager:
         *,
         states: Optional[list[str]] = None,
         limit: int = 50,
+        recovery_mode: str | None = None,
     ) -> List[Dict[str, Any]]:
         normalized_states = [str(item).strip() for item in (states or []) if str(item).strip()]
         params: list[Any] = []
-        query = 'SELECT * FROM network_neighbor_wake_queue WHERE 1=1'
+        query = 'SELECT q.* FROM network_neighbor_wake_queue q WHERE 1=1'
         if normalized_states:
             placeholders = ",".join("?" for _ in normalized_states)
-            query += f' AND state IN ({placeholders})'
+            query += f' AND q.state IN ({placeholders})'
             params.extend(normalized_states)
-        query += ' ORDER BY created_at DESC LIMIT ?'
+        # Filter before LIMIT: already delivered failures or still-waiting runs
+        # must not hide an older recovery candidate indefinitely.
+        if recovery_mode == 'delivery':
+            query += ''' AND q.state = 'failed'
+                AND json_extract(q.payload_json, '$.kind') = 'neighbor_task_assignment'
+                AND COALESCE(json_extract(q.payload_json, '$.deliveryRecoveryAttempts'), 0) < 3
+                AND COALESCE(json_extract(q.payload_json, '$.deliveryRetryAt'), '') <= ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM network_neighbor_messages m WHERE m.status IN ('delivered', 'queued', 'published')
+                    AND m.id = (
+                        SELECT r.id FROM network_neighbor_task_results r
+                        WHERE r.assignment_id = json_extract(q.payload_json, '$.assignment.assignmentId')
+                        AND json_extract(r.metadata_json, '$.direction') = 'outbound'
+                        ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1
+                    )
+                )'''
+            params.append(utc_now_iso())
+        elif recovery_mode == 'terminal_run':
+            query += ''' AND q.state IN ('waiting_input', 'waiting_approval') AND EXISTS (
+                SELECT 1 FROM run_records r WHERE r.id = q.run_id
+                AND r.status IN ('finished', 'completed', 'failed', 'cancelled', 'aborted', 'error')
+            )'''
+        elif recovery_mode is not None:
+            raise ValueError('Unknown neighbor recovery mode')
+        query += ' ORDER BY q.created_at ' + ('ASC' if recovery_mode else 'DESC') + ', q.id LIMIT ?'
         params.append(max(1, min(int(limit or 50), 200)))
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -8852,6 +8940,7 @@ class DatabaseManager:
         result_id: str | None = None,
         error: str | None = None,
         completed: bool = False,
+        only_without_result: bool = False,
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
 
@@ -8866,9 +8955,9 @@ class DatabaseManager:
                         error = COALESCE(?, error),
                         completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
                         updated_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND (? = 0 OR result_id IS NULL)
                     ''',
-                    (status, run_id, result_id, error, 1 if completed else 0, now_iso, now_iso, assignment_id),
+                    (status, run_id, result_id, error, 1 if completed else 0, now_iso, now_iso, assignment_id, int(only_without_result)),
                 )
                 conn.commit()
 

@@ -17,6 +17,7 @@ from core.artifact_store import artifact_store
 from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
+    workspace_safety_decision,
 )
 from core.tools.native.workspace_governance import (
     _apply_scoped_text_patch,
@@ -26,6 +27,7 @@ from core.workspace_capability import (
     ensure_workspace_side_effect_allowed,
     is_global_skill_path,
     resolve_workspace_tool_path,
+    workspace_scope_reviewable,
 )
 from core.workspace_state_digest import mark_workspace_state_stale
 from erc.runtime_context import get_runtime_context
@@ -476,10 +478,13 @@ def _native_file_read_error(
 
 
 @tool
-def read_native_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
+def read_native_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None,
+                     tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
     """Read a code, text, Markdown, PDF, DOCX, PPTX, or spreadsheet file.
 
-    Use this for known text, JSON, Markdown, source, task brief, Spec, or config paths in the active workspace.
+    Use this for known text, JSON, Markdown, source, task brief, Spec, or config paths.
+    Ordinary paths outside the active workspace request Safety approval under the user's current mode;
+    invoke the exact path rather than switching workspace or falling back to a shell. Delegated scopes still apply.
     Do not use shell commands, Python one-liners, `type`, `Get-Content`, or `cat` just to read a known file.
     Reading a file also creates the same-run receipt required before modifying an existing file with `write_native_file`.
     Text reads include the full file's byte count and SHA-256 content version, even for a line range;
@@ -498,7 +503,7 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
     try:
         runtime_context = get_runtime_context()
         path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context, allow_global_skill_read=True)
-        if not path_preflight.get("ok"):
+        if not path_preflight.get("ok") and not workspace_scope_reviewable(path_preflight, runtime_context):
             return json.dumps(
                 {
                     "ok": False,
@@ -513,6 +518,14 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
                 ensure_ascii=False,
             )
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
+        allowed, error_message = _enforce_safety_decision(
+            workspace_safety_decision(safety_guardian.assess_file_read(str(target_path), runtime_context=runtime_context),
+                preflight=path_preflight, runtime_context=runtime_context, tool_name="read_native_file",
+                arguments={"path": path, "startLine": start_line, "endLine": end_line}),
+            tool_call_id=tool_call_id, question=f"允许读取以下文件吗？\n\n{target_path}",
+        )
+        if not allowed:
+            return error_message or "Safety Guardian 已阻止文件读取。"
         if not target_path.exists() or not target_path.is_file():
             return _native_file_read_error(
                 kind="file_not_found",
@@ -626,6 +639,7 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
         return header + content + footer
 
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return _native_file_read_error(
             kind="file_read_failed",
             summary=f"Error reading file '{path}': {str(e)}",
@@ -697,7 +711,10 @@ def write_native_file(
     expected_version: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Author governed text/JSON/Markdown/source artifacts in the active workspace.
+    """Author governed text/JSON/Markdown/source artifacts.
+
+    Ordinary paths outside the active workspace use the current Safety approval mode. Invoke the exact
+    write to request approval; never change workspace roots or use a shell to bypass a delegated write set.
 
     Use this instead of shell commands or redirection for content-bearing project files. New files may be created
     directly. Before changing or appending to an existing file,
@@ -736,10 +753,10 @@ def write_native_file(
         )
         if not side_effect_preflight.get("ok"):
             return json.dumps(side_effect_preflight, ensure_ascii=False, indent=2)
-        if str(path or "").strip() and is_global_skill_path(path):
+        if str(path or "").strip() and is_global_skill_path(path) and not workspace_scope_reviewable({"error": "global_skill_mutation_violation"}, runtime_context):
             return json.dumps(_global_skill_write_block_payload(path), ensure_ascii=False, indent=2)
         path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
-        if not path_preflight.get("ok"):
+        if not path_preflight.get("ok") and not workspace_scope_reviewable(path_preflight, runtime_context):
             return json.dumps(
                 {
                     "ok": False,
@@ -754,7 +771,7 @@ def write_native_file(
                 ensure_ascii=False,
             )
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
-        if is_global_skill_path(target_path):
+        if is_global_skill_path(target_path) and not workspace_scope_reviewable({"error": "global_skill_mutation_violation"}, runtime_context):
             return json.dumps(_global_skill_write_block_payload(target_path), ensure_ascii=False, indent=2)
         if not _task_write_scope_allows(runtime_context, target_path):
             return json.dumps(
@@ -774,12 +791,16 @@ def write_native_file(
                 indent=2,
             )
         allowed, error_message = _enforce_safety_decision(
-            safety_guardian.assess_file_write(
+            workspace_safety_decision(safety_guardian.assess_file_write(
                 str(target_path),
                 append=append,
                 runtime_context=runtime_context,
                 content_preview=str(content or "")[:12000],
-            ),
+            ), preflight=path_preflight, runtime_context=runtime_context, tool_name="write_native_file",
+                arguments={"path": path, "contentSha256": hashlib.sha256(str(content or "").encode("utf-8")).hexdigest(),
+                           "append": append, "lineStart": line_start, "lineEnd": line_end,
+                           "expectedOldTextSha256": hashlib.sha256(expected_old_text.encode("utf-8")).hexdigest(), "allowFullReplace": allow_full_replace,
+                           "expectedVersion": expected_version, "baseVersion": base_version}),
             tool_call_id=tool_call_id,
             question=f"Safety Guardian 检测到写文件动作需要确认，是否继续？\n\n路径：{path}",
         )
@@ -909,11 +930,13 @@ def write_native_file(
 
 
 @tool
-def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = True) -> str:
+def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = True,
+                tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
     """Search file contents for a text or regex pattern under a known file/directory path. Not for finding file names or paths.
 
     This operates completely natively in Python without requiring the GNU `grep` utility,
     making it fully compatible with Windows.
+    Ordinary external paths use the current Safety approval mode; delegated scopes remain binding.
 
     Arguments:
         query (str): The content string or regex pattern to search for inside files.
@@ -924,7 +947,7 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
     try:
         runtime_context = get_runtime_context()
         path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context, allow_global_skill_read=True)
-        if not path_preflight.get("ok"):
+        if not path_preflight.get("ok") and not workspace_scope_reviewable(path_preflight, runtime_context):
             return json.dumps(
                 {
                     "ok": False,
@@ -939,6 +962,14 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
                 ensure_ascii=False,
             )
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
+        allowed, error_message = _enforce_safety_decision(
+            workspace_safety_decision(safety_guardian.assess_file_read(str(target_path), runtime_context=runtime_context),
+                preflight=path_preflight, runtime_context=runtime_context, tool_name="grep_search",
+                arguments={"path": path, "query": query, "regex": regex, "ignoreCase": ignore_case}),
+            tool_call_id=tool_call_id, question=f"允许在以下路径搜索文件内容吗？\n\n{target_path}\n搜索：{query}",
+        )
+        if not allowed:
+            return error_message or "Safety Guardian 已阻止文件搜索。"
         if not target_path.exists():
             return f"Error: Path '{path}' does not exist."
 
@@ -953,8 +984,19 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
 
         results = []
         max_results = 200
+        skipped_files = 0
+        scan_limited = False
 
         def search_file(filepath: Path):
+            nonlocal skipped_files
+            # The exact file already passed _enforce above. A directory grant
+            # does not authorize each protected or symlinked external child.
+            if target_path.is_dir() and (
+                not filepath.resolve().is_relative_to(target_path.resolve())
+                or not safety_guardian.assess_file_read(str(filepath.resolve()), runtime_context=runtime_context).is_allow()
+            ):
+                skipped_files += 1
+                return
             if is_binary(str(filepath)):
                 return
             try:
@@ -976,6 +1018,7 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
                 for file in files:
                     files_scanned += 1
                     if files_scanned > 1000:
+                        scan_limited = True
                         break
 
                     filepath = Path(root) / file
@@ -985,14 +1028,20 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
                 if len(results) >= max_results or files_scanned > 1000:
                     break
 
-        if not results:
-            return f"No matches found for '{query}' in {path}."
-
-        output = "\n".join(results)
+        partial = skipped_files > 0 or scan_limited
+        output = "\n".join(results) if results else (
+            f"No matches in the files searched for '{query}' in {path}." if partial
+            else f"No matches found for '{query}' in {path}."
+        )
+        if skipped_files:
+            output += f"\n\n搜索范围不完整：已跳过 {skipped_files} 个需要单独授权或指向范围外的文件；这些文件未读取。"
+        if scan_limited:
+            output += "\n\n搜索范围不完整：已达到 1000 个文件扫描上限，请缩小目录范围。"
         if len(results) >= max_results:
             output += f"\n\n[WARNING: Results truncated at {max_results} matches.]"
 
         return output
     except Exception as e:
+        _raise_runtime_governance_exception_if_needed(e)
         return f"Error performing search: {str(e)}"
 

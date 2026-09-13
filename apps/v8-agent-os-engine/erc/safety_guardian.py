@@ -1905,6 +1905,29 @@ class SafetyGuardian:
     def assess_background_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
         return self.assess_system_command(command, runtime_context=runtime_context)
 
+    def assess_file_read(self, path: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+        """Use the existing concrete resource rules for native reads, including approved external paths."""
+        config = self._config()
+        normalized = self._normalize_path(path)
+        if not config["enabled"] or normalized is None:
+            return SafetyDecision()
+        details = {"path": str(normalized), "runtime_context": runtime_context or {}}
+        if (self._matches_path_patterns(normalized, config["fileRules"]["blockedPathPatterns"])
+                or self._is_cross_platform_secret_path(normalized)
+                or self._is_cross_platform_hard_auth_path(normalized)
+                or self._is_windows_profile_sensitive_path(normalized)
+                or (self._is_under_protected_path(normalized)
+                    and normalized.suffix.lower() in set(config["fileRules"]["protectedFileExtensions"]))):
+            return self._decision(verdict="block", reason="该读取目标属于认证、密钥或核心状态对象，请使用受治理能力入口。",
+                                  risk_code="protected_file_read", governance_target="v8_integrity",
+                                  posture=self._current_posture(config), details=details, allow_override=False)
+        if self._is_under_protected_path(normalized) or self._is_sensitive_system_path(normalized, include_application_roots=False):
+            return self._decision(verdict="review", reason="读取具体系统或 V8 核心对象需要人工确认。",
+                                  risk_code="sensitive_system_read_command", governance_target="system_integrity",
+                                  posture=self._current_posture(config), details=details)
+        return self._decision(verdict="allow", reason="file_read_allowed", risk_code="file_read_allowed",
+                              governance_target="file_read", posture=self._current_posture(config), details=details)
+
     def assess_file_write(
         self,
         path: str,

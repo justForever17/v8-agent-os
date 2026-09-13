@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Any
+from fastapi import HTTPException
 
 from core.database import db
 from runtimes.network_supervisor.models import NetworkEnvelope
@@ -16,6 +17,7 @@ class NetworkRelayWorkerService:
         self._ws_task: asyncio.Task | None = None
         self._enabled = False
         self._worker_id = f"network_relay_{uuid.uuid4().hex[:10]}"
+        self._inbox_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._enabled = True
@@ -147,11 +149,20 @@ class NetworkRelayWorkerService:
             if not result.ok:
                 raise RuntimeError(f"Relay publish returned not-ok state={result.state}")
             db.complete_network_relay_outbox_item(outbox_id, relay_message_id=result.relay_message_id)
+            if item.get("localMessageId"):
+                db.update_network_neighbor_message_status(str(item["localMessageId"]), "published")
         except Exception as exc:
-            db.fail_network_relay_outbox_item(outbox_id, error=str(exc), retry_delay_seconds=30)
+            failed = db.fail_network_relay_outbox_item(outbox_id, error=str(exc), retry_delay_seconds=30)
+            if item.get("localMessageId") and failed and failed.get("state") == "dead_letter":
+                db.update_network_neighbor_message_status(str(item["localMessageId"]), "failed")
         return True
 
     async def process_inbox_once(self) -> bool:
+        # HTTP polling and websocket notification share the same inbox cursor.
+        async with self._inbox_lock:
+            return await self._process_inbox_once()
+
+    async def _process_inbox_once(self) -> bool:
         status = self._relay_status()
         if not status.get("available"):
             return False
@@ -171,7 +182,7 @@ class NetworkRelayWorkerService:
             envelope_payload = item.get("envelope") if isinstance(item.get("envelope"), dict) else item.get("payload")
             try:
                 if not isinstance(envelope_payload, dict):
-                    raise RuntimeError("Relay mailbox item is missing envelope")
+                    raise ValueError("Relay mailbox item is missing envelope")
                 envelope = NetworkEnvelope.model_validate(envelope_payload)
                 from runtimes.network_supervisor.neighbor import network_neighbor_service
 
@@ -183,6 +194,10 @@ class NetworkRelayWorkerService:
                     db.upsert_network_relay_cursor(peer_id=local_peer_id, cursor=item_cursor)
                 processed = True
             except Exception as exc:
+                # A transient DB/transport error is not a poison message. Do not
+                # ACK it or advance past it: retry the same durable business ID.
+                if not (isinstance(exc, (ValueError,)) or (isinstance(exc, HTTPException) and 400 <= exc.status_code < 500 and exc.status_code != 429)):
+                    break
                 db.add_network_relay_dead_letter(
                     direction="inbound",
                     peer_id=local_peer_id,

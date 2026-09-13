@@ -281,3 +281,35 @@ def test_cloudflare_worker_template_declares_required_protocol_endpoints():
         "dead_letter",
     ]:
         assert token in template
+
+
+def test_transient_inbox_failure_does_not_ack_or_advance_past_lost_message(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from runtimes.network_supervisor import neighbor as neighbor_module
+    from runtimes.network_supervisor.relay_transport import RelayPullResult, RelayAckResult
+
+    database = DatabaseManager(tmp_path / "retry.db")
+    worker = NetworkRelayWorkerService()
+    monkeypatch.setattr(relay_runtime_module, "db", database)
+    monkeypatch.setattr(worker, "_relay_status", lambda: {"available": True, "localNode": {"peerId": "local"}})
+    envelope = {"version": "1", "messageId": "message", "messageType": "neighbor.message",
+                "sentAt": "2026-09-12T00:00:00Z", "expiresAt": "2026-09-12T01:00:00Z",
+                "fromPeerId": "remote", "toPeerId": "local", "nonce": "once", "signature": "sig", "payload": {"body": "Retain me"}}
+    async def pull(*args, **kwargs):
+        return RelayPullResult(ok=True, items=[{"relayMessageId": "relay-one", "cursor": "1", "envelope": envelope}], next_cursor="1")
+    acked, handled = [], []
+    async def ack(peer, ids):
+        acked.extend(ids)
+        return RelayAckResult(ok=True, acked=ids)
+    async def handle(item):
+        if not handled:
+            handled.append("temporary_failure")
+            raise RuntimeError("database temporarily unavailable")
+        handled.append(item.payload["body"])
+    monkeypatch.setattr(worker, "_transport", lambda: SimpleNamespace(pull=pull, ack=ack))
+    monkeypatch.setattr(neighbor_module.network_neighbor_service, "handle_peer_message", handle)
+    assert asyncio.run(worker.process_inbox_once()) is False
+    assert acked == [] and database.get_network_relay_cursor("local") == ""
+    assert asyncio.run(worker.process_inbox_once()) is True
+    assert handled[-1] == "Retain me" and acked == ["relay-one"]
+    assert database.get_network_relay_cursor("local") == "1"

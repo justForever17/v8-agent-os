@@ -52,7 +52,8 @@ from core.tools.native.tool_governance import (
     _raise_runtime_governance_exception_if_needed,
 )
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
-from core.workspace_capability import preflight_command_workspace
+from core.workspace_capability import preflight_command_workspace, workspace_scope_reviewable
+from core.tools.native.tool_governance import workspace_safety_decision
 from core.workspace_state_digest import command_may_change_workspace, mark_workspace_state_stale
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
@@ -432,7 +433,7 @@ def execute_governed_argv(
         cwd=cwd or None,
         runtime_context=governed_context,
     )
-    if not workspace_preflight.get("ok"):
+    if not workspace_preflight.get("ok") and not workspace_scope_reviewable(workspace_preflight, governed_context):
         return {
             "ok": False,
             "kind": "workspace_boundary_block",
@@ -443,7 +444,11 @@ def execute_governed_argv(
         }
 
     allowed, error_message = _enforce_safety_decision(
-        safety_guardian.assess_system_command(command, runtime_context=governed_context),
+        workspace_safety_decision(
+            safety_guardian.assess_system_command(command, runtime_context={**governed_context, "command_cwd": workspace_preflight.get("resolvedCwd") or workspace_preflight.get("cwd")}),
+            preflight=workspace_preflight, runtime_context=governed_context, tool_name="governed_argv",
+            arguments={"command": command, "argv": normalized_argv, "timeoutSeconds": timeout_seconds},
+        ),
         tool_call_id=tool_call_id,
         question=f"Safety Guardian 检测到脚本执行存在风险，是否继续？\n\n命令：{command}",
     )
@@ -455,7 +460,7 @@ def execute_governed_argv(
             "recommendedNextAction": "按 Safety Guardian 的原因调整输入，或改用已批准的方法。",
         }
 
-    resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
+    resolved_cwd = str(workspace_preflight.get("resolvedCwd") or workspace_preflight.get("cwd") or "").strip() or None
     deadline_ms = timeout_seconds * 1000
     with ToolExecutionEnvelope(
         tool_name="run_skill_script" if action_family == "skill_script" else "run_system_command",
@@ -739,6 +744,8 @@ def execute_system_command(
     4. Do not use shell writes as a shortcut for known source/text edits; read the file first and use file tools when possible.
     5. Follow the shell dialect published by the Engineering Kernel/environment; do not mix shell syntaxes in one command.
     6. The synchronous path has a strict 90-second deadline. A longer requested timeout must use a session.
+    Ordinary paths outside the active workspace use the current Safety approval mode; invoke the exact operation
+    to request approval. Do not change workspace roots or bypass file tools. Delegated write sets remain binding.
     
     Arguments:
         command (str): The command to execute natively.
@@ -783,7 +790,7 @@ def execute_system_command(
         if capsule_block:
             return json.dumps(capsule_block, ensure_ascii=False, indent=2)
         workspace_preflight = preflight_command_workspace(command, cwd=cwd or None, runtime_context=runtime_context)
-        if not workspace_preflight.get("ok"):
+        if not workspace_preflight.get("ok") and not workspace_scope_reviewable(workspace_preflight, runtime_context):
             return json.dumps(
                 {
                     "ok": False,
@@ -797,9 +804,13 @@ def execute_system_command(
                 },
                 ensure_ascii=False,
             )
-        resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
+        resolved_cwd = str(workspace_preflight.get("resolvedCwd") or workspace_preflight.get("cwd") or "").strip() or None
         allowed, error_message = _enforce_safety_decision(
-            safety_guardian.assess_system_command(command, runtime_context={**runtime_context, "command_cwd": resolved_cwd}),
+            workspace_safety_decision(
+                safety_guardian.assess_system_command(command, runtime_context={**runtime_context, "command_cwd": resolved_cwd}),
+                preflight=workspace_preflight, runtime_context=runtime_context, tool_name="command_sync",
+                arguments={"command": command, "shellDialect": resolved_shell_dialect, "timeoutSeconds": requested_timeout},
+            ),
             tool_call_id=tool_call_id,
             question=f"Safety Guardian 检测到系统命令存在风险，是否继续执行？\n\n命令：{command}",
         )
@@ -1029,7 +1040,7 @@ def _launch_background_command(
     if capsule_block:
         raise RuntimeError(json.dumps(capsule_block, ensure_ascii=False))
     workspace_preflight = preflight_command_workspace(command, cwd=cwd or None, runtime_context=runtime_context)
-    if not workspace_preflight.get("ok"):
+    if not workspace_preflight.get("ok") and not workspace_scope_reviewable(workspace_preflight, runtime_context):
         raise RuntimeError(
             json.dumps(
                 {
@@ -1062,9 +1073,14 @@ def _launch_background_command(
                 ensure_ascii=False,
             )
         )
-    resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
+    resolved_cwd = str(workspace_preflight.get("resolvedCwd") or workspace_preflight.get("cwd") or "").strip() or None
     allowed, error_message = _enforce_safety_decision(
-        safety_guardian.assess_background_command(command, runtime_context={**runtime_context, "command_cwd": resolved_cwd}),
+        workspace_safety_decision(
+            safety_guardian.assess_background_command(command, runtime_context={**runtime_context, "command_cwd": resolved_cwd}),
+            preflight=workspace_preflight, runtime_context=runtime_context, tool_name="command_session",
+            arguments={"command": command, "shellDialect": resolved_shell_dialect, "timeoutSeconds": timeout_seconds,
+                       "terminalMode": requested_terminal_mode, "profile": resolved_profile},
+        ),
         tool_call_id=tool_call_id,
         question=f"Safety Guardian 检测到后台命令需要确认，是否继续？\n\n命令：{command}",
     )
@@ -3902,6 +3918,9 @@ def run_system_command(
     Do not use this just to read or write a known text/JSON/Markdown/source file. Use `read_native_file` and
     `write_native_file` for file content. If the same command purpose fails twice, stop changing shell wrappers;
     switch to the right tool or return the blocker/degraded reason.
+    Ordinary targets/cwd outside the active workspace use the current Safety approval mode. Invoke the exact
+    operation to request approval rather than changing workspace roots. Explicit sandbox/Capsule/writeSet,
+    OS/V8 core and credential boundaries still apply; an approval never expands a delegated actor's scope.
 
     mode=auto:
     - 短命令/非交互命令直接同步执行并返回结果

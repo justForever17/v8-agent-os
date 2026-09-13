@@ -165,8 +165,7 @@ def test_inbound_child_assignment_accepts_remote_parent_assignment_id(task_servi
 def test_result_policy_inbox_vs_per_result_wake_is_idempotent(task_services, monkeypatch):
     _neighbor_svc, task_svc, _fake_network, temp_db = task_services
     _link(temp_db, "peer_companion", link_id="nlink_companion")
-    wakes: list[tuple[dict, dict, dict]] = []
-    monkeypatch.setattr(task_svc, "_schedule_origin_wake", lambda task, assignment, result: wakes.append((task, assignment, result)))
+    monkeypatch.setattr(neighbor_module.network_neighbor_service, "_kick_wake_queue_processing", lambda: None)
     temp_db.upsert_network_neighbor_task(
         task_id="ntask_inbox",
         title="只入池",
@@ -189,7 +188,7 @@ def test_result_policy_inbox_vs_per_result_wake_is_idempotent(task_services, mon
         payload={"taskId": "ntask_inbox", "assignmentId": "ntasn_inbox", "resultId": "ntres_inbox", "status": "completed", "body": "完成"},
     )
     asyncio.run(task_svc.handle_task_envelope(inbox))
-    assert wakes == []
+    assert temp_db.list_network_neighbor_wake_queue() == []
 
     temp_db.upsert_network_neighbor_task(
         task_id="ntask_wake",
@@ -214,8 +213,10 @@ def test_result_policy_inbox_vs_per_result_wake_is_idempotent(task_services, mon
     asyncio.run(task_svc.handle_task_envelope(wake))
     asyncio.run(task_svc.handle_task_envelope(wake))
 
+    wakes = temp_db.list_network_neighbor_wake_queue()
     assert len(wakes) == 1
-    assert wakes[0][2]["resultId"] == "ntres_wake"
+    assert wakes[0]["payload"]["result"]["resultId"] == "ntres_wake"
+    assert len(temp_db.list_network_neighbor_messages(link_id="nlink_companion")) == 2
 
 
 def test_handoff_request_creates_one_hop_child_and_stops_second_handoff(task_services):

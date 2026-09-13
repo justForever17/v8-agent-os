@@ -10,6 +10,7 @@ from api.models import ChatMessage, ChatRequest, ChatRequestData, ChatToolCall, 
 from core.prompt_budget import estimate_prompt_tokens
 from runtimes.network_supervisor.compat_ingress_filter import filter_anthropic_payload
 from runtimes.network_supervisor.openai_compat import (
+    resolve_compat_tool_choice,
     COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
     COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
     COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS,
@@ -109,7 +110,7 @@ def _anthropic_tools_to_openai_tools(raw_tools: list[dict[str, Any]] | None) -> 
                 "function": {
                     "name": name,
                     "description": str(raw.get("description") or "").strip(),
-                    "parameters": raw.get("input_schema") if isinstance(raw.get("input_schema"), dict) else {},
+                    "parameters": raw.get("input_schema", {}),
                 },
             }
         )
@@ -121,6 +122,8 @@ def _anthropic_tool_choice_to_openai(choice: Any) -> Any:
         choice_type = str(choice.get("type") or "").strip().lower()
         if choice_type == "none":
             return "none"
+        if choice_type == "any":
+            return "required"
         if choice_type == "tool":
             return {"type": "function", "function": {"name": str(choice.get("name") or "").strip()}}
     return None
@@ -317,6 +320,7 @@ def build_engine_chat_request_from_anthropic(
     if not model_name:
         raise ValueError("missing_context_window: no execution model resolved for Anthropic compat request")
     diagnostics = dict(ingress.diagnostics or {})
+    diagnostics["requestedExternalToolChoice"] = resolve_compat_tool_choice(_anthropic_tool_choice_to_openai(payload.get("tool_choice") or payload.get("toolChoice")), external_tools)
     if isinstance(budget_diagnostics, dict) and budget_diagnostics:
         diagnostics["compatModelBudget"] = dict(budget_diagnostics)
     return ChatRequest(

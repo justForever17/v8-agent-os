@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from erc.safety_guardian import SafetyDecision
 
 from core import workspace_capability as workspace_capability_module
 from core import workspace_authority as workspace_authority_module
@@ -216,6 +218,13 @@ def test_host_command_actual_entry_still_assesses_and_audits(tmp_path, monkeypat
     monkeypatch.setattr(native_command.safety_guardian, "log_decision_event", lambda **kwargs: audits.append(kwargs))
     monkeypatch.setattr(native_command, "_shell_subprocess_launch", stopped_before_process)
     monkeypatch.setattr(native_command.subprocess, "Popen", lambda *_a, **_k: pytest.fail("no real command may run"))
+    if mode != "minimal":
+        with pytest.raises(ModelGovernanceInterventionRequired) as waiting:
+            native_command.execute_system_command.func(command, shell_dialect="powershell", tool_call_id="host-fixture")
+        assert waiting.value.request_payload["riskCode"] == "workspace_external_access"
+        assert len(assessments) == 1 and launches == []
+        assert audits[0]["metadata"]["toolCallId"] == "host-fixture"
+        return
     result = json.loads(native_command.execute_system_command.func(command, shell_dialect="powershell", tool_call_id="host-fixture"))
     assert len(assessments) == len(launches) == 1
     assert assessments[0].verdict == "allow"
@@ -236,12 +245,15 @@ def test_host_command_kernel_writes_stay_blocked_at_actual_workspace_entry(tmp_p
     monkeypatch.setattr(native_command, "get_runtime_context", lambda: {
         "workspace_path": str(root), "runtime_kind": "chat", "agent_id": "supervisor", "safety_approval_mode": "minimal",
     })
-    monkeypatch.setattr(native_command.safety_guardian, "assess_system_command", lambda *_a, **_k: pytest.fail("outside write must stop at workspace"))
+    assessed = []
+    def protected_target_assessment(value, **_kwargs):
+        assessed.append(value)
+        return SafetyDecision(verdict="block", risk_code="protected_path_command", governance_target="v8_integrity", allow_override=False)
+    monkeypatch.setattr(native_command.safety_guardian, "assess_system_command", protected_target_assessment)
     monkeypatch.setattr(native_command.subprocess, "Popen", lambda *_a, **_k: pytest.fail("outside write must not execute"))
-    result = json.loads(native_command.execute_system_command.func(f'Set-Content -LiteralPath "{target}" -Value changed', shell_dialect="powershell"))
-    assert result["kind"] == "workspace_boundary_block"
-    assert result["error"] == "workspace_command_path_violation"
-    assert result["violations"][0]["path"] == target
+    result = native_command.execute_system_command.func(f'Set-Content -LiteralPath "{target}" -Value changed', shell_dialect="powershell")
+    assert len(assessed) == 1 and target in assessed[0]
+    assert "Safety Guardian 已阻止" in result
 
 
 def test_relative_tool_path_resolves_inside_active_workspace(tmp_path, monkeypatch):
@@ -480,7 +492,7 @@ def test_command_preflight_blocks_scoped_fallback_to_main_workspace(tmp_path, mo
     assert result["error"] == "workspace_fallback_to_main"
 
 
-def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkeypatch):
+def test_write_native_file_requests_approval_for_another_workspace(tmp_path, monkeypatch):
     from core import native_tools
 
     active_root = tmp_path / "active"
@@ -491,11 +503,12 @@ def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkey
 
     with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
         allowed_result = native_tools.write_native_file.func("src/ok.txt", "ok")
-        blocked_result = native_tools.write_native_file.func(str(main_root / "projects" / "wrong.txt"), "bad")
+        with pytest.raises(ModelGovernanceInterventionRequired) as waiting:
+            native_tools.write_native_file.func(str(main_root / "projects" / "wrong.txt"), "bad")
 
     assert "Successfully Created/Overwritten" in allowed_result
     assert (active_root / "src" / "ok.txt").read_text(encoding="utf-8") == "ok"
-    assert "workspace_boundary_block" in blocked_result
+    assert waiting.value.request_payload["riskCode"] == "workspace_external_access"
     assert not (main_root / "projects" / "wrong.txt").exists()
 
 
@@ -539,7 +552,7 @@ def test_write_native_file_records_a_session_bound_artifact(tmp_path, monkeypatc
             return {"artifactId": "art_test"}
 
     monkeypatch.setattr(workspace_file_module, "artifact_store", _ArtifactStore())
-    monkeypatch.setattr(workspace_file_module.safety_guardian, "assess_file_write", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workspace_file_module.safety_guardian, "assess_file_write", lambda *_args, **_kwargs: SafetyDecision())
     monkeypatch.setattr(workspace_file_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(workspace_file_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
     monkeypatch.setattr(workspace_file_module, "mark_workspace_state_stale", lambda *_args, **_kwargs: None)
@@ -633,7 +646,7 @@ def test_write_native_file_enforces_delegated_task_write_set(tmp_path, monkeypat
     assert not (active_root / "src" / "verify.py").exists()
 
 
-def test_write_native_file_blocks_global_skill_root_even_with_extra_root(tmp_path, monkeypatch):
+def test_write_native_file_asks_safety_for_global_skill_even_with_extra_root(tmp_path, monkeypatch):
     from core import native_tools
 
     active_root = tmp_path / "active"
@@ -655,10 +668,11 @@ def test_write_native_file_blocks_global_skill_root_even_with_extra_root(tmp_pat
         allowed_extra_roots=[str(skill_file.parent)],
     ):
         read_result = native_tools.read_native_file.func(str(skill_file))
-        blocked_result = native_tools.write_native_file.func(str(skill_file), "# changed\n")
+        with pytest.raises(ModelGovernanceInterventionRequired) as waiting:
+            native_tools.write_native_file.func(str(skill_file), "# changed\n")
 
     assert "# Demo Skill" in read_result
-    assert "global_skill_read_execute_only" in blocked_result
+    assert waiting.value.request_payload["riskCode"] == "protected_skill_root_write"
     assert skill_file.read_text(encoding="utf-8") == "# Demo Skill\n"
 
 

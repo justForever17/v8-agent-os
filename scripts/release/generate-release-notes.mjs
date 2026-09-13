@@ -114,6 +114,15 @@ function releaseTitle(product, version, channel) {
 }
 
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "2026.09.12.1": Object.freeze({
+    all: Object.freeze([
+      "邻居设备新增可达地址检测与一份邀请完成连接；支持为每台设备选择自己的任务目录。",
+      "修复邻居签名校验、任务入队、重复投递和审批后结果回传故障，失败消息可沿原记录重试。",
+      "修复 OpenAI / Anthropic 兼容接入的工具回传和问答、审批恢复，补齐本机 v8os acp 接入。",
+      "普通跨工作区文件操作改为按具体动作请求审批，批准后继续原任务；免审遵循已有授权，保留核心资源与委派权限边界。",
+      "修复样式工作台旧文件缓存导致的写入冲突，完善浏览器画面、字幕与音轨的时间对应。",
+    ]),
+  }),
   "2026.09.07.1": Object.freeze({
     all: Object.freeze([
       "修复文档读取能力包在 Windows 桌面安装包冒烟测试中因 typing-extensions 版本滞后导致的依赖冲突。",

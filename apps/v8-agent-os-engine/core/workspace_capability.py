@@ -275,6 +275,26 @@ def resolve_workspace_tool_path(
     return payload
 
 
+def workspace_scope_reviewable(preflight: dict[str, Any], runtime_context: dict[str, Any]) -> bool:
+    """The root actor may ask Safety about a path; a delegated scope is not expandable here."""
+    if preflight.get("error") not in {
+        "workspace_boundary_violation", "workspace_command_path_violation",
+        "workspace_cwd_violation", "global_skill_mutation_violation",
+    }:
+        return False
+    actor = resolve_collaboration_actor(runtime_context=runtime_context)
+    if not actor.is_supervisor or actor.runtime_kind not in {"chat", "supervisor"}:
+        return False
+    if actor.delegation_id or any(runtime_context.get(key) for key in (
+        "managed_engineering_execution", "managedEngineeringExecution",
+        "engineering_task_capsule", "engineeringTaskCapsule", "sandbox_policy", "sandboxPolicy",
+    )):
+        return False
+    if any(key in runtime_context for key in ("allowed_write_paths", "allowedWritePaths")):
+        return False
+    return str(runtime_context.get("engineering_capsule_mode") or runtime_context.get("engineeringCapsuleMode") or "none").lower() == "none"
+
+
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:])([A-Za-z]:[\\/][^\s\"'<>|;&]+)")
 _POSIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w])(/(?:[^\s\"'<>|;&]+))")
 _UNC_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:\\])((?:\\\\|//)[^\\/\s]+[\\/][^\s\"'<>|;&]+)")

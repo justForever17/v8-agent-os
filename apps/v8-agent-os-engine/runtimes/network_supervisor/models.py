@@ -75,7 +75,7 @@ class NetworkDiscoveryConfig(BaseModel):
     multicast_port: int = Field(default=19530, alias="multicastPort")
     announce_interval_seconds: int = Field(default=15, alias="announceIntervalSeconds")
     peer_expiry_seconds: int = Field(default=60, alias="peerExpirySeconds")
-    wan_bootstrap_peers: List[str] = Field(default_factory=list, alias="wanBootstrapPeers")
+    wan_bootstrap_peers: List[str] = Field(default_factory=list, alias="wanBootstrapPeers", description="Already-trusted peer IDs to reconnect; not URLs or unpaired discovery addresses.")
 
 
 class NetworkTrustConfig(BaseModel):

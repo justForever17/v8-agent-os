@@ -319,21 +319,6 @@ def _render_external_tool_description_for_internal_model(original_description: s
     return "\n".join(lines).strip()
 
 
-def _compat_safety_approval_allows(response: Any) -> bool:
-    if isinstance(response, dict):
-        normalized = str(
-            response.get("decision")
-            or response.get("status")
-            or response.get("approval")
-            or response.get("result")
-            or ""
-        ).strip().lower()
-        if response.get("approved") is True:
-            return True
-        return normalized in {"approved", "approve", "allow", "allowed", "granted", "continue"}
-    return str(response or "").strip().lower() in {"approved", "approve", "allow", "allowed", "granted", "continue"}
-
-
 def _record_external_tool_schema_ref(wire_name: str, raw_tool: dict[str, Any]) -> str | None:
     try:
         from core.tool_surface import record_raw_observation
@@ -424,7 +409,11 @@ def select_external_tools_for_request(
         if selected_wire_name and wire_name != selected_wire_name:
             continue
         description = str(function_payload.get("description") or "")
-        parameters = function_payload.get("parameters") if isinstance(function_payload.get("parameters"), dict) else {}
+        parameters = function_payload.get("parameters", {})
+        if not isinstance(parameters, dict) or ("properties" in parameters and not isinstance(parameters["properties"], dict)):
+            raise ValueError("External tool parameters must be an object schema with an object properties map")
+        if "required" in parameters and (not isinstance(parameters["required"], list) or any(not isinstance(name, str) for name in parameters["required"])):
+            raise ValueError("External tool schema required must be an array of property names")
         raw_schema_ref = _record_external_tool_schema_ref(wire_name, raw)
         budget_adjustments = _external_tool_budget_adjustments(
             wire_name=wire_name,
@@ -492,6 +481,31 @@ def build_external_tool_alias_maps(external_tools: list[ExternalToolSpec] | None
         wire_to_internal[wire_name] = internal_alias_name
         internal_to_wire[internal_alias_name] = wire_name
     return wire_to_internal, internal_to_wire
+
+
+def resolve_compat_tool_choice(choice: Any, external_tools: list[ExternalToolSpec] | None) -> str | None:
+    if choice is None or choice == "auto":
+        return None
+    if choice == "none":
+        return "none"
+    names, _ = build_external_tool_alias_maps(external_tools)
+    if choice == "required" and names:
+        return "required"
+    if isinstance(choice, dict) and choice.get("type") == "function":
+        name = str((choice.get("function") or {}).get("name") or "")
+        if name in names:
+            return names[name]
+    raise ValueError("Unsupported or unavailable external tool_choice")
+
+
+def required_tool_choice_failure(events: list[dict[str, Any]], choice: str | None) -> bool:
+    if choice in {None, "", "auto", "none"}:
+        return False
+    terminal = next((event for event in reversed(events) if event.get("type") == "done"), {})
+    if terminal.get("status") != "completed":
+        return False  # Human waits and explicit failures keep their actual truth.
+    names = {str((event.get("tool") or {}).get("toolName") or "") for event in events if event.get("type") == "tool_start"}
+    return not (any(name.startswith("network_") for name in names) if choice == "required" else choice in names)
 
 
 def _missing_langgraph_interrupt_context(exc: BaseException) -> bool:
@@ -680,12 +694,15 @@ def build_external_langchain_tools(external_tools: list[ExternalToolSpec] | None
             _side_effect: str = side_effect,
             **kwargs: Any,
         ) -> str:
+            from erc.runtime_context import get_runtime_context
             runtime_context = {
+                **dict(get_runtime_context() or {}),
                 "runtime_kind": "network_supervisor",
                 "trigger_source": "external_client_tool",
                 "externalWireName": _wire_name,
                 "internalAliasName": _internal_alias_name,
             }
+            tool_call_id = str(tool_call_id or runtime_context.get("tool_call_id") or runtime_context.get("toolCallId") or "")
             safety_decision = safety_guardian.assess_external_tool_call(
                 tool_name=_wire_name,
                 params=dict(kwargs),
@@ -705,28 +722,16 @@ def build_external_langchain_tools(external_tools: list[ExternalToolSpec] | None
                     failure_class=safety_decision.risk_code or "external_tool_local_system_hard_stop",
                 )
             if safety_decision.is_review():
-                safety_guardian.log_decision_event(
-                    action="external_tool_call",
-                    decision=safety_decision,
-                    subject=_wire_name,
-                    metadata={"toolCallId": tool_call_id, "internalAliasName": _internal_alias_name},
+                # The native execution lane can run without LangGraph's
+                # interrupt scratchpad. Reuse the canonical durable Safety
+                # approval path, including exact operation fingerprints and
+                # approved-operation reuse, instead of raising a bare KeyError.
+                from core.tools.native.tool_governance import _enforce_safety_decision
+                permitted, _reason = _enforce_safety_decision(
+                    safety_decision, tool_call_id=tool_call_id,
+                    question=f"是否允许外部客户端工具 {_wire_name} 访问此受保护目标？",
                 )
-                approval_response = interrupt(
-                    {
-                        "interactionKind": "approval",
-                        "approvalKind": "safety_review",
-                        "externalOrigin": "network_client",
-                        "externalWireName": _wire_name,
-                        "internalAliasName": _internal_alias_name,
-                        "toolName": _internal_alias_name,
-                        "toolCallId": tool_call_id,
-                        "question": (
-                            "Safety Guardian 检测到外部客户端工具命中本地系统敏感面，是否允许继续发出该 external tool call？"
-                        ),
-                        "safety": safety_decision.to_payload(),
-                    }
-                )
-                if not _compat_safety_approval_allows(approval_response):
+                if not permitted:
                     raise CompatBridgeHardStop(
                         safety_decision.reason or f"External tool '{_wire_name}' rejected by Safety approval.",
                         failure_class=safety_decision.risk_code or "external_tool_local_system_review",
@@ -737,6 +742,12 @@ def build_external_langchain_tools(external_tools: list[ExternalToolSpec] | None
                 tool_call_id=tool_call_id,
                 params=dict(kwargs),
             )
+            retained_response = runtime_context.get("compat_external_tool_resume")
+            if isinstance(retained_response, dict):
+                content = _extract_external_tool_resume_content(retained_response, wire_name=_wire_name,
+                    internal_alias_name=_internal_alias_name, tool_call_id=tool_call_id)
+                if content is not None:
+                    return content
             request_payload.update(
                 {
                     "interactionKind": "external_tool",
@@ -870,6 +881,7 @@ def build_engine_chat_request_from_openai(
     if not model_name:
         raise ValueError("missing_context_window: no execution model resolved for OpenAI compat request")
     diagnostics = dict(ingress.diagnostics or {})
+    diagnostics["requestedExternalToolChoice"] = resolve_compat_tool_choice(payload.get("tool_choice") or payload.get("toolChoice"), external_tools)
     if isinstance(budget_diagnostics, dict) and budget_diagnostics:
         diagnostics["compatModelBudget"] = dict(budget_diagnostics)
     return ChatRequest(

@@ -6,7 +6,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 
@@ -33,6 +33,9 @@ class DryRunNetworkService:
 
     def read_state(self) -> dict[str, Any]:
         return self.state
+
+    def get_config_model(self):
+        return SimpleNamespace(enabled=True)
 
     def write_state(self, payload: dict[str, Any]) -> None:
         self.state = dict(payload)
@@ -108,6 +111,7 @@ class DryRunNetworkService:
         previous_service = neighbor_module.network_supervisor_service
         previous_db = neighbor_module.db
         previous_task_service = task_module.network_neighbor_task_service
+        previous_neighbor_service = neighbor_module.network_neighbor_service
         try:
             target.activate()
             if path == "peer/neighbors/pairing/consume":
@@ -125,6 +129,7 @@ class DryRunNetworkService:
             task_module.network_supervisor_service = previous_service
             task_module.db = previous_db
             task_module.network_neighbor_task_service = previous_task_service
+            neighbor_module.network_neighbor_service = previous_neighbor_service
 
 
 class DryRunDevice:
@@ -168,6 +173,7 @@ class DryRunDevice:
         }
 
     def activate(self) -> None:
+        neighbor_module.network_neighbor_service = self.neighbor
         neighbor_module.network_supervisor_service = self.network
         neighbor_module.db = self.db
         task_module.network_supervisor_service = self.network
@@ -223,6 +229,8 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
         for device in devices:
             device.discovered = [item for item in devices if item is not device]
             device.mesh = {item.peer_id: item for item in devices if item is not device}
+            # This exporter advances each fixture queue explicitly in order.
+            device.neighbor._kick_wake_queue_processing = lambda: None
 
         def fake_supervisor_run_for(device: DryRunDevice):
             async def _fake_supervisor_run(_self: NetworkNeighborService, **kwargs: Any) -> None:
@@ -273,7 +281,7 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
             return _fake_task_run
 
         def fake_result_wake_for(device: DryRunDevice):
-            def _fake_result_wake(_self: NetworkNeighborTaskService, task: dict[str, Any], assignment: dict[str, Any], result: dict[str, Any]) -> None:
+            async def _fake_result_wake(_self: NetworkNeighborTaskService, task: dict[str, Any], assignment: dict[str, Any], result: dict[str, Any], run_id: str) -> None:
                 device.task_result_wakes.append(
                     {
                         "taskId": task.get("taskId"),
@@ -287,7 +295,7 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
         for device in devices:
             device.neighbor._execute_neighbor_supervisor_message = MethodType(fake_supervisor_run_for(device), device.neighbor)
             device.tasks.execute_assignment = MethodType(fake_task_run_for(device), device.tasks)
-            device.tasks._schedule_origin_wake = MethodType(fake_result_wake_for(device), device.tasks)
+            device.tasks._wake_origin_supervisor = MethodType(fake_result_wake_for(device), device.tasks)
 
         pairing_results: list[dict[str, Any]] = []
         main.activate()
@@ -362,6 +370,8 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
 
         main.activate()
         main.tasks.update_settings({"resultWakePolicy": "inbox"})
+        while await main.neighbor.process_wake_queue_once(worker_id="dry-run-primary-result"):
+            pass
         task_c = await main.tasks.dispatch_task(
             title="场景 C：一跳转交",
             body="这个任务需要 GPU，请先由副设备 A 判断能否处理；如果不能，请申请协助。",

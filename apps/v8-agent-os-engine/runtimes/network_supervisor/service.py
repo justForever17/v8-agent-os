@@ -9,9 +9,11 @@ import socket
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -19,6 +21,7 @@ from fastapi import HTTPException, WebSocket
 
 from api.models import ChatRequest
 from core.database import db
+from core.network_compat_pending import NetworkCompatPendingStore
 from core.run_ledger import run_ledger_service
 from core.storage import storage
 from core.v8_link import resolve_peer_transport_endpoint
@@ -139,6 +142,8 @@ class NetworkSupervisorService:
         self._active_inbound_tasks: dict[str, asyncio.Task] = {}
         self._seen_nonces: dict[str, float] = {}
         self._last_announce_at: str | None = None
+        self._discovery_error: str | None = None
+        self._advertised_endpoint_cache: tuple[tuple[str, str, str, str], float, dict[str, str]] | None = None
         self._compat_rate_state: dict[str, deque[float]] = {}
         self._compat_active_counts: dict[str, int] = {}
 
@@ -149,19 +154,57 @@ class NetworkSupervisorService:
 
     def read_state(self) -> dict[str, Any]:
         self._ensure_runtime_dir()
+        self._pending_store().ensure_migrated()
         if not NETWORK_SUPERVISOR_STATE_PATH.exists():
             self.write_state(_state_default())
         try:
-            return json.loads(NETWORK_SUPERVISOR_STATE_PATH.read_text(encoding="utf-8"))
+            payload = json.loads(NETWORK_SUPERVISOR_STATE_PATH.read_text(encoding="utf-8"))
+            payload.pop("pendingExternalTools", None)
+            return payload
         except Exception:
             return _state_default()
 
     def write_state(self, payload: dict[str, Any]) -> None:
         self._ensure_runtime_dir()
+        # Import before retiring the legacy field; other domain snapshots must
+        # never overwrite the database's pending waits or consumed tombstones.
+        self._pending_store().ensure_migrated()
+        payload = {key: value for key, value in payload.items() if key != "pendingExternalTools"}
         NETWORK_SUPERVISOR_STATE_PATH.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _pending_store(self) -> NetworkCompatPendingStore:
+        return NetworkCompatPendingStore(db, NETWORK_SUPERVISOR_STATE_PATH)
+
+    @contextmanager
+    def _pending_transaction(self):
+        abandoned = []
+        with self._pending_store().transaction() as pending:
+            now_ts = time.time()
+            for item in pending.values():
+                expires_at = float(item.get("expiresAtTs") or 0)
+                if item.get("status") == "waiting_external_tool" and expires_at and expires_at < now_ts:
+                    item.update(status="external_tool_abandoned", abandonedAt=_utc_iso(), lastReason="expired_waiting_for_client_tool_result")
+                    abandoned.append(dict(item))
+            yield pending
+        # Run/ledger updates use their own DB connections, after the pending
+        # transaction releases its lock. They cannot reverse a claimed result.
+        for item in abandoned:
+            self._complete_abandoned_external_tool_run(item)
+
+    def pending_external_tools_snapshot(self) -> dict[str, dict[str, Any]]:
+        pending = self._pending_store().snapshot()
+        now_ts = time.time()
+        if not any(item.get("status") == "waiting_external_tool" and 0 < float(item.get("expiresAtTs") or 0) < now_ts
+                   for item in pending.values()):
+            for item in pending.values():
+                if item.get("status") == "external_tool_abandoned":
+                    self._complete_abandoned_external_tool_run(item)
+            return pending
+        with self._pending_transaction() as pending:
+            return pending
 
     def _external_tool_pending_key(
         self,
@@ -230,33 +273,18 @@ class NetworkSupervisorService:
             # Network Supervisor diagnostics must not break request handling.
             return
 
-    def _prune_pending_external_tools(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-        target_state = state if isinstance(state, dict) else self.read_state()
-        pending = {
-            str(key): dict(value)
-            for key, value in dict(target_state.get("pendingExternalTools") or {}).items()
-            if isinstance(value, dict)
-        }
-        now_ts = time.time()
-        changed = False
-        for key, item in list(pending.items()):
-            status = str(item.get("status") or "waiting_external_tool")
-            expires_at = float(item.get("expiresAtTs") or 0)
-            if status == "waiting_external_tool" and expires_at and expires_at < now_ts:
-                item["status"] = "external_tool_abandoned"
-                item["abandonedAt"] = _utc_iso()
-                item["lastReason"] = "expired_waiting_for_client_tool_result"
-                self._complete_abandoned_external_tool_run(item)
-                pending[key] = item
-                changed = True
-        target_state["pendingExternalTools"] = pending
-        if changed and state is None:
-            self.write_state(target_state)
-        return pending
-
     def record_pending_external_tool(
+        self, **kwargs: Any,
+    ) -> None:
+        with self._pending_transaction() as pending:
+            event = self._record_pending_external_tool_locked(pending=pending, **kwargs)
+        if event:
+            run_ledger_service.record_event(**event)
+
+    def _record_pending_external_tool_locked(
         self,
         *,
+        pending: dict[str, dict[str, Any]],
         protocol: str,
         run_id: str,
         wire_tool_call_id: str,
@@ -265,15 +293,22 @@ class NetworkSupervisorService:
         compat_session_id: str | None = None,
         external_thread_id: str | None = None,
         external_user_id: str | None = None,
+        origin_token_hash: str = "",
         ttl_seconds: int = 900,
         checkpoint_resume_supported: bool = False,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         wire_id = str(wire_tool_call_id or "").strip()
         if not wire_id:
             return
-        state = self.read_state()
-        pending = self._prune_pending_external_tools(state)
         key = self._external_tool_pending_key(protocol, wire_id, compat_session_id=compat_session_id)
+        existing = pending.get(key)
+        if existing:
+            if str(existing.get("originTokenHash") or "") != str(origin_token_hash):
+                raise HTTPException(status_code=409, detail="Pending external tool identity changed")
+            # Repeated status reads cannot resurrect already-consumed results.
+            if str(existing.get("status") or "") != "waiting_external_tool":
+                return
+            return
         now = _utc_now()
         pending[key] = {
             "protocol": str(protocol or "").strip().lower(),
@@ -281,6 +316,7 @@ class NetworkSupervisorService:
             "compatSessionId": str(compat_session_id or "").strip(),
             "externalThreadId": str(external_thread_id or "").strip(),
             "externalUserId": str(external_user_id or "").strip(),
+            "originTokenHash": str(origin_token_hash),
             "wireToolCallId": wire_id,
             "internalAliasName": str(internal_alias_name or "").strip(),
             "externalWireName": str(external_wire_name or "").strip(),
@@ -290,9 +326,7 @@ class NetworkSupervisorService:
             "expiresAt": _utc_iso(now + timedelta(seconds=max(30, int(ttl_seconds or 900)))),
             "expiresAtTs": time.time() + max(30, int(ttl_seconds or 900)),
         }
-        state["pendingExternalTools"] = pending
-        self.write_state(state)
-        run_ledger_service.record_event(
+        return dict(
             event_type="external_tool.waiting",
             run_id=str(run_id or "").strip(),
             session_id=str(compat_session_id or "").strip() or None,
@@ -325,7 +359,8 @@ class NetworkSupervisorService:
         text = text.strip()
         if len(text) <= limit:
             return text
-        return text[: max(0, int(limit) - 32)] + "\n...[truncated external tool result]"
+        marker = "\n...[truncated external tool result]"
+        return text[: max(0, int(limit) - len(marker))] + marker
 
     def _find_pending_external_tool(
         self,
@@ -335,12 +370,13 @@ class NetworkSupervisorService:
         wire_tool_call_id: str,
         compat_session_id: str | None = None,
         external_thread_id: str | None = None,
+        origin_token_hash: str = "",
     ) -> tuple[str, dict[str, Any]] | tuple[None, None]:
         normalized_protocol = str(protocol or "").strip().lower()
         wire_id = str(wire_tool_call_id or "").strip()
         if not normalized_protocol or not wire_id:
             return None, None
-        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        candidates: list[tuple[str, dict[str, Any]]] = []
         for key, item in pending.items():
             if str(item.get("protocol") or "").strip().lower() != normalized_protocol:
                 continue
@@ -348,26 +384,45 @@ class NetworkSupervisorService:
                 continue
             if str(item.get("status") or "") != "waiting_external_tool":
                 continue
-            score = 0
-            if compat_session_id and str(item.get("compatSessionId") or "").strip() == str(compat_session_id).strip():
-                score += 4
-            if external_thread_id and str(item.get("externalThreadId") or "").strip() == str(external_thread_id).strip():
-                score += 2
-            candidates.append((score, key, item))
-        if not candidates:
+            if str(item.get("originTokenHash") or "") != origin_token_hash:
+                continue
+            if compat_session_id and str(item.get("compatSessionId") or "") != compat_session_id:
+                continue
+            if str(item.get("externalThreadId") or "") != str(external_thread_id or ""):
+                continue
+            candidates.append((key, item))
+        if len(candidates) != 1:
+            # Reused provider call ids must not silently pick a different run.
             return None, None
-        candidates.sort(key=lambda row: (row[0], str(row[2].get("createdAt") or "")), reverse=True)
-        _, key, item = candidates[0]
+        key, item = candidates[0]
         return key, item
 
     def claim_external_tool_results(
+        self, **kwargs: Any,
+    ) -> dict[str, Any]:
+        if not any(str(value or "").strip() for value in kwargs.get("wire_tool_call_ids") or []):
+            return {"matched": [], "unmatchedIds": [], "resumeRunId": None, "resumeValue": None}
+        with self._pending_transaction() as pending:
+            result = self._claim_external_tool_results_locked(pending=pending, **kwargs)
+        event = result.pop("ledgerEvent", None)
+        received = result.pop("_receivedReceipts", [])
+        if received:
+            result["receivedReceipts"] = [self.external_tool_receipt_status(item) for item in received]
+        if event:
+            run_ledger_service.record_event(**event)
+        return result
+
+    def _claim_external_tool_results_locked(
         self,
         *,
+        pending: dict[str, dict[str, Any]],
         protocol: str,
         wire_tool_call_ids: list[str],
         tool_results: list[dict[str, Any]] | None = None,
         compat_session_id: str | None = None,
         external_thread_id: str | None = None,
+        origin_token_hash: str = "",
+        delivery_run_id: str | None = None,
     ) -> dict[str, Any]:
         ids = [str(item or "").strip() for item in list(wire_tool_call_ids or []) if str(item or "").strip()]
         if not ids:
@@ -377,19 +432,20 @@ class NetworkSupervisorService:
             for item in list(tool_results or [])
             if isinstance(item, dict)
         }
-        state = self.read_state()
-        pending = self._prune_pending_external_tools(state)
+        # Work on a detached candidate until the entire batch is validated.
+        pending_candidate = dict(pending)
         matched: list[dict[str, Any]] = []
         unmatched: list[str] = []
         changed = False
         now = _utc_iso()
         for wire_id in ids:
             key, item = self._find_pending_external_tool(
-                pending,
+                pending_candidate,
                 protocol=protocol,
                 wire_tool_call_id=wire_id,
                 compat_session_id=compat_session_id,
                 external_thread_id=external_thread_id,
+                origin_token_hash=origin_token_hash,
             )
             if not key or not item:
                 unmatched.append(wire_id)
@@ -399,22 +455,41 @@ class NetworkSupervisorService:
             item["status"] = "external_tool_result_received"
             item["resolvedAt"] = now
             item["toolResultPreview"] = self._compact_tool_result_preview(result.get("content") or result)
-            pending[str(key)] = item
+            item["toolResultReceipt"] = result
+            item["receiptId"] = str(key)
+            item["deliveryRunId"] = str(delivery_run_id or item.get("runId") or "")
+            pending_candidate[str(key)] = item
             matched.append({**item, "toolResult": result})
             changed = True
-        if changed:
-            state["pendingExternalTools"] = pending
-            self.write_state(state)
-
+        if unmatched:
+            # A mixed/foreign/repeated result batch must not consume its valid
+            # subset before the caller learns the request was rejected.
+            return {"matched": [], "unmatchedIds": unmatched, "resumeRunId": None,
+                    "resumeValue": None, "pendingMissReason": "pending_owner_or_state_mismatch",
+                    "_receivedReceipts": [dict(item) for item in pending.values()
+                        if item.get("protocol") == protocol and item.get("originTokenHash") == origin_token_hash
+                        and str(item.get("externalThreadId") or "") == str(external_thread_id or "")
+                        and item.get("wireToolCallId") in unmatched and item.get("receiptId")]}
         checkpoint_matched = [item for item in matched if bool(item.get("checkpointResumeSupported"))]
         run_ids = [
             str(item.get("runId") or "").strip()
             for item in checkpoint_matched
             if str(item.get("runId") or "").strip()
         ]
+        if len(set(run_ids)) > 1:
+            # One HTTP continuation can resume one checkpoint. Reject before
+            # committing any result so each original run remains resumable.
+            return {"matched": [], "unmatchedIds": ids, "resumeRunId": None,
+                    "resumeValue": None, "pendingMissReason": "multiple_checkpoint_runs"}
+        if changed:
+            pending.update(pending_candidate)
         resume_run_id = run_ids[0] if run_ids and all(item == run_ids[0] for item in run_ids) else None
         resume_value = None
+        ledger_event = None
         if resume_run_id:
+            for item in matched:
+                item["deliveryRunId"] = resume_run_id
+                pending[item["receiptId"]]["deliveryRunId"] = resume_run_id
             resume_value = {
                 "kind": "external_tool_result",
                 "protocol": str(protocol or "").strip().lower(),
@@ -423,14 +498,14 @@ class NetworkSupervisorService:
                         "wireToolCallId": item.get("wireToolCallId"),
                         "externalWireName": item.get("externalWireName"),
                         "internalAliasName": item.get("internalAliasName"),
-                        "content": self._compact_tool_result_preview((item.get("toolResult") or {}).get("content") or item.get("toolResult")),
+                        "content": (item.get("toolResult") or {}).get("content"),
                     }
                     for item in matched
                 ],
                 "pendingIds": [f"{item.get('protocol')}:{item.get('wireToolCallId')}" for item in matched],
             }
             first_item = matched[0] if matched else {}
-            run_ledger_service.record_event(
+            ledger_event = dict(
                 event_type="external_tool.resumed",
                 run_id=resume_run_id,
                 session_id=str(first_item.get("compatSessionId") or "").strip() or None,
@@ -453,14 +528,25 @@ class NetworkSupervisorService:
             "resumeRunId": resume_run_id,
             "resumeValue": resume_value,
             "pendingMissReason": "no_pending_external_tool" if unmatched and not matched else None,
+            "ledgerEvent": ledger_event,
         }
 
     def mark_external_tool_results_seen(self, *, protocol: str, wire_tool_call_ids: list[str]) -> None:
         self.claim_external_tool_results(protocol=protocol, wire_tool_call_ids=wire_tool_call_ids)
 
+    @staticmethod
+    def external_tool_receipt_status(item: dict[str, Any]) -> dict[str, Any]:
+        delivery_run_id = str(item.get("deliveryRunId") or "")
+        run = db.get_run_record(delivery_run_id) if delivery_run_id else None
+        status = str((run or {}).get("status") or "")
+        recovery_required = status in {"", "failed", "error", "abandoned"}
+        return {"receiptId": item.get("receiptId"), "originalRunId": item.get("runId"),
+                "deliveryRunId": delivery_run_id or None, "resultStored": bool(item.get("resultStored")),
+                "deliveryState": "recovery_required" if recovery_required else status,
+                "recoveryRequired": recovery_required}
+
     def pending_external_tools_summary(self, limit: int = 10) -> dict[str, Any]:
-        state = self.read_state()
-        pending = self._prune_pending_external_tools(state)
+        pending = self.pending_external_tools_snapshot()
         waiting = [
             dict(item)
             for item in pending.values()
@@ -474,10 +560,13 @@ class NetworkSupervisorService:
         resolved = [
             dict(item)
             for item in pending.values()
-            if str(item.get("status") or "") == "resumed_from_external_tool_result"
+            if str(item.get("status") or "") in {"external_tool_result_received", "resumed_from_external_tool_result"}
         ]
         waiting.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         recent = sorted(pending.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)[: max(1, min(int(limit or 10), 50))]
+        # Full receipts stay in the database, never in the general status panel.
+        recent = [{**{key: value for key, value in item.items() if key != "toolResultReceipt"},
+                   **(self.external_tool_receipt_status(item) if item.get("receiptId") else {})} for item in recent]
         recent_ingress = get_recent_compat_ingress_events(limit=max(1, min(int(limit or 10), 25)))
         recent_recovery_hints: list[dict[str, Any]] = []
         for event in recent_ingress:
@@ -557,16 +646,25 @@ class NetworkSupervisorService:
             self.write_secrets(secrets_payload)
             self.save_config_model(config)
 
+        from runtimes.network_supervisor.transport_setup import advertised_endpoint
+        admin_base = str((storage.get_system_base_config().get("bridge") or {}).get("adminBaseUrl") or "http://127.0.0.1:9528")
+        address_key = (config.node.advertised_base_url, config.node.advertised_ws_url, config.node.peer_base_url or "", admin_base)
+        cached_address = self._advertised_endpoint_cache
+        if cached_address and cached_address[0] == address_key and time.monotonic() - cached_address[1] < 10:
+            public_endpoint = cached_address[2]
+        else:
+            public_endpoint = advertised_endpoint(config.node.model_dump(by_alias=True), admin_base)
+            self._advertised_endpoint_cache = (address_key, time.monotonic(), public_endpoint)
         return {
             "peerId": config.node.peer_id,
             "displayName": config.node.display_name,
             "publicKey": secrets_payload.get("publicKey") or "",
             "publicKeyFingerprint": secrets_payload.get("publicKeyFingerprint") or "",
             "localPeerTokenFingerprint": _fingerprint(secrets_payload.get("localPeerToken") or ""),
-            "advertisedBaseUrl": config.node.advertised_base_url,
-            "advertisedWsUrl": config.node.advertised_ws_url,
+            "advertisedBaseUrl": public_endpoint["advertisedBaseUrl"],
+            "advertisedWsUrl": public_endpoint["advertisedWsUrl"],
             "transportProfileId": config.node.transport_profile_id or "",
-            "peerBaseUrl": config.node.peer_base_url or "",
+            "peerBaseUrl": public_endpoint["peerBaseUrl"],
         }
 
     def _private_key(self) -> Ed25519PrivateKey:
@@ -645,8 +743,11 @@ class NetworkSupervisorService:
             self._started = True
             config = self.get_config_model()
             if config.enabled and config.discovery.lan_enabled:
-                await self._start_discovery_listener(config)
-                self._announce_task = asyncio.create_task(self._announce_loop())
+                try:
+                    await self._start_discovery_listener(config)
+                    self._announce_task = asyncio.create_task(self._announce_loop())
+                except OSError as exc:
+                    self._discovery_error = type(exc).__name__
             if config.enabled and config.discovery.wan_bootstrap_peers:
                 self._bootstrap_task = asyncio.create_task(self._bootstrap_known_peers())
 
@@ -686,8 +787,33 @@ class NetworkSupervisorService:
                 self._http_client = None
 
     async def reload(self) -> None:
-        await self.stop()
-        await self.start()
+        # Config refresh must not cancel accepted inbound work or close its HTTP client.
+        if not self._started:
+            await self.start()
+            return
+        async with self._lock:
+            for task in (self._announce_task, self._bootstrap_task):
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            self._announce_task = self._bootstrap_task = None
+            for resource in (self._discovery_transport, self._discovery_socket, self._discovery_sender):
+                if resource is not None:
+                    resource.close()
+            self._discovery_transport = self._discovery_socket = self._discovery_sender = None
+            self._discovery_error = None
+            config = self.get_config_model()
+            if config.enabled and config.discovery.lan_enabled:
+                try:
+                    await self._start_discovery_listener(config)
+                    self._announce_task = asyncio.create_task(self._announce_loop())
+                except OSError as exc:
+                    self._discovery_error = type(exc).__name__
+            if config.enabled and config.discovery.wan_bootstrap_peers:
+                self._bootstrap_task = asyncio.create_task(self._bootstrap_known_peers())
 
     def build_envelope(
         self,
@@ -712,8 +838,11 @@ class NetworkSupervisorService:
             "trace": (trace or NetworkTraceContext()).model_dump(by_alias=True, exclude_none=True),
             "payload": payload,
         }
-        envelope_payload["signature"] = self._sign_payload(envelope_payload)
-        return NetworkEnvelope.model_validate(envelope_payload)
+        # Sign exactly the validated wire form; optional trace fields materialize as
+        # null on model_dump and must not change the signed bytes after construction.
+        envelope = NetworkEnvelope.model_validate(envelope_payload)
+        envelope.signature = self._sign_payload(envelope.model_dump(by_alias=True))
+        return envelope
 
     def verify_envelope(
         self,
@@ -721,6 +850,7 @@ class NetworkSupervisorService:
         *,
         allow_untrusted: bool = False,
         provided_public_key: str | None = None,
+        mark_nonce_seen: bool = True,
     ) -> dict[str, Any]:
         self.ensure_local_identity()
         if envelope.version != self.protocol_version:
@@ -741,7 +871,7 @@ class NetworkSupervisorService:
             raise HTTPException(status_code=403, detail="Envelope was addressed to a different peer")
 
         self._prune_seen_nonces()
-        if envelope.nonce in self._seen_nonces:
+        if mark_nonce_seen and envelope.nonce in self._seen_nonces:
             raise HTTPException(status_code=409, detail="Envelope nonce already used")
 
         trusted_peer = self._trusted_peer_map().get(envelope.from_peer_id)
@@ -761,7 +891,8 @@ class NetworkSupervisorService:
         except Exception as exc:
             raise HTTPException(status_code=403, detail=f"Envelope signature verification failed: {exc}") from exc
 
-        self._mark_nonce_seen(envelope.nonce, envelope.expires_at)
+        if mark_nonce_seen:
+            self._mark_nonce_seen(envelope.nonce, envelope.expires_at)
         return {
             "trustedPeer": trusted_peer.model_dump(by_alias=True) if trusted_peer else None,
             "publicKey": public_key,
@@ -977,10 +1108,10 @@ class NetworkSupervisorService:
             "protocolVersion": self.protocol_version,
             "peerId": identity["peerId"],
             "displayName": self.get_config_model().node.display_name,
-            "baseUrl": self.get_config_model().node.advertised_base_url,
-            "wsUrl": self.get_config_model().node.advertised_ws_url,
+            "baseUrl": identity["advertisedBaseUrl"],
+            "wsUrl": identity["advertisedWsUrl"],
             "transportProfileId": self.get_config_model().node.transport_profile_id or "",
-            "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
+            "peerBaseUrl": identity["peerBaseUrl"],
             "publicKey": identity["publicKey"],
             "publicKeyFingerprint": identity["publicKeyFingerprint"],
             "sentAt": _utc_iso(),
@@ -996,17 +1127,21 @@ class NetworkSupervisorService:
         port = config.discovery.multicast_port
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sender = None
         try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(("", port))
-        except OSError:
-            sock.bind(("0.0.0.0", port))
-        membership = socket.inet_aton(group) + socket.inet_aton("0.0.0.0")
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
-        sock.setblocking(False)
-        transport, _ = await loop.create_datagram_endpoint(lambda: _DiscoveryProtocol(self), sock=sock)
-        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            membership = socket.inet_aton(group) + socket.inet_aton("0.0.0.0")
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+            sock.setblocking(False)
+            sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            transport, _ = await loop.create_datagram_endpoint(lambda: _DiscoveryProtocol(self), sock=sock)
+        except BaseException:
+            sock.close()
+            if sender is not None:
+                sender.close()
+            raise
         self._discovery_transport = transport
         self._discovery_socket = sock
         self._discovery_sender = sender
@@ -1070,6 +1205,15 @@ class NetworkSupervisorService:
     async def _post_peer(self, peer_id: str, path: str, envelope: NetworkEnvelope) -> dict[str, Any]:
         endpoint = self._peer_endpoint(peer_id)
         base_url = str(endpoint.get("baseUrl") or "").rstrip("/")
+        try:
+            parsed_url = urlsplit(base_url)
+            if base_url and (parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment or parsed_url.path):
+                raise ValueError()
+            _ = parsed_url.port
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"failureClass": "peer_invalid_origin", "peerId": peer_id}) from exc
+        if len(_json_dumps(envelope.model_dump(by_alias=True)).encode("utf-8")) > 262_144:
+            raise HTTPException(status_code=413, detail={"failureClass": "peer_request_too_large", "peerId": peer_id})
         if not base_url:
             raise HTTPException(
                 status_code=400,
@@ -1090,6 +1234,7 @@ class NetworkSupervisorService:
                 f"{base_url}/v1/network-supervisor/{path.lstrip('/')}",
                 headers=self._peer_headers(peer_id),
                 json=envelope.model_dump(by_alias=True),
+                follow_redirects=False,
             )
         except httpx.RequestError as exc:
             raise HTTPException(
@@ -1103,7 +1248,15 @@ class NetworkSupervisorService:
                     "recommendedNextAction": "Check V8 Link diagnostics, VPN route/DNS/MTU, and peer auth before retrying.",
                 },
             ) from exc
-        payload = response.json().copy() if response.content else {}
+        if len(response.content) > 1_048_576:
+            raise HTTPException(status_code=502, detail={"failureClass": "peer_response_too_large", "peerId": peer_id})
+        try:
+            payload = response.json() if response.content else {}
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail={"failureClass": "peer_invalid_response", "peerId": peer_id,
+                "httpStatus": response.status_code}) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail={"failureClass": "peer_invalid_response", "peerId": peer_id})
         if response.is_error:
             detail = payload.get("detail") or payload.get("error") or response.text
             failure_class = "auth_failed" if response.status_code in {401, 403} else "peer_error"
@@ -1116,6 +1269,45 @@ class NetworkSupervisorService:
                     "detail": detail,
                 },
             )
+        # HTTP success is not proof of receipt. Bind the signed response to this request.
+        try:
+            reply = NetworkEnvelope.model_validate(payload)
+            expected_types = {
+                "neighbor.message": {"neighbor.message.ack"},
+                "neighbor.pairing.consume": {"neighbor.pairing.accepted"},
+                "peer.join_request": {"peer.join_response"},
+                "peer.challenge_request": {"peer.challenge_response"},
+                "wake.request": {"wake.ack"},
+                "delegation.request": {"delegation.accepted", "delegation.result", "delegation.failed"},
+                "neighbor.task.assign": {"neighbor.task.ack"},
+                "neighbor.task.result": {"neighbor.task.ack"},
+                "neighbor.task.handoff_request": {"neighbor.task.ack"},
+                "neighbor.task.ack": {"neighbor.task.ack"},
+            }
+            expected = expected_types.get(envelope.message_type, {f"{envelope.message_type}.ack"})
+            if reply.from_peer_id != peer_id or reply.to_peer_id != envelope.from_peer_id or reply.message_type not in expected:
+                raise ValueError("peer_response_identity_mismatch")
+            if reply.payload.get("requestMessageId") != envelope.message_id:
+                raise ValueError("peer_response_request_mismatch")
+            if reply.trace.model_dump() != envelope.trace.model_dump():
+                raise ValueError("peer_response_trace_mismatch")
+            if envelope.message_type == "neighbor.message" and reply.payload.get("messageId") != envelope.payload.get("messageId"):
+                raise ValueError("peer_response_message_mismatch")
+            if envelope.message_type == "neighbor.message" and reply.payload.get("status") not in {"received", "duplicate"}:
+                raise ValueError("peer_response_not_received")
+            if envelope.message_type.startswith("neighbor.task.") and envelope.message_type != "neighbor.task.ack":
+                if reply.payload.get("status") not in {"received", "duplicate"}:
+                    raise ValueError("peer_response_not_received")
+                for identity_field in ("taskId", "assignmentId", "resultId"):
+                    if envelope.payload.get(identity_field) and reply.payload.get(identity_field) != envelope.payload[identity_field]:
+                        raise ValueError("peer_response_task_mismatch")
+            public_key = str(endpoint.get("publicKey") or "").strip()
+            if not public_key:
+                raise ValueError("peer_response_identity_unpinned")
+            self.verify_envelope(reply, allow_untrusted=True, provided_public_key=public_key,
+                                 mark_nonce_seen=False)
+        except (ValueError, HTTPException) as exc:
+            raise HTTPException(status_code=502, detail={"failureClass": "peer_unverified_response", "peerId": peer_id}) from exc
         return payload
 
     def _is_peer_online(
@@ -1375,14 +1567,15 @@ class NetworkSupervisorService:
             "node": {
                 "peerId": identity["peerId"],
                 "displayName": config.node.display_name,
-                "advertisedBaseUrl": config.node.advertised_base_url,
-                "advertisedWsUrl": config.node.advertised_ws_url,
+                "advertisedBaseUrl": identity["advertisedBaseUrl"],
+                "advertisedWsUrl": identity["advertisedWsUrl"],
                 "transportProfileId": config.node.transport_profile_id or "",
-                "peerBaseUrl": config.node.peer_base_url or "",
+                "peerBaseUrl": identity["peerBaseUrl"],
                 "publicKeyFingerprint": identity["publicKeyFingerprint"],
                 "localPeerTokenFingerprint": identity["localPeerTokenFingerprint"],
             },
             "discovery": {
+                "listenerError": self._discovery_error,
                 "lanEnabled": bool(config.discovery.lan_enabled),
                 "wanBootstrapPeers": list(config.discovery.wan_bootstrap_peers),
                 "lastAnnounceAt": self._last_announce_at,
@@ -1680,10 +1873,10 @@ class NetworkSupervisorService:
             payload={
                 "peerId": local_identity["peerId"],
                 "displayName": self.get_config_model().node.display_name,
-                "baseUrl": self.get_config_model().node.advertised_base_url,
-                "wsUrl": self.get_config_model().node.advertised_ws_url,
+                "baseUrl": self._local_identity()["advertisedBaseUrl"],
+                "wsUrl": self._local_identity()["advertisedWsUrl"],
                 "transportProfileId": self.get_config_model().node.transport_profile_id or "",
-                "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
+                "peerBaseUrl": self._local_identity()["peerBaseUrl"],
                 "publicKey": local_identity["publicKey"],
                 "publicKeyFingerprint": local_identity["publicKeyFingerprint"],
                 "baseUrlHint": str(endpoint.get("baseUrl") or "").strip(),
@@ -1935,12 +2128,13 @@ class NetworkSupervisorService:
             message_type="peer.join_response",
             to_peer_id=envelope.from_peer_id,
             payload={
+                "requestMessageId": envelope.message_id,
                 "peerId": self._local_identity()["peerId"],
                 "displayName": self.get_config_model().node.display_name,
-                "baseUrl": self.get_config_model().node.advertised_base_url,
-                "wsUrl": self.get_config_model().node.advertised_ws_url,
+                "baseUrl": self._local_identity()["advertisedBaseUrl"],
+                "wsUrl": self._local_identity()["advertisedWsUrl"],
                 "transportProfileId": self.get_config_model().node.transport_profile_id or "",
-                "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
+                "peerBaseUrl": self._local_identity()["peerBaseUrl"],
                 "publicKey": self._local_identity()["publicKey"],
                 "publicKeyFingerprint": self._local_identity()["publicKeyFingerprint"],
                 "trusted": envelope.from_peer_id in self._trusted_peer_map(),
@@ -1954,13 +2148,14 @@ class NetworkSupervisorService:
             message_type="peer.challenge_response",
             to_peer_id=envelope.from_peer_id,
             payload={
+                "requestMessageId": envelope.message_id,
                 "ok": True,
                 "peerId": self._local_identity()["peerId"],
                 "displayName": self.get_config_model().node.display_name,
-                "baseUrl": self.get_config_model().node.advertised_base_url,
-                "wsUrl": self.get_config_model().node.advertised_ws_url,
+                "baseUrl": self._local_identity()["advertisedBaseUrl"],
+                "wsUrl": self._local_identity()["advertisedWsUrl"],
                 "transportProfileId": self.get_config_model().node.transport_profile_id or "",
-                "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
+                "peerBaseUrl": self._local_identity()["peerBaseUrl"],
                 "publicKey": self._local_identity()["publicKey"],
                 "publicKeyFingerprint": self._local_identity()["publicKeyFingerprint"],
                 "receivedAt": _utc_iso(),
@@ -1971,11 +2166,15 @@ class NetworkSupervisorService:
         )
 
     def handle_peer_wake_request(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
+        config = self.get_config_model()
+        if envelope.message_type != "wake.request" or not config.enabled or not config.wake.enabled:
+            raise HTTPException(status_code=403, detail="Wake request disabled or invalid")
         self.verify_envelope(envelope)
         return self.build_envelope(
             message_type="wake.ack",
             to_peer_id=envelope.from_peer_id,
             payload={
+                "requestMessageId": envelope.message_id,
                 "ok": True,
                 "peerId": self._local_identity()["peerId"],
                 "receivedAt": _utc_iso(),
@@ -1987,6 +2186,8 @@ class NetworkSupervisorService:
 
     async def handle_peer_delegations(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
         if envelope.message_type == "delegation.request":
+            if not self.get_config_model().enabled:
+                raise HTTPException(status_code=403, detail="Network runtime is disabled")
             verified = self.verify_envelope(envelope)
             trusted_peer = self._trusted_peer(envelope.from_peer_id)
             self._assert_peer_scope_access(
@@ -1997,12 +2198,14 @@ class NetworkSupervisorService:
             )
             return await self._handle_inbound_delegation_request(envelope, verified["publicKey"])
 
+        if envelope.message_type not in {"delegation.accepted", "delegation.progress", "delegation.result", "delegation.failed"}:
+            raise HTTPException(status_code=400, detail="Unsupported delegation callback")
         self.verify_envelope(envelope)
         self.handle_protocol_callback(envelope)
         return self.build_envelope(
             message_type=f"{envelope.message_type}.ack",
             to_peer_id=envelope.from_peer_id,
-            payload={"ok": True, "receivedAt": _utc_iso()},
+            payload={"ok": True, "receivedAt": _utc_iso(), "requestMessageId": envelope.message_id},
             trace=envelope.trace,
         )
 
@@ -2018,12 +2221,17 @@ class NetworkSupervisorService:
         delegation_id = str(envelope.trace.delegation_id or "").strip() or f"delegation_{uuid.uuid4().hex}"
         existing = self._delegation_entry(delegation_id)
         if existing:
+            if existing.get("peerId") != envelope.from_peer_id or existing.get("direction") != "inbound":
+                raise HTTPException(status_code=403, detail="Delegation identity belongs to another peer")
+            if existing.get("task") != str(envelope.payload.get("task") or "").strip():
+                raise HTTPException(status_code=409, detail="Delegation identity reused with a different task")
             existing_status = str(existing.get("status") or "").strip().lower()
             if existing_status == "completed":
                 return self.build_envelope(
                     message_type="delegation.result",
                     to_peer_id=envelope.from_peer_id,
                     payload={
+                        "requestMessageId": envelope.message_id,
                         "delegationId": delegation_id,
                         "status": "completed",
                         "content": str(existing.get("result") or "").strip(),
@@ -2038,6 +2246,7 @@ class NetworkSupervisorService:
                     message_type="delegation.failed",
                     to_peer_id=envelope.from_peer_id,
                     payload={
+                        "requestMessageId": envelope.message_id,
                         "delegationId": delegation_id,
                         "status": "failed",
                         "error": str(existing.get("lastError") or "Delegation already failed"),
@@ -2049,6 +2258,7 @@ class NetworkSupervisorService:
                 message_type="delegation.accepted",
                 to_peer_id=envelope.from_peer_id,
                 payload={
+                    "requestMessageId": envelope.message_id,
                     "delegationId": delegation_id,
                     "status": existing_status or "accepted",
                     "outerRunId": existing.get("outerRunId"),
@@ -2129,7 +2339,8 @@ class NetworkSupervisorService:
         return self.build_envelope(
             message_type="delegation.accepted",
             to_peer_id=envelope.from_peer_id,
-            payload={"delegationId": delegation_id, "status": "accepted", "outerRunId": outer_handle.run_id},
+            payload={"delegationId": delegation_id, "status": "accepted", "outerRunId": outer_handle.run_id,
+                     "requestMessageId": envelope.message_id},
             trace=envelope.trace,
             expires_in_seconds=max(60, int(self.get_config_model().delegation.default_timeout_seconds or 120)),
         )
@@ -2139,6 +2350,17 @@ class NetworkSupervisorService:
         if not delegation_id:
             raise HTTPException(status_code=400, detail="Missing delegationId in trace")
         entry = self._delegation_entry(delegation_id)
+        if not entry or entry.get("direction") != "outbound" or entry.get("peerId") != envelope.from_peer_id:
+            raise HTTPException(status_code=403, detail="Delegation callback sender does not own this task")
+        if envelope.payload.get("delegationId") not in (None, "", delegation_id):
+            raise HTTPException(status_code=409, detail="Delegation callback identity mismatch")
+        settled = str(entry.get("status") or "")
+        if settled in {"completed", "failed", "cancelled"}:
+            duplicate_result = settled == "completed" and envelope.message_type == "delegation.result" and str(envelope.payload.get("content") or "").strip() == str(entry.get("result") or "").strip()
+            duplicate_failure = settled == "failed" and envelope.message_type == "delegation.failed" and str(envelope.payload.get("error") or "Remote delegation failed").strip() == str(entry.get("lastError") or "").strip()
+            if duplicate_result or duplicate_failure:
+                return {"status": settled, "duplicate": True}
+            raise HTTPException(status_code=409, detail="Delegation is already terminal")
         outer_run_id = str(entry.get("outerRunId") or "").strip()
         outer_handle = erc_kernel.attach_run(outer_run_id, component="network_supervisor", node="callback") if outer_run_id else None
         payload = dict(envelope.payload or {})

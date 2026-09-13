@@ -52,6 +52,8 @@ ConfigBrokerMode = Literal[
     "model_record_prepare",
     "model_policy_prepare",
     "media_operation_prepare",
+    "network_status",
+    "network_prepare",
     "commit",
     "status",
     "rollback",
@@ -536,6 +538,7 @@ class ConfigBrokerArgs(_StrictConfigBrokerModel):
     governance: ConfigBrokerGovernance | None = None
     routing_policies: dict[str, str] | None = None
     role_parameters: dict[str, ConfigBrokerRoleParameters] | None = None
+    network_settings: dict[str, JsonValue] | None = None
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -711,8 +714,16 @@ def config_broker(
     governance: ConfigBrokerGovernance | None = None,
     routing_policies: dict[str, str] | None = None,
     role_parameters: dict[str, ConfigBrokerRoleParameters] | None = None,
+    network_settings: dict[str, JsonValue] | None = None,
 ) -> str:
-    """Inspect and change model/MCP configuration through one recoverable control plane.
+    """Inspect and change model/MCP/Network configuration through one recoverable control plane.
+
+    `network_status` reads secret-free network settings. `network_prepare` accepts
+    a partial network_settings object (enabled, node, discovery, wake, delegation,
+    relay, openaiCompat); use camelCase keys returned by network_status. Identity,
+    trust enrollment, keys and tokens stay with the pairing/credential owner.
+    Commit with transaction_id/plan_digest; rollback preserves unrelated domains.
+    Compat changes apply next request; transport/discovery changes require reload.
 
     Supervisor only. Use `models` to list models by category, `role_matrix` to
     inspect model consumers, and `recommend` before changing a role. Use
@@ -778,7 +789,11 @@ def config_broker(
     )
     owner_id, session_id, run_id = _runtime_identity()
     try:
-        if normalized_mode in {"models", "model_list", "inventory"}:
+        if normalized_mode == "network_status":
+            payload = config_broker_service.network_status()
+        elif normalized_mode == "network_prepare":
+            payload = config_broker_service.prepare_network(settings=dict(network_settings or {}), owner_id=owner_id, session_id=session_id, run_id=run_id)
+        elif normalized_mode in {"models", "model_list", "inventory"}:
             payload = config_broker_service.inventory(category=category, query=query, limit=limit, offset=offset)
         elif normalized_mode == "role_matrix":
             payload = config_broker_service.role_matrix()

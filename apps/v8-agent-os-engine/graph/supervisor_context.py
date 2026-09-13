@@ -1208,7 +1208,7 @@ def build_supervisor_system_content(
             f"Active Workspace Root: {workspace_path}\n"
             f"Workspace Binding Source: {workspace_binding.source}; workspaceId={workspace_binding.workspace_id or 'none'}; projectId={workspace_binding.project_id or 'none'}\n"
             f"Main V8 Workspace Store: {main_workspace_path}\n"
-            "The Active Workspace Root is the execution capability root for project files and command cwd. "
+            "The Active Workspace Root is the default location for project files and command cwd, not an absolute Supervisor sandbox. "
             "Do not write project files to the Main V8 Workspace Store when an Active Workspace Root is present.\n"
             "When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, "
             "you MUST save them under the Active Workspace Root above.\n"
@@ -1412,7 +1412,7 @@ def build_supervisor_system_content(
     runtime_guidance = (
         "\n\n[Execution Hints]\n"
         "If the current workspace hits a protected or legacy residue path, surface the governance/runtime hint and recommended canonical workspace path instead of trying to fix paths with destructive shell commands.\n"
-        "Treat Active Workspace Root as the project execution boundary: command cwd and project file writes must stay inside it unless the user explicitly grants another root.\n"
+        "Use Active Workspace Root by default. For an ordinary path outside it, call the native read/write/command tool with the exact target: manual/reduced modes request Safety approval, minimal mode follows the user's standing authorization. Do not switch roots or use a shell to evade a refusal; explicit sandbox leases, delegated Capsule/writeSet, versions, core and secret rules still apply.\n"
         "Passive Memory/RAG context is only a compact snapshot. When the user asks about prior work, remembered preferences, project history, exact daily logs, or knowledge graph relations, call `memory_broker` before relying on injected memory.\n"
         "For high-impact decisions based on memory, verify with `memory_broker(mode=\"recall\")`, `memory_broker(mode=\"read_day\")`, or `memory_broker(mode=\"graph_neighbors\")`; if lookup returns no match or stale context, say so instead of inventing history.\n"
         "Skill is a method package, not a permission grant; it cannot bypass runtime gates, workspace boundaries, or safety policy.\n"

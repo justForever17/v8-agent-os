@@ -348,6 +348,8 @@ def test_config_broker_schema_declares_modes_and_forbids_unknown_config_fields()
         "model_record_prepare",
         "model_policy_prepare",
         "media_operation_prepare",
+        "network_status",
+        "network_prepare",
         "commit",
         "status",
         "rollback",

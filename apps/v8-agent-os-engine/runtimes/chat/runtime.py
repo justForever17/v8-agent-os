@@ -1479,7 +1479,9 @@ class ChatRuntime:
                         if not local_path:
                             raise ValueError("无法定位这个附件的本地工作区路径，不能安全读取。")
                         with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
-                            output = await asyncio.to_thread(read_native_file.invoke, {"path": local_path})
+                            output = await asyncio.to_thread(read_native_file.invoke, {
+                                "name": tool_name, "args": {"path": local_path}, "id": tool_call_id, "type": "tool_call",
+                            })
                     else:
                         invoke_payload = {
                             "file_path": local_path or None,
@@ -4990,9 +4992,16 @@ class ChatRuntime:
                 "supervisor_completion_correction": completion_correction_resume,
             }
         if compat_diagnostics:
+            context_transport = chat_run.transport
+            if chat_run.request.resume_run_id:
+                from runtimes.network_supervisor.compat_run_control import resume_data
+                record = db.get_run_record(chat_run.request.resume_run_id) or {}
+                retained_data = resume_data(record)
+                if retained_data is not None:
+                    context_transport = "network_supervisor_" + str((retained_data.compat_ingress_diagnostics or {}).get("protocol") or "openai")
             current_route_context = {
                 **current_route_context,
-                "transport": chat_run.transport,
+                "transport": context_transport,
                 "compatIngressDiagnostics": compat_diagnostics,
                 "compatClientProfile": compat_diagnostics.get("compatClientProfile"),
                 "compatRequestKind": compat_diagnostics.get("compatRequestKind"),
@@ -5052,6 +5061,19 @@ class ChatRuntime:
             session_id=chat_run.session_id,
             resume_value=chat_run.request.resume_value or {},
         )
+        from runtimes.network_supervisor.compat_run_control import resume_data
+        retained = resume_data(db.get_run_record(chat_run.active_run_id) or {})
+        if retained is not None:
+            from langgraph.types import Command
+            diagnostics = {**dict(retained.compat_ingress_diagnostics or {}),
+                           **_compat_ingress_diagnostics_from_request(chat_run.request)}
+            # tool_choice is one API request's contract. A resumed checkpoint
+            # must not require yesterday's tool again after its result arrives.
+            diagnostics["requestedExternalToolChoice"] = _compat_ingress_diagnostics_from_request(chat_run.request).get("requestedExternalToolChoice")
+            transport = "network_supervisor_" + str(diagnostics.get("protocol") or "openai")
+            runner_bundle.payload = Command(resume=chat_run.request.resume_value or {}, update={
+                "current_route_context": {"transport": transport, "compatIngressDiagnostics": diagnostics},
+            })
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
     def _build_tool_watchdog_timeout_messages(
@@ -8812,7 +8834,7 @@ class ChatRuntime:
             error = data.get("error")
             from langgraph.errors import GraphBubbleUp
 
-            if isinstance(error, (GraphBubbleUp, ModelGovernanceInterventionRequired, asyncio.CancelledError)):
+            if isinstance(error, (GraphBubbleUp, ModelGovernanceInterventionRequired, CompatExternalToolRequest, asyncio.CancelledError)):
                 # Interrupt/resume and cancellation have their own lifecycle;
                 # an expected approval/ask_user pause is not a failed tool result.
                 return emitted_events
@@ -10645,6 +10667,10 @@ class ChatRuntime:
                 reason="external_tool_requested",
                 node="run_manager",
             )
+            chat_run.emit_runtime_event("network.external_tool.waiting", {
+                "toolCallId": str((interrupted_signal.get("payload") or {}).get("tool_call_id") or ""),
+                "internalAliasName": str((interrupted_signal.get("payload") or {}).get("internal_alias_name") or ""),
+            })
             return [
                 {
                     "type": "done",
@@ -11501,6 +11527,8 @@ class ChatRuntime:
         context["safetyApprovalMode"] = safety_approval_mode
         spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
         resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        if resume_value.get("kind") == "external_tool_result":
+            context["compat_external_tool_resume"] = resume_value
         spec_continuation = resume_value.get("specContinuation") if isinstance(resume_value.get("specContinuation"), dict) else {}
         continuation_spec_id = str(spec_continuation.get("specId") or spec_continuation.get("spec_id") or "").strip()
         if continuation_spec_id and not spec_id:
@@ -12132,6 +12160,12 @@ class ChatRuntime:
             raise
         except CompatExternalToolRequest as exc:
             payload = dict(getattr(exc, "payload", {}) or {})
+            if not str(payload.get("toolCallId") or payload.get("tool_call_id") or "").strip() and stream_state is not None:
+                alias = str(payload.get("internalAliasName") or payload.get("toolName") or "").strip()
+                call = next((item for item in reversed(stream_state.tool_calls_buffer or [])
+                             if alias and str((item or {}).get("name") or "") == alias and (item or {}).get("id")), None)
+                if call:
+                    payload["toolCallId"] = str(call["id"])
             interrupted_signal = {
                 "command": "external_tool_requested",
                 "reason": "external_tool",

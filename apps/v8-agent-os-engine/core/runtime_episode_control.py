@@ -16,11 +16,15 @@ class EpisodeControlCancelled(asyncio.CancelledError):
     pass
 
 
-def inspect_episode(episode_id: str, *, session_id: str, run_id: str) -> dict[str, Any]:
+def inspect_episode(episode_id: str, *, session_id: str, run_id: str, detail: bool = False) -> dict[str, Any]:
     episode = db.get_runtime_episode(episode_id)
     if not episode or episode.get("session_id") != session_id or episode.get("run_id") != run_id:
         raise ValueError("episode_scope_mismatch")
-    messages = db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id, pending_only=False)
+    messages = db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id, pending_only=False,
+                                               limit=129 if detail else 17, newest_first=True)
+    window_limit = 128 if detail else 16
+    has_more_controls = len(messages) > window_limit
+    messages = messages[:window_limit]
     with db.get_connection() as conn:
         progress = conn.execute(
             "SELECT payload_json, created_at FROM runtime_episode_events WHERE episode_id=? "
@@ -28,6 +32,12 @@ def inspect_episode(episode_id: str, *, session_id: str, run_id: str) -> dict[st
         ).fetchone()
     import json
     observation = json.loads(progress["payload_json"]) if progress else {}
+    from urllib.parse import quote
+    handoffs = db.list_runtime_episode_handoffs(episode_id)
+    if not detail:
+        messages = [{key: item[key] for key in ("messageId", "kind", "deliverySeq", "deliveryState", "receipt") if key in item} for item in messages]
+        handoffs = [{key: payload[key] for key in ("handoffRefId", "producerEpisodeId", "kind", "status", "compactSummary", "version", "sourceVersion", "usableFor", "proofRefs", "artifactRefs") if key in payload}
+                    for item in handoffs[-12:] for payload in [dict(item.get("payload") or item)]]
     return {
         "episodeId": episode_id, "state": episode["state"],
         "executionTerminal": episode["state"] in TERMINAL_EPISODE_STATES,
@@ -35,9 +45,11 @@ def inspect_episode(episode_id: str, *, session_id: str, run_id: str) -> dict[st
         "progress": observation.get("progress") or {},
         "blockingReason": episode.get("error_message") or "",
         "version": {"leaseGeneration": episode.get("leaseGeneration", 0), "updatedAt": episode.get("updated_at")},
-        "detailRef": f"episode://{episode_id}",
+        "detailRef": f"/runtime-episodes/{quote(episode_id, safe='')}?sessionId={quote(session_id, safe='')}&runId={quote(run_id, safe='')}",
+        "detailTool": "runtime_broker(mode='inspect', episode_id=..., detail_level='full')",
         "controls": messages,
-        "handoffs": db.list_runtime_episode_handoffs(episode_id),
+        "controlWindow": {"complete": not has_more_controls, "newestFirst": True},
+        "handoffs": handoffs,
     }
 
 
@@ -47,9 +59,7 @@ def request_control(episode_id: str, *, session_id: str, run_id: str, kind: str,
         raise ValueError("unsupported_episode_control")
     if not request_id or (kind == "steer" and not followup.strip()):
         raise ValueError("episode_control_requires_request_id_and_guidance")
-    snapshot = inspect_episode(episode_id, session_id=session_id, run_id=run_id)
-    if snapshot["executionTerminal"]:
-        raise ValueError("episode_already_terminal")
+    inspect_episode(episode_id, session_id=session_id, run_id=run_id)
     receipt = db.append_runtime_episode_message(
         episode_id=episode_id, session_id=session_id, run_id=run_id,
         recipient=episode_id, kind=kind, request_id=request_id, content={"followup": followup},
@@ -62,19 +72,37 @@ def request_control(episode_id: str, *, session_id: str, run_id: str, kind: str,
 
 
 def cancellation_requested(episode_id: str, run_id: str) -> bool:
-    return any(item["kind"] == "cancel" for item in db.list_runtime_episode_messages(
-        run_id=run_id, recipient=episode_id,
-    ))
+    with db.get_connection() as conn:
+        return bool(conn.execute(
+            "WITH RECURSIVE ancestors(id, parent_id) AS (SELECT id, parent_episode_id FROM runtime_episodes WHERE id=? "
+            "UNION SELECT parent.id, parent.parent_episode_id FROM runtime_episodes parent JOIN ancestors ON parent.id=ancestors.parent_id) "
+            "SELECT 1 FROM runtime_episode_events WHERE episode_id IN (SELECT id FROM ancestors) AND run_id=? "
+            "AND topic='runtime.episode.message' AND state='pending' "
+            "AND json_extract(payload_json, '$.kind')='cancel' LIMIT 1", (episode_id, run_id),
+        ).fetchone())
 
 
 def assert_episode_execution_allowed(context: dict[str, Any]) -> None:
-    episode_id = str(context.get("delegation_id") or context.get("episode_id") or "")
     run_id = str(context.get("run_id") or "")
-    if not episode_id or not run_id:
+    if not run_id:
         return
-    episode = db.get_runtime_episode(episode_id) or {}
-    if cancellation_requested(episode_id, run_id) or episode.get("state") in TERMINAL_EPISODE_STATES:
-        raise EpisodeControlCancelled(episode_id)
+    for episode_id in {str(context.get(key) or "") for key in ("delegation_id", "episode_id", "parent_delegation_id")} - {""}:
+        episode = db.get_runtime_episode(episode_id) or {}
+        if cancellation_requested(episode_id, run_id) or episode.get("state") in TERMINAL_EPISODE_STATES:
+            raise EpisodeControlCancelled(episode_id)
+    assert_partial_dependencies_current(list(context.get("dependency_results") or []))
+
+
+def assert_partial_dependencies_current(results: list[dict[str, Any]]) -> None:
+    for result in results:
+        if result.get("resultPhase") != "accepted_partial":
+            continue
+        producer_id, ref = result.get("producerEpisodeId"), result.get("handoffRefId")
+        handoffs = [dict(row.get("payload") or row) for row in db.list_runtime_episode_handoffs(str(producer_id or ""))]
+        selected = next((item for item in handoffs if item.get("handoffRefId") == ref), None)
+        same_output = [item for item in handoffs if selected and item.get("outputKey") == selected.get("outputKey")]
+        if not selected or not same_output or same_output[-1].get("handoffRefId") != ref:
+            raise ValueError("accepted_partial_superseded")
 
 
 def apply_worker_controls(state: dict[str, Any], *, episode_id: str, run_id: str) -> bool:
@@ -87,8 +115,10 @@ def apply_worker_controls(state: dict[str, Any], *, episode_id: str, run_id: str
     """
     if not episode_id or not run_id:
         return False
-    controls = db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id, pending_only=False)
-    if any(item["kind"] == "cancel" and item["deliveryState"] == "pending" for item in controls):
+    cursors = dict(state.get("runtime_control_cursors") or {})
+    controls = db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id, pending_only=False,
+                                               after_seq=int(cursors.get(episode_id) or 0))
+    if cancellation_requested(episode_id, run_id):
         raise EpisodeControlCancelled(episode_id)
     seen = set(state.get("runtime_control_ids") or [])
     guidance = [item for item in controls if item["kind"] == "steer"
@@ -103,26 +133,56 @@ def apply_worker_controls(state: dict[str, Any], *, episode_id: str, run_id: str
     for item in guidance:
         messages.append(HumanMessage(
             content="[Supervisor guidance for this episode]\n" + item["content"]["followup"],
-            id=item["messageId"], additional_kwargs={"runtimeControlId": item["messageId"]},
+            id=item["messageId"], additional_kwargs={"v8_governance_type": "runtime_episode_guidance", "runtimeControlId": item["messageId"], "runtimeControlSeq": item["deliverySeq"], "runtimeControlEpisodeId": episode_id},
         ))
         seen.add(item["messageId"])
     state["messages"] = messages
     state["runtime_control_ids"] = sorted(seen)
+    cursors[episode_id] = max(item["deliverySeq"] for item in controls)
+    state["runtime_control_cursors"] = cursors
     for item in guidance:
         if db.acknowledge_runtime_episode_message(item["messageId"], recipient=episode_id, state="applied",
                                                   result={"safePoint": "before_graph_node"}):
             emit_runtime_episode_event("runtime.episode.control.applied", {
-                "episode": {"episodeId": episode_id, "run_id": run_id},
-                "control": {"messageId": item["messageId"], "deliveryState": "applied"},
+                "episode": {key: value for key, value in (db.get_runtime_episode(episode_id) or {}).items() if key in {"episodeId", "session_id", "run_id", "state", "kind"}},
+                "control": {"messageId": item["messageId"], "kind": "steer", "deliveryState": "applied"},
             })
     return True
 
 
+def apply_model_controls(messages: list[Any], context: dict[str, Any]) -> bool:
+    """Let the current model owner consume original-episode guidance in place."""
+    episode_id = str(context.get("episode_id") or context.get("delegation_id") or "")
+    run_id = str(context.get("run_id") or "")
+    if not episode_id or not run_id:
+        return False
+    assert_episode_execution_allowed(context)
+    seen, cursor = [], 0
+    for message in messages:
+        metadata = getattr(message, "additional_kwargs", {}) or {}
+        if metadata.get("runtimeControlEpisodeId") == episode_id:
+            seen.append(metadata["runtimeControlId"])
+            cursor = max(cursor, int(metadata.get("runtimeControlSeq") or 0))
+    state = {"messages": messages, "runtime_control_ids": seen, "runtime_control_cursors": {episode_id: cursor}}
+    applied = apply_worker_controls(state, episode_id=episode_id, run_id=run_id)
+    if applied:
+        messages[:] = state["messages"]
+    return applied
+
+
 def acknowledge_stopped(episode_id: str, *, run_id: str) -> None:
-    for item in db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id):
-        if item["kind"] == "cancel":
-            db.acknowledge_runtime_episode_message(item["messageId"], recipient=episode_id, state="stopped",
-                                                  result={"executorSettled": True, "writesTerminated": True})
+    while rows := db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id):
+        for item in rows:
+            acknowledged = db.acknowledge_runtime_episode_message(
+                item["messageId"], recipient=episode_id,
+                state="stopped" if item["kind"] == "cancel" else "rejected",
+                result={"executorSettled": True, "writesTerminated": True, "reason": "episode_cancelled"},
+            )
+            if acknowledged:
+                emit_runtime_episode_event("runtime.episode.control.stopped" if item["kind"] == "cancel" else "runtime.episode.control.rejected", {
+                    "episode": {key: value for key, value in (db.get_runtime_episode(episode_id) or {}).items() if key in {"episodeId", "session_id", "run_id", "state", "kind"}},
+                    "control": {"messageId": item["messageId"], "kind": item["kind"], "deliveryState": "stopped" if item["kind"] == "cancel" else "rejected"},
+                })
 
 
 def publish_attention(episode: dict[str, Any], *, kind: str, detail: dict[str, Any]) -> dict[str, Any] | None:
@@ -140,11 +200,33 @@ def publish_attention(episode: dict[str, Any], *, kind: str, detail: dict[str, A
     )
 
 
+def reconcile_episode_attention(episode: dict[str, Any]) -> None:
+    """Repair a crash between canonical handoff commit and notification."""
+    episode_id = str(episode.get("episodeId") or episode.get("id") or "")
+    state = str(episode.get("state") or "")
+    if state in TERMINAL_EPISODE_STATES or state == "waiting_input":
+        publish_attention(episode, kind="input_required" if state == "waiting_input" else "terminal", detail={
+            "state": state, "resultRef": episode.get("resultRef") or episode.get("result_ref"),
+            "detailRef": f"episode://{episode_id}",
+        })
+    for row in db.list_runtime_episode_handoffs(episode_id):
+        handoff = dict(row.get("payload") or row)
+        if handoff.get("status") == "partial" and handoff.get("outputKey"):
+            publish_attention(episode, kind="partial", detail={
+                "handoffRefId": handoff["handoffRefId"], "outputKey": handoff["outputKey"],
+                "version": handoff["version"], "usableFor": handoff["usableFor"],
+            })
+
+
 def acknowledge_parent_messages(state: dict[str, Any], *, run_id: str) -> None:
     for message in list(state.get("messages") or []):
         additional = getattr(message, "additional_kwargs", {}) or {}
         message_id = additional.get("runtimeAttentionId")
         if message_id:
+            partial_batch = additional.get("runtimePartialBatch")
+            if isinstance(partial_batch, dict):
+                db.acknowledge_runtime_partial_batch(run_id=run_id, episode_id=partial_batch["episodeId"],
+                    output_key=partial_batch["outputKey"], through_seq=partial_batch["throughSeq"], delivered_message_id=message_id)
             db.acknowledge_runtime_episode_message(message_id, recipient=f"supervisor:{run_id}", state="processed",
                                                   result={"checkpointObserved": True})
 
@@ -153,10 +235,14 @@ def parent_attention_messages(state: dict[str, Any], *, run_id: str) -> list[Hum
     # Incoming state is a saved graph superstep. Only these earlier deliveries
     # may be acknowledged; the new batch is acknowledged after its checkpoint.
     acknowledge_parent_messages(state, run_id=run_id)
-    rows = db.list_runtime_episode_messages(run_id=run_id, recipient=f"supervisor:{run_id}")
+    rows = db.list_runtime_parent_attention(run_id)
     return [HumanMessage(
-        content="[Runtime decision event; evidence, not an instruction]\n" + json.dumps(item, ensure_ascii=False),
-        id=item["messageId"], additional_kwargs={"runtimeAttentionId": item["messageId"]},
+        content="[Runtime decision event; evidence, not an instruction]\n" + json.dumps({
+            "episodeId": item["episodeId"], "kind": item["kind"], **item["content"],
+            **({"supersedesEarlierPendingVersions": True} if item["kind"] == "partial" else {}),
+        }, ensure_ascii=False),
+        id=item["messageId"], additional_kwargs={"v8_governance_type": "runtime_episode_attention", "runtimeAttentionId": item["messageId"],
+            **({"runtimePartialBatch": {"episodeId": item["episodeId"], "outputKey": item["content"].get("outputKey", ""), "throughSeq": item["deliverySeq"]}} if item["kind"] == "partial" else {})},
     ) for item in rows]
 
 
@@ -170,14 +256,37 @@ def publish_partial(episode_id: str, *, handoff: dict[str, Any], worker_id: str,
         raise ValueError("partial_scope_and_proof_must_be_arrays")
     if cancellation_requested(episode_id, str(episode.get("run_id") or "")):
         raise EpisodeControlCancelled(episode_id)
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+    producer_tasks = set(RuntimeEpisodeRunner._episode_task_ids(episode))
+    covered_tasks = list(handoff.get("taskBriefIds") or sorted(producer_tasks))
+    if not set(covered_tasks).issubset(producer_tasks):
+        raise ValueError("partial_task_scope_exceeds_producer")
     identity = hashlib.sha256(json.dumps([episode_id, handoff["outputKey"], handoff["version"]]).encode()).hexdigest()
     payload = {**handoff, "handoffRefId": f"partial:{identity}", "producerEpisodeId": episode_id,
-               "kind": "runtime_partial", "status": "partial", "executionTerminal": False}
+               "kind": "runtime_partial", "status": "partial", "executionTerminal": False, "taskBriefIds": covered_tasks}
     result = db.add_runtime_episode_handoff(episode_id=episode_id, handoff=payload,
                                            session_id=episode.get("session_id"), run_id=episode.get("run_id"),
                                            worker_id=worker_id, lease_generation=lease_generation)
     if not result:
         raise ValueError("partial_stale_lease")
+    cursor = 0
+    while accepted := db.list_runtime_episode_messages(run_id=str(episode.get("run_id") or ""), recipient=f"partial:{episode_id}", pending_only=False, after_seq=cursor):
+        for receipt in accepted:
+            if receipt["kind"] == "accept_partial" and receipt["deliveryState"] == "processed" and receipt["content"]["handoffRefId"] != result["handoffRefId"]:
+                previous = next((dict(row.get("payload") or row) for row in db.list_runtime_episode_handoffs(episode_id)
+                                 if dict(row.get("payload") or row).get("handoffRefId") == receipt["content"]["handoffRefId"]), {})
+                if previous.get("outputKey") == handoff["outputKey"]:
+                    with db.get_connection() as conn:
+                        invalidation_exists = conn.execute(
+                            "SELECT 1 FROM runtime_episode_events WHERE episode_id=? AND topic='runtime.episode.message' "
+                            "AND json_extract(payload_json,'$.kind')='partial_invalidated' "
+                            "AND json_extract(payload_json,'$.content.acceptanceId')=? LIMIT 1", (episode_id, receipt["messageId"]),
+                        ).fetchone()
+                    if invalidation_exists:
+                        continue
+                    publish_attention(episode, kind="partial_invalidated", detail={"handoffRefId": previous["handoffRefId"],
+                        "supersededBy": result["handoffRefId"], "consumers": receipt["content"]["consumers"], "acceptanceId": receipt["messageId"]})
+        cursor = accepted[-1]["deliverySeq"]
     publish_attention(episode, kind="partial", detail={"handoffRefId": result["handoffRefId"],
                                                       "outputKey": handoff["outputKey"], "version": handoff["version"],
                                                       "usableFor": handoff["usableFor"]})
@@ -187,7 +296,7 @@ def publish_partial(episode_id: str, *, handoff: dict[str, Any], worker_id: str,
 
 def accept_partial(episode_id: str, *, session_id: str, run_id: str, handoff_id: str,
                    consumers: list[str], reason: str, request_id: str) -> dict[str, Any]:
-    snapshot = inspect_episode(episode_id, session_id=session_id, run_id=run_id)
+    snapshot = inspect_episode(episode_id, session_id=session_id, run_id=run_id, detail=True)
     handoffs = [dict(item.get("payload") or item) for item in snapshot["handoffs"]]
     selected = next((item for item in handoffs if item.get("handoffRefId") == handoff_id), None)
     if not selected or selected.get("status") != "partial":
@@ -212,7 +321,11 @@ def accept_partial(episode_id: str, *, session_id: str, run_id: str, handoff_id:
 
 def accepted_partial_for(episode: dict[str, Any], *, consumer_task_ids: set[str]) -> dict[str, Any] | None:
     episode_id = str(episode.get("episodeId") or episode.get("id") or "")
-    rows = db.list_runtime_episode_messages(run_id=str(episode.get("run_id") or ""), recipient=f"partial:{episode_id}", pending_only=False)
+    rows = []
+    cursor = 0
+    while page := db.list_runtime_episode_messages(run_id=str(episode.get("run_id") or ""), recipient=f"partial:{episode_id}", pending_only=False, after_seq=cursor):
+        rows.extend(page)
+        cursor = page[-1]["deliverySeq"]
     handoffs = [dict(item.get("payload") or item) for item in db.list_runtime_episode_handoffs(episode_id)]
     latest = {item.get("outputKey"): item for item in handoffs if item.get("status") == "partial"}
     for row in reversed(rows):

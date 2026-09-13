@@ -2242,6 +2242,8 @@ class ComputerUseEpisodeAgent:
         return True
 
     def execute(self) -> dict[str, Any]:
+        from core.runtime_episode_control import apply_model_controls, assert_episode_execution_allowed
+        from erc.runtime_context import get_runtime_context
         from core.model_control_plane import model_control_plane
         from core.model_failover_service import model_failover_service
 
@@ -2264,6 +2266,7 @@ class ComputerUseEpisodeAgent:
         )
         no_tool_rounds = 0
         for local_round in range(1, self.max_rounds + 1):
+            assert_episode_execution_allowed(get_runtime_context())
             round_index = self._round_offset + local_round
             self._emit_heartbeat(
                 {
@@ -2276,6 +2279,7 @@ class ComputerUseEpisodeAgent:
             )
             context, frame = self._current_context(round_index)
             messages = self._model_messages(round_index=round_index, context=context, frame=frame)
+            apply_model_controls(messages, get_runtime_context())
             available_tools = self._tools_for_next_round()
             response = model_failover_service.invoke_with_failover(
                 config=model_config,
@@ -2300,6 +2304,10 @@ class ComputerUseEpisodeAgent:
                 stream_attempt_timeout_seconds=60,
                 stream_idle_timeout_seconds=60,
             )
+            messages.append(response)
+            if apply_model_controls(messages, get_runtime_context()):
+                continue
+            assert_episode_execution_allowed(get_runtime_context())
             tool_calls = [dict(item) for item in list(getattr(response, "tool_calls", None) or []) if isinstance(item, dict)]
             if not tool_calls:
                 no_tool_rounds += 1

@@ -1019,13 +1019,17 @@ def append_handoff_ref(route_context: dict[str, Any] | None, handoff_ref: dict[s
             continue
         item = dict(raw_item)
         item_producer_id = str(item.get("producerEpisodeId") or "").strip()
-        if producer_id and item_producer_id == producer_id:
+        if producer_id and item_producer_id == producer_id and handoff_ref.get("status") != "partial":
             continue
         if next_identities and next_identities.intersection(runtime_handoff_identities(item)):
             continue
         refs.append(item)
     refs.append(dict(handoff_ref))
     context["handoffRefs"] = refs[-100:]
+    if handoff_ref.get("status") == "partial":
+        # A partial is evidence emitted by an active owner. It cannot change
+        # that owner's execution state or replace its terminal result pointer.
+        return context
     if producer_id:
         handoff_status = str(handoff_ref.get("status") or "").strip().lower()
         # A handoff can explicitly pause for one missing, user/Supervisor

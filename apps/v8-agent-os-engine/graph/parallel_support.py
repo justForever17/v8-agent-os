@@ -43,7 +43,7 @@ from core.runtime_episodes import (
     transition_runtime_episode,
     upsert_runtime_episode,
 )
-from erc.runtime_context import bind_runtime_context, build_runtime_callback_config
+from erc.runtime_context import bind_runtime_context, build_runtime_callback_config, get_runtime_context
 from .route_context import merge_route_context
 
 
@@ -151,6 +151,8 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
         "resolved_scope": state.get("resolved_scope") or state.get("resolvedScope") or route_context.get("resolved_scope") or route_context.get("resolvedScope"),
         "goal": branch.get("reason") or branch.get("taskGoal") or branch.get("taskBrief"),
         "delegation_id": branch.get("delegationId"),
+        "runtime_episode_lease": state.get("runtime_episode_lease"),
+        "dependency_results": state.get("dependencyResults") or task_brief.get("dependencyResults") or task_context.get("dependencyResults"),
         "delegation_depth": int(branch.get("delegationDepth") or 1),
         "parent_delegation_id": branch.get("parentDelegationId"),
         "root_episode_id": (
@@ -2651,6 +2653,10 @@ async def _run_parallel_agent_branch(
             run_id=str(control_context.get("run_id") or ""),
         ):
             current_node = agent_id
+        owner_episode_id = str(get_runtime_context().get("episode_id") or "")
+        if owner_episode_id and owner_episode_id != str(branch.get("delegationId") or ""):
+            if apply_worker_controls(local_state, episode_id=owner_episode_id, run_id=str(control_context.get("run_id") or "")):
+                current_node = agent_id
         if current_node != last_progress_node:
             stage = "working"
             summary = f"{branch.get('agentName') or agent_id} 正在处理任务。"

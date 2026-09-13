@@ -75,6 +75,8 @@ function buildTimelineDedupeKey(input: {
       : `runtime-timeline:${runtimeId}:${episodeId}:${nodeId}`;
   }
   if (topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.")) {
+    const controlId = readNestedString(metadata, "control.messageId");
+    if (controlId) return `runtime-control:${runId}:${controlId}:${topic}`;
     const episodeId = readNestedString(
       metadata,
       "episode.episodeId",
@@ -94,7 +96,7 @@ function buildTimelineDedupeKey(input: {
       "handoffRef.handoffId",
       "handoffRef.handoff_id",
     );
-    return `runtime-episode:${runId}:${episodeId || handoffId || topic}:${topic}:${status}`;
+    return `runtime-episode:${runId}:${handoffId || episodeId || topic}:${topic}:${status}`;
   }
   if (topic.startsWith("delegation.") || topic.startsWith("subagent.")) {
     const dispatchGroup = readString(

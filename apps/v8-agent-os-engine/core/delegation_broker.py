@@ -2053,9 +2053,24 @@ def build_workset_dispatch_decisions(
                 write_owners.append((index, task_id, path))
 
     conflicts_by_index: dict[int, list[dict[str, Any]]] = {}
+    dependencies = {str(task.get("taskBriefId") or ""): set(task.get("dependency") or task.get("dependencies") or []) for task in normalized_tasks}
+
+    def ordered_after(task_id: str, upstream: str) -> bool:
+        pending, seen = list(dependencies.get(task_id) or []), set()
+        while pending:
+            item = pending.pop()
+            if item == upstream:
+                return True
+            if item not in seen:
+                seen.add(item)
+                pending.extend(dependencies.get(item) or [])
+        return False
+
     for left_pos, (left_index, left_task, left_path) in enumerate(write_owners):
         for right_index, right_task, right_path in write_owners[left_pos + 1 :]:
             if left_task == right_task:
+                continue
+            if ordered_after(left_task, right_task) or ordered_after(right_task, left_task):
                 continue
             if _path_overlaps(left_path, right_path):
                 conflict = {
@@ -2069,7 +2084,7 @@ def build_workset_dispatch_decisions(
         decision = decisions[index]
         decision["risk"] = "outside_write_set"
         decision["warning"] = True
-        decision["blocked"] = bool(auto_dispatch)
+        decision["blocked"] = True
         decision["correlationStatus"] = "outside_write_set"
         decision["worksetConflictGroup"] = conflicts[:6]
         decision["reason"] = "parallel_or_batch_write_set_conflict"

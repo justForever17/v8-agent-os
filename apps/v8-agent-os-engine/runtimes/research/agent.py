@@ -232,6 +232,9 @@ class ResearchAgent:
         return "\n\n".join([candidate["answer"], *candidate.get("limitations", [])])
 
     def check_budget(self) -> float:
+        from core.runtime_episode_control import assert_episode_execution_allowed
+        from erc.runtime_context import get_runtime_context
+        assert_episode_execution_allowed(get_runtime_context())
         if self.cancelled():
             raise InterruptedError("research_cancelled")
         remaining = self.deadline - time.monotonic()
@@ -240,6 +243,9 @@ class ResearchAgent:
         return remaining
 
     def call(self, messages: list[Any], tools: list[dict[str, Any]], *, reviewer: bool = False, required: bool = False) -> Any:
+        from core.runtime_episode_control import apply_model_controls
+        from erc.runtime_context import get_runtime_context
+        apply_model_controls(messages, get_runtime_context())
         seconds = self.check_budget()
         started = time.monotonic()
         self.calls += 1
@@ -372,6 +378,10 @@ class ResearchAgent:
             response = self.call(messages, [review_tool] if final_step else [READ_TOOL, review_tool], reviewer=True, required=True)
             response_index = len(messages)
             messages.append(response)
+            from core.runtime_episode_control import apply_model_controls
+            from erc.runtime_context import get_runtime_context
+            if apply_model_controls(messages, get_runtime_context()):
+                continue
             calls = getattr(response, "tool_calls", []) or []
             if not calls:
                 messages.append(HumanMessage(content="Use review_research_answer to record your decision, or read the required source."))
@@ -477,6 +487,10 @@ class ResearchAgent:
                     )))
                 response = self.call(messages, [SUBMIT_TOOL] if final_step else [READ_TOOL, SEARCH_TOOL, SECTION_TOOL, SUBMIT_TOOL], required=True)
                 messages.append(response)
+                from core.runtime_episode_control import apply_model_controls
+                from erc.runtime_context import get_runtime_context
+                if apply_model_controls(messages, get_runtime_context()):
+                    continue
                 calls = getattr(response, "tool_calls", []) or []
                 if not calls:
                     messages.append(HumanMessage(content="Use submit_research_answer with observed evidence, or read/search the specific missing information. Do not claim completion in prose."))

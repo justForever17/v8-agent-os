@@ -12,6 +12,7 @@ export type RuntimeEpisodeGraphNode = {
   runtimeId?: string;
   kind?: string;
   diagnostic?: string;
+  controls?: Record<string, { kind: string; deliveryState: string }>;
 };
 
 export type RuntimeEpisodeGraphEdge = {
@@ -95,6 +96,7 @@ function getHandoffPayload(activity: RuntimeEpisodeGraphActivity): Record<string
 function normalizeStatus(value: string): RuntimeEpisodeGraphStatus | null {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return null;
+  if (normalized === "partial" || normalized === "cancelling") return "active";
   if (/(fail|error|reject|blocked|cancel|stalled)/.test(normalized)) return "failed";
   if (/(complete|finish|done|success|succeeded|merged|ready)/.test(normalized)) return "completed";
   if (/(attempt|revealed|missing|no_task|no-task|no_tasks|no-tasks|unconfirmed|degraded)/.test(normalized)) return "attempted";
@@ -185,7 +187,8 @@ function upsertNode(
     status: repeatedMissingTasks ? "attempted" : (next.status === "pending" ? existing.status : next.status),
     eventCount: existing.eventCount + Math.max(1, next.eventCount),
     timestamp: Math.max(existing.timestamp, next.timestamp),
-    diagnostic: existing.diagnostic || next.diagnostic,
+    diagnostic: next.diagnostic || existing.diagnostic,
+    controls: { ...existing.controls, ...next.controls },
   });
 }
 
@@ -227,6 +230,23 @@ export function buildSessionExecutionGraph(
     if (!isRuntimeEpisodeGraphActivity(activity)) continue;
     const topic = readString(activity.topic);
     const timestamp = readTimestamp(activity.timestamp);
+    if (topic.startsWith("runtime.episode.control.")) {
+      const episode = getEpisodePayload(activity);
+      const control = readRecord(readRecord(activity.data).control);
+      const id = readString(episode.episodeId) || readString(episode.id);
+      const controlId = readString(control.messageId);
+      if (!id || !controlId) continue;
+      const existing = nodes.get(id);
+      const prior = existing?.controls?.[controlId];
+      const deliveryState = readString(control.deliveryState) || "pending";
+      const kind = readString(control.kind) || prior?.kind || "control";
+      const terminalReceipt = prior && ["stopped", "applied", "rejected"].includes(prior.deliveryState);
+      const controls = { [controlId]: terminalReceipt && deliveryState === "pending" ? prior : { kind, deliveryState } };
+      upsertNode(nodes, { id, parentId: existing?.parentId || "supervisor", label: existing?.label || labelForKind(readString(episode.kind), labels),
+        subtitle: existing?.subtitle || "", status: existing?.status || "active", depth: existing?.depth || 1,
+        eventCount: 1, timestamp, controls, diagnostic: kind === "cancel" && deliveryState === "pending" ? "cancelling" : existing?.diagnostic });
+      continue;
+    }
     if (topic.startsWith("handoff.ref.")) {
       const handoff = getHandoffPayload(activity);
       const producerId = readString(handoff.producerEpisodeId) || readString(handoff.producer_episode_id);
@@ -237,17 +257,18 @@ export function buildSessionExecutionGraph(
         || readString(activity.id)
         || `${producerId}:${timestamp}`;
       const handoffSummary = readString(handoff.compactSummary) || readString(handoff.summary) || readString(activity.summary);
+      const partial = handoff.status === "partial" || handoff.executionTerminal === false;
       upsertNode(nodes, {
         id: producerId,
         parentId: null,
         label: "",
         subtitle: handoffSummary,
-        status: inferStatus(activity, handoff),
+        status: partial ? (nodes.get(producerId)?.status || "active") : inferStatus(activity, handoff),
         depth: 1,
         eventCount: 1,
         timestamp,
         kind: "runtime",
-        diagnostic: inferDiagnostic(topic, handoff),
+        diagnostic: partial ? "partial_available" : inferDiagnostic(topic, handoff),
       });
       upsertNode(nodes, {
         id: `handoff:${handoffId}`,

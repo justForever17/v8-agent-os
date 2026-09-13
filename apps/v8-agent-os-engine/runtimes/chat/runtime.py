@@ -4975,6 +4975,7 @@ class ChatRuntime:
                     "mode": "runtime_episode",
                     "nextAction": "wait_episode",
                     "state": "handoff_resume_requested",
+                    "awaitEpisodeIds": list((dict((db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {}).get("runtimeEpisodeResume") or {}).get("episodeIds") or []),
                     "episodeId": resume_episode_id,
                     "episodeKind": resume_episode_kind,
                     "episodeCount": 1,
@@ -11710,6 +11711,7 @@ class ChatRuntime:
                 session_admission_service.release(chat_run.session_id, chat_run.active_run_id, policy=lane_policy, runtime_kind="chat")
                 yield {"type": "done", "status": "running", "reason": "runtime_resume_already_consumed", "run_id": chat_run.active_run_id}
                 return
+            run_service.update_metadata(chat_run.active_run_id, {"runtimeAwait": {}})
         chat_run.emit_runtime_event(
             "run.lane.acquired",
             {

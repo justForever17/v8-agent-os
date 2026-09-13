@@ -382,7 +382,8 @@ def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch, terminal
     assert request.data.spec_id == "spec_runtime"
     assert request.resume_value["runtimeEpisodeHandoff"]["episodeId"] == "episode_runtime"
     assert request.resume_value["runtimeEpisodeHandoff"]["episodeState"] == terminal_state
-    assert "Runtime Episode Terminal" in request.messages[0].content
+    assert "Runtime Episode Attention" in request.messages[0].content
+    assert "ready dependencies" in request.messages[0].content
     assert claim_updates[0]["next_marker"]["state"] == "scheduled"
 
 

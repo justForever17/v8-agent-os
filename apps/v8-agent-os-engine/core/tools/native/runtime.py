@@ -4516,6 +4516,8 @@ def runtime_broker(
         try:
             if not session or not run:
                 raise ValueError("episode_control_requires_bound_run")
+            if context.get("actor_role") not in {None, "", "supervisor"}:
+                raise ValueError("episode_control_supervisor_only")
             if any(context.get(key) for key in ("subagent_id", "delegation_id", "delegation_depth")):
                 raise ValueError("episode_control_supervisor_only")
             if normalized_mode == "await":
@@ -4527,7 +4529,7 @@ def runtime_broker(
                     "runtime_dispatch_status": {"mode": "runtime_episode", "nextAction": "wait_episode", "awaitEpisodeIds": ids},
                 })
             if normalized_mode == "inspect":
-                result = inspect_episode(str(episode_id or ""), session_id=session, run_id=run)
+                result = inspect_episode(str(episode_id or ""), session_id=session, run_id=run, detail=detail_level in {"full", "detail"})
             elif normalized_mode == "accept_partial":
                 result = accept_partial(str(episode_id or ""), session_id=session, run_id=run, handoff_id=handoff_id,
                                         consumers=consumers or [], reason=reason or "", request_id=request_id or tool_call_id)

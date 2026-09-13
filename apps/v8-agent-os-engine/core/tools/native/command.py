@@ -3755,9 +3755,17 @@ def terminate_episode_background_commands(episode_id: str) -> dict[str, Any]:
     Capture psutil Process identities before termination (including creation
     time), then wait for all observed descendants to exit.
     """
+    from core.runtime_episode_control import db as episode_database
+    with episode_database.get_connection() as conn:
+        family = {row[0] for row in conn.execute(
+            "WITH RECURSIVE family(id) AS (SELECT id FROM runtime_episodes WHERE id=? "
+            "UNION SELECT child.id FROM runtime_episodes child JOIN family ON child.parent_episode_id=family.id) "
+            "SELECT id FROM family", (episode_id,),
+        ).fetchall()}
+    family.add(episode_id)
     pending, stopped = [], []
     for command_id, process in list(_bg_processes.items()):
-        if getattr(process, "episode_id", "") != episode_id:
+        if getattr(process, "episode_id", "") not in family:
             continue
         process_id = process._process_id()
         identities = []

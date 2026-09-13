@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sys
 import uuid
@@ -2388,6 +2389,9 @@ def delegation_broker(
         from core.runtime_episode_control import publish_partial
         from core.runtime_episode_runner import _RUNTIME_EPISODE_CLAIM_CONTEXT
         claim = _RUNTIME_EPISODE_CLAIM_CONTEXT.get()
+        branch_lease = dict(runtime_context.get("runtime_episode_lease") or {})
+        if branch_lease.get("episodeId") == caller.delegation_id:
+            claim = (caller.delegation_id, branch_lease.get("worker_id"), branch_lease.get("lease_generation"))
         try:
             if not caller.is_direct_subagent or not claim or claim[0] != caller.delegation_id:
                 raise ValueError("partial_requires_current_episode_lease")
@@ -2791,7 +2795,11 @@ def delegation_broker(
                 retry_node=recursive_retry_node,
             )
 
-        invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
+        dispatch_run_id = str(runtime_context.get("run_id") or base_state.get("run_id") or "")
+        invocation_id = (
+            "delegation_" + hashlib.sha256(f"{dispatch_run_id}:{tool_call_id}".encode()).hexdigest()[:24]
+            if dispatch_run_id and tool_call_id else f"delegation_{uuid.uuid4().hex[:12]}"
+        )
         effective_task_briefs_by_id = {
             str(task.get("taskBriefId") or "").strip(): dict(task)
             for task in normalized_tasks

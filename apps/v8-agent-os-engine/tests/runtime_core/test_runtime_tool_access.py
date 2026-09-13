@@ -25,6 +25,20 @@ from core.actor_identity import (
     resolve_collaboration_actor,
 )
 from core.delegation_broker import normalize_task_brief
+from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+
+def _resumed_background_send(command):
+    assert command.goto == "supervisor"
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert episode["state"] == "queued"
+    inputs = episode.get("inputs") or {}
+    resumed = RuntimeEpisodeRunner._broker_selected_local_episode_command(
+        episode, worker_briefs=inputs.get("workerBriefs") or [],
+        session_id=episode.get("session_id") or episode.get("sessionId"),
+        run_id=episode.get("run_id") or episode.get("runId"), workspace_path=inputs.get("workspacePath"),
+    )
+    return list(resumed.goto)[0]
 from core.native_tools import (
     _decode_completed_process_bytes,
     _windows_shell_syntax_violation_payload,
@@ -774,7 +788,7 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert updated_context["capabilityEpisodes"][-1]["inputs"]["forceRefresh"] is True
     assert updated_context["capabilityEpisodes"][-1]["inputs"]["researchExecutionMode"] == "single_bundle"
     assert updated_context["capabilityEpisodes"][-1]["reason"] == route_reason
-    assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "continue_supervisor"
 
 
 def test_research_route_language_comes_from_user_message_before_model_briefs():
@@ -1067,7 +1081,7 @@ def test_runtime_broker_allows_explicit_later_user_reverification(monkeypatch):
 
     assert payload["episodeKind"] == "engineering"
     assert payload["queuedEpisodeId"]
-    assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "continue_supervisor"
 
 
 def test_runtime_broker_rejects_manual_wait_episode_polling():
@@ -3907,7 +3921,7 @@ def test_managed_delegation_instruction_uses_child_worktree_not_parent_checkout(
             tool_call_id="call-managed-child-workspace",
         )
 
-    send = list(command.goto)[0]
+    send = _resumed_background_send(command)
     instruction = send.arg["messages"][-1].content
     rendered_instruction = instruction.replace("\\\\", "\\")
     task_brief = send.arg["parallel_branch"]["taskBrief"]
@@ -4045,7 +4059,7 @@ def test_supervisor_delegation_starts_new_top_level_tree_and_routes_risk_review(
             tool_call_id="call-supervisor-risk-review",
         )
 
-    send = list(command.goto)[0]
+    send = _resumed_background_send(command)
     branch = send.arg["parallel_branch"]
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
     assert branch["agentId"] == "verification-engineer"
@@ -4152,7 +4166,7 @@ def test_supervisor_dispatch_persists_recursive_policy_on_durable_task_brief(mon
             tool_call_id="call-supervisor-recursive-policy",
         )
 
-    task_brief = list(command.goto)[0].arg["parallel_branch"]["taskBrief"]
+    task_brief = _resumed_background_send(command).arg["parallel_branch"]["taskBrief"]
     assert task_brief["allowChildDelegation"] is True
     assert task_brief["childDelegationBudget"] == {"maxChildren": 1, "maxDepth": 2}
     assert task_brief["delegationPolicy"]["allowChildDelegation"] is True

@@ -1807,6 +1807,7 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_state ON runtime_episodes (state, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_parent ON runtime_episodes (parent_episode_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_events_episode ON runtime_episode_events (episode_id, created_at ASC)')
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_episode_message_delivery ON runtime_episode_events (run_id, topic, state, json_extract(payload_json, '$.recipient'), CAST(json_extract(payload_json, '$.deliverySeq') AS INTEGER)) WHERE topic='runtime.episode.message'")
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_events_session ON runtime_episode_events (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_queue_state ON runtime_episode_queue (state, priority DESC, available_at ASC, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_queue_episode ON runtime_episode_queue (episode_id)')
@@ -7026,7 +7027,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 episode = conn.execute(
-                    "SELECT id FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
+                    "SELECT id, state FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
                     (episode_id, session_id, run_id),
                 ).fetchone()
                 if not episode:
@@ -7041,6 +7042,8 @@ class DatabaseManager:
                     ):
                         raise ValueError("episode_message_idempotency_conflict")
                     return {**payload, "deliveryState": existing["state"]}
+                if kind in {"steer", "cancel"} and episode["state"] in {"completed", "degraded", "failed", "cancelled", "merged"}:
+                    raise ValueError("episode_already_terminal")
                 seq = conn.execute(
                     "SELECT COALESCE(MAX(json_extract(payload_json, '$.deliverySeq')), 0)+1 "
                     "FROM runtime_episode_events WHERE run_id=? AND topic='runtime.episode.message'",
@@ -7062,16 +7065,19 @@ class DatabaseManager:
         return self._run_write_with_retry(_write)
 
     def list_runtime_episode_messages(
-        self, *, run_id: str, recipient: str, pending_only: bool = True, limit: int = 128,
+        self, *, run_id: str, recipient: str, pending_only: bool = True, limit: int = 128, after_seq: int = 0,
+        newest_first: bool = False,
     ) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute(
                 "SELECT state, payload_json FROM runtime_episode_events "
                 "WHERE run_id=? AND topic='runtime.episode.message' "
                 "AND json_extract(payload_json, '$.recipient')=? "
+                "AND CAST(json_extract(payload_json, '$.deliverySeq') AS INTEGER)>? "
                 + ("AND state='pending' " if pending_only else "")
-                + "ORDER BY CAST(json_extract(payload_json, '$.deliverySeq') AS INTEGER) LIMIT ?",
-                (run_id, recipient, max(1, min(limit, 1000))),
+                + "ORDER BY CAST(json_extract(payload_json, '$.deliverySeq') AS INTEGER) "
+                + ("DESC " if newest_first else "ASC ") + "LIMIT ?",
+                (run_id, recipient, max(0, int(after_seq)), max(1, min(limit, 1000))),
             ).fetchall()
         return [{**json.loads(row["payload_json"]), "deliveryState": row["state"]} for row in rows]
 
@@ -7094,6 +7100,38 @@ class DatabaseManager:
                 return updated.rowcount == 1
 
         return self._run_write_with_retry(_write)
+
+    def list_runtime_parent_attention(self, run_id: str, *, limit: int = 128) -> List[Dict[str, Any]]:
+        """One latest pending partial per output; all decision records remain durable."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "WITH pending AS (SELECT *, json_extract(payload_json,'$.kind') AS message_kind, "
+                "CAST(json_extract(payload_json,'$.deliverySeq') AS INTEGER) AS delivery_seq, "
+                "json_extract(payload_json,'$.content.outputKey') AS output_key "
+                "FROM runtime_episode_events WHERE run_id=? AND topic='runtime.episode.message' AND state='pending' "
+                "AND json_extract(payload_json,'$.recipient')=?) "
+                "SELECT p.payload_json, p.state FROM pending p WHERE message_kind <> 'partial' OR NOT EXISTS "
+                "(SELECT 1 FROM pending newer WHERE newer.message_kind='partial' AND newer.episode_id=p.episode_id "
+                "AND newer.output_key=p.output_key AND newer.delivery_seq>p.delivery_seq) "
+                "ORDER BY CASE WHEN message_kind='partial' THEN 1 ELSE 0 END, delivery_seq LIMIT ?",
+                (run_id, f"supervisor:{run_id}", max(1, min(1000, limit))),
+            ).fetchall()
+        return [{**json.loads(row["payload_json"]), "deliveryState": row["state"]} for row in rows]
+
+    def acknowledge_runtime_partial_batch(self, *, run_id: str, episode_id: str, output_key: str,
+                                          through_seq: int, delivered_message_id: str) -> None:
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    "UPDATE runtime_episode_events SET state='processed', payload_json=json_set(payload_json,'$.receipt',json(?)) "
+                    "WHERE run_id=? AND episode_id=? AND topic='runtime.episode.message' AND state='pending' "
+                    "AND json_extract(payload_json,'$.recipient')=? AND json_extract(payload_json,'$.kind')='partial' "
+                    "AND json_extract(payload_json,'$.content.outputKey')=? AND CAST(json_extract(payload_json,'$.deliverySeq') AS INTEGER)<=?",
+                    (json.dumps({"checkpointObserved": True, "supersededByMessageId": delivered_message_id, "at": utc_now_iso()}),
+                     run_id, episode_id, f"supervisor:{run_id}", output_key, int(through_seq)),
+                )
+                conn.commit()
+        self._run_write_with_retry(_write)
 
     def add_runtime_episode_handoff(
         self,

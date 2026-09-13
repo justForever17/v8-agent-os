@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from core.database import db
 from core.runtime_episode_control import EpisodeControlCancelled, acknowledge_stopped, cancellation_requested
 from core.runtime_episode_control import publish_attention
+from core.runtime_episode_control import reconcile_episode_attention
 from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.runtime_continuation import (
@@ -1180,6 +1181,7 @@ class RuntimeEpisodeRunner:
                             print(f"[EpisodeRunner] Episode task error: {type(exc).__name__}: {exc}")
 
                     claimed_any = False
+                    await self._settle_parked_episode_cancellations()
                     self._recover_parent_wakes()
                     while len(active_tasks) < self._max_concurrent:
                         try:
@@ -1219,6 +1221,35 @@ class RuntimeEpisodeRunner:
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
 
+    async def _settle_parked_episode_cancellations(self) -> None:
+        """Cancel queued/waiting descendants without dispatching their executor."""
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "WITH RECURSIVE family(id) AS (SELECT episode_id FROM runtime_episode_events "
+                "WHERE topic='runtime.episode.message' AND state='pending' AND json_extract(payload_json, '$.kind')='cancel' "
+                "UNION SELECT child.id FROM runtime_episodes child JOIN family ON child.parent_episode_id=family.id) "
+                "SELECT e.id FROM runtime_episodes e JOIN family ON family.id=e.id "
+                "WHERE COALESCE(e.worker_id,'')='' AND e.state NOT IN ('completed','degraded','failed','merged','cancelled')",
+            ).fetchall()
+        from core.tools.native.command import terminate_episode_background_commands
+        for row in reversed(rows):
+            episode = db.get_runtime_episode(row["id"]) or {}
+            with db.get_connection() as conn:
+                active_child = conn.execute(
+                    "SELECT 1 FROM runtime_episodes WHERE parent_episode_id=? AND state NOT IN ('completed','degraded','failed','merged','cancelled') LIMIT 1", (row["id"],),
+                ).fetchone()
+            if active_child:
+                continue
+            stopped_processes = await asyncio.to_thread(terminate_episode_background_commands, row["id"])
+            if not stopped_processes["confirmed"]:
+                continue
+            stopped = db.complete_runtime_episode(row["id"], state="cancelled", expected_state=episode.get("state"),
+                                                   error_code="episode_cancelled", error_message="Cancelled while parked; no executor dispatched.")
+            if stopped:
+                acknowledge_stopped(row["id"], run_id=str(episode.get("run_id") or ""))
+                self._emit("runtime.episode.cancelled", episode=stopped, session_id=episode.get("session_id"), run_id=episode.get("run_id"),
+                           cancellation={"executorSettled": True, "writesTerminated": True})
+
     def _recover_parent_wakes(self, *, restart: bool = False) -> None:
         """Retry lost notifications from durable facts, without a model heartbeat.
 
@@ -1246,6 +1277,13 @@ class RuntimeEpisodeRunner:
                 if not recovered.get("updated"):
                     continue
             episodes = db.list_runtime_episodes(run_id=row["id"], limit=200)
+            signatures = getattr(self, "_parent_attention_signatures", {})
+            signature = json.dumps([(item.get("episodeId"), item.get("state"), item.get("resultRef"), item.get("handoffRefs")) for item in episodes], sort_keys=True, default=str)
+            if signatures.get(row["id"]) != signature:
+                for item in episodes:
+                    reconcile_episode_attention(item)
+                signatures[row["id"]] = signature
+                self._parent_attention_signatures = {key: value for key, value in list(signatures.items())[-200:]}
             pending = db.list_runtime_episode_messages(run_id=row["id"], recipient=f"supervisor:{row['id']}", limit=1)
             candidate = next((item for item in episodes if pending or item.get("state") in {"completed", "degraded", "failed", "cancelled"}), None)
             if candidate:
@@ -1429,6 +1467,8 @@ class RuntimeEpisodeRunner:
                 handoff = self._generic_handoff(episode, status="failed", summary=f"No executor registered for {kind}.")
 
             self._raise_if_episode_cancelled(episode_id, run_id=run_id)
+            from core.runtime_episode_control import assert_partial_dependencies_current
+            assert_partial_dependencies_current(list((episode.get("inputs") or {}).get("dependencyResults") or []))
             handoff_status = str(handoff.get("status") or "ready").strip().lower()
             will_retry = (
                 handoff_status in {"failed", "blocked"}
@@ -1729,7 +1769,8 @@ class RuntimeEpisodeRunner:
     ) -> None:
         if task.done():
             return
-        task.cancel()
+        if not task.cancelling():
+            task.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=max(0.05, settle_seconds))
         except asyncio.CancelledError:
@@ -1740,6 +1781,20 @@ class RuntimeEpisodeRunner:
                 episode_id or "<unknown>",
                 settle_seconds,
             )
+            while not task.done():
+                fence = self._claim_fence_kwargs(episode_id)
+                if fence:
+                    db.heartbeat_runtime_episode(episode_id, progress="cancelling: awaiting executor settlement",
+                                                 lease_seconds=self._lease_seconds, **fence)
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    if task.done():
+                        break
+                except Exception:
+                    break
         except Exception as exc:
             logger.debug(
                 "Runtime episode %s executor stopped with %s during cancellation: %s",
@@ -1770,18 +1825,6 @@ class RuntimeEpisodeRunner:
             while True:
                 if self._episode_cancellation_requested(episode_id, run_id=run_id):
                     await self._stop_awaitable_task(task, episode_id=episode_id)
-                    if not task.done():
-                        # Keep the lease and pending receipt until real cleanup
-                        # completes. Timeout is not a stopped acknowledgement.
-                        while not task.done():
-                            db.heartbeat_runtime_episode(episode_id, progress="cancelling: awaiting executor settlement",
-                                                         lease_seconds=self._lease_seconds, **self._claim_fence_kwargs(episode_id))
-                            try:
-                                await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
-                            except asyncio.TimeoutError:
-                                continue
-                            except (asyncio.CancelledError, EpisodeControlCancelled):
-                                break
                     raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
                 if task.done():
                     return await task
@@ -1814,14 +1857,17 @@ class RuntimeEpisodeRunner:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
         kind = str(episode.get("kind") or "runtime").strip().lower() or "runtime"
-        return await self._await_cancellable_task(
-            episode_id,
-            awaitable,
-            run_id=run_id,
-            progress=f"{kind}: executor running",
-            heartbeat_interval_seconds=_EPISODE_HEARTBEAT_INTERVAL_SECONDS,
-            deadline_seconds=self._episode_executor_deadline_seconds(episode),
-        )
+        with bind_runtime_context(episode_id=episode_id, run_id=run_id,
+                                  session_id=episode.get("session_id"), runtime_kind=kind,
+                                  dependency_results=(episode.get("inputs") or {}).get("dependencyResults") or []):
+            return await self._await_cancellable_task(
+                episode_id,
+                awaitable,
+                run_id=run_id,
+                progress=f"{kind}: executor running",
+                heartbeat_interval_seconds=_EPISODE_HEARTBEAT_INTERVAL_SECONDS,
+                deadline_seconds=self._episode_executor_deadline_seconds(episode),
+            )
 
     @staticmethod
     def _episode_executor_deadline_seconds(episode: dict[str, Any]) -> float | None:
@@ -5404,6 +5450,9 @@ class RuntimeEpisodeRunner:
                 partial = accepted_partial_for(sibling, consumer_task_ids=set(cls._episode_task_ids(episode)))
                 if partial:
                     for task_id in task_ids:
+                        if task_id not in set(partial.get("taskBriefIds") or []):
+                            active_task_to_episode[task_id] = sibling_id
+                            continue
                         completed[task_id] = {
                             **cls._compact_cross_episode_result(task_id=task_id, episode=sibling, handoff=partial, forced_status="ok"),
                             "resultPhase": "accepted_partial", "executionTerminal": False,
@@ -8471,6 +8520,8 @@ class RuntimeEpisodeRunner:
             branch = dict(arg.get("parallel_branch") or {})
             agent_id = str(branch.get("agentId") or "").strip()
             direct_episode = _start_direct_delegation_episode(branch) if manage_direct_episode else None
+            if direct_episode and not direct_episode.get("_directDispatchBlocked"):
+                arg["runtime_episode_lease"] = {"episodeId": branch.get("delegationId"), **_direct_delegation_fence(direct_episode)}
             if direct_episode and direct_episode.get("_directDispatchBlocked"):
                 dispatch_reason = str(
                     direct_episode.get("_directDispatchReason") or "direct_episode_claim_race"
@@ -8751,6 +8802,25 @@ class RuntimeEpisodeRunner:
                 if task_id:
                     completed_by_task_id[task_id] = summary
                 child_episode_ids.extend(branch_child_ids)
+            except asyncio.CancelledError:
+                if direct_episode and manage_direct_episode:
+                    from core.tools.native.command import terminate_episode_background_commands
+                    direct_id = str(direct_episode.get("episodeId") or direct_episode.get("id") or "")
+                    process_stop = await asyncio.to_thread(terminate_episode_background_commands, direct_id)
+                    if not process_stop["confirmed"]:
+                        raise
+                    stopped = db.complete_runtime_episode(direct_id, state="cancelled", error_code="episode_cancelled",
+                                                           **_direct_delegation_fence(direct_episode))
+                    if stopped:
+                        acknowledge_stopped(direct_id, run_id=run_id or "")
+                        self._emit("runtime.episode.cancelled", episode=stopped, session_id=session_id, run_id=run_id)
+                    if not self._episode_cancellation_requested(str(episode.get("episodeId") or ""), run_id=run_id):
+                        summary = {"taskBriefId": task_id, "delegationId": direct_id, "status": "cancelled", "summary": "Child executor stopped after cancellation."}
+                        results.append(summary)
+                        if task_id:
+                            completed_by_task_id[task_id] = summary
+                        return
+                raise
             except Exception as exc:
                 sandbox_failure = _fail_managed_branch_workspace(
                     branch,

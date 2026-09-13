@@ -290,14 +290,14 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertTrue(any(item["blocked"] for item in decisions))
         self.assertTrue(all(item["risk"] == "outside_write_set" for item in decisions))
 
-    def test_workset_dispatch_manual_warns_but_does_not_block(self) -> None:
+    def test_workset_dispatch_manual_blocks_parallel_conflicting_writers(self) -> None:
         tasks = [
             {"taskBriefId": "task-1", "goal": "Implement engine fix", "writeSet": ["apps/v8-agent-os-engine/core/foo.py"], "expectedOutputs": ["apps/v8-agent-os-engine/core/foo.py"], "acceptanceContract": "The focused test passes."},
             {"taskBriefId": "task-2", "goal": "Debug engine fix", "writeSet": ["apps/v8-agent-os-engine/core/"], "expectedOutputs": ["apps/v8-agent-os-engine/core/debug.md"], "acceptanceContract": "The root cause is proven."},
         ]
         decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=False)
         self.assertTrue(any(item["warning"] for item in decisions))
-        self.assertFalse(any(item["blocked"] for item in decisions))
+        self.assertTrue(all(item["blocked"] for item in decisions))
         self.assertTrue(all(item["worksetDecisionSource"] == "supervisor_manual" for item in decisions))
 
     def test_workset_dispatch_allows_read_only_task_without_write_set(self) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from core.database import db
 
@@ -53,3 +53,12 @@ async def runtime_episode_overview(
         "leases": leases,
         "handoffs": handoffs[-120:],
     }
+
+
+@router.get("/{episode_id:path}")
+async def runtime_episode_detail(episode_id: str, session_id: str = Query(alias="sessionId"), run_id: str = Query(alias="runId")):
+    from core.runtime_episode_control import inspect_episode
+    try:
+        return {"ok": True, **inspect_episode(episode_id, session_id=session_id, run_id=run_id, detail=True)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="episode_not_found_in_scope") from exc

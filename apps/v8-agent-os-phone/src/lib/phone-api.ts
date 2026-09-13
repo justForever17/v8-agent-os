@@ -1506,11 +1506,14 @@ export async function requestTextToSpeech(authorizedFetch: AuthorizedFetch, payl
         body: JSON.stringify(payload),
     });
     if (!response.ok) {
-        const errorPayload = await parseJsonSafe<Record<string, unknown>>(response.clone());
+        // Native Expo responses stream once and do not implement clone().
+        const errorText = await parseTextSafe(response);
+        let errorPayload: Record<string, unknown> | null = null;
+        try { errorPayload = JSON.parse(errorText); } catch { /* Plain-text errors are also valid. */ }
         const detail = String(
             errorPayload?.detail
             || errorPayload?.error
-            || await parseTextSafe(response)
+            || errorText
             || translateCurrent("src.lib.phone_api.text_35"),
         ).trim();
         throw new Error(detail || translateCurrent("src.lib.phone_api.text_35"));

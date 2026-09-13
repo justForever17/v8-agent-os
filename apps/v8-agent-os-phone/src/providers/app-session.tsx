@@ -1,6 +1,6 @@
 import React from "react";
 import { AppState, Platform, Pressable, Text, View } from "react-native";
-import { buildAdminApiUrl, normalizeAdminBaseUrl, parseJsonSafe, resolveAdminAssetUrl } from "@/src/lib/admin-client";
+import { normalizeAdminBaseUrl, parseJsonSafe, resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { type AdminConnectionProfile, type ProfileCredentials, orderAdminBaseUrlCandidates,
     readActiveAdminConnectionProfileId, readAdminConnectionProfiles, readProfileCredentials,
     upsertAdminConnectionProfile, writeActiveAdminConnectionProfileId,
@@ -71,20 +71,22 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         if (!credentials) throw new Error("This connection needs pairing again.");
         const instanceId = profile.instanceId || profile.serverId || "";
         if (!instanceId) throw new Error("The saved connection has no verified instance. Pair it again.");
+        const endpoints = orderAdminBaseUrlCandidates({ primary: profile.adminBaseUrl, adminUrls: profile.adminUrls,
+            lanUrls: profile.lanUrls, tailscaleUrls: profile.tailscaleUrls, cloudflareUrls: profile.cloudflareUrls, endpoints: profile.endpoints });
         if (!profile.user?.id) {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 4_000);
+            const bootstrap = new PhoneTransport({ endpoints, instanceId, credentials, principalId: profile.principalId || "",
+                native: Platform.OS !== "web", onEndpoint() {}, onClock() {},
+                persistRefresh: async () => { throw new Error("This connection needs pairing again."); } });
             try {
-                const response = await fetch(buildAdminApiUrl(profile.adminBaseUrl, "/api/client/auth/me"), {
-                    headers: { Authorization: `Bearer ${credentials.accessToken}` }, signal: controller.signal,
-                });
+                const response = await bootstrap.authorizedFetch("/api/client/auth/me");
                 const payload = response.ok ? await parseJsonSafe<{ user: PhoneUser }>(response) : null;
                 if (!payload?.user?.id) throw new Error("This connection needs pairing again.");
+                if (profile.principalId && payload.user.id !== profile.principalId) throw new Error("The paired account changed. Pair this connection again.");
                 profile.user = payload.user;
                 profile.principalId = payload.user.id;
                 await updateAdminConnectionProfiles((current) => current.map((item) => item.id === profileId
                     ? { ...item, user: profile.user, principalId: profile.principalId } : item));
-            } finally { clearTimeout(timer); }
+            } finally { bootstrap.dispose(); }
         }
         const authorityKey = phoneAuthorityKey({ instanceId, principalId: profile.user.id, profileId });
         const rawView = await readMetadata(viewKey(authorityKey));
@@ -92,8 +94,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         if (seq !== activationSeq.current) throw abortError();
         let transport: PhoneTransport;
         transport = new PhoneTransport({
-            endpoints: orderAdminBaseUrlCandidates({ primary: profile.adminBaseUrl, adminUrls: profile.adminUrls,
-                lanUrls: profile.lanUrls, tailscaleUrls: profile.tailscaleUrls, cloudflareUrls: profile.cloudflareUrls, endpoints: profile.endpoints }),
+            endpoints, instanceId,
+            localEndpoints: orderAdminBaseUrlCandidates({ lanUrls: profile.lanUrls,
+                endpoints: (profile.endpoints || []).filter(item => item.scope === "local" || item.kind === "lan" || item.kind === "lan_ipv6"), preferPrimary: false }),
             credentials, principalId: profile.user.id, native: Platform.OS !== "web",
             persistRefresh: async (nextCredentials, user) => {
                 if (activeRef.current?.transport !== transport) throw abortError();
@@ -161,12 +164,17 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             const visible = state === "active";
             setForeground(visible);
             if (!visible) {
+                activeRef.current?.transport.setForeground(false);
                 activeRef.current?.transport.stopStreams();
                 void phoneDrafts.flushAll().catch((error) => setConnectionError(error.message));
             }
         });
         return () => subscription.remove();
     }, []);
+    React.useEffect(() => {
+        active?.transport.setForeground(foreground);
+        return () => active?.transport.setForeground(false);
+    }, [active?.transport, foreground]);
 
     const performSaveView = React.useCallback(async (conversationId: string | null, draftId?: string) => {
         const current = activeRef.current;

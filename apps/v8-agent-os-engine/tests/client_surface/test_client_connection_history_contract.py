@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -57,32 +61,29 @@ def test_cloudflare_phone_remote_link_is_verified_and_separate_from_network_supe
 
 
 def test_phone_connection_failure_keeps_cached_identity_readable() -> None:
-    source = _read_repo_file("apps/v8-agent-os-phone/src/providers/app-session.tsx")
-
-    assert 'setStatus(parsedStoredUser ? "authenticated" : "anonymous")' in source
-    assert "if (parsedStoredUser) {" in source
-    assert 'setStatus("authenticated");' in source
-
-    refresh_failure_block_start = source.index("const refreshed = await refreshSession();")
-    refresh_failure_block = source[refresh_failure_block_start: refresh_failure_block_start + 250]
-    assert "signOut()" not in refresh_failure_block
+    _run_phone_behavior("offline cached identity")
 
 
 def test_phone_connection_candidates_are_typed_and_return_to_verified_lan() -> None:
-    profiles = _read_repo_file("apps/v8-agent-os-phone/src/lib/admin-connection-profiles.ts")
-    session = _read_repo_file("apps/v8-agent-os-phone/src/providers/app-session.tsx")
-    pairing_route = _read_repo_file("apps/v8-agent-os-phone/app/pair.tsx")
+    _run_phone_behavior("endpoint identity|LAN recovery|body backpressure")
 
-    assert 'kind === "lan_ipv6"' in profiles
-    assert 'kind === "cloudflare_tunnel"' in profiles
-    assert "sanitizeConnectionEndpoints" in profiles
-    assert 'buildAdminApiUrl(candidate, "/api/client/instance")' in session
-    assert 'buildAdminApiUrl(candidate, "/api/client/connection")' in session
-    assert "activeInstanceIdRef" in session
-    assert "localConnectionCandidatesRef" in session
-    assert "AppState.addEventListener" in session
-    assert "setInterval" in session
-    assert 'query.set("manifest", params.manifest)' in pairing_route
+
+def _run_phone_behavior(pattern: str, filename: str = "phone-transport-boundary.test.cjs") -> None:
+    """Execute production TS modules; variable names/timer syntax are not oracles.
+
+    The Phone CI matrix installs these dependencies and runs every *.test.cjs.
+    A Python-only shard skips this cross-runtime check explicitly, never reports
+    that the Phone behavior passed without running it.
+    """
+    phone = REPO_ROOT / "apps/v8-agent-os-phone"
+    node = shutil.which("node")
+    if not node or not (phone / "node_modules/typescript/lib/typescript.js").is_file():
+        pytest.skip("Phone runtime dependencies absent; behavior gate must run in the Phone CI matrix")
+    result = subprocess.run(
+        [node, "--test", f"--test-name-pattern={pattern}", str(phone / "tests" / filename)],
+        cwd=phone, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_local_trusted_client_boundary_is_documented() -> None:

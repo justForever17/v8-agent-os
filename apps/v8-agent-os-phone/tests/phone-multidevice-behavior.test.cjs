@@ -67,6 +67,7 @@ test("SSE delivery exceptions are not redelivered as plain text", async () => {
 test("native stream uses chunked Expo fetch; same-lane replacement, late A and dispose cannot reach B", async () => {
   const opened = [];
   const mockFetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
     let producer;
     const response = new Response(new ReadableStream({ start(c) { producer = c; } }));
     opened.push({ url, init, producer, response });
@@ -336,7 +337,8 @@ test("late response body remains abort-aware through parseJsonSafe rather than t
   const { PhoneTransport } = transportLoader();
   const { parseJsonSafe } = loader({ "@/src/lib/locale": { translateCurrent: (value) => value } })("@/src/lib/admin-client");
   const oldFetch = global.fetch; let finish;
-  global.fetch = async () => {
+  global.fetch = async (url) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
     const response = Response.json({});
     response.json = () => new Promise((resolve) => { finish = resolve; });
     return response;
@@ -355,12 +357,13 @@ function transportLoader() {
 }
 function transport(PhoneTransport, overrides = {}) {
   return new PhoneTransport({ endpoints: ["https://a.invalid", "https://alias-a.invalid"], credentials: { accessToken: "synthetic-old", refreshToken: "synthetic-refresh" },
-    principalId: "User", native: false, persistRefresh: async () => {}, onEndpoint() {}, onClock() {}, ...overrides });
+    instanceId: "paired-instance", principalId: "User", native: false, persistRefresh: async () => {}, onEndpoint() {}, onClock() {}, ...overrides });
 }
 test("ten 401 reads share refresh and bound concurrency, while other profile remains usable", async () => {
   const { PhoneTransport } = transportLoader(); const oldFetch = global.fetch;
   let refreshes = 0, inFlight = 0, max = 0;
   global.fetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
     if (url.endsWith("/auth/refresh")) { refreshes++; await tick(); return Response.json({ accessToken: "synthetic-new", refreshToken: "synthetic-rnew", user: { id: "User" } }); }
     inFlight++; max = Math.max(max, inFlight); await tick(); inFlight--;
     return new Headers(init.headers).get("Authorization") === "Bearer synthetic-old" ? Response.json({}, { status: 401 }) : Response.json({ ok: true });
@@ -382,7 +385,7 @@ test("disposing A rejects late results even when fetch ignores abort; mutations 
     const request = a.authorizedFetch("/read"); await tick(); a.dispose(); resolve(Response.json({ from: "A" }));
     await assert.rejects(request, { name: "AbortError" });
     const mutation = transport(PhoneTransport);
-    global.fetch = async () => { requests++; throw new Error("network acceptance unknown"); };
+    global.fetch = async (url) => { if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' }); requests++; throw new Error("network acceptance unknown"); };
     await assert.rejects(mutation.authorizedFetch("/write", { method: "POST", body: "intent" }), /unknown/);
     assert.equal(requests, 2); mutation.dispose();
   } finally { a.dispose(); global.fetch = oldFetch; }
@@ -405,7 +408,7 @@ test("terminal UTF-8 byte cursor never repeats a pipe prefix and generation chan
   assert.equal(state.output, "reset-start");
 });
 
-test("actual terminal polling effect ignores late A 400 after switching to B even when abort is ineffective", async () => {
+for (const status of [400, 404]) test(`actual terminal polling effect ignores late A ${status} after switching to B even when abort is ineffective`, async () => {
   const filename = path.join(root, "src/components/chat/InteractiveTerminalCard.tsx");
   const source = ts.createSourceFile(filename, fs.readFileSync(filename, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let callback;
@@ -426,7 +429,7 @@ test("actual terminal polling effect ignores late A 400 after switching to B eve
   vm.runInContext(code, context);
   const cleanup = context.callback();
   cleanup(); targetRef.current = "B"; outputCursorRef.current = { cursor: 99, generation: "B", output: "B", reset: false };
-  resolve({ status: 400, ok: false }); await tick();
+  resolve({ status, ok: false }); await tick();
   assert.equal(outputCursorRef.current.cursor, 99); assert.equal(outputCursorRef.current.output, "B"); assert.deepEqual(effects, []);
 });
 

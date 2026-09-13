@@ -1,0 +1,112 @@
+{
+  "sourceHead": "53fd9aceb4b9f33694032e6bfa1162cb1c7435c4",
+  "fixture": "synthetic-deferred-v1",
+  "scope": "Extracted production callbacks with network/storage boundary doubles; no native device or product API execution.",
+  "evidence": [
+    {
+      "id": "P01-same-session-draft",
+      "level": "BOUNDARY_EXECUTED",
+      "source": {
+        "file": "apps/v8-agent-os-phone/src/screens/ChatScreen.tsx",
+        "symbol": "handleSelectConversation",
+        "line": 5406,
+        "sha256": "79fc95a9de778dcbcbb482ad6fa0094b12fca2c2c4e713ca7f825ccfba26cf25"
+      },
+      "passed": false,
+      "expected": {
+        "setInput": "合成未发送草稿 v2",
+        "setUploadedFiles": [
+          {
+            "id": "attachment-a"
+          }
+        ],
+        "setComposerSelection": {
+          "start": 2,
+          "end": 6
+        },
+        "setSelectedPlugins": [
+          "plugin-a"
+        ]
+      },
+      "actual": {
+        "setInput": "",
+        "setUploadedFiles": [],
+        "setComposerSelection": {
+          "start": 0,
+          "end": 0
+        },
+        "setSelectedPlugins": []
+      },
+      "status": "FAIL"
+    },
+    {
+      "id": "X02-detail-install-target-race",
+      "level": "BOUNDARY_EXECUTED",
+      "source": {
+        "file": "apps/v8-agent-os-admin/src/app/admin/(dashboard)/extensions/store/page.tsx",
+        "symbol": "openMcpDetail",
+        "line": 265,
+        "sha256": "da1b6a01541f2402106fab8452571704ec49c7851172831cd7153bd39756393f"
+      },
+      "passed": false,
+      "expected": {
+        "selected": "mcp-B",
+        "submitted": "mcp-B"
+      },
+      "actual": {
+        "selected": "mcp-B",
+        "detail": "mcp-A",
+        "submitted": "mcp-A"
+      },
+      "status": "FAIL"
+    },
+    {
+      "id": "X03-search-out-of-order",
+      "level": "BOUNDARY_EXECUTED",
+      "source": {
+        "file": "apps/v8-agent-os-admin/src/app/admin/(dashboard)/extensions/store/page.tsx",
+        "symbol": "loadStore",
+        "line": 207,
+        "sha256": "da1b6a01541f2402106fab8452571704ec49c7851172831cd7153bd39756393f"
+      },
+      "passed": false,
+      "expected": "current",
+      "actual": "old",
+      "status": "FAIL"
+    },
+    {
+      "id": "X04-independent-install-busy",
+      "level": "BOUNDARY_EXECUTED",
+      "source": {
+        "file": "apps/v8-agent-os-admin/src/app/admin/(dashboard)/extensions/store/page.tsx",
+        "symbol": "installSkill",
+        "line": 288,
+        "sha256": "da1b6a01541f2402106fab8452571704ec49c7851172831cd7153bd39756393f"
+      },
+      "passed": false,
+      "expected": {
+        "pending": "B",
+        "busy": "B"
+      },
+      "actual": {
+        "pending": "B",
+        "busy": ""
+      },
+      "status": "FAIL"
+    },
+    {
+      "id": "P07-secure-storage-rejection",
+      "level": "BOUNDARY_EXECUTED",
+      "source": {
+        "file": "apps/v8-agent-os-phone/src/lib/mobile-storage.ts",
+        "symbol": "setStoredValue",
+        "line": 36,
+        "sha256": "08eb2d892afa119bcc7834d246a0ee5f5cb9ce07d7762dd61a76820da6c2aca7"
+      },
+      "passed": false,
+      "expected": "caller receives rejection and cannot claim saved",
+      "actual": "resolved despite native failure",
+      "status": "FAIL"
+    }
+  ]
+}

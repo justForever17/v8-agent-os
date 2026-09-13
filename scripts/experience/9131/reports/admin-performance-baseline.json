@@ -1,0 +1,252 @@
+{
+  "sourceHead": "53fd9aceb4b9f33694032e6bfa1162cb1c7435c4",
+  "fixture": "synthetic-unavailable-and-long-readme-v1",
+  "runtime": "real Admin dev source; API boundary fixtures; no Engine",
+  "qualification": "Single post-networkidle snapshots, followed by awaited long-detail interaction. Layout controls include offscreen elements. Frame observations do not prove permanent spinner, correct save, native behavior, or pixel equivalence. Initial all-route pass narrow capture may overlap dialog exit animation; focused run waits for hidden dialog.",
+  "browserVersion": "140.0.7339.16",
+  "rowCount": 4,
+  "requestCount": 38,
+  "unhandledErrorCount": 0,
+  "rows": [
+    {
+      "route": "/admin/extensions/store",
+      "url": "/admin/extensions/store",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-0.png",
+      "dialogs": [],
+      "navigationMs": 5245,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 38,
+      "primaryActionBounds": [
+        {
+          "name": "安装",
+          "rect": {
+            "x": 787.25,
+            "y": 256.5,
+            "width": 45.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "展开详情",
+          "rect": {
+            "x": 783.75,
+            "y": 370,
+            "width": 49,
+            "height": 17.5
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/extensions/store#long-detail",
+      "level": "INTERACTED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 2,
+      "screenshot": "long-detail.png",
+      "dialogs": [
+        {
+          "text": "合成长文技能合成验收合成段落 0\n内容只用于长说明滚动与安装操作可达性。\n合成段落 1\n内容只用于长说明滚动与安装操作可达性。\n合成段落 2\n内容只用于长说明滚动与安装操作可达性。\n合成段落 3\n内容只用于长说明滚动与安装操作可达性。\n合成",
+          "rect": {
+            "x": 385.26300048828125,
+            "y": 56.67940902709961,
+            "width": 669.4739379882812,
+            "height": 789.02294921875
+          }
+        }
+      ],
+      "layoutControlCount": 40,
+      "primaryActionBounds": [
+        {
+          "name": "安装",
+          "rect": {
+            "x": 787.25,
+            "y": 256.5,
+            "width": 45.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "展开详情",
+          "rect": {
+            "x": 783.75,
+            "y": 370,
+            "width": 49,
+            "height": 17.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "安装",
+          "rect": {
+            "x": 980.5170288085938,
+            "y": 5063.28857421875,
+            "width": 52.30267333984375,
+            "height": 34.86865234375
+          },
+          "insideViewportBounds": false
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": "dialog",
+          "height": 790,
+          "scrollHeight": 5081,
+          "rect": {
+            "x": 385.26300048828125,
+            "y": 56.67940902709961,
+            "width": 669.4739379882812,
+            "height": 789.02294921875
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/extensions/store#escape",
+      "level": "INTERACTED",
+      "openDialogs": 0
+    },
+    {
+      "route": "/admin/extensions/store#390",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 6,
+      "screenshot": "narrow.png",
+      "dialogs": [],
+      "layoutControlCount": 14,
+      "primaryActionBounds": [
+        {
+          "name": "安装",
+          "rect": {
+            "x": 305,
+            "y": 256.442138671875,
+            "width": 45.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "展开详情",
+          "rect": {
+            "x": 301.5,
+            "y": 369.942138671875,
+            "width": 49,
+            "height": 17.5
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    }
+  ],
+  "performance": {
+    "scenario": "open-long-readme-click-to-content-two-frames",
+    "buildMode": "dev-webpack",
+    "network": "in-process synthetic API boundary",
+    "coldOrWarm": "warm",
+    "samplesMs": [
+      115.1,
+      142.3,
+      107.1,
+      123.1,
+      114.4,
+      122,
+      113.3,
+      104.7,
+      104.2,
+      109.1,
+      129,
+      98.6,
+      97.6,
+      111.4,
+      124.2,
+      96.6,
+      96.8,
+      123.2,
+      126.2,
+      143.9,
+      101.2,
+      96.1,
+      96.6,
+      86.1,
+      96.2,
+      85.3,
+      94.5,
+      130.3,
+      107.6,
+      98.7
+    ],
+    "n": 30,
+    "medianMs": 107.35,
+    "p95Ms": 142.3,
+    "qualification": "Real browser event-to-content observation, includes fixture request and test synchronization. Not production INP or native frame performance. Compare only the same fixture/environment."
+  }
+}

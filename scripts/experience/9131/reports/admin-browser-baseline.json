@@ -1,0 +1,2124 @@
+{
+  "sourceHead": "53fd9aceb4b9f33694032e6bfa1162cb1c7435c4",
+  "fixture": "synthetic-unavailable-and-long-readme-v1",
+  "runtime": "real Admin dev source; API boundary fixtures; no Engine",
+  "qualification": "Single post-networkidle snapshots, followed by awaited long-detail interaction. Layout controls include offscreen elements. Frame observations do not prove permanent spinner, correct save, native behavior, or pixel equivalence. Initial all-route pass narrow capture may overlap dialog exit animation; focused run waits for hidden dialog.",
+  "browserVersion": "See focused performance run",
+  "rowCount": 48,
+  "requestCount": 216,
+  "unhandledErrorCount": 12,
+  "rows": [
+    {
+      "route": "/admin/advanced-governance",
+      "url": "/admin/advanced-governance",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-0.png",
+      "dialogs": [],
+      "navigationMs": 3633,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 32,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/automation/cron",
+      "url": "/admin/automation/cron",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-1.png",
+      "dialogs": [],
+      "navigationMs": 4982,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/automation/hooks",
+      "url": "/admin/automation/hooks",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-2.png",
+      "dialogs": [],
+      "navigationMs": 2889,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 35,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/automation",
+      "url": "/admin/automation",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-3.png",
+      "dialogs": [],
+      "navigationMs": 2572,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 44,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/chat-runtime",
+      "url": "/admin/chat-runtime",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-4.png",
+      "dialogs": [],
+      "navigationMs": 4150,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 46,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1258,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/creative-media",
+      "url": "/admin/creative-media",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-5.png",
+      "dialogs": [],
+      "navigationMs": 2726,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 35,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/desktop-automation",
+      "url": "/admin/desktop-automation",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-6.png",
+      "dialogs": [],
+      "navigationMs": 2419,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/desktop-pet",
+      "url": "/admin/desktop-pet",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-7.png",
+      "dialogs": [],
+      "navigationMs": 3453,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 90,
+      "primaryActionBounds": [
+        {
+          "name": "保存",
+          "rect": {
+            "x": 1338.5,
+            "y": 56,
+            "width": 73.5,
+            "height": 35
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1383,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/engineering-lane",
+      "url": "/admin/engineering-lane",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-8.png",
+      "dialogs": [],
+      "navigationMs": 2676,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 57,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/extensions",
+      "url": "/admin/extensions",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-9.png",
+      "dialogs": [],
+      "navigationMs": 2812,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/extensions/store",
+      "url": "/admin/extensions/store",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-10.png",
+      "dialogs": [],
+      "navigationMs": 3009,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 38,
+      "primaryActionBounds": [
+        {
+          "name": "安装",
+          "rect": {
+            "x": 787.25,
+            "y": 256.5,
+            "width": 45.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "展开详情",
+          "rect": {
+            "x": 783.75,
+            "y": 370,
+            "width": 49,
+            "height": 17.5
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-11.png",
+      "dialogs": [],
+      "navigationMs": 7860,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory/runtime",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-12.png",
+      "dialogs": [],
+      "navigationMs": 7558,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 42,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 560,
+          "scrollHeight": 706,
+          "rect": {
+            "x": 308,
+            "y": 310,
+            "width": 1104,
+            "height": 560
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/model-hub",
+      "url": "/admin/model-hub",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-13.png",
+      "dialogs": [],
+      "navigationMs": 7074,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 72,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1784,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/models/providers/synthetic-provider",
+      "url": "/admin/models/providers/synthetic-provider",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-14.png",
+      "dialogs": [],
+      "navigationMs": 3697,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/music",
+      "url": "/admin/music",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-15.png",
+      "dialogs": [],
+      "navigationMs": 2998,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 32,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/network-supervisor-runtime",
+      "url": "/admin/network-supervisor-runtime",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 3,
+      "screenshot": "route-16.png",
+      "dialogs": [],
+      "navigationMs": 3714,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 91,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 2280,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/operations-center",
+      "url": "/admin/operations-center",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-17.png",
+      "dialogs": [],
+      "navigationMs": 5315,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 38,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1130,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin",
+      "url": "/admin",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-18.png",
+      "dialogs": [],
+      "navigationMs": 3603,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 33,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/plugins",
+      "url": "/admin/plugins",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-19.png",
+      "dialogs": [],
+      "navigationMs": 3297,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 38,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/projects-workspaces",
+      "url": "/admin/projects-workspaces",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-20.png",
+      "dialogs": [],
+      "navigationMs": 4179,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/research-runtime",
+      "url": "/admin/research-runtime",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-21.png",
+      "dialogs": [],
+      "navigationMs": 3553,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 40,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1083,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/rpa",
+      "url": "/admin/rpa",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-22.png",
+      "dialogs": [],
+      "navigationMs": 4669,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/runtime-governance",
+      "url": "/admin/runtime-governance",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 1,
+      "screenshot": "route-23.png",
+      "dialogs": [],
+      "navigationMs": 2796,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 38,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1901,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/safety-control",
+      "url": "/admin/safety-control",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-24.png",
+      "dialogs": [],
+      "navigationMs": 3992,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/settings/memory",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 2,
+      "screenshot": "route-25.png",
+      "dialogs": [],
+      "navigationMs": 2957,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 41,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/stability-strategy",
+      "url": "/admin/stability-strategy",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-26.png",
+      "dialogs": [],
+      "navigationMs": 2965,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/subagents",
+      "url": "/admin/subagents",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-27.png",
+      "dialogs": [],
+      "navigationMs": 2589,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 72,
+      "primaryActionBounds": [
+        {
+          "name": "保存",
+          "rect": {
+            "x": 794.25,
+            "y": 216.25,
+            "width": 49,
+            "height": 24.5
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/supervisor",
+      "url": "/admin/supervisor",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-28.png",
+      "dialogs": [],
+      "navigationMs": 3135,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 44,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1202,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/system-base",
+      "url": "/admin/system-base",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-29.png",
+      "dialogs": [],
+      "navigationMs": 3186,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/users",
+      "url": "/admin/users",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-30.png",
+      "dialogs": [],
+      "navigationMs": 3996,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 32,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/verify",
+      "url": "/admin/verify",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-31.png",
+      "dialogs": [],
+      "navigationMs": 3378,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 0,
+      "primaryActionBounds": [],
+      "scrollHosts": [],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/login",
+      "url": "/admin",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-32.png",
+      "dialogs": [],
+      "navigationMs": 3868,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 33,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/",
+      "url": "/admin",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-33.png",
+      "dialogs": [],
+      "navigationMs": 4019,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 33,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=context",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-34.png",
+      "dialogs": [],
+      "navigationMs": 1863,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 41,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=preferences",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-35.png",
+      "dialogs": [],
+      "navigationMs": 1649,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 43,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=logs",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-36.png",
+      "dialogs": [],
+      "navigationMs": 1691,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 44,
+      "primaryActionBounds": [
+        {
+          "name": "保存",
+          "rect": {
+            "x": 1323.5,
+            "y": 332,
+            "width": 66.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1086,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=knowledge",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-37.png",
+      "dialogs": [],
+      "navigationMs": 1858,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 43,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=workflows",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-38.png",
+      "dialogs": [],
+      "navigationMs": 1874,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 47,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=artifacts",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 1,
+      "animationCount": 1,
+      "screenshot": "route-39.png",
+      "dialogs": [],
+      "navigationMs": 1351,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 31,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=graph",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-40.png",
+      "dialogs": [],
+      "navigationMs": 1814,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 42,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 1109,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=agent",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-41.png",
+      "dialogs": [],
+      "navigationMs": 1611,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 47,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 896,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=runtime",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-42.png",
+      "dialogs": [],
+      "navigationMs": 1662,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 42,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 560,
+          "scrollHeight": 706,
+          "rect": {
+            "x": 308,
+            "y": 310,
+            "width": 1104,
+            "height": 560
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=config",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-43.png",
+      "dialogs": [],
+      "navigationMs": 1732,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 64,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 865,
+          "scrollHeight": 2452,
+          "rect": {
+            "x": 280,
+            "y": 35,
+            "width": 1160,
+            "height": 865
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/memory?tab=upload",
+      "url": "/admin/memory",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 0,
+      "screenshot": "route-44.png",
+      "dialogs": [],
+      "navigationMs": 1576,
+      "performanceQualification": "one dev cold/warm mixed observation, not a performance comparison",
+      "layoutControlCount": 44,
+      "primaryActionBounds": [],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/extensions/store#long-detail",
+      "level": "INTERACTED",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 2,
+      "screenshot": "long-detail.png",
+      "dialogs": [
+        {
+          "text": "合成长文技能合成验收合成段落 0\n内容只用于长说明滚动与安装操作可达性。\n合成段落 1\n内容只用于长说明滚动与安装操作可达性。\n合成段落 2\n内容只用于长说明滚动与安装操作可达性。\n合成段落 3\n内容只用于长说明滚动与安装操作可达性。\n合成",
+          "rect": {
+            "x": 384,
+            "y": 54,
+            "width": 672,
+            "height": 792
+          }
+        }
+      ],
+      "layoutControlCount": 40,
+      "primaryActionBounds": [
+        {
+          "name": "安装",
+          "rect": {
+            "x": 787.25,
+            "y": 256.5,
+            "width": 45.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "展开详情",
+          "rect": {
+            "x": 783.75,
+            "y": 370,
+            "width": 49,
+            "height": 17.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "安装",
+          "rect": {
+            "x": 981.5,
+            "y": 5079.5,
+            "width": 52.5,
+            "height": 35
+          },
+          "insideViewportBounds": false
+        }
+      ],
+      "scrollHosts": [
+        {
+          "tag": "DIV",
+          "role": null,
+          "height": 798,
+          "scrollHeight": 1518,
+          "rect": {
+            "x": 0,
+            "y": 35,
+            "width": 280,
+            "height": 797.5
+          }
+        },
+        {
+          "tag": "DIV",
+          "role": "dialog",
+          "height": 790,
+          "scrollHeight": 5081,
+          "rect": {
+            "x": 384,
+            "y": 54,
+            "width": 672,
+            "height": 792
+          }
+        }
+      ],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    },
+    {
+      "route": "/admin/extensions/store#escape",
+      "level": "INTERACTED",
+      "openDialogs": 1
+    },
+    {
+      "route": "/admin/extensions/store#390",
+      "level": "RENDERED",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "rootFont": "14px",
+      "viewportOverflow": false,
+      "spinners": 0,
+      "animationCount": 7,
+      "screenshot": "narrow.png",
+      "dialogs": [
+        {
+          "text": "Close",
+          "rect": {
+            "x": 1.1017584800720215,
+            "y": 400.2237548828125,
+            "width": 387.7965087890625,
+            "height": 43.751373291015625
+          }
+        }
+      ],
+      "layoutControlCount": 15,
+      "primaryActionBounds": [
+        {
+          "name": "安装",
+          "rect": {
+            "x": 305,
+            "y": 256.5,
+            "width": 45.5,
+            "height": 31.5
+          },
+          "insideViewportBounds": true
+        },
+        {
+          "name": "展开详情",
+          "rect": {
+            "x": 301.5,
+            "y": 370,
+            "width": 49,
+            "height": 17.5
+          },
+          "insideViewportBounds": true
+        }
+      ],
+      "scrollHosts": [],
+      "dimensions": {
+        "function": "NOT_RUN",
+        "convenience": "OBSERVED_CANDIDATE",
+        "visual": "OBSERVED_CANDIDATE",
+        "performance": "NOT_RUN"
+      }
+    }
+  ]
+}

@@ -1633,7 +1633,7 @@ export default function SubagentsPage() {
                                             </div>
                                         </CardHeader>
                                         <CardContent className="px-4 pb-4 pt-1 space-y-2">
-                                            <p className="text-xs leading-5 text-muted-foreground line-clamp-2 min-h-[2.5rem] dark:text-muted-foreground" title={agent.description || ""}>
+                                            <p className="text-xs leading-5 text-muted-foreground line-clamp-1 dark:text-muted-foreground" title={agent.description || ""}>
                                                 {agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}
                                             </p>
                                             <div className="flex items-center justify-between pt-1 border-t border-border/60 text-xs text-muted-foreground dark:border-border">

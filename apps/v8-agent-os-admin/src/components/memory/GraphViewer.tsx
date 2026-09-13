@@ -101,8 +101,9 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
 
     const canLeave = useCallback(() => !busy.current && (!draft || window.confirm(t("admin.galaxy.discardDraft"))), [draft, t]);
     const background = useCallback(() => {
-        if (!canLeave()) return;
+        if (!canLeave()) return false;
         setSelected(null); setNodeSelection(null); selectionRef.current = null; setMode("summary"); setTarget(""); setPredicate("RELATED_TO");
+        return true;
     }, [canLeave]);
     const selectCluster = useCallback((id: string) => {
         if (!canLeave()) return;
@@ -163,7 +164,7 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
             </div>
             <div className="min-w-0 space-y-3">
                 {activeCluster ? <><div className="text-sm font-medium">{activeCluster.scopeKind === "global" ? t("admin.galaxy.global") : activeCluster.label}<span className="ml-2 text-xs font-normal text-muted-foreground">{t("admin.galaxy.rendered", { nodes: activeCluster.meta.renderedEntities, total: activeCluster.meta.totalEntities, edges: activeCluster.meta.renderedRelations, edgeTotal: activeCluster.meta.totalRelations })}</span></div><div className="flex max-h-[160px] flex-wrap gap-2 overflow-auto">{activeCluster.nodes.filter(node => !query || node.label.toLowerCase().includes(query.toLowerCase()) || activeCluster.label.toLowerCase().includes(query.toLowerCase())).map(node => <Button key={visualNodeId(activeCluster.clusterId, node.id)} variant="outline" size="sm" onClick={() => selectNode(activeCluster, node)}>{node.label}</Button>)}{!activeCluster.nodes.length ? <span className="text-sm text-muted-foreground">{t("admin.galaxy.empty")}</span> : null}</div></> : null}
-                {nodeSelection ? <section aria-label={t("admin.galaxy.nodeMenu")} className="grid max-h-[560px] grid-rows-[auto_minmax(0,1fr)_auto] rounded-xl border border-border bg-card">
+                {nodeSelection ? <section aria-label={t("admin.galaxy.nodeMenu")} className="fixed right-3 top-[max(64px,10dvh)] z-40 grid max-h-[calc(100dvh-96px)] w-[min(360px,calc(100vw-24px))] grid-rows-[auto_minmax(0,1fr)_auto] rounded-xl border border-border bg-card shadow-xl">
                     <div className="flex items-start justify-between gap-3 border-b border-border p-3"><div className="min-w-0"><h3 className="break-words text-sm font-semibold">{nodeSelection.node.label}</h3><p className="text-xs text-muted-foreground">{nodeSelection.node.type} · {nodeSelection.cluster.label} · {relations.total}</p></div><Button variant="ghost" size="icon" aria-label={t("admin.galaxy.close")} onClick={() => { if (canLeave()) { setNodeSelection(null); selectionRef.current = null; } }}><X size={16}/></Button></div>
                     <div className="min-h-0 space-y-3 overflow-auto p-3">
                         {readOnly ? <p className="text-xs text-muted-foreground">{t("admin.galaxy.globalReadonly")}</p> : null}

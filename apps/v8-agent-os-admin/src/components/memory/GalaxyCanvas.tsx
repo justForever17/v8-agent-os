@@ -4,7 +4,7 @@ import { allocateOrbits, clusterCenter, inverseNode, localNode, transformNode, v
 
 type Camera = Point & { zoom: number };
 type Props = { clusters: GalaxyCluster[]; selected: string | null; paused: boolean; reduced: boolean; label: string;
-    onCluster: (id: string) => void; onNode: (cluster: GalaxyCluster, node: GalaxyNode) => void; onBackground: () => void };
+    onCluster: (id: string) => void; onNode: (cluster: GalaxyCluster, node: GalaxyNode) => void; onBackground: () => boolean };
 
 export default function GalaxyCanvas({ clusters, selected, paused, reduced, label, onCluster, onNode, onBackground }: Props) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -117,13 +117,13 @@ export default function GalaxyCanvas({ clusters, selected, paused, reduced, labe
         const pointerUp = (event: PointerEvent) => {
             if (!drag) return;
             const previous = drag; drag = null; if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-            if (!previous.moved) { const point = pointOf(event); if (previous.node) onNode(previous.node.cluster, previous.node.node); else { const hit = hitCluster(point); if (hit) onCluster(hit.id); else { manual = false; hover = null; moveCamera(overview()); onBackground(); } } }
+            if (!previous.moved) { const point = pointOf(event); if (previous.node) onNode(previous.node.cluster, previous.node.node); else { const hit = hitCluster(point); if (hit) onCluster(hit.id); else if (onBackground()) { manual = false; hover = null; moveCamera(overview()); } } }
             last = 0; request();
         };
         const cancelPointer = () => { drag = null; last = 0; request(); };
         const leave = () => { if (!selected && !drag && hover) { const origin = hover.origin; hover = null; moveCamera(origin, 280); } };
         const wheel = (event: WheelEvent) => { if (document.activeElement !== canvas) return; event.preventDefault(); manual = true; hover = null; transition = null; camera.current.zoom = Math.max(.15, Math.min(5, camera.current.zoom * Math.exp(-event.deltaY * .001))); request(); };
-        const key = (event: KeyboardEvent) => { if (event.key === "Escape") { manual = false; hover = null; moveCamera(overview()); onBackground(); } else if (event.key === "+" || event.key === "-") { event.preventDefault(); manual = true; camera.current.zoom *= event.key === "+" ? 1.2 : 1 / 1.2; request(); } };
+        const key = (event: KeyboardEvent) => { if (event.key === "Escape") { if (onBackground()) { manual = false; hover = null; moveCamera(overview()); } } else if (event.key === "+" || event.key === "-") { event.preventDefault(); manual = true; camera.current.zoom *= event.key === "+" ? 1.2 : 1 / 1.2; request(); } };
         const visibility = () => { if (!visible || document.hidden) { cancelAnimationFrame(frame); frame = 0; last = 0; } else request(); };
         const observer = new ResizeObserver(resize); observer.observe(canvas);
         const intersection = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; visibility(); }); intersection.observe(canvas);

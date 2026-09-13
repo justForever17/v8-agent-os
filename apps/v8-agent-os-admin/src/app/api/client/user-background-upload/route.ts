@@ -11,10 +11,10 @@ import {
     NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
 } from "@/lib/server/native-image-processing";
 import { getSessionIdentifier, updateUserRecord } from "@/lib/users";
+import { pruneExpiredBackgroundReceipts, recordBackgroundReceipt, removeUnreferencedBackground } from "@/lib/background-media";
 import {
     buildUserMediaPublicPath,
     ensureUserMediaDirectory,
-    removeManagedUserMedia,
 } from "@/lib/user-media";
 
 export const runtime = "nodejs";
@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
                 await fs.promises.rename(temporaryPath, targetPath);
             } else {
                 const { default: sharp } = await import("sharp");
-                const image = sharp(temporaryPath, { animated: false }).rotate();
+                const image = sharp(await fs.promises.readFile(temporaryPath), { animated: false }).rotate();
                 const metadata = await image.metadata();
                 originalWidth = metadata.width || null;
                 originalHeight = metadata.height || null;
@@ -139,6 +139,7 @@ export async function POST(req: NextRequest) {
                     .resize({ width: 3840, height: 2160, fit: "inside", withoutEnlargement: true })
                     .webp({ quality: 88 })
                     .toFile(targetPath);
+                await sharp(await fs.promises.readFile(targetPath)).resize({ width: 256, height: 144, fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).toFile(targetPath.replace(/\.webp$/, ".thumb.webp"));
             }
         } catch (error) {
             if (error instanceof Error && error.message === "UPLOAD_TOO_LARGE") {
@@ -150,12 +151,16 @@ export async function POST(req: NextRequest) {
         }
 
         const nextPath = buildUserMediaPublicPath("background", filename);
+        if (req.headers.get("x-v8-background-intent") === "playlist") {
+            const receipt = recordBackgroundReceipt(context.user.id, nextPath, persistedMediaType);
+            pruneExpiredBackgroundReceipts();
+            return NextResponse.json({ url: nextPath, path: nextPath, mediaType: persistedMediaType, originalWidth, originalHeight, receipt });
+        }
         const previousMedia = context.user.appearance?.lightBackgroundMedia
             || context.user.appearance?.lightBackgroundImage
             || "";
         const updated = updateUserRecord(context.user.id, {
             appearance: {
-                ...(context.user.appearance || {}),
                 lightBackgroundMedia: nextPath,
                 lightBackgroundMediaType: persistedMediaType,
                 lightBackgroundImage: persistedMediaType === "image" ? nextPath : "",
@@ -163,7 +168,7 @@ export async function POST(req: NextRequest) {
             },
         });
         if (previousMedia && previousMedia !== nextPath) {
-            removeManagedUserMedia(previousMedia, "background");
+            removeUnreferencedBackground(previousMedia);
         }
 
         return NextResponse.json({

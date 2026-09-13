@@ -10,6 +10,10 @@
     "styles.css"
   ],
   "exports": {
+    "./background-playlist": {
+      "types": "./dist/background-playlist.d.ts",
+      "default": "./dist/background-playlist.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

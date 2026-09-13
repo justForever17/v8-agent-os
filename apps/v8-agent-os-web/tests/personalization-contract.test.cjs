@@ -19,8 +19,8 @@ test("avatar upload uses durable client media and has a visual fallback", () => 
   assert.match(avatarProxy, /allowedKinds: \["avatar"\]/);
 });
 
-test("wallpaper uses center cropping with theme-specific light and dark surfaces", () => {
-  const settings = read("src/components/settings/SettingsDialog.tsx");
+test("playlist wallpaper has one player and transparent sidebar in both themes", () => {
+  const settings = read("src/components/settings/BackgroundPlaylistSettings.tsx");
   const provider = read("src/components/providers/PersonalizationProvider.tsx");
   const styles = read("src/app/globals.css");
   const sidebar = read("src/components/layout/Sidebar.tsx");
@@ -29,35 +29,34 @@ test("wallpaper uses center cropping with theme-specific light and dark surfaces
   assert.match(settings, /data-testid="background-preview"/);
   assert.match(settings, /data-testid="background-video-summary"/);
   assert.doesNotMatch(settings, /<video/);
-  assert.match(settings, /backgroundSize: "cover"/);
+  assert.match(settings, /backgroundSize: item.fit/);
   assert.match(provider, /root\.dataset\.v8Wallpaper = "active"/);
   assert.match(provider, /image\.onload/);
   assert.match(provider, /<video/);
   assert.match(provider, /muted=\{videoMuted\}/);
   assert.doesNotMatch(provider, /resolvedTheme/);
-  assert.match(provider, /root\.style\.getPropertyValue\("--v8-wallpaper-image"\) !== cssValue/);
-  assert.match(provider, /VIDEO_RELOAD_DELAYS_MS = \[250, 750, 1_500\]/);
-  assert.match(provider, /videoReloadAttemptRef\.current < VIDEO_RELOAD_DELAYS_MS\.length|attempt < VIDEO_RELOAD_DELAYS_MS\.length/);
-  assert.match(provider, /document\.visibilityState !== "visible"/);
+  // Playback is generation-bound. Errors advance or become visible; an old
+  // retry timer must not replace the selected playlist item.
+  assert.equal((provider.match(/<video\b/g) || []).length, 1);
+  assert.match(provider, /loop=\{items.length === 1\}/);
+  assert.match(provider, /onEnded=\{\(\) => advance\(1, selection.serial\)\}/);
+  assert.match(provider, /selectionRef.current.serial !== selection.serial/);
+  assert.match(provider, /enabled && ready && visible && !paused/);
   assert.match(provider, /video\.pause\(\)/);
   assert.match(provider, /preload="metadata"/);
-  const profileEffectStart = provider.indexOf("if (!canonicalLoaded) return;");
-  const profileEffectTimerReset = provider.indexOf("if (videoReloadTimerRef.current)", profileEffectStart);
-  assert.ok(profileEffectStart >= 0 && profileEffectTimerReset > profileEffectStart);
-  assert.match(provider, /\[canonicalLoaded, appearance\]/);
-  assert.match(provider, /MediaError\.MEDIA_ERR_NETWORK/);
-  assert.ok(
-    provider.indexOf("video.load()") < provider.lastIndexOf("clearWallpaper(document.documentElement)"),
-    "transient video errors must retry before the wallpaper is cleared",
-  );
+  assert.match(provider, /playbackFailed/);
+  assert.match(provider, /failed.current.clear\(\)/);
+  assert.doesNotMatch(provider, /v8-personalization-wallpaper-overlay/);
   assert.match(styles, /html\.light\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /html\.dark\[data-v8-wallpaper="active"\]/);
-  assert.match(styles, /background-size: cover/);
+  assert.match(styles, /background-size: var\(--v8-wallpaper-fit, cover\)/);
   assert.match(styles, /data-v8-wallpaper-kind="video"[\s\S]*backdrop-filter: none !important/);
   assert.match(styles, /data-v8-wallpaper-kind="video"[\s\S]*transition: none/);
   assert.match(styles, /\.v8-chat-viewport-surface/);
   assert.match(chatWindow, /v8-chat-viewport-surface/);
   assert.match(sidebar, /group\/sidebar relative z-20 hidden h-full/);
+  assert.match(sidebar, /v8-sidebar-surface/);
+  assert.match(styles, /\.v8-sidebar-surface\s*\{[^}]*background:\s*transparent/);
 });
 
 test("topbar sound control belongs only to an active MP4 wallpaper", () => {
@@ -74,7 +73,7 @@ test("topbar sound control belongs only to an active MP4 wallpaper", () => {
 });
 
 test("large MP4 wallpaper uploads stream through the Web bridge", () => {
-  const settings = read("src/components/settings/SettingsDialog.tsx");
+  const settings = read("src/components/settings/BackgroundPlaylistSettings.tsx");
   const upload = read("src/app/api/user-background-upload/route.ts");
 
   assert.match(settings, /headers: \{ "content-type": file\.type \}/);

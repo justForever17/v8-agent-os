@@ -1,6 +1,6 @@
 "use client";
 
-import { Volume2, VolumeX } from "lucide-react";
+import { Volume2, VolumeX, Play, Pause, SkipForward } from "lucide-react";
 
 import { TopbarGlowActionButton } from "@/components/layout/TopbarGlowActionButton";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -34,4 +34,17 @@ export function BackgroundVideoSoundToggle() {
             </Tooltip>
         </TooltipProvider>
     );
+}
+
+export function BackgroundPlaybackControls() {
+    const t = useT();
+    const { enabled, paused, togglePaused, multiple, next, error } = useBackgroundVideoAudio();
+    if (!enabled && !error) return null;
+    return <div className="flex items-center gap-1">
+        <TopbarGlowActionButton onClick={togglePaused} aria-label={t(paused ? "web.background.play" : "web.background.pause")} title={t(error || (paused ? "web.background.play" : "web.background.pause"))} tone="slate">
+            {paused ? <Play /> : <Pause />}
+        </TopbarGlowActionButton>
+        {multiple ? <TopbarGlowActionButton onClick={next} aria-label={t("web.background.next")} title={t("web.background.next")} tone="slate"><SkipForward /></TopbarGlowActionButton> : null}
+        {error ? <span role="status" className="max-w-40 truncate text-xs text-destructive" title={t(error)}>{t(error)}</span> : null}
+    </div>;
 }

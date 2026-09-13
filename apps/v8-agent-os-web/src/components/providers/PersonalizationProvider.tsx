@@ -1,236 +1,165 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-
 import { useClientProfile } from "@/hooks/use-client-profile";
-import {
-    normalizeAppearance,
-    PERSONALIZATION_STORAGE_KEY,
-    resolveLightBackgroundMediaSrc,
-} from "@/lib/personalization";
+import { useSurfaceVisible } from "@/hooks/use-surface-visible";
+import { backgroundFromAppearance, normalizeBackgroundPlaylist, resolveLightBackgroundMediaSrc } from "@/lib/personalization";
 
-const VIDEO_RELOAD_DELAYS_MS = [250, 750, 1_500] as const;
-
-function clearWallpaper(root: HTMLElement) {
-    if (root.dataset.v8Wallpaper) delete root.dataset.v8Wallpaper;
-    if (root.dataset.v8WallpaperKind) delete root.dataset.v8WallpaperKind;
-    if (root.style.getPropertyValue("--v8-wallpaper-image")) {
-        root.style.removeProperty("--v8-wallpaper-image");
-    }
-}
-
-function commitImageWallpaper(root: HTMLElement, src: string) {
-    const cssValue = `url(${JSON.stringify(src)})`;
-    if (root.dataset.v8Wallpaper !== "active") {
-        root.dataset.v8Wallpaper = "active";
-    }
-    root.dataset.v8WallpaperKind = "image";
-    if (root.style.getPropertyValue("--v8-wallpaper-image") !== cssValue) {
-        root.style.setProperty("--v8-wallpaper-image", cssValue);
-    }
-}
-
-type BackgroundVideoAudioContextValue = {
-    available: boolean;
-    muted: boolean;
-    toggleMuted: () => void;
+type Playback = {
+    available: boolean; muted: boolean; toggleMuted: () => void;
+    enabled: boolean; paused: boolean; togglePaused: () => void;
+    multiple: boolean; next: () => void; previous: () => void; error: string;
 };
-
-const BackgroundVideoAudioContext = createContext<BackgroundVideoAudioContextValue | null>(null);
-
+const BackgroundVideoAudioContext = createContext<Playback | null>(null);
 export function useBackgroundVideoAudio() {
-    const context = useContext(BackgroundVideoAudioContext);
-    if (!context) throw new Error("useBackgroundVideoAudio must be used within PersonalizationProvider");
-    return context;
+    const value = useContext(BackgroundVideoAudioContext);
+    if (!value) throw new Error("useBackgroundVideoAudio must be used within PersonalizationProvider");
+    return value;
+}
+function clearWallpaper() {
+    const root = document.documentElement;
+    delete root.dataset.v8Wallpaper;
+    delete root.dataset.v8WallpaperKind;
+    root.style.removeProperty("--v8-wallpaper-image");
 }
 
 export function PersonalizationProvider({ children }: { children: React.ReactNode }) {
     const { profile, canonicalLoaded } = useClientProfile();
-    const { lightBackgroundEnabled, lightBackgroundMedia, lightBackgroundMediaType, lightBackgroundImage } = profile?.appearance || {};
-    const appearance = useMemo(() => normalizeAppearance({
-        lightBackgroundEnabled, lightBackgroundMedia, lightBackgroundMediaType, lightBackgroundImage,
-    }), [
-        lightBackgroundEnabled,
-        lightBackgroundMedia,
-        lightBackgroundMediaType,
-        lightBackgroundImage,
-    ]);
-    const videoRef = useRef<HTMLVideoElement | null>(null);
-    const videoReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const videoReloadAttemptRef = useRef(0);
-    const [videoSrc, setVideoSrc] = useState("");
-    const [videoReady, setVideoReady] = useState(false);
+    const visible = useSurfaceVisible();
+    const rawAppearance = JSON.stringify(profile?.appearance || {});
+    const { playlist, configurationError } = useMemo(() => {
+        try { return { playlist: backgroundFromAppearance(JSON.parse(rawAppearance)), configurationError: "" }; }
+        catch { return { playlist: normalizeBackgroundPlaylist({}), configurationError: "web.background.configurationError" }; }
+    }, [rawAppearance]);
+    const items = playlist.items;
+    const [selection, setSelection] = useState({ id: "", serial: 0 });
+    const selectionRef = useRef(selection);
+    const item = items.find((candidate) => candidate.id === selection.id) || items[0];
+    const enabled = canonicalLoaded && playlist.enabled && Boolean(item) && Boolean(profile?.id);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [ready, setReady] = useState(false);
     const [videoMuted, setVideoMuted] = useState(true);
-
+    const [paused, setPaused] = useState(false);
+    const [error, setError] = useState("");
+    const [poster, setPoster] = useState("");
+    const failed = useRef(new Set<string>());
+    const clock = useRef({ serial: -1, remaining: 0, started: 0 });
+    const mediaSrc = enabled && item ? resolveLightBackgroundMediaSrc(item.media) : "";
     useEffect(() => {
-        return () => {
-            if (videoReloadTimerRef.current) clearTimeout(videoReloadTimerRef.current);
-        };
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setPaused(true);
+        return clearWallpaper;
     }, []);
-
     useEffect(() => {
-        if (!videoSrc) return;
-        const syncPlaybackWithVisibility = () => {
-            const video = videoRef.current;
-            if (!video) return;
-            if (document.visibilityState !== "visible") {
-                video.pause();
-                return;
+        failed.current.clear();
+        if (!items.some((candidate) => candidate.id === selectionRef.current.id)) {
+            const next = { id: items[0]?.id || "", serial: selectionRef.current.serial + 1 };
+            selectionRef.current = next; setSelection(next);
+        }
+    }, [items]);
+    useEffect(() => { clearWallpaper(); setPoster(""); setVideoMuted(true); }, [profile?.id]);
+
+    const advance = useCallback((direction: number, expectedSerial = selectionRef.current.serial, failedItem = false) => {
+        if (expectedSerial !== selectionRef.current.serial || !item) return;
+        if (failedItem) failed.current.add(item.id);
+        const candidates = items.filter((candidate) => !failed.current.has(candidate.id));
+        if (!candidates.length) { setPaused(true); setReady(false); setError("web.background.playbackFailed"); return; }
+        const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
+        let nextItem = item;
+        if (playlist.order === "shuffle" && candidates.length > 1) {
+            const choices = candidates.filter((candidate) => candidate.id !== item.id);
+            nextItem = choices[Math.floor(Math.random() * choices.length)];
+        } else {
+            for (let step = 1; step <= items.length; step++) {
+                const candidate = items[(currentIndex + direction * step + items.length * 2) % items.length];
+                if (!failed.current.has(candidate.id)) { nextItem = candidate; break; }
             }
-            if (videoReady) void video.play().catch(() => undefined);
-        };
-        document.addEventListener("visibilitychange", syncPlaybackWithVisibility);
-        syncPlaybackWithVisibility();
-        return () => document.removeEventListener("visibilitychange", syncPlaybackWithVisibility);
-    }, [videoReady, videoSrc]);
+        }
+        const video = videoRef.current;
+        if (video && video.readyState >= 2 && video.videoWidth) {
+            try {
+                const canvas = document.createElement("canvas");
+                canvas.width = Math.min(video.videoWidth, 1920); canvas.height = Math.round(canvas.width * video.videoHeight / video.videoWidth);
+                canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const frame = canvas.toDataURL("image/jpeg", 0.95);
+                setPoster(frame);
+                document.documentElement.style.setProperty("--v8-wallpaper-image", `url(${JSON.stringify(frame)})`);
+                document.documentElement.dataset.v8WallpaperKind = "image";
+            } catch { /* The last image wallpaper remains a fallback. */ }
+        }
+        const next = { id: nextItem.id, serial: expectedSerial + 1 };
+        selectionRef.current = next; setSelection(next);
+    }, [item, items, playlist.order]);
 
     useEffect(() => {
-        if (!canonicalLoaded) return;
-        if (videoReloadTimerRef.current) {
-            clearTimeout(videoReloadTimerRef.current);
-            videoReloadTimerRef.current = null;
-        }
-        videoReloadAttemptRef.current = 0;
+        setReady(false); setError("");
+        if (!enabled || !item) { clearWallpaper(); return; }
         const root = document.documentElement;
-        const media = appearance.lightBackgroundMedia || appearance.lightBackgroundImage || "";
-        if (!appearance.lightBackgroundEnabled || !media) {
-            setVideoSrc("");
-            setVideoReady(false);
-            setVideoMuted(true);
-            clearWallpaper(root);
-            window.localStorage.removeItem(PERSONALIZATION_STORAGE_KEY);
-            return;
-        }
-        const src = resolveLightBackgroundMediaSrc(media);
-        if (!src) {
-            setVideoSrc("");
-            setVideoReady(false);
-            setVideoMuted(true);
-            clearWallpaper(root);
-            window.localStorage.removeItem(PERSONALIZATION_STORAGE_KEY);
-            return;
-        }
-        window.localStorage.setItem(PERSONALIZATION_STORAGE_KEY, JSON.stringify(appearance));
-        if (appearance.lightBackgroundMediaType === "video") {
-            setVideoSrc((current) => {
-                if (current === src) return current;
-                setVideoReady(false);
-                setVideoMuted(true);
-                videoReloadAttemptRef.current = 0;
-                return src;
-            });
-            return;
-        }
-        setVideoSrc("");
-        setVideoReady(false);
-        setVideoMuted(true);
-        const nextCssValue = `url(${JSON.stringify(src)})`;
-        if (
-            root.dataset.v8Wallpaper === "active"
-            && root.dataset.v8WallpaperKind === "image"
-            && root.style.getPropertyValue("--v8-wallpaper-image") === nextCssValue
-        ) {
-            return;
-        }
-
+        root.style.setProperty("--v8-wallpaper-fit", item.fit);
+        root.style.setProperty("--v8-wallpaper-position", item.position);
+        clock.current = { serial: selection.serial, remaining: item.imageDurationMs || playlist.imageDurationMs, started: 0 };
+        if (item.kind !== "image") return;
         let cancelled = false;
         const image = new Image();
         image.onload = () => {
-            if (!cancelled) commitImageWallpaper(root, src);
+            if (cancelled) return;
+            root.style.setProperty("--v8-wallpaper-image", `url(${JSON.stringify(mediaSrc)})`);
+            root.dataset.v8Wallpaper = "active"; root.dataset.v8WallpaperKind = "image";
+            setReady(true);
         };
-        image.src = src;
-        if (image.complete && image.naturalWidth > 0) {
-            commitImageWallpaper(root, src);
+        image.onerror = () => { if (!cancelled) advance(1, selection.serial, true); };
+        image.src = mediaSrc;
+        return () => { cancelled = true; image.onload = null; image.onerror = null; image.src = ""; };
+    // Source lifecycle is keyed by identity and generation, independent of theme and chat renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [enabled, item?.id, item?.media, item?.fit, item?.position, item?.imageDurationMs, mediaSrc, playlist.imageDurationMs, selection.serial]);
+
+    useEffect(() => {
+        const video = videoRef.current;
+        const running = enabled && ready && visible && !paused;
+        if (video) {
+            if (!running) video.pause();
+            else void video.play().catch((reason) => {
+                if (reason?.name === "AbortError" || videoRef.current !== video || selectionRef.current.serial !== selection.serial) return;
+                setPaused(true); setError("web.background.playRequired");
+            });
         }
-        return () => {
-            cancelled = true;
-            image.onload = null;
-        };
-    }, [canonicalLoaded, appearance]);
+        if (!running || item?.kind !== "image" || items.length < 2) return;
+        const current = clock.current;
+        current.started = performance.now();
+        const timer = setTimeout(() => advance(1, selection.serial), Math.max(1, current.remaining));
+        return () => { clearTimeout(timer); current.remaining = Math.max(1, current.remaining - (performance.now() - current.started)); current.started = 0; };
+    }, [enabled, ready, visible, paused, item?.kind, items.length, selection.serial, advance]);
 
     const toggleMuted = useCallback(() => {
         const video = videoRef.current;
-        if (!video || !videoReady) return;
-        setVideoMuted((current) => {
-            const next = !current;
-            video.muted = next;
-            if (!next) {
-                video.volume = 0.65;
-                void video.play().catch(() => {
-                    video.muted = true;
-                    setVideoMuted(true);
-                });
-            }
-            return next;
-        });
-    }, [videoReady]);
-
-    const backgroundVideoAudio = useMemo<BackgroundVideoAudioContextValue>(() => ({
-        available: Boolean(videoSrc && videoReady),
-        muted: videoMuted,
-        toggleMuted,
-    }), [toggleMuted, videoMuted, videoReady, videoSrc]);
-
-    return (
-        <BackgroundVideoAudioContext.Provider value={backgroundVideoAudio}>
-            <div className="v8-personalization-wallpaper" aria-hidden="true" />
-            <video
-                ref={videoRef}
-                className="v8-personalization-wallpaper-video"
-                src={videoSrc || undefined}
-                autoPlay
-                muted={videoMuted}
-                loop
-                playsInline
-                preload="metadata"
-                disablePictureInPicture
-                aria-hidden="true"
-                tabIndex={-1}
-                onCanPlay={(event) => {
-                    if (!videoSrc) return;
-                    if (videoReloadTimerRef.current) {
-                        clearTimeout(videoReloadTimerRef.current);
-                        videoReloadTimerRef.current = null;
-                    }
-                    const root = document.documentElement;
-                    root.style.removeProperty("--v8-wallpaper-image");
-                    root.dataset.v8WallpaperKind = "video";
-                    root.dataset.v8Wallpaper = "active";
-                    event.currentTarget.muted = videoMuted;
-                    setVideoReady(true);
-                    void event.currentTarget.play().catch(() => undefined);
-                }}
-                onError={(event) => {
-                    if (!videoSrc) return;
-                    setVideoReady(false);
-                    const failedVideo = event.currentTarget;
-                    const attempt = videoReloadAttemptRef.current;
-                    // Reloading can recover a failed transfer, but cannot fix an
-                    // unsupported source or a decoder failure. Keep the retry
-                    // budget for this source even if it briefly becomes playable.
-                    if (failedVideo.error?.code === MediaError.MEDIA_ERR_NETWORK && attempt < VIDEO_RELOAD_DELAYS_MS.length) {
-                        videoReloadAttemptRef.current = attempt + 1;
-                        if (videoReloadTimerRef.current) clearTimeout(videoReloadTimerRef.current);
-                        videoReloadTimerRef.current = setTimeout(() => {
-                            videoReloadTimerRef.current = null;
-                            const video = videoRef.current;
-                            if (!video || video.getAttribute("src") !== videoSrc) return;
-                            video.load();
-                            void video.play().catch(() => undefined);
-                        }, VIDEO_RELOAD_DELAYS_MS[attempt]);
-                        return;
-                    }
-                    failedVideo.pause();
-                    failedVideo.removeAttribute("src");
-                    failedVideo.load();
-                    setVideoSrc("");
-                    if (document.documentElement.dataset.v8WallpaperKind === "video") {
-                        clearWallpaper(document.documentElement);
-                    }
-                }}
-            />
-            <div className="v8-personalization-wallpaper-overlay" aria-hidden="true" />
-            {children}
-        </BackgroundVideoAudioContext.Provider>
-    );
+        if (!video) return;
+        video.muted = !videoMuted; video.volume = 0.65; setVideoMuted(!videoMuted);
+    }, [videoMuted]);
+    const togglePaused = useCallback(() => {
+        if (error && !ready) {
+            failed.current.clear(); setError("");
+            const next = { ...selectionRef.current, serial: selectionRef.current.serial + 1 };
+            selectionRef.current = next; setSelection(next);
+        }
+        setPaused((current) => !current);
+    }, [error, ready]);
+    const value = { available: enabled && item?.kind === "video", muted: videoMuted, toggleMuted, enabled, paused, togglePaused, multiple: items.length > 1, next: () => advance(1), previous: () => advance(-1), error: error || configurationError };
+    return <BackgroundVideoAudioContext.Provider value={value}>
+        <div className="v8-personalization-wallpaper" aria-hidden="true" />
+        {enabled && item?.kind === "video" ? <video
+            key={`${item.id}:${selection.serial}`}
+            ref={videoRef} className="v8-personalization-wallpaper-video"
+            src={mediaSrc} poster={poster || undefined} muted={videoMuted} loop={items.length === 1}
+            playsInline preload="metadata" disablePictureInPicture aria-hidden="true" tabIndex={-1}
+            onCanPlay={() => {
+                if (selectionRef.current.serial !== selection.serial) return;
+                const root = document.documentElement;
+                root.dataset.v8Wallpaper = "active"; root.dataset.v8WallpaperKind = "video";
+                setReady(true);
+            }}
+            onEnded={() => advance(1, selection.serial)}
+            onError={() => advance(1, selection.serial, true)}
+        /> : null}
+        {children}
+    </BackgroundVideoAudioContext.Provider>;
 }

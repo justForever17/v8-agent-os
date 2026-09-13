@@ -3,8 +3,10 @@ import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import { AdminStorageUnavailableError, getBaseDir, readJsonStrict, writeJsonStrict } from "@/lib/storage";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { normalizeBackgroundPlaylist, referencedBackgroundMedia, type BackgroundPlaylist } from "@v8/product-ui/background-playlist";
 export type AdminUserRole = "ADMIN" | "USER";
 export type UserAppearancePreferences = {
+  webBackground?: BackgroundPlaylist;
   lightBackgroundMedia?: string;
   lightBackgroundMediaType?: "image" | "video";
   /** @deprecated Read compatibility for image-only clients. Use lightBackgroundMedia. */
@@ -364,7 +366,25 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
       target.image = patch.image.trim();
     }
     if (patch.appearance && typeof patch.appearance === "object") {
-      target.appearance = normalizeAppearance(patch.appearance);
+      const nextAppearance = { ...(target.appearance || {}), ...patch.appearance };
+      if (patch.appearance.webBackground !== undefined) {
+        const next = normalizeBackgroundPlaylist(patch.appearance.webBackground);
+        const currentRevision = target.appearance?.webBackground?.revision || 0;
+        if (next.revision !== currentRevision) throw new Error("BACKGROUND_REVISION_CONFLICT");
+        const existing = referencedBackgroundMedia(target.appearance);
+        const mediaDirectory = path.join(getBaseDir(), "assets", "user-media", "background");
+        for (const item of next.items) {
+          const filename = path.basename(item.media);
+          if (!fs.existsSync(path.join(mediaDirectory, filename))) throw new Error("BACKGROUND_MEDIA_UNAVAILABLE");
+          if (!existing.has(item.media)) {
+            let receipt: { userId?: string; kind?: string } = {};
+            try { receipt = JSON.parse(fs.readFileSync(path.join(mediaDirectory, `.receipt-${filename}.json`), "utf8")); } catch {}
+            if (receipt.userId !== target.id || receipt.kind !== item.kind) throw new Error("BACKGROUND_MEDIA_UNAVAILABLE");
+          }
+        }
+        nextAppearance.webBackground = { ...next, revision: currentRevision + 1 };
+      }
+      target.appearance = normalizeAppearance(nextAppearance);
     }
     if (typeof patch.email === "string") {
       target.email = patch.email.trim() || undefined;
@@ -374,7 +394,17 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
     }
     target.updatedAt = new Date().toISOString();
     writeUsersPayloadUnlocked(payload);
+    if (patch.appearance?.webBackground) for (const item of target.appearance?.webBackground?.items || []) {
+      const receiptPath = path.join(getBaseDir(), "assets", "user-media", "background", `.receipt-${path.basename(item.media)}.json`);
+      try { const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8")); fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, committed: true })); } catch {}
+    }
     return target;
+  });
+}
+export function withUserBackgroundReferences<T>(operation: (references: Set<string>) => T): T {
+  return withUsersWriteLock(() => {
+    const references = new Set(readUsersPayloadUnlocked().payload.users.flatMap((user) => [...referencedBackgroundMedia(user.appearance)]));
+    return operation(references);
   });
 }
 export function deleteUserRecord(id: string) {

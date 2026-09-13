@@ -11,6 +11,7 @@ let sharedProfileRequest: Promise<SharedUserProfile | null | undefined> | null =
 let sharedProfileSnapshot: SharedUserProfile | null | undefined;
 let sharedProfileFetchedAt = 0;
 let sharedProfileRevision = 0;
+let sharedProfileOwner = "";
 
 function resetSharedProfile() {
     sharedProfileRevision += 1;
@@ -50,7 +51,8 @@ function normalizeProfileValue(value?: string | null) {
 }
 
 function profilesMatch(left?: SharedUserProfile | null, right?: SharedUserProfile | null) {
-    return normalizeProfileValue(left?.login) === normalizeProfileValue(right?.login)
+    return normalizeProfileValue(left?.id) === normalizeProfileValue(right?.id)
+        && normalizeProfileValue(left?.login) === normalizeProfileValue(right?.login)
         && normalizeProfileValue(left?.email) === normalizeProfileValue(right?.email)
         && normalizeProfileValue(left?.name) === normalizeProfileValue(right?.name)
         && normalizeProfileValue(left?.image) === normalizeProfileValue(right?.image)
@@ -110,6 +112,9 @@ export function useClientProfile() {
     }, [hasSessionUser, sessionUserEmail, sessionUserId, sessionUserImage, sessionUserLogin, sessionUserName, sessionUserRole]);
 
     const applyProfile = useCallback(async (next: SharedUserProfile | null) => {
+        // A save or refresh may finish after another principal has signed in.
+        if (sharedProfileOwner !== String(sessionProfile?.id || "")
+            || (next?.id && next.id !== sharedProfileOwner)) return;
         setCanonicalLoaded(true);
         setProfile((current) => profilesMatch(current, next) ? current : next);
         emitProfileUpdate(next);
@@ -147,13 +152,14 @@ export function useClientProfile() {
 
     useEffect(() => {
         if (status !== "authenticated") {
-            if (status === "unauthenticated") resetSharedProfile();
+            if (status === "unauthenticated") { resetSharedProfile(); sharedProfileOwner = ""; }
             setProfile(null);
             setCanonicalLoaded(status === "unauthenticated");
             return;
         }
+        if (sharedProfileOwner !== String(sessionUserId || "")) { resetSharedProfile(); sharedProfileOwner = String(sessionUserId || ""); setProfile(null); setCanonicalLoaded(false); }
         void refreshProfile();
-    }, [refreshProfile, status]);
+    }, [refreshProfile, status, sessionUserId]);
 
     useEffect(() => {
         if (typeof window === "undefined") {

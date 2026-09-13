@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 import { updateUserRecord, findUserByIdentifier, getSessionIdentifier } from "@/lib/users";
-import { removeManagedUserMedia } from "@/lib/user-media";
+import { removeUnreferencedBackground } from "@/lib/background-media";
 import { verifyServiceAuth } from "@/lib/service-auth";
 
 async function resolveCurrentUser(req: NextRequest) {
@@ -44,14 +44,19 @@ export async function PATCH(req: NextRequest) {
     const image = typeof body.image === "string" ? body.image : user.image || "";
     const email = typeof body.email === "string" ? body.email : user.email || "";
     const appearance = body.appearance && typeof body.appearance === "object" && !Array.isArray(body.appearance)
-        ? { ...(user.appearance || {}), ...body.appearance }
-        : user.appearance || {};
+        ? body.appearance
+        : undefined;
 
     const previousBackground = user.appearance?.lightBackgroundMedia || user.appearance?.lightBackgroundImage || "";
-    const updated = updateUserRecord(user.id, { name, image, email, appearance });
+    let updated;
+    try { updated = updateUserRecord(user.id, { name, image, email, appearance }); }
+    catch (error) {
+        const message = error instanceof Error ? error.message : "外观保存失败";
+        return NextResponse.json({ error: message === "BACKGROUND_REVISION_CONFLICT" ? "背景设置已在其他页面更新，请重新载入后保存。" : message }, { status: message === "BACKGROUND_REVISION_CONFLICT" ? 409 : 400 });
+    }
     const nextBackground = updated.appearance?.lightBackgroundMedia || updated.appearance?.lightBackgroundImage || "";
     if (previousBackground && previousBackground !== nextBackground) {
-        removeManagedUserMedia(previousBackground, "background");
+        removeUnreferencedBackground(previousBackground);
     }
     return NextResponse.json({
         success: true,

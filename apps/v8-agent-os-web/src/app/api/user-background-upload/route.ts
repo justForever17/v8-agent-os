@@ -26,10 +26,12 @@ export async function POST(req: NextRequest) {
                 "x-v8-agent-os-secret": internalSecret,
                 "x-v8-agent-os-user-email": userIdentifier,
                 "x-v8-upload-mode": "raw",
+                "x-v8-background-intent": "playlist",
                 "content-type": contentType,
                 ...(req.headers.get("content-length") ? { "content-length": String(req.headers.get("content-length")) } : {}),
             },
             body: req.body,
+            signal: req.signal,
             cache: "no-store",
             duplex: "half",
         } as RequestInit & { duplex: "half" });

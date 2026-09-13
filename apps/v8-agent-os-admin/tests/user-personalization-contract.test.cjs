@@ -29,7 +29,7 @@ test("profile truth carries the light background appearance contract", () => {
   assert.match(users, /webp\|mp4/);
   assert.doesNotMatch(users, /url\.protocol === "https:"/);
   assert.match(profile, /appearance: user\.appearance \|\| \{\}/);
-  assert.match(profile, /removeManagedUserMedia\(previousBackground, "background"\)/);
+  assert.match(profile, /removeUnreferencedBackground\(previousBackground\)/);
 });
 
 test("MP4 backgrounds are validated, stored atomically, and served with byte ranges", () => {

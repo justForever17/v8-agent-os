@@ -9,7 +9,7 @@ import {
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
-import { BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
+import { BackgroundPlaybackControls, BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ShellWindowControls } from "./ShellWindowControls";
 import { RpaTopbarOverlay } from "./RpaTopbarOverlay";
@@ -63,6 +63,7 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
                 <RpaTopbarOverlay />
                 <LocaleToggle />
                 <BackgroundVideoSoundToggle />
+                <BackgroundPlaybackControls />
                 <ThemeToggle />
                 <UserProfile />
                 </>

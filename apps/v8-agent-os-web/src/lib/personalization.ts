@@ -1,8 +1,11 @@
 export const PERSONALIZATION_STORAGE_KEY = "v8-web-personalization";
+export { backgroundFromAppearance, normalizeBackgroundPlaylist, DEFAULT_IMAGE_DURATION_MS } from "@v8/product-ui/background-playlist";
+import type { BackgroundPlaylist } from "@v8/product-ui/background-playlist";
 
 export type LightBackgroundMediaType = "image" | "video";
 
 export type UserAppearancePreferences = {
+    webBackground?: BackgroundPlaylist;
     lightBackgroundMedia?: string;
     lightBackgroundMediaType?: LightBackgroundMediaType;
     /** @deprecated Read compatibility for image-only profiles. */
@@ -19,6 +22,7 @@ export function normalizeAppearance(value: unknown): UserAppearancePreferences {
     const requestedType = String(record.lightBackgroundMediaType || "").trim().toLowerCase();
     const mediaType: LightBackgroundMediaType = requestedType === "video" && inferredType === "video" ? "video" : inferredType;
     return {
+        ...(record.webBackground === undefined ? {} : { webBackground: record.webBackground as BackgroundPlaylist }),
         lightBackgroundMedia: media,
         lightBackgroundMediaType: mediaType,
         lightBackgroundImage: mediaType === "image" ? media : "",
@@ -35,5 +39,7 @@ export function resolveLightBackgroundMediaSrc(value?: string | null) {
 }
 
 export function buildPersonalizationBootstrapScript() {
-    return `(() => { try { const raw = localStorage.getItem(${JSON.stringify(PERSONALIZATION_STORAGE_KEY)}); if (!raw) return; const value = JSON.parse(raw); const media = typeof value?.lightBackgroundMedia === "string" ? value.lightBackgroundMedia.trim() : (typeof value?.lightBackgroundImage === "string" ? value.lightBackgroundImage.trim() : ""); const kind = value?.lightBackgroundMediaType === "video" || media.toLowerCase().endsWith(".mp4") ? "video" : "image"; if (!value?.lightBackgroundEnabled || !media.startsWith("/user-assets/background/")) return; const root = document.documentElement; root.dataset.v8WallpaperKind = kind; if (kind !== "image") return; const src = "/api/user-media?src=" + encodeURIComponent(media); root.dataset.v8Wallpaper = "active"; root.style.setProperty("--v8-wallpaper-image", "url(" + JSON.stringify(src) + ")"); } catch (_) {} })();`;
+    // Identity is not established before hydration. Retire the old global cache
+    // instead of showing the previous principal's media during bootstrap.
+    return `try { localStorage.removeItem(${JSON.stringify(PERSONALIZATION_STORAGE_KEY)}); } catch (_) {}`;
 }

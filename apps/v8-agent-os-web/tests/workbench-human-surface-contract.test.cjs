@@ -231,7 +231,7 @@ test("Collapsed Web task sidebar removes its rail, keeps hidden controls inert, 
   const chat = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   const shell = readText("apps/v8-agent-os-shell/electron/main.cjs");
   const preload = readText("apps/v8-agent-os-shell/electron/preload.cjs");
-  assert.match(sidebar, /isCollapsed \? "w-0 overflow-visible" : "w-\[280px\] glass-panel"/);
+  assert.match(sidebar, /isCollapsed \? "w-0 overflow-visible" : "w-\[280px\] v8-sidebar-surface"/);
   assert.match(sidebar, /inert=\{isCollapsed\}/);
   assert.match(sidebar, /isCollapsed \? "pointer-events-none -translate-x-2 opacity-0"/);
   assert.match(sidebar, /openWorkspaceFolder/);

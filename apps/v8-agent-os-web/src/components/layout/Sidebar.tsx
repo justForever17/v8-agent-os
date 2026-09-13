@@ -586,7 +586,7 @@ export function Sidebar() {
             <div
                 className={cn(
                     "group/sidebar relative z-20 hidden h-full flex-shrink-0 flex-col transition-[width] [transition-duration:220ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:[transition-duration:150ms] md:flex",
-                    isCollapsed ? "w-0 overflow-visible" : "w-[280px] glass-panel",
+                    isCollapsed ? "w-0 overflow-visible" : "w-[280px] v8-sidebar-surface",
                 )}
             >
                 <div className={cn("absolute top-8 z-50 hidden transition-all duration-300 md:block", isCollapsed ? "left-3" : "-right-3")}>
@@ -643,7 +643,7 @@ export function Sidebar() {
                 {isMobileOpen ? (
                     <motion.div
                         key="mobile-sidebar-panel"
-                        className="fixed inset-y-14 left-0 z-50 w-[min(22rem,86vw)] border-r border-border/40 bg-zinc-50/95 shadow-2xl backdrop-blur-2xl dark:bg-zinc-950/95 md:hidden"
+                        className="v8-sidebar-surface fixed inset-y-14 left-0 z-50 w-[min(22rem,86vw)] border-r border-border/40 md:hidden"
                         initial={{ opacity: 0.94, transform: shouldReduceMotion ? "translateX(0)" : "translateX(-18px)" }}
                         animate={{ opacity: 1, transform: "translateX(0)" }}
                         exit={{ opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(-18px)" }}

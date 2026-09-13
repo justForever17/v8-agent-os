@@ -308,8 +308,7 @@
 
 /* User wallpaper is shared by both color themes. Media always keeps its aspect
    ratio: window resizing crops from the center instead of stretching. */
-.v8-personalization-wallpaper,
-.v8-personalization-wallpaper-overlay {
+.v8-personalization-wallpaper {
     display: none;
     position: fixed;
     inset: 0;
@@ -322,8 +321,8 @@
     z-index: -2;
     width: 100%;
     height: 100%;
-    object-fit: cover;
-    object-position: center center;
+    object-fit: var(--v8-wallpaper-fit, cover);
+    object-position: var(--v8-wallpaper-position, center center);
     opacity: 0;
     pointer-events: none;
     transition: opacity 260ms ease-out;
@@ -341,26 +340,17 @@ html[data-v8-wallpaper="active"] .v8-personalization-wallpaper {
     display: block;
     z-index: -2;
     background-image: var(--v8-wallpaper-image);
-    background-position: center center;
+    background-position: var(--v8-wallpaper-position, center center);
     background-repeat: no-repeat;
-    background-size: cover;
+    background-size: var(--v8-wallpaper-fit, cover);
 }
 
-html[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
-    display: block;
-    z-index: -1;
-}
-
-html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
-    background:
-        linear-gradient(115deg, rgb(248 250 252 / 0.48), rgb(248 250 252 / 0.2) 48%, rgb(248 250 252 / 0.4)),
-        radial-gradient(circle at 50% 35%, rgb(255 255 255 / 0.08), rgb(15 23 42 / 0.12));
-}
-
-html.dark[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
-    background:
-        linear-gradient(115deg, rgb(9 9 11 / 0.6), rgb(9 9 11 / 0.32) 48%, rgb(9 9 11 / 0.54)),
-        radial-gradient(circle at 50% 35%, rgb(255 255 255 / 0.04), rgb(0 0 0 / 0.2));
+.v8-sidebar-surface {
+    background: transparent;
+    background-image: none;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
 }
 
 html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper-video {

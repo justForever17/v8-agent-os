@@ -96,6 +96,8 @@ class RuntimeSnapshotPayload:
     workflow_projection: Optional[Dict[str, Any]] = None
     approvals: List[Dict[str, Any]] = field(default_factory=list)
     ask_user_interactions: List[Dict[str, Any]] = field(default_factory=list)
+    queued_messages: List[Dict[str, Any]] = field(default_factory=list)
+    queued_messages_window: Optional[Dict[str, Any]] = None
     controls: Optional[Dict[str, Any]] = None
     recoverable: Optional[Dict[str, Any]] = None
     summary: Optional[Dict[str, Any]] = None
@@ -120,6 +122,8 @@ class RuntimeSnapshotPayload:
             "workflowProjection": self.workflow_projection,
             "approvals": list(self.approvals),
             "askUserInteractions": list(self.ask_user_interactions),
+            "queuedMessages": list(self.queued_messages),
+            "queuedMessagesWindow": self.queued_messages_window,
             "controls": self.controls,
             "recoverable": self.recoverable,
             "summary": self.summary,

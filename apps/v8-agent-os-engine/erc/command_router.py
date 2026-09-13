@@ -67,6 +67,8 @@ class RuntimeCommandRouter:
             workflow_projection=payload.get("workflowProjection"),
             approvals=list(payload.get("approvals") or []),
             ask_user_interactions=list(payload.get("askUserInteractions") or []),
+            queued_messages=list(payload.get("queuedMessages") or []),
+            queued_messages_window=payload.get("queuedMessagesWindow"),
             controls=payload.get("controls"),
             recoverable=payload.get("recoverable"),
             summary=payload.get("summary"),

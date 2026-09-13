@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
 from core.database import DatabaseManager
 import erc.snapshot_service as snapshots
+
+
+@pytest.mark.parametrize("count", [0, 2, 25])
+def test_public_compact_snapshot_preserves_queue_and_paging_without_an_active_run(monkeypatch, tmp_path, count):
+    from api import session_workflow_routes
+    from erc.command_router import RuntimeCommandRouter
+    from erc import session_runtime
+
+    database = DatabaseManager(tmp_path / "public-queue.sqlite3")
+    monkeypatch.setattr(snapshots, "db", database)
+    monkeypatch.setattr(session_runtime, "db", database)
+    monkeypatch.setattr(session_workflow_routes, "runtime_command_router", RuntimeCommandRouter())
+    database.create_or_update_session("public-queue-a", "Fixture")
+    for index in range(count):
+        database.add_chat_user_message_queue_item(queue_id=f"pending-{index}", session_id="public-queue-a", run_id=None,
+                                                 client_message_id=f"client-{index}", content=f"pending text {index}")
+    expected = snapshots.snapshot_service.queued_message_page("public-queue-a")
+    payload = asyncio.run(session_workflow_routes.get_session_snapshot("public-queue-a", compact=1))
+    assert payload["currentRun"] is None
+    assert payload["queuedMessages"] == expected["queuedMessages"]
+    assert payload["queuedMessagesWindow"] == expected["queuedMessagesWindow"]
+    assert payload["queuedMessagesWindow"]["hasMore"] is (count > 20)
+    assert payload["queuedMessagesWindow"]["complete"] is (count <= 20)
 
 
 @pytest.mark.parametrize("count", [0, 20, 21, 41])

@@ -21,4 +21,6 @@ Extensions生产候选见 `EXTENSIONS-09DFCC3C-REVIEW.md`：原来源/目标/foo
 
 Admin后续定向闭环见 `ADMIN-251D31E6-REVIEW.md`：焦点、相机过渡、安全两类失败恢复和治理文案5项通过，范围不扩大为全站/整合验收。
 
+Extensions定向闭环见 `EXTENSIONS-84959E0F-REVIEW.md`：X10可读错误和F03精确argv在生产UI/冻结函数边界分别通过，保留整合与真实安装验收限制。
+
 所有结果必须记录 source commit、fixture、环境、命令、预期/实际和首个偏离。复验新候选先核对回调/API 变化，再更新适配层；保持反例与用户行为 oracle。

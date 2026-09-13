@@ -21,17 +21,21 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--only", default="")
+    parser.add_argument("--candidate", default=COMMIT)
+    parser.add_argument("--build-id", default="unspecified")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[3]
-    assert subprocess.check_output(["git", "rev-parse", COMMIT], cwd=repo, text=True).strip() == COMMIT
+    assert subprocess.check_output(["git", "rev-parse", args.candidate], cwd=repo, text=True).strip() == args.candidate
     out = args.out.resolve()
     assert out.is_relative_to(repo / "tmp")
     out.mkdir(parents=True, exist_ok=True)
     requests, submitted, evidence, errors, assets = [], [], [], [], []
     holds, started, finished, jobs = {}, {}, {}, {}
     theme = {"theme": "light"}
+    mcp_config = None
+    config_saves = []
     selected = [x for x in args.only.split(",") if x]
-    report = {"candidateCommit": COMMIT, "runtime": "production standalone 22825, author-declared frozen final product source; built before commit", "buildId": "thJVYuOhK1Mqvf23zCP0d", "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.", "requests": requests, "submitted": submitted, "evidence": evidence, "errors": errors}
+    report = {"candidateCommit": args.candidate, "runtime": "production standalone 22825, exact source/build as explicitly handed off by owner", "buildId": args.build_id, "qualification": "Independent real browser / stateful synthetic external HTTP boundary. No real install, Engine or business API acceptance.", "requests": requests, "submitted": submitted, "configSaves": config_saves, "evidence": evidence, "errors": errors}
     long_readme = "\n\n".join(f"## Independent section {i}\n\n合成长说明用于测试操作可达性 {i}。" for i in range(100))
 
     def operation(body, kind):
@@ -47,6 +51,7 @@ async def main():
             await asyncio.wait_for(holds[key].wait(), 20)
 
     async def route_api(route):
+        nonlocal mcp_config
         req = route.request
         u = urlparse(req.url)
         if f"{u.scheme}://{u.netloc}" != BASE:
@@ -98,6 +103,16 @@ async def main():
             data, status = {"detail": "Independent fixture health unavailable"}, 503
         elif u.path == "/api/extensions/catalog":
             data, status = {"summary": {"skillCount": 0, "mcpServerCount": 0, "connectedMcpServerCount": 0, "mcpToolCount": 0}, "skills": {"root": "synthetic", "items": []}, "mcp": {"servers": []}}, 200
+            if mcp_config is not None:
+                data["mcp"]["servers"] = [{"name": name, "status": "disabled", "transport": "stdio", "toolCount": 0, "tools": []} for name in mcp_config["mcpServers"]]
+                data["summary"]["mcpServerCount"] = len(data["mcp"]["servers"])
+        elif u.path == "/api/mcp/config" and mcp_config is not None:
+            if req.method == "POST":
+                config_saves.append(req.post_data_json)
+                mcp_config = req.post_data_json
+                data, status = {"status": "success"}, 200
+            else:
+                data, status = mcp_config, 200
         elif u.path == "/api/config-registry/extensions":
             data, status = {"domain": "extensions", "data": {"prefilterPolicy": {"enabled": False, "futurePolicy": "keep", "skills": {"future": 0}}, "modelBindings": {}, "futureConfig": {"keep": False}}, "warnings": []}, 200
         elif u.path in ["/api/models", "/api/skills/safety/reviews", "/api/admin-inbox"]:
@@ -323,6 +338,28 @@ async def main():
                 ordered = sorted(samples)
                 return {"n": len(samples), "samplesMs": samples, "medianMs": statistics.median(samples), "p95Ms": ordered[math.ceil(len(samples)*.95)-1], "qualification": "Production Chrome153 warm click→detail ready→two frames with synthetic response; documentation is lazy and not opened. No baseline comparison or native performance claim."}
             await test("X12-detail-warm-samples", "performance", detail_samples)
+
+            async def stdio_ui_roundtrip():
+                nonlocal mcp_config
+                exact_args = ["--label", "  spaced value  ", ""]
+                mcp_config = {"mcpServers": {"independent-arguments": {"type": "stdio", "command": "synthetic-command", "args": exact_args.copy(), "env": {}, "disabled": True, "future": {"keep": False, "zero": 0}}}}
+                await close()
+                await page.goto(BASE + "/admin/extensions", wait_until="networkidle")
+                await page.get_by_title("编辑 MCP 配置", exact=True).click()
+                dialog = page.get_by_role("dialog")
+                await dialog.wait_for()
+                editor = dialog.locator("textarea").first
+                shown = json.loads(await editor.input_value())
+                assert shown == exact_args, shown
+                before = len(config_saves)
+                await dialog.get_by_role("button", name="保存修改", exact=True).click()
+                await dialog.wait_for(state="hidden")
+                assert len(config_saves) == before + 1
+                actual = config_saves[-1]["mcpServers"]["independent-arguments"]
+                assert actual["args"] == exact_args, actual["args"]
+                assert actual["future"] == {"keep": False, "zero": 0}
+                return {"unmodifiedArgsShownExactly": True, "actualInterceptedPostArgs": actual["args"], "unknownRetained": True, "realEngineWrite": False}
+            await test("X13-stdio-ui-unmodified-save", "function", stdio_ui_roundtrip)
         finally:
             for gate in holds.values():
                 gate.set()

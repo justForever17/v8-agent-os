@@ -6,7 +6,8 @@ import vm from 'node:vm';
 import {createRequire} from 'node:module';
 import {execFileSync} from 'node:child_process';
 const repo=path.resolve(import.meta.dirname,'../../..');
-const commit='09dfcc3cd231d1717d3e712ad2270750c4c1fe31';
+const args=process.argv.slice(2);
+const commit=args.includes('--candidate')?args[args.indexOf('--candidate')+1]:'09dfcc3cd231d1717d3e712ad2270750c4c1fe31';
 const sourcePath='apps/v8-agent-os-admin/src/app/admin/(dashboard)/extensions/page.tsx';
 const source=execFileSync('git',['-C',repo,'show',`${commit}:${sourcePath}`],{encoding:'utf8'});
 const require=createRequire(path.join(repo,'apps/v8-agent-os-admin/package.json'));
@@ -39,6 +40,16 @@ check('F03-stdio-argument-roundtrip',()=>{
   assert.deepEqual(result.args,base.args,'opening and saving an unchanged stdio server must preserve the exact argv including empty arguments and boundary spaces');
   return{argumentArrayUnchanged:true};
 });
-const out=path.join(repo,'scripts/experience/9131/reports/extensions-form-09dfcc3c.json');
+check('F04-argument-boundary-matrix',()=>{
+  const matrix=[[],[''],['',''],['line one\nline two'],['CR\r\nLF'],['quote"','slash\\end'],['  leading','trailing  ']];
+  for(const argv of matrix){const base={type:'stdio',command:'synthetic-command',args:argv,env:{}};assert.deepEqual(invoke(base).args,argv);}
+  return{cases:matrix.length,emptyArray:true,emptyArguments:true,embeddedNewlines:true,quotesAndBackslashes:true};
+});
+check('F05-invalid-json-arguments-rejected',()=>{
+  const base={type:'stdio',command:'synthetic-command',args:[],env:{}};
+  for(const value of ['[1]','[null]','[{}]','["unfinished"'])assert.throws(()=>invoke(base,form=>{form.argsText=value;}));
+  return{invalidInputs:4,noPayloadProduced:true};
+});
+const out=path.join(repo,`scripts/experience/9131/reports/extensions-form-${commit.slice(0,8)}.json`);
 fs.writeFileSync(out,JSON.stringify({commit,sourcePath,level:'BOUNDARY_EXECUTED',qualification:'Frozen real form functions with synthetic values; not native process execution or full BFF credential mutation.',rows},null,2)+'\n');
 console.log(JSON.stringify(rows));process.exitCode=rows.some(r=>r.status!=='PASS')?1:0;

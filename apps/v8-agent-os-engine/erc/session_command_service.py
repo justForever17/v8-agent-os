@@ -193,7 +193,7 @@ class SessionCommandService:
     def command(self, *, mode: str, context: dict[str, Any], state: dict[str, Any], assignment_id: str = "",
                 revision: int = 0, title: str = "", task: dict[str, Any] | None = None, content: str = "",
                 idempotency_key: str = "", after_id: str = "", after_cursor: int = 0, limit: int = 20,
-                assignment_ids: list[str] | None = None, wait_for: str = "any") -> dict[str, Any]:
+                assignment_ids: list[str] | None = None, wait_for: str = "any", target_run_id: str = "") -> dict[str, Any]:
         try:
             session_id, user_id, run_id = self._actor(context)
             if mode == "create":
@@ -227,11 +227,32 @@ class SessionCommandService:
                 if not self.db.revoke_session_command_assignment(assignment_id, user_id=user_id, session_id=session_id, revision=revision):
                     raise ValueError("assignment_revoke_scope_or_revision_mismatch")
                 return {"ok": True, "assignment": self.envelope(self.db.get_session_command_assignment(assignment_id))}
-            if mode != "continue":
+            if mode not in {"continue", "cancel"}:
                 raise ValueError("assignment_unsupported_mode")
             row = self.validate(assignment_id, session_id=session_id, user_id=user_id, revision=revision)
             if row["rootSessionId"] != session_id:
                 raise ValueError("assignment_root_only")
+            if mode == "cancel":
+                if not target_run_id or not idempotency_key:
+                    raise ValueError("assignment_cancel_target_and_idempotency_required")
+                target_run = self.db.get_run_record(target_run_id) or {}
+                binding = (target_run.get("metadata") or {}).get("sessionAssignment") or {}
+                if target_run.get("session_id") != row["childSessionId"] or target_run.get("user_id") != user_id:
+                    raise ValueError("assignment_cancel_target_mismatch")
+                receipt = self.db.request_session_assignment_cancel(
+                    assignment_id=assignment_id, revision=revision, root_session_id=session_id, user_id=user_id,
+                    target_run_id=target_run_id, expected_message_id=str(binding.get("messageId") or ""),
+                    expected_status=str(target_run.get("status") or ""), idempotency_key=idempotency_key,
+                )
+                from erc.command_service import command_service
+                command_service.issue_control_signal(
+                    target_run_id, command="cancel", reason="project_assignment_cancel_requested",
+                    payload={"assignmentId": assignment_id, "revision": revision, "rootSessionId": session_id,
+                             "requestId": receipt["requestId"]},
+                )
+                return {"ok": True, "controlStatus": "cancellation_requested", "targetRunId": target_run_id,
+                        "cancellationRequested": True, "stopConfirmed": False, **receipt,
+                        "summary": "已请求取消此项目任务；等待执行器确认停止。"}
             from erc.session_coordination_service import _latest_human, _contains_secret
             latest, is_coordination = _latest_human(list(state.get("messages") or []))
             # A peer result may inform a root's already-authorized work.
@@ -295,9 +316,12 @@ class SessionCommandService:
         if run.get("status") not in {"running", "queued"} or message.get("targetRunId") != run_id:
             raise ValueError("assignment_run_not_active")
         previous = (run.get("metadata") or {}).get("sessionAssignment") or {}
+        if previous.get("cancelRequested"):
+            raise ValueError("assignment_cancellation_requested")
         result = self.db.update_run_metadata_key_if_state(
             run_id, key="sessionAssignment", expected_state=previous.get("state") or "",
             expected_status=run["status"],
+            expected_value=previous,
             next_value={"state": "active", "assignmentId": assignment["assignmentId"],
                         "revision": assignment["revision"], "messageId": message["messageId"]},
         )
@@ -329,6 +353,8 @@ def validate_assignment_execution_context(context: dict[str, Any]) -> dict[str, 
         return {}
     if run.get("session_id") != session_id or run.get("user_id") != user_id or run.get("status") not in {"running", "queued"}:
         raise ValueError("assignment_run_scope_mismatch")
+    if binding.get("cancelRequested"):
+        raise ValueError("assignment_cancellation_requested")
     service = SessionCommandService()
     message = db.get_session_coordination_message(str(binding.get("messageId") or ""))
     if not message or message.get("targetRunId") != run_id:

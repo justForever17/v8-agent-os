@@ -29,6 +29,7 @@ def session_command_broker(
     afterCursor: int = 0,
     assignmentIds: Optional[list[str]] = None,
     waitFor: str = "any",
+    targetRunId: str = "",
     limit: int = 20,
     state: Annotated[dict[str, Any], InjectedState] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -51,6 +52,10 @@ def session_command_broker(
     await yields the current graph only when you have no independent work to do.
     Select assignmentIds, afterCursor and waitFor='any' or 'all_final', with a stable
     idempotencyKey for this wait generation. Results wake this same root run automatically.
+    Continue also steers an existing assignment; while the child awaits human input or
+    approval it stays queued. Cancel requires the exact targetRunId, assignmentId and
+    revision. It requests cancellation and blocks later assigned actions; it does not
+    claim the executor has stopped or resolve the child's pending human decision.
     """
     payload = session_coordination_service.command(
         context=get_runtime_context(), state=state or {}, mode=str(mode).strip().lower(),
@@ -58,6 +63,7 @@ def session_command_broker(
         content=content, idempotency_key=idempotencyKey,
         after_id=after, after_cursor=max(0, afterCursor), limit=max(1, min(limit, 50)),
         assignment_ids=assignmentIds, wait_for=waitFor,
+        target_run_id=targetRunId,
     )
     if str(mode).strip().lower() == "await" and payload.get("ok") and payload.get("waiting"):
         return Command(goto=END, update={

@@ -800,3 +800,145 @@ def test_late_schedule_failure_cannot_restore_a_new_wait_generation(harness):
     wait = harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]
     assert wait["generation"] == new_generation[0] != first_wait["generation"]
     assert wait["state"] == "waiting"
+
+
+def cancellation_control_owner(harness):
+    import erc.command_service as control_module
+    import erc.run_service as run_module
+    control = control_module.CommandService()
+    harness.monkeypatch.setattr(run_module, "db", harness.db)
+    harness.monkeypatch.setattr(control_module, "command_service", control)
+    return control
+
+
+@pytest.mark.parametrize("child_status", ["running", "waiting_input", "waiting_approval", "paused"])
+def test_cancel_requests_exact_child_without_faking_stopped_or_dismissing_approval(harness, child_status):
+    from core.tools.native.workspace_file import write_native_file
+    from erc.command_service import CommandService
+    import erc.run_service as run_module
+    control = cancellation_control_owner(harness)
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    message_id = sent["message"]["messageId"]
+    harness.service.mark_injected(message_id, target_run_id="run-child-0")
+    child = assignment["childSessionId"]
+    harness.db.update_run_record("run-child-0", status=child_status)
+    harness.db.add_pending_approval("pending-child-approval", child, "run-child-0", "fixture", "pending", {})
+    args = {"mode": "cancel", "assignmentId": assignment["assignmentId"], "revision": 1,
+            "targetRunId": "run-child-0", "idempotencyKey": "cancel-page"}
+    result = invoke(args, routed=True)
+    assert result["ok"] and result["controlStatus"] == "cancellation_requested"
+    assert result["observedRunStatus"] == child_status and result["stopConfirmed"] is False
+    assert harness.db.get_run_record("run-child-0")["status"] == child_status
+    assert harness.db.get_pending_approval("pending-child-approval")["status"] == "pending"
+    assert invoke(args)["requestId"] == result["requestId"]
+    # Restart retains the request. Clearing the ordinary control signal during
+    # a governed resume must not restore the old assignment's write authority.
+    reopened = DatabaseManager(harness.db.db_path)
+    harness.monkeypatch.setattr(run_module, "db", reopened)
+    harness.monkeypatch.setattr(command_module, "db", reopened)
+    assert CommandService().peek_control_signal("run-child-0")["command"] == "cancel"
+    control.clear_control_signal("run-child-0")
+    reopened.update_run_record("run-child-0", status="running")
+    with bind_runtime_context(runtime_kind="chat", session_id=child, run_id="run-child-0", user_id=USER,
+                              workspace_path=str(harness.workspace)):
+        receipt = write_native_file.invoke({"name": "write_native_file", "type": "tool_call", "id": "after-cancel",
+                                           "args": {"path": "page.txt", "content": "must not write after cancel"}})
+    assert not (harness.workspace / "page.txt").exists(), receipt
+    with pytest.raises(ValueError, match="assignment_cancellation_requested"):
+        SessionCommandService(database=reopened).bind_run(reopened.get_session_coordination_message(message_id), run_id="run-child-0")
+
+
+@pytest.mark.parametrize("changed", ["other_user", "other_root", "wrong_target", "old_revision", "revoked", "terminal", "binding"])
+def test_cancel_rejects_unrelated_or_changed_target_without_control_signal(harness, changed):
+    cancellation_control_owner(harness)
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    args = {"mode": "cancel", "assignmentId": assignment["assignmentId"], "revision": 1,
+            "targetRunId": "run-child-0", "idempotencyKey": "cancel-page"}
+    identity = {}
+    if changed == "other_user":
+        identity["user"] = "intruder"
+    elif changed == "other_root":
+        harness.db.create_or_update_session("other-root", "Other", user_id=USER)
+        harness.db.create_run_record("other-root-run", "other-root", user_id=USER, run_type="chat", status="running")
+        identity = {"session": "other-root", "run": "other-root-run"}
+    elif changed == "wrong_target":
+        args["targetRunId"] = "run-root-001"
+    elif changed == "old_revision":
+        args["revision"] = 99
+    elif changed == "revoked":
+        invoke({"mode": "revoke", "assignmentId": assignment["assignmentId"], "revision": 1})
+    elif changed == "terminal":
+        harness.db.update_run_record("run-child-0", status="completed")
+    else:
+        record = harness.db.get_run_record("run-child-0")
+        metadata = record["metadata"]
+        metadata["sessionAssignment"]["messageId"] = "forged-message"
+        harness.db.update_run_record("run-child-0", status="running", metadata=metadata)
+    before = harness.db.get_run_record("run-child-0")
+    denied = invoke(args, **identity)
+    assert denied["ok"] is False, denied
+    after = harness.db.get_run_record("run-child-0")
+    assert after["status"] == before["status"]
+    assert not after["metadata"].get("control_signal")
+    assert not after["metadata"]["sessionAssignment"].get("cancelRequested")
+
+
+def test_cancel_binding_cas_does_not_cancel_rebound_message(harness):
+    cancellation_control_owner(harness)
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    old_message = sent["message"]["messageId"]
+    record = harness.db.get_run_record("run-child-0")
+    metadata = record["metadata"]
+    metadata["sessionAssignment"]["messageId"] = "new-dispatch"
+    metadata["sessionResultWait"] = {"generation": "child-new-wait", "state": "waiting"}
+    harness.db.update_run_record("run-child-0", status="queued", metadata=metadata)
+    with pytest.raises(ValueError, match="assignment_cancel_binding_changed"):
+        harness.db.request_session_assignment_cancel(assignment_id=assignment["assignmentId"], revision=1,
+            root_session_id=ROOT, user_id=USER, target_run_id="run-child-0", expected_message_id=old_message,
+            expected_status="queued", idempotency_key="cancel-page")
+    actual = harness.db.get_run_record("run-child-0")["metadata"]
+    assert actual["sessionResultWait"]["generation"] == "child-new-wait"
+    assert not actual["sessionAssignment"].get("cancelRequested")
+
+
+def test_cancel_wins_against_concurrent_stale_run_rebinding(harness):
+    from threading import Event
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    message = harness.db.get_session_coordination_message(sent["message"]["messageId"])
+    concurrent = DatabaseManager(harness.db.db_path)
+    before_bind, cancelled = Event(), Event()
+    original_update = harness.db.update_run_metadata_key_if_state
+    def delayed_binding(*args, **kwargs):
+        before_bind.set()
+        assert cancelled.wait(10)
+        return original_update(*args, **kwargs)
+    harness.monkeypatch.setattr(harness.db, "update_run_metadata_key_if_state", delayed_binding)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(SessionCommandService(database=harness.db).bind_run, message, run_id="run-child-0")
+        assert before_bind.wait(10)
+        concurrent.request_session_assignment_cancel(assignment_id=assignment["assignmentId"], revision=1,
+            root_session_id=ROOT, user_id=USER, target_run_id="run-child-0", expected_message_id=message["id"],
+            expected_status="queued", idempotency_key="cancel-at-rebind")
+        cancelled.set()
+        with pytest.raises(ValueError, match="assignment_run_binding_conflict"):
+            future.result(timeout=10)
+    assert concurrent.get_run_record("run-child-0")["metadata"]["sessionAssignment"]["cancelRequested"]
+
+
+def test_followup_cannot_start_another_run_before_cancel_is_observed(harness):
+    cancellation_control_owner(harness)
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    harness.db.update_run_record("run-child-0", status="running")
+    assert invoke({"mode": "cancel", "assignmentId": assignment["assignmentId"], "revision": 1,
+                   "targetRunId": "run-child-0", "idempotencyKey": "cancel-page"})["ok"]
+    followup = invoke({"mode": "continue", "assignmentId": assignment["assignmentId"], "revision": 1,
+                       "content": "After stopping, review the original task.", "idempotencyKey": "after-stop"})
+    assert followup["message"]["state"] == "queued"
+    assert len(harness.db.list_run_records(session_id=assignment["childSessionId"])) == 1

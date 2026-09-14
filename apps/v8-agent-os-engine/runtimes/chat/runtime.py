@@ -3962,7 +3962,7 @@ class ChatRuntime:
                 "reason": f"status_mismatch:{expected_status}",
                 "currentStatus": expected_status,
             }
-        request_data = getattr(chat_run.request, "data", None)
+        request_data = getattr(getattr(chat_run, "request", None), "data", None)
         wait_generation = str(getattr(request_data, "_session_coordination_wait_generation", "") or "")
         if wait_generation:
             transition = db.activate_session_result_wait(

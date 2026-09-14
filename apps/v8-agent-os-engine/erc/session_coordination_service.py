@@ -887,6 +887,9 @@ class SessionCoordinationService:
             latest = latest_runs[0] if latest_runs else {}
             latest_metadata = latest.get("metadata") or {}
             wait = latest_metadata.get("sessionResultWait") or {}
+            if ((latest_metadata.get("sessionAssignment") or {}).get("cancelRequested")
+                    and latest.get("status") in {"running", *SESSION_COORDINATION_WAITING_RUN_STATES}):
+                return row
             if (row.get("authority") == "project_result" and wait.get("state") in {"waiting", "scheduled"}
                     and not latest_metadata.get("resume_reason")):
                 # Await registration precedes checkpoint/finalization and lane release.

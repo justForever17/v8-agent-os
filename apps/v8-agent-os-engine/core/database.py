@@ -3482,6 +3482,49 @@ class DatabaseManager:
                 facts.extend((table, str(row[0]), str(row[1])) for row in rows)
         return _runtime_episode_payload_fingerprint({"humanTurns": facts})
 
+    def request_session_assignment_cancel(self, *, assignment_id: str, revision: int, root_session_id: str,
+                                          user_id: str, target_run_id: str, expected_message_id: str,
+                                          expected_status: str, idempotency_key: str) -> Dict[str, Any]:
+        """Reduce one bound child's authority without reporting executor termination."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                relation = conn.execute(
+                    """SELECT * FROM session_command_assignments WHERE id = ? AND revision = ?
+                       AND root_session_id = ? AND user_id = ? AND status = 'active'""",
+                    (assignment_id, revision, root_session_id, user_id),
+                ).fetchone()
+                run = conn.execute("SELECT * FROM run_records WHERE id = ?", (target_run_id,)).fetchone()
+                if not relation or not run or run["session_id"] != relation["child_session_id"] or run["user_id"] != user_id:
+                    raise ValueError("assignment_cancel_target_mismatch")
+                if run["status"] != expected_status or run["status"] not in {"queued", "running", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"}:
+                    raise ValueError("assignment_cancel_run_changed")
+                latest = conn.execute("SELECT id FROM run_records WHERE session_id = ? ORDER BY started_at DESC LIMIT 1", (run["session_id"],)).fetchone()
+                if not latest or latest["id"] != target_run_id:
+                    raise ValueError("assignment_cancel_run_changed")
+                metadata = json.loads(run["metadata"] or "{}")
+                binding = metadata.get("sessionAssignment") or {}
+                if (binding.get("state") != "active" or binding.get("assignmentId") != assignment_id
+                        or binding.get("revision") != revision or binding.get("messageId") != expected_message_id):
+                    raise ValueError("assignment_cancel_binding_changed")
+                message = conn.execute(
+                    """SELECT id FROM session_coordination_messages WHERE id = ? AND target_run_id = ?
+                       AND target_session_id = ? AND source_session_id = ? AND source_user_id = ?
+                       AND authority = 'project_assignment' AND state IN ('promoted', 'injected', 'replied')""",
+                    (expected_message_id, target_run_id, run["session_id"], root_session_id, user_id),
+                ).fetchone()
+                if not message:
+                    raise ValueError("assignment_cancel_binding_changed")
+                previous = binding.get("cancelRequested")
+                request = previous or {"requestId": "assignment_cancel_" + _runtime_episode_payload_fingerprint({
+                    "assignmentId": assignment_id, "revision": revision, "runId": target_run_id, "key": idempotency_key}),
+                    "rootSessionId": root_session_id, "requestedAt": utc_now_iso()}
+                metadata["sessionAssignment"] = {**binding, "cancelRequested": request}
+                conn.execute("UPDATE run_records SET metadata = ? WHERE id = ?", (json.dumps(metadata), target_run_id))
+                conn.commit()
+                return {"requestId": request["requestId"], "idempotent": bool(previous), "observedRunStatus": run["status"]}
+        return self._run_write_with_retry(_write)
+
     def _session_wait_results(self, conn, session_id: str, marker: Dict[str, Any]) -> List[Dict[str, Any]]:
         rows = conn.execute(
             """SELECT * FROM session_coordination_messages WHERE target_session_id = ? AND authority = 'project_result'
@@ -4684,6 +4727,7 @@ class DatabaseManager:
         next_value: Dict[str, Any],
         expected_status: Optional[str] = None,
         expected_generation: Optional[int] = None,
+        expected_value: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         marker_key = str(key or "").strip()
         if not marker_key:
@@ -4726,6 +4770,8 @@ class DatabaseManager:
                 if expected_generation is not None and (metadata.get(marker_key) or {}).get("waitGeneration") != expected_generation:
                     return {"updated": False, "reason": "runtime_wait_generation_changed"}
                 current_state = _marker_state(metadata)
+                if expected_value is not None and (metadata.get(marker_key) or {}) != expected_value:
+                    return {"updated": False, "reason": "metadata_value_mismatch", "currentStatus": status}
                 if current_state != expected_marker_state:
                     conn.rollback()
                     return {

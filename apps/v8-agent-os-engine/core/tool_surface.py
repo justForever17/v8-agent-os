@@ -2783,7 +2783,7 @@ def _decision_agent_visible_surface(
                 ("assignmentId", "rootSessionId", "childSessionId", "revision", "status",
                  "authorizationRef", "scopeRevision", "requirementRevision")
             }
-        compact = {key: payload[key] for key in ("ok", "error", "idempotent", "afterCursor", "nextCursor", "hasMore", "message", "deliveryAcknowledged", "waiting", "generation", "summary") if key in payload}
+        compact = {key: payload[key] for key in ("ok", "error", "idempotent", "afterCursor", "nextCursor", "hasMore", "message", "deliveryAcknowledged", "waiting", "generation", "summary", "controlStatus", "targetRunId", "requestId", "cancellationRequested", "stopConfirmed", "observedRunStatus") if key in payload}
         if isinstance(payload.get("assignment"), dict):
             compact["assignment"] = compact_assignment(payload["assignment"])
         if isinstance(payload.get("assignments"), list):

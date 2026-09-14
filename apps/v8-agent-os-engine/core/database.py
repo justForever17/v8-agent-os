@@ -4683,6 +4683,7 @@ class DatabaseManager:
         expected_state: str,
         next_value: Dict[str, Any],
         expected_status: Optional[str] = None,
+        expected_generation: Optional[int] = None,
     ) -> Dict[str, Any]:
         marker_key = str(key or "").strip()
         if not marker_key:
@@ -4722,6 +4723,8 @@ class DatabaseManager:
                         "currentStatus": status,
                     }
                 metadata = _parse_metadata(run_record.get("metadata"))
+                if expected_generation is not None and (metadata.get(marker_key) or {}).get("waitGeneration") != expected_generation:
+                    return {"updated": False, "reason": "runtime_wait_generation_changed"}
                 current_state = _marker_state(metadata)
                 if current_state != expected_marker_state:
                     conn.rollback()
@@ -4742,6 +4745,36 @@ class DatabaseManager:
                 return {"updated": True, "run_record": run_record}
 
         return self._run_write_with_retry(_write)
+
+    def get_durable_runtime_episode_wait(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Recognize a parked parent from its current wait generation and owned episodes."""
+        from core.runtime_episodes import ACTIVE_EPISODE_STATES
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM run_records WHERE id=?", (run_id,)).fetchone()
+            if not row or row["status"] != "running":
+                return None
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (ValueError, TypeError):
+                return None
+            if not isinstance(metadata, dict):
+                return None
+            marker = metadata.get("runtimeEpisodeResume") or {}
+            if not isinstance(marker, dict):
+                return None
+            generation = marker.get("waitGeneration")
+            ids = marker.get("episodeIds")
+            if (marker.get("state") not in {"waiting", "scheduled"}
+                    or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1
+                    or not isinstance(ids, list) or not ids or any(not isinstance(value, str) or not value for value in ids)
+                    or (metadata.get("control_signal") or {}).get("command") in {"cancel", "interrupt", "pause"}):
+                return None
+            episodes = conn.execute("SELECT id, session_id, run_id, state FROM runtime_episodes WHERE id IN (SELECT value FROM json_each(?))",
+                                    (json.dumps(ids),)).fetchall()
+            if len(episodes) != len(set(ids)) or any(item["run_id"] != run_id or item["session_id"] != row["session_id"]
+                    or item["state"] not in ACTIVE_EPISODE_STATES | TERMINAL_EPISODE_STATES for item in episodes):
+                return None
+            return dict(marker)
 
     def claim_runtime_episode_resume_schedule(
         self,
@@ -4790,6 +4823,8 @@ class DatabaseManager:
                 metadata = _parse_metadata(run_record.get("metadata"))
                 marker = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
                 marker_state = str((marker or {}).get("state") or "").strip().lower()
+                if marker.get("waitGeneration") != next_marker.get("waitGeneration"):
+                    return {"claimed": False, "reason": "runtime_wait_generation_changed"}
                 if marker_state == "scheduled":
                     conn.rollback()
                     return {

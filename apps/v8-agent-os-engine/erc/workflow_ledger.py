@@ -587,6 +587,11 @@ class WorkflowLedgerService:
             if status not in {"queued", "running"}:
                 continue
 
+            if db.get_durable_runtime_episode_wait(run_id):
+                self.emit_reconciliation_event(session_id, run_id, reason="engine_restart_runtime_wait",
+                                               outcome="runtime_wait_preserved")
+                continue
+
             metadata = dict(run_record.get("metadata") or {})
             metadata.update(
                 {

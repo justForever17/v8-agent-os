@@ -446,7 +446,7 @@ def test_restart_recovers_lost_parent_wake_once_without_redispatch(database, mon
     enqueue(database)
     episode = database.get_runtime_episode("A")
     control.publish_attention(episode, kind="input_required", detail={"required": "source"})
-    database.update_run_record("run", status="running", metadata={"runtimeEpisodeResume": {"state": "scheduled", "episodeIds": ["A"]}})
+    database.update_run_record("run", status="running", metadata={"runtimeEpisodeResume": {"state": "scheduled", "episodeIds": ["A"], "waitGeneration": 1}})
     restored = DatabaseManager(database.db_path)
     for module in (control, runner_module, router_module, run_module):
         monkeypatch.setattr(module, "db", restored)

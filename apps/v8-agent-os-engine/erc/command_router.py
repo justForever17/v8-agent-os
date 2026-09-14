@@ -559,6 +559,7 @@ class RuntimeCommandRouter:
         resume_value = {
             "runtimeEpisodeHandoff": {
                 "kind": "runtime_episode_terminal",
+                "waitGeneration": ((run_record.get("metadata") or {}).get(RUNTIME_EPISODE_RESUME_METADATA_KEY) or {}).get("waitGeneration"),
                 "episodeId": episode_id,
                 "episodeKind": episode_kind,
                 "episodeState": episode_state,

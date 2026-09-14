@@ -162,6 +162,7 @@ class RunService:
         expected_state: str,
         next_value: Dict[str, Any],
         expected_status: Optional[str] = None,
+        expected_generation: Optional[int] = None,
     ) -> Dict[str, Any]:
         return db.update_run_metadata_key_if_state(
             run_id,
@@ -169,6 +170,7 @@ class RunService:
             expected_state=expected_state,
             next_value=next_value,
             expected_status=expected_status,
+            **({"expected_generation": expected_generation} if expected_generation is not None else {}),
         )
 
     def claim_runtime_episode_resume_schedule(

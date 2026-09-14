@@ -11058,6 +11058,8 @@ class ChatRuntime:
             if resume_after_terminal:
                 run_metadata = dict((db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {})
                 runtime_await = dict(run_metadata.get("runtimeAwait") or {})
+                prior_wait_generation = (run_metadata.get("runtimeEpisodeResume") or {}).get("waitGeneration")
+                wait_generation = prior_wait_generation + 1 if isinstance(prior_wait_generation, int) and not isinstance(prior_wait_generation, bool) and prior_wait_generation > 0 else 1
                 top_level_episode_ids = [
                     str(episode.get("episodeId") or episode.get("id") or "").strip()
                     for episode in episodes
@@ -11069,6 +11071,7 @@ class ChatRuntime:
                     {
                         "runtimeEpisodeResume": {
                             "state": "waiting",
+                            "waitGeneration": wait_generation,
                             "reason": decision.reason,
                             "episodeIds": list(runtime_await.get("episodeIds") or top_level_episode_ids),
                             "awaitExplicit": bool(runtime_await.get("explicit")),
@@ -11806,10 +11809,12 @@ class ChatRuntime:
         resume_value = getattr(chat_run.request, "resume_value", None) or {}
         if isinstance(resume_value, dict) and resume_value.get("runtimeEpisodeHandoff"):
             marker = dict((db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {}).get("runtimeEpisodeResume") or {}
+            requested_generation = (resume_value.get("runtimeEpisodeHandoff") or {}).get("waitGeneration")
             claimed_resume = run_service.update_metadata_key_if_state(
                 chat_run.active_run_id, key="runtimeEpisodeResume", expected_state="scheduled",
                 next_value={**marker, "state": "executing"}, expected_status="running",
-            )
+                expected_generation=requested_generation,
+            ) if requested_generation == marker.get("waitGeneration") else {"updated": False}
             if not claimed_resume.get("updated"):
                 session_admission_service.release(chat_run.session_id, chat_run.active_run_id, policy=lane_policy, runtime_kind="chat")
                 yield {"type": "done", "status": "running", "reason": "runtime_resume_already_consumed", "run_id": chat_run.active_run_id}

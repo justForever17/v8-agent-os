@@ -3070,6 +3070,7 @@ def test_finalize_success_closes_terminal_race_after_arming_runtime_resume(monke
 
     assert result["status"] == "running"
     assert metadata_updates[0]["updates"]["runtimeEpisodeResume"]["state"] == "waiting"
+    assert metadata_updates[0]["updates"]["runtimeEpisodeResume"]["waitGeneration"] == 1
     assert scheduled == [terminal_episode]
     run_handle.complete.assert_not_called()
     run_handle.fail.assert_not_called()

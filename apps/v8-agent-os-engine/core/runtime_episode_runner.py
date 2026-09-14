@@ -1278,6 +1278,8 @@ class RuntimeEpisodeRunner:
         for row in rows:
             if session_lane_scheduler.get_active_run(row["session_id"]):
                 continue
+            if restart and not db.get_durable_runtime_episode_wait(row["id"]):
+                continue
             marker = json.loads(row["metadata"] or "{}").get("runtimeEpisodeResume") or {}
             if marker.get("state") != "waiting":
                 if not restart:
@@ -1285,6 +1287,7 @@ class RuntimeEpisodeRunner:
                 recovered = run_service.update_metadata_key_if_state(
                     row["id"], key="runtimeEpisodeResume", expected_state=marker["state"],
                     next_value={**marker, "state": "waiting", "recoveredAfterRestart": True}, expected_status="running",
+                    expected_generation=marker.get("waitGeneration"),
                 )
                 if not recovered.get("updated"):
                     continue

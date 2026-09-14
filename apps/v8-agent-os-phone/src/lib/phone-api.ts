@@ -88,7 +88,10 @@ async function readJsonOrThrow<T>(response: Response, fallbackMessage: string): 
                 || (typeof detailPayload.recommendedNextAction === "string" ? detailPayload.recommendedNextAction : "")
             : "";
         const message = String(detail || await parseTextSafe(response) || fallbackMessage).trim();
-        throw new Error(message || fallbackMessage);
+        throw Object.assign(new Error(message || fallbackMessage), {
+            status: response.status,
+            code: typeof detailPayload.code === "string" ? detailPayload.code : undefined,
+        });
     }
     return (payload || {}) as T;
 }
@@ -921,6 +924,7 @@ export async function approvePendingItem(
     approvalId: string,
     answer: string,
     approve = true,
+    documentSha256?: string,
 ) {
     const path = approve
         ? `/api/client/approvals/${encodeURIComponent(approvalId)}/approve`
@@ -932,9 +936,24 @@ export async function approvePendingItem(
             response: {
                 answer,
                 approved: approve,
+                ...(documentSha256 ? { documentSha256 } : {}),
             },
         }),
     });
+}
+
+export async function refreshSpecApprovalReview(
+    authorizedFetch: AuthorizedFetch,
+    approvalId: string,
+    documentSha256: string,
+) {
+    return authorizedJson<{ approval: PendingApproval; replacesApprovalId: string }>(
+        authorizedFetch,
+        `/api/client/approvals/${encodeURIComponent(approvalId)}/refresh-spec-review`,
+        translateCurrent("phone.specReview.refreshFailed"),
+        { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ response: { documentSha256 } }) },
+    );
 }
 
 export async function listSpecs(authorizedFetch: AuthorizedFetch, workspacePath: string) {
@@ -996,7 +1015,7 @@ export async function listSessionSources(authorizedFetch: AuthorizedFetch, sessi
 export async function getSpecDetail(authorizedFetch: AuthorizedFetch, specId: string, workspacePath: string) {
     const query = new URLSearchParams({
         workspace_path: workspacePath,
-        max_chars: "160000",
+        full_content: "true",
     });
     return authorizedJson<SpecDetailResponse>(
         authorizedFetch,
@@ -1012,6 +1031,7 @@ export async function approveSpecStage(
     stage: string,
     workspacePath: string,
     comment: string,
+    documentSha256: string,
 ) {
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
@@ -1020,7 +1040,7 @@ export async function approveSpecStage(
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ workspacePath, comment }),
+            body: JSON.stringify({ workspacePath, comment, documentSha256 }),
         },
     );
 }
@@ -1053,6 +1073,7 @@ export async function editSpecStage(
     sectionRef: string,
     content: string,
     reason: string,
+    expectedDocumentSha256: string,
 ) {
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
@@ -1066,6 +1087,7 @@ export async function editSpecStage(
                 sectionRef,
                 content,
                 reason,
+                expectedDocumentSha256,
                 action: sectionRef ? "replace_section" : "append_section",
             }),
         },

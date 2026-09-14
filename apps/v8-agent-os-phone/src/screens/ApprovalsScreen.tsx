@@ -10,13 +10,15 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { approvePendingItem, listPendingApprovals } from "@/src/lib/phone-api";
+import { isSpecStageApproval, specApprovalReviewHref, specReviewDraftKey } from "@/src/lib/spec-approval-review";
+import { phoneDrafts } from "@/src/lib/phone-drafts";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
 
 export default function ApprovalsScreen() {
-    const { status, userAvatarUri, authorizedFetch } = useAppSession();
+    const { status, userAvatarUri, authorizedFetch, authorityKey } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const [items, setItems] = useState<PendingApproval[]>([]);
@@ -52,6 +54,11 @@ export default function ApprovalsScreen() {
         const approvalId = approval.id || approval.approval_id;
         if (!approvalId) {
             Alert.alert(t("src.screens.approvalsscreen.action_failed"), t("src.screens.approvalsscreen.the_approval_record_is_missing_its_id"));
+            return;
+        }
+        if (approve && isSpecStageApproval(approval)) {
+            if (answer) phoneDrafts.set(specReviewDraftKey(authorityKey, approvalId), "comment", answer);
+            router.push(specApprovalReviewHref(approval) as Href);
             return;
         }
         setBusyId(approvalId);

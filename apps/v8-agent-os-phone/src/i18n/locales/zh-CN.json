@@ -1,4 +1,10 @@
 {
+  "phone.specReview.unavailable": "请重新读取完整文档后再审批。",
+  "phone.specReview.changed": "文档已更新或旧审批卡缺少版本。请先查看最新全文，再刷新审批卡；刷新不会自动批准。",
+  "phone.specReview.reload": "重新读取文档",
+  "phone.specReview.refresh": "刷新审批卡",
+  "phone.specReview.refreshFailed": "刷新审批卡失败，请重试。原审批意见已保留。",
+  "phone.specReview.resolved": "这张审批卡已处理。",
   "phone.devices.navigation": "导航",
   "phone.devices.settings": "设置",
   "phone.devices.returnChat": "返回聊天",

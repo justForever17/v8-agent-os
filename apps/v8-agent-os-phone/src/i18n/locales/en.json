@@ -1,4 +1,10 @@
 {
+  "phone.specReview.unavailable": "Reload the complete document before reviewing it.",
+  "phone.specReview.changed": "The document changed or the old review has no version. Read the latest full text, then refresh the review. Refreshing does not approve it.",
+  "phone.specReview.reload": "Reload document",
+  "phone.specReview.refresh": "Refresh review",
+  "phone.specReview.refreshFailed": "Could not refresh the review. Retry; your comments have been kept.",
+  "phone.specReview.resolved": "This review has already been resolved.",
   "phone.devices.navigation": "Navigation",
   "phone.devices.settings": "Settings",
   "phone.devices.returnChat": "Return to chat",

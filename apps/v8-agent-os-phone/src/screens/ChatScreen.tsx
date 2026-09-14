@@ -140,6 +140,7 @@ import { buildLocalSessionIndexNamespace, createLocalDatabase } from "@/src/serv
 import { phoneSessionKey } from "@/src/lib/phone-identity";
 import { phoneDrafts } from "@/src/lib/phone-drafts";
 import { usePhoneDraftField, usePhoneDraftStatus } from "@/src/hooks/use-phone-draft";
+import { isSpecStageApproval, specApprovalReviewHref, specReviewDraftKey } from "@/src/lib/spec-approval-review";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type {
@@ -249,44 +250,8 @@ function isWorkspaceBindingErrorMessage(value: unknown) {
         || text.includes("workspace_side_effect_blocked");
 }
 
-function approvalRequestRecord(approval?: PendingApproval | null): Record<string, unknown> {
-    const request = approval?.request;
-    return request && typeof request === "object" && !Array.isArray(request)
-        ? request as Record<string, unknown>
-        : {};
-}
-
-function isSpecStageApproval(approval?: PendingApproval | null) {
-    const request = approvalRequestRecord(approval);
-    return String(
-        approval?.approval_kind
-        || request.approvalKind
-        || request.approval_kind
-        || "",
-    ).trim().toLowerCase() === "spec_stage_approval";
-}
-
-function readApprovalString(request: Record<string, unknown>, ...keys: string[]) {
-    for (const key of keys) {
-        const value = request[key];
-        if (typeof value === "string" && value.trim()) {
-            return value.trim();
-        }
-    }
-    return "";
-}
-
 function buildSpecReviewHref(approval: PendingApproval | null, fallbackWorkspacePath: string): Href {
-    const request = approvalRequestRecord(approval);
-    const params = new URLSearchParams();
-    const workspacePath = readApprovalString(request, "workspacePath", "workspace_path") || fallbackWorkspacePath;
-    const specId = readApprovalString(request, "specId", "spec_id");
-    const stage = readApprovalString(request, "stage", "specStage", "spec_stage");
-    if (workspacePath) params.set("workspace", workspacePath);
-    if (specId) params.set("specId", specId);
-    if (stage) params.set("stage", stage);
-    const query = params.toString();
-    return (query ? `/specs?${query}` : "/specs") as Href;
+    return approval ? specApprovalReviewHref(approval, fallbackWorkspacePath) as Href : "/specs";
 }
 
 function normalizeWorkspaceRootCandidate(value?: string | null, keyHint = "") {
@@ -5879,6 +5844,11 @@ const [detail, turnPage, syncData] = await Promise.all([
         if (!approvalId) {
             return;
         }
+        if (approve && isSpecStageApproval(approval as PendingApproval)) {
+            if (answer) phoneDrafts.set(specReviewDraftKey(authorityKey, approvalId), "comment", answer);
+            router.push(buildSpecReviewHref(approval as PendingApproval, String(scopeBinding?.workspacePath || "")));
+            return;
+        }
         if (approvalResolutionInFlightRef.current.has(approvalId)) {
             return;
         }
@@ -5908,7 +5878,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         } finally {
             approvalResolutionInFlightRef.current.delete(approvalId);
         }
-    }, [adminBaseUrl, authorizedFetch, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath]);
+    }, [adminBaseUrl, authorizedFetch, authorityKey, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath]);
 
     const handleRunCommand = useCallback(async (command: "interrupt" | "retry") => {
         const runId = String(activeRunIdRef.current || "").trim();
@@ -6344,8 +6314,9 @@ const [detail, turnPage, syncData] = await Promise.all([
         setGovernanceApprovalOpen(false);
     }, [governancePendingApprovalId]);
 
-    const handleGovernanceApprovalViewDetails = useCallback(() => {
+    const handleGovernanceApprovalViewDetails = useCallback((answer = "") => {
         if (isSpecStageApproval(projection.governancePendingApproval)) {
+            if (governancePendingApprovalId && answer) phoneDrafts.set(specReviewDraftKey(authorityKey, governancePendingApprovalId), "comment", answer);
             const fallbackWorkspacePath = String(
                 projection.activeConversation?.workspacePath
                 || scopeBinding?.workspacePath
@@ -6364,7 +6335,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         setGovernanceApprovalOpen(false);
         setSelectedRuntimeId("automation");
         setRuntimePanelOpen(true);
-    }, [governancePendingApprovalId, projection.activeConversation?.workspacePath, projection.governancePendingApproval, scopeBinding?.workspacePath]);
+    }, [authorityKey, governancePendingApprovalId, projection.activeConversation?.workspacePath, projection.governancePendingApproval, scopeBinding?.workspacePath]);
 
     const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean) => {
         const approval = projection.governancePendingApproval;

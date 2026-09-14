@@ -442,6 +442,7 @@ test('approval resolution owner deduplicates a double tap and drops UI cleanup a
   const context = vm.createContext({
     useCallback: fn => fn, activeConversationIdRef: { current: 'A' }, conversationTransitionTokenRef: { current: 1 },
     approvalResolutionInFlightRef: { current: new Set() },
+    isSpecStageApproval: approval => approval.approval_kind === 'spec_stage_approval',
     setAskUserInteractions: fn => effects.push(['ask', fn]), setApprovals: fn => effects.push(['approval', fn]),
     authorizedFetch: {},
     respondAskUser: async () => {}, approvePendingItem: async () => { await new Promise(done => { resolve = done; }); effects.push('side-effect'); },

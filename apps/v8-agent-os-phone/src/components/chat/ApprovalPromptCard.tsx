@@ -6,6 +6,7 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
+import { isSpecStageApproval } from "@/src/lib/spec-approval-review";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value)
@@ -113,7 +114,8 @@ export function ApprovalPromptCard({
                     style={[styles.button, styles.approveButton, busy && styles.disabled]}
                 >
                     <Text style={[styles.buttonText, styles.approveText]}>
-                        {busy ? t("src.components.chat.approvalpromptcard.processing") : t("src.components.chat.approvalpromptcard.approve_and_continue")}
+                        {busy ? t("src.components.chat.approvalpromptcard.processing") : isSpecStageApproval(approval)
+                            ? t("src.components.chat.governanceapprovalmodal.open_spec_review") : t("src.components.chat.approvalpromptcard.approve_and_continue")}
                     </Text>
                 </Pressable>
             </View>

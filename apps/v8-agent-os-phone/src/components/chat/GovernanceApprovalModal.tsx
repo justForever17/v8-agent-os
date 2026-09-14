@@ -167,7 +167,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
     busy?: boolean;
     onApprove: (answer: string) => void | Promise<void>;
     onReject: (answer: string) => void | Promise<void>;
-    onViewDetails: () => void;
+    onViewDetails: (answer?: string) => void;
     onClose: () => void;
 }) {
     const { colors, t, themeMode } = useUiPrefs();
@@ -360,7 +360,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         <Button variant="ghost" onPress={onClose} disabled={busy}>
                             {t("src.components.chat.governanceapprovalmodal.dismiss")}
                         </Button>
-                        <Button variant="outline" onPress={onViewDetails} disabled={busy}>
+                        <Button variant="outline" onPress={() => onViewDetails(answer)} disabled={busy}>
                             {specDetails.isSpecApproval
                                 ? t("src.components.chat.governanceapprovalmodal.open_spec_review")
                                 : t("src.components.chat.governanceapprovalmodal.view_details")}
@@ -368,9 +368,9 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         <Button variant="outline" onPress={() => void onReject(answer.trim())} disabled={actionsDisabled}>
                             {busy ? t("src.components.chat.askusermodal.processing") : t("src.components.chat.approvalpromptcard.reject")}
                         </Button>
-                        <Button onPress={() => void onApprove(answer.trim())} disabled={actionsDisabled}>
+                        {!specDetails.isSpecApproval ? <Button onPress={() => void onApprove(answer.trim())} disabled={actionsDisabled}>
                             {busy ? t("src.components.chat.askusermodal.processing") : t("src.components.chat.governanceapprovalmodal.approve_and_continue")}
-                        </Button>
+                        </Button> : null}
                     </View>
                 </Card>
             </View>

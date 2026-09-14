@@ -479,6 +479,7 @@ export type PendingApproval = {
     run_id?: string;
     session_id?: string;
     approval_kind?: string;
+    status?: string;
     created_at?: string;
     request?: {
         question?: string;
@@ -531,6 +532,8 @@ export type SpecSummary = {
 export type SpecStageContent = {
     stage?: string;
     documentRef?: string;
+    documentSha256?: string;
+    documentPath?: string;
     content?: string;
     truncated?: boolean;
     ids?: string[];

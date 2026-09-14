@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     Pressable,
@@ -15,6 +15,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
+import { SpecApprovalReview } from "@/src/components/chat/SpecApprovalReview";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
@@ -33,6 +34,23 @@ import type { SpecDetailResponse, SpecSummary } from "@/src/types/admin";
 const STAGES = ["requirements", "bugfix", "design", "tasks"];
 
 export default function SpecApprovalScreen() {
+    const { status, authorityKey, authorizedFetch } = useAppSession();
+    const params = useLocalSearchParams<{ approvalId?: string; workspace?: string; specId?: string; stage?: string }>();
+    const goHomeToChat = useGoHomeToChat();
+    if (!params.approvalId) return <SpecWorkspaceScreen />;
+    if (status === "anonymous") return <Redirect href="/login" />;
+    if (status === "booting") return <LoadingScreen />;
+    return <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+        <PhoneTopbar onBrandPress={() => void goHomeToChat()} actions={[
+            { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
+        ]} />
+        <SpecApprovalReview key={`${authorityKey}:${params.approvalId}`} approvalId={String(params.approvalId)}
+            authorityKey={authorityKey} authorizedFetch={authorizedFetch} workspacePath={String(params.workspace || "")}
+            specId={String(params.specId || "")} stage={String(params.stage || "")} />
+    </SafeAreaView>;
+}
+
+function SpecWorkspaceScreen() {
     const { status, userAvatarUri, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
@@ -45,6 +63,9 @@ export default function SpecApprovalScreen() {
     const [selectedSpecId, setSelectedSpecId] = useState(initialSpecId);
     const [selectedStage, setSelectedStage] = useState(STAGES.includes(initialStage) ? initialStage : "requirements");
     const [detail, setDetail] = useState<SpecDetailResponse | null>(null);
+    const [detailKey, setDetailKey] = useState("");
+    const detailSequence = useRef(0);
+    const actionInFlight = useRef(false);
     const [sectionRef, setSectionRef] = useState("");
     const [comment, setComment] = useState("");
     const [content, setContent] = useState("");
@@ -66,7 +87,9 @@ export default function SpecApprovalScreen() {
         const fromSummary = Object.keys(selectedSpec?.documents || {});
         return STAGES.filter((stage) => fromDetail.includes(stage) || fromSummary.includes(stage));
     }, [detail?.stages, selectedSpec?.documents]);
-    const stageContent = detail?.stages?.[selectedStage]?.content || "";
+    const displayedDocument = detailKey === JSON.stringify([workspacePath.trim(), selectedSpecId]) ? detail?.stages?.[selectedStage] : undefined;
+    const stageContent = displayedDocument?.content || "";
+    const canReviewDocument = Boolean(displayedDocument?.documentSha256 && displayedDocument.truncated === false);
     const stageIds = detail?.stages?.[selectedStage]?.ids || selectedSpec?.documents?.[selectedStage]?.ids || [];
 
     const loadSpecs = useCallback(async () => {
@@ -93,17 +116,21 @@ export default function SpecApprovalScreen() {
             return;
         }
         setBusy(true);
+        setDetail(null);
+        const sequence = ++detailSequence.current;
         try {
             const nextDetail = await getSpecDetail(authorizedFetch, specId, workspacePath.trim());
+            if (sequence !== detailSequence.current) return;
             setDetail(nextDetail);
+            setDetailKey(JSON.stringify([workspacePath.trim(), specId]));
             const firstStage = STAGES.find((stage) => nextDetail.stages?.[stage]);
             if (firstStage && !nextDetail.stages?.[selectedStage]) {
                 setSelectedStage(firstStage);
             }
         } catch (error) {
-            Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.specapprovalscreen.unable_to_load_spec_document"));
+            if (sequence === detailSequence.current) Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.specapprovalscreen.unable_to_load_spec_document"));
         } finally {
-            setBusy(false);
+            if (sequence === detailSequence.current) setBusy(false);
         }
     }, [authorizedFetch, selectedStage, t, workspacePath]);
 
@@ -111,6 +138,7 @@ export default function SpecApprovalScreen() {
         if (selectedSpecId) {
             void loadDetail(selectedSpecId);
         }
+        return () => { detailSequence.current++; };
     }, [loadDetail, selectedSpecId]);
 
     useEffect(() => {
@@ -122,14 +150,16 @@ export default function SpecApprovalScreen() {
     }, [status]);
 
     const runStageAction = async (action: "approve" | "revise" | "edit") => {
+        if (actionInFlight.current || (action !== "revise" && !canReviewDocument)) return;
         if (!selectedSpecId) {
             Alert.alert(t("src.screens.specapprovalscreen.no_spec_selected"), t("src.screens.specapprovalscreen.select_spec_first"));
             return;
         }
+        actionInFlight.current = true;
         setBusy(true);
         try {
             if (action === "approve") {
-                await approveSpecStage(authorizedFetch, selectedSpecId, selectedStage, workspacePath.trim(), comment);
+                await approveSpecStage(authorizedFetch, selectedSpecId, selectedStage, workspacePath.trim(), comment, displayedDocument!.documentSha256!);
             } else if (action === "revise") {
                 if (!comment.trim()) {
                     Alert.alert(t("src.screens.specapprovalscreen.comment_required"), t("src.screens.specapprovalscreen.comment_required_detail"));
@@ -141,7 +171,7 @@ export default function SpecApprovalScreen() {
                     Alert.alert(t("src.screens.specapprovalscreen.content_required"), t("src.screens.specapprovalscreen.content_required_detail"));
                     return;
                 }
-                await editSpecStage(authorizedFetch, selectedSpecId, selectedStage, workspacePath.trim(), sectionRef, content, comment || "phone_spec_edit");
+                await editSpecStage(authorizedFetch, selectedSpecId, selectedStage, workspacePath.trim(), sectionRef, content, comment || "phone_spec_edit", displayedDocument!.documentSha256!);
             }
             setComment("");
             setContent("");
@@ -150,6 +180,7 @@ export default function SpecApprovalScreen() {
         } catch (error) {
             Alert.alert(t("src.screens.specapprovalscreen.action_failed"), error instanceof Error ? error.message : t("src.screens.specapprovalscreen.spec_action_failed"));
         } finally {
+            actionInFlight.current = false;
             setBusy(false);
         }
     };
@@ -236,7 +267,7 @@ export default function SpecApprovalScreen() {
 
                     <View style={styles.documentPanel}>
                         <Text style={styles.documentTitle}>{selectedStage}</Text>
-                        {detail?.stages?.[selectedStage]?.truncated ? <Text style={styles.warningText}>{t("src.screens.specapprovalscreen.truncated_hint")}</Text> : null}
+                        {displayedDocument?.truncated ? <Text style={styles.warningText}>{t("src.screens.specapprovalscreen.truncated_hint")}</Text> : null}
                         <Text selectable style={styles.documentText}>{stageContent || t("src.screens.specapprovalscreen.select_stage")}</Text>
                     </View>
 
@@ -281,14 +312,15 @@ export default function SpecApprovalScreen() {
                         />
 
                         <View style={styles.actionGrid}>
-                            <Pressable style={[styles.primaryAction, busy ? styles.disabledButton : null]} disabled={busy} onPress={() => void runStageAction("approve")}>
+                            <Pressable style={[styles.primaryAction, busy || !canReviewDocument ? styles.disabledButton : null]}
+                                disabled={busy || !canReviewDocument} onPress={() => void runStageAction("approve")}>
                                 <MaterialCommunityIcons name="check-circle-outline" color="#fff" size={18} />
                                 <Text style={styles.primaryActionText}>{t("src.screens.specapprovalscreen.approve_next")}</Text>
                             </Pressable>
                             <Pressable style={[styles.secondaryAction, busy ? styles.disabledButton : null]} disabled={busy} onPress={() => void runStageAction("revise")}>
                                 <Text style={styles.secondaryActionText}>{t("src.screens.specapprovalscreen.revise")}</Text>
                             </Pressable>
-                            <Pressable style={[styles.secondaryAction, busy ? styles.disabledButton : null]} disabled={busy} onPress={() => void runStageAction("edit")}>
+                            <Pressable style={[styles.secondaryAction, busy || !canReviewDocument ? styles.disabledButton : null]} disabled={busy || !canReviewDocument} onPress={() => void runStageAction("edit")}>
                                 <Text style={styles.secondaryActionText}>{t("src.screens.specapprovalscreen.edit")}</Text>
                             </Pressable>
                         </View>

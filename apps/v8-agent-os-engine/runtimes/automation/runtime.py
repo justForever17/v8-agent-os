@@ -708,7 +708,16 @@ class AutomationRuntime:
         project_id: str | None,
         workspace_id: str | None,
     ):
+        from core.tools.native.tool_governance import normalize_safety_approval_mode
+
+        run_record = db.get_run_record(run_handle.run_id) or {}
+        run_metadata = run_record.get("metadata") or {}
+        safety_mode = normalize_safety_approval_mode(
+            run_metadata.get("safetyApprovalMode") or run_metadata.get("safety_approval_mode")
+        )
         return bind_runtime_context(
+            safety_approval_mode=safety_mode,
+            safetyApprovalMode=safety_mode,
             runtime_kind=runtime_kind,
             trigger_source=trigger_source,
             session_id=run_handle.session_id,

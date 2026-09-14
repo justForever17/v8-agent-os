@@ -8110,7 +8110,18 @@ class RuntimeEpisodeRunner:
             or task_brief.get("ephemeralAgentName")
             or target_id
         ).strip() or target_id
+        from core.tools.native.tool_governance import normalize_safety_approval_mode
+
+        # Worker briefs are model data. Restore authorization only from the
+        # current run owner so independent/restarted workers keep its mode.
+        run_record = db.get_run_record(run_id) if run_id else None
+        run_metadata = (run_record or {}).get("metadata") or {}
+        safety_mode = normalize_safety_approval_mode(
+            run_metadata.get("safetyApprovalMode") or run_metadata.get("safety_approval_mode")
+        )
         route_context = {
+            "safetyApprovalMode": safety_mode,
+            "safety_approval_mode": safety_mode,
             "activeCapabilityEpisodeId": episode_id,
             "capabilityEpisodes": [episode],
             "rootEpisodeId": root_episode_id or episode_id,
@@ -8141,6 +8152,8 @@ class RuntimeEpisodeRunner:
                 task_brief=task_brief,
             ),
             **extension_route_context,
+            "safetyApprovalMode": safety_mode,
+            "safety_approval_mode": safety_mode,
             "delegationId": episode_id,
             "delegationDepth": delegation_depth,
             "runtimeAccess": task_runtime_access,
@@ -8149,6 +8162,8 @@ class RuntimeEpisodeRunner:
         from langchain_core.messages import HumanMessage
 
         branch_state = {
+            "safetyApprovalMode": safety_mode,
+            "safety_approval_mode": safety_mode,
             "messages": [
                 HumanMessage(
                     content=f"[Supervisor Delegated Task to {target_label}]:\n{task_query}",

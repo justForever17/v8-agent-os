@@ -78,6 +78,11 @@ def supervisor_delegation_broker(
     allowed tools. Set readOnly=true, writeRequired=false and writeSet=[] for a
     verifier. Provide exact saved Research refs for evidence reads. Runtime tools
     follow the Agent's binding; no extra runtime activation grants are needed.
+    These execution fields belong directly on tasks[i], never directly inside
+    context. Use JSON booleans and path arrays, not strings such as "true" or "".
+    Context holds facts/evidence; a missing typed Capsule with shadow execution
+    fields is rejected before dispatch with exact repair paths and exampleTasks.
+    Review that example and explicitly resubmit without widening permissions.
 
     For read-only inventories, workers can use creative_media_capabilities
     (rank_models/catalog) for configured media models, computer_use_list_apps

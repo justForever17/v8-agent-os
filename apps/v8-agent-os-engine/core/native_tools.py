@@ -318,7 +318,8 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_char: int
     """Read evidence at an exact prior toolobs:// raw_ref, without executing its producer.
 
     max_chars is bounded to 60000. For plain-text evidence, episode inspections,
-    and partial publication receipts, follow next_start_char until the end before
+    partial publication receipts, and delegation context-contract repair errors,
+    follow next_start_char until the end before
     claiming complete verification. Other JSON previews do not support start_char.
     """
     return render_tool_observation_detail(raw_ref, max_chars=max_chars, start_char=start_char)

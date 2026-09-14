@@ -2229,7 +2229,7 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget:
     return "\n".join(line for line in lines if line).strip()
 
 
-def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget: int = 2500) -> str:
     if payload.get("mode") == "inspect" and payload.get("episodeId"):
         return _render_runtime_broker_surface(payload, raw_ref)
     handoff = payload.get("handoff")
@@ -2252,12 +2252,32 @@ def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> 
     missing = payload.get("missingTasks") or payload.get("missing_tasks")
     if missing:
         lines.append(f"Missing tasks: {_short_text(missing, 260)}")
-    if payload.get("ok") is False and isinstance(payload.get("exampleTasks"), list):
+    context_repair = payload.get("error") == "task_context_execution_fields" and isinstance(payload.get("repairPatch"), dict)
+    if context_repair:
+        from core.tool_observation_detail import _redact_tool_observation_preview
+        payload = json.loads(_redact_tool_observation_preview(json.dumps(payload, ensure_ascii=False)))
+        lines.append("Nothing has been dispatched. Apply these top-level fields to the same original tasks; retain their complete goal/context and existing policies. Do not submit this patch as a replacement task:")
+        lines.append(json.dumps(payload["repairPatch"], ensure_ascii=False, separators=(",", ":")))
+        if payload.get("unresolvedFields"):
+            lines.append("Still invalid; choose explicit JSON booleans from the authorized task: " + ", ".join(payload["unresolvedFields"]))
+        lines.append("Original task hashes: " + json.dumps(payload.get("preservedTaskHashes") or [], ensure_ascii=False, separators=(",", ":")))
+        lines.append("Full exampleTasks and original goal/context are in the detail below. Review the repaired fields and explicitly resubmit; context has not been promoted to permission.")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        complete = "\n".join(lines)
+        if len(complete) <= budget:
+            return complete
+        return "\n".join([
+            "Delegation repair: task_context_execution_fields. Nothing dispatched.",
+            f"Omitted complete patch: {len(payload['repairPatch'])} fields across {len(payload.get('preservedTaskHashes') or [])} tasks; JSON has not been clipped.",
+            "Read all pages, apply typed fields to the original tasks, then explicitly retry.",
+            f"tool_observation_detail(raw_ref='{raw_ref}', max_chars=1400, start_char=0)",
+        ])
+    elif payload.get("ok") is False and isinstance(payload.get("exampleTasks"), list):
         lines.append("Repair example (replace placeholders with the authorized task; nothing has been dispatched):")
         lines.append(json.dumps({"mode": "dispatch", "tasks": payload["exampleTasks"]}, ensure_ascii=False))
     if payload.get("ok") is False and payload.get("repairFields"):
         lines.append("Repair fields: " + ", ".join(str(field) for field in payload["repairFields"]))
-    if payload.get("ok") is False and payload.get("repairInstruction"):
+    if payload.get("ok") is False and payload.get("repairInstruction") and not context_repair:
         lines.append("Repair: " + str(payload["repairInstruction"]))
     if mode == "review_result" and isinstance(payload.get("receipt"), dict):
         lines.append("Result decision: " + json.dumps(payload["receipt"], ensure_ascii=False, separators=(",", ":")))
@@ -2820,7 +2840,7 @@ def _decision_agent_visible_surface(
     elif tool_name == "web_broker" or tool_name.startswith("web_"):
         renderer_result = _render_web_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name == "delegation_broker" or tool_name.startswith("delegation_") or tool_name.startswith("subagent_"):
-        renderer_result = _render_delegation_broker_surface(payload, raw_ref)
+        renderer_result = _render_delegation_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name.startswith("computer_use_"):
         renderer_result = _render_computer_use_surface(tool_name, payload, raw_ref)
     elif tool_name.startswith("creative_media_"):

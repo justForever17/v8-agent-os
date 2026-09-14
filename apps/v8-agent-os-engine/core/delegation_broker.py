@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from core.command_environment import default_shell_dialect
-from core.engineering_capsule import ensure_engineering_task_capsule
+from core.engineering_capsule import effective_engineering_capsule, ensure_engineering_task_capsule
 
 from core.agents import normalize_specialist_family_id
 
@@ -435,11 +435,49 @@ def _alias_conflict_diagnostics(
     return diagnostics
 
 
+def _misplaced_execution_fields(payload: dict[str, Any], *, index: int) -> dict[str, Any] | None:
+    """Diagnose direct context shadow fields without turning facts into authority."""
+    context = payload.get("context")
+    capsule = effective_engineering_capsule(payload)
+    if not isinstance(context, dict) or (capsule and capsule.get("contractStatus") == "valid"):
+        return None
+    misplaced = {}
+    for field in ("readOnly", "writeRequired", "readSet", "writeSet", "runtimeAccess", "toolPolicy", "allowedTools", "forbiddenTools", "noTools"):
+        aliases = _TASK_BRIEF_FIELD_ALIASES.get(field, (field,))
+        if any(alias in payload for alias in aliases):
+            continue
+        present = next((alias for alias in aliases if alias in context), None)
+        if present:
+            misplaced[present] = field
+    if not misplaced:
+        return None
+    # This example is returned to the caller for a new explicit dispatch. It is
+    # never fed into normalization, Capsule creation, or the execution queue.
+    example = deepcopy(payload)
+    unresolved = []
+    for source, target in misplaced.items():
+        value = context[source]
+        if target in {"readOnly", "writeRequired", "noTools"}:
+            if isinstance(value, bool):
+                example[target] = value
+            elif isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+                example[target] = value.strip().lower() == "true"
+            else:
+                example[target] = deepcopy(value)
+                unresolved.append(target)
+        else:
+            example[target] = _normalize_scope_values(value) if target != "toolPolicy" else deepcopy(value)
+    return {"code": "task_context_execution_fields", "index": index,
+            "taskBriefId": str(_task_brief_first_present(payload, "taskBriefId") or ""),
+            "fields": misplaced, "exampleTask": example, "unresolvedFields": unresolved}
+
+
 def task_brief_contract_diagnostics(values: Iterable[Any] | None) -> dict[str, Any]:
     """Describe identity/alias defects without rewriting or dropping a brief."""
 
     tasks = list(values or [])
     alias_conflicts: list[dict[str, Any]] = []
+    misplaced_execution: list[dict[str, Any]] = []
     indexes_by_id: dict[str, list[int]] = {}
     task_ids_by_index: dict[int, str] = {}
     dependency_refs_by_index: dict[int, list[str]] = {}
@@ -447,6 +485,9 @@ def task_brief_contract_diagnostics(values: Iterable[Any] | None) -> dict[str, A
         if not isinstance(value, dict):
             continue
         alias_conflicts.extend(_alias_conflict_diagnostics(value, index=index))
+        misplaced = _misplaced_execution_fields(value, index=index)
+        if misplaced:
+            misplaced_execution.append(misplaced)
         task_id = str(_task_brief_first_present(value, "taskBriefId") or "").strip()
         if task_id:
             indexes_by_id.setdefault(task_id, []).append(index)
@@ -459,6 +500,10 @@ def task_brief_contract_diagnostics(values: Iterable[Any] | None) -> dict[str, A
             for worker_index, worker in enumerate(raw_workers):
                 if not isinstance(worker, dict):
                     continue
+                misplaced = _misplaced_execution_fields(worker, index=worker_index)
+                if misplaced:
+                    worker_field = next(alias for alias in _TASK_BRIEF_FIELD_ALIASES["workerBriefs"] if alias in value)
+                    misplaced_execution.append({**misplaced, "parentIndex": index, "workerIndex": worker_index, "workerField": worker_field})
                 for diagnostic in _alias_conflict_diagnostics(
                     worker,
                     index=worker_index,
@@ -495,6 +540,7 @@ def task_brief_contract_diagnostics(values: Iterable[Any] | None) -> dict[str, A
     return {
         "aliasConflicts": alias_conflicts,
         "duplicateTaskBriefIds": duplicates,
+        "misplacedExecutionFields": misplaced_execution,
     }
 
 _TASK_BRIEF_COMPAT_INPUT_FIELDS = frozenset(

@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 
 from typing_extensions import Required, TypedDict
+from pydantic import Field
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -1086,7 +1087,7 @@ class DelegationTaskInput(TypedDict, total=False):
     taskBriefId: Required[str]
     title: str
     goal: Required[str]
-    context: Any
+    context: Annotated[Any, Field(description="Facts and evidence only. Put readOnly, writeRequired, readSet, writeSet, runtimeAccess and toolPolicy directly on tasks[i], with their declared JSON types. Direct context shadow fields do not grant execution authority and are rejected when the typed contract is missing.")]
     expectedOutput: str
     expectedOutputs: Required[list[str]]
     expectedArtifacts: list[str]
@@ -1099,8 +1100,8 @@ class DelegationTaskInput(TypedDict, total=False):
     forbiddenTools: list[str] | str
     noTools: bool
     requiredCapabilities: list[str] | str
-    readOnly: bool
-    writeRequired: bool
+    readOnly: Annotated[bool, Field(description="Top-level execution boundary, e.g. tasks[i].readOnly=true; never context.readOnly or a string.")]
+    writeRequired: Annotated[bool, Field(description="Top-level write obligation. For read-only verification use false and writeSet=[].")]
     runtimeAccess: list[str] | str
     readSet: list[str] | str
     writeSet: list[str] | str
@@ -2156,14 +2157,38 @@ def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) ->
 def _delegation_task_contract_diagnostic_command(
     *,
     diagnostics: dict[str, Any],
+    tasks: list[dict[str, Any]] | None = None,
     tool_call_id: str,
     retry_node: str,
 ) -> Command:
     duplicates = list(diagnostics.get("duplicateTaskBriefIds") or [])
     conflicts = list(diagnostics.get("aliasConflicts") or [])
-    error = "duplicate_task_brief_ids" if duplicates else "task_brief_alias_conflict"
+    misplaced = list(diagnostics.get("misplacedExecutionFields") or [])
+    error = "task_context_execution_fields" if misplaced else "duplicate_task_brief_ids" if duplicates else "task_brief_alias_conflict"
+    examples = json.loads(json.dumps(tasks or [], ensure_ascii=False))
+    repair_patch = {}
+    unresolved_fields = []
+    preserved_hashes = []
+    for item in misplaced:
+        prefix = (f"tasks.{item['parentIndex']}.workerBriefs.{item['workerIndex']}"
+                  if item.get("parentIndex") is not None else f"tasks.{item['index']}")
+        repair_patch.update({f"{prefix}.{field}": item["exampleTask"][field] for field in item["fields"].values()})
+        unresolved_fields.extend(f"{prefix}.{field}" for field in item.get("unresolvedFields") or [])
+        preserved_hashes.append({"taskPath": prefix,
+            "goalSha256": hashlib.sha256(str(item["exampleTask"].get("goal") or "").encode("utf-8")).hexdigest(),
+            "contextSha256": hashlib.sha256(json.dumps(item["exampleTask"].get("context"), ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()})
+        if item.get("parentIndex") is not None:
+            examples[item["parentIndex"]][item.get("workerField") or "workerBriefs"][item["workerIndex"]] = item["exampleTask"]
+        else:
+            examples[item["index"]] = item["exampleTask"]
     repair_fields = sorted(
         {
+            *(
+                f"tasks.{item['parentIndex']}.workerBriefs.{item['workerIndex']}.{field}"
+                if item.get("parentIndex") is not None else f"tasks.{item['index']}.{field}"
+                for item in misplaced for field in item["fields"].values()
+            ),
             *(
                 f"tasks.{index}.taskBriefId"
                 for duplicate in duplicates
@@ -2196,11 +2221,15 @@ def _delegation_task_contract_diagnostic_command(
                         mode="dispatch",
                         ok=False,
                         summary=(
+                            "Execution-boundary fields were placed directly in context without a typed execution contract; no episode or worker was dispatched."
+                            if misplaced else
                             "delegation_broker rejected duplicate taskBriefId values before dispatch."
                             if duplicates
                             else "delegation_broker rejected conflicting task aliases before dispatch."
                         ),
                         recommended_next_action=(
+                            "retry_dispatch_with_explicit_typed_boundaries"
+                            if misplaced else
                             "retry_dispatch_after_task_identity_repair"
                             if duplicates
                             else "retry_dispatch_after_alias_repair"
@@ -2214,10 +2243,14 @@ def _delegation_task_contract_diagnostic_command(
                         repairFields=repair_fields,
                         preserveAllOtherFields=True,
                         repairInstruction=(
+                            "Use the listed top-level task paths and their declared JSON types (booleans and path arrays), rather than context shadow permissions. exampleTasks preserves every original goal/context value and shows the proposed typed placement; review it against the authorized task and explicitly resubmit. No example was executed and no context permission was promoted. Keep explicit empty allowlists and role/write-set limits. If this is analysis-only, keep facts under context.evidence and use toolPolicy.mode=none when no tools are needed. Execution evidence requirements are acceptance checks, not tool grants. If the visible example is clipped, read its full exampleTasks through tool_observation_detail using the returned rawRef before retrying; never copy partial JSON."
+                            if misplaced else
                             "Assign a unique taskBriefId to each listed index and update only dependent ID references; preserve every goal, context, policy, and proof contract."
                             if duplicates
                             else "Remove the conflicting alias spelling and retain one value for each listed field; preserve the rest of every task."
                         ),
+                        **({"exampleTasks": examples, "repairPatch": repair_patch, "unresolvedFields": unresolved_fields,
+                            "preservedTaskHashes": preserved_hashes, "executionOutcome": "not_executed"} if misplaced else {}),
                     ),
                     tool_call_id=tool_call_id,
                 )
@@ -2583,6 +2616,7 @@ def delegation_broker(
         if any(task_contract_diagnostics.values()):
             return _delegation_task_contract_diagnostic_command(
                 diagnostics=task_contract_diagnostics,
+                tasks=raw_requested_tasks,
                 tool_call_id=tool_call_id,
                 retry_node=retry_node,
             )
@@ -2606,6 +2640,7 @@ def delegation_broker(
         if any(expanded_contract_diagnostics.values()):
             return _delegation_task_contract_diagnostic_command(
                 diagnostics=expanded_contract_diagnostics,
+                tasks=normalized_tasks,
                 tool_call_id=tool_call_id,
                 retry_node=retry_node,
             )

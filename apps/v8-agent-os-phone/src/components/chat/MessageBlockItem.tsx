@@ -580,6 +580,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                 status={node.status}
                 tone={tone}
                 eventSummary={extractSafetyEventSummary(node.requestInfo)}
+                compact={approvalKind !== "spec_stage_approval"}
             />
         );
     }

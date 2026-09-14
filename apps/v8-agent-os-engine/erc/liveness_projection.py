@@ -73,6 +73,8 @@ def build_liveness_view(
     elif waiting:
         status = "waiting"
         idle_reason = run_status or workflow_status or "waiting"
+        if run_status == "paused" and ((run_record or {}).get("metadata") or {}).get("pause_reason") == "session_results_wait":
+            idle_reason = "session_results_wait"
     elif run_status == "queued":
         status = "queued"
         idle_reason = "awaiting_admission"

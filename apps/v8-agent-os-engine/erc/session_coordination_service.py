@@ -701,7 +701,8 @@ class SessionCoordinationService:
             updated_parent = db.get_session_coordination_message(parent["id"]) or parent
             self._emit_transition(updated_parent, "session_coordination.result")
             if not row.get("metadata", {}).get("superseded"):
-                row = self.dispatch_message(row["id"]) or row
+                self.dispatch_message(row["id"])
+                row = db.get_session_coordination_message(row["id"]) or row
             return self._ok(row)
         except (ValueError, OSError) as exc:
             return self._error(str(exc), "项目结果未被保存；请核对版本、授权和证明引用。")
@@ -882,6 +883,20 @@ class SessionCoordinationService:
             active_run_id = str(lane.get("activeRunId") or "").strip()
             active_run = db.get_run_record(active_run_id) if active_run_id else None
             run_status = str((active_run or {}).get("status") or "").strip().lower()
+            latest_runs = db.list_run_records(session_id=target_session_id, limit=1)
+            latest = latest_runs[0] if latest_runs else {}
+            latest_metadata = latest.get("metadata") or {}
+            wait = latest_metadata.get("sessionResultWait") or {}
+            if (row.get("authority") == "project_result" and wait.get("state") in {"waiting", "scheduled"}
+                    and not latest_metadata.get("resume_reason")):
+                # Await registration precedes checkpoint/finalization and lane release.
+                # An early result remains durable until the same run can be resumed.
+                if active_run_id or latest.get("status") == "running":
+                    return row
+                if latest.get("status") == "paused":
+                    return self._wake_idle_target(row, target_session)
+            if not active_run_id and latest.get("status") in SESSION_COORDINATION_WAITING_RUN_STATES:
+                return row
             if active_run_id and run_status == "running":
                 existing_signal = command_service.peek_control_signal(active_run_id)
                 if existing_signal:
@@ -937,26 +952,41 @@ class SessionCoordinationService:
         message_id = str(row.get("id") or "")
         run_id = f"run_{uuid.uuid4().hex}"
         target_session_id = str(row.get("targetSessionId") or row.get("target_session_id") or "")
-        db.create_run_record(
-            run_id=run_id,
-            session_id=target_session_id,
-            conversation_id=target_session_id,
-            user_id=str(target_session.get("user_id") or "anonymous"),
-            run_type="chat",
-            status="queued",
-            trigger_source="session_coordination",
-            metadata={
-                "source": "session_coordination_messages",
-                "coordinationMessageId": message_id,
-                "coordinationThreadId": row.get("threadId") or row.get("thread_id"),
-            },
-        )
+        wait_claim = None
+        if row.get("authority") == "project_result":
+            latest_runs = db.list_run_records(session_id=target_session_id, limit=1)
+            latest = latest_runs[0] if latest_runs else {}
+            if (latest.get("metadata") or {}).get("sessionResultWait", {}).get("state") in {"waiting", "scheduled"}:
+                wait_claim = db.claim_session_result_wait(latest["id"], owner_id=_PROJECT_RESULT_DELIVERY_OWNER)
+                if not wait_claim:
+                    return row
+                run_id = wait_claim["runId"]
+                row = wait_claim["message"]
+                message_id = row["id"]
+        if not wait_claim:
+            db.create_run_record(
+                run_id=run_id,
+                session_id=target_session_id,
+                conversation_id=target_session_id,
+                user_id=str(target_session.get("user_id") or "anonymous"),
+                run_type="chat",
+                status="queued",
+                trigger_source="session_coordination",
+                metadata={
+                    "source": "session_coordination_messages",
+                    "coordinationMessageId": message_id,
+                    "coordinationThreadId": row.get("threadId") or row.get("thread_id"),
+                },
+            )
         updated = db.update_session_coordination_message(
             message_id,
             state="promoted",
             target_run_id=run_id,
             timestamp_field="promoted_at",
-            metadata_updates={"deliveryOwner": _PROJECT_RESULT_DELIVERY_OWNER} if row.get("authority") == "project_result" else None,
+            metadata_updates={
+                "deliveryOwner": _PROJECT_RESULT_DELIVERY_OWNER,
+                **({"waitGeneration": wait_claim["generation"]} if wait_claim else {}),
+            } if row.get("authority") == "project_result" else None,
         ) or row
         try:
             if row.get("authority") == "project_assignment":
@@ -967,6 +997,7 @@ class SessionCoordinationService:
             request = runtime_command_router.build_session_coordination_chat_request(
                 session_id=target_session_id,
                 message_id=message_id,
+                **({"wait_generation": wait_claim["generation"]} if wait_claim else {}),
             )
             scheduled = runtime_command_router.schedule_chat_run(
                 request,
@@ -975,11 +1006,12 @@ class SessionCoordinationService:
             )
         except Exception as exc:
             scheduled = None
-            db.update_run_record(
-                run_id,
-                status="failed",
-                error_message=f"session_coordination_schedule_failed: {type(exc).__name__}: {exc}",
-            )
+            if not wait_claim:
+                db.update_run_record(
+                    run_id,
+                    status="failed",
+                    error_message=f"session_coordination_schedule_failed: {type(exc).__name__}: {exc}",
+                )
             if isinstance(exc, ValueError) and str(exc).startswith("assignment_"):
                 updated = db.update_session_coordination_message(
                     message_id, state="blocked", error_code=str(exc),
@@ -987,6 +1019,9 @@ class SessionCoordinationService:
                 self._emit_transition(updated, "session_coordination.blocked")
                 return updated
         if not scheduled:
+            if wait_claim:
+                if not db.restore_session_result_wait(run_id, generation=wait_claim["generation"], message_id=message_id):
+                    return db.get_session_coordination_message(message_id) or updated
             updated = db.update_session_coordination_message(
                 message_id,
                 state="queued",
@@ -1153,7 +1188,8 @@ class SessionCoordinationService:
                 run_id = str(row.get("targetRunId") or "")
                 run = db.get_run_record(run_id) if run_id else {}
                 status = str((run or {}).get("status") or "")
-                if status in {"waiting_input", "waiting_approval", "waiting_external_tool", "paused"}:
+                automatic_wait = status == "paused" and (run.get("metadata") or {}).get("pause_reason") == "session_results_wait"
+                if status in {"waiting_input", "waiting_approval", "waiting_external_tool", "paused"} and not automatic_wait:
                     continue
                 if status == "completed" and metadata.get("checkpointConsumed") and metadata.get("checkpointRunId") == run_id:
                     db.update_session_coordination_message(row["id"], state="replied",

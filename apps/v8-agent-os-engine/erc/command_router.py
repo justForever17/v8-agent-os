@@ -336,13 +336,14 @@ class RuntimeCommandRouter:
             messages.append(ChatMessage(role=role, content=content))
         return messages or self._chat_messages_from_session(session_id)
 
-    def build_session_coordination_chat_request(self, *, session_id: str, message_id: str) -> ChatRequest:
+    def build_session_coordination_chat_request(self, *, session_id: str, message_id: str, wait_generation: str = "") -> ChatRequest:
         session = db.get_session(session_id) or {}
         latest_runs = db.list_run_records(session_id=session_id, limit=1)
         latest_run = latest_runs[0] if latest_runs else None
         scope_payload = self._scope_payload_for_session(session_id)
         request_data = ChatRequestData()
         request_data._session_coordination_message_id = message_id
+        request_data._session_coordination_wait_generation = wait_generation or None
         return ChatRequest(
             messages=self._canonical_chat_messages_for_coordination(session_id),
             config=self._engine_config_from_run(latest_run),

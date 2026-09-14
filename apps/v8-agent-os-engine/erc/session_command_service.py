@@ -192,7 +192,8 @@ class SessionCommandService:
 
     def command(self, *, mode: str, context: dict[str, Any], state: dict[str, Any], assignment_id: str = "",
                 revision: int = 0, title: str = "", task: dict[str, Any] | None = None, content: str = "",
-                idempotency_key: str = "", after_id: str = "", after_cursor: int = 0, limit: int = 20) -> dict[str, Any]:
+                idempotency_key: str = "", after_id: str = "", after_cursor: int = 0, limit: int = 20,
+                assignment_ids: list[str] | None = None, wait_for: str = "any") -> dict[str, Any]:
         try:
             session_id, user_id, run_id = self._actor(context)
             if mode == "create":
@@ -213,6 +214,15 @@ class SessionCommandService:
                         "nextCursor": page[-1]["metadata"]["resultCursor"] if page else after_cursor,
                         "hasMore": len(rows) > limit,
                         "deliveryAcknowledged": False}
+            if mode == "await":
+                result = self.db.register_session_result_wait(
+                    session_id=session_id, run_id=run_id, user_id=user_id,
+                    idempotency_key=idempotency_key, assignment_ids=assignment_ids or ([assignment_id] if assignment_id else []),
+                    after_cursor=after_cursor, condition=wait_for,
+                )
+                return {"ok": True, "mode": "await", **result,
+                        "results": [self.coordination.compact_ref(row) for row in result["results"]],
+                        "summary": "等待项目任务结果。" if result["waiting"] else "所需结果已到达。"}
             if mode == "revoke":
                 if not self.db.revoke_session_command_assignment(assignment_id, user_id=user_id, session_id=session_id, revision=revision):
                     raise ValueError("assignment_revoke_scope_or_revision_mismatch")

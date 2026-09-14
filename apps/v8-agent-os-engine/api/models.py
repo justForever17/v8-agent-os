@@ -258,6 +258,7 @@ class ChatRequestData(BaseModel):
         max_length=3,
     )
     _session_coordination_message_id: Optional[str] = PrivateAttr(default=None)
+    _session_coordination_wait_generation: Optional[str] = PrivateAttr(default=None)
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
     disable_extensions_prefilter: Optional[bool] = Field(default=None, alias="disableExtensionsPrefilter")

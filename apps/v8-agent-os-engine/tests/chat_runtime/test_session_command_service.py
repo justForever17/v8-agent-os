@@ -255,8 +255,9 @@ def test_result_without_proof_or_after_revocation_is_not_published(harness):
     assert harness.db.list_session_project_results(ROOT) == []
 
 
-@pytest.mark.parametrize("waiting_status", ["waiting_input", "waiting_approval"])
-def test_assignment_followup_preserves_human_wait_and_does_not_start_another_run(harness, waiting_status):
+@pytest.mark.parametrize("waiting_status", ["waiting_input", "waiting_approval", "paused"])
+@pytest.mark.parametrize("lane_released", [False, True])
+def test_assignment_followup_preserves_human_wait_and_does_not_start_another_run(harness, waiting_status, lane_released):
     assignment = create()["assignment"]
     sent = send(assignment)
     child = assignment["childSessionId"]
@@ -264,7 +265,7 @@ def test_assignment_followup_preserves_human_wait_and_does_not_start_another_run
     harness.db.update_run_record("run-child-0", status=waiting_status)
     harness.db.add_pending_approval("approval-waiting", child, "run-child-0", "fixture", "pending", {"fixture": True})
     harness.monkeypatch.setattr(coordination_module.session_admission_service, "get_lane_view",
-                                lambda _sid: {"activeRunId": "run-child-0"})
+                                lambda _sid: {"activeRunId": None if lane_released else "run-child-0"})
     result = invoke({"mode": "continue", "assignmentId": assignment["assignmentId"], "revision": 1,
                      "content": "After the human decision, use this correction.", "idempotencyKey": "steering-while-waiting"})
     assert result["ok"] and result["message"]["state"] == "queued"
@@ -560,3 +561,242 @@ def test_empty_child_prompt_capsule_and_actual_native_file_execution(harness):
         invoke({"mode": "revoke", "assignmentId": assignment["assignmentId"], "revision": 1})
         denied = write_native_file.invoke({"name": "write_native_file", "type": "tool_call", "id": "write-revoked", "args": {"path": "page.txt", "content": "must not overwrite", "allow_full_replace": True}})
         assert (harness.workspace / "page.txt").read_text(encoding="utf-8") == "checked fixture output", denied
+
+
+def wait_assignment(assignment, *, generation="wait-1", after_cursor=0, wait_for="any"):
+    return invoke({"mode": "await", "assignmentIds": [assignment["assignmentId"]],
+                   "afterCursor": after_cursor, "waitFor": wait_for, "idempotencyKey": generation}, routed=True)
+
+
+def use_real_delivery(harness):
+    import erc.command_router as router_module
+    from erc.command_router import runtime_command_router
+    harness.monkeypatch.setattr(harness.service, "_wake_idle_target", SessionCoordinationService._wake_idle_target.__get__(harness.service))
+    harness.monkeypatch.setattr(router_module, "db", harness.db)
+    harness.monkeypatch.setattr(router_module, "build_canonical_chat_turn_window", lambda *args, **kwargs: {"messages": []})
+    harness.monkeypatch.setattr(runtime_command_router, "_scope_payload_for_session", lambda _sid: {})
+    scheduled = []
+    def schedule(request, *, run_id, **kwargs):
+        scheduled.append((request, run_id))
+        return {"scheduled": True}
+    harness.monkeypatch.setattr(runtime_command_router, "schedule_chat_run", schedule)
+    return scheduled
+
+
+def finalize_wait(harness):
+    from runtimes.chat.runtime import ChatRuntime
+    import runtimes.chat.runtime as runtime_module
+    events = []
+    harness.monkeypatch.setattr(runtime_module, "db", harness.db)
+    harness.monkeypatch.setattr(runtime_module.workflow_ledger_service, "sync_run_status", lambda *args, **kwargs: None)
+    run = SimpleNamespace(active_run_id="run-root-001", emit_runtime_event=lambda topic, payload, **kwargs: events.append((topic, payload)),
+                          run_handle=SimpleNamespace(descriptor=SimpleNamespace(status="running"),
+                                                     refresh_chat_snapshot=lambda: harness.db.get_run_record("run-root-001")))
+    result = ChatRuntime().finalize_success_run(run)
+    assert result["status"] == "paused" and result["reason"] == "session_results_wait"
+    assert events[0][1]["summary"] == "等待项目任务结果"
+    return result
+
+
+def activate_wait(harness, request):
+    from runtimes.chat.runtime import ChatRuntime
+    import runtimes.chat.runtime as runtime_module
+    import erc.run_service as run_module
+    harness.monkeypatch.setattr(runtime_module, "db", harness.db)
+    harness.monkeypatch.setattr(run_module, "db", harness.db)
+    harness.monkeypatch.setattr(runtime_module.workflow_ledger_service, "sync_run_status", lambda *args, **kwargs: None)
+    record = harness.db.get_run_record("run-root-001")
+    run = SimpleNamespace(active_run_id="run-root-001", session_id=ROOT, user_id=USER, request=request,
+                          transport="session_coordination", is_resume_request=False,
+                          run_handle=SimpleNamespace(descriptor=SimpleNamespace(status=record["status"])))
+    return ChatRuntime()._activate_run_for_execution(run)
+
+
+def test_await_toolnode_ends_graph_and_early_result_returns_without_wait(harness, tmp_path):
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    from graph.tool_routing import create_routed_tool_node
+    from graph.workflow_assembly import _route_runtime_tool_commands
+    assignment = create()["assignment"]
+    node = create_routed_tool_node([session_command_broker], "tools", "supervisor")
+    calls = []
+    def route(state, config):
+        return _route_runtime_tool_commands(asyncio.run(node(state, config)))
+    graph = StateGraph(ToolState)
+    graph.add_node("tools", route)
+    graph.add_node("supervisor", lambda state: calls.append("must not call the model while waiting") or {})
+    graph.add_edge(START, "tools")
+    graph.add_edge("supervisor", END)
+    config = {"configurable": {"thread_id": "root-await-checkpoint"}}
+    with SqliteSaver.from_conn_string(str(tmp_path / "await-checkpoint.sqlite3")) as saver:
+        compiled = graph.compile(checkpointer=saver)
+        with bind_runtime_context(runtime_kind="chat", agent_id="supervisor", session_id=ROOT, run_id="run-root-001", user_id=USER):
+            compiled.invoke({"messages": [AIMessage(content="", tool_calls=[{
+                "id": "wait-call", "name": "session_command_broker", "args": {"mode": "await", "assignmentIds": [assignment["assignmentId"]],
+                "idempotencyKey": "wait-1"}}, {"id": "list-call", "name": "session_command_broker", "args": {"mode": "list"}}])], "current_route_context": {}}, config)
+    assert calls == []
+    with SqliteSaver.from_conn_string(str(tmp_path / "await-checkpoint.sqlite3")) as saver:
+        snapshot = graph.compile(checkpointer=saver).get_state(config)
+        assert snapshot.next == ()
+        receipts = {message.tool_call_id: message for message in snapshot.values["messages"] if hasattr(message, "tool_call_id")}
+        assert set(receipts) == {"wait-call", "list-call"}
+        assert receipts["wait-call"].additional_kwargs["sessionResultsWait"] == harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]["generation"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    use_real_delivery(harness)
+    result = publish_result(harness, assignment, sent, version=1, status="completed", content="Already available.", evidence=["artifact:page"])
+    ready = wait_assignment(assignment, generation="ready-now")
+    assert ready["waiting"] is False and ready["results"][0]["messageId"] == result["message"]["messageId"]
+    assert harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]["state"] == "consumed"
+
+
+def test_result_before_lane_release_resumes_same_run_once_and_checkpoint_consumes(harness):
+    from runtimes.chat.runtime import ChatRuntime
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    waiting = wait_assignment(assignment)
+    assert waiting["waiting"]
+    scheduled = use_real_delivery(harness)
+    harness.monkeypatch.setattr(coordination_module.session_admission_service, "get_lane_view", lambda sid: {"activeRunId": "run-root-001"})
+    result = publish_result(harness, assignment, sent, version=1, status="completed", content="The bounded task finished.", evidence=["artifact:page"])
+    assert scheduled == []
+    finalize_wait(harness)
+    harness.service.dispatch_for_session(ROOT)
+    assert scheduled == []  # Still owns the lane.
+    harness.monkeypatch.setattr(coordination_module.session_admission_service, "get_lane_view", lambda sid: {"activeRunId": None})
+    harness.service.dispatch_for_session(ROOT)
+    harness.service.dispatch_for_session(ROOT)
+    assert len(scheduled) == 1 and scheduled[0][1] == "run-root-001"
+    request = scheduled[0][0]
+    assert request.data._session_coordination_wait_generation == waiting["generation"]
+    assert activate_wait(harness, request)["updated"]
+    assert not activate_wait(harness, request)["updated"]
+    row = harness.db.get_session_coordination_message(result["message"]["messageId"])
+    inbound = ChatRuntime._normalize_session_coordination_message(request, session_id=ROOT)
+    messages = []
+    ChatRuntime()._inject_session_coordination_message(messages, inbound)
+    assert "The bounded task finished." in messages[-1].content
+    harness.service.mark_injected(row["id"], target_run_id="run-root-001")
+    assert harness.service.acknowledge_project_results({"messages": messages}, session_id=ROOT, run_id="run-root-001") == 1
+    assert harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]["state"] == "consumed"
+    assert len(harness.db.list_run_records(session_id=ROOT)) == 1
+
+
+def test_await_schedule_failure_boot_recovery_and_orphan_projection(harness):
+    from erc.command_router import runtime_command_router
+    import erc.workflow_ledger as ledger_module
+    from erc.liveness_projection import build_liveness_view
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    wait_assignment(assignment)
+    finalize_wait(harness)
+    scheduled = use_real_delivery(harness)
+    original_schedule = runtime_command_router.schedule_chat_run
+    harness.monkeypatch.setattr(runtime_command_router, "schedule_chat_run", lambda *args, **kwargs: None)
+    final = publish_result(harness, assignment, sent, version=1, status="completed", content="Durable final.", evidence=["artifact:page"])
+    assert harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]["state"] == "waiting"
+    harness.monkeypatch.setattr(runtime_command_router, "schedule_chat_run", original_schedule)
+    harness.service.dispatch_for_session(ROOT)
+    assert len(scheduled) == 1
+    reopened = DatabaseManager(harness.db.db_path)
+    harness.monkeypatch.setattr(coordination_module, "db", reopened)
+    harness.monkeypatch.setattr(coordination_module, "_PROJECT_RESULT_DELIVERY_OWNER", "new-engine-boot")
+    harness.monkeypatch.setattr(ledger_module, "db", reopened)
+    ledger = ledger_module.WorkflowLedgerService()
+    harness.monkeypatch.setattr(ledger, "emit_reconciliation_event", lambda *args, **kwargs: None)
+    harness.monkeypatch.setattr(ledger, "sync_run_status", lambda *args, **kwargs: None)
+    ledger.reconcile_orphaned_runs()
+    record = reopened.get_run_record("run-root-001")
+    assert record["status"] == "paused" and not record["metadata"].get("orphaned")
+    projection = build_liveness_view(run_record=record, workflow_view={}, runtime_events=[], lane_view={})
+    assert projection["status"] == "waiting" and projection["idleReason"] == "session_results_wait"
+    harness.service.recover_pending()
+    harness.service.recover_pending()
+    assert len(scheduled) == 2 and scheduled[-1][1] == "run-root-001"
+    assert scheduled[-1][0].data._session_coordination_message_id == final["message"]["messageId"]
+
+
+@pytest.mark.parametrize("change", ["manual_pause", "pause_signal_without_reason", "new_human", "new_run", "pending_approval", "new_generation"])
+def test_stale_scheduled_wake_cannot_override_human_or_new_wait(harness, change):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    wait_assignment(assignment)
+    finalize_wait(harness)
+    scheduled = use_real_delivery(harness)
+    publish_result(harness, assignment, sent, version=1, status="accepted", content="Working.")
+    request = scheduled[0][0]
+    record = harness.db.get_run_record("run-root-001")
+    if change == "manual_pause":
+        harness.db.update_run_record("run-root-001", status="paused", metadata={**record["metadata"], "pause_reason": "human_pause"})
+    elif change == "pause_signal_without_reason":
+        harness.db.update_run_record("run-root-001", status="paused", metadata={**record["metadata"], "control_signal": {"command": "pause"}})
+    elif change == "new_human":
+        harness.db.add_message("new-human", ROOT, "user", "先做别的事情")
+    elif change == "pending_approval":
+        harness.db.add_pending_approval("approval-root", ROOT, "run-root-001", "fixture", "pending", {})
+    elif change == "new_run":
+        harness.db.create_run_record("new-human-run", ROOT, user_id=USER, run_type="chat", status="running")
+    else:
+        from api.models import ChatRequest, EngineConfig
+        manual = ChatRequest(messages=[], session_id=ROOT, user_id=USER, config=EngineConfig())
+        assert activate_wait(harness, manual)["updated"]
+        assert harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]["state"] == "superseded"
+        next_wait = wait_assignment(assignment, generation="wait-2", after_cursor=1)
+        assert next_wait["waiting"]
+        finalize_wait(harness)
+        publish_result(harness, assignment, sent, version=2, status="completed", content="Ready.", evidence=["artifact:page"])
+        assert scheduled[-1][0].data._session_coordination_wait_generation == next_wait["generation"]
+    assert not activate_wait(harness, request)["updated"]
+    assert harness.db.get_run_record("run-root-001")["status"] == "paused"
+    if change == "new_generation":
+        assert activate_wait(harness, scheduled[-1][0])["updated"]
+
+
+def test_all_final_await_ignores_partial_and_rejects_unrelated_selection(harness):
+    from api.models import ChatRequestData
+    first = create()["assignment"]
+    second = create(idempotencyKey="second-task", taskBrief=task("second.txt"))["assignment"]
+    first_send, second_send = send(first), send(second)
+    for response in (first_send, second_send):
+        row = harness.db.get_session_coordination_message(response["message"]["messageId"])
+        harness.service.mark_injected(row["id"], target_run_id=row["targetRunId"])
+    args = {"mode": "await", "assignmentIds": [first["assignmentId"], second["assignmentId"]], "waitFor": "all_final", "idempotencyKey": "both"}
+    waiting = invoke(args, routed=True)
+    assert waiting["waiting"]
+    assert invoke({**args, "afterCursor": 9})["error"] == "session_wait_generation_conflict"
+    assert invoke({**args, "assignmentIds": ["unrelated"]})["error"] == "session_wait_assignment_scope_mismatch"
+    forged = ChatRequestData.model_validate({"_session_coordination_wait_generation": waiting["generation"]})
+    assert forged._session_coordination_wait_generation is None
+    finalize_wait(harness)
+    scheduled = use_real_delivery(harness)
+    publish_result(harness, first, first_send, version=1, status="completed", content="First done.", evidence=["artifact:first"])
+    publish_result(harness, second, second_send, version=1, status="partial", content="Second partial.", evidence=["artifact:second-partial"])
+    assert scheduled == []
+    publish_result(harness, second, second_send, version=2, status="completed", content="Second done.", evidence=["artifact:second"])
+    assert len(scheduled) == 1 and scheduled[0][1] == "run-root-001"
+
+
+def test_late_schedule_failure_cannot_restore_a_new_wait_generation(harness):
+    from erc.command_router import runtime_command_router
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    first_wait = wait_assignment(assignment)
+    finalize_wait(harness)
+    use_real_delivery(harness)
+    new_generation = []
+    def late_failure(request, **kwargs):
+        # A human resumes and the Supervisor chooses another wait while the
+        # original scheduler call is still in flight.
+        harness.db.update_run_record("run-root-001", status="running")
+        next_wait = wait_assignment(assignment, generation="next-wait", after_cursor=1)
+        new_generation.append(next_wait["generation"])
+        harness.db.pause_session_result_wait("run-root-001")
+        return None
+    harness.monkeypatch.setattr(runtime_command_router, "schedule_chat_run", late_failure)
+    publish_result(harness, assignment, sent, version=1, status="accepted", content="Accepted.")
+    wait = harness.db.get_run_record("run-root-001")["metadata"]["sessionResultWait"]
+    assert wait["generation"] == new_generation[0] != first_wait["generation"]
+    assert wait["state"] == "waiting"

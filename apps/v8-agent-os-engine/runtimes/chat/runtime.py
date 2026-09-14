@@ -3962,11 +3962,26 @@ class ChatRuntime:
                 "reason": f"status_mismatch:{expected_status}",
                 "currentStatus": expected_status,
             }
-        transition = run_service.transition_run_if_status(
-            chat_run.active_run_id,
-            expected_statuses={expected_status},
-            status="running",
-        )
+        request_data = getattr(chat_run.request, "data", None)
+        wait_generation = str(getattr(request_data, "_session_coordination_wait_generation", "") or "")
+        if wait_generation:
+            transition = db.activate_session_result_wait(
+                chat_run.active_run_id, session_id=chat_run.session_id, user_id=chat_run.user_id,
+                generation=wait_generation,
+                message_id=str(getattr(request_data, "_session_coordination_message_id", "") or ""),
+            )
+        else:
+            metadata = (db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {}
+            wait = metadata.get("sessionResultWait") or {}
+            # A normal/manual resume may continue independent work. Retire the
+            # automatic wait before it can receive an old scheduled request.
+            retired_wait = {"sessionResultWait": {**wait, "state": "superseded"}} if wait.get("state") in {"waiting", "scheduled"} else None
+            transition = run_service.transition_run_if_status(
+                chat_run.active_run_id,
+                expected_statuses={expected_status},
+                status="running",
+                metadata=retired_wait,
+            )
         if not transition.get("updated"):
             current_status = str(transition.get("currentStatus") or "").strip().lower()
             if current_status:
@@ -10985,6 +11000,23 @@ class ChatRuntime:
         chat_run: ChatRunContext,
         stream_state: ChatStreamState | None = None,
     ) -> dict[str, Any]:
+        session_wait = db.pause_session_result_wait(chat_run.active_run_id)
+        if session_wait:
+            reason = "session_results_wait"
+            chat_run.run_handle.descriptor.status = "paused"
+            workflow_ledger_service.sync_run_status(chat_run.active_run_id, run_status="paused", reason=reason)
+            chat_run.emit_runtime_event(
+                "run.completion.waiting_for_runtime",
+                {"reason": reason, "summary": "等待项目任务结果", "generation": session_wait["generation"],
+                 "assignmentIds": session_wait["assignmentIds"], "afterCursor": session_wait["afterCursor"]},
+                agent_id=None, node="completion_gate",
+            )
+            chat_run.emit_runtime_event(
+                "run.state.changed", {"from_status": "running", "to_status": "paused", "reason": reason},
+                agent_id=None, node="completion_gate",
+            )
+            chat_run.run_handle.refresh_chat_snapshot()
+            return {"type": "done", "status": "paused", "reason": reason, "run_id": chat_run.active_run_id}
         episodes = db.list_runtime_episodes(run_id=chat_run.active_run_id, limit=200)
         handoffs_by_episode = {
             str(episode.get("episodeId") or episode.get("id") or ""): db.list_runtime_episode_handoffs(
@@ -12320,6 +12352,13 @@ class ChatRuntime:
                 agent_id=None,
                 node="session_lane",
             )
+            # Results can arrive after await registration but before finalization.
+            # Dispatch only after lane release, using the durable wait generation.
+            try:
+                from erc.session_coordination_service import session_coordination_service
+                session_coordination_service.dispatch_for_session(chat_run.session_id)
+            except Exception:
+                logging.getLogger("v8chat.chat_runtime").exception("Deferred session coordination remains in its ledger")
 
 
 chat_runtime = runtime_registry.register(ChatRuntime())

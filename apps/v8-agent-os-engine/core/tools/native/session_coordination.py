@@ -4,7 +4,10 @@ import json
 from typing import Annotated, Any, Optional
 
 from langchain_core.tools import InjectedToolCallId, tool
+from langchain_core.messages import ToolMessage
+from langgraph.graph import END
 from langgraph.prebuilt import InjectedState
+from langgraph.types import Command
 
 from erc.runtime_context import get_runtime_context
 from erc.session_coordination_service import session_coordination_service
@@ -24,9 +27,12 @@ def session_command_broker(
     idempotencyKey: str = "",
     after: str = "",
     afterCursor: int = 0,
+    assignmentIds: Optional[list[str]] = None,
+    waitFor: str = "any",
     limit: int = 20,
     state: Annotated[dict[str, Any], InjectedState] = None,
-) -> str:
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str | Command:
     """Create, list, continue, revoke or read results of persistent project work sessions.
 
     create: use a stable idempotencyKey, title, and a taskBrief with goal, explicit
@@ -42,13 +48,22 @@ def session_command_broker(
     results replays this root's durable results after afterCursor, including results
     that arrived before a wait or while the app was offline. Use nextCursor to page;
     a superseded result cannot replace its newer version. Reading never accepts a result.
+    await yields the current graph only when you have no independent work to do.
+    Select assignmentIds, afterCursor and waitFor='any' or 'all_final', with a stable
+    idempotencyKey for this wait generation. Results wake this same root run automatically.
     """
     payload = session_coordination_service.command(
         context=get_runtime_context(), state=state or {}, mode=str(mode).strip().lower(),
         assignment_id=assignmentId, revision=revision, title=title, task=taskBrief,
         content=content, idempotency_key=idempotencyKey,
         after_id=after, after_cursor=max(0, afterCursor), limit=max(1, min(limit, 50)),
+        assignment_ids=assignmentIds, wait_for=waitFor,
     )
+    if str(mode).strip().lower() == "await" and payload.get("ok") and payload.get("waiting"):
+        return Command(goto=END, update={
+            "messages": [ToolMessage(content=json.dumps(payload, ensure_ascii=False), name="session_command_broker", tool_call_id=tool_call_id,
+                                     additional_kwargs={"sessionResultsWait": payload["generation"]})],
+        })
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 

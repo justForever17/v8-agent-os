@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from langgraph.graph import StateGraph
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from core.database import db
@@ -90,7 +90,7 @@ def _merged_tool_command_update(commands: list[Command]) -> dict:
     merged: dict = {}
     messages: list = []
     for item in commands:
-        update = dict(getattr(item, "update", None) or {})
+        update = dict(item if isinstance(item, dict) else (getattr(item, "update", None) or {}))
         for key, value in update.items():
             if key == "messages":
                 messages.extend(list(value or []))
@@ -121,6 +121,9 @@ def _route_runtime_tool_commands(command):
     runtime_statuses = [status for status in runtime_statuses if status]
     runtime_status = dict(update.get("runtime_dispatch_status") or {})
     messages = list(update.get("messages") or [])
+    if any(isinstance(message, ToolMessage) and message.name == "session_command_broker"
+           and (message.additional_kwargs or {}).get("sessionResultsWait") for message in messages):
+        return Command(goto="__end__", update=_merged_tool_command_update(command if isinstance(command, list) else [command]))
     waiting_status = next(
         (
             status

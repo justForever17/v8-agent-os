@@ -3482,6 +3482,183 @@ class DatabaseManager:
                 facts.extend((table, str(row[0]), str(row[1])) for row in rows)
         return _runtime_episode_payload_fingerprint({"humanTurns": facts})
 
+    def _session_wait_results(self, conn, session_id: str, marker: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows = conn.execute(
+            """SELECT * FROM session_coordination_messages WHERE target_session_id = ? AND authority = 'project_result'
+               AND CAST(json_extract(metadata_json, '$.resultCursor') AS INTEGER) > ?
+               AND COALESCE(json_extract(metadata_json, '$.superseded'), 0) = 0
+               ORDER BY CAST(json_extract(metadata_json, '$.resultCursor') AS INTEGER)""",
+            (session_id, marker["afterCursor"]),
+        ).fetchall()
+        selected = set(marker["assignmentIds"])
+        results = [self._hydrate_session_coordination_row(dict(row)) for row in rows
+                   if json.loads(row["metadata_json"])["assignmentId"] in selected]
+        if marker["condition"] == "all_final":
+            final_ids = {row["metadata"]["assignmentId"] for row in results if row["metadata"]["resultFinal"]}
+            if not selected.issubset(final_ids):
+                return []
+        return results
+
+    def register_session_result_wait(self, *, session_id: str, run_id: str, user_id: str,
+                                    idempotency_key: str, assignment_ids: list[str], after_cursor: int,
+                                    condition: str) -> Dict[str, Any]:
+        if not idempotency_key or not assignment_ids or condition not in {"any", "all_final"}:
+            raise ValueError("session_wait_contract_required")
+        generation = "session_wait_" + _runtime_episode_payload_fingerprint({
+            "sessionId": session_id, "runId": run_id, "userId": user_id, "idempotencyKey": idempotency_key,
+        })
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                run = conn.execute("SELECT * FROM run_records WHERE id = ? AND session_id = ? AND user_id = ?",
+                                   (run_id, session_id, user_id)).fetchone()
+                if not run or run["status"] != "running":
+                    raise ValueError("session_wait_run_not_active")
+                for assignment_id in assignment_ids:
+                    row = conn.execute(
+                        "SELECT id FROM session_command_assignments WHERE id = ? AND root_session_id = ? AND user_id = ?",
+                        (assignment_id, session_id, user_id),
+                    ).fetchone()
+                    if not row:
+                        raise ValueError("session_wait_assignment_scope_mismatch")
+                metadata = json.loads(run["metadata"] or "{}")
+                previous = metadata.get("sessionResultWait") or {}
+                marker = {"state": "waiting", "generation": generation, "assignmentIds": list(dict.fromkeys(assignment_ids)),
+                          "afterCursor": max(0, after_cursor), "condition": condition,
+                          "rootUserRevision": self.session_command_user_revision(session_id)}
+                if previous.get("generation") == generation:
+                    if any(previous.get(key) != marker[key] for key in ("assignmentIds", "afterCursor", "condition")):
+                        raise ValueError("session_wait_generation_conflict")
+                results = self._session_wait_results(conn, session_id, marker)
+                if results:
+                    metadata["sessionResultWait"] = {**marker, "state": "consumed"}
+                    conn.execute("UPDATE run_records SET metadata = ? WHERE id = ?", (json.dumps(metadata), run_id))
+                    conn.commit()
+                    return {"waiting": False, "generation": generation, "results": results}
+                if previous.get("generation") == generation and previous.get("state") == "consumed":
+                    return {"waiting": False, "generation": generation, "results": []}
+                metadata["sessionResultWait"] = marker
+                metadata.pop("resume_reason", None)
+                conn.execute("UPDATE run_records SET metadata = ? WHERE id = ?", (json.dumps(metadata), run_id))
+                conn.commit()
+                return {"waiting": True, "generation": generation, "results": []}
+        return self._run_write_with_retry(_write)
+
+    def pause_session_result_wait(self, run_id: str) -> Optional[Dict[str, Any]]:
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                if not row or row["status"] != "running":
+                    return None
+                metadata = json.loads(row["metadata"] or "{}")
+                marker = metadata.get("sessionResultWait") or {}
+                if (marker.get("state") != "waiting" or metadata.get("resume_reason")
+                        or (metadata.get("control_signal") or {}).get("command") in {"pause", "cancel", "interrupt"}):
+                    return None
+                for table in ("pending_approvals", "ask_user_interactions"):
+                    if conn.execute(f"SELECT 1 FROM {table} WHERE run_id = ? AND status = 'pending' LIMIT 1", (run_id,)).fetchone():
+                        return None
+                if marker.get("rootUserRevision") != self.session_command_user_revision(row["session_id"]):
+                    return None
+                metadata["pause_reason"] = "session_results_wait"
+                conn.execute("UPDATE run_records SET status = 'paused', metadata = ? WHERE id = ?",
+                             (json.dumps(metadata), run_id))
+                conn.commit()
+                return marker
+        return self._run_write_with_retry(_write)
+
+    def claim_session_result_wait(self, run_id: str, *, owner_id: str) -> Optional[Dict[str, Any]]:
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                if not row or row["status"] != "paused":
+                    return None
+                metadata = json.loads(row["metadata"] or "{}")
+                marker = metadata.get("sessionResultWait") or {}
+                if (metadata.get("pause_reason") != "session_results_wait" or marker.get("state") not in {"waiting", "scheduled"}
+                        or (metadata.get("control_signal") or {}).get("command") in {"pause", "cancel", "interrupt"}):
+                    return None
+                if marker.get("state") == "scheduled" and marker.get("deliveryOwner") == owner_id:
+                    return None
+                if marker.get("rootUserRevision") != self.session_command_user_revision(row["session_id"]):
+                    metadata["sessionResultWait"] = {**marker, "state": "superseded"}
+                    conn.execute("UPDATE run_records SET status = 'interrupted', metadata = ? WHERE id = ?",
+                                 (json.dumps(metadata), run_id))
+                    conn.commit()
+                    return None
+                for table in ("pending_approvals", "ask_user_interactions"):
+                    if conn.execute(f"SELECT 1 FROM {table} WHERE run_id = ? AND status = 'pending' LIMIT 1", (run_id,)).fetchone():
+                        return None
+                results = self._session_wait_results(conn, row["session_id"], marker)
+                if not results:
+                    return None
+                result = results[-1]
+                marker.update({"state": "scheduled", "deliveryOwner": owner_id, "messageId": result["id"],
+                               "targetCursor": result["metadata"]["resultCursor"]})
+                metadata["sessionResultWait"] = marker
+                conn.execute("UPDATE run_records SET metadata = ? WHERE id = ?", (json.dumps(metadata), run_id))
+                conn.commit()
+                return {"runId": run_id, "generation": marker["generation"], "message": result}
+        return self._run_write_with_retry(_write)
+
+    def restore_session_result_wait(self, run_id: str, *, generation: str, message_id: str) -> bool:
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT metadata FROM run_records WHERE id = ? AND status = 'paused'", (run_id,)).fetchone()
+                if not row:
+                    return False
+                metadata = json.loads(row["metadata"] or "{}")
+                marker = metadata.get("sessionResultWait") or {}
+                if marker.get("state") != "scheduled" or marker.get("generation") != generation or marker.get("messageId") != message_id:
+                    return False
+                metadata["sessionResultWait"] = {**marker, "state": "waiting"}
+                conn.execute("UPDATE run_records SET metadata = ? WHERE id = ?", (json.dumps(metadata), run_id))
+                conn.commit()
+                return True
+        return self._run_write_with_retry(_write)
+
+    def activate_session_result_wait(self, run_id: str, *, session_id: str, user_id: str,
+                                     generation: str, message_id: str) -> Dict[str, Any]:
+        """Fence the scheduled wake again at execution, after admission was acquired."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                rejected = {"updated": False, "reason": "session_result_wake_superseded",
+                            "currentStatus": row["status"] if row else "missing"}
+                if not row or row["status"] != "paused" or row["session_id"] != session_id or row["user_id"] != user_id:
+                    return rejected
+                latest = conn.execute("SELECT id FROM run_records WHERE session_id = ? ORDER BY started_at DESC LIMIT 1", (session_id,)).fetchone()
+                if not latest or latest["id"] != run_id:
+                    return rejected
+                metadata = json.loads(row["metadata"] or "{}")
+                marker = metadata.get("sessionResultWait") or {}
+                if (metadata.get("pause_reason") != "session_results_wait" or metadata.get("resume_reason")
+                        or (metadata.get("control_signal") or {}).get("command") in {"pause", "cancel", "interrupt"}
+                        or marker.get("state") != "scheduled" or marker.get("generation") != generation
+                        or marker.get("messageId") != message_id
+                        or marker.get("rootUserRevision") != self.session_command_user_revision(session_id)):
+                    return rejected
+                message = conn.execute(
+                    """SELECT * FROM session_coordination_messages WHERE id = ? AND target_run_id = ?
+                       AND target_session_id = ? AND authority = 'project_result' AND state = 'promoted'""",
+                    (message_id, run_id, session_id),
+                ).fetchone()
+                if not message or json.loads(message["metadata_json"] or "{}").get("waitGeneration") != generation:
+                    return rejected
+                for table in ("pending_approvals", "ask_user_interactions"):
+                    if conn.execute(f"SELECT 1 FROM {table} WHERE run_id = ? AND status = 'pending' LIMIT 1", (run_id,)).fetchone():
+                        return rejected
+                metadata["sessionResultWait"] = {**marker, "state": "executing"}
+                conn.execute("UPDATE run_records SET status = 'running', metadata = ? WHERE id = ?",
+                             (json.dumps(metadata), run_id))
+                conn.commit()
+                return {"updated": True, "previousStatus": "paused", "currentStatus": "running"}
+        return self._run_write_with_retry(_write)
+
     def delete_session(self, session_id: str):
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
@@ -8996,6 +9173,13 @@ class DatabaseManager:
                     "UPDATE session_coordination_messages SET metadata_json = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(meta), utc_now_iso(), message_id),
                 )
+                run = conn.execute("SELECT metadata FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                run_metadata = json.loads(run["metadata"] or "{}") if run else {}
+                wait = run_metadata.get("sessionResultWait") or {}
+                if (wait.get("state") == "executing" and wait.get("messageId") == message_id
+                        and wait.get("generation") == meta.get("waitGeneration") and wait.get("targetCursor") == result_cursor):
+                    run_metadata["sessionResultWait"] = {**wait, "state": "consumed"}
+                    conn.execute("UPDATE run_records SET metadata = ? WHERE id = ?", (json.dumps(run_metadata), run_id))
                 conn.commit()
                 return True
         return self._run_write_with_retry(_write)

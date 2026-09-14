@@ -221,8 +221,8 @@ def reconcile_episode_attention(episode: dict[str, Any]) -> None:
     """Repair a crash between canonical handoff commit and notification."""
     episode_id = str(episode.get("episodeId") or episode.get("id") or "")
     state = str(episode.get("state") or "")
-    if state in TERMINAL_EPISODE_STATES or state == "waiting_input":
-        publish_attention(episode, kind="input_required" if state == "waiting_input" else "terminal", detail={
+    if state in TERMINAL_EPISODE_STATES or state in {"waiting_input", "waiting_approval"}:
+        publish_attention(episode, kind="input_required" if state in {"waiting_input", "waiting_approval"} else "terminal", detail={
             "state": state, "resultRef": episode.get("resultRef") or episode.get("result_ref"),
             "detailRef": f"episode://{episode_id}",
         })

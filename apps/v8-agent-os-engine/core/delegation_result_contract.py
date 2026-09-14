@@ -165,6 +165,8 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "providerErrorCode": item.get("providerErrorCode"),
         "errorMessage": _compact(item.get("errorMessage"), limit=600),
         "dispatchStatus": item.get("dispatchStatus"),
+        "governanceWait": to_jsonable(item.get("governanceWait")),
+        "effectReceipt": to_jsonable(item.get("effectReceipt")),
         "requiredInputs": to_jsonable(item.get("requiredInputs"))
         if isinstance(item.get("requiredInputs"), list)
         else None,

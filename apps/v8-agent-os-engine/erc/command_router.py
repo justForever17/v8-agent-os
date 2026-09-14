@@ -1380,6 +1380,10 @@ class RuntimeCommandRouter:
         control = (run_record.get("metadata") or {}).get("control_signal") or {}
         if run_record.get("status") != "running" or control.get("command") in {"cancel", "interrupt", "pause"}:
             return {"resume_scheduled": False, "resume_error": "run_not_ready_after_approval"}
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        if "runtimeContinuation" in request:
+            return {"resume_mode": "runtime_episode", **db.resume_runtime_episode_after_approval(
+                str(approval.get("id") or approval.get("approval_id") or ""))}
         if approval_kind == "spec_stage_approval":
             if self._schedule_chat_run is None:
                 self._emit_resume_event(

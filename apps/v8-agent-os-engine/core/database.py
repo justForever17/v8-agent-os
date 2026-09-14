@@ -7155,6 +7155,47 @@ class DatabaseManager:
             return None
         return self.get_runtime_episode(episode_id)
 
+    def resume_runtime_episode_after_approval(self, approval_id: str) -> Dict[str, Any]:
+        """Admit the original paused branch once, under the current approval/run state."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                approval = conn.execute("SELECT * FROM pending_approvals WHERE id=?", (approval_id,)).fetchone()
+                if not approval or approval["status"] != "approved":
+                    return {"resume_scheduled": False, "resume_error": "approval_not_approved"}
+                request = json.loads(approval["request_json"] or "{}")
+                continuation = request.get("runtimeContinuation") or {}
+                episode_id = continuation.get("episodeId")
+                run = conn.execute("SELECT status, metadata FROM run_records WHERE id=?", (approval["run_id"],)).fetchone()
+                control = (json.loads(run["metadata"] or "{}").get("control_signal") or {}) if run else {}
+                if not run or run["status"] != "running" or control.get("command") in {"cancel", "interrupt", "pause"}:
+                    return {"resume_scheduled": False, "resume_error": "run_not_eligible_for_resume"}
+                row = conn.execute("SELECT * FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
+                    (episode_id, approval["session_id"], approval["run_id"])).fetchone()
+                if not row:
+                    return {"resume_scheduled": False, "resume_error": "approval_episode_scope_mismatch"}
+                metadata = json.loads(row["metadata_json"] or "{}")
+                wait = metadata.get("governanceWait") or {}
+                if (wait.get("approvalId") != approval_id or not continuation.get("checkpoint")
+                        or wait.get("checkpoint") != continuation["checkpoint"]):
+                    return {"resume_scheduled": False, "resume_error": "approval_continuation_mismatch"}
+                marker = metadata.get("governanceResume") or {}
+                if marker.get("approvalId") == approval_id:
+                    return {"resume_scheduled": True, "episodeId": episode_id, "ignored": True}
+                if row["state"] != "waiting_approval" or row["worker_id"]:
+                    return {"resume_scheduled": False, "resume_error": "episode_not_waiting_for_approval"}
+                now = utc_now_iso()
+                metadata["governanceResume"] = {"approvalId": approval_id, "state": "queued"}
+                conn.execute("UPDATE runtime_episodes SET state='queued', metadata_json=?, updated_at=? WHERE id=?",
+                    (json.dumps(metadata, ensure_ascii=False), now, episode_id))
+                conn.execute("INSERT INTO runtime_episode_queue (id, episode_id, session_id, run_id, kind, state, priority, available_at, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?) ON CONFLICT(episode_id) DO UPDATE SET state='queued', "
+                    "available_at=excluded.available_at, locked_by=NULL, lease_expires_at=NULL, updated_at=excluded.updated_at",
+                    (f"episode_queue:{episode_id}", episode_id, row["session_id"], row["run_id"], row["kind"], row["priority"], now, now, now))
+                conn.commit()
+                return {"resume_scheduled": True, "episodeId": episode_id, "ignored": False}
+        return self._run_write_with_retry(_write)
+
     def retry_runtime_episode(
         self,
         episode_id: str,

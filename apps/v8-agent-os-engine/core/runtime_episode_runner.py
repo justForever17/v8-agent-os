@@ -20,6 +20,7 @@ from core.runtime_episode_control import publish_attention
 from core.runtime_episode_control import reconcile_episode_attention
 from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from erc.side_effect_idempotency import SideEffectReconciliationRequired
 from core.runtime_continuation import (
     RuntimeContinuationContractError,
     normalize_runtime_continuation_request,
@@ -1182,6 +1183,7 @@ class RuntimeEpisodeRunner:
 
                     claimed_any = False
                     await self._settle_parked_episode_cancellations()
+                    self._recover_approved_runtime_continuations()
                     self._recover_parent_wakes()
                     while len(active_tasks) < self._max_concurrent:
                         try:
@@ -1220,6 +1222,16 @@ class RuntimeEpisodeRunner:
                 task.cancel()
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
+
+    def _recover_approved_runtime_continuations(self) -> None:
+        """A committed approval survives a router/process crash before queue admission."""
+        with db.get_connection() as conn:
+            rows = conn.execute("SELECT a.id FROM pending_approvals a JOIN runtime_episodes e "
+                "ON e.id=json_extract(a.request_json,'$.runtimeContinuation.episodeId') "
+                "JOIN run_records r ON r.id=a.run_id WHERE a.status='approved' AND r.status='running' "
+                "AND e.state='waiting_approval' AND e.run_id=a.run_id AND e.session_id=a.session_id").fetchall()
+        for row in rows:
+            db.resume_runtime_episode_after_approval(row["id"])
 
     async def _settle_parked_episode_cancellations(self) -> None:
         """Cancel queued/waiting descendants without dispatching their executor."""
@@ -1481,6 +1493,7 @@ class RuntimeEpisodeRunner:
             )
             separately_persisted = (
                 handoff_status in {
+                    "waiting_approval",
                     "waiting_input",
                     "awaiting_input",
                     "needs_input",
@@ -1511,6 +1524,14 @@ class RuntimeEpisodeRunner:
                     session_id=session_id,
                     run_id=run_id,
                 )
+            if handoff_status == "waiting_approval":
+                waiting = self._require_claim_write(episode_id, db.complete_runtime_episode(
+                    episode_id, state="waiting_approval", result_ref=persisted_handoff.get("handoffId"),
+                    metadata={"handoff": persisted_handoff, "governanceWait": handoff.get("governanceWait") or {}},
+                    **self._claim_fence_kwargs(episode_id)), action="persisting approval wait state")
+                self._emit("runtime.episode.waiting_approval", episode=waiting, handoff=persisted_handoff,
+                           session_id=session_id, run_id=run_id)
+                return
             if handoff_status in {"waiting_input", "awaiting_input", "needs_input"}:
                 waiting = self._require_claim_write(
                     episode_id,
@@ -1977,8 +1998,8 @@ class RuntimeEpisodeRunner:
         run_id: str | None,
         **payload: Any,
     ) -> None:
-        if topic in {"runtime.episode.completed", "runtime.episode.failed", "runtime.episode.degraded", "runtime.episode.cancelled", "runtime.episode.waiting_input"}:
-            publish_attention(episode, kind="input_required" if topic.endswith("waiting_input") else "terminal", detail={
+        if topic in {"runtime.episode.completed", "runtime.episode.failed", "runtime.episode.degraded", "runtime.episode.cancelled", "runtime.episode.waiting_input", "runtime.episode.waiting_approval"}:
+            publish_attention(episode, kind="input_required" if topic.endswith(("waiting_input", "waiting_approval")) else "terminal", detail={
                 "state": episode.get("state"), "resultRef": episode.get("resultRef") or episode.get("result_ref"),
                 "detailRef": f"episode://{episode.get('episodeId') or episode.get('id')}",
             })
@@ -2276,7 +2297,7 @@ class RuntimeEpisodeRunner:
         if not parent_id:
             return
         parent = db.get_runtime_episode(parent_id)
-        if not parent or str(parent.get("state") or "") not in {"waiting_child", "waiting"}:
+        if not parent or str(parent.get("state") or "") not in {"waiting_child", "waiting", "waiting_approval"}:
             return
         children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=1000)
         if not children:
@@ -7730,6 +7751,7 @@ class RuntimeEpisodeRunner:
                 for item in results
                 if str(item.get("status") or "").lower() in {"waiting_input", "awaiting_input", "needs_input"}
             ]
+            waiting_approval = [item for item in results if item.get("status") == "waiting_approval"]
             continuation_request: dict[str, Any] | None = None
             if waiting_input:
                 continuation_requests: list[dict[str, Any]] = []
@@ -7777,7 +7799,9 @@ class RuntimeEpisodeRunner:
                 if str(item.get("status") or "").lower() in {"ok", "ready", "completed", "success"}
             ]
             budget_boundary_only = bool(failed) and bool(budget_blocked) and len(budget_blocked) == len(failed) and not ready_results and not waiting_child and not waiting_input
-            if waiting_input:
+            if waiting_approval:
+                status = "waiting_approval"
+            elif waiting_input:
                 status = "waiting_input"
             elif waiting_child:
                 status = "waiting"
@@ -7923,6 +7947,7 @@ class RuntimeEpisodeRunner:
                         if isinstance(item, dict)
                     ],
                     "resultCount": len(results),
+                    **({"governanceWait": waiting_approval[0].get("governanceWait") or {}} if waiting_approval else {}),
                     **(
                         {
                             "requiredInputs": list((continuation_request or {}).get("requiredInputs") or []),
@@ -8210,6 +8235,9 @@ class RuntimeEpisodeRunner:
             **({"workspace_path": workspace_path, "workspacePath": workspace_path} if workspace_path else {}),
             **engineering_workspace,
         }
+        governance_wait = (episode.get("metadata") or {}).get("governanceWait") or {}
+        if governance_wait.get("checkpoint"):
+            branch_state["runtimeGovernanceContinuation"] = governance_wait
         return Command(goto=[Send("parallel_delegate_task", branch_state)], update={})
 
     @staticmethod
@@ -8367,7 +8395,11 @@ class RuntimeEpisodeRunner:
                         "errorCode": exc.code,
                     }
                     raw_status = "failed"
-            if continuation_request is not None:
+            if raw_status == "waiting_approval":
+                handoff_status = "waiting_approval"
+                final_state = "waiting_approval"
+                event_topic = "runtime.episode.waiting_approval"
+            elif continuation_request is not None:
                 handoff_status = "waiting_input"
                 final_state = "waiting_input"
                 event_topic = "runtime.episode.waiting_input"
@@ -8402,6 +8434,7 @@ class RuntimeEpisodeRunner:
                     "delegationState": "waiting_input" if final_state == "waiting_input" else "waiting_child" if final_state == "waiting_child" else "handoff_ready" if final_state == "completed" else final_state,
                     "results": [build_delegation_result_contract(summary)],
                     "childEpisodeIds": children,
+                    **({"governanceWait": summary.get("governanceWait") or {}} if final_state == "waiting_approval" else {}),
                     "parentEpisodeId": direct_episode.get("parentEpisodeId") or direct_episode.get("parent_episode_id"),
                     **(
                         {
@@ -8433,6 +8466,7 @@ class RuntimeEpisodeRunner:
                 ),
                 metadata={
                     "childEpisodeIds": children,
+                    **({"governanceWait": summary.get("governanceWait") or {}} if final_state == "waiting_approval" else {}),
                     "executionSource": "runtime_episode_runner.local_delegation",
                     **(
                         {
@@ -8848,6 +8882,36 @@ class RuntimeEpisodeRunner:
                             completed_by_task_id[task_id] = summary
                         return
                 raise
+            except SideEffectReconciliationRequired as exc:
+                summary = {"taskBriefId": task_id, "delegationId": branch.get("delegationId"), "agentId": agent_id,
+                    "status": "blocked", "errorCode": exc.code, "error": str(exc), "effectReceipt": exc.receipt,
+                    "governanceWait": arg.get("runtimeGovernanceContinuation") or {},
+                    "summary": str(exc), "recoverable": True,
+                    "repairAction": "Reconcile the original effect receipt against the target before resuming the same operation."}
+                results.append(summary)
+                if manage_direct_episode:
+                    _finalize_direct_delegation_episode(branch, summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
+            except ModelGovernanceInterventionRequired as exc:
+                from erc.kernel import erc_kernel
+                handle = erc_kernel.attach_run(str(run_id or ""), node="runtime_episode_governance")
+                if handle is None:
+                    raise RuntimeError("governance_run_handle_missing") from exc
+                continuation = dict(getattr(exc, "runtime_continuation", {}) or {})
+                request = {**exc.to_request_payload(), "runtimeContinuation": continuation}
+                approval = handle.request_approval(approval_kind=exc.approval_kind, request=request)
+                governance_wait = {**continuation, "approvalId": approval.get("approval_id") or approval.get("id"),
+                                   "approvalKind": exc.approval_kind}
+                summary = {"invocationId": branch.get("invocationId"), "taskBriefId": task_id,
+                    "taskBrief": branch.get("taskBrief"), "delegationId": branch.get("delegationId"),
+                    "agentId": agent_id, "status": "waiting_approval", "governanceWait": governance_wait,
+                    "summary": "The original operation is paused for its governance decision.", "completedAt": None}
+                results.append(summary)
+                if manage_direct_episode:
+                    _finalize_direct_delegation_episode(branch, summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
             except Exception as exc:
                 sandbox_failure = _fail_managed_branch_workspace(
                     branch,
@@ -8906,6 +8970,7 @@ class RuntimeEpisodeRunner:
                     dep
                     for dep in deps
                     if dep in completed_by_task_id and not self._delegation_summary_succeeded(completed_by_task_id[dep])
+                    and str(completed_by_task_id[dep].get("status") or "") not in {"waiting_approval", "waiting_input", "waiting", "waiting_child", "waiting_dependency"}
                 ]
                 if failed_deps:
                     branch = self._delegation_send_branch(item)
@@ -8924,7 +8989,7 @@ class RuntimeEpisodeRunner:
                     pending.remove(item)
                     progressed = True
                     continue
-                if any(dep not in completed_by_task_id for dep in deps):
+                if any(dep not in completed_by_task_id or not self._delegation_summary_succeeded(completed_by_task_id[dep]) for dep in deps):
                     continue
                 await _run_ready_send(item)
                 pending.remove(item)
@@ -8944,6 +9009,10 @@ class RuntimeEpisodeRunner:
                     reason="dependency_not_satisfied",
                     failed=missing_deps,
                 )
+                awaiting = [dep for dep in deps if dep in completed_by_task_id and str(completed_by_task_id[dep].get("status") or "").startswith("waiting")]
+                if awaiting:
+                    summary.update(status="waiting_dependency", error="dependency_waiting", completedAt=None,
+                                   waitingDependencyEpisodeIds=[completed_by_task_id[dep].get("delegationId") for dep in awaiting])
                 results.append(summary)
                 if manage_direct_episode:
                     _finalize_direct_delegation_episode(branch, summary)

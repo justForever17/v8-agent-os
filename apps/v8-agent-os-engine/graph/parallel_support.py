@@ -17,6 +17,7 @@ from core.context.delegation import build_delegation_context, latest_delegation_
 from core.delegation_broker import is_non_file_read_reference, task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
 from core.native_file_progress import NativeFileProgress
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.observability_db import redact_observability_text
 from core.response_normalizer import extract_text_and_reasoning
 from core.subagent_streaming import project_subagent_stream_text
@@ -153,6 +154,7 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
         "goal": branch.get("reason") or branch.get("taskGoal") or branch.get("taskBrief"),
         "delegation_id": branch.get("delegationId"),
         "runtime_episode_lease": state.get("runtime_episode_lease"),
+        "governance_resume": state.get("governance_resume"),
         "dependency_results": state.get("dependencyResults") or task_brief.get("dependencyResults") or task_context.get("dependencyResults"),
         "delegation_depth": int(branch.get("delegationDepth") or 1),
         "parent_delegation_id": branch.get("parentDelegationId"),
@@ -2679,27 +2681,40 @@ async def _run_parallel_agent_branch(
     *,
     progress_callback: Callable[[dict[str, Any]], Any] | None = None,
 ) -> tuple[list[Any], list[Any], dict[str, Any], list[dict[str, Any]]]:
+    from erc.checkpoint_store import checkpoint_store
+    resumed = {}
+    continuation = state.get("runtimeGovernanceContinuation") or {}
+    if continuation:
+        resumed = await checkpoint_store.load_delegation_continuation(
+            run_id=str(state.get("run_id") or ""),
+            episode_id=str((state.get("parallel_branch") or {}).get("delegationId") or ""),
+            reference=continuation["checkpoint"])
+        restored = dict(resumed["state"])
+        restored["runtime_episode_lease"] = state.get("runtime_episode_lease")
+        restored["governance_resume"] = continuation
+        state = restored
     branch = dict(state.get("parallel_branch") or {})
     agent_id = str(branch.get("agentId") or "")
-    current_node = agent_id
+    current_node = str(resumed.get("node") or agent_id)
     local_state = dict(state)
     local_state["messages"] = list(state.get("messages") or [])
     local_state["todos"] = list(state.get("todos") or [])
-    initial_message_count = int(branch.get("initialMessageCount") or len(local_state["messages"]))
-    initial_todo_count = int(branch.get("initialTodoCount") or len(local_state["todos"]))
+    initial_message_count = int(resumed.get("initialMessageCount", branch.get("initialMessageCount") or len(local_state["messages"])))
+    initial_todo_count = int(resumed.get("initialTodoCount", branch.get("initialTodoCount") or len(local_state["todos"])))
 
+    loop_state = resumed.get("loop") or {}
     repeated_state_limit = 8
-    seen_progress_states: dict[str, int] = {}
+    seen_progress_states: dict[str, int] = dict(loop_state.get("seenProgress") or {})
     repeat_sensitive_tool_limit = 2
-    repeat_tool_correction_used = False
-    required_child_correction_count = 0
-    verification_correction_count = 0
-    verification_command_correction_count = 0
-    seen_verification_command_call_ids: set[str] = set()
-    creative_evidence_correction_count = 0
-    artifact_correction_count = 0
-    seen_tool_call_ids: set[str] = set()
-    repeated_tool_signatures: dict[tuple[str, str], int] = {}
+    repeat_tool_correction_used = bool(loop_state.get("repeatToolCorrection"))
+    required_child_correction_count = int(loop_state.get("childCorrections") or 0)
+    verification_correction_count = int(loop_state.get("verificationCorrections") or 0)
+    verification_command_correction_count = int(loop_state.get("commandCorrections") or 0)
+    seen_verification_command_call_ids: set[str] = set(loop_state.get("seenCommandIds") or [])
+    creative_evidence_correction_count = int(loop_state.get("creativeCorrections") or 0)
+    artifact_correction_count = int(loop_state.get("artifactCorrections") or 0)
+    seen_tool_call_ids: set[str] = set(loop_state.get("seenToolIds") or [])
+    repeated_tool_signatures: dict[tuple[str, str], int] = {tuple(item[0]): item[1] for item in loop_state.get("toolSignatures", [])}
     file_progress = NativeFileProgress(
         agent_id=agent_id,
         workspace_path=str(_runtime_context_from_parallel_state(local_state, branch=branch).get("workspace_path") or ""),
@@ -2707,15 +2722,44 @@ async def _run_parallel_agent_branch(
     verification_expectations = _verification_expectations(branch)
     required_verification_commands = list(verification_expectations.get("requiredCommands") or [])
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
-    initial_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+    initial_artifact_snapshot = resumed.get("initialArtifactSnapshot", _artifact_progress_snapshot(expected_artifact_paths))
     required_child_delegation = task_brief_requires_child_delegation(
         branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None
     )
-    artifact_snapshot = initial_artifact_snapshot
-    artifact_stall_rounds = 0
+    artifact_snapshot = loop_state.get("artifactSnapshot", initial_artifact_snapshot)
+    artifact_stall_rounds = int(loop_state.get("artifactStalls") or 0)
     artifact_stall_limit = 80
     last_progress_node = ""
-    model_turn_index = 0
+    model_turn_index = int(loop_state.get("modelTurns") or 0)
+
+    async def _save_governance_continuation(exc):
+        nonlocal local_state
+        for completed in getattr(exc, "completed_tool_results", []):
+            if isinstance(completed, ToolMessage):
+                local_state = _merge_state_update(local_state, {"messages": [completed]})
+            elif isinstance(completed, Command):
+                local_state = _merge_state_update(local_state, dict(completed.update or {}))
+                goto = completed.goto if isinstance(completed.goto, list) else [completed.goto]
+                if any(isinstance(target, Send) for target in goto):
+                    local_state.setdefault("governance_completed_commands", []).append(completed)
+        snapshot = {"state": local_state, "node": current_node,
+                    "initialMessageCount": initial_message_count, "initialTodoCount": initial_todo_count,
+                    "initialArtifactSnapshot": initial_artifact_snapshot,
+                    "loop": {"seenProgress": seen_progress_states, "repeatToolCorrection": repeat_tool_correction_used,
+                        "childCorrections": required_child_correction_count, "verificationCorrections": verification_correction_count,
+                        "commandCorrections": verification_command_correction_count, "seenCommandIds": list(seen_verification_command_call_ids),
+                        "creativeCorrections": creative_evidence_correction_count, "artifactCorrections": artifact_correction_count,
+                        "seenToolIds": list(seen_tool_call_ids), "toolSignatures": [[list(key), value] for key, value in repeated_tool_signatures.items()],
+                        "artifactSnapshot": artifact_snapshot, "artifactStalls": artifact_stall_rounds, "modelTurns": model_turn_index}}
+        reference = await checkpoint_store.save_delegation_continuation(
+            run_id=str(local_state.get("run_id") or ""), episode_id=str(branch.get("delegationId") or ""), value=snapshot)
+        messages = list(local_state.get("messages") or [])
+        calls = next((_tool_call_dicts_from_message(message) for message in reversed(messages)
+                      if _tool_call_dicts_from_message(message)), [])
+        completed_ids = {message.tool_call_id for message in messages if isinstance(message, ToolMessage)}
+        exc.runtime_continuation = {"episodeId": branch.get("delegationId"), "taskBriefId": branch.get("taskBriefId"),
+                                    "checkpoint": reference, "node": current_node,
+                                    "pendingToolCallIds": [call["id"] for call in calls if call.get("id") not in completed_ids]}
     _publish_parallel_progress(
         progress_callback,
         stage="started",
@@ -2777,6 +2821,9 @@ async def _run_parallel_agent_branch(
             invocation = asyncio.create_task(asyncio.to_thread(_invoke_agent_node))
             try:
                 result = await asyncio.shield(invocation)
+            except ModelGovernanceInterventionRequired as exc:
+                await _save_governance_continuation(exc)
+                raise
             except asyncio.CancelledError:
                 # A cancelled asyncio wrapper does not stop its Python thread.
                 # Settle the actual invocation before the Runner can acknowledge
@@ -2792,10 +2839,14 @@ async def _run_parallel_agent_branch(
                     initial_message_count=initial_message_count,
                 )
             with bind_runtime_context(**_runtime_context_from_parallel_state(local_state, branch=branch)):
-                result = await tool_node(
-                    local_state,
-                    config=build_runtime_callback_config(),
-                )
+                try:
+                    result = await tool_node(local_state, config=build_runtime_callback_config())
+                except ModelGovernanceInterventionRequired as exc:
+                    await _save_governance_continuation(exc)
+                    raise
+                completed_commands = local_state.pop("governance_completed_commands", [])
+                if completed_commands:
+                    result = [*completed_commands, *(result if isinstance(result, list) else [result])]
         elif current_node == f"{agent_id}_reviewer":
             reviewer = agent_data.get("reviewer_func")
             if reviewer is None:
@@ -2817,6 +2868,9 @@ async def _run_parallel_agent_branch(
             invocation = asyncio.create_task(asyncio.to_thread(_invoke_reviewer_node))
             try:
                 result = await asyncio.shield(invocation)
+            except ModelGovernanceInterventionRequired as exc:
+                await _save_governance_continuation(exc)
+                raise
             except asyncio.CancelledError:
                 await asyncio.shield(invocation)
                 raise

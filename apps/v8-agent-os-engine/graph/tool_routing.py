@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from typing import Any
+from contextvars import ContextVar
 import asyncio
 import hashlib
 import json
 import os
 import re
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
@@ -1258,6 +1259,9 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
     try:
         hooks_manager.execute_hook("on_tool_execute_end", tool=tool_name)
     except Exception as hook_err:
+        from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+        if isinstance(hook_err, ModelGovernanceInterventionRequired):
+            hook_err.completed_tool_result = apply_agent_visible_budget(result, budget_meta, tool_name=tool_name)
         _raise_runtime_governance_exception_if_needed(hook_err)
 
     # Command-returning tools may omit ToolMessage.name. The request still owns
@@ -1267,6 +1271,7 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
 
 def create_routed_tool_node(tools, name, fallback_goto):
     """Return a ToolNode wrapper that always routes explicitly via Command."""
+    governance_batch = ContextVar(f"{name}_governance_batch", default=None)
     async def _wrapped_tool_call(request, execute):
         from core.runtime_episode_control import assert_episode_execution_allowed
         from erc.runtime_context import get_runtime_context
@@ -1312,8 +1317,31 @@ def create_routed_tool_node(tools, name, fallback_goto):
                     pass
                 raise
 
-        with bind_runtime_context(**assignment_context):
-            return await async_tool_call_wrapper(request, execute_and_settle_sync_tool, tool_node_name=name)
+        from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+        from erc.side_effect_idempotency import side_effect_idempotency_service, SideEffectReconciliationRequired
+        batch = governance_batch.get()
+        try:
+            with bind_runtime_context(**assignment_context):
+                context = get_runtime_context()
+                async def invoke():
+                    return await async_tool_call_wrapper(request, execute_and_settle_sync_tool, tool_node_name=name)
+                pending_ids = (context.get("governance_resume") or {}).get("pendingToolCallIds") or []
+                if request.tool_call.get("id") in pending_ids:
+                    result = await side_effect_idempotency_service.execute_approved_tool_continuation(
+                        context=context, tool_call=request.tool_call, execute=invoke)
+                else:
+                    result = await invoke()
+        except (ModelGovernanceInterventionRequired, SideEffectReconciliationRequired) as exc:
+            if batch is None:
+                raise
+            batch["interruptions"].append(exc)
+            if getattr(exc, "completed_tool_result", None) is not None:
+                batch["completed"].append(exc.completed_tool_result)
+            return ToolMessage(content="Operation awaits its governance decision.",
+                               tool_call_id=request.tool_call["id"], name=request.tool_call["name"], status="error")
+        if batch is not None:
+            batch["completed"].append(result)
+        return result
 
     base_node = ToolNode(
         tools,
@@ -1339,7 +1367,33 @@ def create_routed_tool_node(tools, name, fallback_goto):
             configurable.setdefault(CONFIG_KEY_RUNTIME, Runtime())
         invoke_config[CONF] = configurable
 
-        result = await base_node.ainvoke(state, config=invoke_config)
+        from erc.runtime_context import get_runtime_context
+        branch_call = bool(get_runtime_context().get("delegation_id"))
+        if branch_call and isinstance(state, dict):
+            messages = list(state.get("messages") or [])
+            ai_index = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], AIMessage)), None)
+            if ai_index is not None:
+                assistant = messages[ai_index]
+                completed_ids = {item.tool_call_id for item in messages[ai_index + 1:] if isinstance(item, ToolMessage)}
+                pending_calls = [call for call in assistant.tool_calls if call.get("id") not in completed_ids]
+                if assistant.tool_calls and not pending_calls:
+                    return Command(goto=fallback_goto, update={})
+                if len(pending_calls) != len(assistant.tool_calls):
+                    messages[ai_index] = assistant.model_copy(update={"tool_calls": pending_calls})
+                    state = {**state, "messages": messages}
+        batch = {"interruptions": [], "completed": []} if branch_call else None
+        token = governance_batch.set(batch)
+        try:
+            result = await base_node.ainvoke(state, config=invoke_config)
+        finally:
+            governance_batch.reset(token)
+        if batch and batch["interruptions"]:
+            from erc.side_effect_idempotency import SideEffectReconciliationRequired
+            exc = next((item for item in batch["interruptions"] if isinstance(item, SideEffectReconciliationRequired)), batch["interruptions"][0])
+            # All sibling calls have settled. Preserve completed updates before
+            # raising so approval resumes only the unfinished operation(s).
+            exc.completed_tool_results = batch["completed"]
+            raise exc
 
         if isinstance(result, list):
             if any(isinstance(item, Command) for item in result):

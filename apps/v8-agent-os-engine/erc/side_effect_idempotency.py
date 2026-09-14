@@ -60,7 +60,55 @@ class SideEffectReceipt:
         }
 
 
+class SideEffectReconciliationRequired(RuntimeError):
+    code = "side_effect_reconciliation_required"
+
+    def __init__(self, receipt: dict):
+        super().__init__("The prior operation has no confirmed outcome; reconcile its receipt before retrying.")
+        self.receipt = receipt
+
+
 class SideEffectIdempotencyService:
+    async def execute_approved_tool_continuation(self, *, context: dict, tool_call: dict, execute):
+        """Reuse the effect ledger for a resumed call whose prior checkpoint says unexecuted."""
+        from erc.kernel import erc_kernel
+        from erc.checkpoint_store import checkpoint_store
+        from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+        handle = erc_kernel.attach_run(str(context.get("run_id") or ""), node="delegation_approval_resume")
+        if handle is None:
+            raise RuntimeError("approval_resume_run_missing")
+        episode_id = str(context.get("delegation_id") or "")
+        operation_key = "delegation_tool:" + hashlib.sha256(json.dumps(
+            [handle.session_id, handle.run_id, episode_id, tool_call["id"]]).encode()).hexdigest()
+        receipt = self.begin(run_handle=handle, effect_kind="delegation_tool_continuation",
+            step_key=f"{episode_id}:{tool_call['id']}", target_identity=str(tool_call.get("name") or ""),
+            payload={"name": tool_call.get("name"), "args": tool_call.get("args") or {}},
+            node="delegation_approval_resume", replay_safe=False, idempotency_key=operation_key)
+        if not receipt.execute:
+            stored = db.get_side_effect_receipt(receipt.idempotency_key) or {}
+            metadata = json.loads(stored.get("metadata_json") or "{}")
+            if receipt.state == "completed" and metadata.get("toolResultCheckpoint"):
+                saved = await checkpoint_store.load_delegation_continuation(run_id=handle.run_id,
+                    episode_id=episode_id, reference=metadata["toolResultCheckpoint"])
+                return saved["toolResult"]
+            raise SideEffectReconciliationRequired(receipt.as_dict())
+        try:
+            result = await execute()
+        except ModelGovernanceInterventionRequired as exc:
+            completed = getattr(exc, "completed_tool_result", None)
+            if completed is None:
+                self.fail(run_handle=handle, receipt=receipt, node="delegation_approval_resume", error="approval_required_before_execution")
+            else:
+                reference = await checkpoint_store.save_delegation_continuation(run_id=handle.run_id, episode_id=episode_id,
+                    value={"toolResult": completed})
+                self.complete(run_handle=handle, receipt=receipt, node="delegation_approval_resume", result={"toolResultCheckpoint": reference})
+            raise
+        reference = await checkpoint_store.save_delegation_continuation(run_id=handle.run_id, episode_id=episode_id,
+            value={"toolResult": result})
+        if not self.complete(run_handle=handle, receipt=receipt, node="delegation_approval_resume", result={"toolResultCheckpoint": reference}):
+            raise SideEffectReconciliationRequired(receipt.as_dict())
+        return result
+
     @staticmethod
     def _legacy_completed_receipt_exists(session_id: str, *, idempotency_key: str) -> bool:
         for event in reversed(db.get_runtime_events(session_id)):
@@ -104,14 +152,16 @@ class SideEffectIdempotencyService:
         metadata: Dict[str, Any] | None = None,
         lease_seconds: int = 300,
         replay_safe: bool = False,
+        idempotency_key: str | None = None,
     ) -> SideEffectReceipt:
-        idempotency_key, payload_fingerprint = self.build_idempotency_key(
+        generated_key, payload_fingerprint = self.build_idempotency_key(
             session_id=run_handle.session_id,
             run_id=run_handle.run_id,
             step_key=step_key,
             target_identity=target_identity,
             payload=payload or {},
         )
+        idempotency_key = str(idempotency_key or generated_key)
         owner_id = f"{str(node or 'side_effect').strip() or 'side_effect'}:{uuid.uuid4().hex}"
         legacy_completed = (
             db.get_side_effect_receipt(idempotency_key) is None

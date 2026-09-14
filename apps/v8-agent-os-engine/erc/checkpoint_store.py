@@ -205,5 +205,33 @@ class CheckpointStore:
             if isinstance(conn, aiosqlite.Connection):
                 await conn.close()
 
+    async def save_delegation_continuation(self, *, run_id: str, episode_id: str, value: dict[str, Any]) -> dict:
+        """Keep interrupted branch state in the existing encrypted checkpoint store."""
+        from langgraph.checkpoint.base import empty_checkpoint
+        if not run_id or not episode_id:
+            raise ValueError("delegation_checkpoint_requires_run_and_episode")
+        saver = await self.get_async_sqlite_saver()
+        saver._strict_serializer().assert_write_safe(value, root="delegation_continuation")
+        config = {"configurable": {"thread_id": f"runtime:{run_id}", "checkpoint_ns": f"delegation:{episode_id}"}}
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = {"branch": value}
+        checkpoint["channel_versions"] = {"branch": 1}
+        return await saver.aput(config, checkpoint, {"source": "update", "step": 0, "parents": {}}, {"branch": 1})
+
+    async def load_delegation_continuation(self, *, run_id: str, episode_id: str, reference: dict) -> dict:
+        configurable = reference.get("configurable") or {}
+        if (configurable.get("thread_id") != f"runtime:{run_id}"
+                or configurable.get("checkpoint_ns") != f"delegation:{episode_id}"
+                or not configurable.get("checkpoint_id")):
+            raise ValueError("delegation_checkpoint_scope_mismatch")
+        saver = await self.get_async_sqlite_saver()
+        saved = await saver.aget_tuple(reference)
+        if saved is None:
+            raise ValueError("delegation_checkpoint_missing")
+        value = saved.checkpoint["channel_values"].get("branch")
+        if not isinstance(value, dict):
+            raise ValueError("delegation_checkpoint_invalid")
+        return value
+
 
 checkpoint_store = CheckpointStore(CHECKPOINT_DB_PATH)

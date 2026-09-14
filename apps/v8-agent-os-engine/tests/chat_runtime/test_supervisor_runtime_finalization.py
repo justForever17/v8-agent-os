@@ -144,7 +144,8 @@ def test_silent_action_retry_falls_back_to_no_tool_terminal_visibility_once():
     assert calls[1][1] == []
 
 
-def test_subagent_waiting_child_projection_is_progress_not_failure():
+@pytest.mark.parametrize("waiting_status", ["waiting_child_delegation", "waiting_approval"])
+def test_subagent_waiting_child_projection_is_progress_not_failure(waiting_status):
     emitted = []
     chat_run = SimpleNamespace(
         active_run_id="run-waiting-child",
@@ -158,7 +159,7 @@ def test_subagent_waiting_child_projection_is_progress_not_failure():
                 "delegationId": "subagent::parent",
                 "agentId": "implementation-engineer",
                 "taskBriefId": "TASK-PARENT",
-                "status": "waiting_child_delegation",
+                "status": waiting_status,
                 "childDelegationCount": 1,
             }
         ]
@@ -174,7 +175,7 @@ def test_subagent_waiting_child_projection_is_progress_not_failure():
         asyncio.run(ChatRuntime().emit_subagent_swarm_projection(chat_run, execution_bundle))
 
     assert emitted[0][0] == "subagent.task.updated"
-    assert emitted[0][1]["status"] == "waiting_child_delegation"
+    assert emitted[0][1]["status"] == waiting_status
 
 
 def test_subagent_terminal_projection_never_records_acceptance_from_final_text():

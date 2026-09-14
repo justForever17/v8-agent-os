@@ -10525,6 +10525,7 @@ class ChatRuntime:
                 "starting",
                 "waiting",
                 "waiting_input",
+                "waiting_approval",
                 "waiting_child",
                 "waiting_child_delegation",
                 "waiting_dependency",

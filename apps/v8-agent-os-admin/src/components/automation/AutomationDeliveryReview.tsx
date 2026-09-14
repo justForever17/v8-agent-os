@@ -43,9 +43,10 @@ export function AutomationDeliveryReview() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [saveError, setSaveError] = useState("");
-    const [refreshRequired, setRefreshRequired] = useState(false);
+    const [refreshRequired, setRefreshRequired] = useState<boolean | "partial">(false);
     const readRequest = useRef<AbortController | null>(null);
     const submitting = useRef(false);
+    const reviewRevision = useRef(0);
     const pageAfterByDeliveryId = useRef(new Map<string, string>());
 
     const load = useCallback(async (after?: string): Promise<LoadedPage | null> => {
@@ -80,7 +81,7 @@ export function AutomationDeliveryReview() {
 
     useEffect(() => {
         void load();
-        return () => readRequest.current?.abort();
+        return () => { reviewRevision.current += 1; readRequest.current?.abort(); };
     }, [load]);
 
     useEffect(() => {
@@ -91,6 +92,7 @@ export function AutomationDeliveryReview() {
 
     const open = (item: Delivery) => {
         if (!needsReview(item) || submitting.current) return;
+        reviewRevision.current += 1;
         setSelected(item);
         setOutcome("");
         setObservation("");
@@ -100,23 +102,33 @@ export function AutomationDeliveryReview() {
         setSaved(false);
     };
 
-    const refreshReview = async () => {
+    const close = () => {
+        if (submitting.current) return;
+        reviewRevision.current += 1;
+        readRequest.current?.abort();
+        setLoading(false);
+        setSelected(null);
+    };
+
+    const refreshReview = async (continueAfter?: string) => {
         const targetId = selected?.deliveryId;
+        const revision = ++reviewRevision.current;
         const rememberedAfter = targetId ? pageAfterByDeliveryId.current.get(targetId) : undefined;
-        let refreshed = await load();
-        if (!refreshed) return;
+        let refreshed = await load(continueAfter);
+        if (!refreshed || revision !== reviewRevision.current) return;
         let current = refreshed.visible.find(item => item.deliveryId === targetId);
-        let after = rememberedAfter || refreshed.nextCursor;
+        let after = continueAfter ? refreshed.nextCursor : rememberedAfter || refreshed.nextCursor;
         let pagesRead = 0;
         while (!current && after && pagesRead < MAX_REVIEW_REFRESH_PAGES) {
             refreshed = await load(after);
-            if (!refreshed) return;
+            if (!refreshed || revision !== reviewRevision.current) return;
             current = refreshed.visible.find(item => item.deliveryId === targetId);
             after = refreshed.nextCursor;
             pagesRead += 1;
         }
-        setRefreshRequired(!current);
-        setSaveError(current ? "" : t("automation.reconciliation.stale"));
+        if (current) setSelected(current);
+        setRefreshRequired(current ? false : after ? "partial" : true);
+        setSaveError(current ? "" : t(after ? "automation.reconciliation.searchPartial" : "automation.reconciliation.stale"));
     };
 
     const submit = async (event: FormEvent) => {
@@ -180,7 +192,7 @@ export function AutomationDeliveryReview() {
                 {nextCursor ? <Button variant="ghost" size="sm" disabled={loading || saving} onClick={() => void load(nextCursor)}>{t("automation.reconciliation.more")}</Button> : null}
             </div>
         </ConfigCard>
-        <Dialog open={Boolean(selected)} onOpenChange={value => { if (!value && !submitting.current) setSelected(null); }}>
+        <Dialog open={Boolean(selected)} onOpenChange={value => { if (!value) close(); }}>
             <DialogContent guardUnsaved showCloseButton={!saving} onEscapeKeyDown={event => { if (saving) event.preventDefault(); }} onPointerDownOutside={event => { if (saving) event.preventDefault(); }}>
                 <DialogHeader>
                     <DialogTitle>{t("automation.reconciliation.dialogTitle")}</DialogTitle>
@@ -199,12 +211,12 @@ export function AutomationDeliveryReview() {
                     </div>
                     <div className="space-y-2"><Label htmlFor={`${fieldId}-reference`}>{t("automation.reconciliation.reference")}</Label><Input id={`${fieldId}-reference`} maxLength={1000} disabled={saving} value={reference} onChange={event => setReference(event.target.value)} /></div>
                     {saveError ? <p role="alert" className="text-sm text-destructive">{saveError}</p> : null}
-                    {refreshRequired ? <Button type="button" variant="outline" size="sm" disabled={loading || saving} onClick={() => void refreshReview()}>{t("automation.reconciliation.refresh")}</Button> : null}
+                    {refreshRequired ? <Button type="button" variant="outline" size="sm" disabled={loading || saving} onClick={() => void refreshReview(refreshRequired === "partial" ? nextCursor || undefined : undefined)}>{t(refreshRequired === "partial" ? "automation.reconciliation.continueSearch" : "automation.reconciliation.refresh")}</Button> : null}
                     {loadError ? <p role="alert" className="text-sm text-destructive">{loadError}</p> : null}
                     <DialogFooter className="sticky bottom-0 border-t border-border bg-background pt-3">
                         {saving ? <InlineSaveState saving saved={false} label="automation.reconciliation.record" /> : null}
-                        <Button type="button" variant="outline" disabled={saving} onClick={() => setSelected(null)}>{t("automation.reconciliation.cancel")}</Button>
-                        <Button type="submit" disabled={saving || loading || refreshRequired || !outcome || !observation.trim()}>{t("automation.reconciliation.save")}</Button>
+                        <Button type="button" variant="outline" disabled={saving} onClick={close}>{t("automation.reconciliation.cancel")}</Button>
+                        <Button type="submit" disabled={saving || loading || Boolean(refreshRequired) || !outcome || !observation.trim()}>{t("automation.reconciliation.save")}</Button>
                     </DialogFooter>
                 </form>
             </DialogContent>

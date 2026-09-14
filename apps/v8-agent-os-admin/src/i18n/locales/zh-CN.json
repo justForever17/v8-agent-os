@@ -1,5 +1,7 @@
 {
   "automation.reconciliation.title": "需要核对的执行",
+  "automation.reconciliation.searchPartial": "本次查找尚未覆盖全部记录，暂时无法确认该任务的状态。证据已保留，可继续查找。",
+  "automation.reconciliation.continueSearch": "继续查找",
   "automation.reconciliation.more": "加载更多",
   "automation.reconciliation.reference": "证据位置或记录编号（选填）",
   "automation.reconciliation.record": "核对记录",

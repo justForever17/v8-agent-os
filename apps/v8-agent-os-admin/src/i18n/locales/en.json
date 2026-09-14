@@ -1,5 +1,7 @@
 {
   "automation.reconciliation.title": "Executions to review",
+  "automation.reconciliation.searchPartial": "This search has not covered all records, so the task status is still unconfirmed. Your evidence is retained. Continue searching to check it.",
+  "automation.reconciliation.continueSearch": "Continue search",
   "automation.reconciliation.more": "Load more",
   "automation.reconciliation.reference": "Evidence location or record number (optional)",
   "automation.reconciliation.record": "Review record",

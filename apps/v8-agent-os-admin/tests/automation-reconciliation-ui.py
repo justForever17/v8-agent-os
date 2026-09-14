@@ -43,6 +43,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--channel", choices=("chrome", "msedge"))
+    parser.add_argument("--skip-visuals", action="store_true")
     args = parser.parse_args()
     admin = Path(__file__).resolve().parents[1]
     args.out.mkdir(parents=True, exist_ok=True)
@@ -69,12 +70,15 @@ def main() -> None:
                         assert query["ownership"] == ["system,unresolved"]
                         assert query["limit"] == ["25"]
                         scenario["gets"].append(query)
+                        if scenario.get("hold_get"):
+                            scenario.setdefault("held_gets", []).append(route)
+                            return
                         if scenario.get("get_failure"):
                             route.fulfill(status=502, body="raw-secret-sentinel")
                             return
                         cursor = query.get("after", [""])[0]
                         items = scenario.get("pages", {}).get(cursor, scenario.get("items", []))
-                        next_cursor = scenario.get("cursor") if not cursor else None
+                        next_cursor = scenario.get("cursors", {}).get(cursor, scenario.get("cursor") if not cursor else None)
                         route.fulfill(json={"items": items, "limit": 25, "hasMore": bool(next_cursor), "nextCursor": next_cursor})
                     elif parsed.path.endswith("/reconcile"):
                         body = request.post_data_json
@@ -176,6 +180,61 @@ def main() -> None:
             checks.append("second-page conflict refresh follows remembered keyset cursor and keeps draft")
             page.close()
 
+            scenario = {"items": [delivery("search-target"), delivery("other-record")], "post_status": 409}
+            page, failures = mount(scenario)
+            page.get_by_role("button", name="核对结果", exact=True).first.click()
+            page.get_by_role("radio", name="已完成", exact=True).check()
+            page.get_by_label("核对证据", exact=True).fill("retain bounded-search draft")
+            page.get_by_label("证据位置或记录编号（选填）", exact=True).fill("public-reference")
+            page.get_by_role("button", name="保存核对记录", exact=True).click()
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_be_visible()
+            scenario["pages"] = {"": [delivery("other-record")], **{f"cursor-{index}": [delivery(f"filler-{index}")] for index in range(1, 5)}, "cursor-5": [delivery("search-target")]}
+            scenario["cursors"] = {"": "cursor-1", **{f"cursor-{index}": f"cursor-{index + 1}" for index in range(1, 5)}}
+            reads_before = len(scenario["gets"])
+            page.get_by_role("dialog").get_by_role("button", name="刷新状态", exact=True).click()
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_contain_text("尚未覆盖全部记录")
+            assert len(scenario["gets"]) - reads_before == 5
+            expect(page.get_by_role("button", name="保存核对记录", exact=True)).to_be_disabled()
+            page.get_by_role("dialog").get_by_role("button", name="继续查找", exact=True).click()
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_have_count(0)
+            expect(page.get_by_role("button", name="保存核对记录", exact=True)).to_be_enabled()
+            expect(page.get_by_label("核对证据", exact=True)).to_have_value("retain bounded-search draft")
+            expect(page.get_by_label("证据位置或记录编号（选填）", exact=True)).to_have_value("public-reference")
+            assert scenario["gets"][-1]["after"] == ["cursor-5"]
+            assert len(scenario["posts"]) == 1
+            checks.append("bounded refresh reports partial search, then user continues with cursor and draft intact")
+            assert not failures, failures
+            page.close()
+
+            scenario = {"items": [delivery("old-record"), delivery("new-record")], "post_status": 409}
+            page, failures = mount(scenario)
+            page.get_by_role("button", name="核对结果", exact=True).first.click()
+            page.get_by_role("radio", name="已失败", exact=True).check()
+            page.get_by_label("核对证据", exact=True).fill("old draft")
+            page.get_by_role("button", name="保存核对记录", exact=True).click()
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_be_visible()
+            scenario["hold_get"] = True
+            page.get_by_role("dialog").get_by_role("button", name="刷新状态", exact=True).click()
+            page.wait_for_function("document.querySelector('[role=dialog] button[type=submit]').disabled")
+            page.get_by_role("button", name="取消", exact=True).click()
+            # Returning to another record must not depend on the old GET finishing.
+            page.get_by_role("button", name="核对结果", exact=True).last.click(timeout=2000)
+            page.get_by_role("radio", name="已完成", exact=True).check()
+            page.get_by_label("核对证据", exact=True).fill("new record draft")
+            assert scenario["held_gets"]
+            for held in scenario["held_gets"]:
+                held.fulfill(json={"items": [], "limit": 25, "hasMore": False, "nextCursor": None})
+            scenario["hold_get"] = False
+            page.wait_for_load_state("networkidle")
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_have_count(0)
+            expect(page.get_by_role("button", name="保存核对记录", exact=True)).to_be_enabled()
+            expect(page.get_by_label("核对证据", exact=True)).to_have_value("new record draft")
+            expect(page.get_by_role("dialog")).to_contain_text("new-record")
+            assert len(scenario["posts"]) == 1
+            assert not failures, failures
+            checks.append("closing pending refresh cancels its read and prevents late updates to another record")
+            page.close()
+
             scenario = {"items": [delivery("network")], "network_failure": True}
             page, _ = mount(scenario)
             page.get_by_role("button", name="核对结果", exact=True).click()
@@ -206,7 +265,7 @@ def main() -> None:
             checks.append("opaque keyset pagination, deduplication and first-page refresh")
             page.close()
 
-            for width, dark, locale in ((1440, False, "zh-CN"), (390, False, "zh-CN"), (390, True, "en")):
+            for width, dark, locale in (() if args.skip_visuals else ((1440, False, "zh-CN"), (390, False, "zh-CN"), (390, True, "en"))):
                 scenario = {"items": [delivery("visual-one"), delivery("visual-two", ownership="unresolved")]}
                 page, failures = mount(scenario, width=width, height=640 if width == 390 else 900, dark=dark, locale=locale)
                 review = "Review result" if locale == "en" else "核对结果"
@@ -222,7 +281,8 @@ def main() -> None:
                 assert not scenario["posts"]
                 assert not failures, failures
                 page.close()
-            checks.append("desktop/mobile, Chinese/English, light/dark, keyboard open/Escape, no horizontal overflow")
+            if not args.skip_visuals:
+                checks.append("desktop/mobile, Chinese/English, light/dark, keyboard open/Escape, no horizontal overflow")
             browser.close()
     (args.out / "interaction-evidence.json").write_text(json.dumps({"checks": checks, "backend": "synthetic HTTP boundary; no Engine, Admin server or provider invoked"}, ensure_ascii=False, indent=2), "utf-8")
     print(json.dumps({"passed": len(checks), "evidence": str(args.out)}, ensure_ascii=False))

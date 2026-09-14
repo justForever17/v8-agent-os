@@ -24,6 +24,7 @@ from core.model_text_protocol import NativeToolTextGuard, has_native_tool_text
 
 
 _V8_CHUNK_IDENTITY_METADATA_KEYS = (
+    "v8_bound_tool_names",
     "v8_provider_adapter",
     "v8_model_id",
     "v8_model_ref",
@@ -409,7 +410,10 @@ class V8ChatModelAdapter(BaseChatModel):
         is_anthropic_messages = wire_protocol == "anthropic.messages" or (
             not wire_protocol and self.provider_standard == "anthropic"
         )
-        if wire_protocol != "openai.responses" and not is_anthropic_messages:
+        is_chat_completions = wire_protocol == "openai.chat_completions" or (
+            not wire_protocol and self.provider_standard == "openai"
+        )
+        if wire_protocol != "openai.responses" and not is_anthropic_messages and not is_chat_completions:
             return normalized
 
         if wire_protocol == "openai.responses" or self._provider_surface.supports_native_tools():
@@ -448,8 +452,8 @@ class V8ChatModelAdapter(BaseChatModel):
     @classmethod
     def _project_provider_tool_call_ids(cls, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         # V8 owns stable canonical tool-call ids inside LangGraph/checkpoints,
-        # while Responses and Anthropic Messages must continue with the exact
-        # provider-issued id. Re-project the shadow id only at the provider
+        # while native tool protocols continue with the exact provider-issued
+        # id (including Chat Completions). Re-project only at the provider
         # boundary so canonical state remains provider-neutral and resumable.
         provider_id_by_canonical: dict[str, str] = {}
         projected: list[BaseMessage] = []
@@ -641,9 +645,16 @@ class V8ChatModelAdapter(BaseChatModel):
         include_identity_metadata: bool = True,
     ) -> Any:
         normalized = sanitize_model_tool_calls(message, provider_standard=self.provider_standard)
-        normalized = self._enforce_bound_tool_surface(normalized)
         response_metadata = dict(getattr(normalized, "response_metadata", {}) or {})
         if include_identity_metadata:
+            # Preserve provider calls for a paired ToolNode rejection and exact
+            # continuation. This invocation receipt only narrows execution; it
+            # never grants tools or replaces runtime/actor/Capsule authorization.
+            # Always overwrite remote metadata, including an explicitly empty bind.
+            response_metadata["v8_bound_tool_names"] = sorted({
+                name for tool in self._runtime_bound_tools()
+                if (name := self._tool_ref_name(tool))
+            })
             response_metadata["v8_provider_adapter"] = self.provider_adapter()
             response_metadata["v8_model_id"] = self.model_id
             response_metadata["v8_model_ref"] = str(self._meta.get("model_ref") or self.model_id)
@@ -688,48 +699,6 @@ class V8ChatModelAdapter(BaseChatModel):
             except Exception:
                 continue
         return names
-
-    def _enforce_bound_tool_surface(self, message: Any) -> Any:
-        """Drop provider-emitted calls that were never exposed for this invocation."""
-
-        if not self._bound_tools:
-            return message
-        allowed = self._bound_tool_names()
-        calls = list(getattr(message, "tool_calls", None) or [])
-        rejected = [
-            str(call.get("name") or "").strip()
-            for call in calls
-            if isinstance(call, Mapping) and str(call.get("name") or "").strip() not in allowed
-        ]
-        if not rejected:
-            return message
-        filtered = [
-            call
-            for call in calls
-            if isinstance(call, Mapping) and str(call.get("name") or "").strip() in allowed
-        ]
-        if hasattr(message, "tool_calls"):
-            message.tool_calls = filtered
-        additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
-        raw_calls = list(additional_kwargs.get("tool_calls") or [])
-        if raw_calls:
-            def _raw_name(call: Any) -> str:
-                if not isinstance(call, Mapping):
-                    return ""
-                function = call.get("function") if isinstance(call.get("function"), Mapping) else {}
-                return str(call.get("name") or function.get("name") or "").strip()
-
-            additional_kwargs["tool_calls"] = [call for call in raw_calls if _raw_name(call) in allowed]
-        function_call = additional_kwargs.get("function_call")
-        if isinstance(function_call, Mapping) and str(function_call.get("name") or "").strip() not in allowed:
-            additional_kwargs.pop("function_call", None)
-        if hasattr(message, "additional_kwargs"):
-            message.additional_kwargs = additional_kwargs
-        response_metadata = dict(getattr(message, "response_metadata", {}) or {})
-        response_metadata["v8_rejected_unbound_tool_calls"] = list(dict.fromkeys(rejected))
-        if hasattr(message, "response_metadata"):
-            message.response_metadata = response_metadata
-        return message
 
     def _apply_prompt_emulated_tool_calls(self, message: Any, *, force: bool = False) -> Any:
         if not self._bound_tools or (self._provider_surface.supports_native_tools() and not force):

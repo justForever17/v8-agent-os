@@ -284,7 +284,7 @@ def test_prompt_emulated_tool_call_enforces_mapping_schema_allowlist(
     assert "fetch_skill_instructions" in str(chunks[0].message.content)
 
 
-def test_provider_native_tool_call_cannot_escape_bound_tool_surface() -> None:
+def test_provider_native_call_preserves_identity_for_bound_surface_rejection() -> None:
     adapter = _prompt_emulated_adapter(_PromptEmulatedModel())
     response = AIMessage(
         content="",
@@ -304,10 +304,9 @@ def test_provider_native_tool_call_cannot_escape_bound_tool_surface() -> None:
 
     normalized = adapter._decorate_message(response, tool_mode="prompt_emulated")
 
-    assert [call["name"] for call in normalized.tool_calls] == ["read_native_file"]
-    assert normalized.response_metadata["v8_rejected_unbound_tool_calls"] == [
-        "fetch_skill_instructions"
-    ]
+    assert [call["name"] for call in normalized.tool_calls] == ["fetch_skill_instructions", "read_native_file"]
+    assert "fetch_skill_instructions" not in normalized.response_metadata["v8_bound_tool_names"]
+    assert "read_native_file" in normalized.response_metadata["v8_bound_tool_names"]
 
 
 def test_prompt_emulated_anthropic_history_contains_no_native_tool_use_contract() -> None:

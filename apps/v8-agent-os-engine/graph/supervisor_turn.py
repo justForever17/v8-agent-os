@@ -20,6 +20,7 @@ from .supervisor_context import (
 from .no_progress_breaker import apply_no_progress_breaker, apply_remaining_steps_guard
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from .runtime_handoff_reads import is_research_handoff_read, research_handoff_read_targets
+from .tool_routing import unavailable_tool_calls
 from core.context.delegation import build_delegation_context
 from core.delegation_result_contract import delegation_result_acceptance
 from core.memory_observability import log_memory_observation
@@ -1554,6 +1555,8 @@ def _retry_runtime_route_compiler_once(
 ):
     """Give a route compiler one compact repair turn before failing closed."""
 
+    if unavailable_tool_calls(response):
+        return response
     contract_error = _runtime_route_compiler_contract_error(response, required_kind)
     if not contract_error:
         return response
@@ -3329,6 +3332,8 @@ def _retry_missing_research_briefs_once(
     runtime itself named the missing brief IDs and its bounded next action.
     """
 
+    if unavailable_tool_calls(response):
+        return response
     gap = _runtime_research_gap_state(state)
     missing_ids = list(gap.get("missingTaskBriefIds") or [])
     if not missing_ids or not gap.get("retryAvailable"):
@@ -4069,7 +4074,7 @@ def execute_supervisor_turn(
             invoke_caller_kwargs = {**invoke_caller_kwargs, "_reasoning_effort": supervisor_reasoning_effort}
 
         def _required_route_result_validator(candidate_response) -> str | None:
-            if not required_orchestration_kind:
+            if not required_orchestration_kind or unavailable_tool_calls(candidate_response):
                 return None
             sanitized_response = _normalize_runtime_broker_response_arguments(
                 sanitize_response_tool_calls(candidate_response)
@@ -4225,7 +4230,10 @@ def execute_supervisor_turn(
             ),
             sanitize_response_tool_calls=sanitize_response_tool_calls,
         )
-        if pending_required_runtime_kinds:
+        # An unavailable call needs the original ToolNode's explicit error first.
+        # Replacing this assistant with a route correction would erase native
+        # content/reasoning and leave the model unaware of the rejected call.
+        if pending_required_runtime_kinds and not unavailable_tool_calls(response):
             required_kind = required_orchestration_kind
             compiler_contract_error = (
                 _runtime_route_compiler_contract_error(response, required_kind)
@@ -4274,6 +4282,7 @@ def execute_supervisor_turn(
                 if (
                     required_kind not in _response_runtime_route_kinds(response)
                     and not _is_required_orchestration_preparation(response, required_kind, handoff_read_targets)
+                    and not unavailable_tool_calls(response)
                     and not _response_has_required_broker_attempt(
                         response,
                         required_orchestration_tool,

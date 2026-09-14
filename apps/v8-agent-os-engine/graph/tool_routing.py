@@ -1269,10 +1269,31 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
     return apply_agent_visible_budget(result, budget_meta, tool_name=tool_name)
 
 
+def unavailable_tool_calls(message: Any) -> list[dict]:
+    """Read the adapter's invocation receipt, never model additional_kwargs."""
+    bound_names = (getattr(message, "response_metadata", None) or {}).get("v8_bound_tool_names")
+    if not isinstance(bound_names, list):
+        return []
+    return [call for call in (getattr(message, "tool_calls", None) or [])
+            if isinstance(call, dict) and call.get("name") not in bound_names]
+
+
 def create_routed_tool_node(tools, name, fallback_goto):
     """Return a ToolNode wrapper that always routes explicitly via Command."""
     governance_batch = ContextVar(f"{name}_governance_batch", default=None)
     async def _wrapped_tool_call(request, execute):
+        assistant = next((message for message in reversed(_state_messages(request.state))
+                          if isinstance(message, AIMessage)), None)
+        if any(call.get("id") == request.tool_call.get("id") for call in unavailable_tool_calls(assistant)):
+            bound_names = assistant.response_metadata["v8_bound_tool_names"]
+            return ToolMessage(
+                content=(f"Tool {request.tool_call['name']} was not available in this model invocation and was not executed. "
+                         f"Available tools: {', '.join(bound_names) or '(none)'}. "
+                         "Correct the call using the supplied tool schemas and the user's requested delegation/role boundaries. "
+                         "This rejection does not load or grant tools; available tools remain subject to runtime authorization."),
+                name=request.tool_call["name"], tool_call_id=request.tool_call["id"], status="error",
+                additional_kwargs={"reasonCode": "tool_not_available", "availableTools": list(bound_names)},
+            )
         from core.runtime_episode_control import assert_episode_execution_allowed
         from erc.runtime_context import get_runtime_context
         assert_episode_execution_allowed(get_runtime_context())

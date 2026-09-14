@@ -1596,6 +1596,7 @@ def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_succe
     (False, None, False), (True, None, False),
     (False, "research_broker", False), (False, "tool_observation_detail", False),
     (False, "agent_broker", False),
+    (False, "run_system_command", False),
     (True, None, True),
 ])
 def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch, research_retry, evidence_read, repair_completed):
@@ -1695,11 +1696,12 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
             }])
         if evidence_read:
             assert _kwargs["tool_choice"] == "required"
-            expected_tools = {"delegation_broker", "agent_broker"} if evidence_read == "agent_broker" else {
+            expected_tools = {"delegation_broker", "agent_broker"} if evidence_read in {"agent_broker", "run_system_command"} else {
                 "delegation_broker", "research_broker", "tool_observation_detail",
             }
             assert {tool.name for tool in _args[2]} == expected_tools
-            return AIMessage(content="先核对收到的原始证据，再委派复核。", tool_calls=[{
+            return AIMessage(content="先核对收到的原始证据，再委派复核。",
+                response_metadata={"v8_bound_tool_names": sorted(expected_tools)}, tool_calls=[{
                 "id": "read-evidence", "name": evidence_read,
                 "args": {"mode": "list"} if evidence_read == "agent_broker"
                 else {"mode": "get_evidence", "evidenceBundleId": "original"} if evidence_read == "research_broker"
@@ -1775,7 +1777,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
                 "rawRef": "toolobs://original", "researchRefs": ["research://bundle/original"],
                 "taskBriefResults": [{"taskBriefId": "law", "status": "ready"}],
             }]
-            if evidence_read == "agent_broker":
+            if evidence_read in {"agent_broker", "run_system_command"}:
                 route_bundle.filtered_tools.append(SimpleNamespace(name="agent_broker"))
                 # Registry discovery must remain callable without a Research
                 # reader exception and cannot mark delegation as observed.
@@ -1801,8 +1803,13 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
     assert calls == ["invoked"]
     assert response.tool_calls[0]["name"] == ("delegation_broker" if repair_completed else evidence_read or "runtime_broker")
-    if evidence_read == "agent_broker":
+    if evidence_read in {"agent_broker", "run_system_command"}:
         assert "delegation" not in supervisor_turn_module._observed_runtime_episode_kinds(state)
+    if evidence_read == "run_system_command":
+        from graph.supervisor_execution import route_supervisor_response
+        # The original call reaches the existing ToolNode for explicit refusal;
+        # no hidden model retry discards this assistant before its ToolMessage.
+        assert route_supervisor_response(response).goto == "supervisor_tools"
     assert preparation_records[0] == diagnostics[-1]["contextPreparationMs"]
     assert preparation_records[0]["hostLoad"] == 200.0
     assert preparation_records[0]["engineeringKernel"] == 2000.0

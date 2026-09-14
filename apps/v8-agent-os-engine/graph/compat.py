@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from langchain_core.messages import AIMessage, ToolMessage
 
 from core.response_normalizer import ensure_reasoning_content, sanitize_model_tool_calls
+from .tool_routing import unavailable_tool_calls
 
 
 _SAME_BATCH_FILE_PRODUCERS = {"write_native_file"}
@@ -107,11 +108,18 @@ def dedupe_same_batch_tool_calls(response):
     if len(calls) < 2:
         return response
 
+    unavailable_names = {_tool_call_name(call) for call in unavailable_tool_calls(response)}
+
+    def execution_signature(call):
+        # Every rejected call needs its own paired ToolMessage. It cannot
+        # execute, so execution deduplication must not erase its identity.
+        return None if _tool_call_name(call) in unavailable_names else _same_batch_tool_signature(call)
+
     seen = set()
     kept = []
     dropped = []
     for call in calls:
-        signature = _same_batch_tool_signature(call)
+        signature = execution_signature(call)
         if signature is not None and signature in seen:
             dropped.append({"id": _tool_call_id(call), "name": _tool_call_name(call)})
             continue
@@ -129,7 +137,7 @@ def dedupe_same_batch_tool_calls(response):
         raw_seen = set()
         filtered_raw_calls = []
         for call in raw_calls:
-            signature = _same_batch_tool_signature(call)
+            signature = execution_signature(call)
             if signature is not None and signature in raw_seen:
                 continue
             if signature is not None:
@@ -144,7 +152,7 @@ def dedupe_same_batch_tool_calls(response):
         filtered_blocks = []
         for block in blocks:
             tool_call = _content_block_tool_call(block)
-            signature = _same_batch_tool_signature(tool_call) if tool_call is not None else None
+            signature = execution_signature(tool_call) if tool_call is not None else None
             if signature is not None and signature in block_seen:
                 continue
             if signature is not None:
@@ -215,12 +223,14 @@ def defer_same_batch_file_consumers(response):
     """
 
     calls = list(getattr(response, "tool_calls", None) or [])
-    names = {_tool_call_name(call) for call in calls}
+    unavailable_names = {_tool_call_name(call) for call in unavailable_tool_calls(response)}
+    names = {_tool_call_name(call) for call in calls} - unavailable_names
     if not (names & _SAME_BATCH_FILE_PRODUCERS and names & _SAME_BATCH_FILE_CONSUMERS):
         return response
 
-    deferred = [call for call in calls if _tool_call_name(call) in _SAME_BATCH_FILE_CONSUMERS]
-    kept = [call for call in calls if _tool_call_name(call) not in _SAME_BATCH_FILE_CONSUMERS]
+    deferred_names = _SAME_BATCH_FILE_CONSUMERS - unavailable_names
+    deferred = [call for call in calls if _tool_call_name(call) in deferred_names]
+    kept = [call for call in calls if _tool_call_name(call) not in deferred_names]
     response.tool_calls = kept
 
     additional_kwargs = dict(getattr(response, "additional_kwargs", None) or {})
@@ -228,7 +238,7 @@ def defer_same_batch_file_consumers(response):
         additional_kwargs["tool_calls"] = [
             call
             for call in additional_kwargs["tool_calls"]
-            if _tool_call_name(call) not in _SAME_BATCH_FILE_CONSUMERS
+            if _tool_call_name(call) not in deferred_names
         ]
     additional_kwargs["v8_deferred_dependent_tool_calls"] = [
         {
@@ -244,7 +254,7 @@ def defer_same_batch_file_consumers(response):
         filtered = []
         for block in blocks:
             tool_call = _content_block_tool_call(block)
-            if tool_call is not None and _tool_call_name(tool_call) in _SAME_BATCH_FILE_CONSUMERS:
+            if tool_call is not None and _tool_call_name(tool_call) in deferred_names:
                 continue
             filtered.append(block)
         return filtered

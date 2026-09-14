@@ -14,6 +14,7 @@ from typing import Annotated, Any, Optional
 from langchain_core.tools import InjectedToolCallId, tool
 
 from core.artifact_store import artifact_store
+from core.interprocess_lock import interprocess_file_lock
 from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
@@ -364,6 +365,21 @@ def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str
     }
 
 
+def _workspace_file_lock_path(target_path: Path) -> Path:
+    canonical_path = os.path.normcase(str(target_path.resolve(strict=False)))
+    resource_key = hashlib.sha256(os.fsencode(canonical_path)).hexdigest()
+    # Different Engine state roots and per-process TEMP/TMP overrides must
+    # still coordinate. Keep persistent lock files outside the workspace.
+    if os.name == "nt":
+        user_home = os.path.normcase(str(Path.home().resolve(strict=False)))
+        user_key = hashlib.sha256(os.fsencode(user_home)).hexdigest()
+        temporary_root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Temp"
+    else:
+        user_key = str(os.getuid())
+        temporary_root = Path("/tmp")
+    return temporary_root / f"v8-agent-os-workspace-locks-{user_key}" / f"{resource_key}.lock"
+
+
 def _atomic_write_text(target_path: Path, content: str, *, expected_version: str) -> None:
     """Write text without exposing a partially truncated target file."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,10 +402,9 @@ def _atomic_write_text(target_path: Path, content: str, *, expected_version: str
                 os.chmod(temporary_path, target_path.stat().st_mode & 0o777)
             except OSError:
                 pass
-        # Serialize V8OS commits and check again after validation/fsync. External
-        # editors do not take this lock; this is optimistic conflict detection,
-        # not an OS-wide filesystem transaction.
-        with _READ_BEFORE_WRITE_LOCK:
+        # Serialize cooperating V8OS processes after validation/fsync. External
+        # editors and directory identity changes are outside this lock's scope.
+        with interprocess_file_lock(_workspace_file_lock_path(target_path)):
             if _file_state_fingerprint(target_path) != expected_version:
                 raise ValueError("file_changed_before_commit")
             os.replace(temporary_path, target_path)

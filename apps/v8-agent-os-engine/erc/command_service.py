@@ -8,6 +8,13 @@ from erc.models import ApprovalRequest, INTERRUPTIBLE_RUN_STATUSES
 from erc.run_service import run_service
 
 
+class ApprovalDecisionConflict(ValueError):
+    def __init__(self, approval_id: str, resolution: Dict[str, Any]) -> None:
+        self.detail = {"code": resolution.get("reason"), "approvalId": approval_id,
+                       "status": (resolution.get("approval") or {}).get("status"), "runStatus": resolution.get("runStatus")}
+        super().__init__(str(resolution.get("reason") or "approval_decision_conflict"))
+
+
 class CommandService:
     def __init__(self) -> None:
         self._control_signals: Dict[str, Dict[str, Any]] = {}
@@ -74,37 +81,24 @@ class CommandService:
                 return approval
         return None
 
-    def _remember_approved_operation(self, approval: Dict[str, Any], response: Optional[Dict[str, Any]]) -> None:
+    def _approved_operation(self, approval: Dict[str, Any], response: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
         fingerprint = self._operation_fingerprint(request)
-        run_id = str(approval.get("run_id") or "").strip()
-        if not fingerprint or not run_id:
-            return
-        run_record = run_service.get_run(run_id)
-        if not run_record:
-            return
-        metadata = dict(run_record.get("metadata") or {})
-        operations = metadata.get("approvedSafetyOperations")
-        if not isinstance(operations, list):
-            operations = []
-        operations = [
-            item for item in operations
-            if not (isinstance(item, dict) and str(item.get("fingerprint") or "") == fingerprint)
-        ]
-        operations.append({
+        if not fingerprint:
+            return None
+        return {
             "fingerprint": fingerprint,
             "targetFingerprint": self._operation_target_fingerprint(request),
             "approval_id": approval.get("id") or approval.get("approval_id"),
             "approval_kind": approval.get("approval_kind"),
             "approved_at": datetime.now(timezone.utc).isoformat(),
-            "response": response or approval.get("response") or {},
+            "response": response or {},
             "request": {
                 "riskCode": request.get("riskCode"),
                 "runtimeKind": request.get("runtimeKind"),
                 "toolCallId": request.get("toolCallId"),
             },
-        })
-        run_service.update_metadata(run_id, {"approvedSafetyOperations": operations[-100:]})
+        }
 
     def _remember_safety_allowlist(self, approval: Dict[str, Any], response: Optional[Dict[str, Any]]) -> None:
         try:
@@ -168,34 +162,32 @@ class CommandService:
         }
 
     def approve(self, approval_id: str, response: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        from core.database import db
-
-        response = self._sanitize_approval_response(response)
-        db.update_pending_approval(approval_id, status="approved", response=response)
-        approval = db.get_pending_approval(approval_id)
-        if approval:
-            self._remember_approved_operation(approval, response)
-            self._remember_safety_allowlist(approval, response)
-        if approval and approval.get("run_id") and str(approval.get("approval_kind") or "").strip() != "mcp_app_tool_call":
-            self.clear_control_signal(approval["run_id"])
-        return approval
+        return self._decide_approval(approval_id, "approved", response)
 
     def reject(self, approval_id: str, response: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        return self._decide_approval(approval_id, "rejected", response)
+
+    def _decide_approval(self, approval_id: str, status: str, response: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         from core.database import db
 
         response = self._sanitize_approval_response(response)
-        db.update_pending_approval(approval_id, status="rejected", response=response)
         approval = db.get_pending_approval(approval_id)
-        if approval and str(approval.get("approval_kind") or "").strip() == "mcp_app_tool_call":
-            return approval
-        if approval and approval.get("run_id"):
-            self.issue_control_signal(
-                approval["run_id"],
-                command="approval_rejected",
-                reason=(response or {}).get("reason") if isinstance(response, dict) else None,
-                payload={"approval_id": approval_id, "response": response or {}},
-            )
-        return approval
+        if not approval:
+            return None
+        resolution = db.resolve_pending_approval_if_pending(
+            approval_id, status=status, response=response, expected_request=approval.get("request"),
+            approved_operation=self._approved_operation(approval, response) if status == "approved" else None,
+        )
+        if not resolution.get("updated") and resolution.get("reason") != "already_decided":
+            if resolution.get("reason") == "approval_not_found":
+                return None
+            raise ApprovalDecisionConflict(approval_id, resolution)
+        decided = dict(resolution["approval"])
+        if resolution.get("updated") and status == "approved":
+            self._remember_safety_allowlist(decided, response)
+        # The receipt stays immutable; transition metadata is only for the
+        # kernel/router in this dispatch, and is never persisted on the row.
+        return {**decided, "_decision": {key: value for key, value in resolution.items() if key != "approval"}}
 
     def issue_control_signal(
         self,

@@ -163,6 +163,8 @@ class RuntimeCommandRouter:
                     }
             result = erc_kernel.approve(approval_id, response=command.response)
             if result:
+                if result.get("ignored") or result.get("resume_eligible") is False:
+                    return result
                 approval = result.get("approval") or {}
                 approval_kind = self._approval_kind(approval)
                 if approval_kind in {"checkpoint_replay", "checkpoint_fork"}:
@@ -200,6 +202,8 @@ class RuntimeCommandRouter:
         if topic == "approval.reject":
             result = erc_kernel.reject(approval_id, response=command.response)
             if result:
+                if result.get("ignored") or result.get("resume_eligible") is False:
+                    return result
                 approval = result.get("approval") or {}
                 approval_kind = self._approval_kind(approval)
                 if approval_kind in {"checkpoint_replay", "checkpoint_fork"}:
@@ -1373,6 +1377,9 @@ class RuntimeCommandRouter:
         run_record = db.get_run_record(approval.get("run_id", ""))
         if not run_record:
             return None
+        control = (run_record.get("metadata") or {}).get("control_signal") or {}
+        if run_record.get("status") != "running" or control.get("command") in {"cancel", "interrupt", "pause"}:
+            return {"resume_scheduled": False, "resume_error": "run_not_ready_after_approval"}
         if approval_kind == "spec_stage_approval":
             if self._schedule_chat_run is None:
                 self._emit_resume_event(

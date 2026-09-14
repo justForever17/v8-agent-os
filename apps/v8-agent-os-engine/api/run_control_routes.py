@@ -5,6 +5,7 @@ from core.database import db
 from core.run_ledger import run_ledger_service
 from erc.command_router import runtime_command_router
 from erc.models import RuntimeCommand
+from erc.command_service import ApprovalDecisionConflict
 
 
 router = APIRouter()
@@ -120,6 +121,8 @@ async def approve_pending_approval(approval_id: str, payload: RunCommandPayload,
         if not result:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' not found")
         return result
+    except ApprovalDecisionConflict as e:
+        raise HTTPException(status_code=409, detail=e.detail)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -144,6 +147,8 @@ async def reject_pending_approval(approval_id: str, payload: RunCommandPayload, 
         if not result:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' not found")
         return result
+    except ApprovalDecisionConflict as e:
+        raise HTTPException(status_code=409, detail=e.detail)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:

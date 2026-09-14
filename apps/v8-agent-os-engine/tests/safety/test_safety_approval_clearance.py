@@ -39,28 +39,30 @@ class SafetyApprovalClearanceTests(unittest.TestCase):
         add_pending.assert_not_called()
 
     def test_approved_operation_is_persisted_on_run_metadata(self):
+        from core.database import db
+        import uuid
+
         service = CommandService()
-        approval = {
-            "id": "approval_1",
-            "run_id": "run_a",
-            "approval_kind": "safety_review",
-            "request": {
+        identity = uuid.uuid4().hex
+        run_id, session_id, approval_id = f"run_{identity}", f"session_{identity}", f"approval_{identity}"
+        db.create_or_update_session(session_id, "clearance fixture")
+        db.create_run_record(run_id, session_id, status="waiting_approval")
+        service.request_approval(ApprovalRequest(
+            approval_id=approval_id, session_id=session_id, run_id=run_id, approval_kind="safety_review",
+            request={
                 "operationFingerprint": "safety:abc",
                 "riskCode": "protected_config_write",
                 "runtimeKind": "chat",
                 "toolCallId": "call_1",
             },
-        }
-
-        with patch("erc.command_service.run_service.get_run", return_value={"id": "run_a", "metadata": {}}), \
-             patch("erc.command_service.run_service.update_metadata") as update_metadata:
-            service._remember_approved_operation(approval, {"approved": True})
-
-        update_metadata.assert_called_once()
-        _, updates = update_metadata.call_args.args
-        operations = updates["approvedSafetyOperations"]
+        ))
+        with patch.object(service, "_remember_safety_allowlist"):
+            service.approve(approval_id, {"approved": True})
+        # The old mock only asserted a stale read-modify-write. Check the
+        # actual atomic decision/clearance transaction instead.
+        operations = db.get_run_record(run_id)["metadata"]["approvedSafetyOperations"]
         self.assertEqual(operations[0]["fingerprint"], "safety:abc")
-        self.assertEqual(operations[0]["approval_id"], "approval_1")
+        self.assertEqual(operations[0]["approval_id"], approval_id)
 
 
 if __name__ == "__main__":

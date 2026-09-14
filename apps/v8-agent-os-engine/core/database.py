@@ -11233,6 +11233,95 @@ class DatabaseManager:
                 rows.append(data)
             return rows
 
+    def resolve_pending_approval_if_pending(
+        self,
+        approval_id: str,
+        *,
+        status: str,
+        response: Optional[Dict[str, Any]] = None,
+        approved_operation: Optional[Dict[str, Any]] = None,
+        expected_request: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Decide once and release only this approval's wait, under the run's fence."""
+        if status not in {"approved", "rejected"}:
+            raise ValueError("approval decision must be approved or rejected")
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM pending_approvals WHERE id = ?", (approval_id,)).fetchone()
+                if not row:
+                    return {"updated": False, "reason": "approval_not_found"}
+                approval = dict(row)
+                approval["request"] = json.loads(approval.get("request_json") or "{}")
+                approval["response"] = json.loads(approval["response_json"]) if approval.get("response_json") else None
+                run = conn.execute("SELECT * FROM run_records WHERE id = ?", (approval["run_id"],)).fetchone()
+                run_record = dict(run) if run else {}
+                previous_status = str(run_record.get("status") or "")
+                metadata = json.loads(run_record.get("metadata") or "{}")
+                control = metadata.get("control_signal") or {}
+
+                def unchanged(reason):
+                    return {"updated": False, "reason": reason, "approval": approval, "runStatus": previous_status}
+
+                if approval["status"] != "pending":
+                    return unchanged("already_decided" if approval["status"] == status else "approval_decision_conflict")
+                if expected_request is not None and approval["request"] != expected_request:
+                    return unchanged("approval_request_changed")
+                request = approval["request"]
+                requested_scope = request.get("scopeRevision", request.get("scope_revision"))
+                current_scope = metadata.get("scopeRevision", metadata.get("scope_revision"))
+                if requested_scope is not None and current_scope is not None and requested_scope != current_scope:
+                    return unchanged("approval_scope_changed")
+                identity = (response or {}).get("approvalId", (response or {}).get("approval_id"))
+                if identity is not None and str(identity) != approval_id:
+                    return unchanged("approval_identity_mismatch")
+                if not run:
+                    return unchanged("run_not_found")
+                if previous_status in {"completed", "failed", "cancelled", "interrupted"}:
+                    return unchanged("owning_run_terminal")
+                if control.get("command") in {"cancel", "interrupt"}:
+                    return unchanged("owning_run_stopping")
+                if approval.get("expires_at"):
+                    try:
+                        expiry = datetime.fromisoformat(str(approval["expires_at"]).replace("Z", "+00:00"))
+                        if expiry.tzinfo is None:
+                            expiry = expiry.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        return unchanged("approval_expiry_invalid")
+                    if expiry <= datetime.now(timezone.utc):
+                        return unchanged("approval_expired")
+                conn.execute(
+                    "UPDATE pending_approvals SET status = ?, response_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'",
+                    (status, json.dumps(response, ensure_ascii=False) if response is not None else None, approval_id),
+                )
+                pending = conn.execute("SELECT 1 FROM pending_approvals WHERE run_id = ? AND status = 'pending' LIMIT 1", (approval["run_id"],)).fetchone()
+                next_status = previous_status
+                mcp = approval["approval_kind"] == "mcp_app_tool_call"
+                if not mcp and not control:
+                    if status == "approved" and not pending and previous_status == "waiting_approval":
+                        next_status = "running"
+                    elif status == "rejected" and previous_status in {"running", "waiting_approval"}:
+                        next_status = "waiting_input"
+                        metadata["control_signal"] = {"command": "approval_rejected", "reason": (response or {}).get("reason"),
+                                                      "payload": {"approval_id": approval_id, "response": response or {}}}
+                if status == "approved" and approved_operation:
+                    operations = metadata.get("approvedSafetyOperations") or []
+                    operations = [item for item in operations if isinstance(item, dict) and item.get("fingerprint") != approved_operation.get("fingerprint")]
+                    metadata["approvedSafetyOperations"] = [*operations, approved_operation][-100:]
+                # Preserve the current run metadata/control atomically. A stale
+                # read-modify-write with the old status could resurrect cancel.
+                conn.execute("UPDATE run_records SET status = ?, metadata = ? WHERE id = ?",
+                             (next_status, json.dumps(metadata, ensure_ascii=False), approval["run_id"]))
+                decided = dict(conn.execute("SELECT * FROM pending_approvals WHERE id = ?", (approval_id,)).fetchone())
+                decided["request"] = approval["request"]
+                decided["response"] = response
+                conn.commit()
+                return {"updated": True, "approval": decided, "previousRunStatus": previous_status, "runStatus": next_status,
+                        "resumeEligible": not mcp and not control and not pending and next_status in {"running", "waiting_input"}}
+
+        return self._run_write_with_retry(_write)
+
     def update_pending_approval(
         self,
         approval_id: str,

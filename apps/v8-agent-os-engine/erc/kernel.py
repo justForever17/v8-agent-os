@@ -459,46 +459,41 @@ class ExecutionRuntimeCore:
         command_service.retry_run(run_id, reason=reason)
         return {"command_event": event}
 
+    def _project_approval_decision(self, resolved: Dict[str, Any], status: str) -> Dict[str, Any]:
+        approval = dict(resolved)
+        decision = approval.pop("_decision")
+        result = {"approval": approval, "decisionApplied": bool(decision.get("updated")),
+                  "ignored": not decision.get("updated"), "reason": decision.get("reason"),
+                  "resume_eligible": False, "resume_scheduled": False}
+        if not decision.get("updated"):
+            return result
+        run_record = run_service.get_run(approval["run_id"])
+        if not run_record:
+            return result
+        control = (run_record.get("metadata") or {}).get("control_signal") or {}
+        current_status = run_record.get("status")
+        expected_status = decision.get("runStatus")
+        result["resume_eligible"] = bool(decision.get("resumeEligible") and current_status == expected_status
+                                         and control.get("command") not in {"cancel", "interrupt", "pause"})
+        emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
+        if decision.get("previousRunStatus") != expected_status and current_status == expected_status:
+            result["transition_event"] = emitter.emit("run.state.changed", {
+                "from_status": decision.get("previousRunStatus"), "to_status": expected_status,
+                "reason": f"approval_{status}",
+            })
+            workflow_ledger_service.sync_run_status(approval["run_id"], run_status=expected_status,
+                                                   reason=f"approval_{status}", metadata={"approval_id": approval["id"]})
+        result["command_event"] = emitter.emit(f"approval.{status}", {
+            "approval_id": approval["id"], "run_id": approval["run_id"], "approval_kind": approval.get("approval_kind"),
+            "response": approval.get("response") or {},
+        })
+        return result
+
     def approve(self, approval_id: str, *, response: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         approval = command_service.approve(approval_id, response=response)
         if not approval:
             return None
-        approval_kind = str(approval.get("approval_kind") or "").strip()
-        run_record = run_service.get_run(approval["run_id"])
-        if not run_record:
-            return None
-        emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
-        if approval_kind == "mcp_app_tool_call":
-            event = emitter.emit(
-                "approval.approved",
-                {
-                    "approval_id": approval_id,
-                    "run_id": approval["run_id"],
-                    "approval_kind": approval_kind,
-                    "response": response or {},
-                },
-            )
-            return {"command_event": event, "approval": approval}
-        transition_event = emitter.emit(
-            "run.state.changed",
-            {"from_status": run_record.get("status"), "to_status": "running", "reason": "approval_approved"},
-        )
-        event = emitter.emit(
-            "approval.approved",
-            {
-                "approval_id": approval_id,
-                "run_id": approval["run_id"],
-                "response": response or {},
-            },
-        )
-        run_service.transition_run(approval["run_id"], status="running")
-        workflow_ledger_service.sync_run_status(
-            approval["run_id"],
-            run_status="running",
-            reason="approval_approved",
-            metadata={"approval_id": approval_id},
-        )
-        return {"transition_event": transition_event, "command_event": event, "approval": approval}
+        return self._project_approval_decision(approval, "approved")
 
     def resolve_ask_user_interaction(
         self,
@@ -554,42 +549,7 @@ class ExecutionRuntimeCore:
         approval = command_service.reject(approval_id, response=response)
         if not approval:
             return None
-        approval_kind = str(approval.get("approval_kind") or "").strip()
-        run_record = run_service.get_run(approval["run_id"])
-        if not run_record:
-            return None
-        emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
-        if approval_kind == "mcp_app_tool_call":
-            event = emitter.emit(
-                "approval.rejected",
-                {
-                    "approval_id": approval_id,
-                    "run_id": approval["run_id"],
-                    "approval_kind": approval_kind,
-                    "response": response or {},
-                },
-            )
-            return {"command_event": event, "approval": approval}
-        transition_event = emitter.emit(
-            "run.state.changed",
-            {"from_status": run_record.get("status"), "to_status": "waiting_input", "reason": "approval_rejected"},
-        )
-        event = emitter.emit(
-            "approval.rejected",
-            {
-                "approval_id": approval_id,
-                "run_id": approval["run_id"],
-                "response": response or {},
-            },
-        )
-        run_service.transition_run(approval["run_id"], status="waiting_input")
-        workflow_ledger_service.sync_run_status(
-            approval["run_id"],
-            run_status="waiting_input",
-            reason="approval_rejected",
-            metadata={"approval_id": approval_id},
-        )
-        return {"transition_event": transition_event, "command_event": event, "approval": approval}
+        return self._project_approval_decision(approval, "rejected")
 
     def peek_control_signal(self, run_id: str) -> Optional[Dict[str, Any]]:
         return command_service.peek_control_signal(run_id)

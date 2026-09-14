@@ -7,53 +7,54 @@ from core.action_executor import ActionExecutor
 class CronManager:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
-        self._init_jobs_from_config()
-
-    def _init_jobs_from_config(self):
-        """Loads jobs from configuration on startup."""
-        return None
 
     def sync_jobs_to_scheduler(self):
-        """Syncs all enabled jobs to the APScheduler."""
-        # Remove all existing user jobs
-        for job in self.scheduler.get_jobs():
-            self.scheduler.remove_job(job.id)
-            
+        """Validate the whole plan before replacing any working schedule."""
+        from copy import deepcopy
+
+        current = {job.id: job for job in self.scheduler.get_jobs()}
         config = storage.get_cron_config()
-        for job_cfg in config.get("jobs", []):
-            if not job_cfg.get("enabled", False):
-                continue
-                
-            cron_expr = job_cfg.get("cron_expression")
-            if not cron_expr:
-                continue
-                
-            try:
-                # cron expressions: minute hour day month day_of_week
-                # simple split by space, if 5 parts
-                parts = cron_expr.strip().split()
-                if len(parts) != 5:
-                    print(f"[CronManager] Invalid cron expression for {job_cfg.get('name')}: {cron_expr}")
+        try:
+            if not isinstance(config, dict) or not isinstance(config.get("jobs", []), list):
+                raise ValueError("jobs must be a list")
+            parsed = {}
+            seen = set()
+            for job_cfg in config.get("jobs", []):
+                if not isinstance(job_cfg, dict) or not str(job_cfg.get("id") or "").strip():
+                    raise ValueError("every job requires an id")
+                job_id = str(job_cfg["id"]).strip()
+                if job_id in seen:
+                    raise ValueError(f"duplicate job id: {job_id}")
+                seen.add(job_id)
+                if not job_cfg.get("enabled", False):
                     continue
-                    
-                trigger = CronTrigger(
-                    minute=parts[0],
-                    hour=parts[1],
-                    day=parts[2],
-                    month=parts[3],
-                    day_of_week=parts[4]
-                )
-                
-                self.scheduler.add_job(
-                    self.execute_job,
-                    trigger=trigger,
-                    id=job_cfg["id"],
-                    name=job_cfg["name"],
-                    kwargs={"job_cfg": job_cfg},
-                    replace_existing=True
-                )
-            except Exception as e:
-                print(f"[CronManager] Error parsing cron config for '{job_cfg.get('name')}': {e}")
+                trigger = CronTrigger.from_crontab(str(job_cfg.get("cron_expression") or ""))
+                parsed[job_id] = (deepcopy(job_cfg), trigger)
+        except (TypeError, ValueError) as exc:
+            return {"status": "rejected", "reason": str(exc), "preserved": sorted(current)}
+
+        scheduled = []
+        errors = {}
+        for job_id, (job_cfg, trigger) in parsed.items():
+            try:
+                options = {"trigger": trigger, "name": str(job_cfg.get("name") or job_id),
+                           "kwargs": {"job_cfg": job_cfg}}
+                if job_id in current:
+                    # modify_job also updates pending jobs before scheduler.start;
+                    # add_job(replace_existing=True) would leave duplicate pending IDs.
+                    self.scheduler.modify_job(job_id, **options)
+                else:
+                    self.scheduler.add_job(self.execute_job, id=job_id, **options)
+                scheduled.append(job_id)
+            except Exception as exc:
+                errors[job_id] = str(exc)
+        for job_id in current.keys() - parsed.keys():
+            try:
+                self.scheduler.remove_job(job_id)
+            except Exception as exc:
+                errors[job_id] = str(exc)
+        return {"status": "partial" if errors else "success", "scheduled": sorted(scheduled),
+                "preserved": sorted(current.keys() & errors.keys()), "errors": errors}
 
     async def execute_job(self, job_cfg: Dict[str, Any]):
         """Callback to execute the actual job action using ActionExecutor."""
@@ -105,12 +106,18 @@ class CronManager:
             print(f"[CronManager] Execution of job {job_cfg.get('id')} failed: {e}")
 
     def start(self):
-        self.sync_jobs_to_scheduler()
+        result = self.sync_jobs_to_scheduler()
+        if self.scheduler.running:
+            return result
         self.scheduler.start()
         print("[CronManager] Scheduler started.")
+        return result
         
     def shutdown(self):
-        self.scheduler.shutdown()
+        if not self.scheduler.running:
+            return {"status": "already_stopped"}
+        self.scheduler.shutdown(wait=False)
         print("[CronManager] Scheduler shutdown.")
+        return {"status": "stopped"}
         
 cron_manager = CronManager()

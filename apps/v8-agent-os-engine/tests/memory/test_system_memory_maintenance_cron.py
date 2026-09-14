@@ -12,6 +12,7 @@ class SystemMemoryMaintenanceCronTests(unittest.TestCase):
     def test_scheduler_start_does_not_auto_run_missed_memory_maintenance(self):
         manager = object.__new__(CronManager)
         manager.scheduler = Mock()
+        manager.scheduler.running = False
         manager.sync_jobs_to_scheduler = Mock()
 
         manager.start()

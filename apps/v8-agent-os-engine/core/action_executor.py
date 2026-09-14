@@ -4,6 +4,7 @@ import sys
 import time
 import uuid
 import asyncio
+import contextvars
 from typing import Dict, Any, Optional
 from core.knowledge_db import knowledge_db
 from core.database import db
@@ -33,6 +34,40 @@ class ActionExecutor:
     """
     _active_targets = set()
     _main_loop = None  # Reference to the main FastAPI event loop (captured on first async execute)
+
+    @staticmethod
+    def _is_supervisor_target(target: str) -> bool:
+        return str(target or "").strip().lower() in {"supervisor", "graph.supervisor", "supervisor_runner"}
+
+    @staticmethod
+    async def _invoke_supervisor(payload: Dict[str, Any], session_id: str):
+        from core.engine_config_resolver import require_engine_config, resolve_engine_config_for_role
+        from agents.runners.supervisor_runner import supervisor_runner
+
+        config = require_engine_config(resolve_engine_config_for_role("supervisor"), role="supervisor")
+        bundle = await supervisor_runner.create_execution_bundle(
+            config=config,
+            messages=payload["messages"],
+            session_id=session_id,
+        )
+        return await bundle.graph.ainvoke(bundle.payload, config=bundle.graph_config)
+
+    @staticmethod
+    def _load_agent_graph(target: str):
+        try:
+            module = importlib.import_module(target)
+        except ModuleNotFoundError as exc:
+            # Only fall back for a missing target, never for a dependency broken
+            # inside an otherwise valid module.
+            if exc.name not in {target, target.split(".")[0]} or target.startswith("graph."):
+                raise
+            module = importlib.import_module(f"graph.{target}")
+        graph = getattr(module, "compiled_graph", None)
+        if graph is None:
+            graph = getattr(module, "app", None)
+        if graph is None:
+            raise ValueError(f"Agent target '{target}' has no executable compiled_graph/app.")
+        return graph
 
     @staticmethod
     def _uses_workflow_envelope(trigger_source: str | None, kwargs: Dict[str, Any]) -> bool:
@@ -330,7 +365,7 @@ class ActionExecutor:
                 try:
                     loop = asyncio.get_running_loop()
                     cls._main_loop = loop  # Save main loop reference
-                    loop.run_in_executor(None, cls._execute_sync, action_type, target, payload, kwargs)
+                    loop.run_in_executor(None, contextvars.copy_context().run, cls._execute_sync, action_type, target, payload, kwargs)
                 except RuntimeError:
                     cls._execute_sync(action_type, target, payload, kwargs)
         else:
@@ -352,131 +387,132 @@ class ActionExecutor:
 
         log_id = str(uuid.uuid4())
         task_name = kwargs.get("task_name", f"{action_type}:{target}")
-        run_handle = automation_runtime.begin_or_attach_run(
-            action_type=action_type,
-            target=target,
-            payload=payload,
-            trigger_source=trigger_source,
-            is_async=bool(kwargs.get("_declared_async", False)),
-            kwargs=kwargs,
-        )
-        cls._activate_automation_stage(
-            run_id=run_handle.run_id,
-            trigger_source=trigger_source,
-            kwargs=kwargs,
-            stage="prepare",
-            title="Automation 准备",
-            input_payload={
-                "actionType": action_type,
-                "target": target,
-                "triggerSource": trigger_source,
-                "taskName": task_name,
-            },
-        )
-        run_handle.emit(
-            "automation.trigger.normalized",
-            cls._build_automation_trigger_payload(
-                run_handle=run_handle,
-                action_type=action_type,
-                target=target,
-                task_name=task_name,
-                trigger_source=trigger_source,
-                is_async=bool(kwargs.get("_declared_async", False)),
-                kwargs=kwargs,
-            ),
-        )
-        lane_policy = runtime_stability_service.session_lane_policy()
-        lane_decision = session_admission_service.acquire(
-            run_handle.session_id,
-            run_handle.run_id,
-            policy=lane_policy,
-            runtime_kind="automation",
-            metadata={
-                "triggerSource": trigger_source,
-                "actionType": action_type,
-                "target": target,
-            },
-        )
-        if not lane_decision.acquired:
-            error_message = (
-                f"Session lane busy: session '{run_handle.session_id}' is already running "
-                f"'{lane_decision.rejected_by_run_id or lane_decision.active_run_id}'."
-            )
-            run_handle.emit(
-                "run.lane.rejected",
-                {
-                    "policy": lane_decision.policy,
-                    "busy_run_id": lane_decision.rejected_by_run_id or lane_decision.active_run_id,
-                    "session_id": run_handle.session_id,
-                },
-            )
-            run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
-            return {
-                "status": "rejected",
-                "reason": error_message,
-                "run_id": run_handle.run_id,
-                "session_id": run_handle.session_id,
-            }
-        if lane_decision.waited:
-            run_handle.emit(
-                "run.lane.queued",
-                {
-                    "policy": lane_decision.policy,
-                    "blocked_by_run_id": lane_decision.active_run_id,
-                    "interrupted_run_id": lane_decision.interrupted_run_id,
-                },
-            )
-            run_handle.emit(
-                "run.liveness.blocked",
-                {
-                    "heartbeat_kind": "session_lane",
-                    "blocked_reason": f"lane_busy:{lane_decision.active_run_id}",
-                    "watchdog_source": "session_lane",
-                    "stalled": False,
-                },
-            )
-        run_handle.emit(
-            "run.lane.acquired",
-            {
-                "policy": lane_decision.policy,
-                "waited": lane_decision.waited,
-                "previous_run_id": lane_decision.active_run_id,
-                "interrupted_run_id": lane_decision.interrupted_run_id,
-            },
-        )
-        if lane_decision.waited:
-            run_handle.emit(
-                "run.liveness.recovered",
-                {
-                    "heartbeat_kind": "session_lane",
-                    "blocked_reason": None,
-                    "watchdog_source": "session_lane",
-                    "stalled": False,
-                },
-            )
-        preflight_decision = automation_runtime.run_preflight(
-            run_handle=run_handle,
-            trigger_source=trigger_source,
-            user_id=kwargs.get("user_id"),
-        )
-        
-        # 记录开始状态
-        knowledge_db.log_execution(
-            log_id=log_id,
-            task_name=task_name,
-            action_type=action_type,
-            action_target=target,
-            trigger_source=trigger_source,
-            status="running",
-            payload=payload
-        )
-        
+        run_handle = None
+        lane_decision = None
         start_time = time.time()
         error_message = None
         status = "success"
         execution_receipt = None
 
         try:
+            run_handle = automation_runtime.begin_or_attach_run(
+                action_type=action_type,
+                target=target,
+                payload=payload,
+                trigger_source=trigger_source,
+                is_async=bool(kwargs.get("_declared_async", False)),
+                kwargs=kwargs,
+            )
+            cls._activate_automation_stage(
+                run_id=run_handle.run_id,
+                trigger_source=trigger_source,
+                kwargs=kwargs,
+                stage="prepare",
+                title="Automation 准备",
+                input_payload={
+                    "actionType": action_type,
+                    "target": target,
+                    "triggerSource": trigger_source,
+                    "taskName": task_name,
+                },
+            )
+            run_handle.emit(
+                "automation.trigger.normalized",
+                cls._build_automation_trigger_payload(
+                    run_handle=run_handle,
+                    action_type=action_type,
+                    target=target,
+                    task_name=task_name,
+                    trigger_source=trigger_source,
+                    is_async=bool(kwargs.get("_declared_async", False)),
+                    kwargs=kwargs,
+                ),
+            )
+            lane_policy = runtime_stability_service.session_lane_policy()
+            lane_decision = session_admission_service.acquire(
+                run_handle.session_id,
+                run_handle.run_id,
+                policy=lane_policy,
+                runtime_kind="automation",
+                metadata={
+                    "triggerSource": trigger_source,
+                    "actionType": action_type,
+                    "target": target,
+                },
+            )
+            if not lane_decision.acquired:
+                error_message = (
+                    f"Session lane busy: session '{run_handle.session_id}' is already running "
+                    f"'{lane_decision.rejected_by_run_id or lane_decision.active_run_id}'."
+                )
+                run_handle.emit(
+                    "run.lane.rejected",
+                    {
+                        "policy": lane_decision.policy,
+                        "busy_run_id": lane_decision.rejected_by_run_id or lane_decision.active_run_id,
+                        "session_id": run_handle.session_id,
+                    },
+                )
+                status = "rejected"
+                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+                return {
+                    "status": "rejected",
+                    "reason": error_message,
+                    "run_id": run_handle.run_id,
+                    "session_id": run_handle.session_id,
+                }
+            if lane_decision.waited:
+                run_handle.emit(
+                    "run.lane.queued",
+                    {
+                        "policy": lane_decision.policy,
+                        "blocked_by_run_id": lane_decision.active_run_id,
+                        "interrupted_run_id": lane_decision.interrupted_run_id,
+                    },
+                )
+                run_handle.emit(
+                    "run.liveness.blocked",
+                    {
+                        "heartbeat_kind": "session_lane",
+                        "blocked_reason": f"lane_busy:{lane_decision.active_run_id}",
+                        "watchdog_source": "session_lane",
+                        "stalled": False,
+                    },
+                )
+            run_handle.emit(
+                "run.lane.acquired",
+                {
+                    "policy": lane_decision.policy,
+                    "waited": lane_decision.waited,
+                    "previous_run_id": lane_decision.active_run_id,
+                    "interrupted_run_id": lane_decision.interrupted_run_id,
+                },
+            )
+            if lane_decision.waited:
+                run_handle.emit(
+                    "run.liveness.recovered",
+                    {
+                        "heartbeat_kind": "session_lane",
+                        "blocked_reason": None,
+                        "watchdog_source": "session_lane",
+                        "stalled": False,
+                    },
+                )
+            preflight_decision = automation_runtime.run_preflight(
+                run_handle=run_handle,
+                trigger_source=trigger_source,
+                user_id=kwargs.get("user_id"),
+            )
+            # 记录开始状态
+            knowledge_db.log_execution(
+                log_id=log_id,
+                task_name=task_name,
+                action_type=action_type,
+                action_target=target,
+                trigger_source=trigger_source,
+                status="running",
+                payload=payload
+            )
             preflight_result = automation_runtime.handle_preflight_decision(
                 run_handle=run_handle,
                 trigger_source=trigger_source,
@@ -681,6 +717,12 @@ class ActionExecutor:
             )
             run_handle.complete(reason="automation_finished", node="automation_runtime")
             return result
+        except asyncio.CancelledError:
+            status = "cancelled"
+            error_message = "Automation execution cancelled."
+            if run_handle is not None:
+                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+            raise
         except Exception as e:
             import traceback
             error_message = f"Error executing {action_type} target '{target}': {str(e)}\n{traceback.format_exc()}"
@@ -693,22 +735,21 @@ class ActionExecutor:
                     node="automation_runtime",
                     error=error_message,
                 )
-            run_handle.fail(error_message, node="automation_runtime")
-            raise e
+            if run_handle is not None:
+                run_handle.fail(error_message, node="automation_runtime")
+            raise
         finally:
             try:
-                session_admission_service.release(run_handle.session_id, run_handle.run_id)
-                run_handle.emit(
-                    "run.lane.released",
-                    {
-                        "policy": lane_decision.policy,
-                        "session_id": run_handle.session_id,
-                    },
-                )
-            except Exception:
-                pass
-            if lock_key:
-                cls._active_targets.discard(lock_key)
+                if run_handle is not None:
+                    session_admission_service.release(run_handle.session_id, run_handle.run_id)
+                    if lane_decision is not None and lane_decision.acquired:
+                        run_handle.emit(
+                            "run.lane.released",
+                            {"policy": lane_decision.policy, "session_id": run_handle.session_id},
+                        )
+            finally:
+                if lock_key:
+                    cls._active_targets.discard(lock_key)
             duration_ms = int((time.time() - start_time) * 1000)
             knowledge_db.log_execution(
                 log_id=log_id,
@@ -865,6 +906,7 @@ class ActionExecutor:
         )
         if process.returncode != 0:
             print(f"[ActionExecutor] Command '{command}' Failed with code {process.returncode}:\n{process.stderr}")
+            process.check_returncode()
         else:
             if process.stdout.strip():
                 print(f"[ActionExecutor] Command '{command}' Success:\n{process.stdout.strip()}")
@@ -880,7 +922,7 @@ class ActionExecutor:
                 module = importlib.import_module(module_path)
         except ImportError as e:
             print(f"[ActionExecutor] Could not import python module '{module_path}': {e}")
-            return
+            raise
             
         run_func = getattr(module, 'run', None)
         if callable(run_func):
@@ -913,19 +955,16 @@ class ActionExecutor:
             
             return run_func(*positional_args, **call_kwargs)
         else:
-            print(f"[ActionExecutor] Python module '{module_path}' is missing a callable 'run' function.")
+            raise ValueError(f"Python module '{module_path}' is missing a callable 'run' function.")
 
     @staticmethod
     def _execute_agent_sync(target_graph_module_name: str, action_payload: Dict[str, Any], **kwargs):
         try:
-            target_module = importlib.import_module(f"graph.{target_graph_module_name}")
-            compiled_graph = getattr(target_module, "compiled_graph", None)
-            if compiled_graph is None:
-                 compiled_graph = getattr(target_module, "app", None)
-                 
-            if compiled_graph is None:
-                raise ValueError(f"Could not find 'compiled_graph' or 'app' in graph module {target_graph_module_name}")
-            
+            is_supervisor = ActionExecutor._is_supervisor_target(target_graph_module_name)
+            if is_supervisor:
+                raise ValueError("Supervisor requires async automation execution; configure this hook with async=true.")
+            compiled_graph = ActionExecutor._load_agent_graph(target_graph_module_name)
+
             trigger_reason = kwargs.get("event_name", kwargs.get("trigger", "unknown"))
             channel_id = str(action_payload.get("channel_id") or "").strip()
             chat_id = action_payload.get("chat_id")
@@ -980,9 +1019,6 @@ class ActionExecutor:
 
     @staticmethod
     async def _execute_agent_async(target_graph_module_name: str, action_payload: Dict[str, Any], **kwargs):
-        if not target_graph_module_name:
-            return
-
         trigger_source = kwargs.get("trigger", "manual")
         
         # Mutex Lock for Cron Jobs
@@ -997,126 +1033,127 @@ class ActionExecutor:
 
         log_id = str(uuid.uuid4())
         task_name = kwargs.get("task_name", f"agent:{target_graph_module_name}")
-        run_handle = automation_runtime.begin_or_attach_run(
-            action_type="agent",
-            target=target_graph_module_name,
-            payload=action_payload,
-            trigger_source=trigger_source,
-            is_async=True,
-            kwargs=kwargs,
-        )
-        ActionExecutor._activate_automation_stage(
-            run_id=run_handle.run_id,
-            trigger_source=trigger_source,
-            kwargs=kwargs,
-            stage="prepare",
-            title="Automation 准备",
-            input_payload={
-                "actionType": "agent",
-                "target": target_graph_module_name,
-                "triggerSource": trigger_source,
-                "taskName": task_name,
-            },
-        )
-        run_handle.emit(
-            "automation.trigger.normalized",
-            ActionExecutor._build_automation_trigger_payload(
-                run_handle=run_handle,
-                action_type="agent",
-                target=target_graph_module_name,
-                task_name=task_name,
-                trigger_source=trigger_source,
-                is_async=True,
-                kwargs=kwargs,
-            ),
-        )
-        lane_policy = runtime_stability_service.session_lane_policy()
-        lane_decision = await session_admission_service.acquire_async(
-            run_handle.session_id,
-            run_handle.run_id,
-            policy=lane_policy,
-            runtime_kind="automation_agent",
-            metadata={
-                "triggerSource": trigger_source,
-                "actionType": "agent",
-                "target": target_graph_module_name,
-            },
-        )
-        if not lane_decision.acquired:
-            error_message = (
-                f"Session lane busy: session '{run_handle.session_id}' is already running "
-                f"'{lane_decision.rejected_by_run_id or lane_decision.active_run_id}'."
-            )
-            run_handle.emit(
-                "run.lane.rejected",
-                {
-                    "policy": lane_decision.policy,
-                    "busy_run_id": lane_decision.rejected_by_run_id or lane_decision.active_run_id,
-                    "session_id": run_handle.session_id,
-                },
-            )
-            run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
-            return
-        if lane_decision.waited:
-            run_handle.emit(
-                "run.lane.queued",
-                {
-                    "policy": lane_decision.policy,
-                    "blocked_by_run_id": lane_decision.active_run_id,
-                    "interrupted_run_id": lane_decision.interrupted_run_id,
-                },
-            )
-            run_handle.emit(
-                "run.liveness.blocked",
-                {
-                    "heartbeat_kind": "session_lane",
-                    "blocked_reason": f"lane_busy:{lane_decision.active_run_id}",
-                    "watchdog_source": "session_lane",
-                    "stalled": False,
-                },
-            )
-        run_handle.emit(
-            "run.lane.acquired",
-            {
-                "policy": lane_decision.policy,
-                "waited": lane_decision.waited,
-                "previous_run_id": lane_decision.active_run_id,
-                "interrupted_run_id": lane_decision.interrupted_run_id,
-            },
-        )
-        if lane_decision.waited:
-            run_handle.emit(
-                "run.liveness.recovered",
-                {
-                    "heartbeat_kind": "session_lane",
-                    "blocked_reason": None,
-                    "watchdog_source": "session_lane",
-                    "stalled": False,
-                },
-            )
-        preflight_decision = automation_runtime.run_preflight(
-            run_handle=run_handle,
-            trigger_source=trigger_source,
-            user_id=kwargs.get("user_id"),
-        )
-        
-        # 记录开始状态
-        knowledge_db.log_execution(
-            log_id=log_id,
-            task_name=task_name,
-            action_type="agent",
-            action_target=target_graph_module_name,
-            trigger_source=trigger_source,
-            status="running",
-            payload=action_payload
-        )
-        
+        run_handle = None
+        lane_decision = None
         start_time = time.time()
         error_message = None
         status = "success"
         execution_receipt = None
 
         try:
+            run_handle = automation_runtime.begin_or_attach_run(
+                action_type="agent",
+                target=target_graph_module_name,
+                payload=action_payload,
+                trigger_source=trigger_source,
+                is_async=True,
+                kwargs=kwargs,
+            )
+            ActionExecutor._activate_automation_stage(
+                run_id=run_handle.run_id,
+                trigger_source=trigger_source,
+                kwargs=kwargs,
+                stage="prepare",
+                title="Automation 准备",
+                input_payload={
+                    "actionType": "agent",
+                    "target": target_graph_module_name,
+                    "triggerSource": trigger_source,
+                    "taskName": task_name,
+                },
+            )
+            run_handle.emit(
+                "automation.trigger.normalized",
+                ActionExecutor._build_automation_trigger_payload(
+                    run_handle=run_handle,
+                    action_type="agent",
+                    target=target_graph_module_name,
+                    task_name=task_name,
+                    trigger_source=trigger_source,
+                    is_async=True,
+                    kwargs=kwargs,
+                ),
+            )
+            lane_policy = runtime_stability_service.session_lane_policy()
+            lane_decision = await session_admission_service.acquire_async(
+                run_handle.session_id,
+                run_handle.run_id,
+                policy=lane_policy,
+                runtime_kind="automation_agent",
+                metadata={
+                    "triggerSource": trigger_source,
+                    "actionType": "agent",
+                    "target": target_graph_module_name,
+                },
+            )
+            if not lane_decision.acquired:
+                error_message = (
+                    f"Session lane busy: session '{run_handle.session_id}' is already running "
+                    f"'{lane_decision.rejected_by_run_id or lane_decision.active_run_id}'."
+                )
+                run_handle.emit(
+                    "run.lane.rejected",
+                    {
+                        "policy": lane_decision.policy,
+                        "busy_run_id": lane_decision.rejected_by_run_id or lane_decision.active_run_id,
+                        "session_id": run_handle.session_id,
+                    },
+                )
+                status = "rejected"
+                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+                return
+            if lane_decision.waited:
+                run_handle.emit(
+                    "run.lane.queued",
+                    {
+                        "policy": lane_decision.policy,
+                        "blocked_by_run_id": lane_decision.active_run_id,
+                        "interrupted_run_id": lane_decision.interrupted_run_id,
+                    },
+                )
+                run_handle.emit(
+                    "run.liveness.blocked",
+                    {
+                        "heartbeat_kind": "session_lane",
+                        "blocked_reason": f"lane_busy:{lane_decision.active_run_id}",
+                        "watchdog_source": "session_lane",
+                        "stalled": False,
+                    },
+                )
+            run_handle.emit(
+                "run.lane.acquired",
+                {
+                    "policy": lane_decision.policy,
+                    "waited": lane_decision.waited,
+                    "previous_run_id": lane_decision.active_run_id,
+                    "interrupted_run_id": lane_decision.interrupted_run_id,
+                },
+            )
+            if lane_decision.waited:
+                run_handle.emit(
+                    "run.liveness.recovered",
+                    {
+                        "heartbeat_kind": "session_lane",
+                        "blocked_reason": None,
+                        "watchdog_source": "session_lane",
+                        "stalled": False,
+                    },
+                )
+            preflight_decision = automation_runtime.run_preflight(
+                run_handle=run_handle,
+                trigger_source=trigger_source,
+                user_id=kwargs.get("user_id"),
+            )
+            # 记录开始状态
+            knowledge_db.log_execution(
+                log_id=log_id,
+                task_name=task_name,
+                action_type="agent",
+                action_target=target_graph_module_name,
+                trigger_source=trigger_source,
+                status="running",
+                payload=action_payload
+            )
             preflight_result = automation_runtime.handle_preflight_decision(
                 run_handle=run_handle,
                 trigger_source=trigger_source,
@@ -1178,18 +1215,8 @@ class ActionExecutor:
                 error_message = str((controlled.get("control") or {}).get("reason") or "")
                 return
 
-            try:
-                target_module = importlib.import_module(target_graph_module_name)
-            except ImportError:
-                target_module = importlib.import_module(f"graph.{target_graph_module_name}")
-                
-            compiled_graph = getattr(target_module, "compiled_graph", None)
-            if compiled_graph is None:
-                 compiled_graph = getattr(target_module, "app", None)
-                 
-            if compiled_graph is None:
-                print(f"[ActionExecutor] Async Agent Error: Could not find graph in {target_graph_module_name}")
-                return
+            is_supervisor = ActionExecutor._is_supervisor_target(target_graph_module_name)
+            compiled_graph = None if is_supervisor else ActionExecutor._load_agent_graph(target_graph_module_name)
 
             trigger_reason = kwargs.get("event_name", kwargs.get("trigger", "unknown"))
             channel_id = str(action_payload.get("channel_id") or "").strip()
@@ -1248,7 +1275,14 @@ class ActionExecutor:
                 project_id=kwargs.get("project_id"),
                 workspace_id=kwargs.get("workspace_id"),
             ):
-                result = await compiled_graph.ainvoke(payload)
+                if is_supervisor:
+                    result = await ActionExecutor._invoke_supervisor(payload, run_handle.session_id)
+                else:
+                    result = await compiled_graph.ainvoke(payload)
+            if isinstance(result, dict) and result.get("hook_rejected"):
+                raise RuntimeError(
+                    f"Agent '{target_graph_module_name}' rejected the context: {result.get('hook_feedback') or 'No feedback provided by Agent.'}"
+                )
             automation_runtime.observe_post_action(
                 task_name=task_name,
                 action_type="agent",
@@ -1284,7 +1318,28 @@ class ActionExecutor:
                 error_message = str((controlled.get("control") or {}).get("reason") or "")
                 return
 
+            ActionExecutor._activate_automation_stage(
+                run_id=run_handle.run_id,
+                trigger_source=trigger_source,
+                kwargs=kwargs,
+                stage="finalize",
+                title="Automation 收尾",
+                input_payload={"status": status},
+            )
+            run_handle.complete(reason="automation_finished", node="automation_runtime")
+
+        except asyncio.CancelledError:
+            status = "cancelled"
+            error_message = "Automation execution cancelled."
+            if run_handle is not None:
+                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+            raise
         except ModelGovernanceInterventionRequired as e:
+            status = "review_required"
+            error_message = str(e)
+            if run_handle is None:
+                status = "failed"
+                raise
             request_payload = e.to_request_payload()
             approval = run_handle.request_approval(
                 approval_kind=e.approval_kind,
@@ -1309,32 +1364,21 @@ class ActionExecutor:
                     node="automation_runtime",
                     error=error_message,
                 )
-            run_handle.fail(error_message, node="automation_runtime")
+            if run_handle is not None:
+                run_handle.fail(error_message, node="automation_runtime")
             
         finally:
-            if lock_key:
-                ActionExecutor._active_targets.discard(lock_key)
-            if status == "success":
-                ActionExecutor._activate_automation_stage(
-                    run_id=run_handle.run_id,
-                    trigger_source=trigger_source,
-                    kwargs=kwargs,
-                    stage="finalize",
-                    title="Automation 收尾",
-                    input_payload={"status": status},
-                )
-                run_handle.complete(reason="automation_finished", node="automation_runtime")
             try:
-                await session_admission_service.release_async(run_handle.session_id, run_handle.run_id)
-                run_handle.emit(
-                    "run.lane.released",
-                    {
-                        "policy": lane_decision.policy,
-                        "session_id": run_handle.session_id,
-                    },
-                )
-            except Exception:
-                pass
+                if run_handle is not None:
+                    await session_admission_service.release_async(run_handle.session_id, run_handle.run_id)
+                    if lane_decision is not None and lane_decision.acquired:
+                        run_handle.emit(
+                            "run.lane.released",
+                            {"policy": lane_decision.policy, "session_id": run_handle.session_id},
+                        )
+            finally:
+                if lock_key:
+                    ActionExecutor._active_targets.discard(lock_key)
             duration_ms = int((time.time() - start_time) * 1000)
             knowledge_db.log_execution(
                 log_id=log_id,

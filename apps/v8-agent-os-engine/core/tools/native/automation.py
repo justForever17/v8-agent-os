@@ -236,6 +236,10 @@ def manage_cron(
         elif action == "add":
             if not job_id or not expression or not target or not name:
                 return "Missing required arguments for 'add' action."
+            if any(str(job.get("id") or "") == job_id for job in jobs):
+                return f"Cron job '{job_id}' already exists."
+            from apscheduler.triggers.cron import CronTrigger
+            CronTrigger.from_crontab(expression)
 
             if action_type in ["command", "python", "agent", "rpa", "rpa_runtime"]:
                 inferred_type = action_type
@@ -257,6 +261,9 @@ def manage_cron(
                 "payload": payload or {},
                 "enabled": True
             }
+            for key in ("user_id", "project_id", "workspace_id", "workspace_path", "resolved_scope", "scope_source", "scope_chain"):
+                if runtime_context.get(key) is not None:
+                    new_job[key] = runtime_context[key]
             current_session_id = str(runtime_context.get("session_id") or "").strip()
             if current_session_id:
                 source_metadata = {
@@ -276,7 +283,9 @@ def manage_cron(
                 )
             jobs.append(new_job)
             storage.save_cron_config({"jobs": jobs})
-            cron_manager.sync_jobs_to_scheduler()
+            sync_result = cron_manager.sync_jobs_to_scheduler()
+            if isinstance(sync_result, dict) and sync_result.get("status") != "success":
+                return f"Cron job '{job_id}' was saved but schedule activation failed: {sync_result}"
             safety_guardian.observe_post_action(
                 action_family="cron_mutation",
                 summary=f"已新增定时任务：{job_id}",
@@ -294,7 +303,9 @@ def manage_cron(
                 return f"Job with ID '{job_id}' not found."
 
             storage.save_cron_config({"jobs": filtered_jobs})
-            cron_manager.sync_jobs_to_scheduler()
+            sync_result = cron_manager.sync_jobs_to_scheduler()
+            if isinstance(sync_result, dict) and sync_result.get("status") != "success":
+                return f"Cron job '{job_id}' was removed from config but scheduler sync failed: {sync_result}"
             safety_guardian.observe_post_action(
                 action_family="cron_mutation",
                 summary=f"已删除定时任务：{job_id}",
@@ -328,12 +339,14 @@ def manage_hook(
     on_supervisor_thinking_start, on_supervisor_thinking_end,
     on_supervisor_end, on_chat_end, and tool execution events
     on_tool_execute_start/on_tool_execute_end.
+    Agent target "supervisor" uses the canonical async Supervisor runner;
+    hooks created here run asynchronously.
     In-run Supervisor/tool hooks receive parent_session_id/parent_run_id as
     source context by default; use on_chat_end for terminal cleanup that can
     safely attach to the completed chat session.
 
     Arguments:
-        action (str): "list" or "add".
+        action (str): "list", "add", "pause", "resume", or "remove".
         event (str, optional): The engine event to hook into (e.g. "on_chat_end", "on_agent_start").
         target (str, optional): The execution target. Format depends on action_type:
             - action_type="command": A shell command string.
@@ -343,10 +356,11 @@ def manage_hook(
             - action_type="rpa": An RPA template/draft/script/robot target (e.g. "template:github-star", "draft:<id>", "path/to/flow.robot").
         action_type (str, optional): "command", "python", "agent", or "rpa". Auto-inferred from target if omitted.
         name (str, optional): Human readable display name for the hook.
+            For pause/resume/remove, use the hook ID or unique name returned by list.
         payload (dict, optional): Runtime input, variables, or execution options for the target.
     """
     try:
-        if action == "add":
+        if action in {"add", "pause", "resume", "remove", "delete"}:
             allowed, error_message = _enforce_safety_decision(
                 safety_guardian.assess_hook_mutation(action, runtime_context=get_runtime_context()),
                 tool_call_id=tool_call_id,
@@ -365,7 +379,7 @@ def manage_hook(
             ret = []
             for h in hooks:
                 evs = h.get('events', [])
-                ret.append(f"[{h.get('name')}] Events: {evs} | Target: {h.get('target')} ({h.get('type', '?')})")
+                ret.append(f"[{h.get('id') or h.get('name')}] {h.get('name')} | Enabled: {h.get('enabled', False)} | Events: {evs} | Target: {h.get('target')} ({h.get('type', '?')})")
             return "\n".join(ret)
 
         elif action == "add":
@@ -393,6 +407,10 @@ def manage_hook(
                 "async": True,
                 "enabled": True
             }
+            runtime_context = get_runtime_context()
+            for key in ("user_id", "project_id", "workspace_id"):
+                if runtime_context.get(key) is not None:
+                    new_hook[key] = runtime_context[key]
             hooks.append(new_hook)
             storage.save_hooks_config({"hooks": hooks})
             safety_guardian.observe_post_action(
@@ -402,8 +420,34 @@ def manage_hook(
                 runtime_context=get_runtime_context(),
             )
             return f"Successfully added hook '{name}' for event '{event}' (type={inferred_type}, target={target})."
+        elif action in {"pause", "resume", "remove", "delete"}:
+            selector = str(name or target or "").strip()
+            if not selector:
+                return "Missing hook name or target for lifecycle action."
+            matched = [hook for hook in hooks if str(hook.get("id") or "").strip() == selector]
+            if not matched:
+                matched = [hook for hook in hooks if str(hook.get("name") or "").strip() == selector
+                           or (not name and str(hook.get("target") or "").strip() == selector)]
+            if not matched:
+                return f"Hook '{selector}' not found."
+            if len(matched) > 1:
+                return f"Hook '{selector}' is ambiguous; use its ID."
+            if action in {"remove", "delete"}:
+                hooks = [hook for hook in hooks if hook not in matched]
+            else:
+                for hook in matched:
+                    hook["enabled"] = action == "resume"
+                    hook["status"] = "active" if action == "resume" else "paused"
+            storage.save_hooks_config({"hooks": hooks})
+            safety_guardian.observe_post_action(
+                action_family="hook_mutation",
+                summary=f"Hook {action}: {selector}",
+                details={"action": action, "hook_id": matched[0].get("id")},
+                runtime_context=get_runtime_context(),
+            )
+            return f"Successfully {action}d hook '{selector}'."
         else:
-             return "Invalid action. Only 'list' and 'add' are supported."
+             return "Invalid action. Supported actions: list, add, pause, resume, remove."
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error managing hooks: {str(e)}"

@@ -16,10 +16,6 @@ from core.realtime_protocol import utc_now_iso
 from erc.session_lifecycle_service import session_lifecycle_service
 
 
-_CREATE_INTENT = re.compile(
-    r"(?:创建|建立|新建|开设|开启|开).{0,35}(?:会话|任务)|"
-    r"(?:create|start|open|establish).{0,50}(?:session|task)", re.I,
-)
 _DENY_INTENT = re.compile(
     r"(?:不要|不准|禁止|别|取消|do\s+not|don't|never).{0,18}"
     r"(?:创建|建立|新建|派|继续|create|start|delegate|continue)", re.I,
@@ -133,7 +129,7 @@ class SessionCommandService:
         return row
 
     def _creation(self, *, session_id: str, user_id: str, context: dict[str, Any], state: dict[str, Any],
-                  title: str, task: dict[str, Any], idempotency_key: str, authorization_quote: str) -> dict[str, Any]:
+                  title: str, task: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
         from erc.session_coordination_service import _latest_human, _contains_secret
 
         if self.db.get_session_command_assignment_for_child(session_id):
@@ -141,7 +137,7 @@ class SessionCommandService:
         if not idempotency_key.strip():
             raise ValueError("assignment_idempotency_key_required")
         latest, is_coordination = _latest_human(list(state.get("messages") or []))
-        if is_coordination or _DENY_INTENT.search(latest):
+        if not latest.strip() or is_coordination or _DENY_INTENT.search(latest):
             raise ValueError("assignment_user_authorization_required")
         original = self.db.get_session_command_assignment_by_idempotency(session_id, idempotency_key)
         creation_digest = _digest({"title": title, "task": task})
@@ -150,8 +146,6 @@ class SessionCommandService:
             if original["contract"]["creationDigest"] != creation_digest:
                 raise ValueError("assignment_idempotency_conflict")
             return {"ok": True, "assignment": self.envelope(original), "idempotent": True}
-        if not authorization_quote or authorization_quote not in latest or not _CREATE_INTENT.search(authorization_quote):
-            raise ValueError("assignment_user_authorization_required")
         if _contains_secret(latest):
             raise ValueError("assignment_secret_in_charter")
         binding = self.db.get_session_scope_binding(session_id) or {}
@@ -198,12 +192,12 @@ class SessionCommandService:
 
     def command(self, *, mode: str, context: dict[str, Any], state: dict[str, Any], assignment_id: str = "",
                 revision: int = 0, title: str = "", task: dict[str, Any] | None = None, content: str = "",
-                idempotency_key: str = "", authorization_quote: str = "", after_id: str = "", limit: int = 20) -> dict[str, Any]:
+                idempotency_key: str = "", after_id: str = "", limit: int = 20) -> dict[str, Any]:
         try:
             session_id, user_id, run_id = self._actor(context)
             if mode == "create":
                 return self._creation(session_id=session_id, user_id=user_id, context=context, state=state,
-                                      title=title, task=task or {}, idempotency_key=idempotency_key, authorization_quote=authorization_quote)
+                                      title=title, task=task or {}, idempotency_key=idempotency_key)
             if mode == "list":
                 rows = session_lifecycle_service.list(root_session_id=session_id, limit=limit + 1, after_id=after_id, database=self.db)
                 page = rows[:limit]
@@ -220,7 +214,9 @@ class SessionCommandService:
                 raise ValueError("assignment_root_only")
             from erc.session_coordination_service import _latest_human, _contains_secret
             latest, is_coordination = _latest_human(list(state.get("messages") or []))
-            if is_coordination or _DENY_INTENT.search(latest):
+            # A peer result may inform a root's already-authorized work.
+            # Its text neither creates nor revokes the persistent authority.
+            if not is_coordination and _DENY_INTENT.search(latest):
                 raise ValueError("assignment_user_authorization_required")
             if not idempotency_key or not content.strip() or _contains_secret(content):
                 raise ValueError("assignment_content_or_idempotency_invalid")
@@ -242,20 +238,51 @@ class SessionCommandService:
                 )
             self.coordination._emit_transition(message, "session_coordination.queued")
             message = self.coordination.dispatch_message(message["id"]) or message
-            return {"ok": True, "assignment": self.envelope(row), "message": self.coordination.compact_ref(message)}
+            return {"ok": message.get("state") not in {"blocked", "failed", "cancelled", "expired"},
+                    "assignment": self.envelope(row), "message": self.coordination.compact_ref(message)}
         except (ValueError, OSError) as exc:
             return {"ok": False, "tool": "session_command_broker", "error": str(exc)}
 
     def assignment_for_message(self, message: dict[str, Any], *, session_id: str) -> dict[str, Any]:
-        if message.get("authority") != "project_assignment":
+        persisted = self.db.get_session_coordination_message(str(message.get("messageId") or message.get("id") or ""))
+        if not persisted or persisted.get("authority") != "project_assignment":
+            if message.get("authority") == "project_assignment":
+                raise ValueError("assignment_message_not_authorized")
             return {}
+        for key in ("id", "messageId", "authority", "sourceSessionId", "targetSessionId", "sourceUserId", "content"):
+            if key in message and message[key] != persisted.get(key):
+                raise ValueError("assignment_message_payload_changed")
+        message = persisted
         meta = message.get("metadata") or {}
+        digest = _digest({"assignmentId": meta.get("assignmentId"), "revision": meta.get("assignmentRevision"),
+                          "content": message["content"]})
+        if digest != meta.get("assignmentCommandDigest"):
+            raise ValueError("assignment_message_digest_changed")
         row = self.validate(str(meta.get("assignmentId") or ""), session_id=session_id,
                             user_id=str(message.get("sourceUserId") or message.get("source_user_id") or ""),
                             revision=int(meta.get("assignmentRevision") or 0))
         if row["childSessionId"] != session_id or row["rootSessionId"] != message.get("sourceSessionId"):
             raise ValueError("assignment_message_scope_mismatch")
         return self.envelope(row)
+
+    def bind_run(self, message: dict[str, Any], *, run_id: str) -> None:
+        assignment = self.assignment_for_message(message, session_id=message["targetSessionId"])
+        if not assignment:
+            return
+        run = self.db.get_run_record(run_id)
+        if not run or run.get("session_id") != assignment["childSessionId"] or run.get("user_id") != message["sourceUserId"]:
+            raise ValueError("assignment_run_scope_mismatch")
+        if run.get("status") not in {"running", "queued"} or message.get("targetRunId") != run_id:
+            raise ValueError("assignment_run_not_active")
+        previous = (run.get("metadata") or {}).get("sessionAssignment") or {}
+        result = self.db.update_run_metadata_key_if_state(
+            run_id, key="sessionAssignment", expected_state=previous.get("state") or "",
+            expected_status=run["status"],
+            next_value={"state": "active", "assignmentId": assignment["assignmentId"],
+                        "revision": assignment["revision"], "messageId": message["messageId"]},
+        )
+        if not result.get("updated"):
+            raise ValueError("assignment_run_binding_conflict")
 
     def execution_context(self, assignment: dict[str, Any], *, session_id: str, user_id: str) -> dict[str, Any]:
         row = self.validate(str(assignment.get("assignmentId") or ""), session_id=session_id,
@@ -271,10 +298,46 @@ class SessionCommandService:
 
 
 def validate_assignment_execution_context(context: dict[str, Any]) -> dict[str, Any]:
-    assignment = context.get("project_assignment")
-    if not assignment:
+    session_id = str(context.get("session_id") or context.get("sessionId") or "")
+    user_id = str(context.get("user_id") or context.get("userId") or "")
+    run_id = str(context.get("run_id") or context.get("runId") or "")
+    run = db.get_run_record(run_id) if run_id else None
+    binding = ((run or {}).get("metadata") or {}).get("sessionAssignment")
+    if not binding:
+        if context.get("project_assignment"):
+            raise ValueError("assignment_run_binding_required")
         return {}
-    return SessionCommandService().execution_context(
-        assignment, session_id=str(context.get("session_id") or context.get("sessionId") or ""),
-        user_id=str(context.get("user_id") or context.get("userId") or ""),
-    )
+    if run.get("session_id") != session_id or run.get("user_id") != user_id or run.get("status") not in {"running", "queued"}:
+        raise ValueError("assignment_run_scope_mismatch")
+    service = SessionCommandService()
+    message = db.get_session_coordination_message(str(binding.get("messageId") or ""))
+    if not message or message.get("targetRunId") != run_id:
+        raise ValueError("assignment_run_message_mismatch")
+    if message.get("state") not in {"promoted", "injected", "replied"}:
+        raise ValueError("assignment_run_message_inactive")
+    assignment = service.assignment_for_message(message, session_id=session_id)
+    if not assignment or assignment["assignmentId"] != binding.get("assignmentId") or assignment["revision"] != binding.get("revision"):
+        raise ValueError("assignment_run_binding_mismatch")
+    claimed = context.get("project_assignment") or {}
+    if claimed and (claimed.get("assignmentId") != assignment["assignmentId"] or claimed.get("revision") != assignment["revision"]):
+        raise ValueError("assignment_runtime_projection_mismatch")
+    workspace = assignment["scope"]["workspacePath"]
+    actual_workspace = str(context.get("workspace_path") or context.get("workspacePath") or "")
+    if not actual_workspace or Path(actual_workspace).resolve() != Path(workspace):
+        raise ValueError("assignment_runtime_workspace_changed")
+    verified = service.execution_context(assignment, session_id=session_id, user_id=user_id)
+    # A descendant's explicit narrower set remains narrower; a projection can
+    # never replace a stored Capsule with a wider model-provided one.
+    if str(context.get("runtime_kind") or "") in {"subagent", "delegation"}:
+        requested = _paths(context.get("allowed_write_paths", context.get("allowedWritePaths", [])), workspace)
+        permitted = verified["allowed_write_paths"]
+        if any(not any(Path(path) == Path(parent) or (parent.endswith(os.sep) and Path(path).is_relative_to(Path(parent)))
+                       for parent in permitted) for path in requested):
+            raise ValueError("assignment_write_scope_exceeded")
+        verified["allowed_write_paths"] = requested
+        if context.get("engineering_capsule_mode") in {"read_only", "verify"}:
+            verified["engineering_capsule_mode"] = context["engineering_capsule_mode"]
+        for key in ("task_brief", "taskBrief", "engineering_task_capsule"):
+            if key in context:
+                verified[key] = context[key]
+    return verified

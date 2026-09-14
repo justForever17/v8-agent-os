@@ -1277,7 +1277,13 @@ def create_routed_tool_node(tools, name, fallback_goto):
         context = get_runtime_context()
         if state_route.get("project_assignment"):
             context = {**context, "project_assignment": state_route["project_assignment"]}
-        assignment_context = validate_assignment_execution_context(context)
+        try:
+            assignment_context = validate_assignment_execution_context(context)
+        except (ValueError, OSError) as exc:
+            return ToolMessage(
+                content=json.dumps({"ok": False, "error": str(exc)}),
+                name=request.tool_call["name"], tool_call_id=request.tool_call["id"], status="error",
+            )
         if request.tool is not None and request.tool_call.get("id"):
             # BaseTool's start callback contains args, not the ToolCall envelope.
             # Attach the actual invocation identity to this per-call copy so

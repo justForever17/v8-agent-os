@@ -256,14 +256,17 @@ def _engineering_command_scope_block(
     command: str = "",
 ) -> dict[str, Any] | None:
     runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
-    if runtime_context.get("project_assignment"):
-        from erc.session_command_service import validate_assignment_execution_context
-        try:
-            runtime_context = {**runtime_context, **validate_assignment_execution_context(runtime_context)}
-        except (ValueError, OSError) as exc:
-            return {"ok": False, "error": str(exc), "operation": operation}
+    from erc.session_command_service import validate_assignment_execution_context
+    try:
+        verified_assignment = validate_assignment_execution_context(runtime_context)
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "error": str(exc), "operation": operation}
+    if verified_assignment:
+        runtime_context = {**runtime_context, **verified_assignment}
         # An independent assigned Supervisor has the same bounded command
         # contract as a worker; becoming a chat actor cannot widen its scope.
+        if not _direct_engineering_command_is_read_or_validation(command):
+            return {"ok": False, "error": "assignment_command_outside_capsule", "operation": operation}
         runtime_kind = "subagent"
     if runtime_kind != "subagent":
         return None

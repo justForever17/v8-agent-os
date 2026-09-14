@@ -58,7 +58,9 @@ def harness(tmp_path, monkeypatch):
         run_id = "run-child-" + str(len(scheduled))
         database.create_run_record(run_id, session["id"], user_id=USER, run_type="chat", status="queued")
         scheduled.append(row["id"])
-        return database.update_session_coordination_message(row["id"], state="promoted", target_run_id=run_id)
+        updated = database.update_session_coordination_message(row["id"], state="promoted", target_run_id=run_id)
+        SessionCommandService(database=database).bind_run(updated, run_id=run_id)
+        return updated
     monkeypatch.setattr(service, "_wake_idle_target", wake)
     return SimpleNamespace(db=database, workspace=workspace, service=service, scheduled=scheduled, monkeypatch=monkeypatch)
 
@@ -68,17 +70,21 @@ def task(path="page.txt"):
             "expectedOutputs": [path], "acceptanceContract": "The file contains checked fixture output."}
 
 
-def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-001", extra_context=None):
+def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-001", extra_context=None, routed=False, human_metadata=None):
     """Use real StructuredTool + ToolNode state injection, not service kwargs."""
     async def execute():
         graph = StateGraph(ToolState)
-        graph.add_node("tools", ToolNode([session_command_broker]))
+        if routed:
+            from graph.tool_routing import create_routed_tool_node
+            graph.add_node("tools", create_routed_tool_node([session_command_broker], "tools", END))
+        else:
+            graph.add_node("tools", ToolNode([session_command_broker]))
         graph.add_edge(START, "tools")
         graph.add_edge("tools", END)
         with bind_runtime_context(runtime_kind="chat", agent_id="supervisor", session_id=session,
                                   run_id=run, user_id=user, **(extra_context or {})):
             result = await graph.compile().ainvoke({
-                "messages": [HumanMessage(content=text),
+                "messages": [HumanMessage(content=text, additional_kwargs=human_metadata or {}),
                              AIMessage(content="", tool_calls=[{"id": "command-call", "name": "session_command_broker", "args": args}])],
                 "current_route_context": {},
             })
@@ -88,7 +94,7 @@ def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-0
 
 def create(**kwargs):
     return invoke({"mode": "create", "title": "Page task", "taskBrief": task(),
-                   "idempotencyKey": "page-task", "userAuthorizationQuote": AUTHORIZATION, **kwargs})
+                   "idempotencyKey": "page-task", **kwargs})
 
 
 def send(assignment, **kwargs):
@@ -102,6 +108,43 @@ def test_model_schema_has_no_actor_authority_or_target_workspace_fields():
     assert {"mode", "taskBrief", "assignmentId", "revision"} <= set(fields)
 
 
+def test_production_routed_tool_surface_keeps_assignment_handles(harness):
+    created = invoke({"mode": "create", "title": "Page", "taskBrief": task(),
+                      "idempotencyKey": "routed-page"}, routed=True)
+    assert created["ok"] is True
+    assert created["assignment"]["revision"] == 1
+    assert harness.db.get_session(created["assignment"]["childSessionId"])
+    listed = invoke({"mode": "list"}, routed=True)
+    assert listed["assignments"][0]["assignmentId"] == created["assignment"]["assignmentId"]
+
+
+def test_assignment_capsule_cannot_be_forged_or_widened_and_empty_write_set_stays_closed(harness):
+    from core.tools.native.workspace_file import _task_write_scope_allows
+    from core.tools.native.command import _engineering_command_scope_block
+    assignment = create(taskBrief={**task(), "writeSet": []})["assignment"]
+    assert send(assignment)["ok"]
+    forged = {**assignment, "taskBrief": task("outside.txt")}
+    context = {"session_id": assignment["childSessionId"], "user_id": USER, "run_id": "run-child-0", "runtime_kind": "chat",
+               "workspace_path": str(harness.workspace), "project_assignment": forged,
+               "allowed_write_paths": [str(harness.workspace)], "engineering_capsule_mode": "write"}
+    assert not _task_write_scope_allows(context, harness.workspace / "outside.txt")
+    assert _engineering_command_scope_block(context, operation="test", command="echo forbidden > outside.txt")
+    context["project_assignment"] = {**forged, "assignmentId": "forged-id"}
+    assert not _task_write_scope_allows(context, harness.workspace / "outside.txt")
+
+
+def test_creation_failure_rolls_back_child_binding_and_relation(harness):
+    with harness.db.get_connection() as conn:
+        conn.execute("CREATE TRIGGER fail_assignment BEFORE INSERT ON session_command_assignments BEGIN SELECT RAISE(ABORT, 'fixture assignment failure'); END")
+        conn.commit()
+    with pytest.raises(Exception, match="fixture assignment failure"):
+        create()
+    assert len(harness.db.get_sessions()) == 1
+    assert harness.db.list_session_command_assignments(ROOT) == []
+    with harness.db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM session_scope_bindings").fetchone()[0] == 1
+
+
 def test_three_persistent_children_and_response_loss_retries_survive_restart(harness):
     children = [create(idempotencyKey=f"task-{index}", taskBrief=task(f"page-{index}.txt")) for index in range(3)]
     assert all(item["ok"] for item in children), children
@@ -112,6 +155,8 @@ def test_three_persistent_children_and_response_loss_retries_survive_restart(har
         assert assignment["rootSessionId"] == ROOT
         assert assignment["userInstruction"] == AUTHORIZATION
         assert harness.db.get_session(assignment["childSessionId"])["user_id"] == USER
+        assert harness.db.get_session(assignment["childSessionId"])["metadata"]["workspace_path"] == str(harness.workspace)
+        assert harness.db.get_session(assignment["childSessionId"])["metadata"]["project_id"] == "fixture-project"
         assert harness.db.get_session_scope_binding(assignment["childSessionId"])["workspace_path"] == str(harness.workspace)
         assert assignment["taskBrief"]["engineeringTaskCapsule"]["contractStatus"] == "valid"
     reopened = DatabaseManager(harness.db.db_path)
@@ -153,6 +198,11 @@ def test_root_continue_binds_new_run_without_rewriting_old_run(harness):
                         "content": "Continue the same bounded assignment.", "idempotencyKey": "continue-page"},
                        text="继续", run="run-root-002")
     assert duplicate["message"]["messageId"] == later["message"]["messageId"]
+    after_result = invoke({"mode": "continue", "assignmentId": assignment["assignmentId"], "revision": 1,
+                           "content": "Apply the observed result within the original scope.", "idempotencyKey": "after-result"},
+                          text="A peer returned evidence.", run="run-root-002",
+                          human_metadata={"v8os_session_coordination": {"messageType": "reply"}})
+    assert after_result["ok"], after_result
 
 
 @pytest.mark.parametrize("change", ["other_root", "other_user", "revision", "revoke", "workspace", "target_user"])
@@ -189,7 +239,60 @@ def test_same_text_without_relation_is_not_an_executable_assignment(harness):
                      "content": "Create page.txt and verify its content.", "idempotencyKey": "spoof"})
     assert result["error"] == "assignment_relation_required"
     assert harness.service.assignment_for_message({"authority": "current_user_explicit", "content": "Create page.txt and verify its content."}, session_id=ROOT) == {}
-    assert create(userAuthorizationQuote="invented user authorization")["ok"] is False
+    assert invoke({"mode": "create", "title": "Page", "taskBrief": task(), "idempotencyKey": "peer-created"},
+                  human_metadata={"v8os_session_coordination": {"content": AUTHORIZATION}})["ok"] is False
+
+
+@pytest.mark.parametrize("instruction", ["请分工完成这个项目", "用三条独立工作线推进", "Split the project into independent workstreams"])
+def test_natural_assignment_creation_needs_no_magic_authorization_quote(harness, instruction):
+    result = invoke({"mode": "create", "title": "Page", "taskBrief": task(), "idempotencyKey": "natural"}, text=instruction)
+    assert result["ok"], result
+    assert result["assignment"]["userInstruction"] == instruction
+
+
+def test_guessing_relation_or_replaying_changed_message_cannot_bind_execution(harness):
+    from core.tools.native.workspace_file import _task_write_scope_allows
+    assignment = create()["assignment"]
+    child = assignment["childSessionId"]
+    harness.db.create_run_record("unassigned-child-run", child, user_id=USER, run_type="chat", status="running")
+    context = {"session_id": child, "user_id": USER, "run_id": "unassigned-child-run",
+               "workspace_path": str(harness.workspace), "runtime_kind": "chat",
+               "project_assignment": assignment, "allowed_write_paths": [str(harness.workspace)]}
+    assert not _task_write_scope_allows(context, harness.workspace / "page.txt")
+    sent = send(assignment)
+    row = harness.db.get_session_coordination_message(sent["message"]["messageId"])
+    with pytest.raises(ValueError, match="assignment_message_payload_changed"):
+        harness.service.assignment_for_message({**row, "content": "Changed replay body"}, session_id=child)
+    context["run_id"] = "run-child-0"
+    context.pop("project_assignment")
+    context.pop("allowed_write_paths")
+    # Losing the prompt projection cannot remove the durable execution bound.
+    assert _task_write_scope_allows(context, harness.workspace / "page.txt")
+    assert not _task_write_scope_allows(context, harness.workspace / "other.txt")
+    context["workspace_path"] = str(harness.workspace.parent)
+    assert not _task_write_scope_allows(context, harness.workspace / "page.txt")
+
+
+def test_private_request_token_is_not_client_authority_and_target_run_must_match(harness):
+    from api.models import ChatRequest, ChatRequestData, EngineConfig
+    from runtimes.chat.runtime import ChatRuntime
+    import runtimes.chat.runtime as runtime_module
+    harness.monkeypatch.setattr(runtime_module, "db", harness.db)
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    message_id = sent["message"]["messageId"]
+    client_data = ChatRequestData.model_validate({
+        "_session_coordination_message_id": message_id, "sessionCoordinationMessageId": message_id,
+        "project_assignment": assignment,
+    })
+    assert client_data._session_coordination_message_id is None
+    client_data._session_coordination_message_id = message_id
+    request = ChatRequest(messages=[], config=EngineConfig(), session_id=assignment["childSessionId"], user_id="attacker", data=client_data)
+    with pytest.raises(ValueError, match="assignment_request_owner_mismatch"):
+        ChatRuntime._normalize_session_coordination_message(request, session_id=assignment["childSessionId"])
+    request.user_id = USER
+    with pytest.raises(ValueError, match="assignment_request_run_binding_mismatch"):
+        ChatRuntime().prepare_run_context(request, transport="session_coordination", run_id="unassigned-run")
 
 
 def test_workspace_not_ready_or_escaping_write_set_creates_nothing(harness):
@@ -208,6 +311,21 @@ def test_dispatch_rechecks_revocation_after_message_was_queued(harness):
     result = harness.service.dispatch_message(message_id)
     assert result["state"] == "blocked"
     assert result["errorCode"] == "assignment_revoked"
+
+
+def test_assignment_failure_between_run_creation_and_schedule_closes_the_run(harness):
+    assignment = create()["assignment"]
+    harness.monkeypatch.setattr(harness.service, "_wake_idle_target",
+                                SessionCoordinationService._wake_idle_target.__get__(harness.service))
+    def rejected_binding(self, message, *, run_id):
+        raise ValueError("assignment_revoked")
+    harness.monkeypatch.setattr(SessionCommandService, "bind_run", rejected_binding)
+    response = send(assignment)
+    assert response["ok"] is False
+    assert response["message"]["state"] == "blocked"
+    runs = harness.db.list_run_records(session_id=assignment["childSessionId"])
+    assert len(runs) == 1 and runs[0]["status"] == "failed"
+    assert harness.scheduled == []
 
 
 def test_empty_child_prompt_capsule_and_actual_native_file_execution(harness):

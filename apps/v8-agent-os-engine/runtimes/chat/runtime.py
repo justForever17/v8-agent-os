@@ -2018,6 +2018,10 @@ class ChatRuntime:
             return {}
         if str(row.get("targetSessionId") or row.get("target_session_id") or "") != session_id:
             return {}
+        if row.get("authority") == "project_assignment":
+            target = db.get_session(session_id) or {}
+            if str(request.user_id or "") != str(target.get("user_id") or ""):
+                raise ValueError("assignment_request_owner_mismatch")
         return {
             **session_coordination_service.compact_ref(row, viewer_session_id=session_id),
             "projectAssignment": session_coordination_service.assignment_for_message(row, session_id=session_id),
@@ -3383,6 +3387,11 @@ class ChatRuntime:
         run_id: str | None = None,
         build_engineering_context: bool = True,
     ) -> ChatRunContext:
+        message_id = str(getattr(request.data, "_session_coordination_message_id", "") or "") if request.data else ""
+        assignment_message = db.get_session_coordination_message(message_id) if message_id else None
+        if assignment_message and assignment_message.get("authority") == "project_assignment":
+            if not run_id or assignment_message.get("targetRunId") != run_id:
+                raise ValueError("assignment_request_run_binding_mismatch")
         prepared = self.prepare_request(request)
         run_handle = None
         existing_binding = None

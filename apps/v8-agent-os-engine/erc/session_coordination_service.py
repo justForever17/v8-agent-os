@@ -910,6 +910,9 @@ class SessionCoordinationService:
             timestamp_field="promoted_at",
         ) or row
         try:
+            if row.get("authority") == "project_assignment":
+                from erc.session_command_service import SessionCommandService
+                SessionCommandService(database=db).bind_run(updated, run_id=run_id)
             from erc.command_router import runtime_command_router
 
             request = runtime_command_router.build_session_coordination_chat_request(
@@ -928,6 +931,12 @@ class SessionCoordinationService:
                 status="failed",
                 error_message=f"session_coordination_schedule_failed: {type(exc).__name__}: {exc}",
             )
+            if isinstance(exc, ValueError) and str(exc).startswith("assignment_"):
+                updated = db.update_session_coordination_message(
+                    message_id, state="blocked", error_code=str(exc),
+                ) or updated
+                self._emit_transition(updated, "session_coordination.blocked")
+                return updated
         if not scheduled:
             updated = db.update_session_coordination_message(
                 message_id,
@@ -944,6 +953,9 @@ class SessionCoordinationService:
         row = db.get_session_coordination_message(message_id)
         if not row or str(row.get("state") or "") in SESSION_COORDINATION_TERMINAL_STATES:
             return row
+        if row.get("authority") == "project_assignment":
+            from erc.session_command_service import SessionCommandService
+            SessionCommandService(database=db).bind_run(row, run_id=target_run_id)
         updated = db.update_session_coordination_message(
             message_id,
             state="injected",

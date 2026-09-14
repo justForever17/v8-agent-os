@@ -17,7 +17,7 @@ class SessionLifecycleService:
 
     def create(self, data: dict[str, Any], *, assignment=None, binding=None, database=None) -> dict[str, Any]:
         database = database or db
-        metadata = dict(data.get("metadata") or {})
+        metadata = dict(data["metadata"]) if isinstance(data.get("metadata"), dict) else {}
         for key in ("externalSurface", "clientGroup", "source"):
             if data.get(key):
                 metadata[key] = str(data[key])
@@ -25,8 +25,18 @@ class SessionLifecycleService:
             metadata.setdefault("source", "acp_bridge")
             metadata.setdefault("clientGroup", "acp_bridge")
             metadata.setdefault("historyGroup", "external_agent_clients")
+        session_id = str(uuid.uuid4())
+        if binding:
+            from runtimes.memory.models import SessionScopeBinding
+            metadata.update(SessionScopeBinding(
+                session_id=session_id, conversation_id=session_id,
+                user_id=str(data.get("userId") or "anonymous"),
+                workspace_id=binding.get("workspace_id"), workspace_path=binding.get("workspace_path"),
+                project_id=binding.get("project_id"), resolved_scope=binding["resolved_scope"],
+                scope_source="project_assignment",
+            ).metadata_view())
         created = database.create_session_placeholder(
-            session_id=str(uuid.uuid4()), title=str(data.get("title") or "New Chat"),
+            session_id=session_id, title=str(data.get("title") or "New Chat"),
             user_id=str(data.get("userId") or "anonymous"), metadata=metadata,
             assignment=assignment, binding=binding,
         )

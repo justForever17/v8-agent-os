@@ -99,7 +99,14 @@ def supervisor_delegation_broker(
     inspect.executionTerminal includes degraded, failed and cancelled outcomes;
     completedAt is the persisted settlement timestamp when available. A missing
     historical timestamp leaves the time unknown; use state to judge activity.
-    Inspect evidence, then review_result for each result separately: delegation_id,
+    While executionTerminal=false, a status=partial handoff is usable only after
+    the Supervisor inspects its proof and explicitly chooses scoped acceptance:
+    runtime_broker(mode='accept_partial', episode_id=<producer episodeId>,
+    handoff_id=<current partial handoffRefId>, consumers=<needed subset of usableFor>,
+    reason=<evidence basis>). This does not finish the child or authorize other
+    consumers. Do not route a new episode or use review_result for a partial.
+    Only after executionTerminal=true, inspect the final evidence and use
+    review_result for each final result separately: delegation_id,
     handoff_id, task_brief_id, decision=accept|retry|ignore, followup=evidence basis.
     A prose ACCEPT never records a decision. Unknown evidence remains pending;
     retry records an unmet item and requires a repaired attempt before completion.

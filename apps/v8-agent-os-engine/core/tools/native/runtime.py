@@ -524,7 +524,7 @@ class RuntimeBrokerArgs(BaseModel):
 
     mode: str = Field(
         default="list",
-        description="Operation: route dispatches a background episode; inspect reads it; steer/cancel request acknowledged control; await yields for selected dependencies. list/grant/revoke manage direct tool groups.",
+        description="Operation: route dispatches a new background episode; inspect reads it; accept_partial records a Supervisor decision for an inspected current partial using episode_id, handoff_id, consumers and reason, without completing the episode. steer/cancel request acknowledged control; await yields for selected dependencies. list/grant/revoke manage direct tool groups.",
     )
     runtime_kind: str | None = Field(
         default=None,

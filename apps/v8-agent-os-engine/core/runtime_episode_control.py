@@ -35,20 +35,44 @@ def inspect_episode(episode_id: str, *, session_id: str, run_id: str, detail: bo
     from urllib.parse import quote
     handoffs = db.list_runtime_episode_handoffs(episode_id)
     from core.delegation_result_contract import delegation_handoff_results, delegation_result_acceptance
+    terminal = episode["state"] in TERMINAL_EPISODE_STATES
+    # Match acceptance's created_at/id ordering. This view is only guidance;
+    # accept_runtime_episode_partial still rechecks the current version/consumer.
+    latest_outputs = {}
+    for handoff in sorted(handoffs, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or ""))):
+        payload = handoff.get("payload") or handoff
+        if payload.get("outputKey"):
+            latest_outputs[payload["outputKey"]] = handoff.get("id") or payload.get("handoffRefId")
     for handoff in handoffs:
         payload = handoff.get("payload") or handoff
+        payload.pop("acceptanceAction", None)
+        if (not terminal and not handoff.get("payloadCorrupted") and payload.get("status") == "partial"
+                and payload.get("handoffRefId") and payload.get("usableFor")
+                and latest_outputs.get(payload.get("outputKey")) == payload["handoffRefId"]):
+            payload["acceptanceAction"] = {
+                "tool": "runtime_broker",
+                "arguments": {"mode": "accept_partial", "episode_id": episode_id, "handoff_id": payload["handoffRefId"]},
+                "allowedConsumers": list(payload["usableFor"]),
+                "requiredArguments": ["consumers", "reason"],
+                "guidance": (
+                    "Inspect the proof and decide whether this partial is sufficient for the intended downstream work. "
+                    "If so, supply consumers as the required subset of allowedConsumers and reason as the evidence basis. "
+                    "This hint is not authorization or recorded acceptance. Acceptance does not finish the running episode. "
+                    "Use this action for the inspected partial, not route or terminal review_result."
+                ),
+            }
         for result in delegation_handoff_results(payload):
             if isinstance(result, dict):
                 result["supervisorAcceptance"] = delegation_result_acceptance(episode, payload, str(result.get("taskBriefId") or ""))
     if not detail:
         messages = [{key: item[key] for key in ("messageId", "kind", "deliverySeq", "deliveryState", "receipt") if key in item} for item in messages]
-        handoffs = [{**{key: payload[key] for key in ("handoffRefId", "producerEpisodeId", "kind", "status", "compactSummary", "version", "sourceVersion", "usableFor", "proofRefs", "artifactRefs") if key in payload},
+        handoffs = [{**{key: payload[key] for key in ("handoffRefId", "producerEpisodeId", "kind", "status", "compactSummary", "outputKey", "version", "sourceVersion", "usableFor", "proofRefs", "artifactRefs", "acceptanceAction") if key in payload},
                      "results": [{key: result[key] for key in ("taskBriefId", "delegationId", "status", "error", "missingVerificationTools", "executionContractRepair", "availableTools", "acceptanceHint", "supervisorAcceptance") if key in result}
                                  for result in delegation_handoff_results(payload)]}
                     for item in handoffs[-12:] for payload in [dict(item.get("payload") or item)]]
     return {
         "episodeId": episode_id, "state": episode["state"],
-        "executionTerminal": episode["state"] in TERMINAL_EPISODE_STATES,
+        "executionTerminal": terminal,
         "completedAt": episode.get("completed_at"),
         "phase": (observation.get("progress") or {}).get("stage") or episode["state"],
         "progress": observation.get("progress") or {},

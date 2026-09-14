@@ -2401,6 +2401,14 @@ def delegation_broker(
             payload = {"ok": True, "mode": normalized_mode, "summary": "Decision recorded for this result version only.", **receipt}
         except ValueError as exc:
             payload = {"ok": False, "mode": normalized_mode, "error": str(exc)}
+            if str(exc) == "delegation_result_not_terminal":
+                payload["repairInstruction"] = (
+                    "review_result is only for terminal final results. Inspect the running episode's current partial "
+                    "handoffs with runtime_broker(mode='inspect', episode_id=" + json.dumps(delegation_id) + "). "
+                    "If the inspected proof is sufficient, use its acceptanceAction: runtime_broker(mode='accept_partial') "
+                    "with the exact episode_id and current handoff_id, consumers chosen from usableFor, and reason as "
+                    "the evidence basis. This rejection has not accepted any partial or authorized downstream use."
+                )
         return Command(goto="supervisor", update={"messages": [ToolMessage(
             content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]})
     if normalized_mode == "publish_partial":

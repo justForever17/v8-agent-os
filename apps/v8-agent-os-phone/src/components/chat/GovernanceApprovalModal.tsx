@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -171,6 +172,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
     onClose: () => void;
 }) {
     const { colors, t, themeMode } = useUiPrefs();
+    const insets = useSafeAreaInsets();
     const [answer, setAnswer] = useState("");
     const details = useMemo(() => approval ? extractApprovalDetails(approval) : null, [approval]);
     const specDetails = useMemo(() => extractSpecApprovalDetails(approval), [approval]);
@@ -191,7 +193,9 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-            <View style={[styles.overlay, { backgroundColor: themeMode === "dark" ? "rgba(0,0,0,0.62)" : "rgba(15,23,42,0.40)" }]}>
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"}
+                style={[styles.overlay, { paddingTop: Math.max(16, insets.top), paddingBottom: Math.max(16, insets.bottom),
+                    backgroundColor: themeMode === "dark" ? "rgba(0,0,0,0.62)" : "rgba(15,23,42,0.40)" }]}>
                 <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
                 <Card style={[styles.card, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                     <LinearGradient
@@ -227,6 +231,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         </View>
                     </View>
 
+                    <ScrollView style={styles.bodyScroll} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
                     <CardContent style={styles.content}>
                         {specDetails.isSpecApproval ? (
                             <View style={[styles.detailCard, styles.summaryCard, { borderColor: "rgba(139,92,246,0.26)", backgroundColor: themeMode === "dark" ? "rgba(139,92,246,0.10)" : "rgba(245,243,255,0.92)" }]}>
@@ -355,6 +360,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                             />
                         </View>
                     </CardContent>
+                    </ScrollView>
 
                     <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.50)" : "rgba(255,255,255,0.72)" }]}>
                         <Button variant="ghost" onPress={onClose} disabled={busy}>
@@ -373,7 +379,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         </Button> : null}
                     </View>
                 </Card>
-            </View>
+            </KeyboardAvoidingView>
         </Modal>
     );
 });
@@ -389,6 +395,8 @@ const styles = StyleSheet.create({
     card: {
         width: "100%",
         maxWidth: 560,
+        maxHeight: "100%",
+        flexShrink: 1,
         borderRadius: 28,
         borderWidth: 1,
         overflow: "hidden",
@@ -399,6 +407,7 @@ const styles = StyleSheet.create({
         elevation: 22,
     },
     header: {
+        flexShrink: 0,
         flexDirection: "row",
         alignItems: "flex-start",
         gap: spacing.md,
@@ -436,6 +445,9 @@ const styles = StyleSheet.create({
     content: {
         gap: spacing.md,
         paddingTop: spacing.md,
+    },
+    bodyScroll: {
+        flexShrink: 1,
     },
     detailCard: {
         borderRadius: radii.lg,
@@ -492,6 +504,7 @@ const styles = StyleSheet.create({
         textAlignVertical: "top",
     },
     footer: {
+        flexShrink: 0,
         flexDirection: "row",
         flexWrap: "wrap",
         justifyContent: "flex-end",

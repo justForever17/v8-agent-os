@@ -404,7 +404,7 @@ def superseded_runtime_episode_ids(
     episodes: Iterable[Mapping[str, Any]],
     handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
 ) -> set[str]:
-    """Identify older top-level write attempts replaced by a proven retry."""
+    """Identify retired attempts from current proof and explicit result reviews."""
 
     rows = [dict(item) for item in episodes if isinstance(item, Mapping) and not runtime_episode_parent_id(item)]
 
@@ -550,7 +550,25 @@ def superseded_runtime_episode_ids(
                 )
             )
 
+    from core.delegation_result_contract import (
+        delegation_handoff_results, delegation_result_acceptance, resolved_delegation_retries,
+    )
+    resolved_retries = resolved_delegation_retries(rows, dict(handoffs_by_episode))
     superseded: set[str] = set()
+    for episode in rows:
+        episode_id = _episode_id(episode)
+        retired_tasks = resolved_retries.get(episode_id, set())
+        if not retired_tasks or normalize_capability_kind(episode.get("kind")) != "delegation":
+            continue
+        handoff, _diagnostic = resolve_runtime_episode_current_handoff(episode, handoffs_by_episode.get(episode_id, []))
+        results = delegation_handoff_results(handoff or {})
+        result_ids = {str(item.get("taskBriefId") or "") for item in results}
+        if (results and "" not in result_ids and set(runtime_episode_task_brief_ids(episode)).issubset(result_ids) and all(
+            str(item.get("taskBriefId") or "") in retired_tasks
+            or delegation_result_acceptance(episode, handoff, str(item.get("taskBriefId") or "")).get("status") in {"accepted", "ignored"}
+            for item in results
+        )):
+            superseded.add(episode_id)
     for index, episode in enumerate(rows):
         episode_id = _episode_id(episode)
         write_set = set(runtime_episode_write_set(episode))

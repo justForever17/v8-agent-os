@@ -10324,6 +10324,10 @@ class ChatRuntime:
         results = [dict(item) for item in list((state or {}).get("parallel_results") or []) if isinstance(item, dict)]
         if not results:
             return
+        from core.delegation_result_contract import resolved_delegation_retries
+        durable_episodes = db.list_runtime_episodes(run_id=chat_run.active_run_id, limit=1000)
+        resolved_retries = resolved_delegation_retries(durable_episodes, {
+            row["episodeId"]: db.list_runtime_episode_handoffs(row["episodeId"]) for row in durable_episodes})
         expanded_results: list[dict[str, Any]] = []
         expanded_ids: set[str] = set()
         for raw_item in results:
@@ -10342,6 +10346,7 @@ class ChatRuntime:
                 current_handoff = next((row for row in handoffs if (row.get("handoffRefId") or row.get("handoffId") or row.get("id")) == current_ref), {})
                 item["supervisorAcceptance"] = delegation_result_acceptance(
                     episode or {}, current_handoff, str(item.get("taskBriefId") or ""))
+                item["resultSuperseded"] = str(item.get("taskBriefId") or "") in resolved_retries.get(delegation_id, set())
             item_identity = delegation_id or str(item.get("taskBriefId") or item.get("invocationId") or "").strip()
             if not item_identity or item_identity not in expanded_ids:
                 if item_identity:
@@ -10365,6 +10370,7 @@ class ChatRuntime:
             for item in results
             if isinstance(item.get("gitChangeSet"), dict)
             and int(item.get("delegationDepth") or 1) <= 1
+            and not item.get("resultSuperseded")
         ]
         if managed_top_level_results:
             accepted_managed_results = [
@@ -10471,6 +10477,7 @@ class ChatRuntime:
                     "commandSession": item.get("commandSession"),
                     "resultSchemaMatched": item.get("resultSchemaMatched"),
                     "localSelfCheck": item.get("localSelfCheck"),
+                    "resultSuperseded": bool(item.get("resultSuperseded")),
                     "supervisorAcceptance": item.get("supervisorAcceptance") or {
                         "status": "pending",
                         "summary": "Supervisor has not accepted, retried, or ignored this subtask result yet.",

@@ -3178,7 +3178,10 @@ def _ensure_supervisor_narrative_contract(
 
 
 def _state_has_pending_delegation_acceptance(state) -> bool:
+    resolved_retries = None
+
     def _walk(value) -> bool:
+        nonlocal resolved_retries
         if isinstance(value, dict):
             episode_id = value.get("delegationId")
             task_id = value.get("taskBriefId")
@@ -3190,6 +3193,14 @@ def _state_has_pending_delegation_acceptance(state) -> bool:
                     decision = delegation_result_acceptance(episode, handoff, str(task_id))
                     if decision["status"] in {"accepted", "ignored"}:
                         return False
+                    if decision["status"] == "retry":
+                        if resolved_retries is None:
+                            from core.delegation_result_contract import resolved_delegation_retries
+                            rows = db.list_runtime_episodes(run_id=episode.get("run_id"), session_id=episode.get("session_id"), limit=1000)
+                            resolved_retries = resolved_delegation_retries(rows, {
+                                row["episodeId"]: db.list_runtime_episode_handoffs(row["episodeId"]) for row in rows})
+                        if str(task_id) in resolved_retries.get(str(episode_id), set()):
+                            return False
             acceptance = value.get("supervisorAcceptance")
             if isinstance(acceptance, dict):
                 status = str(acceptance.get("status") or "pending").strip().lower()

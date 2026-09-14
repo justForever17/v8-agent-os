@@ -5731,6 +5731,35 @@ class DatabaseManager:
         data["leaseGeneration"] = int(data.get("lease_generation") or 0)
         return project_runtime_episode_compatibility(data)
 
+    def _delegation_retry_sources(self, conn, *, session_id, run_id, parent_episode_id, inputs):
+        """Bind a new dispatch to current retry decisions inside its admission transaction."""
+        from core.delegation_result_contract import delegation_handoff_results, delegation_result_acceptance
+        task_ids = {item.get("taskBriefId") for item in inputs.get("workerBriefs", []) if isinstance(item, dict)}
+        if not task_ids or not session_id or not run_id:
+            return []
+        sources = []
+        for row in conn.execute(
+            "SELECT * FROM runtime_episodes WHERE session_id=? AND run_id=? AND kind='delegation' "
+            "AND COALESCE(parent_episode_id, '')=? AND result_ref IS NOT NULL",
+            (session_id, run_id, parent_episode_id or ""),
+        ).fetchall():
+            prior = self._hydrate_runtime_episode_row(dict(row))
+            prior_inputs = prior.get("inputs") or {}
+            if prior_inputs.get("workspacePath", "") != inputs.get("workspacePath", ""):
+                continue
+            handoff_row = conn.execute("SELECT * FROM runtime_episode_handoffs WHERE id=? AND episode_id=?",
+                                       (row["result_ref"], row["id"])).fetchone()
+            handoff = self._hydrate_runtime_handoff_row(dict(handoff_row)) if handoff_row else {}
+            if handoff.get("payloadCorrupted"):
+                continue
+            payload = handoff.get("payload") or {}
+            for result in delegation_handoff_results(payload):
+                task_id = result.get("taskBriefId")
+                if task_id in task_ids and delegation_result_acceptance(prior, payload, task_id).get("status") == "retry":
+                    sources.append({"episodeId": row["id"], "handoffRefId": row["result_ref"],
+                                    "payloadDigest": payload["payloadDigest"], "taskBriefId": task_id})
+        return sources
+
     def upsert_runtime_episode_record(
         self,
         episode: Dict[str, Any],
@@ -6034,7 +6063,7 @@ class DatabaseManager:
                 root_episode_id = root_episode_id or parent_episode_id or episode_id
                 existing_handoff_refs: list[Any] = []
                 existing_episode_row = conn.execute(
-                    "SELECT handoff_refs_json FROM runtime_episodes WHERE id = ?",
+                    "SELECT handoff_refs_json, metadata_json FROM runtime_episodes WHERE id = ?",
                     (episode_id,),
                 ).fetchone()
                 if existing_episode_row and existing_episode_row["handoff_refs_json"]:
@@ -6056,6 +6085,15 @@ class DatabaseManager:
                     handoff_refs,
                     canonical_handoff_refs,
                 )
+                durable_metadata = dict(metadata)
+                prior_metadata = json.loads(existing_episode_row["metadata_json"] or "{}") if existing_episode_row else {}
+                for key in ("supervisorAcceptance", "retryOfResults", "supervisorOwned", "ownerEpisodeId"):
+                    if key in prior_metadata:
+                        durable_metadata[key] = prior_metadata[key]
+                if not existing_episode_row and kind == "delegation" and source == "delegation_broker":
+                    durable_metadata["retryOfResults"] = self._delegation_retry_sources(
+                        conn, session_id=resolved_session_id, run_id=resolved_run_id,
+                        parent_episode_id=parent_episode_id, inputs=inputs)
                 conn.execute(
                     '''
                     INSERT INTO runtime_episodes (
@@ -6121,7 +6159,7 @@ class DatabaseManager:
                         episode.get("resultRef") or episode.get("result_ref"),
                         1 if episode.get("recoverable", True) else 0,
                         int(priority or episode.get("priority") or 0),
-                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(durable_metadata), ensure_ascii=False),
                         str(episode.get("createdAt") or now_iso),
                         now_iso,
                     ),
@@ -6516,6 +6554,13 @@ class DatabaseManager:
     ) -> bool:
         terminal = state in TERMINAL_EPISODE_STATES
         release_lease = state != "active"
+        if metadata is not None:
+            prior = conn.execute("SELECT metadata_json FROM runtime_episodes WHERE id=?", (episode_id,)).fetchone()
+            prior_metadata = json.loads(prior["metadata_json"] or "{}") if prior else {}
+            metadata = dict(metadata)
+            for key in ("supervisorAcceptance", "retryOfResults", "supervisorOwned", "ownerEpisodeId"):
+                if key in prior_metadata:
+                    metadata[key] = prior_metadata[key]
         fenced = worker_id is not None or lease_generation is not None
         if fenced and (not worker_id or lease_generation is None):
             raise ValueError("worker_id and lease_generation must be supplied together")
@@ -7087,8 +7132,14 @@ class DatabaseManager:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute("SELECT * FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
                                    (episode_id, session_id, run_id)).fetchone()
-                if not row or row["kind"] != "delegation" or row["parent_episode_id"]:
+                if not row or row["kind"] != "delegation":
                     raise ValueError("delegation_review_scope_mismatch")
+                metadata = json.loads(row["metadata_json"] or "{}")
+                if row["parent_episode_id"]:
+                    owner = conn.execute("SELECT id FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
+                        (row["parent_episode_id"], session_id, run_id)).fetchone()
+                    if not owner or metadata.get("supervisorOwned") is not True or metadata.get("ownerEpisodeId") != row["parent_episode_id"]:
+                        raise ValueError("delegation_review_scope_mismatch")
                 if row["state"] not in {"completed", "degraded", "failed", "cancelled", "merged"}:
                     raise ValueError("delegation_result_not_terminal")
                 if row["result_ref"] != handoff_id:
@@ -7104,7 +7155,6 @@ class DatabaseManager:
                     raise ValueError("delegation_result_task_not_unique")
                 if decision == "accept" and delegation_result_has_execution_gap(matches[0]):
                     raise ValueError("delegation_result_execution_evidence_missing")
-                metadata = json.loads(row["metadata_json"] or "{}")
                 head = metadata.get("supervisorAcceptance") or {}
                 if head.get("handoffRefId") != handoff_id or head.get("payloadDigest") != payload["payloadDigest"]:
                     head = {"handoffRefId": handoff_id, "payloadDigest": payload["payloadDigest"], "results": {}}

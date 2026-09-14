@@ -37,6 +37,49 @@ def delegation_result_has_execution_gap(result: dict) -> bool:
     )
 
 
+def resolved_delegation_retries(episodes: list[dict], handoffs_by_episode: dict) -> dict[str, set[str]]:
+    """Resolve only exact retry versions connected by durable dispatch provenance.
+
+    Old receipts stay immutable. A replacement must itself be reviewed, and a
+    newer unreviewed/failed result cannot inherit an earlier version's vote.
+    """
+    current = {}
+    rows = {str(row.get("episodeId") or row.get("id") or ""): row for row in episodes}
+    for episode_id, row in rows.items():
+        ref = row.get("resultRef") or row.get("result_ref")
+        for handoff in handoffs_by_episode.get(episode_id, []):
+            payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else handoff
+            if handoff.get("payloadCorrupted") or not payload.get("payloadDigest"):
+                continue
+            if not ref or ref != (payload.get("handoffRefId") or payload.get("handoffId")):
+                continue
+            for result in delegation_handoff_results(payload):
+                task = str(result.get("taskBriefId") or "")
+                key = (episode_id, ref, payload["payloadDigest"], task)
+                current[key] = delegation_result_acceptance(row, payload, task).get("status")
+    resolved = {key for key, status in current.items() if status in {"accepted", "ignored"}}
+    replacements = set()
+    changed = True
+    while changed:
+        changed = False
+        for key in list(resolved):
+            row = rows[key[0]]
+            for source in (row.get("metadata") or {}).get("retryOfResults", []):
+                old_key = tuple(source.get(field) for field in ("episodeId", "handoffRefId", "payloadDigest", "taskBriefId"))
+                old = rows.get(old_key[0], {})
+                if (old_key in resolved or current.get(old_key) != "retry" or old_key[3] != key[3]
+                        or any((old.get(field) or "") != (row.get(field) or "")
+                               for field in ("session_id", "run_id", "parentEpisodeId"))):
+                    continue
+                resolved.add(old_key)
+                replacements.add(old_key)
+                changed = True
+    result = {}
+    for key in replacements:
+        result.setdefault(key[0], set()).add(key[3])
+    return result
+
+
 def _compact(value: Any, *, limit: int = 900) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:

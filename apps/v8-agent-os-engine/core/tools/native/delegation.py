@@ -3665,6 +3665,8 @@ def delegation_broker(
                     "registryHash": item.get("registryHash") or registry_hash,
                     "ownerEpisodeId": runtime_owner_episode_id or None,
                     "rootEpisodeId": episode_root_id or None,
+                    "metadata": {"supervisorOwned": caller.is_supervisor,
+                                 "ownerEpisodeId": runtime_owner_episode_id or None},
                     **({"engineeringWorkspace": managed_workspace} if managed_workspace else {}),
                     "error": item.get("error"),
                 },

@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import sys
 import tempfile
 import time
@@ -137,6 +138,58 @@ def worker_stdout_proof(events, worker: Path, marker: str):
         if ready and done and ready.get("pid") == done.get("pid") and ready.get("started") == done.get("started"):
             return {"commandId": command_id, "ready": ready, "done": done}
     return {}
+
+
+def hydrate_child_command_events(events, observations, *, run_id, session_id, episode_ids):
+    """Join trusted nested tool timeline nodes to their same-run raw receipts."""
+    records = {}
+    for row in observations:
+        raw = row.get("raw_body_text")
+        if (row.get("run_id") != run_id or row.get("session_id") != session_id or not isinstance(raw, str)
+                or hashlib.sha256(raw.encode()).hexdigest() != row.get("raw_sha256")):
+            continue
+        key = (row.get("tool_call_id"), row.get("tool_name"))
+        records.setdefault(key, []).append(row)
+    lifted = []
+    for event in events:
+        if (event.get("topic") != "runtime.episode.progress" or event.get("run_id") != run_id
+                or event.get("session_id") != session_id):
+            continue
+        payload = _decoded(event.get("payload")) or {}
+        if (payload.get("episode") or {}).get("episodeId") not in episode_ids:
+            continue
+        node = (payload.get("progress") or {}).get("timelineNode") or {}
+        topic, name, call_id = node.get("topic"), node.get("toolName"), node.get("toolCallId")
+        if name not in {"run_system_command", "command_session_broker", "read_background_output"} or not call_id:
+            continue
+        tool = {"toolName": name, "toolCallId": call_id}
+        if topic == "subagent.tool.started":
+            tool["args"] = node.get("args") or {}
+        elif topic == "subagent.tool.finished":
+            candidates = records.get((call_id, name), [])
+            if len(candidates) != 1:
+                continue
+            result = _decoded(candidates[0]["raw_body_text"])
+            if not isinstance(result, dict):
+                continue
+            tool.update(result=result, resultStatus="failed" if result.get("ok") is False else "completed")
+        else:
+            continue
+        lifted.append({"topic": topic, "seq": event.get("seq"), "payload": {"ownerAgentKind": "subagent", "tool": tool}})
+    return lifted
+
+
+def read_child_command_observations(state_root, *, run_id, session_id):
+    connection = sqlite3.connect((Path(state_root) / "observability.db").resolve().as_uri() + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        return [dict(row) for row in connection.execute(
+            "SELECT tool_call_id,tool_name,run_id,session_id,raw_sha256,raw_body_text FROM tool_observation_records "
+            "WHERE run_id=? AND session_id=? AND tool_name IN ('run_system_command','command_session_broker','read_background_output')",
+            (run_id, session_id),
+        )]
+    finally:
+        connection.close()
 
 
 def _time(value):
@@ -276,7 +329,11 @@ print("CROSS_GRAPH_DONE " + json.dumps({**receipt, "sha256": hashlib.sha256(data
     target = workspace / "parent-b.txt"
     parent_writes = parent_native_write_receipts(events, target)
     body = target.read_bytes() if target.is_file() else b""
-    process_proof = worker_stdout_proof(events, worker, workspace.name)
+    child_events = hydrate_child_command_events(events,
+        read_child_command_observations(args.state_root, run_id=result.run_id, session_id=result.session_id),
+        run_id=result.run_id, session_id=result.session_id,
+        episode_ids={item.get("episodeId") or item.get("id") for item in episodes if item.get("kind") == "delegation"})
+    process_proof = worker_stdout_proof([*events, *child_events], worker, workspace.name)
     proof = process_proof.get("done") or {}
     process_interval = [(proof["started"], proof["finished"])] if "started" in proof and "finished" in proof else []
     ready_refs, accepted_ready_refs = set(), set()

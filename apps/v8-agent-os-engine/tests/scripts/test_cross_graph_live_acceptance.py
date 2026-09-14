@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 import sys
 import json
+import hashlib
+from copy import deepcopy
 
 
 SOURCE = Path(__file__).with_name("run_cross_graph_live_acceptance.py")
@@ -78,3 +80,51 @@ def test_readonly_worker_proof_requires_a_real_child_command_and_zero_exit(tmp_p
     for row in events:
         row["payload"]["ownerAgentKind"] = "supervisor"
     assert not module.worker_stdout_proof(events, worker, marker), "the parent cannot impersonate the child"
+
+
+def test_nested_production_timeline_requires_matching_raw_receipt_and_actor_scope(tmp_path):
+    from langchain_core.messages import AIMessage, ToolMessage
+    from graph.parallel_support import _subagent_timeline_nodes_from_message
+    spec = importlib.util.spec_from_file_location("cross_graph_nested", SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    worker = tmp_path / "validate_a.py"
+    marker = "cross-graph-live-nested"
+    ready = {"marker": marker, "pid": 123, "started": 10, "scriptSha256": "script"}
+    done = {**ready, "finished": 20, "sha256": "result"}
+    events, rows = [], []
+    for call, name, args, body in [
+        ("launch", "run_system_command", {"command": "python -B -u validate_a.py"},
+         {"ok": True, "commandId": "child-command", "initialPreview": "CROSS_GRAPH_READY " + json.dumps(ready)}),
+        ("observe", "command_session_broker", {"command_id": "child-command"},
+         {"ok": True, "commandId": "child-command", "returnCode": 0, "finalPreview": "CROSS_GRAPH_DONE " + json.dumps(done)}),
+    ]:
+        raw = json.dumps(body)
+        messages = [AIMessage(content="", tool_calls=[{"id": call, "name": name, "args": args}]),
+                    ToolMessage(content="Bounded display without raw JSON", tool_call_id=call, name=name)]
+        for message in messages:
+            for node in _subagent_timeline_nodes_from_message(message):
+                events.append({"topic": "runtime.episode.progress", "run_id": "run", "session_id": "session",
+                    "payload": {"episode": {"episodeId": "child"}, "progress": {"timelineNode": node}}})
+        rows.append({"tool_call_id": call, "tool_name": name, "run_id": "run", "session_id": "session",
+                     "raw_body_text": raw, "raw_sha256": hashlib.sha256(raw.encode()).hexdigest()})
+    def proof(source_events=events, source_rows=rows):
+        lifted = module.hydrate_child_command_events(source_events, source_rows, run_id="run", session_id="session", episode_ids={"child"})
+        return module.worker_stdout_proof(lifted, worker, marker)
+    assert not module.worker_stdout_proof(events, worker, marker), "the former flat event reader misses real nested child tools"
+    assert proof()["done"] == done
+    for key, value in (("run_id", "foreign"), ("session_id", "foreign"), ("tool_call_id", "foreign"), ("tool_name", "read_native_file"), ("raw_sha256", "forged")):
+        altered = deepcopy(rows)
+        altered[-1][key] = value
+        assert not proof(source_rows=altered), key
+    assert not proof(source_rows=[*rows, rows[-1]]), "ambiguous receipts are not proof"
+    altered = deepcopy(events)
+    for event in altered:
+        event["payload"]["episode"]["episodeId"] = "foreign"
+    assert not proof(source_events=altered)
+    altered = deepcopy(rows)
+    failed = json.loads(altered[-1]["raw_body_text"])
+    failed["returnCode"] = 1
+    altered[-1]["raw_body_text"] = json.dumps(failed)
+    altered[-1]["raw_sha256"] = hashlib.sha256(altered[-1]["raw_body_text"].encode()).hexdigest()
+    assert not proof(source_rows=altered), "matching failure evidence must remain failed"

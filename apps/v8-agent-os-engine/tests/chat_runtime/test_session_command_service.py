@@ -274,7 +274,7 @@ def test_guessing_relation_or_replaying_changed_message_cannot_bind_execution(ha
 
 
 def test_private_request_token_is_not_client_authority_and_target_run_must_match(harness):
-    from api.models import ChatRequest, ChatRequestData, EngineConfig
+    from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
     from runtimes.chat.runtime import ChatRuntime
     import runtimes.chat.runtime as runtime_module
     harness.monkeypatch.setattr(runtime_module, "db", harness.db)
@@ -293,6 +293,16 @@ def test_private_request_token_is_not_client_authority_and_target_run_must_match
     request.user_id = USER
     with pytest.raises(ValueError, match="assignment_request_run_binding_mismatch"):
         ChatRuntime().prepare_run_context(request, transport="session_coordination", run_id="unassigned-run")
+    runtime = ChatRuntime()
+    harness.monkeypatch.setattr(runtime, "_resolve_engine_config", lambda request: None)
+    human_request = ChatRequest(
+        messages=[ChatMessage(role="user", content="Change this task to read-only review.")],
+        config=EngineConfig(), session_id=assignment["childSessionId"], user_id=USER,
+    )
+    runtime.prepare_request(human_request)
+    denied = send(assignment)
+    assert denied["ok"] is False
+    assert denied["error"] == "assignment_target_revision_changed"
 
 
 def test_workspace_not_ready_or_escaping_write_set_creates_nothing(harness):

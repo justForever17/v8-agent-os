@@ -1326,17 +1326,9 @@ def _verification_command_matches_exact(command: Any, required_commands: list[An
     return normalized in required
 
 
-def _normalize_exact_verification_command_invocations(
-    messages: list[Any],
-    required_commands: list[Any],
-    *,
-    declared_params: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Normalize a bounded exact command before ToolNode starts a process."""
-
-    adjustments: list[dict[str, Any]] = []
-    if not required_commands or declared_params:
-        return adjustments
+def _apply_declared_verification_command_params(messages: list[Any], declared_params: dict[str, Any]) -> None:
+    """Apply the task's explicit native parameters only to its exact command."""
+    parameter_names = {"command", "mode", "profile", "cwd", "shell_dialect", "terminal_mode", "timeout_seconds"}
     for message in messages:
         calls = getattr(message, "tool_calls", None)
         if not isinstance(calls, list):
@@ -1346,32 +1338,9 @@ def _normalize_exact_verification_command_invocations(
                 continue
             args = _normalize_tool_call_args(call.get("args"))
             command = str(args.get("command") or "").strip()
-            if not _verification_command_matches_exact(command, required_commands):
+            if not _verification_command_matches_exact(command, [declared_params.get("command")]):
                 continue
-            mode = str(args.get("mode") or "auto").strip().lower()
-            raw_timeout = args.get("timeout_seconds", args.get("timeoutSeconds"))
-            try:
-                timeout_seconds = float(raw_timeout) if raw_timeout not in (None, "") else 90.0
-            except (TypeError, ValueError):
-                timeout_seconds = 90.0
-            if mode == "sync" and 0 < timeout_seconds <= 90:
-                continue
-            normalized_args = dict(args)
-            normalized_args["mode"] = "sync"
-            normalized_args["timeout_seconds"] = max(1, min(int(timeout_seconds or 90), 90))
-            normalized_args.pop("timeoutSeconds", None)
-            call["args"] = normalized_args
-            adjustments.append(
-                {
-                    "toolCallId": str(call.get("id") or "").strip(),
-                    "command": command,
-                    "fromMode": mode or "auto",
-                    "fromTimeoutSeconds": raw_timeout,
-                    "toMode": "sync",
-                    "toTimeoutSeconds": normalized_args["timeout_seconds"],
-                }
-            )
-    return adjustments
+            call["args"] = {**args, **{key: value for key, value in declared_params.items() if key in parameter_names}}
 
 
 def _verification_command_preflight_deviations(
@@ -2997,7 +2966,7 @@ async def _run_parallel_agent_branch(
                         "The latest tool batch was rejected before execution; no command or sibling tool in that batch ran. "
                         f"Your next action must be exactly one `run_system_command` call whose `command` value equals one of: {exact_commands}. "
                         "Do not add shell variables, redirection, pipes, wrappers, probes, or alternate runners. "
-                        "Use mode='sync', timeout_seconds<=90, and preserve cwd separately."
+                        "Preserve the task's execution mode and timeout, and keep cwd separate from command."
                     ),
                     additional_kwargs={
                         "v8_governance_type": "verification_command_preflight_correction",
@@ -3010,24 +2979,10 @@ async def _run_parallel_agent_branch(
                 "messages": [*update_messages, *rejected_messages],
             }
             update_messages = list(result_update["messages"])
-        exact_command_adjustments = (
-            _normalize_exact_verification_command_invocations(
-                update_messages,
-                required_verification_commands,
-                declared_params=verification_expectations.get("requiredCommandParams"),
-            )
-            if isinstance(result_update, dict) and current_node == agent_id and not preflight_command_deviations
-            else []
-        )
+        if (isinstance(result_update, dict) and current_node == agent_id and not preflight_command_deviations
+                and verification_expectations.get("requiredCommandParams")):
+            _apply_declared_verification_command_params(update_messages, verification_expectations["requiredCommandParams"])
         local_state = _merge_state_update(local_state, result_update)
-        if exact_command_adjustments:
-            _publish_parallel_progress(
-                progress_callback,
-                stage="execution_normalized",
-                status="running",
-                summary=f"{branch.get('agentName') or agent_id} 的精确短验证已在执行前规范为同步命令。",
-                commandCount=len(exact_command_adjustments),
-            )
         for message in list(result_update.get("messages") or []) if isinstance(result_update, dict) else []:
             for timeline_node in _subagent_timeline_nodes_from_message(message):
                 topic = str(timeline_node.get("topic") or "").strip()
@@ -3213,8 +3168,8 @@ async def _run_parallel_agent_branch(
                                 f"{str(command_deviation.get('command') or '').strip()[:800]}. "
                                 f"Your next action must be exactly one `run_system_command` call whose `command` value equals one of: {exact_commands}. "
                                 "Do not add shell variables, redirection, pipes, cmd/powershell wrappers, path discovery, version probes, "
-                                "temporary files, or alternate runners. Preserve cwd separately in the tool argument. For a bounded test "
-                                "command use mode='sync' with timeout_seconds no greater than 90 so the ToolMessage contains the terminal exit code."
+                                "temporary files, or alternate runners. Preserve cwd separately in the tool argument. "
+                                "Keep the task's execution mode and timeout; observe a running session until its terminal result."
                             ),
                             additional_kwargs={
                                 "v8_governance_type": "verification_command_exactness_correction",
@@ -3522,8 +3477,8 @@ async def _run_parallel_agent_branch(
                             "Use the declared runSystemCommandParams unchanged; observe the same command session until its terminal exit result."
                             if verification_expectations.get("requiredCommandParams") else
                             "Call `run_system_command` once with the exact verification command from the acceptance contract, "
-                            "using the current Active Workspace Root as cwd and mode='sync' with timeout_seconds <= 90; "
-                            "require returnCode=0 and preserve stdout/stderr."
+                            "using the current Active Workspace Root as cwd and preserving its execution mode/timeout; "
+                            "observe a running session until it ends, require returnCode=0 and preserve stdout/stderr."
                         )
                     mismatches = [
                         str(item).strip()

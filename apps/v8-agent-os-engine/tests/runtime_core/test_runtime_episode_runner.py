@@ -7137,49 +7137,6 @@ def test_verification_command_preflight_flags_wrapper_before_execution():
     ) == []
 
 
-def test_exact_short_verification_is_normalized_before_tool_execution():
-    from graph.parallel_support import _normalize_exact_verification_command_invocations
-    from langchain_core.messages import AIMessage
-
-    exact = AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "id": "run-session",
-                "name": "run_system_command",
-                "args": {
-                    "command": "npm test -- --run",
-                    "mode": "session",
-                    "timeout_seconds": 600,
-                    "cwd": "E:/workspace",
-                },
-            }
-        ],
-    )
-    unrelated = AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "id": "list-files",
-                "name": "run_system_command",
-                "args": {"command": "Get-ChildItem", "mode": "session", "timeout_seconds": 600},
-            }
-        ],
-    )
-
-    adjustments = _normalize_exact_verification_command_invocations(
-        [exact, unrelated],
-        ["npm test -- --run"],
-    )
-
-    assert len(adjustments) == 1
-    assert exact.tool_calls[0]["args"] == {
-        "command": "npm test -- --run",
-        "mode": "sync",
-        "timeout_seconds": 90,
-        "cwd": "E:/workspace",
-    }
-    assert unrelated.tool_calls[0]["args"]["mode"] == "session"
 
 
 def test_parallel_verifier_rejects_wrapper_before_tool_node_and_runs_exact_once():
@@ -7315,8 +7272,8 @@ def test_parallel_verifier_rejects_wrapper_before_tool_node_and_runs_exact_once(
     assert executed_commands == [
         {
             "command": "npm test -- --run",
-            "mode": "sync",
-            "timeout_seconds": 90,
+            "mode": "session",
+            "timeout_seconds": 600,
         }
     ]
     assert child_requests == []

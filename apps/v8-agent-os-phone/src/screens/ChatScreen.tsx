@@ -6945,7 +6945,10 @@ const [detail, turnPage, syncData] = await Promise.all([
                 setWorkspaceChooserVisible(true);
                 setWorkspaceInfoOpen(false);
             }
-            Alert.alert(t("src.screens.chatscreen.send_failed"), errorMessage);
+            Alert.alert(
+                t("src.screens.chatscreen.send_failed"),
+                asRecord(error).acceptanceUnknown === true ? t("phone.devices.unknownSubmit") : errorMessage,
+            );
         } finally {
             if (viewCurrent()) {
                 pendingRunAcceptanceRef.current = false;

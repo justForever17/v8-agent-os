@@ -1125,6 +1125,7 @@ export default function ChatClient() {
     const [queuedMessageEditText, setQueuedMessageEditText] = useState("");
     const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
     const [queuedMessageError, setQueuedMessageError] = useState("");
+    const [chatTransportError, setChatTransportError] = useState("");
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const lastSessionProcessSurfaceAtRef = useRef(0);
     const workbenchMode = useWorkbenchStore((state) => state.mode);
@@ -1583,7 +1584,7 @@ export default function ChatClient() {
             console.error("Chat error:", error);
             streamingConversationIdRef.current = null;
             streamingTransportRef.current = null;
-            setQueuedMessageError(error.message);
+            setChatTransportError(error.message);
         },
         onCustomEvent: (event) => {
             if (event.name === "ask_user") {
@@ -2382,6 +2383,7 @@ export default function ChatClient() {
     }, [activeConversationId, setMessages]);
 
     useEffect(() => {
+        setChatTransportError("");
         setGovernanceApprovalOverlaySessionId(activeConversationId);
         setLiveGovernanceApprovals([]);
         setResolvedGovernanceApprovalIds([]);
@@ -3812,6 +3814,7 @@ export default function ChatClient() {
             supervisorRuntimeMode: supervisorRuntimeModeSnapshot,
             ...(!optionData.contextSessionRefs && pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
+        setChatTransportError("");
         const submittingConversationId = activeConversationIdRef.current;
         if (activeConversationRunning) {
             try {
@@ -4538,7 +4541,7 @@ export default function ChatClient() {
                 >
                     <div className="flex flex-col gap-2">
                         <div className="relative shrink-0">
-                            {activeConversationId && (hasAskUserSurface || visibleQueuedMessages.length > 0) ? (
+                            {activeConversationId && (hasAskUserSurface || visibleQueuedMessages.length > 0 || chatTransportError || queuedMessageError) ? (
                                 <div
                                     data-testid="chat-transient-dock"
                                     className="pointer-events-none absolute inset-x-0 bottom-full z-[75] mb-2 flex max-h-[min(62vh,560px)] flex-col justify-end gap-2 overflow-y-auto overscroll-contain"
@@ -4582,12 +4585,25 @@ export default function ChatClient() {
                                                 onCancel={handleCancelQueuedMessage}
                                                 onEdit={handleOpenQueuedMessageEditor}
                                             />
-                                            {queuedMessageError ? (
-                                                <div className="mx-auto mt-1 max-w-4xl rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                                                    {queuedMessageError}
-                                                    <button type="button" className="ml-2 underline" onClick={() => activeConversationId && void synchronizeQueue(activeConversationId)}>重新同步</button>
-                                                </div>
-                                            ) : null}
+                                        </div>
+                                    ) : null}
+                                    {chatTransportError || queuedMessageError ? (
+                                        <div role="alert" className="pointer-events-auto mx-auto w-full max-w-4xl rounded-xl border border-destructive/25 bg-background px-3 py-2 text-xs text-destructive shadow-sm">
+                                            <span className="break-words">{chatTransportError || queuedMessageError}</span>
+                                            <button type="button" className="ml-2 underline" onClick={async () => {
+                                                const conversationId = activeConversationIdRef.current;
+                                                if (!conversationId) return;
+                                                try {
+                                                    await Promise.all([
+                                                        loadConversationHistory(conversationId, { mergeWithCurrent: true, preserveCurrentOnEmpty: true }),
+                                                        loadRuns(conversationId),
+                                                        synchronizeQueue(conversationId),
+                                                    ]);
+                                                    if (activeConversationIdRef.current === conversationId) setChatTransportError("");
+                                                } catch (error) {
+                                                    if (activeConversationIdRef.current === conversationId) setChatTransportError(error instanceof Error ? error.message : String(error));
+                                                }
+                                            }}>重新同步</button>
                                         </div>
                                     ) : null}
                                 </div>

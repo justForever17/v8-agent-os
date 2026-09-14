@@ -255,3 +255,42 @@ test('running composer uses durable JSON acceptance, preserving scope and id acr
     assert.equal(requests[0].request.workspace_id, 'ws-A');
     assert.deepEqual(reloads, ['A']);
 });
+
+test('composer renders a transport error without a queue and offers GET recovery without a new submission', async () => {
+    const source = readSource('app/chat/ChatClient.tsx');
+    const ast = ts.createSourceFile('ChatClient.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let dock;
+    function visit(node) {
+        if (ts.isJsxElement(node) && node.openingElement.attributes.properties.some(attribute =>
+            ts.isJsxAttribute(attribute) && attribute.name.getText(ast) === 'data-testid' && attribute.initializer?.text === 'chat-transient-dock')) {
+            dock = node.parent;
+            while (dock && ts.isParenthesizedExpression(dock)) dock = dock.parent;
+        }
+        ts.forEachChild(node, visit);
+    }
+    visit(ast); assert.ok(dock && ts.isConditionalExpression(dock));
+    const recovery = []; const errors = [];
+    const exports = {};
+    const jsx = ts.transpileModule(`exports.tree = (${dock.getText(ast)});`, {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+    }).outputText;
+    vm.runInNewContext(jsx, { exports, require, activeConversationId: 'A', activeConversationIdRef: { current: 'A' },
+        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', queuedMessageError: '',
+        loadConversationHistory: async id => recovery.push(['history', id]), loadRuns: async id => recovery.push(['runs', id]),
+        synchronizeQueue: async id => recovery.push(['queue', id]), setChatTransportError: value => errors.push(value),
+    });
+    const html = require('react-dom/server').renderToStaticMarkup(exports.tree);
+    assert.match(html, /role="alert"/);
+    assert.match(html, /Unauthorized/);
+    let button;
+    function walk(node) {
+        if (!node || typeof node !== 'object') return;
+        if (node.type === 'button') button = node;
+        const children = node.props?.children;
+        for (const child of Array.isArray(children) ? children.flat() : [children]) walk(child);
+    }
+    walk(exports.tree); assert.ok(button);
+    await button.props.onClick();
+    assert.deepEqual(recovery, [['history', 'A'], ['runs', 'A'], ['queue', 'A']]);
+    assert.deepEqual(errors, ['']);
+});

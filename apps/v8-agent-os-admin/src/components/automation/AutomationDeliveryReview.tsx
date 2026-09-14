@@ -23,6 +23,8 @@ type Delivery = {
 };
 type DeliveryPage = { items: Delivery[]; limit: number; hasMore: boolean; nextCursor: string | null };
 type Outcome = "completed" | "failed";
+type LoadedPage = { visible: Delivery[]; nextCursor: string | null };
+const MAX_REVIEW_REFRESH_PAGES = 4;
 
 const needsReview = (item: Delivery) => item.phase === "unknown" && (item.ownership === "system" || item.ownership === "unresolved");
 
@@ -44,8 +46,9 @@ export function AutomationDeliveryReview() {
     const [refreshRequired, setRefreshRequired] = useState(false);
     const readRequest = useRef<AbortController | null>(null);
     const submitting = useRef(false);
+    const pageAfterByDeliveryId = useRef(new Map<string, string>());
 
-    const load = useCallback(async (after?: string) => {
+    const load = useCallback(async (after?: string): Promise<LoadedPage | null> => {
         readRequest.current?.abort();
         const request = new AbortController();
         readRequest.current = request;
@@ -63,9 +66,10 @@ export function AutomationDeliveryReview() {
             if (!Array.isArray(page.items) || (page.hasMore && (typeof page.nextCursor !== "string" || !page.nextCursor))) throw new Error("invalid list receipt");
             if (request.signal.aborted) return null;
             const visible = page.items.filter(needsReview);
+            visible.forEach(item => pageAfterByDeliveryId.current.set(item.deliveryId, after || ""));
             setItems(previous => after ? [...new Map([...previous, ...visible].map(item => [item.deliveryId, item])).values()] : visible);
             setNextCursor(page.hasMore ? page.nextCursor : null);
-            return visible;
+            return { visible, nextCursor: page.hasMore ? page.nextCursor : null };
         } catch {
             if (!request.signal.aborted) setLoadError(t("automation.reconciliation.loadError"));
             return null;
@@ -97,9 +101,20 @@ export function AutomationDeliveryReview() {
     };
 
     const refreshReview = async () => {
-        const refreshed = await load();
+        const targetId = selected?.deliveryId;
+        const rememberedAfter = targetId ? pageAfterByDeliveryId.current.get(targetId) : undefined;
+        let refreshed = await load();
         if (!refreshed) return;
-        const current = refreshed.find(item => item.deliveryId === selected?.deliveryId);
+        let current = refreshed.visible.find(item => item.deliveryId === targetId);
+        let after = rememberedAfter || refreshed.nextCursor;
+        let pagesRead = 0;
+        while (!current && after && pagesRead < MAX_REVIEW_REFRESH_PAGES) {
+            refreshed = await load(after);
+            if (!refreshed) return;
+            current = refreshed.visible.find(item => item.deliveryId === targetId);
+            after = refreshed.nextCursor;
+            pagesRead += 1;
+        }
         setRefreshRequired(!current);
         setSaveError(current ? "" : t("automation.reconciliation.stale"));
     };

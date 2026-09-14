@@ -155,6 +155,27 @@ def main() -> None:
                 page.close()
             checks.append("auth/conflict/validation/unavailable/wrong receipt retain drafts without retry or raw error disclosure")
 
+            first_page = [delivery(f"page-one-{index:02d}") for index in range(25)]
+            target_page = [delivery("page-two-target")]
+            scenario = {"items": first_page, "pages": {"": first_page, "page-one-cursor": target_page}, "cursor": "page-one-cursor", "post_status": 409}
+            page, failures = mount(scenario)
+            page.get_by_role("button", name="加载更多", exact=True).click()
+            expect(page.get_by_role("button", name="核对结果", exact=True)).to_have_count(26)
+            page.get_by_role("button", name="核对结果", exact=True).last.click()
+            page.get_by_role("radio", name="已完成", exact=True).check()
+            page.get_by_label("核对证据", exact=True).fill("keep second page draft")
+            page.get_by_role("button", name="保存核对记录", exact=True).click()
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_contain_text("状态已变化")
+            page.get_by_role("dialog").get_by_role("button", name="刷新状态", exact=True).click()
+            expect(page.get_by_role("dialog").get_by_role("alert")).to_have_count(0)
+            expect(page.get_by_label("核对证据", exact=True)).to_have_value("keep second page draft")
+            expect(page.get_by_role("button", name="保存核对记录", exact=True)).to_be_enabled()
+            assert [query.get("after", [""])[0] for query in scenario["gets"][-2:]] == ["", "page-one-cursor"]
+            assert len(scenario["posts"]) == 1
+            assert not failures, failures
+            checks.append("second-page conflict refresh follows remembered keyset cursor and keeps draft")
+            page.close()
+
             scenario = {"items": [delivery("network")], "network_failure": True}
             page, _ = mount(scenario)
             page.get_by_role("button", name="核对结果", exact=True).click()

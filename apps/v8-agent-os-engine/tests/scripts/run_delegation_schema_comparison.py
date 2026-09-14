@@ -146,9 +146,9 @@ def run_comparison(args, public_schema: dict) -> dict:
     capture = ScopedCapture(args.marker, args.output_dir / "capture.jsonl")
     capture.install()
     comparison = getattr(args, "comparison", "internal")
-    other_group = "factoredPublic" if comparison == "factored" else "internal"
+    other_group = "autoPublic" if comparison == "tool-choice" else "factoredPublic" if comparison == "factored" else "internal"
     schemas = {"capturedPublic": public_schema,
-               other_group: flatten_public_task_schema(public_schema) if comparison == "factored" else internal_schema}
+               other_group: public_schema if comparison == "tool-choice" else flatten_public_task_schema(public_schema) if comparison == "factored" else internal_schema}
     expected = {"mode": "dispatch", "tasks": [{"targetAgentName": "Verification Engineer", "taskBriefId": "schema-probe-A",
                 "goal": "Read the synthetic input and return a verification summary.", "expectedOutputs": ["Verification summary"],
                 "acceptanceContract": ["Report actual read evidence"], "readOnly": True, "writeRequired": False,
@@ -156,7 +156,8 @@ def run_comparison(args, public_schema: dict) -> dict:
     messages = [SystemMessage(content=args.marker + ". Isolated schema diagnostic. Return exactly one native tool call; no tool will execute."),
                 HumanMessage(content="Call delegation_broker with these exact complete arguments. Preserve JSON arrays/objects and all fields:\n"
                              + json.dumps(expected, ensure_ascii=False))]
-    report = {"evidenceClass": "short synthetic prompt schema comparison; no runtime dispatch or joint acceptance",
+    report = {"evidenceClass": "short synthetic prompt controlled comparison; no runtime dispatch or joint acceptance",
+              "comparison": comparison,
               "sourceRunId": args.source_run_id, "model": args.expected_model, "results": [],
               "promptSha256": _hash("\n".join(message.content for message in messages)),
               "schemaSha256": {key: _hash(json.dumps(value, ensure_ascii=False, sort_keys=True)) for key, value in schemas.items()}}
@@ -175,7 +176,8 @@ def run_comparison(args, public_schema: dict) -> dict:
                     raise ValueError("configured_output_policy_changed")
                 if any(model._model_kwargs.get(key) is not None for key in OUTPUT_TOKEN_KEYS):
                     raise ValueError("constructor_output_cap_present")
-                bound = model.bind_tools([deepcopy(schemas[group])], tool_choice="required")
+                row["toolChoice"] = "auto" if group == "autoPublic" else "required"
+                bound = model.bind_tools([deepcopy(schemas[group])], tool_choice=row["toolChoice"])
                 runtime_model = bound._get_runtime_model()
                 sdk = getattr(runtime_model, "bound", runtime_model)
                 if getattr(sdk, "max_retries", None) != 0:
@@ -226,8 +228,8 @@ def main(argv=None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-model", required=True)
     parser.add_argument("--marker", required=True)
-    parser.add_argument("--comparison", choices=("internal", "factored"), default="internal",
-                        help="factored changes only the captured public task-union representation; never production validation")
+    parser.add_argument("--comparison", choices=("internal", "factored", "tool-choice"), default="internal",
+                        help="Change internal/factored schema or required/auto tool choice only; never execute tools or alter production validation")
     args = parser.parse_args(argv)
     try:
         schema = guard(args)

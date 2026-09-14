@@ -47,7 +47,7 @@ def delegation_parameter_repair(invalid_fields: list[str]) -> tuple[str, list[st
 
 @tool("delegation_broker")
 def supervisor_delegation_broker(
-    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume"] = "observe",
+    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume", "review_result"] = "observe",
     tasks: Annotated[
         list[ManualLocalDelegationTask | ManualExternalDelegationTask] | None,
         "For dispatch use a flat array. Each local task requires targetAgentName, taskBriefId, goal, expectedOutputs and acceptanceContract. Omit unused optional fields; do not send null strings or taskBrief wrappers.",
@@ -59,6 +59,9 @@ def supervisor_delegation_broker(
     write_set_partitions: list[dict[str, Any]] | None = None,
     delegation_id: str = "",
     followup: str = "",
+    handoff_id: Annotated[str, "For review_result: current handoffRefId from inspect; binds the exact immutable result version."] = "",
+    task_brief_id: Annotated[str, "For review_result: one taskBriefId in that handoff's results."] = "",
+    decision: Literal["", "accept", "retry", "ignore"] = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
@@ -96,7 +99,10 @@ def supervisor_delegation_broker(
     inspect.executionTerminal includes degraded, failed and cancelled outcomes;
     completedAt is the persisted settlement timestamp when available. A missing
     historical timestamp leaves the time unknown; use state to judge activity.
-    The Supervisor must inspect evidence and accept/retry/ignore the result.
+    Inspect evidence, then review_result for each result separately: delegation_id,
+    handoff_id, task_brief_id, decision=accept|retry|ignore, followup=evidence basis.
+    A prose ACCEPT never records a decision. Unknown evidence remains pending;
+    retry records an unmet item and requires a repaired attempt before completion.
     """
     return delegation_broker.func(
         mode=mode, tasks=tasks, family=family, target_count=target_count,
@@ -104,5 +110,6 @@ def supervisor_delegation_broker(
         child_delegation_budget=child_delegation_budget,
         write_set_partitions=write_set_partitions,
         delegation_id=delegation_id, followup=followup,
+        handoff_id=handoff_id, task_brief_id=task_brief_id, decision=decision,
         tool_call_id=tool_call_id, state=state,
     )

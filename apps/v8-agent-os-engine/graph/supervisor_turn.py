@@ -21,7 +21,7 @@ from .no_progress_breaker import apply_no_progress_breaker, apply_remaining_step
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from .runtime_handoff_reads import is_research_handoff_read, research_handoff_read_targets
 from core.context.delegation import build_delegation_context
-from core.delegation_result_contract import parse_delegation_acceptance_text
+from core.delegation_result_contract import delegation_result_acceptance
 from core.memory_observability import log_memory_observation
 from core.prompt_cache_segments import hash_prompt_segment
 from core.runtime.extensions_runtime import extensions_runtime_service
@@ -2882,8 +2882,9 @@ def _runtime_handoff_final_message(state=None) -> HumanMessage:
             "A failed/degraded Engineering handoff with sandboxEvidence.state=failed, artifactRefsAccepted=false, or a write-set violation is a quarantined candidate, "
             "not a workspace to salvage. Repair the typed task contract and create one bounded Engineering retry for the named repairTaskBriefIds. "
             "Do not inspect, execute, copy, or manually reconstruct the preserved candidate worktree, and do not poll the terminal episode with local shell commands. "
-            "For delegated results whose supervisorAcceptance is still pending, include exactly one explicit line in the "
-            "user-facing conclusion: `验收决定：ACCEPT`, `验收决定：RETRY`, or `验收决定：IGNORE`, followed by the evidence basis. "
+            "For delegated results whose supervisorAcceptance is still pending, use delegation_broker(inspect) and "
+            "review_result for each exact delegation_id/handoff_id/task_brief_id with decision=accept|retry|ignore and followup=evidence basis. "
+            "A final prose decision does not record acceptance or settle another result. "
             "A provider task ID or a bare worker success sentence is not proof by itself; only explicit missing evidence, "
             "a blocker, or contradictory values justify a repair/verification route. Once the declared acceptance is covered and one bounded "
             "verification pass is clean, finalize instead of expanding self-authored test scope."
@@ -3176,13 +3177,19 @@ def _ensure_supervisor_narrative_contract(
     )
 
 
-def _response_has_delegation_acceptance(response) -> bool:
-    return bool(parse_delegation_acceptance_text(_response_text_content(response)))
-
-
 def _state_has_pending_delegation_acceptance(state) -> bool:
     def _walk(value) -> bool:
         if isinstance(value, dict):
+            episode_id = value.get("delegationId")
+            task_id = value.get("taskBriefId")
+            if episode_id and task_id:
+                from core.database import db
+                episode = db.get_runtime_episode(str(episode_id))
+                if episode:
+                    handoff = (episode.get("metadata") or {}).get("handoff") or {}
+                    decision = delegation_result_acceptance(episode, handoff, str(task_id))
+                    if decision["status"] in {"accepted", "ignored"}:
+                        return False
             acceptance = value.get("supervisorAcceptance")
             if isinstance(acceptance, dict):
                 status = str(acceptance.get("status") or "pending").strip().lower()
@@ -3226,11 +3233,11 @@ def _retry_delegation_acceptance_once(
     preferred_model_id: str,
     build_model,
     sanitize_response_tool_calls,
+    filtered_tools=None,
 ):
     if (
         not _state_has_pending_delegation_acceptance(state)
         or _response_has_tool_calls(response)
-        or _response_has_delegation_acceptance(response)
     ):
         return response
 
@@ -3241,34 +3248,27 @@ def _retry_delegation_acceptance_once(
             content=(
                 "[Delegation Acceptance Discipline Correction]\n"
                 "The delegated workers have reached a terminal handoff, but your prior response did not record the required parent decision. "
-                "Do not call another tool and do not repeat the task plan. Inspect the typed handoff already present in context, then answer with "
-                "exactly one explicit decision line: `验收决定：ACCEPT`, `验收决定：RETRY`, or `验收决定：IGNORE`. "
-                "Follow it with a short evidence basis. ACCEPT is only valid when the returned result and evidence satisfy the task contract; "
-                "otherwise choose RETRY or IGNORE."
+                "Use delegation_broker(mode='inspect', delegation_id=...) to obtain the current handoffRefId and results. "
+                "Then call review_result with that delegation_id, handoff_id, task_brief_id, decision=accept|retry|ignore, "
+                "and followup=evidence basis for each result separately. Text alone cannot write acceptance; "
+                "retry leaves the unmet task pending until a repaired result arrives. Do not re-execute accepted siblings."
             )
         ),
     ]
+    review_tools = [tool for tool in filtered_tools or [] if _tool_ref_name(tool) == "delegation_broker"]
+    if not review_tools:
+        return response
     corrected = robust_invoke(
         invoke_llm,
         correction_messages,
-        [],
+        review_tools,
         role="supervisor",
         preferred_model_id=preferred_model_id,
         build_model=build_model,
     )
     corrected = sanitize_response_tool_calls(corrected)
-    if _response_has_tool_calls(corrected) or _response_has_delegation_acceptance(corrected):
-        return corrected
-
-    # A missing decision after one real correction must never become false
-    # success. RETRY is the only safe deterministic fallback: it records that
-    # the parent did not accept the delegated result and keeps completion gates
-    # honest without fabricating an ACCEPT.
-    corrected.content = (
-        "验收决定：RETRY\n"
-        "原因：Supervisor 在一次纪律纠正后仍未形成可验证的明确验收结论，"
-        "因此本轮不能把子 Agent 结果视为已接受或已交付。"
-    )
+    # The completion gate reads durable per-result decisions, even if the
+    # corrected response again claims acceptance only in text.
     return corrected
 
 
@@ -3632,6 +3632,9 @@ def execute_supervisor_turn(
             runtime_access_from_route_context(state.get("current_route_context")),
         )
         filtered_supervisor_tools = _filter_spec_tools_for_mode(filtered_supervisor_tools, state)
+        if _state_has_pending_delegation_acceptance(state):
+            filtered_supervisor_tools = _ensure_named_tools(
+                filtered_supervisor_tools, visible_supervisor_tools, {"delegation_broker"})
         filtered_supervisor_tools = _filter_completion_truth_correction_tools(
             filtered_supervisor_tools,
             state,
@@ -4187,6 +4190,7 @@ def execute_supervisor_turn(
             state=state,
             prepared_messages=prepared_messages,
             invoke_llm=invoke_llm,
+            filtered_tools=filtered_supervisor_tools,
             robust_invoke=robust_invoke,
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(

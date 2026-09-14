@@ -1533,6 +1533,9 @@ def test_non_spec_required_write_resolves_delivered_file_from_original_workspace
 def test_non_spec_readonly_engineering_family_delegation_does_not_require_written_file(tmp_path) -> None:
     episode = {
         "episodeId": "episode-readonly-delegation",
+        "resultRef": "readonly-handoff",
+        "metadata": {"supervisorAcceptance": {"handoffRefId": "readonly-handoff", "payloadDigest": "readonly-digest",
+            "results": {"TASK-READ": {"status": "accepted"}}}},
         "kind": "delegation",
         "state": "completed",
         "inputs": {
@@ -1555,6 +1558,8 @@ def test_non_spec_readonly_engineering_family_delegation_does_not_require_writte
                 {
                     "status": "ready",
                     "compactSummary": "README.md first heading verified.",
+                    "handoffRefId": "readonly-handoff", "payloadDigest": "readonly-digest",
+                    "results": [{"taskBriefId": "TASK-READ", "status": "ok"}],
                 }
             ]
         },
@@ -1611,6 +1616,9 @@ def test_direct_delegation_native_write_and_readback_is_structured_proof(tmp_pat
     artifact.write_text("done", encoding="utf-8")
     episode = _required_write_episode(str(tmp_path))
     episode["kind"] = "delegation"
+    episode["resultRef"] = "write-handoff"
+    episode["metadata"] = {"supervisorAcceptance": {"handoffRefId": "write-handoff", "payloadDigest": "write-digest",
+        "results": {"TASK-WRITE": {"status": "accepted"}}}}
 
     decision = evaluate_supervisor_completion(
         episodes=[episode],
@@ -1620,6 +1628,7 @@ def test_direct_delegation_native_write_and_readback_is_structured_proof(tmp_pat
                     "status": "ready",
                     "kind": "subagent_result",
                     "taskBriefId": "TASK-WRITE",
+                    "handoffRefId": "write-handoff", "payloadDigest": "write-digest",
                     "workerStatus": "ok",
                     "toolsUsed": ["write_native_file", "read_native_file"],
                     "writeToolSucceeded": True,

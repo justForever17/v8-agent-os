@@ -2241,6 +2241,8 @@ def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> 
         lines.append("Repair fields: " + ", ".join(str(field) for field in payload["repairFields"]))
     if payload.get("ok") is False and payload.get("repairInstruction"):
         lines.append("Repair: " + str(payload["repairInstruction"]))
+    if mode == "review_result" and isinstance(payload.get("receipt"), dict):
+        lines.append("Result decision: " + json.dumps(payload["receipt"], ensure_ascii=False, separators=(",", ":")))
 
     tasks = (
         payload.get("tasks")

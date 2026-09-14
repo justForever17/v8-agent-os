@@ -27,7 +27,7 @@ from core.delegation_broker import (
     normalize_task_brief,
     normalize_task_briefs,
 )
-from core.delegation_result_contract import parse_delegation_acceptance_text
+from core.delegation_result_contract import delegation_result_acceptance
 from core.llm_factory import llm_factory
 from core.llm_exceptions import V8LLMError
 from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
@@ -129,10 +129,6 @@ _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "web_broker",
     "write_todos",
 }
-
-def _delegation_acceptance_from_final_text(final_text: str | None) -> dict[str, Any] | None:
-    return parse_delegation_acceptance_text(final_text)
-
 
 def _nested_delegation_results_from_handoffs(handoffs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
@@ -10328,7 +10324,6 @@ class ChatRuntime:
         results = [dict(item) for item in list((state or {}).get("parallel_results") or []) if isinstance(item, dict)]
         if not results:
             return
-        acceptance = _delegation_acceptance_from_final_text(final_text)
         expanded_results: list[dict[str, Any]] = []
         expanded_ids: set[str] = set()
         for raw_item in results:
@@ -10342,40 +10337,11 @@ class ChatRuntime:
                 item["status"] = "completed"
             elif episode_state in {"failed", "cancelled", "degraded"}:
                 item["status"] = episode_state
-            if acceptance and delegation_depth <= 1 and episode_state in TERMINAL_EPISODE_STATES:
-                acceptance_handoff = {
-                    "handoffId": f"handoff:{delegation_id}:supervisor_acceptance:{chat_run.active_run_id}",
-                    "kind": "subagent_acceptance",
-                    "status": acceptance["status"],
-                    "confidence": "high",
-                    "compactSummary": acceptance["summary"],
-                    "consumerHint": "Use this governance record as the durable Supervisor decision for the delegated result.",
-                    "delegationId": delegation_id,
-                    "supervisorAcceptance": dict(acceptance),
-                }
-                acceptance_handoff_persisted = db.add_runtime_episode_handoff(
-                    episode_id=delegation_id,
-                    handoff=acceptance_handoff,
-                    session_id=chat_run.session_id,
-                    run_id=chat_run.active_run_id,
-                )
-                episode_metadata = dict((episode or {}).get("metadata") or {})
-                episode_metadata["supervisorAcceptance"] = dict(acceptance)
-                acceptance_episode = db.complete_runtime_episode(
-                    delegation_id,
-                    state=episode_state,
-                    metadata=episode_metadata,
-                    expected_state=episode_state,
-                )
-                if acceptance_handoff_persisted is None or acceptance_episode is None:
-                    item.pop("supervisorAcceptance", None)
-                    item["supervisorAcceptanceError"] = "runtime_episode_acceptance_cas_rejected"
-                    logging.getLogger("v8chat.chat_runtime").warning(
-                        "Supervisor acceptance CAS was rejected for delegation episode %s",
-                        delegation_id,
-                    )
-                else:
-                    item["supervisorAcceptance"] = dict(acceptance)
+            if delegation_depth <= 1:
+                current_ref = (episode or {}).get("resultRef") or (episode or {}).get("result_ref")
+                current_handoff = next((row for row in handoffs if (row.get("handoffRefId") or row.get("handoffId") or row.get("id")) == current_ref), {})
+                item["supervisorAcceptance"] = delegation_result_acceptance(
+                    episode or {}, current_handoff, str(item.get("taskBriefId") or ""))
             item_identity = delegation_id or str(item.get("taskBriefId") or item.get("invocationId") or "").strip()
             if not item_identity or item_identity not in expanded_ids:
                 if item_identity:
@@ -10400,18 +10366,18 @@ class ChatRuntime:
             if isinstance(item.get("gitChangeSet"), dict)
             and int(item.get("delegationDepth") or 1) <= 1
         ]
-        if acceptance and managed_top_level_results:
+        if managed_top_level_results:
             accepted_managed_results = [
                 item
                 for item in managed_top_level_results
                 if str((item.get("supervisorAcceptance") or {}).get("status") or "").strip()
-                == str(acceptance.get("status") or "").strip()
+                == "accepted"
             ]
             if len(accepted_managed_results) == len(managed_top_level_results):
                 from core.engineering_sandbox.service import get_engineering_sandbox_service
 
                 sandbox_service = get_engineering_sandbox_service()
-                if acceptance.get("status") == "accepted":
+                if accepted_managed_results:
                     promotion = sandbox_service.promote_run_integration(run_id=chat_run.active_run_id)
                     if promotion.get("status") != "delivered":
                         raise RuntimeError("managed_integration_missing_for_accepted_delegation")
@@ -10425,11 +10391,6 @@ class ChatRuntime:
                         },
                         agent_id=None,
                         node="engineering_worktree_promotion",
-                    )
-                else:
-                    sandbox_service.record_run_integration_decision(
-                        run_id=chat_run.active_run_id,
-                        decision=str(acceptance.get("status") or ""),
                     )
         seen: set[tuple[str, str, str]] = set()
         for item in results:

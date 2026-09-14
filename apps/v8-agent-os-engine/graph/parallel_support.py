@@ -103,8 +103,9 @@ def _render_delegation_handoff_message(
             f"<delegation_handoffs>{payload}</delegation_handoffs>\n"
             "精确子 Agent 输出只读取 resultText；summary/compactTranscript 仅供展示，不得用包装文案替代结果。"
             "你必须逐项明确 accept、retry 或 ignore；只依据上述合同验收，不要把内部 ID 当作用户说明。"
-            "在面向用户的结论中用独立一行记录父级决定：`验收决定：ACCEPT`、`验收决定：RETRY` "
-            "或 `验收决定：IGNORE`。"
+            "调用 delegation_broker(mode='inspect') 取得当前 handoffRefId，再逐项 review_result，传入 "
+            "delegation_id、handoff_id、task_brief_id、decision=accept|retry|ignore 和 followup 证据依据。"
+            "最终答复中的 ACCEPT 不会写入验收记录；retry 后原任务仍需修复。"
         ),
         id=str(uuid.uuid4()),
         additional_kwargs={

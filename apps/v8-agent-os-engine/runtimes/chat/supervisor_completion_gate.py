@@ -7,7 +7,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from core.database import db
-from core.delegation_result_contract import parse_delegation_acceptance_text
+from core.delegation_result_contract import delegation_handoff_results, delegation_result_acceptance
 from core.runtime_episodes import (
     ACTIVE_EPISODE_STATES,
     resolve_runtime_episode_current_handoff,
@@ -159,8 +159,6 @@ def _delegation_acceptance_missing(
     *,
     final_text: str,
 ) -> list[str]:
-    if parse_delegation_acceptance_text(final_text):
-        return []
     pending: list[str] = []
     for episode in episodes:
         if _is_optional_episode(episode):
@@ -172,20 +170,17 @@ def _delegation_acceptance_missing(
         state = str(episode.get("state") or "").strip().lower()
         if state not in {"completed", "merged", "degraded"}:
             continue
-        metadata = episode.get("metadata") if isinstance(episode.get("metadata"), Mapping) else {}
-        acceptance = metadata.get("supervisorAcceptance") if isinstance(metadata.get("supervisorAcceptance"), Mapping) else {}
-        acceptance_status = str(acceptance.get("status") or "").strip().lower()
-        if acceptance_status in {"accepted", "retry", "ignored"}:
-            continue
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         if not episode_id:
             continue
-        has_terminal_handoff = any(
-            str(handoff.get("status") or "").strip().lower() in RUNTIME_EXECUTION_HANDOFF_STATUSES
-            for handoff in list(handoffs_by_episode.get(episode_id, []) or [])
-            if isinstance(handoff, Mapping)
-        )
-        if has_terminal_handoff:
+        results = []
+        for row in handoffs_by_episode.get(episode_id, []) or []:
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
+            if (payload.get("handoffRefId") or payload.get("handoffId")) != (episode.get("resultRef") or episode.get("result_ref")):
+                continue
+            results.extend((payload, item) for item in delegation_handoff_results(payload))
+        if not results or any(delegation_result_acceptance(dict(episode), payload, str(item.get("taskBriefId") or ""))["status"]
+                              not in {"accepted", "ignored"} for payload, item in results):
             pending.append(episode_id)
     return pending
 

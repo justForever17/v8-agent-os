@@ -2291,7 +2291,7 @@ def _grandchild_write_contract_block_payload(
 
 @tool
 def delegation_broker(
-    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume", "request_input", "publish_partial"] = "observe",
+    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume", "request_input", "publish_partial", "review_result"] = "observe",
     family: str = "",
     tasks: Annotated[
         list[DelegationTaskInput] | dict[str, Any] | str | None,
@@ -2308,6 +2308,9 @@ def delegation_broker(
     delegation_id: str = "",
     followup: str = "",
     partial_handoff: Annotated[dict[str, Any] | None, "For publish_partial by a direct child: outputKey, version, sourceVersion, usableFor task IDs, compactSummary, proofRefs, optional artifactRefs. Publishing preserves active execution and requires parent acceptance for downstream use."] = None,
+    handoff_id: str = "",
+    task_brief_id: str = "",
+    decision: Literal["", "accept", "retry", "ignore"] = "",
     required_inputs: Annotated[
         list[RuntimeContinuationInput] | None,
         "Only for mode=request_input. Typed missing inputs discovered during this direct subagent execution.",
@@ -2387,6 +2390,19 @@ def delegation_broker(
                 ]
             }
         )
+    if normalized_mode == "review_result":
+        try:
+            if not caller.is_supervisor:
+                raise ValueError("delegation_review_supervisor_only")
+            receipt = db.review_runtime_delegation_result(
+                episode_id=delegation_id, session_id=str(runtime_context.get("session_id") or ""),
+                run_id=str(runtime_context.get("run_id") or ""), handoff_id=handoff_id,
+                task_brief_id=task_brief_id, decision=decision, reason=followup, request_id=tool_call_id)
+            payload = {"ok": True, "mode": normalized_mode, "summary": "Decision recorded for this result version only.", **receipt}
+        except ValueError as exc:
+            payload = {"ok": False, "mode": normalized_mode, "error": str(exc)}
+        return Command(goto="supervisor", update={"messages": [ToolMessage(
+            content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]})
     if normalized_mode == "publish_partial":
         from core.runtime_episode_control import publish_partial
         from core.runtime_episode_runner import _RUNTIME_EPISODE_CLAIM_CONTEXT

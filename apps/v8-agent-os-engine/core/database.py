@@ -7071,6 +7071,67 @@ class DatabaseManager:
 
         return _write() if _connection is not None else self._run_write_with_retry(_write)
 
+    def review_runtime_delegation_result(
+        self, *, episode_id: str, session_id: str, run_id: str, handoff_id: str,
+        task_brief_id: str, decision: str, reason: str, request_id: str,
+    ) -> Dict[str, Any]:
+        """Review one current result atomically; prose and other results do not vote."""
+        from core.delegation_result_contract import delegation_handoff_results, delegation_result_has_execution_gap
+        if decision not in {"accept", "retry", "ignore"} or not all(
+            isinstance(value, str) and value.strip() for value in (handoff_id, task_brief_id, reason, request_id)
+        ):
+            raise ValueError("delegation_review_requires_version_task_decision_and_reason")
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM runtime_episodes WHERE id=? AND session_id=? AND run_id=?",
+                                   (episode_id, session_id, run_id)).fetchone()
+                if not row or row["kind"] != "delegation" or row["parent_episode_id"]:
+                    raise ValueError("delegation_review_scope_mismatch")
+                if row["state"] not in {"completed", "degraded", "failed", "cancelled", "merged"}:
+                    raise ValueError("delegation_result_not_terminal")
+                if row["result_ref"] != handoff_id:
+                    raise ValueError("delegation_result_version_superseded")
+                handoff_row = conn.execute("SELECT * FROM runtime_episode_handoffs WHERE episode_id=? AND id=?",
+                                           (episode_id, handoff_id)).fetchone()
+                handoff = self._hydrate_runtime_handoff_row(dict(handoff_row)) if handoff_row else {}
+                payload = handoff.get("payload") or {}
+                if handoff.get("payloadCorrupted") or not payload.get("payloadDigest"):
+                    raise ValueError("delegation_result_version_invalid")
+                matches = [item for item in delegation_handoff_results(payload) if item.get("taskBriefId") == task_brief_id]
+                if len(matches) != 1:
+                    raise ValueError("delegation_result_task_not_unique")
+                if decision == "accept" and delegation_result_has_execution_gap(matches[0]):
+                    raise ValueError("delegation_result_execution_evidence_missing")
+                metadata = json.loads(row["metadata_json"] or "{}")
+                head = metadata.get("supervisorAcceptance") or {}
+                if head.get("handoffRefId") != handoff_id or head.get("payloadDigest") != payload["payloadDigest"]:
+                    head = {"handoffRefId": handoff_id, "payloadDigest": payload["payloadDigest"], "results": {}}
+                decisions = dict(head.get("results") or {})
+                existing = decisions.get(task_brief_id)
+                if existing and (existing.get("decision") != decision or existing.get("summary") != reason):
+                    raise ValueError("delegation_result_already_reviewed")
+                content = {"handoffRefId": handoff_id, "payloadDigest": payload["payloadDigest"],
+                           "taskBriefId": task_brief_id, "decision": decision, "reason": reason}
+                receipt = self.append_runtime_episode_message(
+                    episode_id=episode_id, session_id=session_id, run_id=run_id,
+                    recipient=f"acceptance:{episode_id}", kind="review_result", request_id=request_id,
+                    content=content, _connection=conn)
+                acceptance = existing or {"status": {"accept": "accepted", "retry": "retry", "ignore": "ignored"}[decision],
+                    "decision": decision, "summary": reason, "reviewedAt": utc_now_iso(),
+                    "handoffRefId": handoff_id, "taskBriefId": task_brief_id}
+                decisions[task_brief_id] = acceptance
+                metadata["supervisorAcceptance"] = {**head, "results": decisions}
+                conn.execute("UPDATE runtime_episodes SET metadata_json=?, updated_at=? WHERE id=?",
+                             (json.dumps(metadata, ensure_ascii=False), utc_now_iso(), episode_id))
+                conn.execute("UPDATE runtime_episode_events SET state='processed', payload_json=json_set(payload_json,'$.receipt',json(?)) WHERE id=?",
+                             (json.dumps(acceptance, ensure_ascii=False), receipt["messageId"]))
+                conn.commit()
+                return {**receipt, "deliveryState": "processed", "receipt": acceptance}
+
+        return self._run_write_with_retry(_write)
+
     def accept_runtime_episode_partial(
         self, *, episode_id: str, session_id: str, run_id: str, handoff_id: str,
         consumers: list[str], reason: str, request_id: str,

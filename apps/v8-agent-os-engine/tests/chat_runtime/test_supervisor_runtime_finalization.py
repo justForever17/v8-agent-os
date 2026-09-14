@@ -47,7 +47,7 @@ from graph.supervisor_turn import (
     execute_supervisor_turn,
 )
 from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
-from runtimes.chat.runtime import ChatRuntime, _delegation_acceptance_from_final_text
+from runtimes.chat.runtime import ChatRuntime
 
 
 def test_governed_ask_user_pause_is_not_logged_as_stream_failure(caplog) -> None:
@@ -177,7 +177,7 @@ def test_subagent_waiting_child_projection_is_progress_not_failure():
     assert emitted[0][1]["status"] == "waiting_child_delegation"
 
 
-def test_subagent_terminal_projection_records_supervisor_acceptance_and_nested_return():
+def test_subagent_terminal_projection_never_records_acceptance_from_final_text():
     emitted = []
     chat_run = SimpleNamespace(
         active_run_id="run-accepted-child",
@@ -238,62 +238,11 @@ def test_subagent_terminal_projection_records_supervisor_acceptance_and_nested_r
     parent_event = next(payload for topic, payload, _ in emitted if payload.get("delegationId") == parent_delegation_id)
     child_event = next(payload for topic, payload, _ in emitted if payload.get("delegationId") == child_delegation_id)
     assert parent_event["status"] == "completed"
-    assert parent_event["supervisorAcceptance"]["status"] == "accepted"
+    assert parent_event["supervisorAcceptance"]["status"] == "pending"
     assert child_event["status"] == "ok"
     assert child_event["parentDelegationId"] == parent_delegation_id
-    acceptance_handoff = add_handoff.call_args.kwargs["handoff"]
-    assert acceptance_handoff["kind"] == "subagent_acceptance"
-    assert acceptance_handoff["status"] == "accepted"
-    complete_episode.assert_called_once()
-
-
-def test_delegation_acceptance_parser_requires_one_explicit_decision():
-    accepted = _delegation_acceptance_from_final_text("验收决定：ACCEPT\n理由：证据完整。")
-    assert accepted == {
-        "status": "accepted",
-        "decision": "ACCEPT",
-        "summary": "理由：证据完整。",
-    }
-    markdown_accepted = _delegation_acceptance_from_final_text("> 验收决定：**ACCEPT**\n> 依据：证据完整。")
-    assert markdown_accepted == {
-        "status": "accepted",
-        "decision": "ACCEPT",
-        "summary": "依据：证据完整。",
-    }
-    natural_accepted = _delegation_acceptance_from_final_text(
-        "验收结论：**accept**\n\n- accept：证据完整。\n- retry：不执行。\n- ignore：不执行。"
-    )
-    assert natural_accepted == {
-        "status": "accepted",
-        "decision": "ACCEPT",
-        "summary": "accept：证据完整。\n- retry：不执行。\n- ignore：不执行。",
-    }
-    action_accepted = _delegation_acceptance_from_final_text(
-        "1. **验收动作**：显式 **ACCEPT**（验收通过）。\n2. 依据：工具证据完整。"
-    )
-    assert action_accepted == {
-        "status": "accepted",
-        "decision": "ACCEPT",
-        "summary": "（验收通过）。\n2. 依据：工具证据完整。",
-    }
-    heading_accepted = _delegation_acceptance_from_final_text(
-        "## 验收动作\n\n**`accept` — 接受 Verification Engineer 的验收结果。**"
-    )
-    assert heading_accepted == {
-        "status": "accepted",
-        "decision": "ACCEPT",
-        "summary": "接受 Verification Engineer 的验收结果。**",
-    }
-    repeated_accepted = _delegation_acceptance_from_final_text(
-        "验收决定：ACCEPT\n前置结论。\n### 验收决定：ACCEPT\n依据：父子结果一致。"
-    )
-    assert repeated_accepted == {
-        "status": "accepted",
-        "decision": "ACCEPT",
-        "summary": "依据：父子结果一致。",
-    }
-    assert _delegation_acceptance_from_final_text("结果已完成。") is None
-    assert _delegation_acceptance_from_final_text("验收决定：ACCEPT\n验收决定：RETRY") is None
+    add_handoff.assert_not_called()
+    complete_episode.assert_not_called()
 
 
 def test_runtime_handoff_retries_missing_delegation_acceptance_once():
@@ -324,6 +273,7 @@ def test_runtime_handoff_retries_missing_delegation_acceptance_once():
         state=state,
         prepared_messages=[HumanMessage(content="original")],
         invoke_llm=object(),
+        filtered_tools=[SimpleNamespace(name="delegation_broker")],
         robust_invoke=_robust_invoke,
         preferred_model_id="test-model",
         build_model=lambda _model_id: object(),
@@ -332,7 +282,7 @@ def test_runtime_handoff_retries_missing_delegation_acceptance_once():
 
     assert result.content.startswith("验收决定：ACCEPT")
     assert len(calls) == 1
-    assert calls[0]["tools"] == []
+    assert [tool.name for tool in calls[0]["tools"]] == ["delegation_broker"]
     assert "Delegation Acceptance Discipline Correction" in calls[0]["messages"][-1].content
 
 
@@ -362,6 +312,7 @@ def test_direct_delegation_handoff_retries_acceptance_without_runtime_dispatch_s
         state=state,
         prepared_messages=[HumanMessage(content="original")],
         invoke_llm=object(),
+        filtered_tools=[SimpleNamespace(name="delegation_broker")],
         robust_invoke=_robust_invoke,
         preferred_model_id="test-model",
         build_model=lambda _model_id: object(),
@@ -455,9 +406,9 @@ def test_completion_gate_blocks_terminal_delegation_without_parent_acceptance():
 
     assert missing.action == "fail"
     assert missing.reason == "delegation_supervisor_acceptance_missing"
-    assert accepted.action == "complete"
-    assert natural_accepted.action == "complete"
-    assert repeated_accepted.action == "complete"
+    assert accepted.action == "fail"
+    assert natural_accepted.action == "fail"
+    assert repeated_accepted.action == "fail"
     assert conflicting.action == "fail"
     assert conflicting.reason == "delegation_supervisor_acceptance_missing"
 
@@ -768,9 +719,8 @@ def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
     assert "repairTaskBriefIds" in content
     assert "do not poll the terminal episode" in content
     assert "evidence=complete" in content
-    assert "验收决定：ACCEPT" in content
-    assert "验收决定：RETRY" in content
-    assert "验收决定：IGNORE" in content
+    assert "review_result for each exact delegation_id/handoff_id/task_brief_id" in content
+    assert "decision=accept|retry|ignore" in content
     assert "Do not call tools" not in content
     assert "single review edge" in content
     assert "one bounded verification pass is clean" in content
@@ -2261,6 +2211,8 @@ def test_completion_gate_uses_current_delegation_result_ref_for_nested_failures(
                 "state": "completed",
                 "kind": "delegation",
                 "resultRef": "handoff_delegation_ready",
+                "metadata": {"supervisorAcceptance": {"handoffRefId": "handoff_delegation_ready", "payloadDigest": "ready-digest",
+                    "results": {item["taskBriefId"]: {"status": "accepted"} for item in ready_results}}},
             }
         ],
         handoffs_by_episode={
@@ -2274,6 +2226,7 @@ def test_completion_gate_uses_current_delegation_result_ref_for_nested_failures(
                 },
                 {
                     "handoffRefId": "handoff_delegation_ready",
+                    "payloadDigest": "ready-digest",
                     "producerEpisodeId": "episode_delegation_retry",
                     "kind": "delegation",
                     "status": "ready",
@@ -2296,12 +2249,15 @@ def test_completion_gate_allows_explicitly_optional_nested_delegation_failure():
                 "state": "completed",
                 "kind": "delegation",
                 "resultRef": "handoff_delegation_optional_failure",
+                "metadata": {"supervisorAcceptance": {"handoffRefId": "handoff_delegation_optional_failure", "payloadDigest": "optional-digest",
+                    "results": {"required": {"status": "accepted"}, "optional-review": {"status": "ignored"}}}},
             }
         ],
         handoffs_by_episode={
             "episode_delegation_optional_failure": [
                 {
                     "handoffRefId": "handoff_delegation_optional_failure",
+                    "payloadDigest": "optional-digest",
                     "producerEpisodeId": "episode_delegation_optional_failure",
                     "kind": "delegation",
                     "status": "ready",

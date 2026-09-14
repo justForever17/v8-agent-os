@@ -34,11 +34,17 @@ def inspect_episode(episode_id: str, *, session_id: str, run_id: str, detail: bo
     observation = json.loads(progress["payload_json"]) if progress else {}
     from urllib.parse import quote
     handoffs = db.list_runtime_episode_handoffs(episode_id)
+    from core.delegation_result_contract import delegation_handoff_results, delegation_result_acceptance
+    for handoff in handoffs:
+        payload = handoff.get("payload") or handoff
+        for result in delegation_handoff_results(payload):
+            if isinstance(result, dict):
+                result["supervisorAcceptance"] = delegation_result_acceptance(episode, payload, str(result.get("taskBriefId") or ""))
     if not detail:
         messages = [{key: item[key] for key in ("messageId", "kind", "deliverySeq", "deliveryState", "receipt") if key in item} for item in messages]
         handoffs = [{**{key: payload[key] for key in ("handoffRefId", "producerEpisodeId", "kind", "status", "compactSummary", "version", "sourceVersion", "usableFor", "proofRefs", "artifactRefs") if key in payload},
                      "results": [{key: result[key] for key in ("taskBriefId", "delegationId", "status", "error", "missingVerificationTools", "executionContractRepair", "availableTools", "acceptanceHint", "supervisorAcceptance") if key in result}
-                                 for result in payload.get("results", []) if isinstance(result, dict)]}
+                                 for result in delegation_handoff_results(payload)]}
                     for item in handoffs[-12:] for payload in [dict(item.get("payload") or item)]]
     return {
         "episodeId": episode_id, "state": episode["state"],

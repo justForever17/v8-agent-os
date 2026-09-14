@@ -1,64 +1,40 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from core.json_safe import to_jsonable
 
 
-DELEGATION_ACCEPTANCE_DECISION_RE = re.compile(
-    r"(?:验收(?:决定|结论|结果|动作)|acceptance\s+(?:decision|conclusion|result|action))"
-    r"\s*[`*_~]*\s*[：:]\s*(?:(?:显式|明确)\s*)?[`*_~]*\s*"
-    r"(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
-    re.IGNORECASE,
-)
-
-DELEGATION_ACCEPTANCE_HEADING_RE = re.compile(
-    r"(?:^|\n)\s{0,3}(?:#{1,6}\s*)?"
-    r"(?:验收动作|acceptance\s+action)\s*(?:\r?\n)+\s*"
-    r"[`*_~\s]*(ACCEPT|RETRY|IGNORE)\b[`*_~\s]*"
-    r"(?=[：:\-—–]|$)",
-    re.IGNORECASE,
-)
+def delegation_handoff_results(handoff: dict) -> list[dict]:
+    payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else handoff
+    nested = payload.get("delegationHandoff") or {}
+    results = payload.get("results") or nested.get("results") or ([payload] if payload.get("taskBriefId") else [])
+    return [item for item in results if isinstance(item, dict)]
 
 
-def parse_delegation_acceptance_text(
-    value: Any,
-    *,
-    summary_limit: int = 600,
-) -> dict[str, str] | None:
-    text = str(value or "").strip()
-    matches = sorted(
-        [
-            *DELEGATION_ACCEPTANCE_DECISION_RE.finditer(text),
-            *DELEGATION_ACCEPTANCE_HEADING_RE.finditer(text),
-        ],
-        key=lambda match: match.start(),
+def delegation_result_acceptance(episode: dict, handoff: dict, task_brief_id: str) -> dict:
+    """Read only the parent's decision bound to this immutable result version."""
+    payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else handoff
+    current_ref = episode.get("resultRef") or episode.get("result_ref")
+    head = (episode.get("metadata") or {}).get("supervisorAcceptance") or {}
+    handoff_ref = payload.get("handoffRefId") or payload.get("handoffId")
+    if (current_ref and current_ref == handoff_ref == head.get("handoffRefId")
+            and payload.get("payloadDigest") and payload["payloadDigest"] == head.get("payloadDigest")):
+        decision = (head.get("results") or {}).get(task_brief_id)
+        if isinstance(decision, dict):
+            return dict(decision)
+    return {"status": "pending", "requiredAction": ["accept", "retry", "ignore"]}
+
+
+def delegation_result_has_execution_gap(result: dict) -> bool:
+    verification = result.get("verificationEvidence") or {}
+    return bool(
+        str(result.get("workerStatus") or result.get("status") or "unknown").lower() not in {"ok", "ready", "completed", "success", "done"}
+        or verification.get("passed") is False
+        or result.get("missingVerificationTools") or result.get("verificationEvidenceMismatches")
+        or result.get("missingArtifactEvidence") or result.get("missingExpectedArtifacts")
+        or (result.get("executionContractRepair") or {}).get("required")
     )
-    decisions = {
-        str(match.group(1) or "").strip().upper()
-        for match in matches
-        if str(match.group(1) or "").strip()
-    }
-    if len(decisions) != 1:
-        return None
-    decision = next(iter(decisions))
-    status = {
-        "ACCEPT": "accepted",
-        "RETRY": "retry",
-        "IGNORE": "ignored",
-    }.get(decision)
-    if not status:
-        return None
-    evidence_basis = text[matches[-1].end():].strip()
-    evidence_basis = re.sub(r"^[`*\s>—–:：-]+", "", evidence_basis)
-    if len(evidence_basis) > summary_limit:
-        evidence_basis = f"{evidence_basis[: max(0, summary_limit - 1)].rstrip()}…"
-    return {
-        "status": status,
-        "decision": decision,
-        "summary": evidence_basis or f"Supervisor recorded {decision} for the delegated result.",
-    }
 
 
 def _compact(value: Any, *, limit: int = 900) -> str:

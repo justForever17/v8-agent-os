@@ -179,6 +179,10 @@ def _latest_human(messages: Iterable[Any]) -> tuple[str, bool]:
         if _message_role(message) not in {"user", "human"}:
             continue
         kwargs = _message_additional_kwargs(message)
+        if str(kwargs.get("v8_governance_type") or "").strip():
+            # Match Supervisor request selection: runtime evidence is neither
+            # a new user instruction nor a source of persistent authorization.
+            continue
         is_coordination = any(isinstance(kwargs.get(key), dict) for key in (
             "v8os_session_coordination", "v8os_session_command_assignment",
         ))
@@ -191,7 +195,8 @@ def _has_completed_context_read(messages: Iterable[Any], target_session_id: str)
     latest_human_index = -1
     items = list(messages or [])
     for index, message in enumerate(items):
-        if _message_role(message) in {"user", "human"}:
+        if (_message_role(message) in {"user", "human"}
+                and not str(_message_additional_kwargs(message).get("v8_governance_type") or "").strip()):
             latest_human_index = index
     for message in items[latest_human_index + 1 :]:
         for call in _message_tool_calls(message):

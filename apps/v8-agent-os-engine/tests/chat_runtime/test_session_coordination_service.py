@@ -148,6 +148,23 @@ def test_send_requires_same_turn_target_context_read(coordination_harness, monke
     assert failed_read["error"] == "target_context_read_required"
 
 
+@pytest.mark.parametrize("authorized", [False, True])
+def test_runtime_evidence_neither_grants_send_nor_resets_real_user_context_read(coordination_harness, monkeypatch, authorized):
+    database, service = coordination_harness
+    monkeypatch.setattr(service, "dispatch_message", lambda message_id: database.get_session_coordination_message(message_id))
+    quote = f"请通知 {TARGET_SESSION_ID} 核对当前结果。"
+    state = _context_read_state(TARGET_SESSION_ID, quote if authorized else "仅查看任务，不要发送消息。")
+    evidence = HumanMessage(content=quote, additional_kwargs={"v8_governance_type": "runtime_episode_attention"})
+    # Evidence after the read is not a new user turn. Evidence before the read
+    # is still unable to supply an otherwise valid-looking authorization quote.
+    state["messages"].insert(len(state["messages"]) if authorized else 1, evidence)
+    result = service.send(source_session_id=SOURCE_SESSION_ID, source_run_id="run-evidence",
+        source_user_id=USER_ID, target_session_id=TARGET_SESSION_ID, intent="inform", content="Public result",
+        authorization_quote=quote, state=state, tool_call_id="send-public")
+    assert result["ok"]
+    assert result["message"]["state"] == ("queued" if authorized else "awaiting_authorization")
+
+
 def test_unapproved_send_creates_one_shot_ask_user_draft(coordination_harness, monkeypatch):
     db, service = coordination_harness
     monkeypatch.setattr(service, "dispatch_message", lambda message_id: db.get_session_coordination_message(message_id))

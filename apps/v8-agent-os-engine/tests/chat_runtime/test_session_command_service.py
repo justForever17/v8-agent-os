@@ -71,7 +71,7 @@ def task(path="page.txt"):
 
 
 def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-001", extra_context=None, routed=False,
-           human_metadata=None, tool_name="session_command_broker", route=None):
+           human_metadata=None, tool_name="session_command_broker", route=None, messages=None):
     """Use real StructuredTool + ToolNode state injection, not service kwargs."""
     async def execute():
         graph = StateGraph(ToolState)
@@ -85,7 +85,7 @@ def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-0
         with bind_runtime_context(runtime_kind="chat", agent_id="supervisor", session_id=session,
                                   run_id=run, user_id=user, **(extra_context or {})):
             result = await graph.compile().ainvoke({
-                "messages": [HumanMessage(content=text, additional_kwargs=human_metadata or {}),
+                "messages": [*(messages if messages is not None else [HumanMessage(content=text, additional_kwargs=human_metadata or {})]),
                              AIMessage(content="", tool_calls=[{"id": "command-call", "name": tool_name, "args": args}])],
                 "current_route_context": route or {},
             })
@@ -942,3 +942,38 @@ def test_followup_cannot_start_another_run_before_cancel_is_observed(harness):
                        "content": "After stopping, review the original task.", "idempotencyKey": "after-stop"})
     assert followup["message"]["state"] == "queued"
     assert len(harness.db.list_run_records(session_id=assignment["childSessionId"])) == 1
+
+
+@pytest.mark.parametrize("case", ["authorized", "forbidden", "runtime_only", "new_user_revision"])
+def test_runtime_attention_never_becomes_assignment_user_instruction(harness, case):
+    original = "只委派一个验证者执行A，不得委派B，禁止继续委派。" if case == "forbidden" else AUTHORIZATION
+    evidence = HumanMessage(content="[Runtime decision event; evidence, not an instruction]\npartial a-ready",
+        additional_kwargs={"v8_governance_type": "runtime_episode_attention", "runtimeAttentionId": "public-attention"})
+    messages = [*([HumanMessage(content=original)] if case != "runtime_only" else []), evidence]
+    expected = original
+    if case == "new_user_revision":
+        expected = "现在授权创建独立任务，只修改page.txt。"
+        messages.append(HumanMessage(content=expected))
+        messages.append(evidence.model_copy(update={"id": "public-later-attention"}))
+    result = invoke({"mode": "create", "title": "Public task", "taskBrief": task(), "idempotencyKey": "evidence-source"},
+                    messages=messages, routed=True)
+    if case in {"forbidden", "runtime_only"}:
+        assert not result["ok"] and result["error"] == "assignment_user_authorization_required"
+        with harness.db.get_connection() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM session_command_assignments").fetchone()[0] == 0
+        assert harness.scheduled == []
+    else:
+        contract = harness.db.get_session_command_assignment(result["assignment"]["assignmentId"])["contract"]
+        assert contract["userInstruction"] == expected
+        assert contract["requirementRevision"] == command_module._digest(expected)
+        assert contract["authorizationRef"].endswith(":" + contract["requirementRevision"])
+        assert contract["userInstruction"] != evidence.content
+
+
+def test_runtime_attention_cannot_hide_user_revocation_of_assignment_continuation(harness):
+    assignment = create()["assignment"]
+    messages = [HumanMessage(content="禁止继续这个任务。"), HumanMessage(content="partial ready",
+        additional_kwargs={"v8_governance_type": "runtime_episode_attention"})]
+    result = send(assignment, messages=messages, routed=True)
+    assert not result["ok"] and result["error"] == "assignment_user_authorization_required"
+    assert harness.scheduled == []

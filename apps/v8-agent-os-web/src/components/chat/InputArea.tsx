@@ -1335,7 +1335,7 @@ export function InputArea({
                 e.preventDefault();
                 if (!draftKey || !draft.hydrated || submittingRef.current) return;
                 if (files.some((_, index) => !uploadedSources[index]?.sourceId && !uploadedSources[index]?.id)) {
-                    showInlineNotice("error", "请移除并重新选择未上传成功的附件。");
+                    showInlineNotice("error", t("web.chat.attachments.reselectFailed"));
                     return;
                 }
                 if (uploading) {
@@ -1461,8 +1461,8 @@ export function InputArea({
             )}
             style={{ backdropFilter: 'blur(16px) saturate(120%)' }}
         >
-            {draft.error ? <div role="alert" className="px-3 pt-2 text-xs text-destructive">{draft.hydrated ? "草稿保存失败，内容仍在此页，请复制备份。" : "草稿读取失败，已保存内容尚未恢复。当前输入会保留，重试后合并。"}<button type="button" className="ml-2 underline" onClick={() => void flushDraft(draftKey)}>{draft.hydrated ? "重试保存" : "重试恢复"}</button></div> : null}
-            {files.some((file, index) => !(file instanceof Blob) && !uploadedSources[index]?.id && !uploadedSources[index]?.sourceId) ? <div role="status" className="px-3 pt-2 text-xs text-amber-600">未完成上传的附件需要移除并重新选择。</div> : null}
+            {draft.error ? <div role="alert" className="px-3 pt-2 text-xs text-destructive">{draft.hydrated ? t("web.composer.draft.saveFailed") : t("web.composer.draft.restoreFailed")}<button type="button" className="ml-2 underline" onClick={() => void flushDraft(draftKey)}>{draft.hydrated ? t("web.composer.draft.retrySave") : t("web.composer.draft.retryRestore")}</button></div> : null}
+            {files.some((file, index) => !(file instanceof Blob) && !uploadedSources[index]?.id && !uploadedSources[index]?.sourceId) ? <div role="status" className="px-3 pt-2 text-xs text-amber-600">{t("web.chat.attachments.reselectIncomplete")}</div> : null}
             {/* Unified Input Box Top Area: File Previews (if any) */}
             {files.length > 0 && (
                 <div className="scrollbar-none flex min-h-[4rem] items-end gap-2.5 overflow-x-auto px-3 pb-0 pt-3">

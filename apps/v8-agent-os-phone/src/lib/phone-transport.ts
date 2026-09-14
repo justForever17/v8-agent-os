@@ -243,21 +243,25 @@ export class PhoneTransport {
         const read = !init.method || ["GET", "HEAD"].includes(init.method.toUpperCase());
         let response = await this.fetch(endpoint, path, { ...init, headers, signal }, Math.min(read ? 4_000 : 10_000, deadline - Date.now()));
         if (response.status === 401) {
+            const authStage = response.headers.get("x-v8-auth-stage");
             await response.text();
-            if (!read) {
-                // A write may have reached Engine before an intermediary
-                // returned 401. Refresh credentials for the user's next
-                // explicit retry, but never replay an ambiguous side effect.
-                if (this.credentials.accessToken === token) await this.refresh(endpoint, signal);
-                throw Object.assign(new Error("Authentication expired; the side effect needs explicit retry."), {
-                    status: 401,
-                    acceptanceUnknown: true,
+            // The BFF auth owner marks rejection before forwarding the action.
+            // HTTP status alone does not establish whether a write was accepted.
+            if (!read && authStage !== "pre_execution") {
+                throw Object.assign(new Error("The request outcome could not be confirmed."), {
+                    status: 401, acceptanceUnknown: true,
                 });
             }
             if (this.credentials.accessToken === token) await this.refresh(endpoint, signal);
             await this.verifyEndpoint(endpoint, signal);
             headers.set("Authorization", `Bearer ${this.credentials.accessToken}`);
             response = await this.fetch(endpoint, path, { ...init, headers, signal }, deadline - Date.now());
+            if (!read && response.status === 401 && response.headers.get("x-v8-auth-stage") !== "pre_execution") {
+                await response.text();
+                throw Object.assign(new Error("The request outcome could not be confirmed."), {
+                    status: 401, acceptanceUnknown: true,
+                });
+            }
         }
         this.options.onClock(response.headers.get("x-v8-engine-now"));
         return response;

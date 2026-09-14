@@ -97,7 +97,7 @@ test('endpoint identity: refresh rechecks the exact 401 endpoint and shared prob
     seen.push({ url, token: new Headers(init.headers).get('authorization'), body: init.body });
     if (url.endsWith('/instance')) { await tick(); return Response.json({ instanceId: identity }); }
     identity = 'reassigned';
-    return new Response('', { status: 401 });
+    return new Response('', { status: 401, headers: { 'X-V8-Auth-Stage': 'pre_execution' } });
   };
   try {
     const results = await Promise.allSettled([a.authorizedFetch('/write', { method: 'POST' }), b.authorizedFetch('/write', { method: 'POST' })]);
@@ -265,7 +265,7 @@ test('finite native response: active Expo body getter stays untouched before tex
   } finally { transport.dispose(); global.fetch = old; }
 });
 
-test('401 mutation refreshes credentials without replaying the ambiguous side effect', async () => {
+test('unmarked 401 mutation stays unknown without refreshing or replaying the side effect', async () => {
   const old = global.fetch; let writes = 0, refreshes = 0;
   const transport = create({ endpoints: ['https://remote.invalid'] });
   global.fetch = async url => {
@@ -275,7 +275,155 @@ test('401 mutation refreshes credentials without replaying the ambiguous side ef
   };
   try {
     await assert.rejects(transport.authorizedFetch('/api/client/approve', { method: 'POST', body: JSON.stringify({ approvalId: 'approval-1' }) }), error => error.status === 401 && error.acceptanceUnknown === true);
-    assert.equal(writes, 1); assert.equal(refreshes, 1);
+    assert.equal(writes, 1); assert.equal(refreshes, 0);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+// Load the real Admin auth, token signing/expiry/rotation, proxy and routes.
+// Only storage/users/config/Next response scaffolding and Engine execution are
+// controlled. No user configuration, token store, server or provider is opened.
+function adminBoundary() {
+  const adminRoot = path.resolve(root, '../v8-agent-os-admin/src');
+  const modules = new Map(), store = new Map();
+  const user = { id: 'owner', email: 'owner@fixture.invalid', login: 'owner', role: 'ADMIN' };
+  class NextResponse extends Response {
+    static json(value, init) { return new NextResponse(JSON.stringify(value), { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } }); }
+  }
+  const mocks = {
+    'next/server': { NextRequest: Request, NextResponse },
+    '@/lib/auth': { auth: async () => null },
+    '@/lib/service-auth': { verifyServiceAuth: async () => null },
+    '@/lib/password': { verifyPassword: async () => false },
+    '@/lib/storage': { readJson: (key, fallback) => structuredClone(store.get(key) ?? fallback), writeJson: (key, value) => store.set(key, structuredClone(value)) },
+    '@/lib/users': { PERSONAL_OWNER_MODE: true, findUserById: id => id === user.id ? user : null,
+      findUserByIdentifier: id => id === user.email || id === user.login ? user : null, getSessionIdentifier: value => value.email },
+    '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveAdminApiBaseUrl: () => 'http://admin.invalid/api',
+      resolveClientSurfaceOriginFromRequest: () => '', resolveInternalSecret: () => 'synthetic-internal-fixture' },
+    '@/lib/server/client-perf-metrics': { jsonSizeBytes: () => 0, readEngineElapsedMs: () => 0, recordAdminApiMetric() {} },
+  };
+  function load(name, from = adminRoot) {
+    if (Object.hasOwn(mocks, name)) return mocks[name];
+    if (!name.startsWith('@/') && !name.startsWith('.')) return require(name);
+    const file = (name.startsWith('@/') ? path.join(adminRoot, name.slice(2)) : path.resolve(from, name)) + '.ts';
+    if (modules.has(file)) return modules.get(file);
+    const module = { exports: {} };
+    const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+    vm.runInThisContext(`(function(require,module,exports,console){${code}\n})`)((next) => load(next, path.dirname(file)), module, module.exports, { error() {}, warn() {} });
+    modules.set(file, module.exports); return module.exports;
+  }
+  const mobile = load('@/lib/mobile-auth');
+  const now = Date.now;
+  let expired;
+  try { Date.now = () => now() - 2 * 24 * 60 * 60 * 1000; expired = mobile.issueMobileSessionForUser(user, 'synthetic-device'); }
+  finally { Date.now = now; }
+  return { load, expired, user, mobile, NextResponse };
+}
+
+test('real BFF auth rejects before Engine and expired-token send plus approval recover with one refresh', async () => {
+  const old = global.fetch, boundary = adminBoundary(), attempts = [], executed = [];
+  const chat = boundary.load('@/app/api/client/chat-submit/route');
+  const approval = boundary.load('@/app/api/client/approvals/[id]/approve/route');
+  const refresh = boundary.load('@/app/api/client/auth/refresh/route');
+  const context = { params: Promise.resolve({ id: 'approval-1' }) };
+  const chatBody = JSON.stringify({ clientMessageId: 'intent-1', messages: [{ role: 'user', content: 'continue once' }], data: { conversationId: 'session-A', clientMessageId: 'intent-1' } });
+  const approvalBody = JSON.stringify({ response: { answer: 'yes', approved: true } });
+  let refreshes = 0, persisted = 0;
+  const transport = create({ endpoints: ['https://remote.invalid'], credentials: boundary.expired, persistRefresh: async () => { persisted++; } });
+  global.fetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.startsWith('http://engine.invalid')) { executed.push({ url, body: JSON.parse(init.body) }); return Response.json({ accepted: true, ok: true }); }
+    const request = new Request(url, init);
+    if (url.endsWith('/auth/refresh')) { refreshes++; await tick(); return refresh.POST(request); }
+    attempts.push({ url, body: init.body });
+    return url.endsWith('/chat-submit') ? chat.POST(request) : approval.POST(request, context);
+  };
+  try {
+    for (const [route, routeUrl] of [[chat, '/api/client/chat-submit'], [approval, '/api/client/approvals/approval-1/approve']]) {
+      const request = new Request(`https://remote.invalid${routeUrl}`, { method: 'POST', headers: { Authorization: `Bearer ${boundary.expired.accessToken}` } });
+      request.json = () => assert.fail('expired auth must reject before reading action body');
+      const rejected = await route.POST(request, context);
+      assert.equal(rejected.status, 401); assert.equal(rejected.headers.get('x-v8-auth-stage'), 'pre_execution');
+      assert.equal((await rejected.json()).code, 'auth_pre_execution'); assert.equal(executed.length, 0);
+    }
+    const results = await Promise.all([
+      transport.authorizedFetch('/api/client/chat-submit', { method: 'POST', body: chatBody }).then(r => r.json()),
+      transport.authorizedFetch('/api/client/approvals/approval-1/approve', { method: 'POST', body: approvalBody }).then(r => r.json()),
+    ]);
+    assert.ok(results.every(result => result.accepted)); assert.equal(refreshes, 1); assert.equal(persisted, 1);
+    assert.equal(attempts.length, 4); assert.equal(executed.length, 2);
+    assert.equal(executed.filter(row => row.url.endsWith('/chat/submit')).length, 1);
+    assert.equal(executed.filter(row => row.url.endsWith('/approvals/approval-1/approve')).length, 1);
+    const forwardedChat = executed.find(row => row.url.endsWith('/chat/submit')).body;
+    assert.equal(forwardedChat.clientMessageId, 'intent-1');
+    assert.equal(forwardedChat.data.clientMessageId, 'intent-1');
+    assert.equal(forwardedChat.session_id, 'session-A');
+    for (const item of attempts) assert.equal(item.body, item.url.endsWith('/chat-submit') ? chatBody : approvalBody);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+test('real BFF forwarding does not label downstream 401 or lost responses as pre-execution; no write replay', async () => {
+  const old = global.fetch, boundary = adminBoundary();
+  const credentials = boundary.mobile.issueMobileSessionForUser(boundary.user, 'synthetic-valid');
+  let executed = 0, refreshes = 0, mode = '401';
+  const chat = boundary.load('@/app/api/client/chat-submit/route');
+  const approval = boundary.load('@/app/api/client/approvals/[id]/approve/route');
+  const transport = create({ endpoints: ['https://remote.invalid'], credentials });
+  global.fetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.endsWith('/auth/refresh')) { refreshes++; assert.fail('unknown action outcome must not trigger token recovery'); }
+    if (url.startsWith('http://engine.invalid')) {
+      executed++;
+      if (mode === 'lost') throw new Error('synthetic response loss after execution');
+      // Downstream fault injection, NOT a claim that token expiry causes this.
+      return Response.json({ error: 'downstream failure' }, { status: 401, headers: { 'X-V8-Auth-Stage': 'pre_execution' } });
+    }
+    const request = new Request(url, init);
+    const response = url.endsWith('/chat-submit') ? await chat.POST(request) : await approval.POST(request, { params: Promise.resolve({ id: 'approval-1' }) });
+    assert.equal(response.headers.get('x-v8-auth-stage'), null);
+    return response;
+  };
+  try {
+    for (const route of ['/api/client/chat-submit', '/api/client/approvals/approval-1/approve']) {
+      await assert.rejects(transport.authorizedFetch(route, { method: 'POST', body: '{}' }), error => error.acceptanceUnknown === true);
+    }
+    assert.equal(executed, 2); assert.equal(refreshes, 0);
+    mode = 'lost';
+    const failed = await transport.authorizedFetch('/api/client/chat-submit', { method: 'POST', body: '{}' });
+    assert.equal(failed.status, 500); await failed.text(); assert.equal(executed, 3);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+test('pre-execution retry stays bounded for repeated rejection; a retry becoming unknown is not replayed', async () => {
+  const old = global.fetch;
+  for (const markedRetry of [true, false]) {
+    let requests = 0, refreshes = 0;
+    const transport = create({ endpoints: ['https://remote.invalid'] });
+    global.fetch = async url => {
+      if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+      if (url.endsWith('/auth/refresh')) { refreshes++; return Response.json({ accessToken: 'new', refreshToken: 'new-r', user: { id: 'owner' } }); }
+      requests++; return Response.json({ error: 'denied' }, { status: 401,
+        headers: requests === 1 || markedRetry ? { 'X-V8-Auth-Stage': 'pre_execution' } : {} });
+    };
+    try {
+      const operation = transport.authorizedFetch('/write', { method: 'POST', body: '{}' });
+      if (markedRetry) { const response = await operation; assert.equal(response.status, 401); await response.text(); }
+      else await assert.rejects(operation, error => error.acceptanceUnknown === true);
+      assert.equal(requests, 2); assert.equal(refreshes, 1);
+    } finally { transport.dispose(); global.fetch = old; }
+  }
+});
+
+test('read auth recovery retries exactly once and consumes no orphan response', async () => {
+  const old = global.fetch; let reads = 0;
+  const transport = create({ endpoints: ['https://remote.invalid'] });
+  global.fetch = async url => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.endsWith('/auth/refresh')) return Response.json({ accessToken: 'new', refreshToken: 'new-r', user: { id: 'owner' } });
+    return ++reads === 1 ? new Response('', { status: 401 }) : Response.json({ ok: true });
+  };
+  try {
+    assert.deepEqual(await (await transport.authorizedFetch('/read')).json(), { ok: true });
+    assert.equal(reads, 2); assert.equal(transport.activeReads, 0); assert.equal(transport.controllers.size, 0);
   } finally { transport.dispose(); global.fetch = old; }
 });
 

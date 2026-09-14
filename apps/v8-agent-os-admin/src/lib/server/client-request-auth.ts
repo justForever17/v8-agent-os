@@ -33,5 +33,11 @@ export async function resolveClientUserEmail(req: NextRequest) {
 }
 
 export function unauthorizedClientJson() {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // Only this BFF authentication rejection is safe to retry after refresh:
+    // callers return it before forwarding to the action/Engine owner.
+    // Upstream response statuses must not acquire this local marker.
+    return NextResponse.json(
+        { error: "Unauthorized", code: "auth_pre_execution" },
+        { status: 401, headers: { "X-V8-Auth-Stage": "pre_execution" } },
+    );
 }

@@ -243,3 +243,50 @@ def test_resume_preflight_rechecks_cancel_after_approval(service):
     result = router._resume_from_approval(decision, {})
     assert result["resume_scheduled"] is False
     assert result["resume_error"] == "run_not_ready_after_approval"
+
+
+@pytest.mark.parametrize("decision,expected", [("approve", "running"), ("reject", "waiting_input")])
+def test_approval_transition_refreshes_projection_and_clears_stale_terminal_fields(service, decision, expected):
+    from core.run_ledger import run_ledger_service
+    from erc.snapshot_service import snapshot_service
+    from erc.session_history_contract import build_session_history_materialized_record
+
+    run, approval = seed(service)
+    session = db.get_run_record(run)["session_id"]
+    stale_finish = "2000-01-01T00:00:00Z"
+    # Fault at the row boundary: a prior path left terminal diagnostics on a
+    # waiting run. Original transition_run cleared them before projecting.
+    with db.get_connection() as conn:
+        conn.execute("UPDATE run_records SET finished_at = ?, error_message = ? WHERE id = ?",
+                     (stale_finish, "previous failure", run))
+        conn.commit()
+    snapshot_service.refresh_chat_projection(session, run_id=run)
+    before_seq = db.get_latest_runtime_snapshot(session, snapshot_type="chat_projection")["latest_seq"]
+    assert any(item["id"] == f"{run}:run_record:finish" for item in run_ledger_service.get_run_ledger(run)["timeline"])
+
+    # Use the real emitter and snapshot path, not the kernel fixture's observer.
+    result = getattr(ExecutionRuntimeCore(), decision)(approval)
+    assert result["decisionApplied"]
+    snapshot = snapshot_service.build_chat_projection_payload(session)
+    record = db.get_run_record(run)
+    assert snapshot["latestSeq"] > before_seq
+    assert snapshot["currentRun"]["status"] == expected
+    assert snapshot["currentRun"]["finished_at"] is None
+    assert record["error_message"] is None
+    assert snapshot["liveness"]["lastProgressAt"] == db.get_runtime_events(session)[-1]["event_ts"]
+    assert not any(item["id"] == f"{run}:run_record:finish" for item in run_ledger_service.get_run_ledger(run)["timeline"])
+    history = build_session_history_materialized_record(
+        session_row=db.get_session(session), workflow_view={"status": expected, "rootRunId": run},
+        approvals=[], snapshot=snapshot, latest_seq=snapshot["latestSeq"], source="test", run_record=record,
+    )
+    assert history["endedAt"] is None
+
+
+def test_approval_without_run_transition_preserves_diagnostics(service):
+    run, approval = seed(service, status="paused")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE run_records SET error_message = ? WHERE id = ?", ("user pause context", run))
+        conn.commit()
+    service.approve(approval)
+    assert db.get_run_record(run)["status"] == "paused"
+    assert db.get_run_record(run)["error_message"] == "user pause context"

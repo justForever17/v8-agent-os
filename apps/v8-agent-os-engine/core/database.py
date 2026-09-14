@@ -11311,8 +11311,13 @@ class DatabaseManager:
                     metadata["approvedSafetyOperations"] = [*operations, approved_operation][-100:]
                 # Preserve the current run metadata/control atomically. A stale
                 # read-modify-write with the old status could resurrect cancel.
-                conn.execute("UPDATE run_records SET status = ?, metadata = ? WHERE id = ?",
-                             (next_status, json.dumps(metadata, ensure_ascii=False), approval["run_id"]))
+                conn.execute(
+                    """UPDATE run_records SET status = ?, metadata = ?,
+                       finished_at = CASE WHEN ? THEN NULL ELSE finished_at END,
+                       error_message = CASE WHEN ? THEN NULL ELSE error_message END WHERE id = ?""",
+                    (next_status, json.dumps(metadata, ensure_ascii=False), next_status != previous_status,
+                     next_status != previous_status, approval["run_id"]),
+                )
                 decided = dict(conn.execute("SELECT * FROM pending_approvals WHERE id = ?", (approval_id,)).fetchone())
                 decided["request"] = approval["request"]
                 decided["response"] = response

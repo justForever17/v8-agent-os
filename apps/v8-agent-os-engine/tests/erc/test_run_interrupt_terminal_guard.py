@@ -134,7 +134,8 @@ def test_interrupted_run_executes_terminal_post_run_cleanup(monkeypatch):
         run_id="run_interrupted",
         source_component="test",
     ) is True
-    assert calls == ["guides", "proof", "metadata", "memory", "hooks"]
+    # A pre-existing memory marker must not suppress durable Hook recovery.
+    assert calls == ["guides", "proof", "hooks", "metadata", "memory"]
 
 
 def test_chat_worker_honors_interrupt_after_connected_event_before_lane(monkeypatch):

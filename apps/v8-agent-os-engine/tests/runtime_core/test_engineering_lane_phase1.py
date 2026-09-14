@@ -739,7 +739,8 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         ), patch.object(service, "_run_non_memory_hooks", side_effect=lambda **_: calls.append("hooks")):
             self.assertTrue(service.dispatch(session_id=session_id, run_id=run_id, source_component="test"))
         self.assertTrue(proof.called)
-        self.assertEqual(calls, ["memory", "hooks"])
+        # Durable Hook delivery must precede the independent memory dispatch marker.
+        self.assertEqual(calls, ["hooks", "memory"])
 
 
 if __name__ == "__main__":

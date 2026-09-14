@@ -118,6 +118,7 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "agent_broker": {"mode": "list"},
     "session_context_broker": {"sourceSessionId": "calibration-missing-session", "mode": "summary"},
     "session_message_broker": {"mode": "status", "messageId": "calibration-missing-message"},
+    "session_command_broker": {"mode": "list"},
     "mcp_server_config": {"mode": "mcp_list"},
     "config_broker": {"mode": "inventory", "limit": 5, "offset": 0},
     "plugin_broker": {"mode": "list"},

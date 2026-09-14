@@ -7,6 +7,7 @@ import { InputArea } from "@/components/chat/InputArea";
 import { draftOwnerKey, hydrateDraft, readDraft, removeDrafts, setDraftField } from "@/lib/composer-drafts";
 import { readCompleteQueue, reconcileQueueSnapshot } from "@/lib/queue-snapshot";
 import { useLangGraphStream } from "@/hooks/use-langgraph-stream";
+import type { SpecReviewDecision } from "@/lib/spec-review";
 import {
     cloneMessages,
     normalizeMessagesForState,
@@ -1793,6 +1794,8 @@ export default function ChatClient() {
     }, [activeConversationId, governanceApprovalOverlaySessionId, liveGovernanceApprovals, resolvedGovernanceApprovalIds, sessionProjection?.approvals]);
     const governancePendingApproval = governanceApprovals[0] || null;
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
+    const governancePendingApprovalIdRef = useRef(governancePendingApprovalId);
+    governancePendingApprovalIdRef.current = governancePendingApprovalId;
     const hasAskUserPending = Boolean(askUserApprovalId || askUserToolCallId);
     const interruptibleRunId = activeConversationRunning
         ? deriveInterruptibleRunId({
@@ -2324,21 +2327,31 @@ export default function ChatClient() {
         }
     }, [governancePendingApproval, governancePendingApprovalId, mainWorkspacePath, router, scopeBinding?.workspacePath]);
 
-    const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean) => {
-        if (!governancePendingApprovalId) {
+    const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean, review?: SpecReviewDecision) => {
+        const approvalId = review?.approvalId || governancePendingApprovalId;
+        const sessionId = activeConversationIdRef.current;
+        let resolvedId = "";
+        if (!approvalId || approvalId !== governancePendingApprovalIdRef.current) {
             return;
         }
         setGovernanceApprovalBusy(true);
         try {
-            await resolveApproval(governancePendingApprovalId, answer, approve);
+            const receipt = await resolveApproval(approvalId, answer, approve, review);
+            if (activeConversationIdRef.current !== sessionId) return;
+            resolvedId = readString(receipt?.approvalId) || readString(receipt?.approval_id) || readString(receipt?.approval?.id);
+            const currentApprovalId = governancePendingApprovalIdRef.current;
+            if (currentApprovalId && currentApprovalId !== approvalId && currentApprovalId !== resolvedId) return;
             // Keep the resolved id dismissed until the authoritative snapshot
             // removes it. Otherwise the stale projection reopens the modal in
             // the render immediately following a successful response.
-            setDismissedGovernanceApprovalId(governancePendingApprovalId);
-            removeGovernanceApproval(governancePendingApprovalId);
+            setDismissedGovernanceApprovalId(approvalId);
+            removeGovernanceApproval(approvalId);
+            if (resolvedId && resolvedId !== approvalId) removeGovernanceApproval(resolvedId);
             setGovernanceApprovalOpen(false);
         } finally {
-            setGovernanceApprovalBusy(false);
+            if (activeConversationIdRef.current === sessionId && (!governancePendingApprovalIdRef.current || governancePendingApprovalIdRef.current === approvalId || governancePendingApprovalIdRef.current === resolvedId)) {
+                setGovernanceApprovalBusy(false);
+            }
         }
     }, [governancePendingApprovalId, removeGovernanceApproval, resolveApproval]);
 
@@ -2384,6 +2397,7 @@ export default function ChatClient() {
 
     useEffect(() => {
         setChatTransportError("");
+        setGovernanceApprovalBusy(false);
         setGovernanceApprovalOverlaySessionId(activeConversationId);
         setLiveGovernanceApprovals([]);
         setResolvedGovernanceApprovalIds([]);
@@ -4724,8 +4738,20 @@ export default function ChatClient() {
             isOpen={governanceApprovalOpen}
             approval={governancePendingApproval}
             busy={governanceApprovalBusy}
-            onApprove={(answer) => handleGovernanceApprovalResolve(answer, true)}
+            onApprove={(answer, review) => handleGovernanceApprovalResolve(answer, true, review)}
             onReject={(answer) => handleGovernanceApprovalResolve(answer, false)}
+            onReplaceApproval={(next, previousId) => {
+                if (previousId !== governancePendingApprovalId) return;
+                removeGovernanceApproval(previousId);
+                if (next.status && next.status !== "pending") {
+                    removeGovernanceApproval(String(next.id || ""));
+                    setGovernanceApprovalOpen(false);
+                    return;
+                }
+                upsertGovernanceApproval(next);
+                setDismissedGovernanceApprovalId("");
+                setGovernanceApprovalOpen(true);
+            }}
             onViewDetails={handleGovernanceApprovalViewDetails}
             onCancel={handleGovernanceApprovalDismiss}
         />

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "@/components/providers/LocaleProvider";
+import { specError, verifiedSpecDocument } from "@/lib/spec-review";
 
 type SpecSummary = {
     specId?: string;
@@ -26,6 +27,9 @@ type SpecStage = {
     truncated?: boolean;
     ids?: string[];
     documentRef?: string;
+    documentSha256?: string;
+    documentPath?: string;
+    relativePath?: string;
 };
 
 type SpecDetail = {
@@ -48,8 +52,8 @@ function normalizeError(payload: unknown, fallback: string) {
 
 async function readJson<T>(response: Response, fallback: string): Promise<T> {
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(normalizeError(payload, fallback));
+    if (!response.ok || payload.ok === false) {
+        throw specError(payload, normalizeError(payload, fallback));
     }
     return payload as T;
 }
@@ -77,12 +81,23 @@ export default function SpecApprovalClient({
     const [replacement, setReplacement] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
+    const [detailOwner, setDetailOwner] = useState("");
+    const owner = JSON.stringify([workspacePath.trim(), selectedSpecId]);
+    const ownerRef = useRef(owner);
+    ownerRef.current = owner;
+    const detailGenerationRef = useRef(0);
+    const actionIdentity = JSON.stringify([owner, selectedStage]);
+    const actionIdentityRef = useRef(actionIdentity);
+    actionIdentityRef.current = actionIdentity;
+    const stageActionPendingRef = useRef(false);
 
     const selectedSpec = useMemo(
         () => specs.find((item) => item.specId === selectedSpecId) || detail?.spec || null,
         [detail?.spec, selectedSpecId, specs],
     );
-    const stageContent = detail?.stages?.[selectedStage]?.content || "";
+    const currentStage = detailOwner === owner ? detail?.stages?.[selectedStage] : undefined;
+    const stageContent = currentStage?.content || "";
+    const reviewAvailable = Boolean(currentStage?.documentSha256 && currentStage.truncated !== true);
     const stageIds = detail?.stages?.[selectedStage]?.ids || selectedSpec?.documents?.[selectedStage]?.ids || [];
     const availableStages = useMemo(() => {
         const fromDetail = Object.keys(detail?.stages || {});
@@ -112,6 +127,9 @@ export default function SpecApprovalClient({
     }, [initialSpecId, selectedSpecId, t, workspacePath]);
 
     const loadSpecDetail = useCallback(async (specId: string) => {
+        const requestOwner = JSON.stringify([workspacePath.trim(), specId]);
+        const generation = ++detailGenerationRef.current;
+        const isCurrent = () => requestOwner === ownerRef.current && generation === detailGenerationRef.current;
         if (!workspacePath.trim() || !specId) {
             setDetail(null);
             return;
@@ -119,9 +137,11 @@ export default function SpecApprovalClient({
         setBusy(true);
         setError("");
         try {
-            const query = new URLSearchParams({ workspace_path: workspacePath.trim(), max_chars: "160000" });
+            const query = new URLSearchParams({ workspace_path: workspacePath.trim(), full_content: "true" });
             const payload = await readJson<SpecDetail>(await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, { cache: "no-store" }), t("web.specReview.documentLoadFailed"));
+            if (!isCurrent()) return;
             setDetail(payload);
+            setDetailOwner(requestOwner);
             const preferredStage = STAGES.includes(initialStage.trim().toLowerCase())
                 ? initialStage.trim().toLowerCase()
                 : selectedStage;
@@ -132,9 +152,9 @@ export default function SpecApprovalClient({
                 setSelectedStage(firstStage);
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : t("web.specReview.documentLoadFailed"));
+            if (isCurrent()) { setDetailOwner(""); setError(err instanceof Error ? err.message : t("web.specReview.documentLoadFailed")); }
         } finally {
-            setBusy(false);
+            if (isCurrent()) setBusy(false);
         }
     }, [initialStage, selectedStage, t, workspacePath]);
 
@@ -152,16 +172,20 @@ export default function SpecApprovalClient({
     }, [loadSpecDetail, selectedSpecId]);
 
     const postStageAction = async (action: "approve" | "revise" | "edit") => {
+        if (stageActionPendingRef.current) return;
         if (!selectedSpecId || !selectedStage) {
             setError(t("web.specReview.selectionRequired"));
             return;
         }
+        stageActionPendingRef.current = true;
         setBusy(true);
         setError("");
         try {
+            const reviewed = action === "revise" ? null : await verifiedSpecDocument(currentStage);
+            if (actionIdentityRef.current !== actionIdentity) return;
             const body =
                 action === "approve"
-                    ? { workspacePath: workspacePath.trim(), comment }
+                    ? { workspacePath: workspacePath.trim(), comment, documentSha256: reviewed?.documentSha256 }
                     : action === "revise"
                         ? { workspacePath: workspacePath.trim(), comment, sectionRef }
                         : {
@@ -170,6 +194,7 @@ export default function SpecApprovalClient({
                             sectionRef,
                             content: replacement,
                             reason: comment || "web_spec_approval_edit",
+                            expectedDocumentSha256: reviewed?.documentSha256,
                         };
             await readJson<Record<string, unknown>>(
                 await fetch(`/api/specs/${encodeURIComponent(selectedSpecId)}/stages/${encodeURIComponent(selectedStage)}/${action}`, {
@@ -179,13 +204,15 @@ export default function SpecApprovalClient({
                 }),
                 action === "approve" ? t("web.specReview.approveFailed") : action === "revise" ? t("web.specReview.reviseFailed") : t("web.specReview.editFailed"),
             );
+            if (actionIdentityRef.current !== actionIdentity) return;
             setComment("");
             setReplacement("");
             await loadSpecDetail(selectedSpecId);
             await loadSpecs();
         } catch (err) {
-            setError(err instanceof Error ? err.message : t("web.specReview.actionFailed"));
+            if (actionIdentityRef.current === actionIdentity) setError(err instanceof Error ? err.message : t("web.specReview.actionFailed"));
         } finally {
+            stageActionPendingRef.current = false;
             setBusy(false);
         }
     };
@@ -296,6 +323,7 @@ export default function SpecApprovalClient({
                     <textarea
                         className="mt-2 min-h-28 w-full resize-y rounded-md border border-zinc-200 bg-white p-3 text-sm outline-none focus:border-rose-400 dark:border-zinc-800 dark:bg-zinc-900"
                         value={comment}
+                        disabled={busy}
                         onChange={(event) => setComment(event.target.value)}
                         placeholder={t("web.specReview.commentPlaceholder")}
                     />
@@ -304,6 +332,7 @@ export default function SpecApprovalClient({
                     <textarea
                         className="mt-2 min-h-40 w-full resize-y rounded-md border border-zinc-200 bg-white p-3 text-sm outline-none focus:border-rose-400 dark:border-zinc-800 dark:bg-zinc-900"
                         value={replacement}
+                        disabled={busy}
                         onChange={(event) => setReplacement(event.target.value)}
                         placeholder={t("web.specReview.replacementPlaceholder")}
                     />
@@ -311,7 +340,7 @@ export default function SpecApprovalClient({
                     <div className="mt-5 grid gap-2">
                         <button
                             className="h-11 rounded-md bg-emerald-600 text-sm font-semibold text-white disabled:opacity-50"
-                            disabled={busy || !selectedSpecId}
+                            disabled={busy || !selectedSpecId || !reviewAvailable}
                             onClick={() => void postStageAction("approve")}
                         >
                             {t("web.specReview.approve")}
@@ -325,7 +354,7 @@ export default function SpecApprovalClient({
                         </button>
                         <button
                             className="h-11 rounded-md border border-zinc-300 text-sm font-semibold disabled:opacity-50 dark:border-zinc-700"
-                            disabled={busy || !selectedSpecId || !replacement.trim()}
+                            disabled={busy || !selectedSpecId || !reviewAvailable || !replacement.trim()}
                             onClick={() => void postStageAction("edit")}
                         >
                             {t("web.specReview.edit")}

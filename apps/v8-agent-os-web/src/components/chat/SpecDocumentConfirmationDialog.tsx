@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ExternalLink, Eye, FileText, LoaderCircle, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,14 +10,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import type { SessionApprovalView } from "@v8/session-realtime";
-
-type SpecStagePayload = {
-    content?: string;
-};
-
-type SpecDetailPayload = {
-    stages?: Record<string, SpecStagePayload>;
-};
+import { specError, specReviewMatches, validateRefreshedSpecApproval, verifiedSpecDocument, type SpecReviewDecision, type SpecReviewDocument } from "@/lib/spec-review";
 
 function recordOf(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value)
@@ -30,14 +23,6 @@ function firstText(...values: unknown[]) {
         if (typeof value === "string" && value.trim()) return value.trim();
     }
     return "";
-}
-
-function errorMessage(payload: unknown, fallback: string) {
-    const root = recordOf(payload);
-    const detail = root.detail;
-    if (typeof detail === "string" && detail.trim()) return detail.trim();
-    const nested = recordOf(detail);
-    return firstText(nested.message, root.message, root.error) || fallback;
 }
 
 function stageLabel(stage: string, t: (key: string) => string) {
@@ -56,17 +41,20 @@ export function SpecDocumentConfirmationDialog({
     onReject,
     onViewDetails,
     onCancel,
+    onReplaceApproval,
 }: {
     isOpen: boolean;
     approval: SessionApprovalView;
     busy?: boolean;
-    onApprove: (answer: string) => void | Promise<void>;
+    onApprove: (answer: string, review?: SpecReviewDecision) => void | Promise<void>;
     onReject: (answer: string) => void | Promise<void>;
     onViewDetails: () => void;
     onCancel: () => void;
+    onReplaceApproval: (approval: SessionApprovalView, previousId: string) => void;
 }) {
     const t = useT();
     const request = useMemo(() => recordOf(approval.request), [approval.request]);
+    const approvalId = firstText(approval.id, approval.approval_id, approval.approvalId);
     const specBrief = useMemo(() => recordOf(request.specBrief), [request.specBrief]);
     const specId = firstText(request.specId, request.spec_id);
     const stage = firstText(request.stage, request.specStage, request.spec_stage).toLowerCase();
@@ -81,46 +69,69 @@ export function SpecDocumentConfirmationDialog({
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState("");
+    const [document, setDocument] = useState<SpecReviewDocument | null>(null);
+    const [savedReviewHash, setSavedReviewHash] = useState("");
+    const [retainedDraft, setRetainedDraft] = useState<string | null>(null);
+    const [reload, setReload] = useState(0);
+    const draftsRef = useRef(new Map<string, string>());
+    const owner = JSON.stringify([workspacePath, specId, stage]);
+    const identity = JSON.stringify([owner, approvalId, request.documentSha256]);
+    const activeRef = useRef({ identity, isOpen, epoch: 0 });
+    if (activeRef.current.identity !== identity || activeRef.current.isOpen !== isOpen) {
+        activeRef.current = { identity, isOpen, epoch: activeRef.current.epoch + 1 };
+    }
+    const epoch = activeRef.current.epoch;
+    const operationRef = useRef(false);
+    const translateRef = useRef(t);
+    translateRef.current = t;
+    const stillCurrent = () => activeRef.current.epoch === epoch && activeRef.current.isOpen;
 
     useEffect(() => {
         if (!isOpen) return;
-        let cancelled = false;
+        const controller = new AbortController();
         setEditing(false);
         setRevisionMode(false);
-        setRevisionNote("");
         setError("");
-        if (!specId || !stage || !workspacePath) {
-            setContent(fallbackSummary);
-            setSavedContent(fallbackSummary);
+        setDocument(null);
+        setSavedReviewHash("");
+        setSaving(false);
+        operationRef.current = false;
+        if (!approvalId || !specId || !stage || !workspacePath) {
+            setLoading(false);
+            setError(translateRef.current("web.specConfirmation.loadFailed"));
             return;
         }
         const load = async () => {
             setLoading(true);
             try {
-                const query = new URLSearchParams({ workspace_path: workspacePath, max_chars: "160000" });
-                const response = await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, { cache: "no-store" });
-                const payload = await response.json().catch(() => ({})) as SpecDetailPayload;
-                if (!response.ok) throw new Error(errorMessage(payload, t("web.specConfirmation.loadFailed")));
-                if (cancelled) return;
-                const nextContent = String(payload.stages?.[stage]?.content || fallbackSummary || "").trim();
-                setContent(nextContent);
-                setSavedContent(nextContent);
+                const query = new URLSearchParams({ workspace_path: workspacePath, full_content: "true" });
+                const response = await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, {
+                    cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || payload.ok !== true) throw specError(payload, translateRef.current("web.specConfirmation.loadFailed"));
+                const nextDocument = await verifiedSpecDocument(payload.stages?.[stage]);
+                if (controller.signal.aborted) return;
+                const draft = draftsRef.current.get(owner);
+                setRetainedDraft(draft !== undefined && draft !== nextDocument.content ? draft : null);
+                setContent(nextDocument.content);
+                setSavedContent(nextDocument.content);
+                setDocument(nextDocument);
             } catch (reason) {
-                if (!cancelled) {
+                if (!controller.signal.aborted) {
                     setError(reason instanceof Error ? reason.message : String(reason));
-                    setContent(fallbackSummary);
-                    setSavedContent(fallbackSummary);
                 }
             } finally {
-                if (!cancelled) setLoading(false);
+                if (!controller.signal.aborted) setLoading(false);
             }
         };
         void load();
-        return () => { cancelled = true; };
-    }, [fallbackSummary, isOpen, specId, stage, t, workspacePath]);
+        return () => { controller.abort(); };
+    }, [approvalId, identity, isOpen, owner, reload, specId, stage, workspacePath]);
 
     const saveDocument = async () => {
-        if (!specId || !stage || !workspacePath || content === savedContent) return;
+        if (!document) throw new Error(t("web.specConfirmation.loadFailed"));
+        if (content === savedContent) return document;
         const response = await fetch(`/api/specs/${encodeURIComponent(specId)}/stages/${encodeURIComponent(stage)}/edit`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -128,45 +139,90 @@ export function SpecDocumentConfirmationDialog({
                 workspacePath,
                 action: "rewrite_stage",
                 content,
+                expectedDocumentSha256: document.documentSha256,
                 reason: "user_reviewed_spec_document",
             }),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(errorMessage(payload, t("web.specConfirmation.saveFailed")));
-        setSavedContent(content);
+        if (!response.ok || payload.ok !== true) throw specError(payload, t("web.specConfirmation.saveFailed"));
+        const saved = await verifiedSpecDocument(payload);
+        if (saved.documentPath !== document.documentPath) throw new Error(t("web.specConfirmation.versionChanged"));
+        if (!stillCurrent()) return null;
+        setSavedContent(saved.content);
+        setDocument(saved);
+        setSavedReviewHash(saved.documentSha256);
+        if (saved.content !== content) {
+            setRetainedDraft(content);
+            setContent(saved.content);
+            setEditing(false);
+            setError(t("web.specConfirmation.normalized"));
+            return null;
+        }
+        draftsRef.current.delete(owner);
+        return saved;
     };
 
     const approve = async () => {
+        if (!document || operationRef.current || !stillCurrent()
+            || (!specReviewMatches(approval, document) && savedReviewHash !== document.documentSha256)) return;
+        operationRef.current = true;
         setSaving(true);
         setError("");
         try {
-            await saveDocument();
-            await onApprove("");
+            const saved = await saveDocument();
+            if (!saved || !stillCurrent()) return;
+            await onApprove("", { approvalId, documentSha256: saved.documentSha256,
+                ...(!specReviewMatches(approval, saved) ? { replaceSpecReview: true } : {}) });
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : String(reason));
+            if (stillCurrent()) setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
-            setSaving(false);
+            if (stillCurrent()) { setSaving(false); operationRef.current = false; }
+        }
+    };
+
+    const refreshReview = async () => {
+        if (!document || operationRef.current) return;
+        operationRef.current = true;
+        setSaving(true);
+        setError("");
+        try {
+            const response = await fetch(`/api/approvals/${encodeURIComponent(approvalId)}/refresh-spec-review`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ response: { documentSha256: document.documentSha256 } }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw specError(payload, t("web.specConfirmation.loadFailed"));
+            const next = validateRefreshedSpecApproval(payload, approval, document);
+            if (stillCurrent()) onReplaceApproval(next, approvalId);
+        } catch (reason) {
+            if (stillCurrent()) setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            if (stillCurrent()) { setSaving(false); operationRef.current = false; }
         }
     };
 
     const reject = async () => {
         const note = revisionNote.trim();
-        if (!note) return;
+        if (!note || operationRef.current) return;
+        operationRef.current = true;
         setSaving(true);
         setError("");
         try {
             await onReject(note);
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : String(reason));
+            if (stillCurrent()) setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
-            setSaving(false);
+            if (stillCurrent()) { setSaving(false); operationRef.current = false; }
         }
     };
 
     const unavailable = loading || busy || saving;
+    const needsRefresh = Boolean(document && !specReviewMatches(approval, document) && savedReviewHash !== document.documentSha256);
 
     return (
-        <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel(); }}>
+        <Dialog open={isOpen} onOpenChange={(open) => {
+            if (!open) { activeRef.current.isOpen = false; activeRef.current.epoch += 1; onCancel(); }
+        }}>
             <DialogContent
                 showCloseButton={false}
                 overlayClassName="bg-black/45 backdrop-blur-[1px]"
@@ -188,7 +244,7 @@ export function SpecDocumentConfirmationDialog({
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                disabled={unavailable}
+                                disabled={unavailable || !document}
                                 onClick={() => setEditing((value) => !value)}
                                 className="h-8 rounded-lg px-2.5"
                             >
@@ -210,14 +266,15 @@ export function SpecDocumentConfirmationDialog({
                     ) : editing ? (
                         <Textarea
                             value={content}
-                            onChange={(event) => setContent(event.target.value)}
+                            disabled={unavailable}
+                            onChange={(event) => { setContent(event.target.value); draftsRef.current.set(owner, event.target.value); }}
                             className="h-full min-h-0 resize-none rounded-none border-0 bg-background px-6 py-5 text-sm leading-7 shadow-none focus-visible:ring-0"
                             aria-label={t("web.specConfirmation.editDocument")}
                         />
                     ) : (
                         <div className="scrollbar-none h-full overflow-y-auto px-6 py-5 sm:px-8">
                             <article className="prose prose-sm mx-auto max-w-[780px] break-words text-foreground dark:prose-invert prose-headings:scroll-mt-4 prose-pre:overflow-x-auto">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || t("web.specConfirmation.empty")}</ReactMarkdown>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{document ? content : fallbackSummary || t("web.specConfirmation.empty")}</ReactMarkdown>
                             </article>
                         </div>
                     )}
@@ -234,7 +291,17 @@ export function SpecDocumentConfirmationDialog({
                         />
                     </div>
                 ) : null}
-                {error ? <div className="shrink-0 border-t border-destructive/20 bg-destructive/5 px-5 py-2 text-xs text-destructive">{error}</div> : null}
+                {error || needsRefresh ? <div role="alert" className="shrink-0 border-t border-destructive/20 bg-destructive/5 px-5 py-2 text-xs text-destructive">
+                    {error || t("web.specConfirmation.versionChanged")}
+                    <Button type="button" variant="ghost" size="sm" disabled={unavailable} onClick={() => setReload(value => value + 1)}>{t("web.specConfirmation.reload")}</Button>
+                    {needsRefresh ? <Button type="button" variant="outline" size="sm" disabled={unavailable} onClick={() => void refreshReview()}>{t("web.specConfirmation.refreshReview")}</Button> : null}
+                </div> : null}
+                {retainedDraft !== null ? <div className="shrink-0 px-5 py-2 text-xs">
+                    {t("web.specConfirmation.draftKept")}
+                    <Button type="button" variant="ghost" size="sm" disabled={unavailable} onClick={() => {
+                        setContent(retainedDraft); draftsRef.current.set(owner, retainedDraft); setRetainedDraft(null); setEditing(true);
+                    }}>{t("web.specConfirmation.restoreDraft")}</Button>
+                </div> : null}
 
                 <DialogFooter className="shrink-0 border-t border-border/60 bg-background px-5 py-3 sm:justify-between sm:space-x-0">
                     <div className="text-xs text-muted-foreground">
@@ -250,9 +317,9 @@ export function SpecDocumentConfirmationDialog({
                         ) : (
                             <Button type="button" variant="outline" onClick={() => setRevisionMode(true)} disabled={unavailable} className="rounded-lg">{t("web.specConfirmation.requestRevision")}</Button>
                         )}
-                        <Button type="button" onClick={() => void approve()} disabled={unavailable || !content.trim()} className="rounded-lg">
+                        <Button type="button" onClick={() => void approve()} disabled={unavailable || !document || needsRefresh || !content.trim()} className="rounded-lg">
                             {saving ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                            {t("web.specConfirmation.approve")}
+                            {t(content !== savedContent ? "web.specConfirmation.saveAndApprove" : "web.specConfirmation.approve")}
                         </Button>
                     </div>
                 </DialogFooter>

@@ -11,6 +11,7 @@ import { createClientId } from '@/lib/id';
 import { normalizeRealtimeEvent } from '@/lib/realtime';
 import { shouldSettleSubmittedRun } from '@/lib/chat/run-activity';
 import { readChatStream } from '@/lib/chat/read-chat-stream';
+import { specError, type SpecReviewDecision } from '@/lib/spec-review';
 import {
     markStreamClientCommit,
     markStreamClientRender,
@@ -599,7 +600,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId
         }
     }, [beginRequest, flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, tryResyncConversation]);
 
-    const resolveApproval = useCallback(async (approvalId: string, answer: string, approve = true) => {
+    const resolveApproval = useCallback(async (approvalId: string, answer: string, approve = true, review?: SpecReviewDecision) => {
         const endpoint = approve ? `/api/approvals/${approvalId}/approve` : `/api/approvals/${approvalId}/reject`;
         const response = await fetch(endpoint, {
             method: 'POST',
@@ -608,16 +609,17 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId
                 response: {
                     answer,
                     approved: approve,
+                    ...(approve && review ? { documentSha256: review.documentSha256, replaceSpecReview: review.replaceSpecReview === true } : {}),
                 }
             }),
         });
 
-        if (!response.ok) {
-            const detail = await response.text().catch(() => '');
-            throw new Error(detail || `Approval request failed: ${response.status}`);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.ok === false) throw specError(payload, `Approval request failed: ${response.status}`);
+        if (review && (payload.spec_stage_approval?.ok === false || payload.approval?.status !== 'approved')) {
+            throw specError(payload.spec_stage_approval || payload, 'Spec approval was not accepted. Refresh its state before continuing.');
         }
-
-        return response.json().catch(() => ({}));
+        return payload;
     }, []);
 
     const dispatchRunCommand = useCallback(async (runId: string, command: string, reason?: string) => {

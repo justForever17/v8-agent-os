@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { SpecDocumentConfirmationDialog } from "@/components/chat/SpecDocumentConfirmationDialog";
 import type { SessionApprovalView } from "@v8/session-realtime";
+import type { SpecReviewDecision } from "@/lib/spec-review";
 
 function readFirstString(...values: unknown[]) {
     for (const value of values) {
@@ -172,14 +173,16 @@ export function GovernanceApprovalModal({
     onReject,
     onViewDetails,
     onCancel,
+    onReplaceApproval,
 }: {
     isOpen: boolean;
     approval: SessionApprovalView | null;
     busy?: boolean;
-    onApprove: (answer: string) => void | Promise<void>;
+    onApprove: (answer: string, review?: SpecReviewDecision) => void | Promise<void>;
     onReject: (answer: string) => void | Promise<void>;
     onViewDetails: () => void;
     onCancel: () => void;
+    onReplaceApproval: (approval: SessionApprovalView, previousId: string) => void;
 }) {
     const t = useT();
     const [answer, setAnswer] = useState("");
@@ -201,6 +204,7 @@ export function GovernanceApprovalModal({
                 onReject={onReject}
                 onViewDetails={onViewDetails}
                 onCancel={onCancel}
+                onReplaceApproval={onReplaceApproval}
             />
         );
     }

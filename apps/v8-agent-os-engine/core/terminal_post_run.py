@@ -47,6 +47,9 @@ class TerminalPostRunService:
             dispatch_key=dispatch_key,
             run_metadata=dict(run_record.get("metadata") or {}),
         )
+        # Non-memory delivery has its own atomic source receipt/outbox. The old
+        # memory marker may already be set after a crash before Hook dispatch.
+        self._run_non_memory_hooks(session_id=session_id, run_id=run_id)
         with self._lock:
             metadata = dict(run_record.get("metadata") or {})
             if metadata.get("memory_terminal_dispatched") or dispatch_key in self._dispatched_keys:
@@ -65,7 +68,6 @@ class TerminalPostRunService:
                 logger.warning("Failed to persist terminal memory dispatch marker for %s: %s", run_id, exc)
 
         self._schedule_memory_extraction(session_id=session_id, run_id=run_id, source_component=source_component)
-        self._run_non_memory_hooks(session_id=session_id, run_id=run_id)
         return True
 
     @staticmethod
@@ -162,17 +164,24 @@ class TerminalPostRunService:
             daemon=True,
         ).start()
 
-    def _run_non_memory_hooks(self, *, session_id: str, run_id: str) -> None:
+    def _run_non_memory_hooks(self, *, session_id: str, run_id: str) -> bool:
         try:
+            session = db.get_session(session_id) or {}
+            metadata = session.get("metadata") or {}
             hooks_manager.execute_hook(
                 "on_chat_end",
                 session_id=session_id,
                 parent_run_id=run_id,
                 exclude_targets=["agents.memory_agent"],
                 exclude_names=["Memory Agent System"],
+                user_id=session.get("user_id"),
+                project_id=metadata.get("project_id"),
+                workspace_id=metadata.get("workspace_id"),
             )
+            return True
         except Exception as exc:
             logger.warning("Non-memory on_chat_end hooks failed for session %s: %s", session_id, exc)
+            return False
 
 
 terminal_post_run_service = TerminalPostRunService()

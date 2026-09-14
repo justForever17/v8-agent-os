@@ -92,9 +92,11 @@ def test_cron_manager_passes_bound_session_into_action_executor(monkeypatch):
     manager = CronManager()
 
     def fake_execute(**kwargs):
-        captured.update(kwargs)
+        captured.update(kwargs["entries"][0]["kwargs"])
+        return []
 
-    monkeypatch.setattr("core.cron_manager.ActionExecutor.execute", fake_execute)
+    monkeypatch.setattr("core.cron_manager.automation_delivery_service.enqueue", fake_execute)
+    monkeypatch.setattr("core.cron_manager.automation_delivery_service.kick", lambda: None)
 
     asyncio.run(
         manager.execute_job(
@@ -238,9 +240,10 @@ def test_hooks_manager_preserves_current_runtime_context_as_parent(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "core.hooks_manager.ActionExecutor.execute",
-        lambda **kwargs: captured.update(kwargs),
+        "core.hooks_manager.automation_delivery_service.enqueue",
+        lambda **kwargs: (captured.update(kwargs["entries"][0]["kwargs"]) or []),
     )
+    monkeypatch.setattr("core.hooks_manager.automation_delivery_service.kick", lambda: None)
 
     with bind_runtime_context(session_id="session-current", run_id="run-current", workspace_id="workspace-main"):
         hooks_manager.execute_hook("on_tool_execute_start", tool="demo_tool")

@@ -15,7 +15,9 @@ class SystemMemoryMaintenanceCronTests(unittest.TestCase):
         manager.scheduler.running = False
         manager.sync_jobs_to_scheduler = Mock()
 
-        manager.start()
+        with patch("core.cron_manager.automation_delivery_service.start") as recovery_start:
+            manager.start()
+        recovery_start.assert_called_once_with(manager.scheduler)
 
         manager.sync_jobs_to_scheduler.assert_called_once_with()
         manager.scheduler.start.assert_called_once_with()

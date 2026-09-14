@@ -2815,21 +2815,52 @@ class StorageManager:
 
     # --- Hooks Config Accessors ---
     def get_hooks_config(self) -> Dict[str, Any]:
-        return self.read_json("hooks_config.json")
+        with self._config_io_lock:
+            data = self.read_json("hooks_config.json")
+            return self._version_automation_config("hooks_config.json", data, "hooks")
         
     def save_hooks_config(self, data: Dict[str, Any]):
-        self.write_json("hooks_config.json", data)
+        with self._config_io_lock:
+            previous = self.read_json("hooks_config.json")
+            self._version_automation_config("hooks_config.json", data, "hooks", previous=previous, save=True)
+
+    def _version_automation_config(self, filename, data, list_key, *, previous=None, save=False):
+        from core.automation.definitions import version_definitions
+        result = deepcopy(data or {})
+        previous = previous if previous is not None else result
+        if isinstance(result.get(list_key, []), list):
+            result[list_key] = version_definitions(result.get(list_key, []), previous.get(list_key, []))
+        if filename == "cron_config.json":
+            # Only the scheduler publication path may replace the effective plan.
+            result.pop("appliedPlan", None)
+            if previous.get("appliedPlan") is not None:
+                result["appliedPlan"] = deepcopy(previous["appliedPlan"])
+        if save or result != previous:
+            self.write_json(filename, result)
+        return result
 
     # --- Cron Config Accessors ---
     def get_cron_config(self) -> Dict[str, Any]:
-        data = self.read_json("cron_config.json")
-        normalized = normalize_cron_config_with_system_job(data)
-        if normalized != data:
-            self.write_json("cron_config.json", normalized)
-        return normalized
+        with self._config_io_lock:
+            data = self.read_json("cron_config.json")
+            normalized = normalize_cron_config_with_system_job(data)
+            return self._version_automation_config("cron_config.json", normalized, "jobs", previous=data)
         
     def save_cron_config(self, data: Dict[str, Any]):
-        self.write_json("cron_config.json", normalize_cron_config_with_system_job(data))
+        with self._config_io_lock:
+            previous = self.read_json("cron_config.json")
+            self._version_automation_config("cron_config.json", normalize_cron_config_with_system_job(data), "jobs", previous=previous, save=True)
+
+    def publish_applied_cron_plan(self, *, expected_jobs, applied_jobs):
+        """Persist the installed scheduler plan in the existing cron config domain."""
+        with self._config_io_lock:
+            current = self.get_cron_config()
+            if current.get("jobs", []) != expected_jobs:
+                return False
+            from core.automation.definitions import fingerprint
+            current["appliedPlan"] = {"revision": fingerprint(applied_jobs), "jobs": deepcopy(applied_jobs)}
+            self.write_json("cron_config.json", current)
+            return True
 
     # --- Automation Runtime Config Accessors ---
     def get_automation_runtime_config(self) -> Dict[str, Any]:

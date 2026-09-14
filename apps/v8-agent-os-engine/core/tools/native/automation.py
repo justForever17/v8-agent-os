@@ -172,6 +172,9 @@ def manage_cron(
     action_type: str = None,
     payload: dict = None,
     name: str = None,
+    delivery_id: str = None,
+    outcome: str = None,
+    evidence: dict = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Manage scheduled cron tasks in the V8Chat Engine.
@@ -182,7 +185,10 @@ def manage_cron(
     long-running.
 
     Arguments:
-        action (str): "list", "add", or "remove".
+        action (str): "list", "add", "remove", or "reconcile".
+        delivery_id (str, optional): Unknown delivery ID from read_audit_log for reconciliation.
+        outcome (str, optional): Observed "completed" or "failed" result; reconciliation never replays the action.
+        evidence (dict, optional): Redacted observations/references proving the external outcome, not a success log alone.
         job_id (str, optional): The ID of the job to remove, or a new unique ID to add.
         expression (str, optional): Standard 5-part cron expression (e.g. "0 11 * * *" for daily 11am).
         target (str, optional): The execution target. Format depends on action_type:
@@ -209,7 +215,7 @@ def manage_cron(
         NOTE: You can pass a `channel_id` (例如插件声明的渠道标识，如 "weixin") inside the `payload` dictionary to automatically broadcast the finished task summary to that channel.
     """
     try:
-        if action in {"add", "remove"}:
+        if action in {"add", "remove", "reconcile"}:
             allowed, error_message = _enforce_safety_decision(
                 safety_guardian.assess_cron_mutation(action, runtime_context=get_runtime_context()),
                 tool_call_id=tool_call_id,
@@ -217,6 +223,10 @@ def manage_cron(
             )
             if not allowed:
                 return error_message or "Safety Guardian 已阻止定时任务变更。"
+        if action == "reconcile":
+            from core.automation.delivery import automation_delivery_service
+            return automation_delivery_service.reconcile(delivery_id=delivery_id, kind="cron", outcome=outcome,
+                evidence=evidence, context=get_runtime_context())
 
         from core.storage import storage
         from core.cron_manager import cron_manager
@@ -328,6 +338,9 @@ def manage_hook(
     action_type: str = None,
     name: str = None,
     payload: dict = None,
+    delivery_id: str = None,
+    outcome: str = None,
+    evidence: dict = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Manage lifecycle event hooks in the V8Chat Engine.
@@ -346,7 +359,10 @@ def manage_hook(
     safely attach to the completed chat session.
 
     Arguments:
-        action (str): "list", "add", "pause", "resume", or "remove".
+        action (str): "list", "add", "pause", "resume", "remove", or "reconcile".
+        delivery_id (str, optional): Unknown delivery ID from read_audit_log for reconciliation.
+        outcome (str, optional): Observed "completed" or "failed" result; reconciliation never replays the action.
+        evidence (dict, optional): Redacted observations/references proving the external outcome, not a success log alone.
         event (str, optional): The engine event to hook into (e.g. "on_chat_end", "on_agent_start").
         target (str, optional): The execution target. Format depends on action_type:
             - action_type="command": A shell command string.
@@ -360,7 +376,7 @@ def manage_hook(
         payload (dict, optional): Runtime input, variables, or execution options for the target.
     """
     try:
-        if action in {"add", "pause", "resume", "remove", "delete"}:
+        if action in {"add", "pause", "resume", "remove", "delete", "reconcile"}:
             allowed, error_message = _enforce_safety_decision(
                 safety_guardian.assess_hook_mutation(action, runtime_context=get_runtime_context()),
                 tool_call_id=tool_call_id,
@@ -368,6 +384,10 @@ def manage_hook(
             )
             if not allowed:
                 return error_message or "Safety Guardian 已阻止 Hook 变更。"
+        if action == "reconcile":
+            from core.automation.delivery import automation_delivery_service
+            return automation_delivery_service.reconcile(delivery_id=delivery_id, kind="hook", outcome=outcome,
+                evidence=evidence, context=get_runtime_context())
 
         from core.storage import storage
         config = storage.get_hooks_config()

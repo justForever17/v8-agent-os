@@ -2342,6 +2342,32 @@ class DatabaseManager:
     @staticmethod
     def _ensure_runtime_safety_tables(conn: sqlite3.Connection) -> None:
         """Create idempotency and receipt ledgers without requiring a schema bump."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runtime_automation_deliveries (
+                delivery_id TEXT PRIMARY KEY,
+                definition_kind TEXT NOT NULL,
+                definition_id TEXT NOT NULL,
+                definition_revision TEXT NOT NULL,
+                source_event_id TEXT NOT NULL,
+                source_session_id TEXT NOT NULL,
+                source_run_id TEXT,
+                execution_run_id TEXT NOT NULL,
+                envelope_json TEXT NOT NULL,
+                phase TEXT NOT NULL DEFAULT 'pending',
+                owner_id TEXT,
+                lease_expires_at TEXT,
+                available_at TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                receipt_key TEXT,
+                last_error TEXT,
+                admitted_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_event_id, definition_kind, definition_id),
+                FOREIGN KEY (source_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_delivery_pending ON runtime_automation_deliveries(phase, available_at, lease_expires_at)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS runtime_episode_idempotency (
@@ -4698,6 +4724,271 @@ class DatabaseManager:
     def get_latest_runtime_seq(self, session_id: str) -> int:
         with self.get_connection() as conn:
             return self._runtime_event_sequence_floor(conn, session_id)
+
+    # --- Automation delivery ownership (same DB and runtime event ledger) ---
+
+    @staticmethod
+    def _hydrate_automation_delivery(row):
+        if not row:
+            return None
+        value = dict(row)
+        value["envelope"] = json.loads(value.pop("envelope_json"))
+        return value
+
+    def enqueue_automation_deliveries(self, *, source_event, deliveries):
+        """Commit the source receipt and its immutable fan-out in one transaction."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute("SELECT session_id, run_id, topic, payload_json FROM runtime_events WHERE id = ?", (source_event["event_id"],)).fetchone()
+                if existing:
+                    original_source_run = json.loads(existing["payload_json"]).get("sourceRunId")
+                    declared_source_run = (source_event.get("payload") or {}).get("sourceRunId")
+                    if (existing["session_id"] != source_event["session_id"]
+                            or original_source_run != declared_source_run
+                            or existing["topic"] != source_event["topic"]):
+                        raise ValueError("automation source event identity conflict")
+                    if not existing["run_id"] and source_event.get("run_id"):
+                        if source_event["run_id"] != original_source_run:
+                            raise ValueError("automation source run binding conflict")
+                        conn.execute("UPDATE runtime_events SET run_id=? WHERE id=? AND run_id IS NULL", (source_event["run_id"], source_event["event_id"]))
+                else:
+                    seq = self._allocate_runtime_event_seq(conn, source_event["session_id"])
+                    conn.execute(
+                        """INSERT INTO runtime_events(id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
+                           VALUES (?, ?, ?, ?, 'event', ?, ?, ?, ?)""",
+                        (source_event["event_id"], source_event["session_id"], source_event.get("run_id"), seq,
+                         source_event["topic"], source_event.get("ts") or utc_now_iso(),
+                         json.dumps(source_event.get("source") or {}), json.dumps(to_jsonable(source_event.get("payload") or {}))),
+                    )
+                    for item in deliveries:
+                        now = utc_now_iso()
+                        conn.execute(
+                            """INSERT INTO runtime_automation_deliveries(
+                                   delivery_id, definition_kind, definition_id, definition_revision,
+                                   source_event_id, source_session_id, source_run_id, execution_run_id,
+                                   envelope_json, phase, available_at, last_error, receipt_key, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (item["delivery_id"], item["definition_kind"], item["definition_id"], item["definition_revision"],
+                             source_event["event_id"], source_event["session_id"], (source_event.get("payload") or {}).get("sourceRunId") or source_event.get("run_id"),
+                             item["execution_run_id"], json.dumps(to_jsonable(item["envelope"]), sort_keys=True),
+                             item.get("phase") or "pending", now, item.get("last_error"), item.get("receipt_key"), now, now),
+                        )
+                rows = conn.execute("SELECT * FROM runtime_automation_deliveries WHERE source_event_id = ?", (source_event["event_id"],)).fetchall()
+                conn.commit()
+                return [self._hydrate_automation_delivery(row) for row in rows]
+        return self._run_write_with_retry(_write)
+
+    def get_automation_delivery(self, delivery_id):
+        with self.get_connection() as conn:
+            return self._hydrate_automation_delivery(conn.execute(
+                "SELECT * FROM runtime_automation_deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone())
+
+    def list_automation_deliveries(self, *, phases=("pending",), limit=100):
+        if not phases:
+            return []
+        placeholders = ",".join("?" for _ in phases)
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM runtime_automation_deliveries WHERE phase IN ({placeholders}) ORDER BY available_at, delivery_id LIMIT ?",
+                (*phases, max(1, min(int(limit), 256))),
+            ).fetchall()
+        return [self._hydrate_automation_delivery(row) for row in rows]
+
+    def claim_automation_delivery(self, delivery_id, *, owner_id, lease_seconds=30):
+        now = utc_now_iso()
+        lease = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                item = conn.execute("SELECT * FROM runtime_automation_deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone()
+                if not item or item["phase"] != "pending" or item["available_at"] > now:
+                    conn.rollback()
+                    return None
+                run = conn.execute("SELECT status FROM run_records WHERE id = ?", (item["execution_run_id"],)).fetchone()
+                if run and run["status"] in {"cancelled", "completed"}:
+                    phase = "cancelled" if run["status"] == "cancelled" else "unknown"
+                    conn.execute("UPDATE runtime_automation_deliveries SET phase = ?, updated_at = ? WHERE delivery_id = ?", (phase, now, delivery_id))
+                    conn.commit()
+                    return None
+                execution_run_id = item["execution_run_id"]
+                envelope_json = item["envelope_json"]
+                if item["attempt_count"]:
+                    # A recovered attempt gets a new canonical run identity so
+                    # a late old worker cannot release/cancel the new run's lane.
+                    execution_run_id = "automation-" + uuid.uuid4().hex
+                    envelope = json.loads(envelope_json)
+                    envelope["kwargs"]["run_id"] = execution_run_id
+                    envelope_json = json.dumps(envelope, sort_keys=True)
+                conn.execute(
+                    """UPDATE runtime_automation_deliveries SET phase='claimed', owner_id=?, lease_expires_at=?,
+                       execution_run_id=?, envelope_json=?, receipt_key=NULL,
+                       attempt_count=attempt_count+1, updated_at=? WHERE delivery_id=? AND phase='pending'""",
+                    (owner_id, lease, execution_run_id, envelope_json, now, delivery_id),
+                )
+                item = conn.execute("SELECT * FROM runtime_automation_deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone()
+                conn.commit()
+                return self._hydrate_automation_delivery(item)
+        return self._run_write_with_retry(_write)
+
+    def transition_automation_delivery(self, delivery_id, *, owner_id, expected_phases, phase, error=None, receipt_key=None, retry_delay=5):
+        now = utc_now_iso()
+        lease = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        available = (datetime.now(timezone.utc) + timedelta(seconds=retry_delay)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        placeholders = ",".join("?" for _ in expected_phases)
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                # A cancellation wins even when it arrives between run creation and admission.
+                row = conn.execute("SELECT execution_run_id FROM runtime_automation_deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
+                run = conn.execute("SELECT status FROM run_records WHERE id=?", (row["execution_run_id"],)).fetchone() if row else None
+                if phase in {"admitted", "executing"} and run and run["status"] in {"cancelled", "completed"}:
+                    conn.rollback()
+                    return False
+                changed = conn.execute(
+                    f"""UPDATE runtime_automation_deliveries SET phase=?, last_error=?, receipt_key=COALESCE(?, receipt_key),
+                        admitted_at=CASE WHEN ?='admitted' THEN ? ELSE admitted_at END,
+                        available_at=CASE WHEN ?='pending' THEN ? ELSE available_at END, updated_at=?,
+                        lease_expires_at=CASE WHEN ? IN ('claimed','admitted','executing') THEN ? ELSE NULL END
+                        WHERE delivery_id=? AND owner_id=? AND phase IN ({placeholders})""",
+                    (phase, error, receipt_key, phase, now, phase, available, now, phase, lease,
+                     delivery_id, owner_id, *expected_phases),
+                ).rowcount == 1
+                conn.commit()
+                return changed
+        return self._run_write_with_retry(_write)
+
+    def cancel_automation_delivery(self, delivery_id, *, reason):
+        """Cancel queued work; an admitted/running effect is left for its run controller."""
+        def _write():
+            with self.get_connection() as conn:
+                changed = conn.execute(
+                    """UPDATE runtime_automation_deliveries SET phase='cancelled', last_error=?, lease_expires_at=NULL, updated_at=?
+                       WHERE delivery_id=? AND phase IN ('pending','claimed','blocked')""",
+                    (reason, utc_now_iso(), delivery_id),
+                ).rowcount == 1
+                conn.commit()
+                return changed
+        return self._run_write_with_retry(_write)
+
+    def renew_automation_delivery(self, delivery_id, *, owner_id, lease_seconds=30):
+        lease = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        def _write():
+            with self.get_connection() as conn:
+                changed = conn.execute(
+                    """UPDATE runtime_automation_deliveries SET lease_expires_at=?, updated_at=?
+                       WHERE delivery_id=? AND owner_id=? AND phase IN ('claimed','admitted','executing')""",
+                    (lease, utc_now_iso(), delivery_id, owner_id),
+                ).rowcount == 1
+                conn.commit()
+                return changed
+        return self._run_write_with_retry(_write)
+
+    def reconcile_automation_deliveries(self, *, limit=100):
+        """Expired pre-effect claims can retry; uncertain effects require reconciliation."""
+        now = utc_now_iso()
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """SELECT * FROM runtime_automation_deliveries
+                       WHERE (phase IN ('claimed','admitted','executing') AND lease_expires_at <= ?)
+                          OR phase='unknown'
+                       ORDER BY available_at, delivery_id LIMIT ?""",
+                    (now, max(1, min(int(limit), 256))),
+                ).fetchall()
+                results = []
+                for row in rows:
+                    run = conn.execute("SELECT status FROM run_records WHERE id=?", (row["execution_run_id"],)).fetchone()
+                    receipt = conn.execute("SELECT * FROM runtime_side_effect_receipts WHERE idempotency_key=?", (row["receipt_key"],)).fetchone() if row["receipt_key"] else None
+                    if receipt and receipt["state"] == "completed":
+                        phase, reason = "completed", "receipt_completed"
+                    elif run and run["status"] == "cancelled":
+                        phase, reason = "cancelled", "execution_cancelled"
+                    elif receipt and receipt["state"] == "failed":
+                        phase, reason = "failed", "receipt_failed"
+                    elif row["phase"] in {"executing", "unknown"}:
+                        phase, reason = "unknown", "external_outcome_requires_reconciliation"
+                        if receipt and receipt["state"] == "claimed":
+                            conn.execute(
+                                """UPDATE runtime_side_effect_receipts SET state='indeterminate', owner_id=NULL,
+                                   lease_expires_at=NULL, last_error=?, updated_at=? WHERE idempotency_key=? AND state='claimed'""",
+                                (reason, now, row["receipt_key"]),
+                            )
+                    else:
+                        # The action is only allowed to start AFTER the executing CAS.
+                        phase, reason = "pending", "pre_execution_owner_lost"
+                        conn.execute(
+                            """UPDATE runtime_side_effect_receipts SET state='failed', owner_id=NULL, lease_expires_at=NULL,
+                               last_error='automation_not_started', updated_at=?
+                               WHERE run_id=? AND effect_kind='automation.trigger_execution' AND state='claimed'""",
+                            (now, row["execution_run_id"]),
+                        )
+                    conn.execute(
+                        """UPDATE runtime_automation_deliveries SET phase=?, owner_id=NULL, lease_expires_at=NULL,
+                           available_at=?, last_error=?, updated_at=? WHERE delivery_id=?""",
+                        (phase, now, reason, now, row["delivery_id"]),
+                    )
+                    if phase != row["phase"] or reason != row["last_error"]:
+                        results.append({"delivery_id": row["delivery_id"], "phase": phase, "reason": reason})
+                conn.commit()
+                return results
+        return self._run_write_with_retry(_write)
+
+    def list_automation_terminal_sources(self, *, after_run_id="", limit=100):
+        """A bounded, indexed startup cursor; normal delivery never scans terminal history."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """SELECT r.* FROM run_records r WHERE r.id > ? AND r.run_type='chat'
+                   AND r.status IN ('completed','failed','cancelled','interrupted')
+                   ORDER BY r.id LIMIT ?""",
+                (after_run_id, max(1, min(int(limit), 256))),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["metadata"] = json.loads(value.get("metadata") or "{}")
+            result.append(value)
+        return result
+
+    def find_automation_source_runs(self, *, source_run_id, target):
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """SELECT * FROM run_records WHERE run_type='automation'
+                   AND json_extract(metadata, '$.kwargs.parent_run_id')=?
+                   AND json_extract(metadata, '$.kwargs.automation_delivery_id') IS NULL
+                   AND json_extract(metadata, '$.kwargs.event_name')='on_chat_end'
+                   AND json_extract(metadata, '$.action_target')=? ORDER BY started_at LIMIT 32""",
+                (source_run_id, target),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_automation_execution_receipts(self, run_id):
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM runtime_side_effect_receipts WHERE run_id=? AND effect_kind='automation.trigger_execution' LIMIT 32",
+                (run_id,),
+            ).fetchall()]
+
+    def reconcile_automation_delivery(self, delivery_id, *, outcome, evidence):
+        if outcome not in {"completed", "failed"} or not isinstance(evidence, dict) or not evidence:
+            raise ValueError("delivery reconciliation requires completed/failed and outcome evidence")
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM runtime_automation_deliveries WHERE delivery_id=? AND phase='unknown'", (delivery_id,)).fetchone()
+                if not row:
+                    conn.rollback()
+                    return False
+                envelope = json.loads(row["envelope_json"])
+                envelope["reconciliation"] = {"outcome": outcome, "evidence": to_jsonable(evidence), "at": utc_now_iso()}
+                conn.execute(
+                    "UPDATE runtime_automation_deliveries SET phase=?, envelope_json=?, last_error=NULL, updated_at=? WHERE delivery_id=? AND phase='unknown'",
+                    (outcome, json.dumps(envelope, sort_keys=True), utc_now_iso(), delivery_id),
+                )
+                conn.commit()
+                return True
+        return self._run_write_with_retry(_write)
 
     def get_side_effect_receipt(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
         normalized_key = str(idempotency_key or "").strip()

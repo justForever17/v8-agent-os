@@ -24,6 +24,7 @@ from erc.workflow_ledger import workflow_ledger_service
 from runtimes.automation.runtime import automation_runtime
 from core.runtime_episodes import build_runtime_episode, enqueue_runtime_episode
 from core.process_launch import run_windowless_bounded
+from core.automation.delivery import automation_delivery_service
 
 _AUTOMATION_COMMAND_TIMEOUT_SECONDS = 60
 
@@ -382,6 +383,7 @@ class ActionExecutor:
             if lock_key in cls._active_targets:
                 cls._log_audit_event(trigger_source, kwargs.get("task_name", "Cron Task"), target, "SKIPPED", "Mutex lock: already running")
                 print(f"[ActionExecutor] Skipping {target} because it is already running (locked by {lock_key}).")
+                automation_delivery_service.finished(kwargs, status="rejected", error="cron_overlap")
                 return
             cls._active_targets.add(lock_key)
 
@@ -403,6 +405,7 @@ class ActionExecutor:
                 is_async=bool(kwargs.get("_declared_async", False)),
                 kwargs=kwargs,
             )
+            automation_delivery_service.verify_binding(kwargs, run_handle)
             cls._activate_automation_stage(
                 run_id=run_handle.run_id,
                 trigger_source=trigger_source,
@@ -454,7 +457,7 @@ class ActionExecutor:
                     },
                 )
                 status = "rejected"
-                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+                run_service.transition_run(run_handle.run_id, status="queued" if kwargs.get("automation_delivery_id") else "cancelled", error_message=error_message)
                 return {
                     "status": "rejected",
                     "reason": error_message,
@@ -498,6 +501,7 @@ class ActionExecutor:
                         "stalled": False,
                     },
                 )
+            automation_delivery_service.admitted(kwargs)
             preflight_decision = automation_runtime.run_preflight(
                 run_handle=run_handle,
                 trigger_source=trigger_source,
@@ -574,7 +578,7 @@ class ActionExecutor:
                 error_message = str((controlled.get("control") or {}).get("reason") or "")
                 return controlled
 
-            run_handle.transition("running", reason=trigger_source, node="automation_runtime")
+            automation_delivery_service.start_running(kwargs, run_handle, trigger_source)
             cls._activate_automation_stage(
                 run_id=run_handle.run_id,
                 trigger_source=trigger_source,
@@ -597,7 +601,7 @@ class ActionExecutor:
                     kwargs=kwargs,
                 )
                 if not execution_receipt.execute:
-                    if execution_receipt.requires_reconciliation:
+                    if execution_receipt.requires_reconciliation or execution_receipt.state != "completed":
                         status = "review_required"
                         error_message = "外部副作用结果未知，必须核对目标系统状态后再决定完成或重试。"
                         run_handle.fail(error_message, node="automation_runtime")
@@ -624,6 +628,7 @@ class ActionExecutor:
                         "session_id": run_handle.session_id,
                         "receipt": execution_receipt.as_dict(),
                     }
+            automation_delivery_service.executing(kwargs, execution_receipt)
             if action_type == "command":
                 with automation_runtime.bind_execution_context(
                     runtime_kind="automation",
@@ -726,6 +731,7 @@ class ActionExecutor:
         except Exception as e:
             import traceback
             error_message = f"Error executing {action_type} target '{target}': {str(e)}\n{traceback.format_exc()}"
+            kwargs["automation_retryable_failure"] = not isinstance(e.__cause__ or e, (ValueError, ImportError))
             print(f"[ActionExecutor] {error_message}")
             status = "failed"
             if execution_receipt is not None:
@@ -750,6 +756,7 @@ class ActionExecutor:
             finally:
                 if lock_key:
                     cls._active_targets.discard(lock_key)
+                automation_delivery_service.finished(kwargs, status=status, error=error_message)
             duration_ms = int((time.time() - start_time) * 1000)
             knowledge_db.log_execution(
                 log_id=log_id,
@@ -853,7 +860,7 @@ class ActionExecutor:
         action_payload: Dict[str, Any],
         kwargs: Dict[str, Any],
     ):
-        return side_effect_idempotency_service.begin(
+        receipt = side_effect_idempotency_service.begin(
             run_handle=run_handle,
             effect_kind="automation.trigger_execution",
             step_key=f"automation.execute.{action_type}",
@@ -879,6 +886,8 @@ class ActionExecutor:
                 "eventName": kwargs.get("event_name"),
             },
         )
+        automation_delivery_service.link_receipt(kwargs, receipt)
+        return receipt
 
     @staticmethod
     def _execute_command(command: str, action_payload: Dict[str, Any], **kwargs):
@@ -1015,7 +1024,7 @@ class ActionExecutor:
 
         except Exception as e:
             # Re-raise so the caller can handle reflection
-            raise Exception(f"Agent Action '{target_graph_module_name}' execution failed: {str(e)}")
+            raise Exception(f"Agent Action '{target_graph_module_name}' execution failed: {str(e)}") from e
 
     @staticmethod
     async def _execute_agent_async(target_graph_module_name: str, action_payload: Dict[str, Any], **kwargs):
@@ -1028,6 +1037,7 @@ class ActionExecutor:
             if lock_key in ActionExecutor._active_targets:
                 ActionExecutor._log_audit_event(trigger_source, kwargs.get("task_name", "Cron Task"), target_graph_module_name, "SKIPPED", "Mutex lock: already running")
                 print(f"[ActionExecutor] Skipping {target_graph_module_name} because it is already running (locked by {lock_key}).")
+                automation_delivery_service.finished(kwargs, status="rejected", error="cron_overlap")
                 return
             ActionExecutor._active_targets.add(lock_key)
 
@@ -1049,6 +1059,7 @@ class ActionExecutor:
                 is_async=True,
                 kwargs=kwargs,
             )
+            automation_delivery_service.verify_binding(kwargs, run_handle)
             ActionExecutor._activate_automation_stage(
                 run_id=run_handle.run_id,
                 trigger_source=trigger_source,
@@ -1100,7 +1111,7 @@ class ActionExecutor:
                     },
                 )
                 status = "rejected"
-                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+                run_service.transition_run(run_handle.run_id, status="queued" if kwargs.get("automation_delivery_id") else "cancelled", error_message=error_message)
                 return
             if lane_decision.waited:
                 run_handle.emit(
@@ -1139,6 +1150,7 @@ class ActionExecutor:
                         "stalled": False,
                     },
                 )
+            automation_delivery_service.admitted(kwargs)
             preflight_decision = automation_runtime.run_preflight(
                 run_handle=run_handle,
                 trigger_source=trigger_source,
@@ -1228,7 +1240,7 @@ class ActionExecutor:
                 run_handle=run_handle,
             )
 
-            run_handle.transition("running", reason=trigger_source, node="automation_runtime")
+            automation_delivery_service.start_running(kwargs, run_handle, trigger_source)
             ActionExecutor._activate_automation_stage(
                 run_id=run_handle.run_id,
                 trigger_source=trigger_source,
@@ -1251,7 +1263,7 @@ class ActionExecutor:
                     kwargs=kwargs,
                 )
                 if not execution_receipt.execute:
-                    if execution_receipt.requires_reconciliation:
+                    if execution_receipt.requires_reconciliation or execution_receipt.state != "completed":
                         status = "review_required"
                         error_message = "外部副作用结果未知，必须核对目标系统状态后再决定完成或重试。"
                         run_handle.fail(error_message, node="automation_runtime")
@@ -1267,6 +1279,7 @@ class ActionExecutor:
                     )
                     run_handle.complete(reason="side_effect_deduplicated", node="automation_runtime")
                     return
+            automation_delivery_service.executing(kwargs, execution_receipt)
             with automation_runtime.bind_execution_context(
                 runtime_kind="automation_agent",
                 trigger_source=trigger_reason,
@@ -1355,6 +1368,7 @@ class ActionExecutor:
         except Exception as e:
             import traceback
             error_message = f"Async Agent '{target_graph_module_name}' failed in background: {str(e)}\n{traceback.format_exc()}"
+            kwargs["automation_retryable_failure"] = not isinstance(e, (ValueError, ImportError))
             print(f"[ActionExecutor] {error_message}")
             status = "failed"
             if execution_receipt is not None:
@@ -1379,6 +1393,7 @@ class ActionExecutor:
             finally:
                 if lock_key:
                     ActionExecutor._active_targets.discard(lock_key)
+                automation_delivery_service.finished(kwargs, status=status, error=error_message)
             duration_ms = int((time.time() - start_time) * 1000)
             knowledge_db.log_execution(
                 log_id=log_id,

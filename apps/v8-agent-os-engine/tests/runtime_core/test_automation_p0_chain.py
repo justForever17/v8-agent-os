@@ -304,7 +304,6 @@ def test_command_nonzero_and_missing_python_fail_the_run(monkeypatch, execution,
 
 @pytest.fixture
 def hook_setup(monkeypatch):
-    hooks_module.HooksManager._recent_dispatches.clear()
     hook = {"id": "hook-1", "name": "audit", "events": ["*"], "target": "echo audit",
             "type": "command", "enabled": True, "async": True}
     state = {"hooks": [hook]}
@@ -315,55 +314,8 @@ def hook_setup(monkeypatch):
     return state, calls
 
 
-def test_hook_duplicate_occurrence_is_scoped_and_next_occurrence_runs(hook_setup):
-    _, calls = hook_setup
-    for occurrence, project in [("one", "a"), ("one", "a"), ("two", "a"), ("one", "b")]:
-        hooks_module.hooks_manager.execute_hook("on_chat_end", occurrence_id=occurrence, project_id=project)
-    assert len(calls) == 3
-
-
-def test_repeated_tool_events_without_occurrence_are_not_collapsed(hook_setup):
-    _, calls = hook_setup
-    with bind_runtime_context(run_id="run", session_id="session"):
-        hooks_module.hooks_manager.execute_hook("on_tool_execute_start", tool="read")
-        hooks_module.hooks_manager.execute_hook("on_tool_execute_start", tool="read")
-    assert len(calls) == 2
-
-
-def test_hook_chain_stops_nested_async_self_excitation(monkeypatch, hook_setup):
-    _, calls = hook_setup
-    async def run():
-        pending = []
-        def dispatch(**kwargs):
-            calls.append(kwargs)
-            async def nested():
-                hooks_module.hooks_manager.execute_hook("on_chat_end", occurrence_id="nested")
-            pending.append(asyncio.create_task(nested()))
-        monkeypatch.setattr(action.ActionExecutor, "execute", dispatch)
-        hooks_module.hooks_manager.execute_hook("on_chat_end", occurrence_id="first")
-        await asyncio.gather(*pending)
-    asyncio.run(run())
-    assert len(calls) == 1
-
-
-def test_dispatch_rejection_allows_retry(monkeypatch, hook_setup):
-    _, calls = hook_setup
-    monkeypatch.setattr(action.ActionExecutor, "execute", lambda **k: fail("not accepted"))
-    hooks_module.hooks_manager.execute_hook("on_chat_end", occurrence_id="retry")
-    monkeypatch.setattr(action.ActionExecutor, "execute", lambda **k: calls.append(k))
-    hooks_module.hooks_manager.execute_hook("on_chat_end", occurrence_id="retry")
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize("status", ["paused", "deleted", "disabled"])
-def test_paused_deleted_or_mismatched_hook_is_not_dispatched(hook_setup, status):
-    state, calls = hook_setup
-    state["hooks"][0]["status"] = status
-    hooks_module.hooks_manager.execute_hook("on_chat_end")
-    state["hooks"][0]["status"] = "active"
-    state["hooks"][0]["project_id"] = "project-a"
-    hooks_module.hooks_manager.execute_hook("on_chat_end", project_id="project-b")
-    assert calls == []
+# Hook occurrence/reentry oracles now use the real SQLite delivery path in
+# test_automation_delivery_recovery.py instead of the retired process cache.
 
 
 def test_manage_hook_lifecycle_uses_guard_and_exact_id(monkeypatch, hook_setup):

@@ -141,6 +141,37 @@ def matching_payload(payload: dict[str, Any], marker: str) -> bool:
                for message in payload.get("messages", []) if isinstance(message, dict))
 
 
+def input_message_facts(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fingerprint actual wire messages; fixed fixture markers are exact matches, not intent judgments."""
+    markers = {
+        "singleDelegate": "请只委派一个",
+        "noFurtherDelegation": "禁止继续委派",
+        "parentMustOwnB": "B不依赖A的结果，不得委派B",
+        "acceptPartialBeforeB": "accept_partial接受此版本仅用于parent-independent-b",
+        "nativeBWrite": "使用原生文件工具写parent-b.txt",
+        "internalRuntimeDecision": "Runtime decision event",
+    }
+    rows = []
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(block["text"] for block in content if isinstance(block, dict)
+                             and block.get("type") in {"text", "input_text"}
+                             and isinstance(block.get("text"), str))
+        else:
+            text = ""
+        serialized = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        role = message.get("role")
+        rows.append({"messageIndex": index,
+                     "role": role if role in {"system", "developer", "user", "assistant", "tool"} else None,
+                     "contentSha256": _hash(serialized), "textChars": len(text),
+                     "textSha256": _hash(text),
+                     "exactFixtureMarkers": {name: needle in text for name, needle in markers.items()}})
+    return rows
+
+
 def argument_facts(value: Any) -> dict[str, Any]:
     facts = {"type": type(value).__name__}
     if not isinstance(value, str):
@@ -270,6 +301,7 @@ class ScopedCapture:
                         for index, message in enumerate(messages) if message.get("role") == "assistant"],
                     "availableToolNames": [tool["function"].get("name") for tool in payload.get("tools", [])
                                            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)],
+                    "inputMessageFacts": input_message_facts(messages),
                     "promptFacts": {"registeredAgentIndexPresent": "[registeredAgentIndex]" in system_text,
                                     "requiredDelegationGuidancePresent": "[Required Delegation Dispatch]" in system_text},
                     "delegationReplyFacts": [{"length": len(reply), "sha256": _hash(reply),

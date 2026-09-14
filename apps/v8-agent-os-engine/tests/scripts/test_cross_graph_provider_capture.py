@@ -84,6 +84,32 @@ def test_actual_native_sdk_binding_preserves_delegation_union_required_fields():
     assert _tool_schema_hash([supervisor_delegation_broker])
 
 
+def test_capture_distinguishes_original_user_from_runtime_injection_without_saving_text(tmp_path):
+    capture = capture_module.ScopedCapture("cross-graph-live-instruction-fixture", tmp_path / "capture.jsonl")
+    original = (capture.marker + " PRIVATE USER BODY 请只委派一个A，禁止继续委派。"
+                "B不依赖A的结果，不得委派B；accept_partial接受此版本仅用于parent-independent-b，"
+                "使用原生文件工具写parent-b.txt")
+    user = {"role": "user", "content": [{"type": "text", "text": original},
+        {"type": "image_url", "image_url": {"url": "https://fixture.invalid/PRIVATE-IMAGE"}}]}
+    injected = {"role": "user", "content": "Runtime decision event PRIVATE INTERNAL BODY " + capture.marker}
+    capture.request({"messages": [user]})
+    capture.request({"messages": [user, injected]})
+    capture.request({"messages": [injected]})  # A replacement must not look like preserved user context.
+    rows = [json.loads(line)["inputMessageFacts"] for line in capture.output.read_text(encoding="utf-8").splitlines()]
+    assert rows[0][0] == rows[1][0]
+    assert all(value for key, value in rows[0][0]["exactFixtureMarkers"].items() if key != "internalRuntimeDecision")
+    assert rows[1][1]["exactFixtureMarkers"]["internalRuntimeDecision"]
+    assert not rows[2][0]["exactFixtureMarkers"]["parentMustOwnB"]
+    assert rows[2][0]["textSha256"] != rows[0][0]["textSha256"]
+    tool = capture_module.input_message_facts([{**user, "role": "tool"}])[0]
+    assert tool["textSha256"] == rows[0][0]["textSha256"] and tool["role"] == "tool"
+    shortened = capture_module.input_message_facts([{"role": "user", "content": original[:40]}])[0]
+    assert not shortened["exactFixtureMarkers"]["parentMustOwnB"]
+    encoded = capture.output.read_text(encoding="utf-8")
+    for private in ("PRIVATE USER BODY", "PRIVATE INTERNAL BODY", "PRIVATE-IMAGE", "fixture.invalid", original):
+        assert private not in encoded
+
+
 def test_capture_distinguishes_actual_model_requests_without_endpoint_credentials(tmp_path):
     from types import SimpleNamespace
     capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")

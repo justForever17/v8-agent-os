@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ChevronDown, ShieldAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -49,8 +49,7 @@ function summaryRows(value: unknown) {
                 ? { key, value: item.trim() }
                 : null;
         })
-        .filter((item): item is { key: string; value: string } => Boolean(item))
-        .slice(0, 6);
+        .filter((item): item is { key: string; value: string } => Boolean(item));
 }
 
 function shortMessage(value: string) {
@@ -69,7 +68,7 @@ export function ApprovalCard({
     showHint = true,
 }: ApprovalCardProps) {
     // Kept for callers that still pass the legacy hint flag. Generic cards now
-    // keep the explanation in the hoverable full message instead of repeating it.
+    // expose their full message in the disclosure instead of repeating a hint.
     void showHint;
     const styles = TONE_STYLES[tone];
     const Icon = tone === "control" ? AlertTriangle : ShieldAlert;
@@ -78,12 +77,14 @@ export function ApprovalCard({
     const messageSummary = shortMessage(fullMessage);
 
     return (
-        <div
+        <details
             data-approval-card="compact"
-            className={`my-1 overflow-hidden rounded-xl border px-2.5 py-2 shadow-sm transition-shadow hover:shadow-md ${styles.wrapper}`}
-            title={fullMessage || title}
+            className={`group my-1 overflow-hidden rounded-xl border shadow-sm transition-shadow hover:shadow-md ${styles.wrapper}`}
         >
-            <div className="flex items-center gap-2.5">
+            <summary
+                className="flex cursor-pointer list-none items-center gap-2.5 rounded-xl px-2.5 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-current [&::-webkit-details-marker]:hidden"
+                title={fullMessage || title}
+            >
                 {showIcon ? (
                     <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${styles.icon}`} aria-hidden="true">
                         <Icon className="h-3.5 w-3.5" />
@@ -97,22 +98,25 @@ export function ApprovalCard({
                     <div
                         className="mt-0.5 truncate text-xs leading-5 text-current/80"
                         title={fullMessage || undefined}
-                        aria-label={fullMessage || undefined}
                     >
                         {messageSummary}
                     </div>
-                    {rows.length ? (
-                        <div className="mt-1.5 flex min-w-0 flex-wrap gap-1" aria-label="Approval details">
-                            {rows.map((row) => (
-                                <div key={row.key} className="max-w-full rounded-md border border-current/15 bg-background/35 px-1.5 py-0.5 text-[10px] leading-4" title={`${row.key}: ${row.value}`}>
-                                    <span className="font-semibold text-current/55">{row.key}</span>
-                                    <span className="ml-1 truncate text-current/85">{row.value}</span>
-                                </div>
-                            ))}
-                        </div>
-                    ) : null}
                 </div>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-current/60 group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className="select-text border-t border-current/10 px-3 py-2.5 text-xs leading-5">
+                <p className="whitespace-pre-wrap break-words">{fullMessage || "—"}</p>
+                {rows.length ? (
+                    <dl className="mt-2 grid gap-1 border-t border-current/10 pt-2">
+                        {rows.map((row) => (
+                            <div key={row.key} className="grid grid-cols-[minmax(0,6rem)_minmax(0,1fr)] gap-2">
+                                <dt className="break-words font-medium text-current/60">{row.key}</dt>
+                                <dd className="whitespace-pre-wrap break-all text-current/90">{row.value}</dd>
+                            </div>
+                        ))}
+                    </dl>
+                ) : null}
             </div>
-        </div>
+        </details>
     );
 }

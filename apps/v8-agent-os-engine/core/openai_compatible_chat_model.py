@@ -72,6 +72,8 @@ def _consume_reasoning_details(previous: Any, current: Any, *, stream_mode: str)
         else:
             slot = min(position, len(snapshot))
         merge_index = item.get("index")
+        if merge_index is None and slot < len(snapshot):
+            merge_index = snapshot[slot].get("index")
         if not isinstance(merge_index, int) and not (
             isinstance(merge_index, str) and merge_index.startswith("lc_")
         ):

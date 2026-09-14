@@ -200,16 +200,15 @@ class RunService:
         reason: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        return self.update_metadata(
-            run_id,
-            {
-                "control_signal": {
-                    "command": command,
-                    "reason": reason,
-                    "payload": payload or {},
-                }
-            },
+        # Control signals have command/reason/payload, no marker state. This is
+        # an atomic replacement of that field, not a compare-and-swap between
+        # commands. Preserve the existing last-writer ordering without writing
+        # a stale run status or overwriting unrelated metadata.
+        result = db.update_run_metadata_key_if_state(
+            run_id, key="control_signal", expected_state="",
+            next_value={"command": command, "reason": reason, "payload": payload or {}},
         )
+        return result.get("run_record") if result.get("updated") else None
 
     def get_control_signal(self, run_id: str) -> Optional[Dict[str, Any]]:
         run_record = self.get_run(run_id)

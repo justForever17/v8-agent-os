@@ -54,6 +54,22 @@ def test_command_session_output_keeps_terminal_identity_exit_and_long_log_refere
     assert "rawRef=" in text and len(text) < 3000
 
 
+def test_delegation_inspect_projection_preserves_runtime_partial_acceptance_action():
+    payload = {
+        "mode": "inspect", "episodeId": "subagent::fixture", "state": "active",
+        "executionTerminal": False,
+        "handoffs": [{"handoffRefId": "handoff-a-ready", "status": "partial", "outputKey": "a-ready",
+                      "version": "v1", "usableFor": ["parent-independent-b"],
+                      "acceptanceAction": {"tool": "runtime_broker", "arguments": {
+                          "mode": "accept_partial", "episode_id": "subagent::fixture", "handoff_id": "handoff-a-ready"},
+                          "requiredArguments": ["consumers", "reason"]}}],
+        "detailRef": "/runtime-episodes/subagent%3A%3Afixture",
+    }
+    text = _visible("delegation_broker", payload, budget=2500)
+    assert '"acceptanceAction"' in text and '"accept_partial"' in text
+    assert '"handoff-a-ready"' in text and "generic delegation" not in text
+
+
 def _visible(tool_name: str, payload: dict, *, budget: int = 2500) -> str:
     message = ToolMessage(
         content=json.dumps(payload, ensure_ascii=False),

@@ -2814,6 +2814,11 @@ def _decision_agent_visible_surface(
         renderer_result = "\n".join(line for line in lines if line)
     elif tool_name == "runtime_broker":
         renderer_result = _render_runtime_broker_surface(payload, raw_ref)
+    elif tool_name == "delegation_broker" and payload.get("mode") == "inspect" and payload.get("episodeId"):
+        # delegation's inspect/steer facade delegates to runtime_broker. Keep
+        # the runtime inspection contract (especially acceptanceAction) visible
+        # to the Supervisor instead of collapsing it to a generic delegation summary.
+        renderer_result = _render_runtime_broker_surface(payload, raw_ref)
     elif tool_name == "agent_broker":
         renderer_result = _render_agent_registry_surface(payload, raw_ref)
     elif tool_name == "config_broker":

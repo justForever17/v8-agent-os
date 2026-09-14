@@ -119,6 +119,16 @@ def test_continuation_fingerprints_detect_wire_loss_and_history_replay_without_t
     assert capture_module.wire_field_facts(capture.current.get()) == []
 
 
+def test_native_reasoning_fingerprint_ignores_only_sdk_merge_indexes():
+    def fingerprint(details):
+        return capture_module.continuation_facts({"reasoning_details": details})["reasoning_details"]["nativeFieldsSha256"]
+    native = [{"id": "native-block", "type": "reasoning.text", "format": "fixture", "text": "AA"}]
+    merged = [{**native[0], "index": "lc_v8_reasoning_0"}]
+    assert fingerprint(native) == fingerprint(merged)
+    for change in ({"text": "A"}, {"id": "another-block"}, {"index": 7}, {"format": "changed"}):
+        assert fingerprint(native) != fingerprint([{**native[0], **change}])
+
+
 def test_raw_invalid_arguments_and_metadata_never_save_private_values(tmp_path):
     from types import SimpleNamespace
     capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")

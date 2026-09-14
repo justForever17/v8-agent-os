@@ -40,7 +40,18 @@ def opaque_field_facts(value: Any) -> dict[str, Any]:
 
 
 def continuation_facts(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: opaque_field_facts(payload[key]) for key in _CONTINUATION_FIELDS if key in payload}
+    result = {key: opaque_field_facts(payload[key]) for key in _CONTINUATION_FIELDS if key in payload}
+    details = payload.get("reasoning_details")
+    if isinstance(details, list):
+        # The SDK may add merge-only indexes. Compare actual provider fields
+        # without mistaking their removal on the next request for text loss.
+        native = [
+            {key: value for key, value in item.items()
+             if not (key == "index" and isinstance(value, str) and value.startswith("lc_v8_reasoning_"))}
+            if isinstance(item, dict) else item for item in details
+        ]
+        result["reasoning_details"]["nativeFieldsSha256"] = _hash(json.dumps(native, ensure_ascii=False, sort_keys=True))
+    return result
 
 
 def accumulate_wire_fields(context: dict, choice_index: int, delta: dict) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -16,10 +15,6 @@ class ApprovalDecisionConflict(ValueError):
 
 
 class CommandService:
-    def __init__(self) -> None:
-        self._control_signals: Dict[str, Dict[str, Any]] = {}
-        self._lock = threading.Lock()
-
     def _should_auto_approve(self, approval_kind: str) -> bool:
         # Governance approvals must always surface explicitly instead of being
         # silently auto-approved by default policy.
@@ -197,38 +192,17 @@ class CommandService:
         reason: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        signal = {
-            "command": command,
-            "reason": reason,
-            "payload": payload or {},
-        }
-        with self._lock:
-            self._control_signals[run_id] = signal
-        run_service.set_control_signal(run_id, command=command, reason=reason, payload=payload)
-        return signal
+        record = run_service.set_control_signal(run_id, command=command, reason=reason, payload=payload)
+        return (record.get("metadata") or {}).get("control_signal") if record else None
 
     def peek_control_signal(self, run_id: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            signal = self._control_signals.get(run_id)
-        if signal:
-            return dict(signal)
-        persisted = run_service.get_control_signal(run_id)
-        return dict(persisted) if persisted else None
+        return run_service.get_control_signal(run_id)
 
     def consume_control_signal(self, run_id: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            signal = self._control_signals.pop(run_id, None)
-        persisted = run_service.get_control_signal(run_id)
-        effective = signal or persisted
-        if effective:
-            run_service.clear_control_signal(run_id)
-            return dict(effective)
-        return None
+        return run_service.consume_control_signal(run_id)
 
-    def clear_control_signal(self, run_id: str) -> None:
-        with self._lock:
-            self._control_signals.pop(run_id, None)
-        run_service.clear_control_signal(run_id)
+    def clear_control_signal(self, run_id: str, *, expected_signal: Optional[Dict[str, Any]] = None) -> None:
+        run_service.clear_control_signal(run_id, expected_signal=expected_signal)
 
     def pause_run(self, run_id: str, *, reason: Optional[str] = None) -> None:
         run_service.transition_run(

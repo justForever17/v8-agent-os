@@ -218,16 +218,14 @@ class RunService:
         signal = metadata.get("control_signal")
         return dict(signal) if isinstance(signal, dict) else None
 
-    def clear_control_signal(self, run_id: str) -> Optional[Dict[str, Any]]:
-        run_record = self.get_run(run_id)
-        if not run_record:
-            return None
-        metadata = dict(run_record.get("metadata") or {})
-        if "control_signal" not in metadata:
-            return run_record
-        metadata.pop("control_signal", None)
-        db.update_run_record(run_id, status=run_record["status"], metadata=metadata)
-        return self.get_run(run_id)
+    def consume_control_signal(self, run_id: str) -> Optional[Dict[str, Any]]:
+        return db.consume_run_control_signal(run_id).get("signal")
+
+    def clear_control_signal(self, run_id: str, *, expected_signal: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        observed = expected_signal if expected_signal is not None else self.get_control_signal(run_id)
+        if not observed:
+            return self.get_run(run_id)
+        return db.consume_run_control_signal(run_id, expected_signal=observed).get("run_record")
 
 
 run_service = RunService()

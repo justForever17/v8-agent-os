@@ -757,7 +757,7 @@ class SessionCoordinationService:
         if target_run_id:
             signal = command_service.peek_control_signal(target_run_id)
             if signal and str((signal.get("payload") or {}).get("messageId") or "") == message_id:
-                command_service.clear_control_signal(target_run_id)
+                command_service.clear_control_signal(target_run_id, expected_signal=signal)
         updated = db.update_session_coordination_message(
             message_id,
             state="cancelled",

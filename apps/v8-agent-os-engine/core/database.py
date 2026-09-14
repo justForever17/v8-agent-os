@@ -4793,6 +4793,27 @@ class DatabaseManager:
 
         return self._run_write_with_retry(_write)
 
+    def consume_run_control_signal(self, run_id: str, *, expected_signal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Consume the current control field without rewriting run state or other metadata."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id=?", (run_id,)).fetchone()
+                if not row:
+                    return {"signal": None, "run_record": None}
+                record = dict(row)
+                metadata = json.loads(record["metadata"] or "{}")
+                signal = metadata.get("control_signal")
+                record["metadata"] = metadata
+                if not isinstance(signal, dict) or not signal or (expected_signal is not None and signal != expected_signal):
+                    return {"signal": None, "run_record": record}
+                metadata.pop("control_signal")
+                conn.execute("UPDATE run_records SET metadata=? WHERE id=?",
+                    (json.dumps(to_jsonable(metadata), ensure_ascii=False), run_id))
+                conn.commit()
+                return {"signal": signal, "run_record": record}
+        return self._run_write_with_retry(_write)
+
     def get_durable_runtime_episode_wait(self, run_id: str) -> Optional[Dict[str, Any]]:
         """Recognize a parked parent from its current wait generation and owned episodes."""
         from core.runtime_episodes import ACTIVE_EPISODE_STATES

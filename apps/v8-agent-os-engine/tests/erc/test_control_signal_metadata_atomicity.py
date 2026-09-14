@@ -43,3 +43,67 @@ def test_control_signal_preserves_concurrent_wait_human_metadata_and_terminal_st
     assert actual["metadata"]["humanRevision"] == "user-correction-2"
     assert actual["metadata"]["pause_reason"] == "human_pause"
     assert actual["metadata"]["control_signal"]["command"] == "cancel"
+
+
+def test_stale_clear_preserves_new_control_scope_and_paused_status(tmp_path, monkeypatch):
+    database = DatabaseManager(tmp_path / "clear.sqlite3")
+    database.create_or_update_session("session", "Fixture", user_id="owner")
+    initial = {"control_signal": {"command": "guidance", "reason": "old"}}
+    database.create_run_record("run", "session", run_type="chat", status="running", metadata=initial)
+    concurrent = DatabaseManager(database.db_path)
+    monkeypatch.setattr(run_module, "db", database)
+    ready, changed = Event(), Event()
+    original_write = database._run_write_with_retry
+    def delayed(write):
+        ready.set()
+        assert changed.wait(10)
+        return original_write(write)
+    monkeypatch.setattr(database, "_run_write_with_retry", delayed)
+    latest = {
+        "control_signal": {"command": "cancel", "reason": "new"},
+        "sessionAssignment": {"state": "active", "cancelRequested": True},
+        "runtimeEpisodeResume": {"state": "waiting", "waitGeneration": 2},
+        "humanRevision": "new-goal",
+    }
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(RunService().clear_control_signal, "run")
+        assert ready.wait(10)
+        concurrent.update_run_record("run", status="paused", metadata=latest)
+        changed.set()
+        future.result(timeout=10)
+    actual = concurrent.get_run_record("run")
+    assert actual["status"] == "paused"
+    assert actual["metadata"] == latest
+
+
+def test_separate_control_service_consumes_latest_persisted_signal_once(tmp_path, monkeypatch):
+    from erc.command_service import CommandService
+    database = DatabaseManager(tmp_path / "instances.sqlite3")
+    database.create_or_update_session("session", "Fixture", user_id="owner")
+    database.create_run_record("run", "session", run_type="chat", status="running")
+    monkeypatch.setattr(run_module, "db", database)
+    first, second = CommandService(), CommandService()
+    first.issue_control_signal("run", command="guidance", reason="old")
+    second.issue_control_signal("run", command="cancel", reason="new")
+    assert first.peek_control_signal("run")["command"] == "cancel"
+    assert first.consume_control_signal("run")["command"] == "cancel"
+    assert second.consume_control_signal("run") is None
+    assert first.peek_control_signal("run") is None
+
+
+def test_control_consumption_is_single_claim_across_service_instances(tmp_path, monkeypatch):
+    from threading import Barrier
+    from erc.command_service import CommandService
+    database = DatabaseManager(tmp_path / "consume.sqlite3")
+    database.create_or_update_session("session", "Fixture", user_id="owner")
+    database.create_run_record("run", "session", run_type="chat", status="running")
+    monkeypatch.setattr(run_module, "db", database)
+    control = CommandService()
+    control.issue_control_signal("run", command="pause", reason="single-consumption")
+    barrier = Barrier(4)
+    def consume():
+        barrier.wait()
+        return CommandService().consume_control_signal("run")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: consume(), range(4)))
+    assert sum(result is not None for result in results) == 1

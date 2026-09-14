@@ -1305,7 +1305,8 @@ def test_runtime_route_compiler_repairs_missing_tool_once_without_replaying_fail
     )
 
     assert result is corrected
-    assert result.content == ""
+    assert result.content == "internal correction prose"
+    assert result.additional_kwargs["v8_internal_model_surface"] == "runtime_route_compiler_correction"
     assert len(calls) == 1
     assert failed not in calls[0][0]
     assert calls[0][1]["tool_choice"] == "runtime_broker"

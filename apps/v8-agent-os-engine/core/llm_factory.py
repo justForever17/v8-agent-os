@@ -1494,6 +1494,7 @@ class LLMFactory:
                 resolved_model_ref = str(meta.get("model_ref") or model_id)
                 builder = lambda: V8OpenAICompatibleChatModel(
                     v8_model_ref=resolved_model_ref,
+                    v8_reasoning_surface=meta.get("reasoning_surface"),
                     **provider_kwargs,
                 )
             return V8ChatModelAdapter(

@@ -1,9 +1,32 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import pytest
 
 import runtimes.extensions.runtime as extensions_runtime_module
 from runtimes.extensions.runtime import ExtensionsRuntimeService
+
+
+@pytest.mark.parametrize("surface", ["runtime_route_compiler", "runtime_route_compiler_correction", ""])
+def test_internal_compiler_event_preserves_tool_status_without_prose_preview(surface) -> None:
+    emitted = []
+    service = object.__new__(ExtensionsRuntimeService)
+    service._emit = lambda topic, payload, *, node: emitted.append(payload)
+    response = SimpleNamespace(
+        content="internal route explanation" if surface else "visible explanation",
+        additional_kwargs={"v8_internal_model_surface": surface},
+        tool_calls=[{"name": "runtime_broker", "args": {"mode": "route"}}],
+    )
+    service.emit_execution_completed(response=response)
+    payload = emitted[0]
+    assert payload["toolNames"] == ["runtime_broker"]
+    assert payload["toolResultPending"] is True
+    if surface:
+        assert "messagePreview" not in payload
+        assert payload["activitySummary"]
+        assert response.content == "internal route explanation"
+    else:
+        assert payload["messagePreview"] == "visible explanation"
 
 
 def test_tool_call_only_extension_event_is_not_reported_as_empty_message_preview() -> None:

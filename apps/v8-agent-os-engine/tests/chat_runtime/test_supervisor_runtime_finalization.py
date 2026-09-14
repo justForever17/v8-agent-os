@@ -1812,8 +1812,26 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
 @pytest.mark.parametrize("request_budget", [None, 512])
 @pytest.mark.parametrize("remaining_steps", [None, 6])
-def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_cap(monkeypatch, request_budget, remaining_steps):
+@pytest.mark.parametrize("reasoning_format", ["split", "inline"])
+def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_cap(monkeypatch, tmp_path, request_budget, remaining_steps, reasoning_format):
     from langgraph.errors import GraphRecursionError
+    from langgraph.checkpoint.base import empty_checkpoint
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    from langgraph.graph.message import add_messages
+    from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
+    from core.response_normalizer import ensure_reasoning_content
+    from graph.compat import sanitize_message_chain
+    from graph.supervisor_execution import route_supervisor_response
+    from runtimes.chat.runtime import ChatRuntime
+
+    provider_model = V8OpenAICompatibleChatModel(
+        model="MiniMax-M3", api_key="test-key", base_url="https://api.minimax.io/v1",
+        v8_model_ref="minimax::MiniMax-M3",
+    )
+    provider_content = "internal route explanation"
+    if reasoning_format == "inline":
+        provider_content = "<think>public fixture analysis</think>" + provider_content
+    provider_details = [{"type": "reasoning.text", "index": 0, "id": "public-reasoning", "format": "MiniMax-response-v1", "text": "public fixture analysis"}]
     emitted: list[tuple[str, object]] = []
     model_calls: list[list[object]] = []
     model_creations: list[tuple[str, dict]] = []
@@ -1903,8 +1921,8 @@ def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_
             "metadata": {"v8_internal_model_surface": "runtime_route_compiler"}
         }
         model_calls.append(list(prepared_messages))
-        return AIMessage(
-            content="internal route explanation that must not reach history",
+        draft = AIMessage(
+            content=provider_content,
             tool_calls=[
                 {
                     "id": "call-compiler-engineering",
@@ -1929,6 +1947,14 @@ def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_
                 }
             ],
         )
+        call = draft.tool_calls[0]
+        raw = {"role": "assistant", "content": provider_content, "tool_calls": [{
+            "id": call["id"], "type": "function",
+            "function": {"name": call["name"], "arguments": json.dumps(call["args"])},
+        }]}
+        if reasoning_format == "split":
+            raw["reasoning_details"] = provider_details
+        return provider_model._create_chat_result({"choices": [{"index": 0, "message": raw, "finish_reason": "tool_calls"}]}).generations[0].message
 
     def create_chat_model(model_id, **kwargs):
         model_creations.append((model_id, dict(kwargs)))
@@ -1966,7 +1992,25 @@ def test_selected_read_only_engineering_keeps_model_policy_without_hidden_route_
         return
 
     assert response.tool_calls[0]["name"] == "runtime_broker"
-    assert response.content == ""
+    assert response.content == provider_content
+    assert response.additional_kwargs["v8_internal_model_surface"] == "runtime_route_compiler"
+    routed = route_supervisor_response(response)
+    history = add_messages([HumanMessage(content="public fixture request")], routed.update["messages"])
+    history = add_messages(history, [ToolMessage(content="public fixture result", tool_call_id=response.tool_calls[0]["id"])])
+    checkpoint = empty_checkpoint()
+    checkpoint["channel_values"] = {"messages": history}
+    checkpoint_path = str(tmp_path / "public-continuation.sqlite3")
+    with SqliteSaver.from_conn_string(checkpoint_path) as saver:
+        saved = saver.put({"configurable": {"thread_id": "public-continuation", "checkpoint_ns": ""}}, checkpoint,
+            {"source": "loop", "step": 1, "parents": {}}, {})
+    with SqliteSaver.from_conn_string(checkpoint_path) as saver:
+        restored = saver.get(saved)["channel_values"]
+    prepared = sanitize_message_chain([ensure_reasoning_content(message) for message in restored["messages"]])
+    wire = next(message for message in provider_model._get_request_payload(prepared)["messages"] if message["role"] == "assistant")
+    assert wire["content"] == provider_content
+    if reasoning_format == "split":
+        assert wire["reasoning_details"] == provider_details
+    assert ChatRuntime._extract_final_assistant_text_from_state(restored) == ""
     assert response.tool_calls[0]["args"]["taskBriefs"][0]["readOnly"] is True
     assert len(model_calls) == 1
     assert model_creations == [

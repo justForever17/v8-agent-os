@@ -4877,7 +4877,8 @@ class ExtensionsRuntimeService:
 
     def emit_execution_completed(self, *, response: Any) -> None:
         tool_calls = list(getattr(response, "tool_calls", None) or [])
-        visible_text = _truncate(sanitize_background_model_output(response).text, 200)
+        internal_surface = str(dict(getattr(response, "additional_kwargs", None) or {}).get("v8_internal_model_surface") or "").strip()
+        visible_text = "" if internal_surface else _truncate(sanitize_background_model_output(response).text, 200)
         tool_names = [str(item.get("name") or "") for item in tool_calls]
         payload: dict[str, Any] = {
             "hasToolCalls": bool(tool_calls),

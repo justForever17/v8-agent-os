@@ -9732,6 +9732,8 @@ class ChatRuntime:
             if not isinstance(message, AIMessage):
                 continue
             additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+            if str(additional_kwargs.get("v8_internal_model_surface") or "").strip():
+                continue
             if str(additional_kwargs.get("v8_owner_agent_kind") or "").strip().lower() in {"subagent", "shard"}:
                 continue
             if str(additional_kwargs.get("v8_owner_runtime_kind") or "").strip().lower() in {"subagent", "delegation"}:

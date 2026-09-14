@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from core.llm_factory import LLMFactory
 from core.model_control_plane import model_control_plane
 from core.model_thinking_control import provider_reasoning_transport_patch, reasoning_summary_request_patch
@@ -65,6 +67,41 @@ def test_minimax_m3_uses_documented_split_reasoning_transport():
     }
     kwargs = LLMFactory._build_openai_kwargs("MiniMax-M3", metadata)
     assert kwargs["extra_body"]["reasoning_split"] is True
+
+
+@pytest.mark.parametrize("stream_mode", ["delta", "cumulative"])
+def test_factory_carries_reasoning_contract_and_binding_without_sending_internal_options(monkeypatch, stream_mode):
+    from langchain_core.messages import HumanMessage
+    from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
+    surface = {
+        "mode": "provider_reasoning", "trust": "official", "requestStyle": "minimax_interleaved_thinking",
+        "responseFields": ["reasoning_details", "content[inline_think]"], "streamMode": stream_mode,
+    }
+    metadata = {
+        "is_found": True, "model_id": "custom-wire-model", "model_ref": "configured-provider::custom-binding",
+        "api_standard": "openai", "wire_protocol": "openai.chat_completions",
+        "api_key": "test-key", "base_url": "https://fixture.example/v1", "reasoning_surface": surface,
+    }
+    monkeypatch.setattr(LLMFactory, "_resolve_model_metadata", classmethod(lambda cls, _model_id: metadata))
+    monkeypatch.setattr(LLMFactory, "_attach_telemetry", classmethod(lambda cls, kwargs, *_args, **_kwargs: kwargs))
+    adapter = LLMFactory.create_chat_model("configured-provider::custom-binding")
+    model = adapter._get_base_model()
+    payload = model._get_request_payload([HumanMessage(content="public fixture")])
+    assert payload["extra_body"]["reasoning_split"] is True
+    assert payload["model"] == "custom-wire-model"
+    assert "v8_reasoning_surface" not in payload
+    assert model._reasoning_origin()["modelRef"] == "configured-provider::custom-binding"
+    chunks = [{"choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_details": [{"type": "reasoning.text", "text": "A"}]}}]}] * 2
+    from test_openai_compatible_reasoning_adapter import _SyncClient
+    object.__setattr__(model, "client", _SyncClient(chunks))
+    combined = list(model.stream([HumanMessage(content="public fixture")]))
+    full = combined[0]
+    for chunk in combined[1:]:
+        full += chunk
+    assert full.additional_kwargs["reasoning_details"][0]["text"] == ("AA" if stream_mode == "delta" else "A")
+    message = model._create_chat_result({"choices": [{"message": {"role": "assistant", "content": "<think>public fixture</think>Visible"}}]}).generations[0].message
+    other = V8OpenAICompatibleChatModel(model="custom-wire-model", api_key="test-key", base_url="https://other.example/v1")
+    assert other._get_request_payload([message])["messages"][0]["content"] == "Visible"
 
 
 def test_split_reasoning_transport_is_not_inferred_for_other_chat_models():

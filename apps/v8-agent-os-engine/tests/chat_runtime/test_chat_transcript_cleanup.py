@@ -96,6 +96,30 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             "supervisor accepted the handoff",
         )
 
+    async def test_internal_compiler_preserves_history_without_human_projection(self):
+        for surface in ("runtime_route_compiler", "runtime_route_compiler_correction"):
+            with self.subTest(surface=surface):
+                stream_state = ChatStreamState()
+                stream_state.valid_agent_node_names = ["supervisor"]
+                content = "<think>public fixture analysis</think>internal route explanation"
+                message = AIMessage(content=content, additional_kwargs={"v8_internal_model_surface": surface})
+                self.assertEqual(self.runtime._extract_final_assistant_text_from_state({"messages": [message]}), "")
+                self.assertEqual(self.runtime._extract_final_assistant_text_from_state({"messages": [message, AIMessage(content="accepted result")]}), "accepted result")
+                for event_kind, field, payload in (
+                    ("on_chat_model_stream", "chunk", AIMessageChunk(content=content)),
+                    ("on_chat_model_end", "output", message),
+                ):
+                    emitted = await self.runtime.handle_stream_event(self.chat_run, stream_state, {
+                        "event": event_kind, "run_id": "model-" + surface, "name": "V8ChatModelAdapter",
+                        "metadata": {"langgraph_node": "supervisor", "v8_internal_model_surface": surface},
+                        "data": {field: payload},
+                    })
+                    self.assertTrue(all(not item.get("displayInMessage") for item in emitted))
+                self.assertEqual(stream_state.output_buffer, [])
+                self.assertEqual(stream_state.reasoning_buffer, [])
+                self.assertIsNone(stream_state.assistant_message_id)
+                self.assertEqual(message.content, content)
+
     async def test_callback_metadata_keeps_subagent_text_out_of_supervisor_canonical_message(self):
         self.stream_state.valid_agent_node_names = ["supervisor", "worker-one"]
 

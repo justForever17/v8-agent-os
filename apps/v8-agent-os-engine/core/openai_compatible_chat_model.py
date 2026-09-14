@@ -9,6 +9,9 @@ from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
 from pydantic import PrivateAttr
 
+from core.reasoning_payload_contract import THINK_TAG_PATTERN
+from core.reasoning_surface_contract import is_trusted_reasoning_surface
+
 
 _REASONING_RESPONSE_FIELDS = (
     "reasoning_details",
@@ -53,67 +56,63 @@ def _reasoning_fields(value: Any) -> dict[str, Any]:
     return fields
 
 
-def _mergeable_reasoning_details(previous: Any, current: Any) -> Any:
-    """Turn cumulative detail snapshots into LangChain-mergeable deltas."""
+def _consume_reasoning_details(previous: Any, current: Any, *, stream_mode: str) -> tuple[Any, Any]:
+    """Keep native block identity while emitting additive LangChain chunks."""
     if not isinstance(current, list) or not all(isinstance(item, Mapping) for item in current):
-        return current
+        return current, current
 
-    previous_items = previous if isinstance(previous, list) else []
+    snapshot = deepcopy(previous) if isinstance(previous, list) else []
     deltas: list[dict[str, Any]] = []
-    for index, raw_item in enumerate(current):
+    for position, raw_item in enumerate(current):
         item = dict(raw_item)
+        if item.get("index") is not None:
+            slot = next((i for i, old in enumerate(snapshot) if old.get("index") == item["index"]), len(snapshot))
+        elif item.get("id"):
+            slot = next((i for i, old in enumerate(snapshot) if old.get("id") == item["id"]), len(snapshot))
+        else:
+            slot = min(position, len(snapshot))
         merge_index = item.get("index")
         if not isinstance(merge_index, int) and not (
             isinstance(merge_index, str) and merge_index.startswith("lc_")
         ):
-            merge_index = f"{_REASONING_DETAIL_INDEX_PREFIX}{index}"
+            merge_index = f"{_REASONING_DETAIL_INDEX_PREFIX}{slot}"
 
-        previous_item = (
-            dict(previous_items[index])
-            if index < len(previous_items) and isinstance(previous_items[index], Mapping)
-            else None
-        )
-        if previous_item is None:
-            item["index"] = merge_index
-            deltas.append(item)
+        if slot == len(snapshot):
+            snapshot.append(deepcopy(item))
+            deltas.append({**item, "index": merge_index})
             continue
 
+        previous_item = snapshot[slot]
         delta: dict[str, Any] = {"index": merge_index}
         for key, field_value in item.items():
             if key == "index":
                 continue
-            if key not in previous_item:
-                delta[key] = deepcopy(field_value)
-                continue
-            previous_value = previous_item.get(key)
-            if field_value == previous_value:
-                continue
-            if isinstance(field_value, str) and isinstance(previous_value, str):
-                delta[key] = (
-                    field_value[len(previous_value) :]
-                    if field_value.startswith(previous_value)
-                    else field_value
+            if key == "text":
+                text_delta, text_snapshot = _consume_reasoning_text(
+                    previous_item.get(key, ""), field_value, stream_mode=stream_mode,
                 )
-
+                previous_item[key] = text_snapshot
+                if text_delta:
+                    delta[key] = text_delta
+            elif key not in previous_item or field_value != previous_item[key]:
+                # Identity/format are block metadata, never text fragments.
+                previous_item[key] = deepcopy(field_value)
+                delta[key] = deepcopy(field_value)
         if len(delta) > 1:
             deltas.append(delta)
-    return deltas
+    return deltas, snapshot
 
 
-def _consume_cumulative_text(
+def _consume_reasoning_text(
     previous: Any,
     current: Any,
     *,
-    cumulative_hint: bool = False,
+    stream_mode: str,
 ) -> tuple[Any, Any]:
     if not isinstance(current, str) or not isinstance(previous, str):
         return current, current
-    if not previous:
-        return current, current
-    if cumulative_hint and current == previous:
-        return "", previous
-    if len(current) > len(previous) and current.startswith(previous):
-        return current[len(previous) :], current
+    if stream_mode == "cumulative":
+        return (current[len(previous):] if current.startswith(previous) else current), current
     return current, previous + current
 
 
@@ -127,10 +126,23 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
     """
 
     _v8_model_ref: str = PrivateAttr(default="")
+    _v8_reasoning_stream_mode: str = PrivateAttr(default="delta")
+    _v8_inline_thinking: bool = PrivateAttr(default=False)
 
-    def __init__(self, *args: Any, v8_model_ref: str = "", **kwargs: Any) -> None:
+    def __init__(self, *args: Any, v8_model_ref: str = "", v8_reasoning_surface: Mapping[str, Any] | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._v8_model_ref = str(v8_model_ref or "").strip()
+        surface = dict(v8_reasoning_surface or {})
+        trusted = is_trusted_reasoning_surface(surface)
+        # Chat Completions delta is additive. Snapshot transport must be an
+        # explicit trusted contract; repeated/prefix text cannot identify it.
+        if trusted and surface.get("streamMode") == "cumulative":
+            self._v8_reasoning_stream_mode = "cumulative"
+        self._v8_inline_thinking = bool(
+            trusted
+            and surface.get("requestStyle") == "minimax_interleaved_thinking"
+            and "content[inline_think]" in surface.get("responseFields", [])
+        )
 
     def _reasoning_origin(self) -> dict[str, str]:
         provider_id = ""
@@ -162,6 +174,7 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
         return {
             "origin": self._reasoning_origin(),
             "fields": preserved,
+            **({"inlineThinking": True} if self._v8_inline_thinking else {}),
         }
 
     @staticmethod
@@ -192,7 +205,7 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
         for generation, choice in zip(result.generations, choices):
             message_payload = choice.get("message") if isinstance(choice, Mapping) else None
             preserved = _reasoning_fields(message_payload)
-            if preserved and isinstance(generation.message, AIMessage):
+            if isinstance(generation.message, AIMessage):
                 generation.message.additional_kwargs = {
                     **dict(generation.message.additional_kwargs or {}),
                     **preserved,
@@ -202,7 +215,7 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
                     for key in _REASONING_CONTINUATION_FIELDS
                     if key in preserved
                 }
-                if continuation_fields:
+                if continuation_fields or self._v8_inline_thinking:
                     generation.message.additional_kwargs[_REASONING_CONTINUATION_KEY] = (
                         self._continuation_payload(continuation_fields)
                     )
@@ -225,26 +238,23 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
         delta = choices[0].get("delta") if choices and isinstance(choices[0], Mapping) else None
         preserved = _reasoning_fields(delta)
         stream_state = _REASONING_STREAM_STATE.get()
-        if preserved and stream_state is not None:
+        if stream_state is not None:
             details_key = _REASONING_CONTINUATION_FIELDS[0]
             for field_key in _REASONING_CONTINUATION_FIELDS:
                 if field_key not in preserved:
                     continue
                 current_value = deepcopy(preserved[field_key])
                 if field_key == details_key:
-                    stream_value = _mergeable_reasoning_details(
+                    stream_value, snapshot = _consume_reasoning_details(
                         stream_state.get(field_key),
                         current_value,
+                        stream_mode=self._v8_reasoning_stream_mode,
                     )
-                    snapshot = current_value
                 else:
-                    stream_value, snapshot = _consume_cumulative_text(
+                    stream_value, snapshot = _consume_reasoning_text(
                         stream_state.get(field_key, ""),
                         current_value,
-                        cumulative_hint=(
-                            details_key in preserved
-                            or details_key in stream_state
-                        ),
+                        stream_mode=self._v8_reasoning_stream_mode,
                     )
                 stream_state[field_key] = snapshot
                 continuation_fields = stream_state.setdefault("continuation_fields", {})
@@ -255,7 +265,7 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
                     preserved[field_key] = stream_value
             continuation_fields = stream_state.get("continuation_fields")
             continuation_payload = stream_state.get("continuation_payload")
-            if isinstance(continuation_fields, Mapping) and continuation_fields:
+            if continuation_fields or self._v8_inline_thinking:
                 if not isinstance(continuation_payload, dict):
                     continuation_payload = self._continuation_payload({})
                     stream_state["continuation_payload"] = continuation_payload
@@ -263,7 +273,7 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
                 payload_fields = continuation_payload.get("fields")
                 if isinstance(payload_fields, dict):
                     payload_fields.clear()
-                    payload_fields.update(deepcopy(dict(continuation_fields)))
+                    payload_fields.update(deepcopy(dict(continuation_fields or {})))
         additional_kwargs = dict(generation.message.additional_kwargs or {})
         for key in (*_REASONING_RESPONSE_FIELDS, _REASONING_CONTINUATION_KEY):
             additional_kwargs.pop(key, None)
@@ -300,18 +310,27 @@ class V8OpenAICompatibleChatModel(ChatOpenAI):
                 continue
             for key in (*_PROVIDER_REASONING_WIRE_FIELDS, _REASONING_CONTINUATION_KEY):
                 target.pop(key, None)
+            continuation = source.additional_kwargs.get(_REASONING_CONTINUATION_KEY)
+            continuation = continuation if isinstance(continuation, Mapping) else {}
+            origin = continuation.get("origin")
+            same_origin = isinstance(origin, Mapping) and dict(origin) == self._reasoning_origin()
+            if not same_origin and continuation.get("inlineThinking") is True:
+                content = target.get("content")
+                if isinstance(content, str):
+                    # Only the native leading block is private. Literal tags
+                    # in the visible body, fenced code and escaped examples stay.
+                    start = len(content) - len(content.lstrip())
+                    thought = THINK_TAG_PATTERN.match(content, start)
+                    if thought:
+                        target["content"] = content[:start] + content[thought.end():]
             has_tool_continuation = self._has_tool_continuation(source)
             if not has_tool_continuation:
                 continue
             # Some OpenAI-compatible tool APIs require the field to exist even
             # when no provider-native reasoning continuation is available.
             target["reasoning_content"] = ""
-            continuation = source.additional_kwargs.get(_REASONING_CONTINUATION_KEY)
-            if not isinstance(continuation, Mapping):
-                continue
-            origin = continuation.get("origin")
             fields = continuation.get("fields")
-            if not isinstance(origin, Mapping) or dict(origin) != self._reasoning_origin():
+            if not same_origin:
                 continue
             if not isinstance(fields, Mapping):
                 continue

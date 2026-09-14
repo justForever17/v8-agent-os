@@ -1613,9 +1613,9 @@ def _retry_runtime_route_compiler_once(
     corrected = _normalize_runtime_broker_response_arguments(
         sanitize_response_tool_calls(corrected)
     )
-    corrected.content = ""
     corrected.additional_kwargs = {
         **dict(getattr(corrected, "additional_kwargs", None) or {}),
+        "v8_internal_model_surface": "runtime_route_compiler_correction",
         "v8_runtime_route_compiler_correction": {
             "attempted": True,
             "initialError": contract_error,
@@ -4178,10 +4178,12 @@ def execute_supervisor_turn(
                 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
                 raise CompatBridgeHardStop("Configured provider did not return the required external tool", failure_class="compat_required_tool_not_returned")
         if use_runtime_route_compiler:
-            # Compiler prose is an internal routing representation. Its stream
-            # is suppressed by metadata; clear the aggregate as a second guard
-            # before the AIMessage reaches history or Human Surface projection.
-            response.content = ""
+            # Retain the complete native assistant for provider continuation.
+            # Human projections use the same marker as the suppressed stream.
+            response.additional_kwargs = {
+                **dict(getattr(response, "additional_kwargs", None) or {}),
+                "v8_internal_model_surface": "runtime_route_compiler",
+            }
             response = _retry_runtime_route_compiler_once(
                 response,
                 required_kind=required_orchestration_kind,

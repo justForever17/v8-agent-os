@@ -406,7 +406,7 @@ class V8ChatModelAdapter(BaseChatModel):
         return input_value
 
     def _normalize_messages_for_provider(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
-        normalized = self._provider_surface.normalize_messages(messages)
+        normalized = self._provider_surface.normalize_messages(self._tool_surface_change_messages(messages))
         wire_protocol = str(self._meta.get("wire_protocol") or self._meta.get("wireProtocol") or "").strip()
         is_anthropic_messages = wire_protocol == "anthropic.messages" or (
             not wire_protocol and self.provider_standard == "anthropic"
@@ -422,6 +422,35 @@ class V8ChatModelAdapter(BaseChatModel):
         if is_anthropic_messages and self._provider_surface.supports_native_tools():
             self._assert_anthropic_tool_result_contract(normalized)
         return normalized
+
+    def _tool_surface_change_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        """Describe invocation changes from existing receipts; never grant tools."""
+        marker = "v8_tool_surface_change"
+        prepared = [message for message in messages if not (
+            isinstance(message, SystemMessage) and message.additional_kwargs.get(marker) is True)]
+        if self.role != "supervisor" or not self._provider_surface.supports_native_tools():
+            return prepared
+        previous = next((message for message in reversed(prepared) if isinstance(message, AIMessage)), None)
+        prior_names = (getattr(previous, "response_metadata", None) or {}).get("v8_bound_tool_names")
+        if not isinstance(prior_names, list) or any(not isinstance(name, str) for name in prior_names):
+            return prepared
+        current = sorted({name for tool in self._runtime_bound_tools() if (name := self._tool_ref_name(tool))})
+        if set(prior_names) == set(current):
+            return prepared
+        notice = (
+            "[Current tool availability; Engine invocation evidence]\n"
+            "The tool set changed since the previous assistant invocation. Current provided tools: "
+            + (", ".join(current) or "(none)") + ".\n"
+            "Earlier statements about available or missing tools describe earlier invocations. "
+            "Use the current supplied schemas to continue the original user task and delegation boundaries. "
+            "Availability does not grant permission or relax runtime, actor, or Task Capsule checks."
+        )
+        # Anthropic consolidates SystemMessages before SDK formatting. Avoid a
+        # duplicate notice if an already normalized input is normalized again.
+        if any(isinstance(message, SystemMessage) and notice in _stringify_content(message.content) for message in prepared):
+            return prepared
+        prepared.insert(0, SystemMessage(content=notice, additional_kwargs={marker: True}))
+        return prepared
 
     @staticmethod
     def _project_content_tool_call_ids(

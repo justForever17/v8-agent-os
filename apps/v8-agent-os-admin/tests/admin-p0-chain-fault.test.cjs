@@ -22,7 +22,8 @@ function load(relativePath, { overrides = {}, globals = {}, source } = {}) {
     return module.exports;
 }
 function baseline(relativePath) {
-    return execFileSync("git", ["show", `251d31e6:apps/v8-agent-os-admin/${relativePath}`], { cwd: adminRoot, encoding: "utf8" });
+    const ref = process.env.V8_P0_BASELINE_REF;
+    return ref ? execFileSync("git", ["show", `${ref}:apps/v8-agent-os-admin/${relativePath}`], { cwd: adminRoot, encoding: "utf8" }) : null;
 }
 function gateway(source) {
     let now = 0, nextTimer = 0;
@@ -80,7 +81,9 @@ test("unexpected EOF retains partial data and exact identity without publishing 
     assert.equal(socket.sent.filter(value => value.topic === "chat.start").length, 1);
     assert.equal(fixed.timers.size, 0);
     // Same observable oracle rejects the actual pre-fix source, not a copied implementation.
-    const old = gateway(baseline("src/lib/realtime/engine-chat-gateway.ts"));
+    const source = baseline("src/lib/realtime/engine-chat-gateway.ts");
+    if (!source) return; // Optional historical comparison; CI may use a shallow checkout.
+    const old = gateway(source);
     const oldStream = old.createEngineChatGatewayStream({ session_id: "session-a" }, "fixture-owner");
     old.sockets[0].open(); old.sockets[0].message(progress); old.sockets[0].disconnect();
     const oldFrames = await frames(oldStream);
@@ -214,7 +217,9 @@ test("invalid successful receipts cannot become 200 empty success; Engine confli
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), { detail: "already_decided", status: "rejected" });
 
-    const old = load("src/app/api/approvals/[id]/approve/route.ts", { source: baseline("src/app/api/approvals/[id]/approve/route.ts"), overrides: {
+    const source = baseline("src/app/api/approvals/[id]/approve/route.ts");
+    if (!source) return;
+    const old = load("src/app/api/approvals/[id]/approve/route.ts", { source, overrides: {
         "@/lib/server/runtime-config": { resolveEngineBaseUrl: engine.origin, resolveInternalSecret: () => "public-test-key" },
         "@/lib/server/request-auth": { resolveAuthorizedUserEmail: async () => "fixture-owner" },
     } });

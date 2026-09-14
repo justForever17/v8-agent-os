@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Callable, Optional
 from uuid import uuid4
 
 from langchain_core.tools import InjectedToolCallId, tool
@@ -406,11 +406,14 @@ def _workspace_file_lock_path(target_path: Path) -> Path:
 def _atomic_write_text(
     target_path: Path, content: str, *, expected_version: str,
     expected_identity: FileIdentitySnapshot | None = None,
+    before_commit: Callable[[], None] | None = None,
 ) -> None:
     """Write text without exposing a partially truncated target file."""
     snapshot = expected_identity or capture_file_identity(target_path)
     target_path = snapshot.target_path
     lock_path = _workspace_file_lock_path(target_path)
+    if before_commit is not None:
+        before_commit()
     with bind_file_parent(snapshot) as parent:
         def current_version() -> str:
             return (_file_state_fingerprint(target_path) if parent.dir_fd is None
@@ -455,6 +458,8 @@ def _atomic_write_text(
                 if current_version() != expected_version:
                     raise ValueError("file_changed_before_commit")
                 parent.validate()
+                if before_commit is not None:
+                    before_commit()
                 if parent.dir_fd is None:
                     os.replace(temporary_path, target_path)
                 else:
@@ -881,6 +886,15 @@ def write_native_file(
         if not allowed:
             return error_message or "Safety Guardian 已阻止文件写入。"
 
+        def revalidate_write_authority() -> None:
+            from core.runtime_episode_control import assert_episode_execution_allowed
+            assert_episode_execution_allowed(runtime_context)
+            if not _task_write_scope_allows(runtime_context, target_path):
+                raise ValueError("file_write_authority_changed")
+
+        # Approval may wait while the user revokes the assignment or changes
+        # its goal/workspace. It does not freeze authority until publication.
+        revalidate_write_authority()
         incoming_content = str(content or "")
 
         scoped_patch_requested = (
@@ -949,7 +963,8 @@ def write_native_file(
                 )
 
         try:
-            _atomic_write_text(target_path, final_content, expected_version=base_version, expected_identity=write_identity)
+            _atomic_write_text(target_path, final_content, expected_version=base_version, expected_identity=write_identity,
+                               before_commit=revalidate_write_authority)
         except FileCommitPathChanged:
             return json.dumps({
                 "ok": False,

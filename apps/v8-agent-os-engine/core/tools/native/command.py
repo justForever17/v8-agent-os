@@ -475,6 +475,11 @@ def execute_governed_argv(
         }
 
     resolved_cwd = str(workspace_preflight.get("resolvedCwd") or workspace_preflight.get("cwd") or "").strip() or None
+    capsule_block = _engineering_command_scope_block(governed_context, operation="governed_argv", command=command)
+    if capsule_block:
+        return capsule_block
+    from core.runtime_episode_control import assert_episode_execution_allowed
+    assert_episode_execution_allowed(governed_context)
     deadline_ms = timeout_seconds * 1000
     with ToolExecutionEnvelope(
         tool_name="run_skill_script" if action_family == "skill_script" else "run_system_command",
@@ -831,6 +836,11 @@ def execute_system_command(
         if not allowed:
             return error_message or "Safety Guardian 已阻止命令执行。"
 
+        capsule_block = _engineering_command_scope_block(runtime_context, operation="command_sync", command=command)
+        if capsule_block:
+            return json.dumps(capsule_block, ensure_ascii=False)
+        from core.runtime_episode_control import assert_episode_execution_allowed
+        assert_episode_execution_allowed(runtime_context)
         sync_deadline_ms = int((requested_timeout or _SYNC_COMMAND_TIMEOUT_SECONDS) * 1000)
         with ToolExecutionEnvelope(tool_name="run_system_command", family="command", deadline_ms=sync_deadline_ms, retry_limit=1) as envelope:
             process_job = None
@@ -1101,6 +1111,11 @@ def _launch_background_command(
     if not allowed:
         raise RuntimeError(error_message or "Safety Guardian 已阻止后台命令启动。")
 
+    capsule_block = _engineering_command_scope_block(runtime_context, operation="command_session_start", command=command)
+    if capsule_block:
+        raise RuntimeError(json.dumps(capsule_block, ensure_ascii=False))
+    from core.runtime_episode_control import assert_episode_execution_allowed
+    assert_episode_execution_allowed(runtime_context)
     cmd_id = str(uuid.uuid4())[:8]
     try:
         bg_proc = BackgroundProcess(

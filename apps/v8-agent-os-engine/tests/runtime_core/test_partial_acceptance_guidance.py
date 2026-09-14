@@ -151,10 +151,11 @@ def test_inspection_keeps_proof_and_action_whole_in_actual_next_request(database
 
 
 @pytest.mark.parametrize("tool", [runtime.runtime_broker, supervisor_delegation_broker])
-def test_inspection_honors_small_budget_with_complete_recovery_not_broken_proof(database, tool):
+@pytest.mark.parametrize("summary_repetitions", [300, 2000])
+def test_inspection_honors_small_budget_with_complete_recovery_not_broken_proof(database, tool, summary_repetitions):
     _, claim = database
     control.publish_partial("producer-A", handoff={"outputKey": "ready", "version": "v1", "sourceVersion": "source-v1",
-        "usableFor": ["consumer-B"], "compactSummary": "public observation " * 2000, "proofRefs": ["proof://public/full"]},
+        "usableFor": ["consumer-B"], "compactSummary": "public observation " * summary_repetitions, "proofRefs": ["proof://public/full"]},
         worker_id="owner", lease_generation=claim["leaseGeneration"])
     key = "delegation_id" if tool.name == "delegation_broker" else "episode_id"
     _, reply = tool_call(tool, {"mode": "inspect", key: "producer-A"}, "bounded-inspect",
@@ -167,7 +168,7 @@ def test_inspection_honors_small_budget_with_complete_recovery_not_broken_proof(
     assert "acceptanceAction" not in reply.content and "read" in view["nextAction"].lower()
     # The original handoff remains complete; a preview is never an acceptance.
     stored = database[0].list_runtime_episode_handoffs("producer-A")[0]["payload"]
-    assert len(stored["compactSummary"]) == len("public observation " * 2000)
+    assert len(stored["compactSummary"]) == len("public observation " * summary_repetitions)
     assert database[0].list_runtime_episode_messages(run_id="run", recipient="partial:producer-A", pending_only=False) == []
     from core.tool_observation_detail import render_tool_observation_detail
     parts, offset = [], 0
@@ -215,3 +216,39 @@ def test_child_partial_publication_returns_exact_receipt_and_stays_nonterminal(d
     model = V8OpenAICompatibleChatModel(model="fixture", api_key="fixture-key", base_url="https://fixture.invalid/v1")
     wire = model._get_request_payload([HumanMessage(content="public request"), assistant, reply])
     assert json.loads(wire["messages"][-1]["content"].split("\n", 1)[1]) == receipt
+
+
+@pytest.mark.parametrize("summary_repetitions", [1, 1000])
+def test_inspection_and_json_pages_redact_structured_values_without_losing_proof(database, summary_repetitions):
+    from core.tool_observation_detail import render_tool_observation_detail
+    _, claim = database
+    sentinel = 'synthetic-only-sensitive-value-"\\-甲'
+    public_ref = "proof://public/keep-exact"
+    control.publish_partial("producer-A", handoff={"outputKey": "ready", "version": "v1", "sourceVersion": "source-v1",
+        "usableFor": ["consumer-B"], "compactSummary": "public facts " * summary_repetitions,
+        "proofRefs": [{"path": public_ref, "token": sentinel, "nested": [{"api_key": "short", "refreshToken": sentinel}]}]},
+        worker_id="owner", lease_generation=claim["leaseGeneration"])
+    _, reply = tool_call(runtime.runtime_broker, {"mode": "inspect", "episode_id": "producer-A"}, "inspect-private-shape",
+                         {"configurable": {"toolOutputHardMaxChars": 2500}})
+    assert "synthetic-only-sensitive-value" not in reply.content
+    view = json.loads(reply.content.split("\n", 1)[1])
+    if view.get("truncated"):
+        pieces, offset = [], 0
+        for _ in range(50):
+            page = render_tool_observation_detail(view["rawRef"], max_chars=500, start_char=offset)
+            assert "synthetic-only-sensitive-value" not in page and "[secrets redacted]" in page
+            pieces.append(page.split("<preview>\n", 1)[1].split("\n</preview>", 1)[0])
+            next_page = re.search(r"next_start_char=(\d+)", page)
+            if not next_page:
+                assert "[end of observation]" in page
+                break
+            assert int(next_page[1]) > offset
+            offset = int(next_page[1])
+        else:
+            pytest.fail("redacted inspection did not finish")
+        view = json.loads("".join(pieces))
+    else:
+        assert view["secretsRedacted"] is True
+    proof = view["handoffs"][0]["proofRefs"][0]
+    assert proof["path"] == public_ref and proof["token"] == "<redacted>"
+    assert proof["nested"] == [{"api_key": "<redacted>", "refreshToken": "<redacted>"}]

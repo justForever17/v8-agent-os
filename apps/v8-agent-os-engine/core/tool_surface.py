@@ -215,6 +215,10 @@ def _nested_config_value(config: Any, *names: str) -> Any:
 
 
 def _request_config(request: Any) -> dict[str, Any]:
+    # LangGraph ToolCallRequest carries RunnableConfig on its ToolRuntime.
+    runtime_config = getattr(getattr(request, "runtime", None), "config", None)
+    if isinstance(runtime_config, dict):
+        return runtime_config
     config = getattr(request, "config", None)
     return config if isinstance(config, dict) else {}
 
@@ -2831,6 +2835,14 @@ def _decision_agent_visible_surface(
         renderer_result = _render_generic_json_surface(tool_name, payload_any, raw_ref, budget=budget)
     if renderer_result is None:
         return None
+    if renderer_result.startswith(("Runtime episode inspection\n", "Partial handoff published\n")):
+        from core.tool_observation_detail import _redact_tool_observation_preview
+        title, structured = renderer_result.split("\n", 1)
+        safe = _redact_tool_observation_preview(structured)
+        if safe != structured:
+            safe_payload = json.loads(safe)
+            safe_payload["secretsRedacted"] = True
+            renderer_result = title + "\n" + json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":"))
     preserve_full_research = tool_name == "research_broker" and renderer_result.startswith("Research answer\n")
     preserve_focused_media_contract = tool_name == "creative_media_capabilities" and _focused_creative_media_contract(payload) is not None
     if len(renderer_result) > budget and not (preserve_full_research or preserve_focused_media_contract):

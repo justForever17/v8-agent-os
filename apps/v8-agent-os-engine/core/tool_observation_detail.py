@@ -9,6 +9,10 @@ _TOOL_OBSERVATION_SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*([^\s,;\"']{8,})"),
     re.compile(r"(?i)(bearer)\s+([A-Za-z0-9._~+/=-]{12,})"),
 ]
+_TOOL_OBSERVATION_SECRET_KEYS = {
+    "apikey", "token", "accesstoken", "refreshtoken", "idtoken", "secret", "clientsecret",
+    "password", "passwd", "authorization", "cookie", "setcookie", "privatekey",
+}
 
 _TOOL_OBSERVATION_INTERNAL_KEYS = {
     "_v8ToolSurface",
@@ -27,10 +31,31 @@ _TOOL_OBSERVATION_INTERNAL_KEYS = {
 
 
 def _redact_tool_observation_preview(text: str) -> str:
-    redacted = str(text or "")
-    for pattern in _TOOL_OBSERVATION_SECRET_PATTERNS:
-        redacted = pattern.sub(lambda match: f"{match.group(1)}=<redacted>", redacted)
-    return redacted
+    original = str(text or "")
+
+    def redact_text(value: str) -> str:
+        for pattern in _TOOL_OBSERVATION_SECRET_PATTERNS:
+            value = pattern.sub(lambda match: f"{match.group(1)}=<redacted>", value)
+        return value
+
+    def redact_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: "<redacted>" if re.sub(r"[_-]", "", key).casefold() in _TOOL_OBSERVATION_SECRET_KEYS
+                    else redact_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact_value(item) for item in value]
+        return redact_text(value) if isinstance(value, str) else value
+
+    try:
+        parsed = json.loads(original)
+    except (ValueError, TypeError):
+        return redact_text(original)
+    if not isinstance(parsed, (dict, list)):
+        return redact_text(original)
+    safe = redact_value(parsed)
+    # Redact structured values before serialization/slicing so escaped quotes
+    # and page boundaries cannot expose a value or invalidate JSON recovery.
+    return json.dumps(safe, ensure_ascii=False) if safe != parsed else original
 
 
 def _parse_tool_observation_json(text: str) -> dict[str, Any] | None:

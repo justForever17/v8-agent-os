@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+from collections import Counter
 from copy import deepcopy
 from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Sequence
 
@@ -417,7 +418,7 @@ class V8ChatModelAdapter(BaseChatModel):
             return normalized
 
         if wire_protocol == "openai.responses" or self._provider_surface.supports_native_tools():
-            normalized = self._project_provider_tool_call_ids(normalized)
+            normalized = self._project_provider_tool_call_ids(normalized, preserve_ambiguous_ids=is_chat_completions)
         if is_anthropic_messages and self._provider_surface.supports_native_tools():
             self._assert_anthropic_tool_result_contract(normalized)
         return normalized
@@ -450,7 +451,9 @@ class V8ChatModelAdapter(BaseChatModel):
         return projected
 
     @classmethod
-    def _project_provider_tool_call_ids(cls, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    def _project_provider_tool_call_ids(
+        cls, messages: Sequence[BaseMessage], *, preserve_ambiguous_ids: bool = False,
+    ) -> list[BaseMessage]:
         # V8 owns stable canonical tool-call ids inside LangGraph/checkpoints,
         # while native tool protocols continue with the exact provider-issued
         # id (including Chat Completions). Re-project only at the provider
@@ -460,15 +463,28 @@ class V8ChatModelAdapter(BaseChatModel):
         for message in messages:
             if isinstance(message, AIMessage) and list(getattr(message, "tool_calls", None) or []):
                 clean_message = deepcopy(message)
+                batch_ids = {
+                    str(call.get("id") or "").strip(): str(
+                        call.get("providerToolCallId") or call.get("provider_tool_call_id")
+                        or (call.get("id") if preserve_ambiguous_ids else "") or ""
+                    ).strip()
+                    for call in clean_message.tool_calls
+                }
+                if preserve_ambiguous_ids:
+                    # Reserve every canonical identity before projection. This
+                    # also catches a third provider ID colliding with an ID
+                    # restored by a duplicate group's canonical fallback.
+                    counts = Counter(batch_ids.values())
+                    ambiguous = {canonical for canonical, provider in batch_ids.items() if counts[provider] > 1}
+                    for canonical, provider in batch_ids.items():
+                        if provider in batch_ids and provider != canonical:
+                            ambiguous.update((canonical, provider))
+                    batch_ids.update({canonical: canonical for canonical in ambiguous})
                 clean_tool_calls: list[dict[str, Any]] = []
                 for raw_call in list(clean_message.tool_calls or []):
                     call = dict(raw_call or {})
                     canonical_id = str(call.get("id") or "").strip()
-                    provider_id = str(
-                        call.get("providerToolCallId")
-                        or call.get("provider_tool_call_id")
-                        or ""
-                    ).strip()
+                    provider_id = batch_ids.get(canonical_id, "")
                     if canonical_id and provider_id:
                         provider_id_by_canonical[canonical_id] = provider_id
                         call["id"] = provider_id
@@ -491,6 +507,8 @@ class V8ChatModelAdapter(BaseChatModel):
                             or provider_id_by_canonical.get(canonical_id)
                             or ""
                         ).strip()
+                        if preserve_ambiguous_ids:
+                            provider_id = provider_id_by_canonical.get(canonical_id, provider_id)
                         if provider_id:
                             if "tool_call_id" in call and "id" not in call:
                                 call["tool_call_id"] = provider_id

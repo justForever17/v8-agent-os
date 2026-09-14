@@ -6,7 +6,7 @@ import fnmatch
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -1154,9 +1154,17 @@ class ManagedGitService:
 
     @staticmethod
     def _path_allowed(path: str, write_set: Iterable[str]) -> bool:
-        normalized = path.replace("\\", "/").lstrip("./")
+        def normalized_relative(value: str) -> str:
+            value = value.replace("\\", "/")
+            if PurePosixPath(value).is_absolute() or PureWindowsPath(value).drive or ".." in PurePosixPath(value).parts:
+                return ""
+            return os.path.normcase(PurePosixPath(value).as_posix()).replace("\\", "/") if value else ""
+
+        normalized = normalized_relative(path)
+        if not normalized:
+            return False
         for raw_rule in write_set:
-            rule = str(raw_rule or "").replace("\\", "/").lstrip("./").rstrip("/")
+            rule = normalized_relative(str(raw_rule or ""))
             if not rule:
                 continue
             if any(marker in rule for marker in ("*", "?", "[")):
@@ -1174,89 +1182,81 @@ class ManagedGitService:
         commit_message: str,
     ) -> GitChangeSetRef:
         root = Path(str(worktree.topology.worktree_root))
-        status = self.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=root, text=False)
-        changed_paths = self._changed_paths_from_status(bytes(status.stdout or b""))
-        if not changed_paths:
-            current_head = str(self.run(["rev-parse", "HEAD"], cwd=root).stdout or "").strip()
-            if current_head and current_head != worktree.base_commit:
-                changed_paths = tuple(
-                    str(item or "").replace("\\", "/").strip()
-                    for item in str(
-                        self.run(
-                            ["diff", "--name-only", worktree.base_commit, current_head, "--"],
-                            cwd=root,
-                        ).stdout
-                        or ""
-                    ).splitlines()
-                    if str(item or "").strip()
-                )
-                violations = [path for path in changed_paths if not self._path_allowed(path, write_set)]
-                if violations:
-                    raise ManagedGitError(
-                        "worktree_write_set_violation",
-                        "The committed task changed paths outside its approved write set.",
-                        details={"violations": violations[:40], "writeSet": list(write_set)},
-                    )
-                self._assert_no_large_files(root, changed_paths)
-                numstat = str(
-                    self.run(
-                        ["diff", "--numstat", worktree.base_commit, current_head, "--"],
-                        cwd=root,
-                    ).stdout
-                    or ""
-                )
-                insertions = 0
-                deletions = 0
-                for line in numstat.splitlines():
-                    parts = line.split("\t", 2)
-                    if len(parts) >= 2:
-                        insertions += int(parts[0]) if parts[0].isdigit() else 0
-                        deletions += int(parts[1]) if parts[1].isdigit() else 0
-                return GitChangeSetRef(
-                    repository_id=worktree.repository_id,
-                    worktree_id=worktree.worktree_id,
-                    branch_name=worktree.branch_name,
-                    base_commit=worktree.base_commit,
-                    commit_id=current_head,
-                    changed_paths=changed_paths,
-                    insertions=insertions,
-                    deletions=deletions,
-                )
-        violations = [path for path in changed_paths if not self._path_allowed(path, write_set)]
-        if violations:
-            raise ManagedGitError(
-                "worktree_write_set_violation",
-                "The task changed paths outside its approved write set.",
-                details={"violations": violations[:40], "writeSet": list(write_set)},
-            )
-        self._assert_no_escaping_symlinks(root, changed_paths)
-        self._assert_no_large_files(root, changed_paths)
-        if not changed_paths:
-            return GitChangeSetRef(
-                repository_id=worktree.repository_id,
-                worktree_id=worktree.worktree_id,
-                branch_name=worktree.branch_name,
-                base_commit=worktree.base_commit,
-                commit_id=worktree.base_commit,
-                changed_paths=(),
-                status="no_changes",
-            )
-        self.run(["add", "-A", "--"], cwd=root)
-        self.run(
-            [
-                "-c",
-                "user.name=V8 Agent OS",
-                "-c",
-                "user.email=v8os@local.invalid",
-                "commit",
-                "--no-verify",
-                "-m",
-                str(commit_message or "V8OS managed task change"),
-            ],
-            cwd=root,
-        )
-        commit_id = str(self.run(["rev-parse", "HEAD"], cwd=root).stdout or "").strip()
-        numstat = str(self.run(["show", "--format=", "--numstat", "HEAD"], cwd=root).stdout or "")
+        write_set = tuple(write_set)
+        current_head = str(self.run(["rev-parse", "HEAD"], cwd=root).stdout or "").strip()
+        branch_ref = f"refs/heads/{worktree.branch_name}"
+        if str(self.run(["symbolic-ref", "HEAD"], cwd=root).stdout or "").strip() != branch_ref:
+            raise ManagedGitError("worktree_branch_changed", "The worktree no longer has its assigned branch checked out.")
+        # Use Git's index lock to exclude concurrent Git writers; capture and
+        # validate an immutable tree, then commit exactly that tree. Working
+        # files edited after capture remain dirty and are never overwritten.
+        raw_index = str(self.run(["rev-parse", "--git-path", "index"], cwd=root).stdout or "").strip()
+        index_path = (root / raw_index).resolve()
+        index_lock = index_path.with_name(index_path.name + ".lock")
+        try:
+            lock_handle = index_lock.open("xb")
+        except FileExistsError as error:
+            raise ManagedGitError("worktree_index_busy", "Another Git operation is updating this worktree.") from error
+        lock_identity = os.fstat(lock_handle.fileno())
+        temporary_index = None
+        published = False
+        reference_published = False
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(prefix="candidate-", suffix=".index", dir=self.index_root)
+            os.close(descriptor)
+            temporary_index = Path(temporary_name)
+            temporary_index.unlink()
+            environment = {"GIT_INDEX_FILE": str(temporary_index)}
+            self.run(["read-tree", current_head], cwd=root, env=environment)
+            self.run(["add", "-A", "--"], cwd=root, env=environment)
+            tree = str(self.run(["write-tree"], cwd=root, env=environment).stdout or "").strip()
+            changed_paths = self._validate_candidate_tree(root, worktree.base_commit, tree, write_set)
+            head_tree = str(self.run(["rev-parse", f"{current_head}^{{tree}}"], cwd=root).stdout or "").strip()
+            commit_id = current_head
+            if tree != head_tree:
+                commit_id = str(self.run(["commit-tree", tree, "-p", current_head], cwd=root,
+                    env={"GIT_AUTHOR_NAME": "V8 Agent OS", "GIT_AUTHOR_EMAIL": "v8os@local.invalid",
+                         "GIT_COMMITTER_NAME": "V8 Agent OS", "GIT_COMMITTER_EMAIL": "v8os@local.invalid"},
+                    input_text=str(commit_message or "V8OS managed task change") + "\n").stdout or "").strip()
+            # Plumbing can change a ref while the index is locked. Check the
+            # assigned ref even for no-change replay; never update a new HEAD.
+            if str(self.run(["symbolic-ref", "HEAD"], cwd=root, check=False).stdout or "").strip() != branch_ref:
+                raise ManagedGitError("worktree_branch_changed", "The worktree branch changed during finalization.")
+            lock_handle.write(temporary_index.read_bytes())
+            lock_handle.flush()
+            os.fsync(lock_handle.fileno())
+            lock_handle.close()
+            self.run(["update-ref", branch_ref, commit_id, current_head], cwd=root)
+            reference_published = commit_id != current_head
+            if str(self.run(["symbolic-ref", "HEAD"], cwd=root, check=False).stdout or "").strip() != branch_ref:
+                restored = not reference_published or self.run(
+                    ["update-ref", branch_ref, current_head, commit_id], cwd=root, check=False,
+                ).returncode == 0
+                raise ManagedGitError("worktree_branch_changed", "The worktree branch changed during reference publication.",
+                                      details={"referenceRestored": restored, "candidateCommit": commit_id})
+            try:
+                os.replace(index_lock, index_path)
+            except OSError as error:
+                # Windows readers can block index replacement after the ref
+                # was updated. Restore only our exact ref generation; never
+                # overwrite a later writer's commit or discard working files.
+                restored = not reference_published or self.run(
+                    ["update-ref", branch_ref, current_head, commit_id], cwd=root, check=False,
+                ).returncode == 0
+                raise ManagedGitError("candidate_index_publication_failed", "The candidate index could not be published.",
+                    details={"referenceRestored": restored, "candidateCommit": commit_id,
+                             "previousCommit": current_head, "retryableAfterReaderRelease": restored}) from error
+            published = True
+        finally:
+            lock_handle.close()
+            if not published and index_lock.exists():
+                remaining = index_lock.stat()
+                if (remaining.st_dev, remaining.st_ino) == (lock_identity.st_dev, lock_identity.st_ino):
+                    index_lock.unlink()
+            if temporary_index is not None:
+                temporary_index.unlink(missing_ok=True)
+                temporary_index.with_name(temporary_index.name + ".lock").unlink(missing_ok=True)
+        numstat = str(self.run(["diff", "--numstat", "--no-renames", worktree.base_commit, commit_id, "--"], cwd=root).stdout or "")
         insertions = 0
         deletions = 0
         for line in numstat.splitlines():
@@ -1276,4 +1276,56 @@ class ManagedGitService:
             changed_paths=changed_paths,
             insertions=insertions,
             deletions=deletions,
+            status="candidate" if changed_paths else "no_changes",
         )
+
+    def _validate_candidate_tree(self, root: Path, base_commit: str, tree: str, write_set: tuple[str, ...]) -> tuple[str, ...]:
+        paths = bytes(self.run(["diff", "--name-only", "--no-renames", "-z", base_commit, tree, "--"], cwd=root, text=False).stdout or b"")
+        changed = tuple(item.decode("utf-8", errors="surrogateescape") for item in paths.split(b"\0") if item)
+        violations = [path for path in changed if not self._path_allowed(path, write_set)]
+        if violations:
+            raise ManagedGitError("worktree_write_set_violation", "The candidate tree changes paths outside its approved write set.",
+                                  details={"violations": violations[:40], "writeSet": list(write_set)})
+        entries = {}
+        listing = bytes(self.run(["ls-tree", "-r", "-l", "-z", tree], cwd=root, text=False).stdout or b"")
+        for row in listing.split(b"\0"):
+            if not row:
+                continue
+            metadata, name = row.split(b"\t", 1)
+            mode, kind, object_id, size = metadata.split()
+            entries[name.decode("utf-8", errors="surrogateescape")] = (mode, kind, object_id.decode(), int(size) if size.isdigit() else 0)
+        oversized = [{"path": name, "sizeBytes": entries[name][3]} for name in changed
+                     if name in entries and entries[name][1] == b"blob" and entries[name][3] > MAX_MANAGED_FILE_BYTES]
+        if oversized:
+            raise ManagedGitError("managed_git_large_file_blocked", "Files larger than 20 MiB cannot enter a V8OS-managed change set.",
+                                  details={"limitBytes": MAX_MANAGED_FILE_BYTES, "files": oversized[:20]})
+        links = {}
+        path_key = lambda value: os.path.normcase(value).replace("\\", "/")
+        for name, (mode, _kind, object_id, _size) in entries.items():
+            if mode == b"120000":
+                links[path_key(name)] = str(self.run(["cat-file", "blob", object_id], cwd=root).stdout or "")
+        for name in changed:
+            if path_key(name) not in links:
+                continue
+            pending = list(PurePosixPath(name).parts)
+            resolved: list[str] = []
+            followed = 0
+            while pending:
+                part = pending.pop(0)
+                if part == "..":
+                    if not resolved:
+                        raise ManagedGitError("repository_symlink_escapes_workspace", "A candidate symlink escapes its repository.", details={"path": name})
+                    resolved.pop()
+                    continue
+                if part in {"", "."}:
+                    continue
+                resolved.append(part)
+                target = links.get(path_key("/".join(resolved)))
+                if target is None:
+                    continue
+                followed += 1
+                if followed > 40 or PurePosixPath(target).is_absolute() or PureWindowsPath(target).drive or "\\" in target:
+                    raise ManagedGitError("repository_symlink_escapes_workspace", "A candidate symlink has an unsafe or cyclic target.", details={"path": name})
+                resolved.pop()
+                pending = list(PurePosixPath(target).parts) + pending
+        return changed

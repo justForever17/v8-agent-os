@@ -41,8 +41,8 @@ def fsync(fd):
 files.os.fsync = fsync
 
 original_fingerprint = files._file_state_fingerprint
-def fingerprint(path):
-    version = original_fingerprint(path)
+def fingerprint(path, **kwargs):
+    version = original_fingerprint(path, **kwargs)
     signal('checked')
     if mode == 'pause_after_compare':
         wait('release')
@@ -50,7 +50,7 @@ def fingerprint(path):
 files._file_state_fingerprint = fingerprint
 
 original_replace = files.os.replace
-def replace(source, destination):
+def replace(source, destination, **kwargs):
     if mode == 'fail':
         raise PermissionError('injected replace failure')
     if mode == 'cancel':
@@ -58,7 +58,7 @@ def replace(source, destination):
     if mode == 'hold':
         signal('holding')
         wait('release')
-    return original_replace(source, destination)
+    return original_replace(source, destination, **kwargs)
 files.os.replace = replace
 
 try:

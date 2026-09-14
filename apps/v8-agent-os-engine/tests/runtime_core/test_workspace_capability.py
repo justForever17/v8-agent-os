@@ -969,7 +969,7 @@ def test_write_native_file_keeps_original_when_atomic_replace_fails(tmp_path, mo
     target.parent.mkdir(parents=True)
     target.write_text("original\ncontent\n", encoding="utf-8")
 
-    def fail_replace(_source, _destination):
+    def fail_replace(_source, _destination, **_kwargs):
         raise OSError("simulated atomic replace failure")
 
     monkeypatch.setattr(workspace_file_module.os, "replace", fail_replace)
@@ -1111,7 +1111,7 @@ def test_write_conflict_during_validation_and_failed_replace_do_not_advance_rece
     with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root),
                               session_id="fault-session", run_id="fault-run", agent_id="author"):
         files.write_native_file.func("receipt.txt", "base")
-        def failed_replace(*args):
+        def failed_replace(*args, **kwargs):
             raise PermissionError("replace denied")
         with monkeypatch.context() as fault:
             fault.setattr(files.os, "replace", failed_replace)

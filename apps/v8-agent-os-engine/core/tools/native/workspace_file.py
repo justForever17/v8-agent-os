@@ -5,16 +5,23 @@ import hashlib
 import mimetypes
 import os
 import re
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Annotated, Any, Optional
+from uuid import uuid4
 
 from langchain_core.tools import InjectedToolCallId, tool
 
 from core.artifact_store import artifact_store
 from core.interprocess_lock import interprocess_file_lock
+from core.tools.native.workspace_file_identity import (
+    FileCommitPathChanged,
+    FileIdentityChanged,
+    FileIdentitySnapshot,
+    bind_file_parent,
+    capture_file_identity,
+)
 from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
@@ -307,8 +314,15 @@ def _content_version(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
-def _file_state_fingerprint(target_path: Path) -> str:
-    return _content_version(target_path.read_bytes()) if target_path.exists() else "missing"
+def _file_state_fingerprint(target_path: Path, *, dir_fd: int | None = None) -> str:
+    if dir_fd is None:
+        return _content_version(target_path.read_bytes()) if target_path.exists() else "missing"
+    try:
+        descriptor = os.open(target_path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return "missing"
+    with os.fdopen(descriptor, "rb") as handle:
+        return _content_version(handle.read())
 
 
 def _prune_read_before_write_receipts(now: float) -> None:
@@ -389,45 +403,80 @@ def _workspace_file_lock_path(target_path: Path) -> Path:
     return temporary_root / f"v8-agent-os-workspace-locks-{user_key}" / f"{resource_key}.lock"
 
 
-def _atomic_write_text(target_path: Path, content: str, *, expected_version: str) -> None:
+def _atomic_write_text(
+    target_path: Path, content: str, *, expected_version: str,
+    expected_identity: FileIdentitySnapshot | None = None,
+) -> None:
     """Write text without exposing a partially truncated target file."""
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{target_path.name}.",
-        suffix=".v8os-tmp",
-        dir=str(target_path.parent),
-        text=False,
-    )
-    temporary_path = Path(temporary_name)
-    descriptor_open = True
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
-            descriptor_open = False
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if target_path.exists():
-            try:
-                os.chmod(temporary_path, target_path.stat().st_mode & 0o777)
-            except OSError:
-                pass
-        # Serialize cooperating V8OS processes after validation/fsync. External
-        # editors and directory identity changes are outside this lock's scope.
-        with interprocess_file_lock(_workspace_file_lock_path(target_path)):
-            if _file_state_fingerprint(target_path) != expected_version:
-                raise ValueError("file_changed_before_commit")
-            os.replace(temporary_path, target_path)
-    except BaseException:
-        if descriptor_open:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
+    snapshot = expected_identity or capture_file_identity(target_path)
+    target_path = snapshot.target_path
+    lock_path = _workspace_file_lock_path(target_path)
+    with bind_file_parent(snapshot) as parent:
+        def current_version() -> str:
+            return (_file_state_fingerprint(target_path) if parent.dir_fd is None
+                    else _file_state_fingerprint(target_path, dir_fd=parent.dir_fd))
+
         try:
-            temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            parent.validate()
+        except FileIdentityChanged:
+            # Preserve the existing stale-content result for a completed V8OS
+            # replacement; same-content object substitution is an identity fault.
+            if current_version() != expected_version:
+                raise ValueError("file_changed_before_commit") from None
+            raise
+        temporary_name = f".{target_path.name}.{uuid4().hex}.v8os-tmp"
+        temporary_path = target_path.parent / temporary_name
+        temporary_ref = temporary_name if parent.dir_fd is not None else temporary_path
+        file_descriptor = os.open(
+            temporary_ref,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            0o600, dir_fd=parent.dir_fd,
+        )
+        descriptor_open = True
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
+                descriptor_open = False
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                try:
+                    source = target_path.name if parent.dir_fd is not None else target_path
+                    mode = os.stat(source, dir_fd=parent.dir_fd, follow_symlinks=False).st_mode & 0o777
+                    if parent.dir_fd is None:
+                        os.chmod(temporary_path, mode)
+                    else:
+                        os.fchmod(handle.fileno(), mode)
+                except OSError:
+                    pass
+            # The lock serializes cooperating V8OS writers. Directory handles
+            # bind the commit; external leaf edits still require optimistic CAS.
+            with interprocess_file_lock(lock_path):
+                parent.validate(check_target=False)
+                if current_version() != expected_version:
+                    raise ValueError("file_changed_before_commit")
+                parent.validate()
+                if parent.dir_fd is None:
+                    os.replace(temporary_path, target_path)
+                else:
+                    os.replace(temporary_name, target_path.name,
+                               src_dir_fd=parent.dir_fd, dst_dir_fd=parent.dir_fd)
+                    try:
+                        parent.validate(check_target=False)
+                    except FileIdentityChanged:
+                        # POSIX cannot prevent renaming an open directory. The
+                        # write reached the bound object, not its replacement.
+                        raise FileCommitPathChanged() from None
+        except BaseException:
+            if descriptor_open:
+                try:
+                    os.close(file_descriptor)
+                except OSError:
+                    pass
+            try:
+                os.unlink(temporary_ref, dir_fd=parent.dir_fd)
+            except OSError:
+                pass
+            raise
 
 
 def _html_integrity_issues(content: str) -> list[str]:
@@ -803,6 +852,7 @@ def write_native_file(
                 ensure_ascii=False,
                 indent=2,
             )
+        write_identity = capture_file_identity(target_path)
         original_bytes = target_path.read_bytes() if target_path.exists() else None
         base_version = _content_version(original_bytes) if original_bytes is not None else "missing"
         if expected_version and expected_version != base_version:
@@ -832,8 +882,6 @@ def write_native_file(
             return error_message or "Safety Guardian 已阻止文件写入。"
 
         incoming_content = str(content or "")
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
 
         scoped_patch_requested = (
             not append
@@ -901,7 +949,26 @@ def write_native_file(
                 )
 
         try:
-            _atomic_write_text(target_path, final_content, expected_version=base_version)
+            _atomic_write_text(target_path, final_content, expected_version=base_version, expected_identity=write_identity)
+        except FileCommitPathChanged:
+            return json.dumps({
+                "ok": False,
+                "kind": "workspace_file_path_changed_after_commit",
+                "error": "file_committed_to_moved_directory",
+                "writeApplied": True,
+                "summary": "内容已写入原目录对象，但该目录在提交时被移动，原路径已不能确认该结果。",
+                "path": str(target_path),
+                "recommendedNextAction": "先核对原目录的新位置和已写内容，再决定后续操作；不要直接重复本次写入。",
+            }, ensure_ascii=False)
+        except FileIdentityChanged:
+            return json.dumps({
+                "ok": False,
+                "kind": "workspace_file_identity_changed",
+                "error": "file_identity_changed_before_commit",
+                "summary": "目标文件或父目录在预检后被替换，已阻止本次写入。",
+                "path": str(target_path),
+                "recommendedNextAction": "重新读取原目标路径并核对工作区授权后，再使用 write_native_file 重试。",
+            }, ensure_ascii=False)
         except ValueError as exc:
             if str(exc) != "file_changed_before_commit":
                 raise

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -32,12 +34,24 @@ class AutomationDeliveryService:
             user_id = str((entries[0]["kwargs"] if entries else {}).get("user_id") or "system")
             db.create_or_update_session(source_session_id, title=f"{kind.title()} automation", user_id=user_id)
         persisted_source_run = source_run_id if source_run_id and db.get_run_record(source_run_id) else None
+        source_session = db.get_session(source_session_id) or {}
+        source_record = db.get_run_record(persisted_source_run) if persisted_source_run else None
+        if source_record and source_record.get("session_id") != source_session_id:
+            raise ValueError("automation source run/session binding conflict")
+        source_scope = {"user_id": (source_record or {}).get("user_id") or source_session.get("user_id")}
+        for key in ("project_id", "workspace_id"):
+            source_scope[key] = ((source_record or {}).get("metadata") or {}).get(key) or (source_session.get("metadata") or {}).get(key)
         deliveries = []
         for entry in entries:
             definition = entry["definition"]
             definition_id = str(definition["id"])
             delivery_id = "delivery-" + fingerprint([source_event_id, kind, definition_id])
             kwargs = dict(entry["kwargs"])
+            for key, owner in source_scope.items():
+                if owner and kwargs.get(key) and str(owner) != str(kwargs[key]):
+                    raise ValueError("automation source ownership conflict")
+                if owner and not kwargs.get(key):
+                    kwargs[key] = owner
             run_id = "automation-" + fingerprint(delivery_id)[:32]
             session_id = automation_runtime.resolve_session_id(
                 action_type=entry["action_type"], target=entry["target"],
@@ -95,16 +109,162 @@ class AutomationDeliveryService:
         )
 
     @staticmethod
-    def reconcile(*, delivery_id, kind, outcome, evidence, context):
+    def _owner_scope(item):
+        from core.memory_maintenance_contract import SYSTEM_MEMORY_MAINTENANCE_JOB_ID, SYSTEM_MEMORY_MAINTENANCE_TARGET
+
+        envelope = item["envelope"]
+        original = envelope["kwargs"]
+        candidates = {key: set() for key in ("user_id", "project_id", "workspace_id")}
+        def collect(value):
+            if not isinstance(value, dict):
+                return
+            for key in candidates:
+                alias = {"user_id": "userId", "project_id": "projectId", "workspace_id": "workspaceId"}[key]
+                owner = str(value.get(key) or value.get(alias) or "").strip()
+                if owner:
+                    candidates[key].add(owner)
+        collect(original)
+        session_ids = {item["source_session_id"]}
+        binding_conflict = False
+        for run_id in (item.get("source_run_id"), item["execution_run_id"]):
+            record = db.get_run_record(run_id) if run_id else None
+            if not record:
+                continue
+            if run_id == item.get("source_run_id") and record.get("session_id") != item["source_session_id"]:
+                binding_conflict = True
+            collect(record)
+            metadata = record.get("metadata") or {}
+            collect(metadata)
+            collect(metadata.get("kwargs") if isinstance(metadata, dict) else None)
+            if record.get("session_id"):
+                session_ids.add(record["session_id"])
+        for session_id in session_ids:
+            session = db.get_session(session_id)
+            if session:
+                collect(session)
+                collect(session.get("metadata"))
+        system_definition = (
+            item["definition_kind"] == "cron" and item["definition_id"] == SYSTEM_MEMORY_MAINTENANCE_JOB_ID
+            and envelope["action_type"] == "python" and envelope["target"] == SYSTEM_MEMORY_MAINTENANCE_TARGET
+        )
+        system_owned = system_definition or "system" in candidates["user_id"]
+        conflict = binding_conflict or any(len(owners) > 1 for owners in candidates.values())
+        return {
+            "system": system_owned, "unresolved": conflict or not candidates["user_id"],
+            "scope": {key: next(iter(owners)) if len(owners) == 1 else None for key, owners in candidates.items()},
+        }
+
+    @staticmethod
+    def list_for_admin(*, limit=25, after=None, ownership="system,unresolved"):
+        from core.observability_db import redact_observability_text
+        accepted = set(str(ownership).split(","))
+        if not accepted or not accepted <= {"system", "user", "unresolved"} or not 1 <= int(limit) <= 100:
+            raise ValueError("invalid delivery query")
+        cursor = None
+        if after:
+            try:
+                if len(after) > 1024:
+                    raise ValueError()
+                cursor = json.loads(base64.urlsafe_b64decode(after + "=" * (-len(after) % 4)))
+                if not isinstance(cursor, list) or len(cursor) != 2 or any(not isinstance(value, str) or not value or len(value) > 160 for value in cursor):
+                    raise ValueError()
+            except Exception:
+                raise ValueError("invalid delivery cursor") from None
+        selected = []
+        # Each read is an indexed keyset page. Filtering uses the same canonical
+        # owner resolver as writes, before determining the visible next page.
+        while len(selected) <= limit:
+            rows = db.page_unknown_automation_deliveries(after=cursor, limit=128)
+            if not rows:
+                break
+            for item in rows:
+                cursor = [item["created_at"], item["delivery_id"]]
+                owner = AutomationDeliveryService._owner_scope(item)
+                owner_kind = "system" if owner["system"] else "unresolved" if owner["unresolved"] else "user"
+                if owner_kind not in accepted:
+                    continue
+                receipt = db.get_side_effect_receipt(item["receipt_key"]) if item["receipt_key"] else None
+                receipt_state = str((receipt or {}).get("state") or "missing")
+                if receipt_state not in {"indeterminate", "claimed", "completed", "failed"}:
+                    receipt_state = "missing"
+                name = str(item["envelope"]["kwargs"].get("task_name") or item["definition_id"])
+                selected.append({
+                    "deliveryId": item["delivery_id"], "definitionId": item["definition_id"],
+                    "definitionName": redact_observability_text(name).replace("\n", " ")[:160],
+                    "kind": item["definition_kind"], "phase": "unknown", "ownership": owner_kind,
+                    "source": {"eventId": item["source_event_id"], "runId": item.get("source_run_id"), "sessionId": item["source_session_id"]},
+                    "createdAt": item["created_at"], "updatedAt": item["updated_at"], "admittedAt": item.get("admitted_at"),
+                    "receiptState": receipt_state,
+                    "evidenceSummary": "已有执行记录，外部结果尚未确认；请先核对目标系统。" if receipt else "旧执行记录缺少结果凭据；请核对外部结果后记录人工观察。",
+                })
+                if len(selected) > limit:
+                    break
+            if len(rows) < 128:
+                break
+        has_more = len(selected) > limit
+        items = selected[:limit]
+        next_cursor = None
+        if has_more:
+            next_cursor = base64.urlsafe_b64encode(json.dumps([items[-1]["createdAt"], items[-1]["deliveryId"]]).encode()).decode().rstrip("=")
+        return {"items": items, "limit": limit, "hasMore": has_more, "nextCursor": next_cursor}
+
+    @staticmethod
+    def _assert_request_owner(item, context):
+        ownership = AutomationDeliveryService._owner_scope(item)
+        if ownership["system"] or ownership["unresolved"]:
+            raise PermissionError(
+                "automation_admin_reconciliation_required: 系统任务或归属待确认，请前往 Admin 的自动化页面核对结果。"
+            )
+        # Tool arguments cannot supply this context. Corroborate the injected
+        # caller with the persisted chat/session owner; labels such as ADMIN or
+        # user_id=system never grant global configuration authority.
+        caller_session_id = str(context.get("session_id") or "")
+        caller_run_id = str(context.get("run_id") or "")
+        caller_run = db.get_run_record(caller_run_id) if caller_run_id else None
+        if caller_run:
+            if caller_session_id and caller_run.get("session_id") != caller_session_id:
+                raise PermissionError("delivery reconciliation caller binding mismatch")
+            caller_session_id = str(caller_run.get("session_id") or "")
+        caller_session = db.get_session(caller_session_id) if caller_session_id else None
+        caller_user = str((caller_run or {}).get("user_id") or (caller_session or {}).get("user_id") or "").strip()
+        if not caller_user or caller_user == "system" or str(context.get("user_id") or "").strip() != caller_user:
+            raise PermissionError("delivery reconciliation caller ownership is unverified")
+        for key, owner in ownership["scope"].items():
+            if owner and str(context.get(key) or "").strip() != owner:
+                raise PermissionError("delivery reconciliation scope mismatch")
+
+    @staticmethod
+    def authorize_reconciliation(*, delivery_id, kind, context):
         item = db.get_automation_delivery(delivery_id)
         if not item or item["definition_kind"] != kind:
             raise ValueError("delivery not found in this automation kind")
+        AutomationDeliveryService._assert_request_owner(item, context)
+        return item
+
+    @staticmethod
+    def reconcile(*, delivery_id, kind, outcome, evidence, context):
+        item = AutomationDeliveryService.authorize_reconciliation(delivery_id=delivery_id, kind=kind, context=context)
+        return AutomationDeliveryService._reconcile_authorized(item, outcome=outcome, evidence=evidence)
+
+    @staticmethod
+    def reconcile_from_admin(*, delivery_id, outcome, evidence, authenticated_owner):
+        """Control-plane caller only, after Admin login/relay authentication."""
+        if not str(authenticated_owner or "").strip():
+            raise PermissionError("authenticated Admin identity required")
+        if not isinstance(evidence, dict) or not evidence:
+            raise ValueError("reconciliation requires observed outcome evidence")
+        item = db.get_automation_delivery(delivery_id)
+        if not item:
+            raise ValueError("delivery not found")
+        return AutomationDeliveryService._reconcile_authorized(
+            item, outcome=outcome, evidence={**dict(evidence or {}), "reconciledByAdmin": authenticated_owner},
+        )
+
+    @staticmethod
+    def _reconcile_authorized(item, *, outcome, evidence):
+        delivery_id, kind = item["delivery_id"], item["definition_kind"]
         if item["phase"] != "unknown":
             raise ValueError(f"delivery is {item['phase']}; only unknown outcomes can be reconciled")
-        for key in ("user_id", "project_id", "workspace_id"):
-            owner = item["envelope"]["kwargs"].get(key)
-            if owner and str(context.get(key) or "") != str(owner):
-                raise PermissionError("delivery reconciliation scope mismatch")
         if outcome not in {"completed", "failed"} or not isinstance(evidence, dict) or not evidence:
             raise ValueError("reconciliation requires observed outcome evidence")
         if item["receipt_key"]:

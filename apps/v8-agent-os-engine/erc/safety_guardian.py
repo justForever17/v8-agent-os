@@ -2423,16 +2423,16 @@ class SafetyGuardian:
             details=base_details,
         )
 
-    def assess_cron_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+    def assess_cron_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None, target: str = "") -> SafetyDecision:
         posture = self._current_posture()
-        if (action or "").lower() in {"add", "remove"}:
+        if (action or "").strip().lower() in {"add", "remove", "reconcile"}:
             return self._decision(
                 verdict="review",
                 reason="修改系统定时任务会影响长期自动化行为，需要人工确认。",
                 risk_code="cron_mutation_review",
                 governance_target="external_mutation",
                 posture=posture,
-                details={"action": action, "runtime_context": runtime_context or {}},
+                details={"action": action, "runtime_context": runtime_context or {}, **({"target": target} if target else {})},
             )
         return self._decision(
             verdict="allow",
@@ -2443,16 +2443,16 @@ class SafetyGuardian:
             details={"action": action, "runtime_context": runtime_context or {}},
         )
 
-    def assess_hook_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+    def assess_hook_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None, target: str = "") -> SafetyDecision:
         posture = self._current_posture()
-        if (action or "").lower() == "add":
+        if (action or "").strip().lower() in {"add", "pause", "resume", "remove", "delete", "reconcile"}:
             return self._decision(
                 verdict="review",
                 reason="新增系统 Hook 会改变引擎生命周期行为，需要人工确认。",
                 risk_code="hook_mutation_review",
                 governance_target="v8_integrity",
                 posture=posture,
-                details={"action": action, "runtime_context": runtime_context or {}},
+                details={"action": action, "runtime_context": runtime_context or {}, **({"target": target} if target else {})},
             )
         return self._decision(
             verdict="allow",

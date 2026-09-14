@@ -215,9 +215,13 @@ def manage_cron(
         NOTE: You can pass a `channel_id` (例如插件声明的渠道标识，如 "weixin") inside the `payload` dictionary to automatically broadcast the finished task summary to that channel.
     """
     try:
+        if action == "reconcile":
+            from core.automation.delivery import automation_delivery_service
+            automation_delivery_service.authorize_reconciliation(delivery_id=delivery_id, kind="cron", context=get_runtime_context())
         if action in {"add", "remove", "reconcile"}:
             allowed, error_message = _enforce_safety_decision(
-                safety_guardian.assess_cron_mutation(action, runtime_context=get_runtime_context()),
+                safety_guardian.assess_cron_mutation(action, runtime_context=get_runtime_context(),
+                    target=f"delivery:{delivery_id}:{outcome}" if action == "reconcile" else ""),
                 tool_call_id=tool_call_id,
                 question=f"Safety Guardian 检测到定时任务配置变更，是否继续？\n\n动作：{action}\n任务：{job_id or name or target or 'unknown'}",
             )
@@ -376,9 +380,13 @@ def manage_hook(
         payload (dict, optional): Runtime input, variables, or execution options for the target.
     """
     try:
+        if action == "reconcile":
+            from core.automation.delivery import automation_delivery_service
+            automation_delivery_service.authorize_reconciliation(delivery_id=delivery_id, kind="hook", context=get_runtime_context())
         if action in {"add", "pause", "resume", "remove", "delete", "reconcile"}:
             allowed, error_message = _enforce_safety_decision(
-                safety_guardian.assess_hook_mutation(action, runtime_context=get_runtime_context()),
+                safety_guardian.assess_hook_mutation(action, runtime_context=get_runtime_context(),
+                    target=f"delivery:{delivery_id}:{outcome}" if action == "reconcile" else ""),
                 tool_call_id=tool_call_id,
                 question=f"Safety Guardian 检测到生命周期 Hook 变更，是否继续？\n\n事件：{event}\n目标：{target}",
             )

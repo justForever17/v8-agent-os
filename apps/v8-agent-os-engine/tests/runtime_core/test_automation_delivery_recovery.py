@@ -452,15 +452,16 @@ def test_legacy_delivery_reconciliation_uses_existing_guard_scope_and_evidence(s
     guarded = []
     monkeypatch.setattr(native.safety_guardian, "assess_hook_mutation", lambda action, **k: guarded.append(action))
     monkeypatch.setattr(native, "_enforce_safety_decision", lambda *a, **k: (False, "fixture denied"))
-    assert native.manage_hook.func(action="reconcile", delivery_id=item["delivery_id"], outcome="completed", evidence={"proof": "fixture"}) == "fixture denied"
+    with bind_runtime_context(user_id="user-a", session_id="source-session"):
+        assert native.manage_hook.func(action="reconcile", delivery_id=item["delivery_id"], outcome="completed", evidence={"proof": "fixture"}) == "fixture denied"
     monkeypatch.setattr(native, "_enforce_safety_decision", lambda *a, **k: (True, ""))
     with bind_runtime_context(user_id="another-user"):
-        assert "scope mismatch" in native.manage_hook.func(action="reconcile", delivery_id=item["delivery_id"], outcome="completed", evidence={"proof": "fixture"})
-    with bind_runtime_context(user_id="user-a"):
+        assert "ownership is unverified" in native.manage_hook.func(action="reconcile", delivery_id=item["delivery_id"], outcome="completed", evidence={"proof": "fixture"})
+    with bind_runtime_context(user_id="user-a", session_id="source-session"):
         assert "evidence" in native.manage_hook.func(action="reconcile", delivery_id=item["delivery_id"], outcome="completed", evidence={})
         result = native.manage_hook.func(action="reconcile", delivery_id=item["delivery_id"], outcome="completed", evidence={"targetObservation": "fixture-effect confirmed"})
     assert "reconciled as completed" in result
-    assert guarded == ["reconcile"] * 4
+    assert guarded == ["reconcile"] * 3
     assert state.db.get_automation_delivery(item["delivery_id"])["envelope"]["reconciliation"]["evidence"] == {"targetObservation": "fixture-effect confirmed"}
     asyncio.run(drain(state.service))
     assert not state.effects

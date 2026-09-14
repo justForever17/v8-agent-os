@@ -4,7 +4,8 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Request, UploadFile, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from typing import Literal
 
 from core.storage import storage
 from core.safety_active_defense import safety_active_defense_monitor
@@ -12,6 +13,74 @@ from erc.safety_guardian import safety_guardian
 
 
 router = APIRouter()
+
+
+def _automation_admin_owner(request: Request) -> str:
+    # Reuse the existing Admin-to-Engine relay authentication. A role header
+    # alone is never a principal; only the authenticated Admin proxy sets it.
+    from api.system_operation_routes import system_operation_owner
+    try:
+        owner = system_operation_owner(request)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail={"code": "automation_admin_auth_required", "message": "请登录管理员后重试。"}) from None
+    if request.headers.get("x-v8-admin-role") != "ADMIN":
+        raise HTTPException(status_code=403, detail={"code": "automation_admin_required", "message": "此操作仅限管理员。"})
+    return owner
+
+
+class AutomationOutcomeEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    observation: str = Field(min_length=1, max_length=2000)
+    reference: str | None = Field(default=None, max_length=1000)
+
+
+class AutomationReconciliationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["completed", "failed"]
+    evidence: AutomationOutcomeEvidence
+
+
+@router.get("/automation/deliveries")
+def list_unknown_automation_deliveries(request: Request, owner: str = Depends(_automation_admin_owner)):
+    from core.automation.delivery import automation_delivery_service
+    try:
+        return automation_delivery_service.list_for_admin(
+            limit=int(request.query_params.get("limit", "25")), after=request.query_params.get("after"),
+            ownership=request.query_params.get("ownership", "system,unresolved"),
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "automation_reconciliation_invalid", "message": "分页参数无效。"}) from None
+    except Exception:
+        raise HTTPException(status_code=500, detail={"code": "automation_delivery_unavailable", "message": "暂时无法读取待核对任务。"}) from None
+
+
+@router.post("/automation/deliveries/{delivery_id}/reconcile")
+async def reconcile_automation_delivery(delivery_id: str, request: Request, owner: str = Depends(_automation_admin_owner)):
+    from core.automation.delivery import automation_delivery_service
+    from core.database import db
+    try:
+        body = await request.body()
+        if len(body) > 16384:
+            raise ValueError()
+        incoming = AutomationReconciliationRequest.model_validate_json(body)
+    except (ValueError, ValidationError):
+        # Validation must not echo submitted evidence or unrecognized secret fields.
+        raise HTTPException(status_code=422, detail={"code": "automation_reconciliation_invalid", "message": "请提供核对结果与非空观察证据。"}) from None
+    if not db.get_automation_delivery(delivery_id):
+        raise HTTPException(status_code=404, detail={"code": "automation_delivery_not_found", "message": "未找到这条任务记录。"})
+    try:
+        automation_delivery_service.reconcile_from_admin(
+            delivery_id=delivery_id, outcome=incoming.outcome,
+            evidence=incoming.evidence.model_dump(exclude_none=True), authenticated_owner=owner,
+        )
+    except (ValueError, RuntimeError):
+        raise HTTPException(status_code=409, detail={"code": "automation_reconciliation_conflict", "message": "任务状态已变化或与凭据冲突，请刷新后重新核对。"}) from None
+    except Exception:
+        raise HTTPException(status_code=500, detail={"code": "automation_delivery_unavailable", "message": "暂时无法保存核对结果。"}) from None
+    item = db.get_automation_delivery(delivery_id)
+    receipt = db.get_side_effect_receipt(item["receipt_key"]) if item["receipt_key"] else None
+    return {"status": "success", "deliveryId": delivery_id, "phase": item["phase"],
+            "receiptState": (receipt or {}).get("state") or "missing", "summary": "已记录人工核对结果，未再次执行该任务。"}
 
 
 class HookToggleRequest(BaseModel):

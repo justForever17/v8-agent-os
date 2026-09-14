@@ -2368,6 +2368,7 @@ class DatabaseManager:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_delivery_pending ON runtime_automation_deliveries(phase, available_at, lease_expires_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_delivery_triage ON runtime_automation_deliveries(phase, created_at, delivery_id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS runtime_episode_idempotency (
@@ -5041,6 +5042,17 @@ class DatabaseManager:
         with self.get_connection() as conn:
             return self._hydrate_automation_delivery(conn.execute(
                 "SELECT * FROM runtime_automation_deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone())
+
+    def page_unknown_automation_deliveries(self, *, after=None, limit=100):
+        query = "SELECT * FROM runtime_automation_deliveries WHERE phase='unknown'"
+        params = []
+        if after:
+            query += " AND (created_at, delivery_id) > (?, ?)"
+            params.extend(after)
+        query += " ORDER BY created_at, delivery_id LIMIT ?"
+        params.append(max(1, min(int(limit), 256)))
+        with self.get_connection() as conn:
+            return [self._hydrate_automation_delivery(row) for row in conn.execute(query, params).fetchall()]
 
     def list_automation_deliveries(self, *, phases=("pending",), limit=100):
         if not phases:

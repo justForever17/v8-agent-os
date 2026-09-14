@@ -2106,7 +2106,7 @@ class SpecService:
         self._write_manifest(paths, manifest)
         return self._pipeline_control(manifest)
 
-    def approve_stage(self, *, workspace_path: str, spec_id: str, stage: str, approver: str = "user", comment: str = "") -> dict[str, Any]:
+    def approve_stage(self, *, workspace_path: str, spec_id: str, stage: str, approver: str = "user", comment: str = "", approval_id: str = "") -> dict[str, Any]:
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
         manifest = self._load_manifest(paths)
         if not manifest:
@@ -2119,6 +2119,14 @@ class SpecService:
         doc_meta = dict((manifest.get("documents") or {}).get(normalized_stage) or {})
         doc_path = paths.spec_dir / SPEC_DOCS[normalized_stage]
         content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
+        content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        prior_approval = (manifest.get("approvals") or {}).get(normalized_stage) or {}
+        if approval_id and prior_approval.get("approved") and prior_approval.get("approvalId") == approval_id and prior_approval.get("documentSha256"):
+            if prior_approval["documentSha256"] != content_sha256:
+                return {"ok": False, "kind": "spec_approval_document_changed", "stage": normalized_stage, "specId": spec_id}
+            return {"ok": True, "kind": "spec_stage_approved", "stage": normalized_stage, "specId": spec_id,
+                    "nextStage": self.next_stage(manifest, normalized_stage), "reusedApproval": True,
+                    "pipelineControl": self._pipeline_control(manifest), "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id)}
         diagnostics = _stage_format_diagnostics(normalized_stage, content)
         doc_meta["formatDiagnostics"] = diagnostics
         manifest.setdefault("documents", {})[normalized_stage] = doc_meta
@@ -2158,6 +2166,8 @@ class SpecService:
                 }
         manifest.setdefault("approvals", {})[normalized_stage] = {
             "approved": True,
+            "documentSha256": content_sha256,
+            **({"approvalId": approval_id} if approval_id else {}),
             "approver": _safe_text(approver, limit=80) or "user",
             "approvedAt": _now_iso(),
             "comment": _safe_text(comment, limit=1000),

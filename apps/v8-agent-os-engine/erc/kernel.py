@@ -462,9 +462,11 @@ class ExecutionRuntimeCore:
     def _project_approval_decision(self, resolved: Dict[str, Any], status: str) -> Dict[str, Any]:
         approval = dict(resolved)
         decision = approval.pop("_decision")
+        resume_record = approval.pop("resume_json", None)
         result = {"approval": approval, "decisionApplied": bool(decision.get("updated")),
                   "ignored": not decision.get("updated"), "reason": decision.get("reason"),
-                  "resume_eligible": False, "resume_scheduled": False}
+                  "resume_eligible": False, "resume_scheduled": False,
+                  "approvalDeliveryRecorded": resume_record not in (None, "", "{}")}
         if not decision.get("updated"):
             return result
         run_record = run_service.get_run(approval["run_id"])

@@ -591,6 +591,10 @@ class WorkflowLedgerService:
                 self.emit_reconciliation_event(session_id, run_id, reason="engine_restart_runtime_wait",
                                                outcome="runtime_wait_preserved")
                 continue
+            if db.list_undelivered_approval_resumes(run_id=run_id):
+                self.emit_reconciliation_event(session_id, run_id, reason="engine_restart_approval_delivery",
+                                               outcome="approval_delivery_preserved")
+                continue
 
             metadata = dict(run_record.get("metadata") or {})
             metadata.update(

@@ -734,6 +734,7 @@ class DatabaseManager:
                     status TEXT NOT NULL,
                     request_json TEXT NOT NULL,
                     response_json TEXT,
+                    resume_json TEXT NOT NULL DEFAULT '{}',
                     expires_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -2369,6 +2370,9 @@ class DatabaseManager:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_delivery_pending ON runtime_automation_deliveries(phase, available_at, lease_expires_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_delivery_triage ON runtime_automation_deliveries(phase, created_at, delivery_id)")
+        approval_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_approvals)").fetchall()}
+        if approval_columns and "resume_json" not in approval_columns:
+            conn.execute("ALTER TABLE pending_approvals ADD COLUMN resume_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS runtime_episode_idempotency (
@@ -12306,6 +12310,12 @@ class DatabaseManager:
                     operations = metadata.get("approvedSafetyOperations") or []
                     operations = [item for item in operations if isinstance(item, dict) and item.get("fingerprint") != approved_operation.get("fingerprint")]
                     metadata["approvedSafetyOperations"] = [*operations, approved_operation][-100:]
+                if (status == "approved" and not mcp and not control and not pending and next_status == "running"
+                        and run_record.get("run_type") == "chat"
+                        and approval["approval_kind"] not in {"checkpoint_replay", "checkpoint_fork"}
+                        and "runtimeContinuation" not in request):
+                    conn.execute("UPDATE pending_approvals SET resume_json=? WHERE id=?",
+                        (json.dumps({"state": "pending", "generation": uuid.uuid4().hex, "attempt": 0}), approval_id))
                 # Preserve the current run metadata/control atomically. A stale
                 # read-modify-write with the old status could resurrect cancel.
                 conn.execute(
@@ -12323,6 +12333,94 @@ class DatabaseManager:
                         "resumeEligible": not mcp and not control and not pending and next_status in {"running", "waiting_input"}}
 
         return self._run_write_with_retry(_write)
+
+    def claim_approval_resume(self, approval_id: str, *, restart: bool = False) -> Dict[str, Any]:
+        """Claim delivery of an immutable decision; a duplicate vote is not delivery."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM pending_approvals WHERE id=? AND status='approved'", (approval_id,)).fetchone()
+                if not row:
+                    return {"claimed": False, "reason": "approval_not_approved"}
+                delivery = json.loads(row["resume_json"] or "{}")
+                allowed = {"pending", "scheduled"} if restart else {"pending"}
+                if delivery.get("state") not in allowed or not delivery.get("generation"):
+                    return {"claimed": False, "reason": "approval_resume_already_claimed"}
+                run = conn.execute("SELECT * FROM run_records WHERE id=? AND session_id=?", (row["run_id"], row["session_id"])).fetchone()
+                metadata = json.loads(run["metadata"] or "{}") if run else {}
+                request = json.loads(row["request_json"] or "{}")
+                if not run or run["status"] != "running" or (metadata.get("control_signal") or {}).get("command") in {"cancel", "interrupt", "pause"}:
+                    return {"claimed": False, "reason": "run_not_ready_after_approval"}
+                request_scope = request.get("scopeRevision", request.get("scope_revision"))
+                current_scope = metadata.get("scopeRevision", metadata.get("scope_revision"))
+                if request_scope is not None and current_scope is not None and request_scope != current_scope:
+                    return {"claimed": False, "reason": "approval_scope_changed"}
+                if conn.execute("SELECT 1 FROM pending_approvals WHERE run_id=? AND status='pending' LIMIT 1", (row["run_id"],)).fetchone():
+                    return {"claimed": False, "reason": "another_approval_pending"}
+                active = conn.execute("SELECT 1 FROM pending_approvals WHERE run_id=? AND id<>? "
+                    "AND json_extract(resume_json,'$.state') IN ('scheduled','executing') LIMIT 1", (row["run_id"], approval_id)).fetchone()
+                if active:
+                    return {"claimed": False, "reason": "approval_parent_writer_reserved"}
+                if not restart and delivery.get("retryAfter") and delivery["retryAfter"] > utc_now_iso():
+                    return {"claimed": False, "reason": "approval_resume_retry_pending"}
+                delivery = {**delivery, "state": "scheduled", "attempt": int(delivery.get("attempt") or 0) + 1,
+                            "scheduledAt": utc_now_iso()}
+                conn.execute("UPDATE pending_approvals SET resume_json=? WHERE id=?", (json.dumps(delivery), approval_id))
+                conn.commit()
+                approval = dict(row)
+                approval["request"] = request
+                approval["response"] = json.loads(row["response_json"] or "{}")
+                return {"claimed": True, "approval": approval, "delivery": delivery}
+        return self._run_write_with_retry(_write)
+
+    def transition_approval_resume(self, approval_id: str, *, run_id: str, generation: str, attempt: int,
+                                   expected_state: str, state: str, error: str = "") -> bool:
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT resume_json,request_json,session_id FROM pending_approvals WHERE id=? AND run_id=? AND status='approved'",
+                                   (approval_id, run_id)).fetchone()
+                delivery = json.loads(row["resume_json"] or "{}") if row else {}
+                if delivery.get("state") != expected_state or delivery.get("generation") != generation or delivery.get("attempt") != attempt:
+                    return False
+                if state == "executing":
+                    run = conn.execute("SELECT status,metadata FROM run_records WHERE id=? AND session_id=?", (run_id, row["session_id"])).fetchone()
+                    metadata = json.loads(run["metadata"] or "{}") if run else {}
+                    if not run or run["status"] != "running" or (metadata.get("control_signal") or {}).get("command") in {"cancel", "interrupt", "pause"}:
+                        return False
+                    request = json.loads(row["request_json"] or "{}")
+                    requested_scope = request.get("scopeRevision", request.get("scope_revision"))
+                    current_scope = metadata.get("scopeRevision", metadata.get("scope_revision"))
+                    if requested_scope is not None and current_scope is not None and requested_scope != current_scope:
+                        return False
+                next_value = {**delivery, "state": state}
+                if error:
+                    next_value["lastError"] = error
+                if state == "pending":
+                    next_value["retryAfter"] = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                conn.execute("UPDATE pending_approvals SET resume_json=? WHERE id=?", (json.dumps(next_value), approval_id))
+                conn.commit()
+                return True
+        return self._run_write_with_retry(_write)
+
+    def approval_resume_state_for_run(self, run_id: str) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT resume_json FROM pending_approvals WHERE run_id=? AND status='approved' "
+                "AND COALESCE(json_extract(resume_json,'$.generation'),'')<>''", (run_id,)).fetchall()
+            states = {json.loads(row["resume_json"]).get("state") for row in rows}
+            return {"recorded": bool(rows), "requiresDelivery": bool(states & {"pending", "scheduled", "executing", "blocked"})}
+
+    def list_undelivered_approval_resumes(self, *, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT a.id,a.run_id,a.session_id,a.resume_json FROM pending_approvals a JOIN run_records r ON r.id=a.run_id "
+                "WHERE a.status='approved' AND r.status='running' AND json_extract(a.resume_json,'$.state') IN ('pending','scheduled') "
+                "AND COALESCE(json_extract(r.metadata,'$.control_signal.command'),'') NOT IN ('cancel','interrupt','pause') "
+                "AND (COALESCE(json_extract(a.request_json,'$.scopeRevision'),json_extract(a.request_json,'$.scope_revision')) IS NULL "
+                "OR COALESCE(json_extract(r.metadata,'$.scopeRevision'),json_extract(r.metadata,'$.scope_revision')) IS NULL "
+                "OR COALESCE(json_extract(a.request_json,'$.scopeRevision'),json_extract(a.request_json,'$.scope_revision')) "
+                "=COALESCE(json_extract(r.metadata,'$.scopeRevision'),json_extract(r.metadata,'$.scope_revision'))) "
+                + ("AND a.run_id=? " if run_id else "") + "ORDER BY a.created_at", (run_id,) if run_id else ()).fetchall()
+            return [{**dict(row), "delivery": json.loads(row["resume_json"])} for row in rows]
 
     def update_pending_approval(
         self,

@@ -1166,6 +1166,8 @@ class RuntimeEpisodeRunner:
         self._thread_started.set()
         active_tasks: set[asyncio.Task] = set()
         self._recover_parent_wakes(restart=True)
+        from erc.command_router import runtime_command_router
+        runtime_command_router.recover_approval_resumes(restart=True)
         try:
             while not self._stop_event.is_set():
                 try:
@@ -1184,6 +1186,7 @@ class RuntimeEpisodeRunner:
                     claimed_any = False
                     await self._settle_parked_episode_cancellations()
                     self._recover_approved_runtime_continuations()
+                    runtime_command_router.recover_approval_resumes()
                     self._recover_parent_wakes()
                     while len(active_tasks) < self._max_concurrent:
                         try:

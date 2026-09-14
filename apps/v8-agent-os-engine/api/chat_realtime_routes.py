@@ -802,7 +802,11 @@ def _schedule_chat_run(request: ChatRequest, *, transport: str, run_id: str | No
             run_id=scheduled_run_id,
             payload={"failureType": type(exc).__name__},
         )
-        if scheduled_run_id:
+        approval_delivery_pending = bool(
+            scheduled_run_id and transport == "system_resume"
+            and db.approval_resume_state_for_run(scheduled_run_id)["requiresDelivery"]
+        )
+        if scheduled_run_id and not approval_delivery_pending:
             run_service.transition_run_if_status(
                 scheduled_run_id,
                 expected_statuses=_FALLBACK_ACTIVE_CHAT_STATUSES,

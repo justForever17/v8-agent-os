@@ -163,6 +163,10 @@ class RuntimeCommandRouter:
                     }
             result = erc_kernel.approve(approval_id, response=command.response)
             if result:
+                decided = result.get("approval") or {}
+                if decided.get("status") == "approved" and result.get("approvalDeliveryRecorded"):
+                    result.update(self.deliver_approval_resume(approval_id))
+                    return result
                 if result.get("ignored") or result.get("resume_eligible") is False:
                     return result
                 approval = result.get("approval") or {}
@@ -1372,6 +1376,51 @@ class RuntimeCommandRouter:
         result["worker_crash_count"] = next_crash_count
         return result
 
+    def deliver_approval_resume(self, approval_id: str, *, restart: bool = False) -> Dict[str, Any]:
+        claim = db.claim_approval_resume(approval_id, restart=restart)
+        if not claim.get("claimed"):
+            return {"resume_scheduled": False, "resume_error": claim.get("reason")}
+        approval, delivery = claim["approval"], claim["delivery"]
+        approval["_resumeDelivery"] = delivery
+        try:
+            if self._approval_kind(approval) == "spec_stage_approval":
+                applied = self._apply_spec_stage_approval(approval, approval.get("response") or {})
+                if applied.get("ok") is False:
+                    db.transition_approval_resume(approval_id, run_id=approval["run_id"], generation=delivery["generation"],
+                        attempt=delivery["attempt"], expected_state="scheduled", state="blocked", error="spec_stage_approval_apply_failed")
+                    transition = run_service.transition_run_if_status(approval["run_id"], expected_statuses={"running"}, status="waiting_input",
+                        metadata={"approval_resume_error": "spec_stage_approval_apply_failed", "approval_id": approval_id}) if applied.get("error") != "run_not_ready_after_approval" else {}
+                    if transition.get("updated"):
+                        workflow_ledger_service.sync_run_status(approval["run_id"], run_status="waiting_input", reason="spec_stage_approval_apply_failed")
+                        self._emit_resume_event(transition["run_record"], "run.resume.not_scheduled", {
+                            "approvalId": approval_id, "reason": "spec_stage_approval_apply_failed", "restoredStatus": "waiting_input"})
+                    return {"resume_scheduled": False, "resume_error": "spec_stage_approval_apply_failed", "spec_stage_approval": applied}
+            result = self._resume_from_approval(approval, approval.get("response") or {}) or {"resume_scheduled": False}
+        except Exception as exc:
+            result = {"resume_scheduled": False, "resume_error": f"approval_resume_scheduler_failed:{type(exc).__name__}"}
+        if not result.get("resume_scheduled"):
+            db.transition_approval_resume(approval_id, run_id=approval["run_id"], generation=delivery["generation"],
+                attempt=delivery["attempt"], expected_state="scheduled", state="pending", error=str(result.get("resume_error") or "resume_not_scheduled"))
+        return result
+
+    def recover_approval_resumes(self, *, restart: bool = False) -> None:
+        from erc.session_lane_scheduler import session_lane_scheduler
+        if self._schedule_chat_run is None:
+            return
+        for pending in db.list_undelivered_approval_resumes():
+            if session_lane_scheduler.get_active_run(pending["session_id"]):
+                continue
+            if pending["delivery"].get("state") == "scheduled" and not restart:
+                continue
+            self.deliver_approval_resume(pending["id"], restart=restart)
+
+    @staticmethod
+    def _bind_approval_resume_delivery(request: ChatRequest, approval: Dict[str, Any]) -> None:
+        delivery = approval.get("_resumeDelivery")
+        if delivery:
+            request.resume_value = {**dict(request.resume_value or {}), "approvalDelivery": {
+                "approvalId": approval["id"], "generation": delivery["generation"], "attempt": delivery["attempt"]}}
+
     def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any] | None:
         approval_kind = self._approval_kind(approval)
         if approval_kind == "mcp_app_tool_call":
@@ -1438,6 +1487,7 @@ class RuntimeCommandRouter:
                     "stage": request_payload.get("stage"),
                 },
             )
+            self._bind_approval_resume_delivery(resume_request, approval)
             scheduled_run_id = self._schedule_chat_run(
                 resume_request,
                 transport="system_resume",
@@ -1495,6 +1545,7 @@ class RuntimeCommandRouter:
             return {"resume_mode": "chat", "resume_scheduled": False}
         resume_request = self._build_resume_chat_request(approval, response)
         if resume_request:
+            self._bind_approval_resume_delivery(resume_request, approval)
             scheduled_run_id = self._schedule_chat_run(
                 resume_request,
                 transport="system_resume",
@@ -1678,6 +1729,14 @@ class RuntimeCommandRouter:
         run_record = db.get_run_record(str(approval.get("run_id") or ""))
         if not run_record:
             return {"ok": False, "error": "run_not_found"}
+        control = (run_record.get("metadata") or {}).get("control_signal") or {}
+        if run_record.get("status") != "running" or control.get("command") in {"cancel", "interrupt", "pause"}:
+            return {"ok": False, "error": "run_not_ready_after_approval"}
+        requested_scope = request.get("scopeRevision", request.get("scope_revision"))
+        metadata = run_record.get("metadata") or {}
+        current_scope = metadata.get("scopeRevision", metadata.get("scope_revision"))
+        if requested_scope is not None and current_scope is not None and requested_scope != current_scope:
+            return {"ok": False, "error": "approval_scope_changed"}
         scope_payload = self._scope_payload_for_session(str(run_record.get("session_id") or ""))
         workspace_path = (
             str(request.get("workspacePath") or request.get("workspace_path") or "").strip()
@@ -1701,6 +1760,7 @@ class RuntimeCommandRouter:
                 stage=stage,
                 approver=f"{approver}:{approval_id}" if approval_id else approver,
                 comment=comment,
+                approval_id=approval_id,
             )
         except Exception as exc:
             return {

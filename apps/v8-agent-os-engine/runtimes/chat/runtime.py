@@ -3400,6 +3400,11 @@ class ChatRuntime:
         if assignment_message and assignment_message.get("authority") == "project_assignment":
             if not run_id or assignment_message.get("targetRunId") != run_id:
                 raise ValueError("assignment_request_run_binding_mismatch")
+        if transport != "system_resume" and isinstance(request.resume_value, dict) and "approvalDelivery" in request.resume_value:
+            raise ValueError("approval_resume_requires_governed_router")
+        if (request.resume_run_id and transport != "system_resume"
+                and db.approval_resume_state_for_run(request.resume_run_id)["requiresDelivery"]):
+            raise ValueError("approval_resume_requires_governed_router")
         prepared = self.prepare_request(request)
         run_handle = None
         existing_binding = None
@@ -10995,11 +11000,33 @@ class ChatRuntime:
         except Exception:
             return prepared_brief
 
+    @staticmethod
+    def _consume_approval_delivery(chat_run) -> bool:
+        resume_value = getattr(getattr(chat_run, "request", None), "resume_value", None) or {}
+        delivery = resume_value.get("approvalDelivery") if isinstance(resume_value, dict) else None
+        if not isinstance(delivery, dict):
+            return not db.approval_resume_state_for_run(chat_run.active_run_id)["requiresDelivery"]
+        if getattr(chat_run, "transport", None) != "system_resume":
+            return False
+        return db.transition_approval_resume(str(delivery.get("approvalId") or ""), run_id=chat_run.active_run_id,
+            generation=str(delivery.get("generation") or ""), attempt=delivery.get("attempt"),
+            expected_state="scheduled", state="executing")
+
+    @staticmethod
+    def _finish_approval_delivery(chat_run) -> None:
+        resume_value = getattr(getattr(chat_run, "request", None), "resume_value", None) or {}
+        delivery = resume_value.get("approvalDelivery") if isinstance(resume_value, dict) else None
+        if isinstance(delivery, dict):
+            db.transition_approval_resume(str(delivery.get("approvalId") or ""), run_id=chat_run.active_run_id,
+                generation=str(delivery.get("generation") or ""), attempt=delivery.get("attempt"),
+                expected_state="executing", state="completed")
+
     def finalize_success_run(
         self,
         chat_run: ChatRunContext,
         stream_state: ChatStreamState | None = None,
     ) -> dict[str, Any]:
+        self._finish_approval_delivery(chat_run)
         session_wait = db.pause_session_result_wait(chat_run.active_run_id)
         if session_wait:
             reason = "session_results_wait"
@@ -11238,6 +11265,8 @@ class ChatRuntime:
         stream_state: ChatStreamState | None = None,
     ) -> list[dict[str, Any]]:
         run_id = chat_run.active_run_id if chat_run else None
+        if chat_run:
+            self._finish_approval_delivery(chat_run)
         if chat_run and isinstance(exc, ModelGovernanceInterventionRequired):
             request_payload = exc.to_request_payload()
             if self._is_ask_user_request(request_payload):
@@ -11807,6 +11836,10 @@ class ChatRuntime:
             return
 
         resume_value = getattr(chat_run.request, "resume_value", None) or {}
+        if not self._consume_approval_delivery(chat_run):
+            session_admission_service.release(chat_run.session_id, chat_run.active_run_id, policy=lane_policy, runtime_kind="chat")
+            yield {"type": "done", "status": "running", "reason": "approval_resume_already_consumed", "run_id": chat_run.active_run_id}
+            return
         if isinstance(resume_value, dict) and resume_value.get("runtimeEpisodeHandoff"):
             marker = dict((db.get_run_record(chat_run.active_run_id) or {}).get("metadata") or {}).get("runtimeEpisodeResume") or {}
             requested_generation = (resume_value.get("runtimeEpisodeHandoff") or {}).get("waitGeneration")

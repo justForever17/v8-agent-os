@@ -2955,6 +2955,7 @@ def _command_agent_visible_surface(
                 payload.get("keyOutput"),
                 payload.get("deltaText"),
                 payload.get("outputPreview"),
+                payload.get("initialPreview"),
             )
             if state in terminal_states
             else (
@@ -2962,12 +2963,22 @@ def _command_agent_visible_surface(
                 payload.get("keyOutput"),
                 payload.get("outputPreview"),
                 payload.get("finalPreview"),
+                payload.get("initialPreview"),
             )
         )
         stdout = next((item for item in stdout_candidates if item not in (None, "")), "")
         control: list[str] = []
-        if session_id and state not in terminal_states:
+        debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+        if not stdout and isinstance(debug.get("screenPreview"), str) and debug["screenPreview"].strip():
+            _append_terminal_stream(control, "terminal screen", debug["screenPreview"], raw_ref=raw_ref,
+                                    truncated=bool(debug.get("screenPreviewTruncated")))
+        if session_id:
             control.append(f"[session: {session_id}]")
+        for key in ("cursor", "nextCursor"):
+            if key in payload:
+                control.append(f"[{key}: {json.dumps(payload[key], ensure_ascii=False)}]")
+        if state in terminal_states and payload.get("returnCode") in (0, "0"):
+            control.append("[exit code: 0]")
         if state == "recoverable_stalled":
             control.append("[command appears stalled; observe later or terminate]")
         elif state == "render_stalled":
@@ -2990,6 +3001,7 @@ def _command_agent_visible_surface(
                 or payload.get("keyOutputTruncated")
                 or payload.get("outputPreviewTruncated")
                 or payload.get("finalPreviewTruncated")
+                or payload.get("initialPreviewTruncated")
             ),
             control_lines=control,
         )
@@ -3215,7 +3227,7 @@ def _copy_tool_message_with_budget(message: ToolMessage, content: str, budget_me
         if isinstance(command_payload, dict) and command_payload.get("kind") in {"command_result", "command_session"}:
             additional_kwargs["v8_command_execution"] = {
                 key: command_payload[key]
-                for key in ("kind", "ok", "state", "commandId", "sessionId", "returnCode")
+                for key in ("kind", "ok", "state", "commandId", "sessionId", "returnCode", "cursor", "nextCursor")
                 if key in command_payload
             }
     response_metadata["v8_tool_output_budget"] = budget_meta

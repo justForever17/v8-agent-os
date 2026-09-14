@@ -2,12 +2,56 @@ from __future__ import annotations
 
 import hashlib
 import json
+import asyncio
+
+import pytest
 
 from langchain_core.messages import ToolMessage
 
 from core.tool_surface import MAX_RESEARCH_DELIVERY_SURFACE_CHARS, apply_tool_surface_budget
 from core.tools.research_quality import build_research_review_binding
 from runtimes.extensions.skills.loader import _read_skill_text_file
+
+
+@pytest.mark.parametrize("field", ["initialPreview", "debugScreen"])
+def test_command_ready_output_survives_toolnode_and_next_native_request(field):
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.tools import tool
+    from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
+    from graph.tool_routing import create_routed_tool_node
+    marker = 'CROSS_GRAPH_READY {"pid":12345,"commandId":"fixture-session"}'
+    payload = {"ok": True, "kind": "command_session", "mode": "start" if field == "initialPreview" else "observe",
+               "state": "running", "command": "python -B -u validate_fixture.py", "commandId": "fixture-session",
+               "cursor": 12, "nextCursor": 13}
+    if field == "initialPreview":
+        payload[field] = marker
+    else:
+        payload["debug"] = {"screenPreview": marker, "rawFramePreview": "INTERNAL_RAW_FRAME_MUST_STAY_IN_DETAIL"}
+    @tool("run_system_command")
+    def observe_fixture() -> str:
+        """Return a synthetic command session observation."""
+        return json.dumps(payload)
+    assistant = AIMessage(content="", tool_calls=[{"name": "run_system_command", "args": {}, "id": "start-fixture"}])
+    node = create_routed_tool_node([observe_fixture], "worker_tools", "worker")
+    result = asyncio.run(node({"messages": [assistant]}))
+    message = result.update["messages"][0]
+    assert marker in message.content and "[still running]" in message.content
+    assert "[session: fixture-session]" in message.content and "[nextCursor: 13]" in message.content
+    assert "INTERNAL_RAW_FRAME_MUST_STAY_IN_DETAIL" not in message.content
+    assert message.additional_kwargs["v8_command_execution"]["state"] == "running"
+    model = V8OpenAICompatibleChatModel(model="fixture", api_key="fixture-key", base_url="https://fixture.invalid/v1")
+    request = model._get_request_payload([HumanMessage(content="Observe the task."), assistant, message])
+    assert marker in request["messages"][-1]["content"]
+    assert request["messages"][-1]["tool_call_id"] == "start-fixture"
+
+
+def test_command_session_output_keeps_terminal_identity_exit_and_long_log_reference():
+    marker = "CROSS_GRAPH_DONE"
+    text = _visible("command_session_broker", {"ok": True, "kind": "command_session", "state": "completed",
+        "commandId": "completed-fixture", "returnCode": 0, "finalPreview": "prefix\n" + "x" * 12000 + "\n" + marker,
+        "finalPreviewTruncated": True}, budget=3000)
+    assert marker in text and "[exit code: 0]" in text and "[session: completed-fixture]" in text
+    assert "rawRef=" in text and len(text) < 3000
 
 
 def _visible(tool_name: str, payload: dict, *, budget: int = 2500) -> str:

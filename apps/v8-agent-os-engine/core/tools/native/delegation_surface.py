@@ -6,7 +6,7 @@ import json
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from pydantic import Field, TypeAdapter
+from pydantic import ConfigDict, Field, TypeAdapter
 from typing_extensions import Required
 
 from core.tools.native.delegation import DelegationTaskInput, delegation_broker
@@ -27,6 +27,8 @@ def delegation_parameter_repair(invalid_fields: list[str]) -> tuple[str, list[st
     external_required = TypeAdapter(ManualExternalDelegationTask).json_schema().get("required", [])
     fields = list(dict.fromkeys(field.replace(".ManualLocalDelegationTask.", ".").replace(".ManualExternalDelegationTask.", ".")
                                 for field in invalid_fields))
+    task_fields = TypeAdapter(DelegationTaskInput).json_schema().get("properties", {})
+    misplaced = [field for field in fields if field in task_fields]
     example = {
         "mode": "dispatch",
         "tasks": [{"taskBriefId": "<retain task id>", "targetAgentName": "<exact registered name from agent_broker(mode='list')>",
@@ -36,11 +38,15 @@ def delegation_parameter_repair(invalid_fields: list[str]) -> tuple[str, list[st
     return "\n".join([
         "Delegation parameters were rejected before execution; no episode or worker was dispatched by this call.",
         "Invalid field paths: " + ", ".join(fields),
+        *(["Task fields were placed at the broker level. Put each field on the intended original task: "
+           + ", ".join(f"{field} -> tasks[i].{field}" for field in misplaced)
+           + ". No values have been moved or permissions granted."] if misplaced else []),
         "For a local registered Agent, tasks[i] requires: " + ", ".join(local_required) + ".",
         "Set tasks[i].targetAgentName to the exact name from the visible registry or agent_broker(mode='list'). A family or preferredAgentId does not replace targetAgentName.",
         "For an explicitly requested external worker only, tasks[i] instead requires: " + ", ".join(external_required) + "; executionLaneHint must be 'external_worker'.",
         "These are alternative task variants. Do not switch a local task to external_worker to bypass a missing name. Do not add the validation branch class names as JSON fields.",
         "Preserve the authorized goal, evidence, outputs, acceptance, read/write boundaries and task IDs; repair this call's fields without widening permissions. Omit unused optional fields, including null lane/selector values.",
+        "Use only declared broker-level fields. Task constraints and execution boundaries belong on tasks[i], not beside tasks.",
         "Local shape (replace placeholders; do not copy a made-up Agent name): " + json.dumps(example, ensure_ascii=False),
     ]), fields
 
@@ -125,3 +131,12 @@ def supervisor_delegation_broker(
         handoff_id=handoff_id, task_brief_id=task_brief_id, decision=decision,
         tool_call_id=tool_call_id, state=state,
     )
+
+
+class SupervisorDelegationArguments(supervisor_delegation_broker.args_schema):
+    """Keep signature-derived fields and injections; reject silent field loss."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+supervisor_delegation_broker.args_schema = SupervisorDelegationArguments

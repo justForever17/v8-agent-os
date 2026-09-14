@@ -142,6 +142,33 @@ def test_input_error_projection_preserves_repair_fields_and_execution_uncertaint
         assert len(projected.content) <= 2500
 
 
+def test_misplaced_task_boundaries_are_rejected_before_dispatch_and_explicit_repair_preserves_them(monkeypatch):
+    from copy import deepcopy
+
+    dispatched = []
+    monkeypatch.setattr(surface.delegation_broker, "func", lambda **kwargs: dispatched.append(kwargs) or "dispatched")
+    call = invalid_call()
+    brief = call["args"]["tasks"][0]
+    brief["targetAgentName"] = "Fixture Registered Agent"
+    boundaries = {"readOnly": True, "writeRequired": False, "readSet": ["verify.py"], "writeSet": [],
+                  "toolPolicy": {"mode": "allowlist", "allowedTools": []}}
+    call["args"].update(deepcopy(boundaries))
+    original = deepcopy(call)
+    node = create_routed_tool_node([surface.supervisor_delegation_broker], "supervisor_tools", "supervisor")
+    result = asyncio.run(node({"messages": [AIMessage(content="", tool_calls=[call])]}))
+    assert dispatched == [], "misplaced execution boundaries must not silently disappear"
+    message = result.update["messages"][0]
+    assert message.status == "error" and message.additional_kwargs["executionOutcome"] == "not_executed"
+    assert "tasks[i].readOnly" in message.content and "tasks[i].toolPolicy" in message.content
+    assert call == original
+    # Only the caller's explicit corrected request may move these fields.
+    for field in boundaries:
+        brief[field] = call["args"].pop(field)
+    asyncio.run(node({"messages": [AIMessage(content="", tool_calls=[call])]}))
+    assert len(dispatched) == 1 and dispatched[0]["tasks"] == [brief]
+    assert dispatched[0]["tasks"][0]["toolPolicy"]["allowedTools"] == []
+
+
 def test_tool_body_validation_cannot_claim_dispatch_was_not_executed(monkeypatch):
     class InnerPayload(BaseModel):
         required_value: int

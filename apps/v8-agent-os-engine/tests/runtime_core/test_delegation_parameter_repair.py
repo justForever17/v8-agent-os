@@ -119,6 +119,29 @@ def test_registry_preparation_cannot_complete_delegation_or_admit_mixed_side_eff
         assert not _is_required_orchestration_preparation(AIMessage(content="", tool_calls=calls), "delegation", {})
 
 
+@pytest.mark.parametrize("tool_name", ["delegation_broker", "runtime_broker", "agent_broker"])
+def test_input_error_projection_preserves_repair_fields_and_execution_uncertainty(tool_name):
+    from langchain_core.messages import ToolMessage
+    from core.tool_surface import apply_tool_surface_budget
+
+    for rejected in (True, False):
+        payload = {
+            "ok": False, "kind": "tool_parameter_repair" if rejected else "tool_execution_error",
+            "error": "ValidationError", "summary": "Correct the listed fields." if rejected else "Check existing effects.",
+            "executionOutcome": "not_executed" if rejected else "unverified",
+            **({"invalidFields": ["tasks.0.context.command", "tasks.0.readSet"]} if rejected else {}),
+        }
+        message = ToolMessage(content=json.dumps(payload), name=tool_name, tool_call_id="rejected-input", status="error")
+        projected = apply_tool_surface_budget(message, {"agentVisibleBudget": 2500}, tool_name=tool_name)
+        assert projected.tool_call_id == message.tool_call_id and projected.status == "error"
+        assert payload["executionOutcome"] in projected.content
+        if rejected:
+            assert all(field in projected.content for field in payload["invalidFields"])
+        else:
+            assert "not_executed" not in projected.content
+        assert len(projected.content) <= 2500
+
+
 def test_tool_body_validation_cannot_claim_dispatch_was_not_executed(monkeypatch):
     class InnerPayload(BaseModel):
         required_value: int

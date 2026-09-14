@@ -2801,7 +2801,18 @@ def _decision_agent_visible_surface(
         return None
     payload = payload_any if isinstance(payload_any, dict) else {}
     renderer_result: str | None = None
-    if tool_name == "runtime_broker":
+    if payload.get("kind") in {"tool_parameter_repair", "tool_execution_error"}:
+        # Callback errors precede broker-specific results. Keep their input
+        # rejection / uncertain side-effect distinction across all projections.
+        lines = [_first_text(payload, "summary", "message", limit=500)]
+        outcome = _short_text(payload.get("executionOutcome") or "unverified", 80)
+        lines.append(f"Execution outcome: {outcome}")
+        fields = payload.get("invalidFields")
+        if isinstance(fields, list) and fields:
+            lines.append("Invalid field paths: " + ", ".join(_short_text(field, 180) for field in fields[:8]))
+        lines.extend(_surface_ref_lines(raw_ref))
+        renderer_result = "\n".join(line for line in lines if line)
+    elif tool_name == "runtime_broker":
         renderer_result = _render_runtime_broker_surface(payload, raw_ref)
     elif tool_name == "agent_broker":
         renderer_result = _render_agent_registry_surface(payload, raw_ref)

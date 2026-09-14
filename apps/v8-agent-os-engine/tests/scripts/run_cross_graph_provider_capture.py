@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextvars import ContextVar
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -16,12 +17,20 @@ from pathlib import Path
 import re
 import runpy
 import threading
+import time
 from typing import Any
 import uuid
 
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def model_identity_fact(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value:
+        return {"present": False}
+    safe = bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{1,180}", value)) and "://" not in value
+    return {"present": True, "sha256": _hash(value), **({"value": value} if safe else {})}
 
 
 _PROTOCOL_MARKERS = ("<tool_call>", "</tool_call>", "<invoke", "</invoke>",
@@ -217,7 +226,7 @@ class ScopedCapture:
             with self.output.open("a", encoding="utf-8") as stream:
                 stream.write(encoded + "\n")
 
-    def request(self, payload: dict[str, Any]) -> None:
+    def request(self, payload: dict[str, Any], *, model_ref: str = "") -> None:
         if not matching_payload(payload, self.marker):
             if self.current.get() is not None:
                 self.current.get()["matched"] = False
@@ -227,6 +236,7 @@ class ScopedCapture:
             context = {"captureId": uuid.uuid4().hex}
             self.current.set(context)
         context["matched"] = True
+        context["startedMonotonic"] = time.monotonic()
         # An invocation context can be reused by SDK retry; don't attribute the
         # earlier response's fragments to a later network attempt.
         context.pop("wireFields", None)
@@ -244,6 +254,8 @@ class ScopedCapture:
         replies = [str(message.get("content") or "") for message in messages
                    if message.get("role") == "tool" and message.get("tool_call_id") in delegation_call_ids]
         self.write({"boundary": "openai_final_request_payload", "captureId": context["captureId"], "tools": schemas,
+                    "requestedAt": datetime.now(timezone.utc).isoformat(),
+                    "modelIdentity": {"wireModel": model_identity_fact(payload.get("model")), "modelRef": model_identity_fact(model_ref)},
                     "schemaSha256": _hash(json.dumps(schemas, sort_keys=True, ensure_ascii=False)),
                     "toolChoice": payload.get("tool_choice"),
                     "outputCaps": cap_facts(payload),
@@ -274,6 +286,8 @@ class ScopedCapture:
         metadata = {**dict(getattr(message, "response_metadata", None) or {}), **dict(generation_info or {})}
         extra = dict(getattr(message, "additional_kwargs", None) or {})
         self.write({"boundary": "openai_sdk_assembled_response", "captureId": context["captureId"],
+                    "finishedAt": datetime.now(timezone.utc).isoformat(),
+                    "elapsedMs": round((time.monotonic() - context["startedMonotonic"]) * 1000) if "startedMonotonic" in context else None,
                     "continuationFacts": continuation_facts({"content": getattr(message, "content", None), **extra}),
                     "wireContinuationFacts": wire_field_facts(context),
                     "toolCallsView": "sdk_parsed_may_repair_incomplete_json_not_wire_arguments",
@@ -324,7 +338,7 @@ class ScopedCapture:
 
         def payload(model, *args, **kwargs):
             result = original_payload(model, *args, **kwargs)
-            capture.request(result)
+            capture.request(result, model_ref=getattr(model, "_v8_model_ref", ""))
             return result
 
         def stream(model, *args, **kwargs):

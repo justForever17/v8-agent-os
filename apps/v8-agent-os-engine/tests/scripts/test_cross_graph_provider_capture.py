@@ -84,6 +84,22 @@ def test_actual_native_sdk_binding_preserves_delegation_union_required_fields():
     assert _tool_schema_hash([supervisor_delegation_broker])
 
 
+def test_capture_distinguishes_actual_model_requests_without_endpoint_credentials(tmp_path):
+    from types import SimpleNamespace
+    capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")
+    for model, model_ref in [("MiniMax-M3", "minimax-cn::MiniMax-M3"), ("fallback-fixture", "configured::fallback-fixture")]:
+        capture.request({"model": model, "messages": [{"role": "user", "content": capture.marker}]}, model_ref=model_ref)
+        capture.response(SimpleNamespace(content="", tool_calls=[], additional_kwargs={}, response_metadata={}))
+    unsafe = "https://user:PRIVATE-CREDENTIAL@host.invalid/model?token=PRIVATE"
+    capture.request({"model": unsafe, "messages": [{"content": capture.marker}]}, model_ref=unsafe)
+    rows = [json.loads(line) for line in capture.output.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["modelIdentity"]["wireModel"]["value"] == "MiniMax-M3"
+    assert rows[2]["modelIdentity"]["modelRef"]["value"] == "configured::fallback-fixture"
+    assert rows[1]["elapsedMs"] >= 0 and rows[1]["finishedAt"] >= rows[0]["requestedAt"]
+    assert "value" not in rows[4]["modelIdentity"]["wireModel"]
+    assert "PRIVATE" not in capture.output.read_text(encoding="utf-8")
+
+
 def test_continuation_fingerprints_detect_wire_loss_and_history_replay_without_text(tmp_path):
     from types import SimpleNamespace
     capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")

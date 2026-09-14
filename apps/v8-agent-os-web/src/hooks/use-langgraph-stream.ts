@@ -5,12 +5,12 @@ import {
     buildAssistantMessage,
     cloneMessages,
     normalizeMessagesForState,
-    normalizeProjectedMessages,
     WEB_STREAM_LIFECYCLE_OPTIONS,
 } from '@/lib/chat-stream-state';
 import { createClientId } from '@/lib/id';
 import { normalizeRealtimeEvent } from '@/lib/realtime';
 import { shouldSettleSubmittedRun } from '@/lib/chat/run-activity';
+import { readChatStream } from '@/lib/chat/read-chat-stream';
 import {
     markStreamClientCommit,
     markStreamClientRender,
@@ -36,6 +36,8 @@ type AbortableTransport = {
 interface UseLangGraphStreamOptions {
     apiEndpoint: string;
     submitEndpoint?: string;
+    conversationId: string | null;
+    onResync: (sessionId: string) => Promise<void>;
     onError?: (error: Error) => void;
     onFinish?: (messages: Message[]) => void;
     onConnect?: (conversationId: string, transport: 'stream' | 'submit') => void;
@@ -102,12 +104,20 @@ function isVisualUrl(value: string) {
     return isClientVisualAttachment({ url: value });
 }
 
-export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
+export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId, onResync, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
     const { messages, setMessages, isLoading, setIsLoading } = useChatStore();
     const [submittedRunId, setSubmittedRunId] = useState<string | null>(null);
     const abortControllerRef = useRef<AbortableTransport | null>(null);
     const submittedRunIdRef = useRef<string | null>(null);
     const durableSubmitPendingRef = useRef(false);
+    const requestGenerationRef = useRef(0);
+    const activeConversationRef = useRef(conversationId);
+    activeConversationRef.current = conversationId;
+    const beginRequest = useCallback(() => {
+        const generation = ++requestGenerationRef.current;
+        const owner = activeConversationRef.current;
+        return () => generation === requestGenerationRef.current && owner === activeConversationRef.current;
+    }, []);
     const pendingMessagesRef = useRef<Message[] | null>(null);
     const commitFrameRef = useRef<number | null>(null);
     const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -119,8 +129,8 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
     );
 
     // Use a ref for callbacks to avoid stale closures in the long-running stream loop
-    const handlersRef = useRef({ onError, onFinish, onConnect, onCustomEvent });
-    handlersRef.current = { onError, onFinish, onConnect, onCustomEvent };
+    const handlersRef = useRef({ onError, onFinish, onConnect, onCustomEvent, onResync });
+    handlersRef.current = { onError, onFinish, onConnect, onCustomEvent, onResync };
 
     useEffect(() => {
         messagesRef.current = messages;
@@ -162,7 +172,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         }
     }, [setMessages]);
 
-    const scheduleMessagesCommit = useCallback((nextMessages: Message[]) => {
+    const scheduleMessagesCommit = useCallback((nextMessages: Message[], isCurrent: () => boolean) => {
         pendingMessagesRef.current = nextMessages;
         if (commitFrameRef.current !== null || commitTimerRef.current) {
             return;
@@ -171,6 +181,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         const commit = () => {
             commitFrameRef.current = null;
             commitTimerRef.current = null;
+            if (!isCurrent()) pendingMessagesRef.current = null;
             flushPendingMessages();
         };
 
@@ -183,6 +194,9 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
 
     useEffect(() => {
         return () => {
+            requestGenerationRef.current += 1;
+            abortControllerRef.current?.abort();
+            pendingMessagesRef.current = null;
             flushPendingMessages();
         };
     }, [flushPendingMessages]);
@@ -207,7 +221,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         return queueSessionRealtimeRuntimeEvent(realtimeMessageStateRef.current, event);
     }, []);
 
-    const streamNdjson = useCallback(async (requestBody: any, initialMessages: Message[]) => {
+    const streamNdjson = useCallback(async (requestBody: any, initialMessages: Message[], isCurrent: () => boolean) => {
         const abortController = new AbortController();
         abortControllerRef.current = { abort: () => abortController.abort() };
         streamLatencyStatsRef.current.clear();
@@ -219,6 +233,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             body: JSON.stringify(requestBody),
             signal: abortController.signal
         });
+        if (!isCurrent()) throw new DOMException('Detached conversation', 'AbortError');
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => "");
@@ -246,13 +261,13 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         if (!response.body) throw new Error('Response body is null');
 
         const convId = response.headers.get('x-v8-agent-os-conversation-id');
+        if (convId && requestBody.session_id && convId !== requestBody.session_id) {
+            throw new Error('Stream conversation does not match the submitted task.');
+        }
         if (convId && handlersRef.current.onConnect) {
             handlersRef.current.onConnect(convId, 'stream');
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let localMessages = cloneMessages(initialMessages);
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             localMessages,
@@ -275,73 +290,26 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             }
             localMessages = nextState.messages;
             messagesRef.current = nextState.messages;
-            scheduleMessagesCommit(nextState.messages);
+            scheduleMessagesCommit(nextState.messages, isCurrent);
         };
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            buffer += chunk;
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-
-                try {
-                    const rawEvent = JSON.parse(line);
-                    const event = normalizeRealtimeEvent(rawEvent);
-                    if (!event) continue;
-                    const pendingDiagnostic = recordReceivedStreamDelta({
-                        surface: 'web/local-ndjson',
-                        event,
-                        diagnostics: readStreamDiagnostics(rawEvent),
-                        receivedAtMs: Date.now(),
-                        statsByKey: streamLatencyStatsRef.current,
-                    });
-                    if (pendingDiagnostic) {
-                        pendingStreamDiagnosticRef.current = pendingDiagnostic;
-                    }
-
-                    applyStreamEvent(event);
-                } catch (e) {
-                    console.warn('Failed to parse NDJSON line:', line, e);
-                }
-            }
-
+        await readChatStream(response.body, (rawEvent) => {
+            const event = normalizeRealtimeEvent(rawEvent);
+            if (!event) return;
+            const pendingDiagnostic = recordReceivedStreamDelta({
+                surface: 'web/local-ndjson', event,
+                diagnostics: readStreamDiagnostics(rawEvent), receivedAtMs: Date.now(),
+                statsByKey: streamLatencyStatsRef.current,
+            });
+            if (pendingDiagnostic) pendingStreamDiagnosticRef.current = pendingDiagnostic;
+            applyStreamEvent(event);
             flushRuntimeEvents();
-        }
-
-        if (buffer.trim()) {
-            try {
-                const rawEvent = JSON.parse(buffer);
-                const event = normalizeRealtimeEvent(rawEvent);
-                if (event) {
-                    const pendingDiagnostic = recordReceivedStreamDelta({
-                        surface: 'web/local-ndjson',
-                        event,
-                        diagnostics: readStreamDiagnostics(rawEvent),
-                        receivedAtMs: Date.now(),
-                        statsByKey: streamLatencyStatsRef.current,
-                    });
-                    if (pendingDiagnostic) {
-                        pendingStreamDiagnosticRef.current = pendingDiagnostic;
-                    }
-                    applyStreamEvent(event);
-                    flushRuntimeEvents();
-                }
-            } catch (e) {
-                console.warn('Failed to parse trailing NDJSON buffer:', buffer, e);
-            }
-        }
+        }, isCurrent);
 
         flushPendingMessages();
         return localMessages;
     }, [apiEndpoint, applyStreamEvent, flushPendingMessages, scheduleMessagesCommit]);
 
-    const submitDurableRun = useCallback(async (requestBody: any) => {
+    const submitDurableRun = useCallback(async (requestBody: any, isCurrent: () => boolean) => {
         if (!submitEndpoint) {
             return null;
         }
@@ -354,6 +322,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             signal: abortController.signal,
         });
         const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+        if (!isCurrent()) throw new DOMException('Detached conversation', 'AbortError');
         abortControllerRef.current = null;
         if (!response.ok) {
             const detail = payload.detail && typeof payload.detail === 'object'
@@ -373,41 +342,23 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         return payload;
     }, [submitEndpoint]);
 
-    const hydrateFromSnapshot = useCallback(async (sessionId: string) => {
-        const snapshotRes = await fetch(`/api/realtime/sessions/${sessionId}/snapshot`, { cache: 'no-store' });
-        if (!snapshotRes.ok) {
-            return false;
-        }
-
-        const snapshotData = await snapshotRes.json();
-        const snapshotMessages = snapshotData?.snapshot?.messages;
-        if (!Array.isArray(snapshotMessages)) {
-            return false;
-        }
-
-        const localMessages = normalizeMessagesForState(normalizeProjectedMessages(snapshotMessages));
-        messagesRef.current = localMessages;
-        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
-            localMessages,
-            WEB_STREAM_LIFECYCLE_OPTIONS,
-        );
-        setMessages([...localMessages]);
-        return true;
-    }, [setMessages]);
-
-    const tryResyncConversation = useCallback(async (sessionId: string | undefined, label: string) => {
-        if (!sessionId) {
+    const tryResyncConversation = useCallback(async (sessionId: string | undefined, label: string, isCurrent: () => boolean) => {
+        if (!sessionId || !isCurrent()) {
             return false;
         }
         try {
-            return await hydrateFromSnapshot(sessionId);
+            // Flush before the canonical reload, never over its recovered state.
+            flushPendingMessages();
+            await handlersRef.current.onResync(sessionId);
+            return isCurrent();
         } catch (syncError) {
             console.warn(`[useLangGraphStream] ${label} resync failed:`, syncError);
             return false;
         }
-    }, [hydrateFromSnapshot]);
+    }, [flushPendingMessages]);
 
     const sendMessage = useCallback(async (userMessage: string, data?: any) => {
+        const isCurrent = beginRequest();
         setIsLoading(true);
         const currentMessages = cloneMessages(messages);
         const commandPresetName = typeof data?.commandPreset?.name === 'string'
@@ -488,7 +439,8 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             metadata: Object.keys(optimisticMetadata).length > 0 ? optimisticMetadata : undefined,
         };
 
-        const newHistory = appendAssistantPlaceholderIfNeeded([...currentMessages, tempUserMsg]);
+        const submissionMessages = normalizeMessagesForState([...currentMessages, tempUserMsg]);
+        const newHistory = appendAssistantPlaceholderIfNeeded(submissionMessages);
         messagesRef.current = newHistory;
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             newHistory,
@@ -501,7 +453,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             if (abortControllerRef.current) abortControllerRef.current.abort();
 
             const requestBody: any = {
-                messages: [...currentMessages, tempUserMsg].map(m => ({ id: m.id, role: m.role, content: m.content })), // Stable ids let the Engine reconcile persistent history.
+                messages: submissionMessages.map(m => ({ id: m.id, role: m.role, content: m.content })), // Stable ids let the Engine reconcile persistent history.
                 data: data, // Keep passing the whole object just in case backend expects it
                 fileUrls: allFileUrls, // Explicitly pass all uploaded refs, including audio
                 attachments: dataAttachments,
@@ -514,13 +466,16 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
                     clientMessageId: tempUserMsg.id,
                 };
                 durableSubmitPendingRef.current = true;
-                const payload = await submitDurableRun(requestBody);
+                const payload = await submitDurableRun(requestBody, isCurrent);
                 const conversationId = String(
                     payload?.conversationId
                     || payload?.session_id
                     || data?.conversationId
                     || '',
                 ).trim();
+                if (data?.conversationId && conversationId !== data.conversationId) {
+                    throw new Error('Accepted conversation does not match the submitted task.');
+                }
                 const runId = String(payload?.runId || payload?.run_id || '').trim();
                 const queued = payload?.queued === true;
                 if (!queued && !runId) {
@@ -533,36 +488,41 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
                     handlersRef.current.onConnect(conversationId, 'submit');
                 }
                 if (queued) {
-                    await tryResyncConversation(conversationId || data?.conversationId, 'queued submit');
+                    await tryResyncConversation(conversationId || data?.conversationId, 'queued submit', isCurrent);
+                    if (!isCurrent()) return true;
                     setIsLoading(false);
                     if (handlersRef.current.onFinish) handlersRef.current.onFinish(messagesRef.current);
                 }
                 return true;
             }
 
-            const finalMessages = await streamNdjson(requestBody, newHistory);
+            const finalMessages = await streamNdjson(requestBody, newHistory, isCurrent);
             if (handlersRef.current.onFinish) handlersRef.current.onFinish(finalMessages);
             return true;
 
         } catch (error) {
+            if (!isCurrent()) return false;
             durableSubmitPendingRef.current = false;
             console.error("Stream failed:", error);
-            const recovered = await tryResyncConversation(data?.conversationId, "HTTP stream");
-            if (!recovered && handlersRef.current.onError) handlersRef.current.onError(error as Error);
+            await tryResyncConversation(data?.conversationId, "HTTP stream", isCurrent);
+            if (isCurrent()) handlersRef.current.onError?.(error as Error);
             return false;
         } finally {
-            flushPendingMessages();
-            if (!submitEndpoint || !submittedRunIdRef.current) {
-                setIsLoading(false);
-            }
-            if (!submittedRunIdRef.current) {
-                abortControllerRef.current = null;
+            if (isCurrent()) {
+                flushPendingMessages();
+                if (!submitEndpoint || !submittedRunIdRef.current) {
+                    setIsLoading(false);
+                }
+                if (!submittedRunIdRef.current) {
+                    abortControllerRef.current = null;
+                }
             }
         }
 
-    }, [flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, submitDurableRun, submitEndpoint, tryResyncConversation]);
+    }, [beginRequest, flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, submitDurableRun, submitEndpoint, tryResyncConversation]);
 
     const stop = useCallback(() => {
+        requestGenerationRef.current += 1;
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
@@ -570,6 +530,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         submittedRunIdRef.current = null;
         durableSubmitPendingRef.current = false;
         setSubmittedRunId(null);
+        pendingMessagesRef.current = null;
         flushPendingMessages();
         setIsLoading(false);
     }, [flushPendingMessages, setIsLoading]);
@@ -601,6 +562,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
     const getSubmittedRunId = useCallback(() => submittedRunIdRef.current, []);
 
     const sendToolOutput = useCallback(async (toolCallId: string, output: string, data?: any) => {
+        const isCurrent = beginRequest();
         setIsLoading(true);
         const currentMessages = cloneMessages(messages);
         try {
@@ -619,20 +581,23 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             };
             applyScopeRequestFields(requestBody, data);
 
-            const finalMessages = await streamNdjson(requestBody, nextMessages);
+            const finalMessages = await streamNdjson(requestBody, nextMessages, isCurrent);
 
             if (handlersRef.current.onFinish) handlersRef.current.onFinish(finalMessages);
 
         } catch (error) {
+            if (!isCurrent()) return;
             console.error("Tool output stream failed:", error);
-            const recovered = await tryResyncConversation(data?.conversationId, "Tool output");
-            if (!recovered && handlersRef.current.onError) handlersRef.current.onError(error as Error);
+            await tryResyncConversation(data?.conversationId, "Tool output", isCurrent);
+            if (isCurrent()) handlersRef.current.onError?.(error as Error);
         } finally {
-            flushPendingMessages();
-            setIsLoading(false);
-            abortControllerRef.current = null;
+            if (isCurrent()) {
+                flushPendingMessages();
+                setIsLoading(false);
+                abortControllerRef.current = null;
+            }
         }
-    }, [flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, tryResyncConversation]);
+    }, [beginRequest, flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, tryResyncConversation]);
 
     const resolveApproval = useCallback(async (approvalId: string, answer: string, approve = true) => {
         const endpoint = approve ? `/api/approvals/${approvalId}/approve` : `/api/approvals/${approvalId}/reject`;

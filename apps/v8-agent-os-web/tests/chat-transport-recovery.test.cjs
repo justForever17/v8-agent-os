@@ -1,0 +1,257 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
+const root = path.resolve(__dirname, '../src');
+function readSource(relativePath) {
+    const baseline = process.env.V8_WEB_TRANSPORT_BASELINE_REF;
+    if (baseline && ['hooks/use-langgraph-stream.ts', 'app/chat/ChatClient.tsx'].includes(relativePath)) {
+        return require('node:child_process').execFileSync('git', ['show', `${baseline}:apps/v8-agent-os-web/src/${relativePath}`], { cwd: root, encoding: 'utf8' });
+    }
+    return fs.readFileSync(path.join(root, relativePath), 'utf8');
+}
+
+// Execute the production hook and projection modules. Only React scheduling,
+// the view store and HTTP boundary are controlled by the harness.
+function harness(fetcher, options = {}) {
+    const refs = []; let slot = 0;
+    const state = { messages: [], isLoading: false };
+    const store = { ...state, setMessages: value => { state.messages = value; }, setIsLoading: value => { state.isLoading = value; } };
+    const cache = new Map();
+    const react = {
+        useRef(value) { const index = slot++; return refs[index] ||= { current: value }; },
+        useState(value) { const ref = this.useRef(value); return [ref.current, next => { ref.current = next; }]; },
+        useCallback: value => value,
+        useEffect() {},
+    };
+    react.useState = react.useState.bind(react);
+    const context = { console: { ...console, error() {}, warn() {} }, process: { env: { NODE_ENV: 'test' } }, crypto: require('node:crypto').webcrypto,
+        fetch: fetcher, Response, ReadableStream, TextEncoder, TextDecoder, AbortController, AbortSignal, DOMException,
+        setTimeout, clearTimeout, URL, URLSearchParams, Date };
+    function load(name) {
+        if (name === 'react') return react;
+        if (name === '@/store/chat-store') return { useChatStore: () => ({ ...store, ...state }) };
+        if (!name.startsWith('@/')) return require(name);
+        if (cache.has(name)) return cache.get(name);
+        const source = readSource(name.slice(2) + '.ts');
+        const exports = {}; cache.set(name, exports);
+        vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
+            { ...context, exports, require: load });
+        return exports;
+    }
+    const useHook = load('@/hooks/use-langgraph-stream').useLangGraphStream;
+    const events = { errors: [], finishes: [], connects: [], resyncs: [] };
+    let config = { apiEndpoint: '/api/chat', conversationId: 'A',
+        onError: error => events.errors.push(error), onFinish: value => events.finishes.push(value),
+        onConnect: (id, transport) => events.connects.push({ id, transport }),
+        onResync: async id => { events.resyncs.push(id); state.messages = [{ id: 'canonical', role: 'assistant', content: 'Recovered' }]; }, ...options };
+    return { state, events, load, render(changes = {}) { slot = 0; config = { ...config, ...changes }; return useHook(config); } };
+}
+const streamResponse = (...events) => new Response(events.map(event => typeof event === 'string' ? event : JSON.stringify(event) + '\n').join(''),
+    { headers: { 'x-v8-agent-os-conversation-id': 'A', 'Content-Type': 'application/x-ndjson' } });
+const textDelta = { type: 'text_chunk', content: 'Partial', run_id: 'run-A', message_id: 'assistant-A' };
+
+for (const [name, tail] of [
+    ['EOF without terminal', ''],
+    ['Admin transport envelope', { type: 'transport_error', code: 'engine_stream_disconnected', error: 'connection lost', sessionId: 'A', runId: 'run-A', unknownOutcome: true, retryable: false, recovery: 'resync' }],
+    ['malformed final frame', '{"type":'],
+]) {
+    test(`${name}: recover same session, keep canonical result, no onFinish or POST replay`, async () => {
+        let posts = 0;
+        const h = harness(async () => { posts++; return streamResponse(textDelta, tail); });
+        const hook = h.render();
+        assert.equal(await hook.sendMessage('work', { conversationId: 'A', clientMessageId: 'client-A' }), false);
+        assert.deepEqual(h.events.resyncs, ['A']);
+        assert.equal(h.state.messages[0].content, 'Recovered', 'pending partial batch cannot overwrite recovered snapshot');
+        assert.equal(h.events.finishes.length, 0);
+        assert.equal(h.events.errors.length, 1);
+        assert.equal(h.events.errors[0].unknownOutcome, true);
+        assert.equal(h.state.isLoading, false);
+        assert.equal(posts, 1);
+    });
+}
+
+test('valid terminal completes once; next message can be submitted', async () => {
+    let posts = 0;
+    const h = harness(async () => { posts++; return streamResponse(textDelta, { type: 'done' }); });
+    assert.equal(await h.render().sendMessage('one', { conversationId: 'A' }), true);
+    assert.equal(await h.render().sendMessage('two', { conversationId: 'A' }), true);
+    assert.equal(posts, 2);
+    assert.equal(h.events.finishes.length, 2);
+    assert.equal(h.events.resyncs.length, 0);
+    assert.equal(h.state.isLoading, false);
+});
+
+test('runtime error is surfaced and reconciled without a success callback', async () => {
+    const h = harness(async () => streamResponse(textDelta, { type: 'error', error: 'provider failed' }));
+    assert.equal(await h.render().sendMessage('work', { conversationId: 'A' }), false);
+    assert.equal(h.events.finishes.length, 0);
+    assert.equal(h.events.errors[0].message, 'provider failed');
+    assert.deepEqual(h.events.resyncs, ['A']);
+});
+
+test('401 stays visible even when canonical recovery succeeds; no automatic resubmission', async () => {
+    let posts = 0;
+    const h = harness(async () => { posts++; return Response.json({ error: 'Unauthorized', code: 'auth_pre_execution' }, { status: 401 }); }, { submitEndpoint: '/api/chat-submit' });
+    assert.equal(await h.render().sendMessage('work', { conversationId: 'A', clientMessageId: 'stable-A' }), false);
+    assert.equal(posts, 1);
+    assert.match(h.events.errors[0].message, /Unauthorized/);
+    assert.equal(h.state.isLoading, false);
+});
+
+test('late durable acknowledgement cannot change session B or clear its active request', async () => {
+    let acceptA; let acceptB;
+    const h = harness((_url, init) => new Promise(resolve => {
+        if (JSON.parse(init.body).session_id === 'A') acceptA = resolve; else acceptB = resolve;
+    }), { submitEndpoint: '/api/chat-submit' });
+    const old = h.render().sendMessage('A task', { conversationId: 'A' });
+    const nextHook = h.render({ conversationId: 'B' });
+    const next = nextHook.sendMessage('B task', { conversationId: 'B' });
+    acceptA(Response.json({ accepted: true, session_id: 'A', run_id: 'run-A' }));
+    assert.equal(await old, false);
+    assert.equal(h.events.connects.length, 0);
+    assert.equal(h.state.isLoading, true);
+    acceptB(Response.json({ accepted: true, session_id: 'B', run_id: 'run-B' }));
+    assert.equal(await next, true);
+    assert.equal(nextHook.getSubmittedRunId(), 'run-B');
+    assert.deepEqual(h.events.connects, [{ id: 'B', transport: 'submit' }]);
+});
+
+test('aborted old request does not hydrate session A over session B', async () => {
+    let rejectA;
+    const h = harness(() => new Promise((_resolve, reject) => { rejectA = reject; }), { submitEndpoint: '/api/chat-submit' });
+    const hook = h.render();
+    const old = hook.sendMessage('A task', { conversationId: 'A' });
+    hook.stop();
+    h.render({ conversationId: 'B' });
+    h.state.messages = [{ id: 'B', content: 'B history' }];
+    rejectA(new DOMException('aborted', 'AbortError'));
+    assert.equal(await old, false);
+    assert.equal(h.state.messages[0].content, 'B history');
+    assert.equal(h.events.resyncs.length, 0);
+    assert.equal(h.events.errors.length, 0);
+});
+
+test('retry after unknown acceptance keeps request id and a single optimistic user message', async () => {
+    const requests = [];
+    const h = harness(async (_url, init) => {
+        requests.push(JSON.parse(init.body));
+        if (requests.length === 1) return Response.json({ error: 'unknown outcome', unknownOutcome: true }, { status: 504 });
+        return Response.json({ accepted: true, session_id: 'A', run_id: 'run-A' });
+    }, { submitEndpoint: '/api/chat-submit', onResync: async () => {} });
+    const data = { conversationId: 'A', clientMessageId: 'stable-A', projectId: 'project-A', workspaceId: 'ws-A' };
+    assert.equal(await h.render().sendMessage('same work', data), false);
+    assert.equal(await h.render().sendMessage('same work', data), true);
+    assert.deepEqual(requests.map(request => request.clientMessageId), ['stable-A', 'stable-A']);
+    assert.equal(h.state.messages.filter(message => message.id === 'stable-A').length, 1);
+    assert.equal(requests[1].messages.filter(message => message.id === 'stable-A').length, 1);
+    assert.equal(requests[1].workspace_id, 'ws-A');
+});
+
+function actualQueueSubmit(bindings) {
+    return actualClientCallback('submitQueuedMessage', bindings);
+}
+
+function actualClientCallback(name, bindings) {
+    const source = readSource('app/chat/ChatClient.tsx');
+    const ast = ts.createSourceFile('ChatClient.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let callback;
+    function visit(node) {
+        if (ts.isVariableDeclaration(node) && node.name.getText(ast) === name) callback = node.initializer.arguments[0];
+        if (ts.isPropertyAssignment(node) && node.name.getText(ast) === name) callback = node.initializer;
+        ts.forEachChild(node, visit);
+    }
+    visit(ast); assert.ok(callback);
+    const compiled = ts.transpileModule(`const submit = ${callback.getText(ast)}; exports.submit = submit;`,
+        { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+    const exports = {};
+    vm.runInNewContext(compiled, { exports, ...bindings });
+    return exports.submit;
+}
+
+test('canonical recovery advances the existing snapshot cursor; replay is ignored and new tail remains usable', async () => {
+    const realtime = require('@v8/session-realtime');
+    const h = harness(async () => streamResponse(textDelta));
+    const stateModule = h.load('@/lib/chat-stream-state');
+    const messagesRef = { current: [] };
+    const covered = { current: 3 }; const latest = { current: 3 };
+    const stateRef = { current: realtime.createInitialSessionRealtimeMessageState([], stateModule.WEB_STREAM_LIFECYCLE_OPTIONS) };
+    const applySnapshot = actualClientCallback('applyProjectedSnapshot', {
+        runtimeFlushFrameRef: { current: null }, runtimeFlushTimerRef: { current: null },
+        ...stateModule, ...realtime, messagesRef, realtimeMessageStateRef: stateRef,
+        // This case recovers a complete canonical message at sequence 8.
+        mergeProjectedSnapshotMessages: (_current, incoming) => stateModule.normalizeProjectedMessages(incoming),
+        snapshotCoveredRealtimeSeqRef: covered, latestRealtimeSeqRef: latest,
+        seenRealtimeEventIdentitiesRef: { current: { pruneSnapshotCovered() {} } },
+        setMessages: value => { h.state.messages = value; },
+    });
+    const reads = [];
+    const resync = actualClientCallback('onResync', {
+        activeConversationIdRef: { current: 'A' },
+        loadConversationHistory: async (id, options) => {
+            reads.push({ id, options });
+            const response = Response.json({ messages: [{ id: 'canonical-A', role: 'assistant', content: 'canonical answer', runId: 'run-A' }], latestSeq: 8 });
+            const snapshot = await response.json();
+            applySnapshot(snapshot.messages, snapshot.latestSeq, options);
+        }, loadRuns: async id => reads.push({ runs: id }),
+    });
+    const accepted = await h.render({ onResync: resync }).sendMessage('work', { conversationId: 'A' });
+    assert.equal(accepted, false);
+    assert.equal(covered.current, 8);
+    assert.equal(latest.current, 8);
+    assert.equal(h.state.messages[0].content, 'canonical answer');
+    assert.deepEqual(reads.map(read => read.id || read.runs), ['A', 'A']);
+    assert.equal(realtime.evaluateSessionRuntimeEvent({ type: 'text_chunk', seq: 8 }, { snapshotCoveredSeq: covered.current }).accept, false);
+    assert.equal(realtime.evaluateSessionRuntimeEvent({ type: 'text_chunk', seq: 9 }, { snapshotCoveredSeq: covered.current }).accept, true);
+    assert.equal(h.events.finishes.length, 0);
+    assert.equal(h.state.isLoading, false);
+});
+
+test('late run-status body cannot replace another session or a newer same-session response', async () => {
+    let finishBody; const active = { current: 'A' }; const entries = [];
+    let delayed = true;
+    const loadRuns = actualClientCallback('loadRuns', {
+        activeConversationIdRef: active, runLoadGenerationRef: { current: 0 }, AbortSignal,
+        fetch: async () => delayed ? { ok: true, json: () => new Promise(resolve => { finishBody = resolve; }) }
+            : Response.json({ runs: [{ id: 'new-run', status: 'running' }] }),
+        setRunEntries: runs => entries.push(runs), isRecognizedRunStatus: () => false, console,
+    });
+    const old = loadRuns('A'); await new Promise(setImmediate);
+    active.current = 'B';
+    finishBody({ runs: [{ id: 'old-run', status: 'failed' }] }); await old;
+    assert.equal(entries.length, 0);
+    active.current = 'A';
+    const stale = loadRuns('A'); await new Promise(setImmediate);
+    delayed = false; await loadRuns('A');
+    finishBody({ runs: [{ id: 'old-run', status: 'failed' }] }); await stale;
+    assert.deepEqual(entries, [[{ id: 'new-run', status: 'running' }]]);
+});
+
+test('running composer uses durable JSON acceptance, preserving scope and id across busy/idle race', async () => {
+    const requests = []; const queue = []; const reloads = []; let busy = true;
+    const submit = actualQueueSubmit({
+        activeConversationIdRef: { current: 'A' }, session: { user: { id: 'user-A' } },
+        buildScopePayload: id => ({ conversationId: id, projectId: 'project-A', workspaceId: 'ws-A' }),
+        messagesRef: { current: [] },
+        fetch: async (url, init) => {
+            const request = JSON.parse(init.body); requests.push({ url, request });
+            assert.equal(url, '/api/chat-submit', 'stream endpoint cannot acknowledge a queued JSON request');
+            return Response.json(busy ? { accepted: true, queued: true, session_id: 'A', queuedMessage: { id: 'q-A', sessionId: 'A', clientMessageId: request.clientMessageId } }
+                : { accepted: true, queued: false, session_id: 'A', runId: 'run-next' });
+        },
+        upsertQueuedMessage: item => queue.push(item), setQueuedMessagesCollapsed() {}, setQueuedMessageError() {},
+        synchronizeQueue() {}, loadConversationHistory: async id => reloads.push(id), loadRuns: async () => {},
+        readErrorPayloadMessage: payload => payload.error, t: key => key,
+    });
+    await submit('first', { clientMessageId: 'stable-A', conversationId: 'wrong', workspaceId: 'wrong' });
+    busy = false;
+    await submit('second', { clientMessageId: 'stable-B' });
+    assert.equal(queue.length, 1);
+    assert.equal(queue[0].clientMessageId, 'stable-A');
+    assert.equal(requests[0].request.data.conversationId, 'A');
+    assert.equal(requests[0].request.workspace_id, 'ws-A');
+    assert.deepEqual(reloads, ['A']);
+});

@@ -206,6 +206,8 @@ type QueuedChatMessage = {
 
 type ChatQueueSubmitResponse = {
     accepted?: boolean;
+    session_id?: string;
+    conversationId?: string;
     queued?: boolean;
     queuedMessage?: QueuedChatMessage | null;
     clientMessageId?: string;
@@ -1470,17 +1472,23 @@ export default function ChatClient() {
 
     const settleTerminalStreamRef = useRef<(runId?: string | null) => boolean>(() => false);
     const isRunAcceptancePendingRef = useRef<() => boolean>(() => false);
+    const runLoadGenerationRef = useRef(0);
     const loadRuns = useCallback(async (conversationId: string) => {
+        if (activeConversationIdRef.current !== conversationId) return;
+        const generation = ++runLoadGenerationRef.current;
+        const isCurrent = () => generation === runLoadGenerationRef.current && activeConversationIdRef.current === conversationId;
         try {
             const res = await fetch(`/api/runs?session_id=${encodeURIComponent(conversationId)}&limit=8`, {
                 cache: "no-store",
                 signal: AbortSignal.timeout(8_000),
             });
+            if (!isCurrent()) return;
             if (!res.ok) {
                 setRunEntries([]);
                 return;
             }
             const data = await res.json().catch(() => ({}));
+            if (!isCurrent()) return;
             const runs = Array.isArray(data?.runs) ? data.runs as RunRecordView[] : [];
             setRunEntries(runs);
             const latestRun = runs[0];
@@ -1518,7 +1526,7 @@ export default function ChatClient() {
             }
         } catch (error) {
             console.warn("[ChatClient] Failed to load runs:", error);
-            setRunEntries([]);
+            if (isCurrent()) setRunEntries([]);
         }
     }, [patchConversationSummary]);
 
@@ -1539,6 +1547,14 @@ export default function ChatClient() {
     } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
         submitEndpoint: `/api/chat-submit`,
+        conversationId: activeConversationId,
+        onResync: async (conversationId) => {
+            if (activeConversationIdRef.current !== conversationId) return;
+            await Promise.all([
+                loadConversationHistory(conversationId, { mergeWithCurrent: true, preserveCurrentOnEmpty: true }),
+                loadRuns(conversationId),
+            ]);
+        },
         onFinish: () => {
             refreshConversations();
             streamingConversationIdRef.current = null; // Reset when done
@@ -1567,9 +1583,7 @@ export default function ChatClient() {
             console.error("Chat error:", error);
             streamingConversationIdRef.current = null;
             streamingTransportRef.current = null;
-            if (error.message.includes("Conversation not found") || error.message.includes("404")) {
-                router.replace('/chat');
-            }
+            setQueuedMessageError(error.message);
         },
         onCustomEvent: (event) => {
             if (event.name === "ask_user") {
@@ -2615,6 +2629,7 @@ export default function ChatClient() {
         historyLoadControllerRef.current?.abort();
         const controller = new AbortController();
         historyLoadControllerRef.current = controller;
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
         turnIndexRef.current = [];
         setTurnIndex([]);
         setTotalTurnCount(0);
@@ -2625,9 +2640,9 @@ export default function ChatClient() {
             [detailRes, turnPage] = await Promise.all([
                 fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=1`, {
                     cache: "no-store",
-                    signal: controller.signal,
+                    signal,
                 }),
-                loadConversationTurnPage(conversationId, { signal: controller.signal }),
+                loadConversationTurnPage(conversationId, { signal }),
             ]);
         } catch (error) {
             if (controller.signal.aborted) return;
@@ -2644,6 +2659,7 @@ export default function ChatClient() {
         }
 
         const data = await detailRes.json();
+        if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
         const detailPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
         const projectionPayload = (detailPayload?.projection && typeof detailPayload.projection === "object")
             ? detailPayload.projection
@@ -2979,10 +2995,10 @@ export default function ChatClient() {
         }
 
         const requestData: Record<string, unknown> = {
+            ...(data || {}),
             agentId: undefined,
             userId: session?.user?.id,
             ...buildScopePayload(conversationId),
-            ...(data || {}),
         };
         const dataAttachments: Record<string, unknown>[] = Array.isArray(requestData.attachments)
             ? requestData.attachments.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
@@ -2991,8 +3007,8 @@ export default function ChatClient() {
             ? requestData.fileUrls.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
             : [];
         const requestMessages = [
-            ...messagesRef.current.map((message) => ({ role: message.role, content: message.content })),
-            { role: "user", content },
+            ...messagesRef.current.map((message) => ({ id: message.id, role: message.role, content: message.content })),
+            { id: requestData.clientMessageId, role: "user", content },
         ];
         const requestBody: Record<string, unknown> = {
             clientMessageId: requestData.clientMessageId,
@@ -3010,7 +3026,7 @@ export default function ChatClient() {
             scope_mode: requestData.scopeMode ?? requestData.scope_mode ?? "explicit",
         };
 
-        const response = await fetch("/api/chat", {
+        const response = await fetch("/api/chat-submit", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(requestBody),
@@ -3027,19 +3043,41 @@ export default function ChatClient() {
         if (!response.ok) {
             throw new Error(readErrorPayloadMessage(payload as Record<string, unknown>) || `Queue request failed: ${response.status}`);
         }
+        const acceptedSessionId = payload.session_id || payload.conversationId;
+        if (payload.accepted !== true || acceptedSessionId !== conversationId
+            || (payload.queuedMessage && payload.queuedMessage.sessionId !== conversationId)) {
+            throw new Error('Queue acceptance does not match the submitted task.');
+        }
         if (payload.queued && payload.queuedMessage) {
             upsertQueuedMessage(payload.queuedMessage);
-            setQueuedMessagesCollapsed(false);
-            setQueuedMessageError("");
+            if (activeConversationIdRef.current === conversationId) {
+                setQueuedMessagesCollapsed(false);
+                setQueuedMessageError("");
+            }
             return;
         }
         if (payload.queued) {
-            setQueuedMessagesCollapsed(false);
-            setQueuedMessageError("");
+            if (activeConversationIdRef.current === conversationId) {
+                setQueuedMessagesCollapsed(false);
+                setQueuedMessageError("");
+                void synchronizeQueue(conversationId);
+            }
+            return;
+        }
+        // The previous run may finish while this request is in flight. The
+        // durable endpoint then starts this message directly, still accepted.
+        if (payload.runId || payload.run_id) {
+            if (activeConversationIdRef.current === conversationId) {
+                void loadConversationHistory(conversationId, { mergeWithCurrent: true, preserveCurrentOnEmpty: true }).catch((error) => {
+                    if (activeConversationIdRef.current === conversationId) setQueuedMessageError(String(error));
+                });
+                void loadRuns(conversationId);
+                setQueuedMessageError("");
+            }
             return;
         }
         throw new Error(t("web.generated.0bf47da6e3"));
-    }, [buildScopePayload, session?.user?.id, t, upsertQueuedMessage]);
+    }, [buildScopePayload, loadConversationHistory, loadRuns, session?.user?.id, synchronizeQueue, t, upsertQueuedMessage]);
 
     const handlePromoteQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
         const id = String(item.id || "").trim();
@@ -3774,12 +3812,14 @@ export default function ChatClient() {
             supervisorRuntimeMode: supervisorRuntimeModeSnapshot,
             ...(!optionData.contextSessionRefs && pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
+        const submittingConversationId = activeConversationIdRef.current;
         if (activeConversationRunning) {
             try {
                 await submitQueuedMessage(currentInput, submissionData);
-                clearPendingContextSessionRefs();
+                if (activeConversationIdRef.current === submittingConversationId) clearPendingContextSessionRefs();
                 return true;
             } catch (error) {
+                if (activeConversationIdRef.current !== submittingConversationId) return false;
                 console.error("[ChatClient] Failed to queue message:", error);
                 const errorMessage = error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f");
                 if (isWorkspaceBindingErrorMessage(errorMessage)) {
@@ -3798,7 +3838,6 @@ export default function ChatClient() {
         // [REMOVED] Optimistic UI: The useLangGraphStream hook now handles both User and AI placeholders internally.
         // This prevents the "Flicker" caused by state conflicts (Client vs Hook)
 
-        const submittingConversationId = activeConversationIdRef.current;
         streamingConversationIdRef.current = submittingConversationId;
         streamingTransportRef.current = "submit";
         try {
@@ -4117,6 +4156,7 @@ export default function ChatClient() {
         };
 
         const handleSnapshot = (event: MessageEvent) => {
+            if (activeConversationIdRef.current !== activeConversationId) return;
             try {
                 const data = attachSseEventId(JSON.parse(event.data), event) as Record<string, unknown>;
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
@@ -4209,6 +4249,7 @@ export default function ChatClient() {
         };
 
         const handleRuntime = (event: MessageEvent) => {
+            if (activeConversationIdRef.current !== activeConversationId) return;
             try {
                 const rawEvent = attachSseEventId(JSON.parse(event.data), event);
                 applyRemoteRuntimeEvent(rawEvent);
@@ -4218,6 +4259,7 @@ export default function ChatClient() {
         };
 
         const handleError = () => {
+            if (activeConversationIdRef.current !== activeConversationId) return;
             requestAuthoritativeResync("sse_error");
         };
 

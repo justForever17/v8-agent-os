@@ -1430,7 +1430,7 @@ def test_runtime_route_normalizes_wrapped_task_arrays_and_boolean_strings() -> N
     assert args["proofExpectations"] == ["real command output"]
 
 
-def test_delegation_arguments_normalize_wrapped_json_and_drop_optional_nulls() -> None:
+def test_delegation_arguments_preserve_wrong_json_types_for_tool_validation() -> None:
     response = SimpleNamespace(
         tool_calls=[
             {
@@ -1446,13 +1446,9 @@ def test_delegation_arguments_normalize_wrapped_json_and_drop_optional_nulls() -
         additional_kwargs={},
     )
 
+    original = response.tool_calls[0]["args"]["tasks"]
     normalized = _normalize_runtime_broker_response_arguments(response)
-    task = normalized.tool_calls[0]["args"]["tasks"][0]
-
-    assert task["expectedOutputs"] == ["Concise verdict"]
-    assert task["acceptanceContract"] == "Cite both handoffs"
-    assert "executionLaneHint" not in task
-    assert task["context"]["dependencyResults"][0]["status"] == "ready"
+    assert normalized.tool_calls[0]["args"]["tasks"] == original
 
 
 def test_delegation_contract_validator_rejects_missing_outputs_and_acceptance() -> None:

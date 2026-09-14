@@ -1396,32 +1396,6 @@ def _coerce_json_sequence(value, *, nested_keys: tuple[str, ...] = ()) -> list:
     return []
 
 
-def _normalize_delegation_task_arguments(value) -> list[dict]:
-    normalized: list[dict] = []
-    for raw_task in _coerce_json_sequence(
-        value,
-        nested_keys=("tasks", "workerBriefs", "worker_briefs"),
-    ):
-        task = _coerce_json_mapping(raw_task)
-        if not task:
-            continue
-        task = {key: item for key, item in task.items() if item is not None}
-        if "expectedOutputs" not in task:
-            expected_output = task.get("expectedOutput") or task.get("expected_output")
-            if expected_output not in (None, ""):
-                task["expectedOutputs"] = (
-                    list(expected_output)
-                    if isinstance(expected_output, (list, tuple, set))
-                    else [str(expected_output)]
-                )
-        if "acceptanceContract" not in task:
-            acceptance = task.get("acceptance") or task.get("acceptance_contract")
-            if acceptance not in (None, "", [], {}):
-                task["acceptanceContract"] = acceptance
-        normalized.append(task)
-    return normalized
-
-
 def _normalize_tool_argument_sequence(value) -> list:
     if value in (None, "", [], {}):
         return []
@@ -1500,6 +1474,11 @@ def _normalize_runtime_broker_response_arguments(response):
         if not isinstance(call, dict):
             continue
         tool_name = str(call.get("name") or "").strip()
+        if tool_name == "delegation_broker":
+            # Keep the provider's exact argument values in execution/history.
+            # The public typed tool owns validation and repair feedback; an
+            # invalid string or array member must never become empty tasks.
+            continue
         args = _coerce_json_mapping(call.get("args"))
         if not args:
             continue
@@ -1520,14 +1499,6 @@ def _normalize_runtime_broker_response_arguments(response):
                 ):
                     if field in container:
                         container[field] = _normalize_tool_argument_sequence(container.get(field))
-        elif tool_name == "delegation_broker":
-            if "tasks" in args:
-                args["tasks"] = _normalize_delegation_task_arguments(args.get("tasks"))
-            if "worker_briefs" in args:
-                args["worker_briefs"] = _normalize_delegation_task_arguments(args.get("worker_briefs"))
-            if "workerBriefs" in args:
-                args["workerBriefs"] = _normalize_delegation_task_arguments(args.get("workerBriefs"))
-            args = {key: value for key, value in args.items() if value is not None}
         call["args"] = args
     return response
 
@@ -1660,14 +1631,15 @@ def _delegation_dispatch_contract_error(response) -> str | None:
         args = _coerce_json_mapping(call.get("args"))
         if str(args.get("mode") or "").strip().lower() != "dispatch":
             continue
-        tasks = _coerce_json_sequence(
-            args.get("tasks") if "tasks" in args else args.get("worker_briefs") or args.get("workerBriefs"),
-            nested_keys=("tasks", "workerBriefs", "worker_briefs"),
-        )
-        if not tasks:
+        tasks = args.get("tasks")
+        if tasks is None or tasks == []:
             return "delegation_dispatch_contract_missing:tasks"
+        if not isinstance(tasks, list):
+            return None  # Preserve present wrong types for the tool schema.
         for index, raw_task in enumerate(tasks, start=1):
-            task = _coerce_json_mapping(raw_task)
+            if not isinstance(raw_task, dict):
+                return None
+            task = raw_task
             if not task:
                 return f"delegation_dispatch_contract_missing:task[{index}]"
             missing = [

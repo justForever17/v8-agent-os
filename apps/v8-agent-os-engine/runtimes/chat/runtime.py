@@ -9958,6 +9958,10 @@ class ChatRuntime:
             return
         from core.runtime_episode_control import acknowledge_parent_messages
         acknowledge_parent_messages(state, run_id=chat_run.active_run_id)
+        from erc.session_coordination_service import session_coordination_service
+        session_coordination_service.acknowledge_project_results(
+            state, session_id=chat_run.session_id, run_id=chat_run.active_run_id,
+        )
         message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
         row = db.get_chat_canonical_message(message_id) or {}
         current_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")

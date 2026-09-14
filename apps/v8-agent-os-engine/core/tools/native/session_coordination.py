@@ -23,10 +23,11 @@ def session_command_broker(
     content: str = "",
     idempotencyKey: str = "",
     after: str = "",
+    afterCursor: int = 0,
     limit: int = 20,
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """Create, list, continue or revoke persistent project work sessions.
+    """Create, list, continue, revoke or read results of persistent project work sessions.
 
     create: use a stable idempotencyKey, title, and a taskBrief with goal, explicit
     readSet/writeSet (empty means no writes), expectedOutputs, acceptanceContract.
@@ -38,12 +39,15 @@ def session_command_broker(
     invalidates an exact assignment revision. Actor, owner, charter authority,
     Capsule and workspace identity are derived and rechecked on the server.
     Ordinary peer messages retain their separate evidence-only contract.
+    results replays this root's durable results after afterCursor, including results
+    that arrived before a wait or while the app was offline. Use nextCursor to page;
+    a superseded result cannot replace its newer version. Reading never accepts a result.
     """
     payload = session_coordination_service.command(
         context=get_runtime_context(), state=state or {}, mode=str(mode).strip().lower(),
         assignment_id=assignmentId, revision=revision, title=title, task=taskBrief,
         content=content, idempotency_key=idempotencyKey,
-        after_id=after, limit=max(1, min(limit, 50)),
+        after_id=after, after_cursor=max(0, afterCursor), limit=max(1, min(limit, 50)),
     )
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 

@@ -192,7 +192,7 @@ class SessionCommandService:
 
     def command(self, *, mode: str, context: dict[str, Any], state: dict[str, Any], assignment_id: str = "",
                 revision: int = 0, title: str = "", task: dict[str, Any] | None = None, content: str = "",
-                idempotency_key: str = "", after_id: str = "", limit: int = 20) -> dict[str, Any]:
+                idempotency_key: str = "", after_id: str = "", after_cursor: int = 0, limit: int = 20) -> dict[str, Any]:
         try:
             session_id, user_id, run_id = self._actor(context)
             if mode == "create":
@@ -203,6 +203,16 @@ class SessionCommandService:
                 page = rows[:limit]
                 return {"ok": True, "assignments": [self.envelope(row) for row in page],
                         "nextCursor": page[-1]["assignmentId"] if len(rows) > limit else None}
+            if mode == "results":
+                rows = self.db.list_session_project_results(session_id, after_cursor=after_cursor, limit=limit + 1)
+                if any(row.get("sourceUserId") != user_id for row in rows):
+                    raise ValueError("project_result_owner_mismatch")
+                page = rows[:limit]
+                return {"ok": True, "results": [self.coordination.compact_ref(row) for row in page],
+                        "afterCursor": after_cursor,
+                        "nextCursor": page[-1]["metadata"]["resultCursor"] if page else after_cursor,
+                        "hasMore": len(rows) > limit,
+                        "deliveryAcknowledged": False}
             if mode == "revoke":
                 if not self.db.revoke_session_command_assignment(assignment_id, user_id=user_id, session_id=session_id, revision=revision):
                     raise ValueError("assignment_revoke_scope_or_revision_mismatch")

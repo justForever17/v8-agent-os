@@ -8638,6 +8638,60 @@ class DatabaseManager:
             ).fetchall()
             return [self._hydrate_session_coordination_row(dict(row)) for row in rows]
 
+    def acknowledge_session_project_result(self, message_id: str, *, session_id: str, run_id: str,
+                                          result_version: int, result_cursor: int, content: str) -> bool:
+        """Record graph-checkpoint consumption, separately from delivery completion."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    """SELECT * FROM session_coordination_messages WHERE id = ?
+                       AND authority = 'project_result' AND target_session_id = ? AND target_run_id = ?
+                       AND state IN ('promoted', 'injected')""",
+                    (message_id, session_id, run_id),
+                ).fetchone()
+                if not row:
+                    return False
+                result = self._hydrate_session_coordination_row(dict(row))
+                meta = result["metadata"]
+                if (meta.get("resultVersion") != result_version or meta.get("resultCursor") != result_cursor
+                        or result["content"] != content):
+                    raise ValueError("project_result_checkpoint_payload_mismatch")
+                if meta.get("checkpointConsumed") and meta.get("checkpointRunId") == run_id:
+                    return False
+                meta.update({"checkpointConsumed": True, "checkpointRunId": run_id})
+                conn.execute(
+                    "UPDATE session_coordination_messages SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), utc_now_iso(), message_id),
+                )
+                conn.commit()
+                return True
+        return self._run_write_with_retry(_write)
+
+    def claim_session_project_result_replay(self, message_id: str, *, owner_id: str) -> bool:
+        """One replay claim per Engine boot; a new process can recover a lost wake."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT metadata_json FROM session_coordination_messages WHERE id = ? AND authority = 'project_result'",
+                    (message_id,),
+                ).fetchone()
+                if not row:
+                    return False
+                metadata = json.loads(row["metadata_json"] or "{}")
+                if metadata.get("deliveryOwner") == owner_id:
+                    return False
+                metadata.update({"deliveryOwner": owner_id, "checkpointConsumed": False, "deliveryReplayRequired": False})
+                conn.execute(
+                    """UPDATE session_coordination_messages SET state = 'queued', target_run_id = NULL,
+                       metadata_json = ?, updated_at = ? WHERE id = ?""",
+                    (json.dumps(metadata), utc_now_iso(), message_id),
+                )
+                conn.commit()
+                return True
+        return self._run_write_with_retry(_write)
+
     def get_session_coordination_message_by_idempotency(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
         normalized_key = str(idempotency_key or "").strip()
         if not normalized_key:

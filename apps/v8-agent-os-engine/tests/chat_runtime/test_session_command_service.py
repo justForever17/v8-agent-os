@@ -150,6 +150,82 @@ def test_project_result_versions_partial_terminal_duplicate_and_restart(harness)
     assert [row["metadata"]["superseded"] for row in results] == [True, True, False]
     tail = reopened.list_session_project_results(ROOT, after_cursor=accepted["message"]["resultCursor"])
     assert [row["replyStatus"] for row in tail] == ["partial", "completed"]
+    first_page = invoke({"mode": "results", "afterCursor": 0, "limit": 2}, routed=True)
+    second_page = invoke({"mode": "results", "afterCursor": first_page["nextCursor"]}, routed=True)
+    assert [item["resultVersion"] for item in first_page["results"] + second_page["results"]] == [1, 2, 3]
+    assert second_page["deliveryAcknowledged"] is False
+
+
+def pending_final(harness):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    harness.monkeypatch.setattr(harness.service, "dispatch_message", lambda mid: harness.db.get_session_coordination_message(mid))
+    final = publish_result(harness, assignment, sent, version=1, status="completed", content="Delivered file.", evidence=["artifact:file"])
+    return harness.db.get_session_coordination_message(final["message"]["messageId"])
+
+
+def test_project_result_ack_requires_persisted_graph_message_and_is_idempotent(harness, tmp_path):
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    from runtimes.chat.runtime import ChatRuntime
+    row = pending_final(harness)
+    harness.db.create_run_record("consumer-run", ROOT, user_id=USER, run_type="chat", status="running")
+    harness.db.update_session_coordination_message(row["id"], state="injected", target_run_id="consumer-run")
+    assert harness.service.acknowledge_project_results({"messages": []}, session_id=ROOT, run_id="consumer-run") == 0
+    message = {**harness.service.compact_ref(row), "content": row["content"]}
+    injected = []
+    ChatRuntime()._inject_session_coordination_message(injected, message)
+    checkpoint_path = str(tmp_path / "consumer-checkpoint.sqlite")
+    config = {"configurable": {"thread_id": ROOT}}
+    builder = StateGraph(ToolState)
+    builder.add_node("consume", lambda state: {})
+    builder.add_edge(START, "consume")
+    builder.add_edge("consume", END)
+    with SqliteSaver.from_conn_string(checkpoint_path) as saver:
+        builder.compile(checkpointer=saver).invoke({"messages": injected, "current_route_context": {}}, config=config)
+    with SqliteSaver.from_conn_string(checkpoint_path) as reopened:
+        persisted = builder.compile(checkpointer=reopened).get_state(config).values
+        assert harness.service.acknowledge_project_results(persisted, session_id=ROOT, run_id="consumer-run") == 1
+        assert harness.service.acknowledge_project_results(persisted, session_id=ROOT, run_id="consumer-run") == 0
+    consumed = harness.db.get_session_coordination_message(row["id"])
+    assert consumed["state"] == "injected"
+    assert consumed["metadata"]["checkpointRunId"] == "consumer-run"
+    harness.db.update_run_record("consumer-run", status="completed")
+    harness.service.on_run_terminal(ROOT, "consumer-run", status="completed")
+    assert harness.db.get_session_coordination_message(row["id"])["state"] == "replied"
+
+
+def test_missing_wake_and_checkpoint_crash_replay_same_result_without_duplicate_claim(harness):
+    row = pending_final(harness)
+    harness.db.create_run_record("crashed-consumer", ROOT, user_id=USER, run_type="chat", status="interrupted")
+    harness.db.update_session_coordination_message(row["id"], state="injected", target_run_id="crashed-consumer")
+    harness.service.on_run_terminal(ROOT, "crashed-consumer", status="interrupted")
+    assert harness.db.get_session_coordination_message(row["id"])["metadata"]["deliveryReplayRequired"]
+    reopened = DatabaseManager(harness.db.db_path)
+    harness.monkeypatch.setattr(coordination_module, "db", reopened)
+    harness.monkeypatch.setattr(harness.service, "dispatch_message",
+                                SessionCoordinationService.dispatch_message.__get__(harness.service))
+    recovered = harness.service.recover_pending()
+    assert recovered["recovered"] == 1
+    replayed = reopened.get_session_coordination_message(row["id"])
+    assert replayed["state"] == "promoted"
+    assert replayed["targetRunId"] != "crashed-consumer"
+    assert replayed["metadata"]["resultCursor"] == row["metadata"]["resultCursor"]
+    assert len(reopened.list_session_project_results(ROOT)) == 1
+    scheduled_count = len(harness.scheduled)
+    harness.service.recover_pending()
+    assert len(harness.scheduled) == scheduled_count
+
+
+def test_result_delivery_does_not_report_processed_without_checkpoint(harness):
+    row = pending_final(harness)
+    harness.db.create_run_record("empty-consumer", ROOT, user_id=USER, run_type="chat", status="completed")
+    harness.db.update_session_coordination_message(row["id"], state="injected", target_run_id="empty-consumer")
+    harness.service.on_run_terminal(ROOT, "empty-consumer", status="completed")
+    current = harness.db.get_session_coordination_message(row["id"])
+    assert current["state"] == "failed"
+    assert current["errorCode"] == "project_result_delivery_incomplete"
+    assert not current["metadata"].get("replyDelivered")
 
 
 def test_out_of_order_older_result_does_not_reopen_terminal_request(harness):

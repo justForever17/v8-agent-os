@@ -91,6 +91,7 @@ _REJECT_TOKENS = {
     "不要发送",
 }
 _LOCAL_OWNER_IDS = {"", "anonymous", "local", "local_trusted", "admin_ui"}
+_PROJECT_RESULT_DELIVERY_OWNER = uuid.uuid4().hex
 
 
 def _sha256_text(value: str) -> str:
@@ -837,6 +838,8 @@ class SessionCoordinationService:
             row = db.get_session_coordination_message(message_id)
             if not row or str(row.get("state") or "") not in {"queued", "promoted"}:
                 return row
+            if row.get("authority") == "project_result" and row.get("metadata", {}).get("superseded"):
+                return db.update_session_coordination_message(message_id, state="replied") or row
             if self._is_expired(row):
                 updated = db.update_session_coordination_message(
                     message_id,
@@ -953,6 +956,7 @@ class SessionCoordinationService:
             state="promoted",
             target_run_id=run_id,
             timestamp_field="promoted_at",
+            metadata_updates={"deliveryOwner": _PROJECT_RESULT_DELIVERY_OWNER} if row.get("authority") == "project_result" else None,
         ) or row
         try:
             if row.get("authority") == "project_assignment":
@@ -1049,6 +1053,26 @@ class SessionCoordinationService:
         del run_id
         self.dispatch_for_session(session_id)
 
+    def acknowledge_project_results(self, checkpoint_state: dict[str, Any], *, session_id: str, run_id: str) -> int:
+        """Called only with a graph owner's persisted snapshot, never client state."""
+        consumed = 0
+        for message in list((checkpoint_state or {}).get("messages") or []):
+            if not isinstance(message, HumanMessage):
+                continue
+            inbound = _message_additional_kwargs(message).get("v8os_session_coordination") or {}
+            if inbound.get("authority") != "project_result":
+                continue
+            message_id = str(inbound.get("messageId") or "")
+            if str(message.id or "") != f"session_coordination_{message_id}":
+                continue
+            consumed += int(db.acknowledge_session_project_result(
+                message_id, session_id=session_id, run_id=run_id,
+                result_version=int(inbound.get("resultVersion") or 0),
+                result_cursor=int(inbound.get("resultCursor") or 0),
+                content=str(inbound.get("content") or ""),
+            ))
+        return consumed
+
     def on_run_terminal(self, session_id: str, run_id: str, *, status: str = "") -> None:
         promoted = db.list_session_coordination_messages(
             target_run_id=run_id,
@@ -1071,6 +1095,19 @@ class SessionCoordinationService:
         for row in injected:
             message_type = str(row.get("messageType") or row.get("message_type") or "")
             if message_type == "reply":
+                if row.get("authority") == "project_result" and not (
+                    str(status or "").lower() == "completed"
+                    and row.get("metadata", {}).get("checkpointConsumed")
+                    and row.get("metadata", {}).get("checkpointRunId") == run_id
+                ):
+                    # Keep the result itself immutable and replayable. A failed
+                    # delivery must not trigger an immediate endless model loop.
+                    updated = db.update_session_coordination_message(
+                        row["id"], state="failed", error_code="project_result_delivery_incomplete",
+                        metadata_updates={"deliveryReplayRequired": True, "terminalRunStatus": status},
+                    ) or row
+                    self._emit_transition(updated, "session_coordination.failed")
+                    continue
                 if str(status or "").lower() == "completed":
                     updated = db.update_session_coordination_message(
                         str(row.get("id") or ""),
@@ -1104,10 +1141,31 @@ class SessionCoordinationService:
         recovered = 0
         expired = 0
         rows = db.list_session_coordination_messages(
-            states=["awaiting_authorization", "queued", "promoted", "injected"],
+            states=["awaiting_authorization", "queued", "promoted", "injected", "failed"],
             limit=500,
         )
         for row in rows:
+            if row.get("authority") == "project_result":
+                metadata = row.get("metadata") or {}
+                if metadata.get("superseded"):
+                    db.update_session_coordination_message(row["id"], state="replied")
+                    continue
+                run_id = str(row.get("targetRunId") or "")
+                run = db.get_run_record(run_id) if run_id else {}
+                status = str((run or {}).get("status") or "")
+                if status in {"waiting_input", "waiting_approval", "waiting_external_tool", "paused"}:
+                    continue
+                if status == "completed" and metadata.get("checkpointConsumed") and metadata.get("checkpointRunId") == run_id:
+                    db.update_session_coordination_message(row["id"], state="replied",
+                                                           metadata_updates={"replyDelivered": True})
+                    continue
+                if not db.claim_session_project_result_replay(row["id"], owner_id=_PROJECT_RESULT_DELIVERY_OWNER):
+                    continue
+                self.dispatch_message(row["id"])
+                recovered += 1
+                continue
+            if row.get("state") == "failed":
+                continue
             if self._is_expired(row):
                 updated = db.update_session_coordination_message(
                     str(row.get("id") or ""),

@@ -2783,11 +2783,16 @@ def _decision_agent_visible_surface(
                 ("assignmentId", "rootSessionId", "childSessionId", "revision", "status",
                  "authorizationRef", "scopeRevision", "requirementRevision")
             }
-        compact = {key: payload[key] for key in ("ok", "error", "idempotent", "nextCursor", "message") if key in payload}
+        compact = {key: payload[key] for key in ("ok", "error", "idempotent", "afterCursor", "nextCursor", "hasMore", "message", "deliveryAcknowledged") if key in payload}
         if isinstance(payload.get("assignment"), dict):
             compact["assignment"] = compact_assignment(payload["assignment"])
         if isinstance(payload.get("assignments"), list):
             compact["assignments"] = [compact_assignment(item) for item in payload["assignments"] if isinstance(item, dict)]
+        if isinstance(payload.get("results"), list):
+            compact["results"] = [{key: item.get(key) for key in
+                                  ("messageId", "assignmentId", "resultVersion", "resultCursor",
+                                   "resultFinal", "superseded", "replyStatus", "detailRef")}
+                                 for item in payload["results"] if isinstance(item, dict)]
         compact["rawRef"] = raw_ref
         renderer_result = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     elif tool_name == "session_message_broker":

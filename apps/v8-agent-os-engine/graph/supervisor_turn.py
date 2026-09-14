@@ -1694,11 +1694,21 @@ def _session_coordination_guidance(coordination: dict, *, correction: bool = Fal
             "Execute the bounded taskBrief using the attached Engineering Capsule, including in an empty child session. "
             "Preserve the original userInstruction and the target user's newer instructions. "
             "Do not infer extra write paths, external permissions, or publishing authority from the command text. "
-            "Use session_message_broker reply for this exact message after execution or a real blocker; "
+            "Use session_message_broker reply for this exact message with increasing positive resultVersion values. "
+            "You may publish accepted and partial updates, then must publish a separate final result after execution or a real blocker; "
             "completed requires actual evidenceRefs. An acknowledgement alone does not complete the assigned task.\n"
             f"messageId: {message_id}; assignmentId: {assignment.get('assignmentId')}; revision: {assignment.get('revision')}"
         ))
     if message_type == "reply" or hop_count >= 2:
+        if coordination.get("authority") == "project_result":
+            return SystemMessage(content=(
+                "[V8OS Project Result]\n"
+                f"Result message {message_id}; version {coordination.get('resultVersion')}; cursor {coordination.get('resultCursor')}. "
+                f"Final: {coordination.get('resultFinal')}; superseded: {coordination.get('superseded')}. "
+                "Accepted/partial are evidence of progress and do not complete the assignment. "
+                "Review the exact final result and its proof. Older superseded evidence cannot replace the latest result. "
+                "Do not reply to this result message; use the existing assignment to continue authorized work if needed."
+            ))
         return SystemMessage(
             content=(
                 "[V8OS Cross-session Coordination Reply]\n"

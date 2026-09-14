@@ -296,6 +296,10 @@ class SessionCoordinationService:
             "updatedAt": row.get("updatedAt") or row.get("updated_at"),
             "errorCode": row.get("errorCode") or row.get("error_code"),
         }
+        metadata = row.get("metadata") or {}
+        if row.get("authority") == "project_result":
+            payload.update({key: metadata.get(key) for key in
+                            ("assignmentId", "assignmentRevision", "resultVersion", "resultCursor", "resultFinal", "superseded")})
         if viewer_session_id:
             payload["direction"] = "outgoing" if viewer_session_id == source_session_id else "incoming"
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
@@ -569,6 +573,7 @@ class SessionCoordinationService:
         evidence_refs: Optional[list[str]],
         state: Optional[dict[str, Any]],
         tool_call_id: str,
+        result_version: int = 0,
     ) -> dict[str, Any]:
         parent = db.get_session_coordination_message(message_id)
         if not parent:
@@ -580,6 +585,12 @@ class SessionCoordinationService:
             return self._error("reply_session_mismatch", "当前会话不是该消息的目标会话。")
         if str(parent.get("messageType") or parent.get("message_type") or "") != "request" or int(parent.get("hopCount") or 1) != 1:
             return self._error("max_hops_exceeded", "跨会话协调最多两跳，回复消息不能再次回复。")
+        if parent.get("authority") == "project_assignment":
+            return self._reply_project_result(
+                parent, current_session_id=current_session_id, current_run_id=current_run_id,
+                current_user_id=current_user_id, reply_status=reply_status, result_version=result_version,
+                content=content, evidence_refs=evidence_refs,
+            )
         reply_key = f"coord-reply:{message_id}"
         existing = db.get_session_coordination_message_by_idempotency(reply_key)
         if existing:
@@ -659,6 +670,40 @@ class SessionCoordinationService:
         row = self.dispatch_message(actual_reply_id) or row
         self.dispatch_for_session(current_session_id)
         return self._ok(row)
+
+    def _reply_project_result(
+        self, parent: dict[str, Any], *, current_session_id: str, current_run_id: str,
+        current_user_id: str, reply_status: str, result_version: int,
+        content: str, evidence_refs: Optional[list[str]],
+    ) -> dict[str, Any]:
+        try:
+            assignment = self.assignment_for_message(parent, session_id=current_session_id)
+            if not assignment or parent.get("sourceUserId") != current_user_id:
+                raise ValueError("project_result_owner_mismatch")
+            status = str(reply_status or "").strip().lower()
+            if status not in {"acknowledged", "accepted", "partial", "completed", "conflict", "blocked", "failed", "cancelled"}:
+                raise ValueError("project_result_status_invalid")
+            if result_version < 1:
+                raise ValueError("project_result_positive_version_required")
+            body = str(content or "").strip()
+            refs = [str(ref).strip() for ref in evidence_refs or [] if str(ref).strip()]
+            if not body or _contains_secret(body) or any(_contains_secret(ref) for ref in refs):
+                raise ValueError("project_result_content_invalid")
+            if status in {"partial", "completed"} and not refs:
+                raise ValueError("project_result_proof_required")
+            row = db.append_session_project_result(
+                request_id=parent["id"], session_id=current_session_id, run_id=current_run_id,
+                user_id=current_user_id, result_version=result_version, reply_status=status,
+                content=body, evidence_refs=refs,
+            )
+            self._emit_transition(row, "session_coordination.result")
+            updated_parent = db.get_session_coordination_message(parent["id"]) or parent
+            self._emit_transition(updated_parent, "session_coordination.result")
+            if not row.get("metadata", {}).get("superseded"):
+                row = self.dispatch_message(row["id"]) or row
+            return self._ok(row)
+        except (ValueError, OSError) as exc:
+            return self._error(str(exc), "项目结果未被保存；请核对版本、授权和证明引用。")
 
     @staticmethod
     def inbound_from_state(state: Optional[dict[str, Any]]) -> dict[str, Any]:

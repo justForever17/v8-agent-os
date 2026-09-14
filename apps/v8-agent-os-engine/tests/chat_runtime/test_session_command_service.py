@@ -13,7 +13,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from core.database import DatabaseManager
-from core.tools.native.session_coordination import session_command_broker
+from core.tools.native.session_coordination import session_command_broker, session_message_broker
 from erc.runtime_context import bind_runtime_context
 from erc.session_command_service import SessionCommandService
 from erc.session_coordination_service import SessionCoordinationService
@@ -70,23 +70,24 @@ def task(path="page.txt"):
             "expectedOutputs": [path], "acceptanceContract": "The file contains checked fixture output."}
 
 
-def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-001", extra_context=None, routed=False, human_metadata=None):
+def invoke(args, *, text=AUTHORIZATION, session=ROOT, user=USER, run="run-root-001", extra_context=None, routed=False,
+           human_metadata=None, tool_name="session_command_broker", route=None):
     """Use real StructuredTool + ToolNode state injection, not service kwargs."""
     async def execute():
         graph = StateGraph(ToolState)
         if routed:
             from graph.tool_routing import create_routed_tool_node
-            graph.add_node("tools", create_routed_tool_node([session_command_broker], "tools", END))
+            graph.add_node("tools", create_routed_tool_node([session_command_broker, session_message_broker], "tools", END))
         else:
-            graph.add_node("tools", ToolNode([session_command_broker]))
+            graph.add_node("tools", ToolNode([session_command_broker, session_message_broker]))
         graph.add_edge(START, "tools")
         graph.add_edge("tools", END)
         with bind_runtime_context(runtime_kind="chat", agent_id="supervisor", session_id=session,
                                   run_id=run, user_id=user, **(extra_context or {})):
             result = await graph.compile().ainvoke({
                 "messages": [HumanMessage(content=text, additional_kwargs=human_metadata or {}),
-                             AIMessage(content="", tool_calls=[{"id": "command-call", "name": "session_command_broker", "args": args}])],
-                "current_route_context": {},
+                             AIMessage(content="", tool_calls=[{"id": "command-call", "name": tool_name, "args": args}])],
+                "current_route_context": route or {},
             })
         return json.loads(result["messages"][-1].content)
     return asyncio.run(execute())
@@ -100,6 +101,100 @@ def create(**kwargs):
 def send(assignment, **kwargs):
     return invoke({"mode": "continue", "assignmentId": assignment["assignmentId"], "revision": assignment["revision"],
                    "content": "Create page.txt and verify its content.", "idempotencyKey": "start-page"}, **kwargs)
+
+
+def publish_result(harness, assignment, sent, *, version, status, content, evidence=None):
+    row = harness.db.get_session_coordination_message(sent["message"]["messageId"])
+    return invoke({"mode": "reply", "messageId": row["id"], "replyStatus": status, "resultVersion": version,
+                   "content": content, "evidenceRefs": evidence or []},
+                  session=assignment["childSessionId"], run=row["targetRunId"],
+                  tool_name="session_message_broker",
+                  route={"sessionCoordination": harness.service.compact_ref(row)})
+
+
+def test_project_accepted_cannot_consume_later_completed_result(harness):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    # Keep result delivery pending so we can inspect the immutable source ledger.
+    harness.monkeypatch.setattr(harness.service, "dispatch_message", lambda mid: harness.db.get_session_coordination_message(mid))
+    accepted = publish_result(harness, assignment, sent, version=1, status="accepted", content="Started working.")
+    completed = publish_result(harness, assignment, sent, version=2, status="completed", content="The page is complete.", evidence=["artifact:page"])
+    assert accepted["ok"] and completed["ok"]
+    assert completed["message"]["replyStatus"] == "completed"
+    assert completed["message"]["messageId"] != accepted["message"]["messageId"]
+
+
+def test_project_result_versions_partial_terminal_duplicate_and_restart(harness):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    request_id = sent["message"]["messageId"]
+    harness.service.mark_injected(request_id, target_run_id="run-child-0")
+    harness.monkeypatch.setattr(harness.service, "dispatch_message", lambda mid: harness.db.get_session_coordination_message(mid))
+    accepted = publish_result(harness, assignment, sent, version=1, status="accepted", content="Accepted work.")
+    assert harness.db.get_session_coordination_message(request_id)["state"] == "injected"
+    partial = publish_result(harness, assignment, sent, version=2, status="partial", content="Page body ready.", evidence=["artifact:partial"])
+    assert partial["message"]["resultFinal"] is False
+    assert harness.db.get_session_coordination_message(request_id)["state"] == "injected"
+    completed = publish_result(harness, assignment, sent, version=3, status="completed", content="All checks pass.", evidence=["artifact:final"])
+    assert completed["message"]["resultFinal"] is True
+    assert harness.db.get_session_coordination_message(request_id)["state"] == "replied"
+    duplicate = publish_result(harness, assignment, sent, version=3, status="completed", content="All checks pass.", evidence=["artifact:final"])
+    assert duplicate["message"]["messageId"] == completed["message"]["messageId"]
+    conflict = publish_result(harness, assignment, sent, version=3, status="completed", content="Changed same version.", evidence=["artifact:final"])
+    assert conflict["error"] == "project_result_version_conflict"
+    reopened = DatabaseManager(harness.db.db_path)
+    results = reopened.list_session_project_results(ROOT)
+    assert [row["metadata"]["resultVersion"] for row in results] == [1, 2, 3]
+    assert [row["metadata"]["resultCursor"] for row in results] == [1, 2, 3]
+    assert [row["metadata"]["superseded"] for row in results] == [True, True, False]
+    tail = reopened.list_session_project_results(ROOT, after_cursor=accepted["message"]["resultCursor"])
+    assert [row["replyStatus"] for row in tail] == ["partial", "completed"]
+
+
+def test_out_of_order_older_result_does_not_reopen_terminal_request(harness):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    request_id = sent["message"]["messageId"]
+    harness.service.mark_injected(request_id, target_run_id="run-child-0")
+    harness.monkeypatch.setattr(harness.service, "dispatch_message", lambda mid: harness.db.get_session_coordination_message(mid))
+    final = publish_result(harness, assignment, sent, version=3, status="completed", content="Final.", evidence=["artifact:final"])
+    late = publish_result(harness, assignment, sent, version=2, status="partial", content="Delayed partial.", evidence=["artifact:partial"])
+    assert late["ok"] and late["message"]["superseded"] is True
+    parent = harness.db.get_session_coordination_message(request_id)
+    assert parent["state"] == "replied"
+    assert parent["metadata"]["latestResultId"] == final["message"]["messageId"]
+    assert parent["metadata"]["latestResultVersion"] == 3
+    assert publish_result(harness, assignment, sent, version=4, status="accepted", content="Reopen.")["error"] == "project_result_already_terminal"
+
+
+def test_result_without_proof_or_after_revocation_is_not_published(harness):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    assert publish_result(harness, assignment, sent, version=1, status="completed", content="No proof.")["error"] == "project_result_proof_required"
+    assert harness.db.list_session_project_results(ROOT) == []
+    invoke({"mode": "revoke", "assignmentId": assignment["assignmentId"], "revision": 1})
+    assert publish_result(harness, assignment, sent, version=1, status="completed", content="Revoked.", evidence=["artifact:fake"])["ok"] is False
+    assert harness.db.list_session_project_results(ROOT) == []
+
+
+@pytest.mark.parametrize("waiting_status", ["waiting_input", "waiting_approval"])
+def test_assignment_followup_preserves_human_wait_and_does_not_start_another_run(harness, waiting_status):
+    assignment = create()["assignment"]
+    sent = send(assignment)
+    child = assignment["childSessionId"]
+    harness.service.mark_injected(sent["message"]["messageId"], target_run_id="run-child-0")
+    harness.db.update_run_record("run-child-0", status=waiting_status)
+    harness.db.add_pending_approval("approval-waiting", child, "run-child-0", "fixture", "pending", {"fixture": True})
+    harness.monkeypatch.setattr(coordination_module.session_admission_service, "get_lane_view",
+                                lambda _sid: {"activeRunId": "run-child-0"})
+    result = invoke({"mode": "continue", "assignmentId": assignment["assignmentId"], "revision": 1,
+                     "content": "After the human decision, use this correction.", "idempotencyKey": "steering-while-waiting"})
+    assert result["ok"] and result["message"]["state"] == "queued"
+    assert harness.db.get_run_record("run-child-0")["status"] == waiting_status
+    assert harness.db.get_pending_approval("approval-waiting")["status"] == "pending"
+    assert len(harness.db.list_run_records(session_id=child)) == 1
 
 
 def test_model_schema_has_no_actor_authority_or_target_workspace_fields():

@@ -57,6 +57,7 @@ def session_message_broker(
     content: str = "",
     userAuthorizationQuote: str = "",
     replyStatus: str = "acknowledged",
+    resultVersion: int = 0,
     evidenceRefs: Optional[list[str]] = None,
     state: Annotated[dict[str, Any], InjectedState] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "session_message_broker",
@@ -68,7 +69,11 @@ def session_message_broker(
     `userAuthorizationQuote` containing the target session ID and send/notify/ask/correct
     instruction. Otherwise the broker returns an exact `ask_user` request and waits for
     one-shot authorization. Use `reply` only for the active inbound coordination message.
-    A reply is final and cannot be replied to again. This tool never inherits workspace,
+    Ordinary peer replies are final and cannot be replied to again. For a server-verified
+    project assignment, publish accepted, partial and completed results with increasing
+    positive resultVersion values; retrying one version must preserve its content/status/refs.
+    Accepted acknowledges work and does not complete it. Partial/completed need evidenceRefs.
+    This tool never inherits workspace,
     approval, plugin grants, credentials, checkpoints, or source-session permissions.
     """
 
@@ -111,6 +116,7 @@ def session_message_broker(
             evidence_refs=evidenceRefs,
             state=state,
             tool_call_id=tool_call_id,
+            result_version=resultVersion,
         )
     elif normalized_mode == "status":
         payload = session_coordination_service.status(

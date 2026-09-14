@@ -8532,6 +8532,112 @@ class DatabaseManager:
             row = cursor.fetchone()
             return self._hydrate_session_coordination_row(dict(row)) if row else None
 
+    def append_session_project_result(
+        self, *, request_id: str, session_id: str, run_id: str, user_id: str,
+        result_version: int, reply_status: str, content: str, evidence_refs: list[str],
+    ) -> Dict[str, Any]:
+        """Append an immutable result version and advance its request atomically.
+
+        Result order and delivery cursor are separate: an older result arriving
+        late remains readable but cannot undo a newer terminal result.
+        """
+        terminal = reply_status in {"completed", "blocked", "conflict", "failed", "cancelled"}
+        identity = f"project-result:{request_id}:{result_version}"
+        digest = _runtime_episode_payload_fingerprint({
+            "status": reply_status, "content": content, "evidenceRefs": evidence_refs,
+        })
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                parent_row = conn.execute(
+                    "SELECT * FROM session_coordination_messages WHERE id = ?", (request_id,)
+                ).fetchone()
+                parent = self._hydrate_session_coordination_row(dict(parent_row)) if parent_row else {}
+                if parent.get("authority") != "project_assignment" or parent.get("targetSessionId") != session_id:
+                    raise ValueError("project_result_request_scope_mismatch")
+                meta = parent.get("metadata") or {}
+                assignment = conn.execute(
+                    """SELECT * FROM session_command_assignments
+                       WHERE id = ? AND child_session_id = ? AND root_session_id = ?
+                         AND user_id = ? AND revision = ? AND status = 'active'""",
+                    (meta.get("assignmentId"), session_id, parent["sourceSessionId"], user_id, meta.get("assignmentRevision")),
+                ).fetchone()
+                if not assignment:
+                    raise ValueError("project_result_assignment_changed")
+                existing = conn.execute(
+                    "SELECT * FROM session_coordination_messages WHERE idempotency_key = ?", (identity,)
+                ).fetchone()
+                if existing:
+                    result = self._hydrate_session_coordination_row(dict(existing))
+                    if result["metadata"].get("resultDigest") != digest:
+                        raise ValueError("project_result_version_conflict")
+                    return result
+                run = conn.execute("SELECT session_id, user_id, status FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                if (not run or run["session_id"] != session_id or run["user_id"] != user_id
+                        or parent.get("targetRunId") != run_id or run["status"] not in {"running", "queued"}):
+                    raise ValueError("project_result_run_scope_mismatch")
+                if parent.get("state") not in {"injected", "replied"}:
+                    raise ValueError("project_result_request_inactive")
+                latest = int(meta.get("latestResultVersion") or 0)
+                if meta.get("resultFinal") and result_version > latest:
+                    raise ValueError("project_result_already_terminal")
+                current = result_version > latest
+                cursor = conn.execute(
+                    """SELECT COALESCE(MAX(CAST(json_extract(metadata_json, '$.resultCursor') AS INTEGER)), 0) + 1
+                       FROM session_coordination_messages WHERE target_session_id = ? AND authority = 'project_result'""",
+                    (parent["sourceSessionId"],),
+                ).fetchone()[0]
+                result_id = "coord_" + uuid.uuid4().hex
+                result_meta = {
+                    "assignmentId": meta["assignmentId"], "assignmentRevision": meta["assignmentRevision"],
+                    "resultVersion": result_version, "resultCursor": cursor, "resultDigest": digest,
+                    "resultFinal": terminal, "superseded": not current,
+                }
+                conn.execute(
+                    """INSERT INTO session_coordination_messages
+                       (id, thread_id, message_type, source_session_id, target_session_id, source_run_id,
+                        source_user_id, intent, authority, content, summary, context_json, evidence_refs_json,
+                        reply_to_message_id, reply_status, hop_count, max_hops, state, idempotency_key,
+                        metadata_json, authorized_at, created_at, updated_at)
+                       VALUES (?, ?, 'reply', ?, ?, ?, ?, 'inform', 'project_result', ?, ?, '{}', ?, ?, ?, 2, 2, ?, ?, ?, ?, ?, ?)""",
+                    (result_id, parent["threadId"], session_id, parent["sourceSessionId"], run_id, user_id,
+                     content, content, json.dumps(evidence_refs), request_id, reply_status,
+                     "queued" if current else "replied", identity, json.dumps(result_meta), utc_now_iso(), utc_now_iso(), utc_now_iso()),
+                )
+                if current:
+                    meta.update({"latestResultVersion": result_version, "latestResultId": result_id,
+                                 "resultFinal": terminal, "executionResultStatus": reply_status})
+                    conn.execute(
+                        """UPDATE session_coordination_messages SET metadata_json = ?, reply_status = ?,
+                           state = ?, updated_at = ? WHERE id = ?""",
+                        (json.dumps(meta), reply_status, "replied" if terminal else "injected", utc_now_iso(), request_id),
+                    )
+                    # Versions not yet delivered no longer need separate model
+                    # wakeups. Their immutable bodies remain in cursor replay.
+                    conn.execute(
+                        """UPDATE session_coordination_messages
+                           SET metadata_json = json_set(metadata_json, '$.superseded', json('true')),
+                               state = CASE WHEN state = 'queued' THEN 'replied' ELSE state END
+                           WHERE reply_to_message_id = ? AND authority = 'project_result' AND id != ?
+                             AND CAST(json_extract(metadata_json, '$.resultVersion') AS INTEGER) < ?""",
+                        (request_id, result_id, result_version),
+                    )
+                conn.commit()
+                row = conn.execute("SELECT * FROM session_coordination_messages WHERE id = ?", (result_id,)).fetchone()
+                return self._hydrate_session_coordination_row(dict(row))
+        return self._run_write_with_retry(_write)
+
+    def list_session_project_results(self, root_session_id: str, *, after_cursor: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """SELECT * FROM session_coordination_messages
+                   WHERE target_session_id = ? AND authority = 'project_result'
+                     AND CAST(json_extract(metadata_json, '$.resultCursor') AS INTEGER) > ?
+                   ORDER BY CAST(json_extract(metadata_json, '$.resultCursor') AS INTEGER) LIMIT ?""",
+                (root_session_id, max(0, after_cursor), max(1, min(limit, 200))),
+            ).fetchall()
+            return [self._hydrate_session_coordination_row(dict(row)) for row in rows]
+
     def get_session_coordination_message_by_idempotency(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
         normalized_key = str(idempotency_key or "").strip()
         if not normalized_key:

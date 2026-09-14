@@ -2096,14 +2096,22 @@ class ChatRuntime:
                 [
                     "",
                     "回复纪律：处理或判断冲突后，必须调用 session_message_broker(mode='reply', messageId=上述 ID, replyStatus=acknowledged|accepted|conflict|blocked|completed, content=...)。",
-                    "completed 必须带 evidenceRefs；不得只在普通文本里声称已经回复。",
+                    (
+                        "项目任务使用递增正整数 resultVersion 发布 accepted/partial，结束后另发 completed/blocked 等终态；partial/completed 必须有 evidenceRefs，accepted 不等于完成。"
+                        if message.get("projectAssignment")
+                        else "completed 必须带 evidenceRefs；不得只在普通文本里声称已经回复。"
+                    ),
                 ]
             )
         else:
             lines.extend(
                 [
                     "",
-                    "这是最终第二跳回复。请向当前用户简洁总结结果；禁止再次跨会话回复。",
+                    (
+                        f"这是项目结果 version={message.get('resultVersion')}，cursor={message.get('resultCursor')}，final={message.get('resultFinal')}，superseded={message.get('superseded')}。accepted/partial不等于完成；请核对最新终态和证明，不回复此结果消息。"
+                        if message.get("authority") == "project_result"
+                        else "这是最终第二跳回复。请向当前用户简洁总结结果；禁止再次跨会话回复。"
+                    ),
                 ]
             )
         lines.append("[/V8OS 跨会话协调消息]")

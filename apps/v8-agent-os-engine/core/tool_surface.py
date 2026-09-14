@@ -1172,6 +1172,9 @@ def _render_session_coordination_surface(payload: dict[str, Any], raw_ref: str, 
             lines.append(f"Target session: {_short_text(message.get('targetSessionId'), 190)}")
         if message.get("replyStatus"):
             lines.append(f"Reply status: {_short_text(message.get('replyStatus'), 80)}")
+        if message.get("resultVersion"):
+            lines.append(f"Result: version={message['resultVersion']} cursor={message.get('resultCursor')} final={message.get('resultFinal')} superseded={message.get('superseded')}")
+            lines.append(f"Result message ID: {message.get('messageId')}")
     if payload.get("summary"):
         lines.append("Message:")
         lines.append(_content_excerpt(payload.get("summary"), min(1600, max(500, budget // 5))))

@@ -186,6 +186,7 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     "ask_user",
     "spec_broker",
     "session_message_broker",
+    "session_command_broker",
     "session_context_broker",
     "config_broker",
     "mcp_server_config",

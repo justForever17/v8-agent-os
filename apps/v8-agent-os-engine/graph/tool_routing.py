@@ -41,6 +41,7 @@ SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS = {
     "delegation_broker",
     "runtime_broker",
     "session_message_broker",
+    "session_command_broker",
     "ask_user",
     "write_todos",
     "update_todo",
@@ -1270,6 +1271,13 @@ def create_routed_tool_node(tools, name, fallback_goto):
         from core.runtime_episode_control import assert_episode_execution_allowed
         from erc.runtime_context import get_runtime_context
         assert_episode_execution_allowed(get_runtime_context())
+        from erc.session_command_service import validate_assignment_execution_context
+        from erc.runtime_context import bind_runtime_context
+        state_route = (request.state or {}).get("current_route_context") or {}
+        context = get_runtime_context()
+        if state_route.get("project_assignment"):
+            context = {**context, "project_assignment": state_route["project_assignment"]}
+        assignment_context = validate_assignment_execution_context(context)
         if request.tool is not None and request.tool_call.get("id"):
             # BaseTool's start callback contains args, not the ToolCall envelope.
             # Attach the actual invocation identity to this per-call copy so
@@ -1298,7 +1306,8 @@ def create_routed_tool_node(tools, name, fallback_goto):
                     pass
                 raise
 
-        return await async_tool_call_wrapper(request, execute_and_settle_sync_tool, tool_node_name=name)
+        with bind_runtime_context(**assignment_context):
+            return await async_tool_call_wrapper(request, execute_and_settle_sync_tool, tool_node_name=name)
 
     base_node = ToolNode(
         tools,

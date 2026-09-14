@@ -10,7 +10,44 @@ from erc.runtime_context import get_runtime_context
 from erc.session_coordination_service import session_coordination_service
 
 
-__all__ = ["session_message_broker"]
+__all__ = ["session_message_broker", "session_command_broker"]
+
+
+@tool
+def session_command_broker(
+    mode: str,
+    assignmentId: str = "",
+    revision: int = 0,
+    title: str = "",
+    taskBrief: Optional[dict[str, Any]] = None,
+    content: str = "",
+    idempotencyKey: str = "",
+    userAuthorizationQuote: str = "",
+    after: str = "",
+    limit: int = 20,
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> str:
+    """Create, list, continue or revoke persistent project work sessions.
+
+    create: use a stable idempotencyKey, title, the current user's verbatim
+    authorization to create task sessions, and a taskBrief with goal, explicit
+    readSet/writeSet (empty means no writes), expectedOutputs, acceptanceContract.
+    Sessions use the current root's ready workspace. Creation returns assignmentId
+    and revision; it does not dispatch. continue: pass that assignmentId/revision,
+    a stable idempotencyKey and the task instruction in content. This uses the
+    durable project authorization across later root turns, including "continue".
+    list discovers this root's assignments, with optional after cursor. revoke
+    invalidates an exact assignment revision. Actor, owner, charter authority,
+    Capsule and workspace identity are derived and rechecked on the server.
+    Ordinary peer messages retain their separate evidence-only contract.
+    """
+    payload = session_coordination_service.command(
+        context=get_runtime_context(), state=state or {}, mode=str(mode).strip().lower(),
+        assignment_id=assignmentId, revision=revision, title=title, task=taskBrief,
+        content=content, idempotency_key=idempotencyKey,
+        authorization_quote=userAuthorizationQuote, after_id=after, limit=max(1, min(limit, 50)),
+    )
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 @tool

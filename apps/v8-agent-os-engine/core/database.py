@@ -369,6 +369,32 @@ class DatabaseManager:
                         raise
                     time.sleep(delays[min(attempt, len(delays) - 1)] + lock_timeout_s)
 
+    def _ensure_session_command_tables(self, conn: sqlite3.Connection) -> None:
+        """Create the canonical durable root/child assignment relation."""
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS session_command_assignments (
+                id TEXT PRIMARY KEY,
+                root_session_id TEXT NOT NULL,
+                child_session_id TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                contract_json TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'active',
+                idempotency_key TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                revoked_at TIMESTAMP,
+                FOREIGN KEY (root_session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                FOREIGN KEY (child_session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                UNIQUE (root_session_id, idempotency_key)
+            )
+            '''
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_command_root ON session_command_assignments (root_session_id, status, updated_at DESC)"
+        )
+
     @contextmanager
     def get_connection(self) -> Iterator[sqlite3.Connection]:
         """Returns a connection to the database configured during initialization."""
@@ -394,6 +420,7 @@ class DatabaseManager:
                 # current version marker but still lack these tables.
                 self._ensure_runtime_safety_tables(conn)
                 self._ensure_creative_media_store_tables(conn)
+                self._ensure_session_command_tables(conn)
                 conn.commit()
                 return
             if schema_version > DATABASE_SCHEMA_VERSION:
@@ -402,6 +429,7 @@ class DatabaseManager:
                     f"{schema_version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
                 )
             self._ensure_runtime_safety_tables(conn)
+            self._ensure_session_command_tables(conn)
 
             # 1. Sessions Table (Threads)
             conn.execute('''
@@ -3302,6 +3330,127 @@ class DatabaseManager:
             data["created_at"] = normalize_utc_iso(data.get("created_at")) or data.get("created_at")
             data["updated_at"] = normalize_utc_iso(data.get("updated_at")) or data.get("updated_at")
             return data
+
+    def create_session_placeholder(
+        self, *, session_id: str, title: str, user_id: str,
+        metadata: Dict[str, Any], assignment: Optional[Dict[str, Any]] = None,
+        binding: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Commit the child, its scope and its assignment together, or none."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if assignment:
+                    root_id = assignment["rootSessionId"]
+                    root = conn.execute("SELECT user_id FROM sessions WHERE id = ?", (root_id,)).fetchone()
+                    if not root or root["user_id"] != user_id:
+                        raise ValueError("assignment_owner_mismatch")
+                    existing = conn.execute(
+                        "SELECT * FROM session_command_assignments WHERE root_session_id = ? AND idempotency_key = ?",
+                        (root_id, assignment["idempotencyKey"]),
+                    ).fetchone()
+                    if existing:
+                        row = self._hydrate_session_command_assignment(dict(existing))
+                        if row["contract"]["creationDigest"] != assignment["contract"]["creationDigest"]:
+                            raise ValueError("assignment_idempotency_conflict")
+                        return {"sessionId": row["childSessionId"], "assignment": row, "idempotent": True}
+                    current_binding = conn.execute(
+                        "SELECT * FROM session_scope_bindings WHERE session_id = ?", (root_id,)
+                    ).fetchone()
+                    for key in ("workspace_id", "workspace_path", "project_id", "resolved_scope", "status"):
+                        if not current_binding or current_binding[key] != (binding or {}).get(key):
+                            raise ValueError("assignment_root_scope_changed")
+                now = utc_now_iso()
+                conn.execute(
+                    "INSERT INTO sessions (id, title, user_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_id, title, user_id, json.dumps(metadata, ensure_ascii=False), now, now),
+                )
+                if binding:
+                    conn.execute(
+                        """INSERT INTO session_scope_bindings
+                        (session_id, conversation_id, user_id, workspace_id, workspace_path, project_id,
+                         resolved_scope, scope_source, scope_confidence, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1.0, 'active')""",
+                        (session_id, session_id, user_id, binding.get("workspace_id"),
+                         binding.get("workspace_path"), binding.get("project_id"),
+                         binding["resolved_scope"], "project_assignment"),
+                    )
+                if assignment:
+                    conn.execute(
+                        """INSERT INTO session_command_assignments
+                        (id, root_session_id, child_session_id, user_id, contract_json, idempotency_key)
+                        VALUES (?, ?, ?, ?, ?, ?)""",
+                        (assignment["assignmentId"], assignment["rootSessionId"], session_id, user_id,
+                         json.dumps(assignment["contract"], ensure_ascii=False), assignment["idempotencyKey"]),
+                    )
+                conn.commit()
+                return {"sessionId": session_id, "assignmentId": (assignment or {}).get("assignmentId"), "idempotent": False}
+        result = self._run_write_with_retry(_write)
+        if result.get("assignmentId"):
+            result["assignment"] = self.get_session_command_assignment(result["assignmentId"])
+        return result
+
+    @staticmethod
+    def _hydrate_session_command_assignment(row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["contract"] = json.loads(data.pop("contract_json"))
+        for target, source in (
+            ("assignmentId", "id"), ("rootSessionId", "root_session_id"),
+            ("childSessionId", "child_session_id"), ("userId", "user_id"),
+            ("idempotencyKey", "idempotency_key"),
+        ):
+            data[target] = data[source]
+        return data
+
+    def get_session_command_assignment(self, assignment_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM session_command_assignments WHERE id = ?", (assignment_id,)).fetchone()
+            return self._hydrate_session_command_assignment(dict(row)) if row else None
+
+    def get_session_command_assignment_for_child(self, session_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM session_command_assignments WHERE child_session_id = ?", (session_id,)).fetchone()
+            return self._hydrate_session_command_assignment(dict(row)) if row else None
+
+    def get_session_command_assignment_by_idempotency(self, root_session_id: str, key: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM session_command_assignments WHERE root_session_id = ? AND idempotency_key = ?",
+                (root_session_id, key),
+            ).fetchone()
+            return self._hydrate_session_command_assignment(dict(row)) if row else None
+
+    def list_session_command_assignments(self, root_session_id: str, *, limit: int = 50, after_id: str = "") -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM session_command_assignments WHERE root_session_id = ? AND id > ? ORDER BY id LIMIT ?",
+                (root_session_id, after_id, max(1, min(int(limit), 200))),
+            ).fetchall()
+            return [self._hydrate_session_command_assignment(dict(row)) for row in rows]
+
+    def revoke_session_command_assignment(self, assignment_id: str, *, user_id: str, session_id: str, revision: int) -> bool:
+        with self.get_connection() as conn:
+            changed = conn.execute(
+                """UPDATE session_command_assignments
+                   SET status = 'revoked', revision = revision + 1, revoked_at = ?, updated_at = ?
+                   WHERE id = ? AND user_id = ? AND revision = ? AND status = 'active'
+                   AND (root_session_id = ? OR child_session_id = ?)""",
+                (utc_now_iso(), utc_now_iso(), assignment_id, user_id, revision, session_id, session_id),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+
+    def session_command_user_revision(self, session_id: str) -> str:
+        """Fingerprint human intent, excluding coordination messages (never stored as user turns)."""
+        with self.get_connection() as conn:
+            facts = []
+            for table, column in (("messages", "content"), ("chat_canonical_messages", "content_text")):
+                rows = conn.execute(
+                    f"SELECT id, {column} FROM {table} WHERE session_id = ? AND role = 'user' ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+                facts.extend((table, str(row[0]), str(row[1])) for row in rows)
+        return _runtime_episode_payload_fingerprint({"humanTurns": facts})
 
     def delete_session(self, session_id: str):
         normalized_session_id = str(session_id or "").strip()

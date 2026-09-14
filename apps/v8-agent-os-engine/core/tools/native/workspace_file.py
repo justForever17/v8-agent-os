@@ -67,6 +67,15 @@ def _task_write_scope_values(runtime_context: dict[str, Any]) -> list[str]:
 
 
 def _task_write_scope_allows(runtime_context: dict[str, Any], target_path: Path) -> bool:
+    if runtime_context.get("project_assignment"):
+        from erc.session_command_service import validate_assignment_execution_context
+        try:
+            verified = validate_assignment_execution_context(runtime_context)
+        except (ValueError, OSError):
+            return False
+        runtime_context = {**runtime_context, **verified}
+        if runtime_context.get("engineering_capsule_mode") != "write" or not runtime_context.get("allowed_write_paths"):
+            return False
     runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
     capsule_mode = str(
         runtime_context.get("engineering_capsule_mode")

@@ -493,7 +493,9 @@ def _enrich_session_navigation(session_row: dict, context: dict | None = None) -
 def _build_web_session_index_records() -> list[dict]:
     sessions: list[dict] = []
     navigation_context = _session_navigation_context()
-    for row in db.get_sessions():
+    from erc.session_lifecycle_service import session_lifecycle_service
+
+    for row in session_lifecycle_service.list(database=db):
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         if _is_hidden_compat_session(row, metadata):
             continue
@@ -763,37 +765,11 @@ async def get_sessions_quick_index(
 async def create_session(data: dict = Body(...)):
     """Create a new session placeholder."""
     try:
-        session_id = str(uuid.uuid4())
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-        metadata = dict(metadata)
-        for key in ("externalSurface", "clientGroup", "source"):
-            value = str(data.get(key) or "").strip()
-            if value:
-                metadata[key] = value
-        if metadata.get("externalSurface") == "acp_bridge":
-            metadata.setdefault("source", "acp_bridge")
-            metadata.setdefault("clientGroup", "acp_bridge")
-            metadata.setdefault("historyGroup", "external_agent_clients")
-        db.create_or_update_session(
-            session_id=session_id,
-            title=data.get("title", "New Chat"),
-            user_id=data.get("userId", "anonymous"),
-            metadata=metadata or None,
-        )
-        if data.get("projectId") or data.get("workspaceId") or data.get("workspacePath") or data.get("scopeHint"):
-            scope_resolution_service.resolve(
-                session_id=session_id,
-                conversation_id=session_id,
-                user_id=data.get("userId", "anonymous"),
-                user_query="",
-                project_id=data.get("projectId"),
-                workspace_id=data.get("workspaceId"),
-                workspace_path=data.get("workspacePath"),
-                thread_id=data.get("threadId"),
-                scope_hint=data.get("scopeHint"),
-                scope_mode=data.get("scopeMode", "explicit"),
-            )
-        session = db.get_session(session_id)
+        from erc.session_lifecycle_service import session_lifecycle_service
+
+        created = session_lifecycle_service.create(data, database=db)
+        session_id = created["sessionId"]
+        session = created["session"]
         workflow_view = workflow_ledger_service.get_session_workflow_view(session_id) or {}
         approvals: list[dict] = []
         controls = build_projection_controls(workflow_view, approvals)

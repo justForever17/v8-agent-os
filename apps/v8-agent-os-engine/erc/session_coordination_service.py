@@ -178,7 +178,9 @@ def _latest_human(messages: Iterable[Any]) -> tuple[str, bool]:
         if _message_role(message) not in {"user", "human"}:
             continue
         kwargs = _message_additional_kwargs(message)
-        is_coordination = isinstance(kwargs.get("v8os_session_coordination"), dict)
+        is_coordination = any(isinstance(kwargs.get(key), dict) for key in (
+            "v8os_session_coordination", "v8os_session_command_assignment",
+        ))
         return _message_content(message), is_coordination
     return "", False
 
@@ -256,6 +258,16 @@ def _response_tokens(value: Any) -> set[str]:
 class SessionCoordinationService:
     def __init__(self) -> None:
         self._dispatch_lock = threading.RLock()
+
+    def command(self, *, context: dict[str, Any], state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        from erc.session_command_service import SessionCommandService
+
+        return SessionCommandService(database=db, coordination=self).command(context=context, state=state, **kwargs)
+
+    def assignment_for_message(self, row: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+        from erc.session_command_service import SessionCommandService
+
+        return SessionCommandService(database=db, coordination=self).assignment_for_message(row, session_id=session_id)
 
     @staticmethod
     def detail_ref(message_id: str) -> str:
@@ -807,6 +819,14 @@ class SessionCoordinationService:
                     message_id,
                     state="blocked",
                     error_code="delivery_owner_changed",
+                ) or row
+                self._emit_transition(updated, "session_coordination.blocked")
+                return updated
+            try:
+                self.assignment_for_message(row, session_id=target_session_id)
+            except (ValueError, OSError) as exc:
+                updated = db.update_session_coordination_message(
+                    message_id, state="blocked", error_code=str(exc),
                 ) or row
                 self._emit_transition(updated, "session_coordination.blocked")
                 return updated

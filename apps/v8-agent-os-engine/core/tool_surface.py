@@ -155,7 +155,7 @@ def runtime_kind_for_tool(tool_name: str) -> str:
         return "runtime_broker"
     if name == "session_context_broker":
         return "session_context"
-    if name == "session_message_broker":
+    if name in {"session_message_broker", "session_command_broker"}:
         return "session_coordination"
     if name == "delegation_broker" or name.startswith("delegation_") or name.startswith("subagent_"):
         return "subagent_swarm"
@@ -223,7 +223,7 @@ def _tool_output_kind(tool_name: str) -> str:
     normalized = (tool_name or "").lower()
     if normalized == "session_context_broker":
         return "diagnostic"
-    if normalized == "session_message_broker":
+    if normalized in {"session_message_broker", "session_command_broker"}:
         return "operation"
     if normalized == "fetch_skill_instructions":
         return "skill_instructions"
@@ -2773,6 +2773,20 @@ def _decision_agent_visible_surface(
         renderer_result = _render_plugin_broker_surface(payload, raw_ref)
     elif tool_name == "session_context_broker":
         renderer_result = _render_session_context_surface(payload, raw_ref, budget=budget)
+    elif tool_name == "session_command_broker":
+        def compact_assignment(item):
+            return {
+                key: item.get(key) for key in
+                ("assignmentId", "rootSessionId", "childSessionId", "revision", "status",
+                 "authorizationRef", "scopeRevision", "requirementRevision")
+            }
+        compact = {key: payload[key] for key in ("ok", "error", "idempotent", "nextCursor", "message") if key in payload}
+        if isinstance(payload.get("assignment"), dict):
+            compact["assignment"] = compact_assignment(payload["assignment"])
+        if isinstance(payload.get("assignments"), list):
+            compact["assignments"] = [compact_assignment(item) for item in payload["assignments"] if isinstance(item, dict)]
+        compact["rawRef"] = raw_ref
+        renderer_result = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     elif tool_name == "session_message_broker":
         renderer_result = _render_session_coordination_surface(payload, raw_ref, budget=budget)
     elif tool_name == "system_operations":

@@ -839,11 +839,27 @@ class SessionCoordinationService:
         delivered = self.dispatch_message(message_id) or updated
         return {"handled": True, "approved": True, "message": self.compact_ref(delivered)}
 
+    def _hold_stopped_project_result(self, row: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if row.get("authority") != "project_result":
+            return None
+        error = db.session_project_result_delivery_error(row["id"])
+        if not error:
+            return None
+        if error == "project_result_source_paused":
+            return row
+        updated = db.update_session_coordination_message(row["id"], state="blocked", error_code=error,
+            metadata_updates={"deliveryReplayRequired": False}) or row
+        self._emit_transition(updated, "session_coordination.blocked")
+        return updated
+
     def dispatch_message(self, message_id: str) -> Optional[dict[str, Any]]:
         with self._dispatch_lock:
             row = db.get_session_coordination_message(message_id)
             if not row or str(row.get("state") or "") not in {"queued", "promoted"}:
                 return row
+            held = self._hold_stopped_project_result(row)
+            if held:
+                return held
             if row.get("authority") == "project_result" and row.get("metadata", {}).get("superseded"):
                 return db.update_session_coordination_message(message_id, state="replied") or row
             if self._is_expired(row):
@@ -927,6 +943,10 @@ class SessionCoordinationService:
                     target_run_id=active_run_id,
                     timestamp_field="promoted_at",
                 ) or row
+                if updated.get("state") != "promoted":
+                    if updated.get("state") == "blocked":
+                        self._emit_transition(updated, "session_coordination.blocked")
+                    return updated
                 command_service.issue_control_signal(
                     active_run_id,
                     command="session_coordination",
@@ -957,6 +977,9 @@ class SessionCoordinationService:
         return self.dispatch_message(str((promoted or rows[0]).get("id") or ""))
 
     def _wake_idle_target(self, row: dict[str, Any], target_session: dict[str, Any]) -> dict[str, Any]:
+        held = self._hold_stopped_project_result(row)
+        if held:
+            return held
         message_id = str(row.get("id") or "")
         run_id = f"run_{uuid.uuid4().hex}"
         target_session_id = str(row.get("targetSessionId") or row.get("target_session_id") or "")
@@ -996,6 +1019,12 @@ class SessionCoordinationService:
                 **({"waitGeneration": wait_claim["generation"]} if wait_claim else {}),
             } if row.get("authority") == "project_result" else None,
         ) or row
+        if updated.get("state") != "promoted":
+            if not wait_claim:
+                db.update_run_record(run_id, status="cancelled", error_message="project_result_delivery_stopped_before_schedule")
+            if updated.get("state") == "blocked":
+                self._emit_transition(updated, "session_coordination.blocked")
+            return updated
         try:
             if row.get("authority") == "project_assignment":
                 from erc.session_command_service import SessionCommandService
@@ -1055,7 +1084,10 @@ class SessionCoordinationService:
             error_code="",
             timestamp_field="injected_at",
         ) or row
-        self._emit_transition(updated, "session_coordination.injected")
+        if updated.get("state") == "injected":
+            self._emit_transition(updated, "session_coordination.injected")
+        elif updated.get("state") == "blocked":
+            self._emit_transition(updated, "session_coordination.blocked")
         return updated
 
     def mark_failed(
@@ -1123,6 +1155,8 @@ class SessionCoordinationService:
             limit=20,
         )
         for row in promoted:
+            if self._hold_stopped_project_result(row):
+                continue
             updated = db.update_session_coordination_message(
                 str(row.get("id") or ""),
                 state="queued",
@@ -1136,6 +1170,8 @@ class SessionCoordinationService:
             limit=20,
         )
         for row in injected:
+            if self._hold_stopped_project_result(row):
+                continue
             message_type = str(row.get("messageType") or row.get("message_type") or "")
             if message_type == "reply":
                 if row.get("authority") == "project_result" and not (
@@ -1189,6 +1225,8 @@ class SessionCoordinationService:
         )
         for row in rows:
             if row.get("authority") == "project_result":
+                if self._hold_stopped_project_result(row):
+                    continue
                 metadata = row.get("metadata") or {}
                 if metadata.get("superseded"):
                     db.update_session_coordination_message(row["id"], state="replied")

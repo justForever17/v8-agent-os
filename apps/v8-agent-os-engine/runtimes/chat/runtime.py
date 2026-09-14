@@ -2018,6 +2018,8 @@ class ChatRuntime:
             return {}
         if str(row.get("targetSessionId") or row.get("target_session_id") or "") != session_id:
             return {}
+        if row.get("authority") == "project_result" and db.session_project_result_delivery_error(message_id):
+            return {}
         if row.get("authority") == "project_assignment":
             target = db.get_session(session_id) or {}
             if str(request.user_id or "") != str(target.get("user_id") or ""):
@@ -4116,6 +4118,11 @@ class ChatRuntime:
         return activation
 
     def record_request_inputs(self, chat_run: ChatRunContext) -> dict[str, Any] | None:
+        coordination = getattr(chat_run.prepared, "session_coordination_message", None) or {}
+        if coordination.get("authority") == "project_result":
+            blocked = db.session_project_result_delivery_error(str(coordination.get("messageId") or ""))
+            if blocked:
+                raise ValueError(blocked)
         request = chat_run.request
         client_message_id = self._request_client_message_id(request)
         metadata = {
@@ -4467,10 +4474,12 @@ class ChatRuntime:
 
             coordination_message_id = str(session_coordination_message.get("messageId") or "").strip()
             if coordination_message_id:
-                session_coordination_service.mark_injected(
+                injected = session_coordination_service.mark_injected(
                     coordination_message_id,
                     target_run_id=chat_run.active_run_id,
                 )
+                if not injected or injected.get("state") != "injected":
+                    raise ValueError((injected or {}).get("errorCode") or "session_coordination_message_unavailable")
                 workflow_ledger_service.record_step_inputs(
                     chat_run.active_run_id,
                     inputs={
@@ -5463,6 +5472,9 @@ class ChatRuntime:
 
         from erc.session_coordination_service import session_coordination_service
 
+        if (coordination_row.get("authority") == "project_result"
+                and db.session_project_result_delivery_error(str(coordination_row.get("id") or coordination_row.get("messageId") or ""))):
+            return None
         coordination_message = {
             **session_coordination_service.compact_ref(
                 coordination_row,
@@ -11877,6 +11889,26 @@ class ChatRuntime:
                 node="session_lane",
             )
         activation = self.emit_lifecycle_start_events(chat_run)
+        if activation.get("updated"):
+            try:
+                self.record_request_inputs(chat_run)
+            except ValueError as exc:
+                reason = str(exc)
+                if not (reason.startswith("project_result_") or reason == "session_coordination_message_unavailable"):
+                    raise
+                activation = {"updated": False, "reason": reason}
+        rejection = str(activation.get("reason") or "")
+        if not activation.get("updated") and (rejection.startswith("project_result_") or rejection == "session_coordination_message_unavailable"):
+            coordination = chat_run.prepared.session_coordination_message or {}
+            record = run_service.get_run(chat_run.active_run_id) or {}
+            coordination_id = str(coordination.get("messageId") or "")
+            # Only retire the run created for this rejected delivery. A parent
+            # waiting on several assignments keeps its own control/lifetime.
+            if coordination_id and (record.get("metadata") or {}).get("coordinationMessageId") == coordination_id:
+                if rejection == "project_result_source_paused":
+                    db.update_session_coordination_message(str(coordination.get("messageId") or ""),
+                        state="queued", clear_target_run_id=True, error_code=rejection)
+                erc_kernel.cancel_run(chat_run.active_run_id, reason=rejection)
         if not activation.get("updated"):
             current_status = str(
                 activation.get("currentStatus")
@@ -11907,7 +11939,6 @@ class ChatRuntime:
                 node="session_lane",
             )
             return
-        self.record_request_inputs(chat_run)
         self._apply_explicit_plugin_grants(chat_run)
         try:
             from erc.session_coordination_service import session_coordination_service
@@ -12217,10 +12248,14 @@ class ChatRuntime:
                             continuation_bundle = None
                             session_coordination_service.dispatch_for_session(chat_run.session_id)
                             break
-                        session_coordination_service.mark_injected(
+                        injected_coordination = session_coordination_service.mark_injected(
                             coordination_message_id,
                             target_run_id=chat_run.active_run_id,
                         )
+                        if not injected_coordination or injected_coordination.get("state") != "injected":
+                            continuation_bundle = None
+                            session_coordination_service.dispatch_for_session(chat_run.session_id)
+                            break
                         coordination_bundle = await self.create_session_coordination_bundle(
                             chat_run=chat_run,
                             previous_bundle=execution_bundle,

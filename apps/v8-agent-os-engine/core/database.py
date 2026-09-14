@@ -3697,6 +3697,9 @@ class DatabaseManager:
                 ).fetchone()
                 if not message or json.loads(message["metadata_json"] or "{}").get("waitGeneration") != generation:
                     return rejected
+                blocked = self._session_project_result_delivery_error(conn, message_id)
+                if blocked:
+                    return {**rejected, "reason": blocked}
                 for table in ("pending_approvals", "ask_user_interactions"):
                     if conn.execute(f"SELECT 1 FROM {table} WHERE run_id = ? AND status = 'pending' LIMIT 1", (run_id,)).fetchone():
                         return rejected
@@ -4681,6 +4684,11 @@ class DatabaseManager:
                     return {"updated": False, "reason": "run_not_found"}
                 run_record = dict(row)
                 current_status = str(run_record.get("status") or "").strip()
+                coordination_id = (json.loads(run_record.get("metadata") or "{}")).get("coordinationMessageId")
+                if status == "running" and coordination_id:
+                    blocked = self._session_project_result_delivery_error(conn, coordination_id)
+                    if blocked:
+                        return {"updated": False, "reason": blocked, "currentStatus": current_status}
                 if normalized_expected and current_status not in normalized_expected:
                     conn.rollback()
                     return {
@@ -9416,11 +9424,67 @@ class DatabaseManager:
                 return True
         return self._run_write_with_retry(_write)
 
+    def session_project_result_delivery_error(self, message_id: str) -> str:
+        with self.get_connection() as conn:
+            return self._session_project_result_delivery_error(conn, message_id)
+
+    @staticmethod
+    def _session_project_result_delivery_error(conn, message_id: str) -> str:
+        """Results remain evidence; their original command grants automatic continuation."""
+        result = conn.execute("SELECT * FROM session_coordination_messages WHERE id=?", (message_id,)).fetchone()
+        if not result or result["authority"] != "project_result":
+            return ""
+        request = conn.execute("SELECT * FROM session_coordination_messages WHERE id=?",
+                               (result["reply_to_message_id"],)).fetchone()
+        if (not request or request["authority"] != "project_assignment"
+                or request["source_session_id"] != result["target_session_id"]
+                or request["target_session_id"] != result["source_session_id"]):
+            return "project_result_request_changed"
+        meta = json.loads(result["metadata_json"] or "{}")
+        assignment = conn.execute("SELECT * FROM session_command_assignments WHERE id=?", (meta.get("assignmentId"),)).fetchone()
+        if (not assignment or assignment["status"] != "active" or assignment["revision"] != meta.get("assignmentRevision")
+                or assignment["root_session_id"] != result["target_session_id"]
+                or assignment["child_session_id"] != result["source_session_id"]
+                or assignment["user_id"] != result["source_user_id"]):
+            return "project_result_assignment_changed"
+
+        def stopped(run):
+            metadata = json.loads(run["metadata"] or "{}")
+            signal = (metadata.get("control_signal") or {}).get("command")
+            if run["status"] == "cancelled" or signal in {"cancel", "interrupt"}:
+                return True
+            if run["status"] == "interrupted" and metadata.get("interrupt_reason"):
+                last_control = conn.execute("""SELECT topic FROM runtime_events WHERE run_id=?
+                    AND topic IN ('run.interrupted','run.resumed') ORDER BY seq DESC LIMIT 1""", (run["id"],)).fetchone()
+                return not last_control or last_control["topic"] == "run.interrupted"
+            return False
+
+        origin = conn.execute("SELECT * FROM run_records WHERE id=? AND session_id=?",
+                              (request["source_run_id"], result["target_session_id"])).fetchone()
+        if not origin:
+            return "project_result_source_unavailable"
+        if stopped(origin):
+            return "project_result_source_stopped"
+        origin_meta = json.loads(origin["metadata"] or "{}")
+        if ((origin_meta.get("control_signal") or {}).get("command") == "pause"
+                or (origin["status"] == "paused" and origin_meta.get("pause_reason") != "session_results_wait")):
+            return "project_result_source_paused"
+        # Cancelling a result consumer stops automatic delivery of this command's
+        # later versions too. A fresh user continue creates another request ID.
+        deliveries = conn.execute("""SELECT r.* FROM session_coordination_messages m
+            JOIN run_records r ON r.id=m.target_run_id WHERE m.reply_to_message_id=? AND m.authority='project_result'""",
+            (request["id"],)).fetchall()
+        if any(stopped(run) for run in deliveries):
+            return "project_result_delivery_stopped"
+        return ""
+
     def claim_session_project_result_replay(self, message_id: str, *, owner_id: str) -> bool:
         """One replay claim per Engine boot; a new process can recover a lost wake."""
         def _write():
             with self.get_connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                if self._session_project_result_delivery_error(conn, message_id):
+                    return False
                 row = conn.execute(
                     "SELECT metadata_json FROM session_coordination_messages WHERE id = ? AND authority = 'project_result'",
                     (message_id,),
@@ -9567,6 +9631,15 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                if state in {"promoted", "injected"}:
+                    conn.execute("BEGIN IMMEDIATE")
+                    blocked = self._session_project_result_delivery_error(conn, message_id)
+                    if blocked:
+                        if blocked != "project_result_source_paused":
+                            conn.execute("UPDATE session_coordination_messages SET state='blocked',error_code=?,updated_at=? WHERE id=?",
+                                         (blocked, utc_now_iso(), message_id))
+                            conn.commit()
+                        return
                 conn.execute(
                     f"UPDATE session_coordination_messages SET {', '.join(assignments)} WHERE id = ?",
                     tuple(values),

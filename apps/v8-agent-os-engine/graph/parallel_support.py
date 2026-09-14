@@ -920,6 +920,8 @@ def _tool_message_evidence_succeeded(message: Any, *, tool_name: str) -> bool:
         payload = json.loads(content)
     except Exception:
         payload = None
+    if not isinstance(payload, dict):
+        payload = dict(getattr(message, "additional_kwargs", {}) or {}).get("v8_command_execution")
     if isinstance(payload, dict):
         if payload.get("ok") is False:
             return False
@@ -964,14 +966,13 @@ def _tool_message_evidence_succeeded(message: Any, *, tool_name: str) -> bool:
 
 def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
     calls_by_id: dict[str, dict[str, Any]] = {}
+    records: list[dict[str, Any]] = []
     for message in messages:
         for call in _tool_call_dicts_from_message(message):
             call_id = str(call.get("id") or "").strip()
             if call_id:
                 calls_by_id[call_id] = call
 
-    records: list[dict[str, Any]] = []
-    for message in messages:
         if not isinstance(message, ToolMessage):
             continue
         call_id = str(getattr(message, "tool_call_id", "") or "").strip()
@@ -984,6 +985,9 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
         except Exception:
             payload = None
         payload = payload if isinstance(payload, dict) else {}
+        receipt = dict(getattr(message, "additional_kwargs", {}) or {}).get("v8_command_execution")
+        if not payload and isinstance(receipt, dict):
+            payload = dict(receipt)
         command = str(args.get("command") or payload.get("command") or "").strip()
         if not command:
             command_match = re.search(r"(?m)^\$\s+(.+?)\s*$", content)
@@ -994,7 +998,7 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
             path = str(path_match.group(1) if path_match else "").strip()
         stdout = str(payload.get("keyOutput") or payload.get("stdout") or payload.get("stdoutPreview") or "")
         stderr = str(payload.get("keyErrors") or payload.get("stderr") or payload.get("stderrPreview") or "")
-        if not payload:
+        if not stdout and not stderr:
             stdout_match = re.search(r"<stdout>\s*\n?(.*?)\n?\s*</stdout>", content, re.DOTALL | re.IGNORECASE)
             stderr_match = re.search(r"<stderr>\s*\n?(.*?)\n?\s*</stderr>", content, re.DOTALL | re.IGNORECASE)
             stdout = str(stdout_match.group(1) if stdout_match else "")
@@ -1011,7 +1015,8 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
         records.append(
             {
                 "toolCallId": call_id,
-                "callMatched": bool(call_id and call_id in calls_by_id),
+                "callMatched": bool(call_id and call_id in calls_by_id and call.get("name") == tool_name),
+                "toolError": getattr(message, "status", None) == "error",
                 "tool": tool_name,
                 "args": args,
                 "path": path,
@@ -1023,6 +1028,35 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
                 "succeeded": _tool_message_evidence_succeeded(message, tool_name=tool_name),
             }
         )
+    # Session admission is not command completion. Only a later call-matched
+    # observation of the same session can discharge the launch obligation.
+    launches: dict[str, dict[str, Any]] = {}
+    completed_sessions: list[dict[str, Any]] = []
+    for record in records:
+        payload = record["payload"]
+        if payload.get("kind") != "command_session":
+            continue
+        record["succeeded"] = False
+        session_id = str(payload.get("commandId") or payload.get("sessionId") or "").strip()
+        if not record["callMatched"] or record["toolError"] or payload.get("ok") is not True or not session_id:
+            continue
+        if record["tool"] == "run_system_command":
+            launches[session_id] = record
+        launch = launches.get(session_id)
+        if not launch:
+            continue
+        if record["tool"] != "run_system_command":
+            args = record["args"]
+            requested_id = str(args.get("command_id") or args.get("session_id") or "").strip()
+            if record["tool"] not in {"command_session_broker", "read_background_output"} or requested_id != session_id:
+                continue
+        if payload.get("state") != "completed" or record["returnCode"] != 0:
+            continue
+        completed_sessions.append({**record, "tool": "run_system_command", "succeeded": True,
+            "args": launch["args"], "command": launch["command"],
+            "toolCallId": launch["toolCallId"], "terminalToolCallId": record["toolCallId"],
+            "commandId": session_id})
+    records.extend(completed_sessions)
     return records
 
 
@@ -1292,11 +1326,13 @@ def _verification_command_matches_exact(command: Any, required_commands: list[An
 def _normalize_exact_verification_command_invocations(
     messages: list[Any],
     required_commands: list[Any],
+    *,
+    declared_params: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize a bounded exact command before ToolNode starts a process."""
 
     adjustments: list[dict[str, Any]] = []
-    if not required_commands:
+    if not required_commands or declared_params:
         return adjustments
     for message in messages:
         calls = getattr(message, "tool_calls", None)
@@ -1420,6 +1456,13 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     )
     contract_blob = "\n".join(_stringify_for_acceptance(value) for value in contract_values)
     required_commands = _texts(explicit.get("requiredCommands"))
+    command_params = context.get("runSystemCommandParams")
+    command_params = dict(command_params) if isinstance(command_params, dict) else {}
+    declared_command = command_params.get("command")
+    if isinstance(declared_command, str) and declared_command.strip():
+        required_commands.append(declared_command.strip())
+    else:
+        command_params = {}
     for source in (task_brief, context, capsule):
         for key in ("verificationCommand", "verification_command", "requiredCommands", "required_commands"):
             required_commands.extend(
@@ -1532,6 +1575,7 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
         "requiredCommandTargets": command_targets,
         "expectedStdout": expected_stdout,
         "expectEmptyStderr": expect_empty_stderr,
+        **({"requiredCommandParams": command_params} if command_params else {}),
     }
 
 
@@ -1552,7 +1596,7 @@ def _verification_evidence_result(
     missing_tools: list[str] = []
     mismatches: list[str] = []
     successful_by_tool = {
-        tool: [record for record in records if record.get("tool") == tool and record.get("succeeded")]
+        tool: [record for record in records if record.get("tool") == tool and record.get("succeeded") and record.get("callMatched")]
         for tool in expectations["requiredTools"]
     }
     for tool_name in expectations["requiredTools"]:
@@ -1576,8 +1620,18 @@ def _verification_evidence_result(
     ]
     for required_command in expectations["requiredCommands"]:
         normalized_required = re.sub(r"\s+", " ", str(required_command).replace("\\", "/")).casefold()
-        if normalized_required and not any(normalized_required in command for command in normalized_commands):
+        exact_required = bool(expectations.get("requiredCommandParams"))
+        if normalized_required and not any(
+            normalized_required == command if exact_required else normalized_required in command
+            for command in normalized_commands
+        ):
             mismatches.append(f"required_command_not_executed:{required_command}")
+    params = expectations.get("requiredCommandParams") or {}
+    if params and command_records and not any(
+        all(record["args"].get(key) == value for key, value in params.items())
+        for record in command_records
+    ):
+        mismatches.append("command_parameters_not_preserved")
     for target in expectations["requiredCommandTargets"]:
         normalized_target = _normalized_evidence_path(target)
         if normalized_target and not any(normalized_target in command for command in normalized_commands):
@@ -1596,7 +1650,7 @@ def _verification_evidence_result(
     compact_records = [
         {
             key: record.get(key)
-            for key in ("toolCallId", "tool", "path", "command", "returnCode", "stdout", "stderr")
+            for key in ("toolCallId", "terminalToolCallId", "commandId", "tool", "path", "command", "returnCode", "stdout", "stderr")
             if record.get(key) not in (None, "", [], {})
         }
         for record in records
@@ -1642,16 +1696,39 @@ def _validate_required_verification_evidence(
         }
     if not missing and not mismatches:
         return None
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
+    allowed = set(policy.get("allowedTools") or [])
+    forbidden = set(policy.get("forbiddenTools") or [])
+    unavailable = [name for name in missing if name in forbidden or policy.get("mode") == "none"
+                   or (policy.get("mode") == "allowlist" and name not in allowed)]
+    capsule_missing = "run_system_command" in missing and not effective_engineering_capsule(task_brief)
+    surface = _reported_bound_tool_surface(delta_messages, branch)
+    if surface:
+        unavailable = sorted(set(unavailable) | {name for name in missing if name not in surface})
+    repair_required = capsule_missing or bool(unavailable)
     return {
-        "status": "failed",
+        "status": "blocked" if repair_required else "failed",
         "error": "verification_evidence_missing" if missing else "verification_evidence_mismatch",
         "missingVerificationTools": missing,
         "verificationEvidenceMismatches": mismatches,
+        "verificationEvidence": _evidence,
+        "availableTools": surface,
+        "executionContractRepair": {
+            "required": repair_required,
+            "capsuleMissing": capsule_missing,
+            "unavailableTools": unavailable,
+        },
         "localSelfCheck": (
             "This verification worker returned without tool evidence that semantically matches its execution "
             "contract. A successful unrelated command, a tool name, or a prose claim is not proof."
         ),
-        "acceptanceHint": "Retry the verification worker against the exact declared paths, commands, and outputs before acceptance.",
+        "acceptanceHint": (
+            "Supervisor must repair the typed Capsule/toolPolicy for this task and retry it within the authorized scope. "
+            "Do not bypass the allowlist or accept missing execution evidence."
+            if repair_required else
+            "Retry the verification worker against the exact declared paths, commands, and outputs before acceptance."
+        ),
     }
 
 
@@ -2882,6 +2959,7 @@ async def _run_parallel_agent_branch(
             _normalize_exact_verification_command_invocations(
                 update_messages,
                 required_verification_commands,
+                declared_params=verification_expectations.get("requiredCommandParams"),
             )
             if isinstance(result_update, dict) and current_node == agent_id and not preflight_command_deviations
             else []
@@ -3370,7 +3448,9 @@ async def _run_parallel_agent_branch(
                         delta_messages=list(local_state.get("messages") or [])[initial_message_count:],
                     )
                 )
-                if verification_failure and verification_correction_count < 2:
+                if verification_failure and verification_correction_count < 2 and not (
+                    verification_failure.get("executionContractRepair") or {}
+                ).get("required"):
                     verification_correction_count += 1
                     missing_tools = [
                         str(item).strip()
@@ -3384,6 +3464,8 @@ async def _run_parallel_agent_branch(
                         )
                     if "run_system_command" in missing_tools:
                         required_steps.append(
+                            "Use the declared runSystemCommandParams unchanged; observe the same command session until its terminal exit result."
+                            if verification_expectations.get("requiredCommandParams") else
                             "Call `run_system_command` once with the exact verification command from the acceptance contract, "
                             "using the current Active Workspace Root as cwd and mode='sync' with timeout_seconds <= 90; "
                             "require returnCode=0 and preserve stdout/stderr."
@@ -3717,13 +3799,9 @@ async def _run_parallel_agent_branch(
             ),
             **artifact_status,
         }, []
-    verification_failure = (
-        None
-        if reported_failure
-        else _validate_required_verification_evidence(
-            branch=branch,
-            delta_messages=delta_messages,
-        )
+    verification_failure = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=delta_messages,
     )
     if verification_failure:
         return delta_messages, delta_todos, {

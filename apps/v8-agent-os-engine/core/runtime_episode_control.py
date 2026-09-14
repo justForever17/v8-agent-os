@@ -36,7 +36,9 @@ def inspect_episode(episode_id: str, *, session_id: str, run_id: str, detail: bo
     handoffs = db.list_runtime_episode_handoffs(episode_id)
     if not detail:
         messages = [{key: item[key] for key in ("messageId", "kind", "deliverySeq", "deliveryState", "receipt") if key in item} for item in messages]
-        handoffs = [{key: payload[key] for key in ("handoffRefId", "producerEpisodeId", "kind", "status", "compactSummary", "version", "sourceVersion", "usableFor", "proofRefs", "artifactRefs") if key in payload}
+        handoffs = [{**{key: payload[key] for key in ("handoffRefId", "producerEpisodeId", "kind", "status", "compactSummary", "version", "sourceVersion", "usableFor", "proofRefs", "artifactRefs") if key in payload},
+                     "results": [{key: result[key] for key in ("taskBriefId", "delegationId", "status", "error", "missingVerificationTools", "executionContractRepair", "availableTools", "acceptanceHint", "supervisorAcceptance") if key in result}
+                                 for result in payload.get("results", []) if isinstance(result, dict)]}
                     for item in handoffs[-12:] for payload in [dict(item.get("payload") or item)]]
     return {
         "episodeId": episode_id, "state": episode["state"],

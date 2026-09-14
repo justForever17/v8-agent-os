@@ -7474,6 +7474,8 @@ def test_parallel_verifier_gets_one_correction_to_collect_missing_command_eviden
                 goto="supervisor",
                 update={
                     "messages": [
+                        AIMessage(content="", tool_calls=[{"id": "read-proof", "name": "read_native_file",
+                            "args": {"path": "src/sandbox_live.py"}}]),
                         ToolMessage(
                             content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
                             name="read_native_file",
@@ -7567,6 +7569,8 @@ def test_parallel_verifier_gets_focused_correction_after_plain_json_tool_intent(
         calls.append(list(state.get("messages") or []))
         if len(calls) == 1:
             messages = [
+                AIMessage(content="", tool_calls=[{"id": "read-json-proof", "name": "read_native_file",
+                    "args": {"path": "src/sandbox_live.py"}}]),
                 ToolMessage(
                     content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
                     name="read_native_file",

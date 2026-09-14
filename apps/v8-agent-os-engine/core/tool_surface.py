@@ -595,6 +595,9 @@ def _source_line(item: dict[str, Any], *, title_limit: int = 120, url_limit: int
 
 
 def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    if payload.get("mode") == "inspect" and payload.get("episodeId"):
+        facts = {key: payload[key] for key in ("episodeId", "state", "executionTerminal", "completedAt", "phase", "blockingReason", "version", "handoffs", "controls", "controlWindow", "detailRef", "detailTool") if key in payload}
+        return "Runtime episode inspection\n" + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
     mode = _short_text(payload.get("mode") or "status", 40)
     failed = payload.get("ok") is False
     state = payload.get("state") or payload.get("status")
@@ -2215,6 +2218,8 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget:
 
 
 def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    if payload.get("mode") == "inspect" and payload.get("episodeId"):
+        return _render_runtime_broker_surface(payload, raw_ref)
     mode = _short_text(payload.get("mode") or payload.get("kind") or "dispatch", 40)
     lines = [f"Delegation broker ({mode})"]
     summary = _first_text(payload, "summary", "message", "result", "error", limit=500)
@@ -3175,6 +3180,20 @@ def _copy_tool_message_with_budget(message: ToolMessage, content: str, budget_me
     additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
     response_metadata = dict(getattr(message, "response_metadata", {}) or {})
     additional_kwargs["v8_tool_output_budget"] = budget_meta
+    # Keep native command lifecycle facts when the Agent Surface renders JSON
+    # as terminal text. This receipt is runtime metadata, never inferred from
+    # the model's prose or from a session admission being labelled "ok".
+    if getattr(message, "name", "") in {"run_system_command", "command_session_broker", "read_background_output"}:
+        try:
+            command_payload = json.loads(message.content)
+        except (ValueError, TypeError):
+            command_payload = None
+        if isinstance(command_payload, dict) and command_payload.get("kind") in {"command_result", "command_session"}:
+            additional_kwargs["v8_command_execution"] = {
+                key: command_payload[key]
+                for key in ("kind", "ok", "state", "commandId", "sessionId", "returnCode")
+                if key in command_payload
+            }
     response_metadata["v8_tool_output_budget"] = budget_meta
     return message.model_copy(
         update={

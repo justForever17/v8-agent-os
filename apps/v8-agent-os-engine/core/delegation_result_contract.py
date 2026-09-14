@@ -189,6 +189,7 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         else None,
         "missingVerificationTools": _list(item.get("missingVerificationTools")),
         "verificationEvidenceMismatches": _list(item.get("verificationEvidenceMismatches")),
+        "executionContractRepair": to_jsonable(item.get("executionContractRepair")),
         "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
         "availableTools": _list(item.get("availableTools")),
         "requiredTool": item.get("requiredTool"),

@@ -7817,7 +7817,7 @@ class RuntimeEpisodeRunner:
             )
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
             if local_results:
-                summary = f"Delegation executed {len(local_results)} local subagent worker(s)."
+                summary = f"Delegation received {len(local_results)} local subagent result(s); parent acceptance is pending."
             if hard_failed:
                 summary += f" failed={len(hard_failed)}"
             if budget_blocked:
@@ -7885,9 +7885,12 @@ class RuntimeEpisodeRunner:
                         if isinstance(item, dict)
                     ],
                     "acceptanceCheck": {
-                        "must": {"passed": bool(ready_results) and not hard_failed and not budget_blocked, "items": list(dict.fromkeys(acceptance_tiers["must"]))},
-                        "should": {"passed": bool(ready_results) and not hard_failed, "items": list(dict.fromkeys(acceptance_tiers["should"]))},
-                        "nice": {"passed": bool(ready_results) and not hard_failed, "items": list(dict.fromkeys(acceptance_tiers["nice"]))},
+                        tier: {
+                            "passed": False if tier == "must" and (hard_failed or budget_blocked) else None,
+                            "status": "blocked" if tier == "must" and (hard_failed or budget_blocked) else "pending",
+                            "items": list(dict.fromkeys(items)),
+                        }
+                        for tier, items in acceptance_tiers.items()
                     },
                     "recoveryHints": (
                         [

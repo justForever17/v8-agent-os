@@ -250,5 +250,7 @@ def test_tool_node_budget_treats_command_timeout_as_terminal():
 
     assert "[deadline exceeded; process tree terminated]" in visible
     assert "[still running]" not in visible
-    assert "[session: timeout-session]" not in visible
+    # The stable command identity remains useful after settlement; liveness is
+    # represented by the explicit terminal state and exit code below.
+    assert "[session: timeout-session]" in visible
     assert "[exit code: 124]" in visible

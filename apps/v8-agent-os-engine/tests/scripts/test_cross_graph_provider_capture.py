@@ -84,6 +84,41 @@ def test_actual_native_sdk_binding_preserves_delegation_union_required_fields():
     assert _tool_schema_hash([supervisor_delegation_broker])
 
 
+def test_continuation_fingerprints_detect_wire_loss_and_history_replay_without_text(tmp_path):
+    from types import SimpleNamespace
+    capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")
+    content = "PRIVATE BODY <tool_call><invoke name=\"fixture\">hidden</invoke></tool_call>"
+    reasoning = "PRIVATE REASONING secret=" + "not-a-real-credential"
+    details = [{"type": "reasoning.text", "text": reasoning}]
+    capture.request({"messages": [{"role": "user", "content": capture.marker},
+                                  {"role": "assistant", "content": content, "reasoning_content": reasoning,
+                                   "reasoning_details": details, "tool_calls": [{"id": "fixture"}]}],
+                     "extra_body": {"reasoning_split": True}})
+    # The public protocol marker crosses an actual delta boundary. Simulate
+    # a converter dropping content while preserving reasoning continuation.
+    for part in (content[:20], content[20:24], content[24:]):
+        capture.conversion({"choices": [{"index": 0, "delta": {"content": part}}]}, None)
+    capture.conversion({"choices": [{"index": 0, "delta": {"reasoning_details": details}}]}, None)
+    capture.response(SimpleNamespace(content="", additional_kwargs={"reasoning_details": details}, tool_calls=[],
+                                     usage_metadata=None, response_metadata={}))
+    rows = [json.loads(line) for line in capture.output.read_text(encoding="utf-8").splitlines()]
+    request, response = rows[0], rows[-1]
+    assert request["reasoningSplitRequested"] is True
+    history = request["assistantContinuationFacts"][0]["fields"]
+    assert history["reasoning_details"] == response["continuationFacts"]["reasoning_details"]
+    wire = response["wireContinuationFacts"][0]["fields"]["content"]
+    assert wire["concatenatedFragmentsSha256"] == capture_module._hash(content)
+    assert wire["chars"] == len(content) and wire["fragments"] == 3
+    assert wire["protocolMarkers"]["<tool_call>"] == 1
+    assert wire["protocolMarkers"]["</invoke>"] == 1
+    assert response["continuationFacts"]["content"]["chars"] == 0
+    evidence = capture.output.read_text(encoding="utf-8")
+    for private in ("PRIVATE BODY", "PRIVATE REASONING", "not-a-real-credential", "hidden", "secret="):
+        assert private not in evidence
+    capture.request({"messages": [{"role": "user", "content": capture.marker}]})
+    assert capture_module.wire_field_facts(capture.current.get()) == []
+
+
 def test_raw_invalid_arguments_and_metadata_never_save_private_values(tmp_path):
     from types import SimpleNamespace
     capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")

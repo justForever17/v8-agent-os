@@ -24,6 +24,56 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_PROTOCOL_MARKERS = ("<tool_call>", "</tool_call>", "<invoke", "</invoke>",
+                     "<parameter", "</parameter>", "<think>", "</think>", "]<]minimax[>[")
+_CONTINUATION_FIELDS = ("content", "reasoning_content", "reasoning_details")
+
+
+def opaque_field_facts(value: Any) -> dict[str, Any]:
+    """Fingerprint continuation fields without persisting text or dynamic keys."""
+    if value is None:
+        return {"type": "null", "chars": 0}
+    serialized = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return {"type": type(value).__name__, "chars": len(serialized),
+            "utf8Bytes": len(serialized.encode("utf-8")), "sha256": _hash(serialized),
+            "protocolMarkers": {marker: serialized.count(marker) for marker in _PROTOCOL_MARKERS}}
+
+
+def continuation_facts(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: opaque_field_facts(payload[key]) for key in _CONTINUATION_FIELDS if key in payload}
+
+
+def accumulate_wire_fields(context: dict, choice_index: int, delta: dict) -> None:
+    """Keep constant memory for raw text deltas, including split marker tokens."""
+    fields = context.setdefault("wireFields", {}).setdefault(choice_index, {})
+    for key in _CONTINUATION_FIELDS:
+        value = delta.get(key)
+        if value is None:
+            continue
+        row = fields.setdefault(key, {"fragments": 0, "chars": 0, "utf8Bytes": 0,
+                                     "digest": hashlib.sha256(), "tail": "",
+                                     "protocolMarkers": {marker: 0 for marker in _PROTOCOL_MARKERS}})
+        row["fragments"] += 1
+        row["lastValueFacts"] = opaque_field_facts(value)
+        serialized = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        encoded = serialized.encode("utf-8")
+        row["chars"] += len(serialized)
+        row["utf8Bytes"] += len(encoded)
+        row["digest"].update(encoded)
+        joined = row["tail"] + serialized
+        for marker in _PROTOCOL_MARKERS:
+            row["protocolMarkers"][marker] += joined.count(marker) - row["tail"].count(marker)
+        row["tail"] = joined[-64:]
+
+
+def wire_field_facts(context: dict) -> list[dict[str, Any]]:
+    return [{"choiceIndex": index, "fields": {
+        key: {**{name: value for name, value in row.items() if name not in {"digest", "tail"}},
+              "concatenatedFragmentsSha256": row["digest"].hexdigest()}
+        for key, row in fields.items()}}
+        for index, fields in sorted(context.get("wireFields", {}).items())]
+
+
 def _without_url_queries(value: Any) -> Any:
     if isinstance(value, dict):
         return {_without_url_queries(str(key)): _without_url_queries(child) for key, child in value.items()}
@@ -166,6 +216,9 @@ class ScopedCapture:
             context = {"captureId": uuid.uuid4().hex}
             self.current.set(context)
         context["matched"] = True
+        # An invocation context can be reused by SDK retry; don't attribute the
+        # earlier response's fragments to a later network attempt.
+        context.pop("wireFields", None)
         invocation = self.invocation.get()
         if invocation is not None:
             invocation["captureId"] = context["captureId"]
@@ -185,6 +238,11 @@ class ScopedCapture:
                     "outputCaps": cap_facts(payload),
                     "outputTokenPolicy": (invocation or {}).get("outputTokenPolicy"),
                     "streamUsageRequested": (payload.get("stream_options") or {}).get("include_usage") is True,
+                    "reasoningSplitRequested": payload.get("reasoning_split", (payload.get("extra_body") or {}).get("reasoning_split")) is True,
+                    "assistantContinuationFacts": [
+                        {"messageIndex": index, "hasToolCalls": bool(message.get("tool_calls")),
+                         "fields": continuation_facts(message)}
+                        for index, message in enumerate(messages) if message.get("role") == "assistant"],
                     "availableToolNames": [tool["function"].get("name") for tool in payload.get("tools", [])
                                            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)],
                     "promptFacts": {"registeredAgentIndexPresent": "[registeredAgentIndex]" in system_text,
@@ -205,6 +263,8 @@ class ScopedCapture:
         metadata = {**dict(getattr(message, "response_metadata", None) or {}), **dict(generation_info or {})}
         extra = dict(getattr(message, "additional_kwargs", None) or {})
         self.write({"boundary": "openai_sdk_assembled_response", "captureId": context["captureId"],
+                    "continuationFacts": continuation_facts({"content": getattr(message, "content", None), **extra}),
+                    "wireContinuationFacts": wire_field_facts(context),
                     "toolCallsView": "sdk_parsed_may_repair_incomplete_json_not_wire_arguments",
                     "toolCalls": summarize_calls(list(getattr(message, "tool_calls", None) or [])),
                     "argumentViews": {
@@ -228,6 +288,7 @@ class ScopedCapture:
             if not isinstance(choice, dict):
                 continue
             delta = choice.get("delta") or {}
+            accumulate_wire_fields(context, choice.get("index") if type(choice.get("index")) is int else 0, delta)
             if delta.get("tool_calls") or choice.get("finish_reason"):
                 rows.append({"index": choice.get("index") if type(choice.get("index")) is int else None,
                              "finishReason": finish_fact(choice.get("finish_reason")),

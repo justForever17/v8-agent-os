@@ -3002,6 +3002,10 @@ class DatabaseManager:
     def create_or_update_session(self, session_id: str, title: str, user_id: str = "anonymous", agent_id: Optional[str] = None, metadata: dict = None):
         """Creates a new session or updates the updated_at timestamp if it exists."""
         with self.get_connection() as conn:
+            # Admission can arrive concurrently from chat, hooks and cron. The
+            # metadata merge must read under the same writer transaction as
+            # its insert/update, including preservation of user-owned titles.
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             cursor.execute('SELECT id, metadata FROM sessions WHERE id = ?', (session_id,))
             existing = cursor.fetchone()

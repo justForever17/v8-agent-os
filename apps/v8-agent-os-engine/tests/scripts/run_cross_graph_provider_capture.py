@@ -240,6 +240,7 @@ class ScopedCapture:
         # An invocation context can be reused by SDK retry; don't attribute the
         # earlier response's fragments to a later network attempt.
         context.pop("wireFields", None)
+        context.pop("sse", None)
         invocation = self.invocation.get()
         if invocation is not None:
             invocation["captureId"] = context["captureId"]
@@ -259,6 +260,7 @@ class ScopedCapture:
                     "schemaSha256": _hash(json.dumps(schemas, sort_keys=True, ensure_ascii=False)),
                     "toolChoice": payload.get("tool_choice"),
                     "outputCaps": cap_facts(payload),
+                    "stopPolicy": opaque_field_facts(payload.get("stop")),
                     "outputTokenPolicy": (invocation or {}).get("outputTokenPolicy"),
                     "streamUsageRequested": (payload.get("stream_options") or {}).get("include_usage") is True,
                     "reasoningSplitRequested": payload.get("reasoning_split", (payload.get("extra_body") or {}).get("reasoning_split")) is True,
@@ -290,6 +292,7 @@ class ScopedCapture:
                     "elapsedMs": round((time.monotonic() - context["startedMonotonic"]) * 1000) if "startedMonotonic" in context else None,
                     "continuationFacts": continuation_facts({"content": getattr(message, "content", None), **extra}),
                     "wireContinuationFacts": wire_field_facts(context),
+                    "sse": dict(context["sse"]) if "sse" in context else None,
                     "toolCallsView": "sdk_parsed_may_repair_incomplete_json_not_wire_arguments",
                     "toolCalls": summarize_calls(list(getattr(message, "tool_calls", None) or [])),
                     "argumentViews": {
@@ -325,6 +328,7 @@ class ScopedCapture:
                         "sdkToolChunks": raw_call_facts(list(getattr(getattr(generation, "message", None), "tool_call_chunks", None) or []))})
 
     def install(self) -> None:
+        from openai import _streaming
         from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
         from core.llm_chat_adapter import V8ChatModelAdapter
         original_payload = V8OpenAICompatibleChatModel._get_request_payload
@@ -334,7 +338,38 @@ class ScopedCapture:
         original_conversion = V8OpenAICompatibleChatModel._convert_chunk_to_generation_chunk
         original_prepare = V8ChatModelAdapter._prepare_prompt_cache_request
         original_validate = V8ChatModelAdapter._validate_complete_tool_response
+        original_sse = _streaming.Stream._iter_events
+        original_async_sse = _streaming.AsyncStream._iter_events
         capture = self
+
+        def observe_sse():
+            context = capture.current.get()
+            if not context or not context.get("matched"):
+                return None
+            facts = {"doneSeen": False, "namedErrorEventSeen": False, "cleanEOF": False}
+            context["sse"] = facts
+            return facts
+
+        def record_sse(facts, event):
+            if facts is not None:
+                facts["doneSeen"] |= event.data.startswith("[DONE]")
+                facts["namedErrorEventSeen"] |= event.event == "error"
+
+        def sse_events(stream):
+            facts = observe_sse()
+            for event in original_sse(stream):
+                record_sse(facts, event)
+                yield event
+            if facts is not None:
+                facts["cleanEOF"] = True
+
+        async def async_sse_events(stream):
+            facts = observe_sse()
+            async for event in original_async_sse(stream):
+                record_sse(facts, event)
+                yield event
+            if facts is not None:
+                facts["cleanEOF"] = True
 
         def payload(model, *args, **kwargs):
             result = original_payload(model, *args, **kwargs)
@@ -421,6 +456,8 @@ class ScopedCapture:
         V8OpenAICompatibleChatModel._convert_chunk_to_generation_chunk = conversion
         V8ChatModelAdapter._prepare_prompt_cache_request = prepare
         V8ChatModelAdapter._validate_complete_tool_response = validate
+        _streaming.Stream._iter_events = sse_events
+        _streaming.AsyncStream._iter_events = async_sse_events
 
 
 def main(argv: list[str] | None = None) -> int:

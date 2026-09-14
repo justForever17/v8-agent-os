@@ -100,6 +100,51 @@ def test_capture_distinguishes_actual_model_requests_without_endpoint_credential
     assert "PRIVATE" not in capture.output.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("ending", ["done", "eof", "error"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_native_sdk_sse_termination_facts_do_not_expose_content(tmp_path, monkeypatch, ending, asynchronous):
+    import httpx
+    import openai
+    from openai import _streaming
+    from core.llm_chat_adapter import V8ChatModelAdapter
+    from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
+    from types import SimpleNamespace
+
+    for owner, names in ((V8OpenAICompatibleChatModel, ("_stream", "_astream", "_get_request_payload", "_create_chat_result", "_convert_chunk_to_generation_chunk")),
+                         (V8ChatModelAdapter, ("_prepare_prompt_cache_request", "_validate_complete_tool_response")),
+                         (_streaming.Stream, ("_iter_events",)), (_streaming.AsyncStream, ("_iter_events",))):
+        for name in names:
+            monkeypatch.setattr(owner, name, getattr(owner, name))
+    capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")
+    capture.install()
+    capture.request({"model": "fixture", "messages": [{"content": capture.marker}], "stop": "PRIVATE STOP"})
+    body = 'data: {"id":"fixture","choices":[{"index":0,"delta":{"content":"PRIVATE RESPONSE"}}]}\n\n'
+    body += 'data: [DONE]\n\n' if ending == "done" else 'event: error\ndata: {"error":{"message":"PRIVATE ERROR"}}\n\n' if ending == "error" else ""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body))
+    async def consume_async():
+        async with httpx.AsyncClient(transport=transport) as http:
+            client = openai.AsyncOpenAI(api_key="synthetic", base_url="https://fixture.invalid/v1", http_client=http)
+            stream = await client.chat.completions.create(model="fixture", messages=[], stream=True)
+            return [event async for event in stream]
+    def consume():
+        if asynchronous:
+            return asyncio.run(consume_async())
+        with httpx.Client(transport=transport) as http:
+            client = openai.OpenAI(api_key="synthetic", base_url="https://fixture.invalid/v1", http_client=http)
+            return list(client.chat.completions.create(model="fixture", messages=[], stream=True))
+    if ending == "error":
+        with pytest.raises(openai.APIError):
+            consume()
+    else:
+        assert len(consume()) == 1
+    capture.response(SimpleNamespace(content="", tool_calls=[], additional_kwargs={}, response_metadata={}))
+    text = capture.output.read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in text.splitlines()]
+    assert rows[-1]["sse"] == {"doneSeen": ending == "done", "namedErrorEventSeen": ending == "error", "cleanEOF": ending == "eof"}
+    assert rows[0]["stopPolicy"]["sha256"] == capture_module._hash("PRIVATE STOP")
+    assert "PRIVATE" not in text
+
+
 def test_continuation_fingerprints_detect_wire_loss_and_history_replay_without_text(tmp_path):
     from types import SimpleNamespace
     capture = capture_module.ScopedCapture("cross-graph-live-synthetic", tmp_path / "capture.jsonl")
@@ -211,6 +256,9 @@ def test_capture_real_sdk_and_adapter_boundaries_preserve_stream_and_rejection(t
     monkeypatch.setattr(ChatOpenAI, "_stream", fake_stream)
     monkeypatch.setattr(ChatOpenAI, "_astream", fake_astream)
     # Capture monkey-patches are process local; restore every installed method.
+    from openai import _streaming
+    monkeypatch.setattr(_streaming.Stream, "_iter_events", _streaming.Stream._iter_events)
+    monkeypatch.setattr(_streaming.AsyncStream, "_iter_events", _streaming.AsyncStream._iter_events)
     for owner, names in ((V8OpenAICompatibleChatModel, ("_stream", "_astream", "_get_request_payload", "_create_chat_result", "_convert_chunk_to_generation_chunk")),
                          (V8ChatModelAdapter, ("_prepare_prompt_cache_request", "_validate_complete_tool_response"))):
         for name in names:

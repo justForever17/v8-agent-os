@@ -2851,6 +2851,29 @@ async def _run_parallel_agent_branch(
             )
 
         if isinstance(result, list):
+            child_requests = _extract_child_delegation_requests(result, source_branch=branch, source_agent_id=agent_id)
+            merged_update: dict[str, Any] = {}
+            routes: list[str] = []
+            for item in result:
+                if isinstance(item, Command):
+                    merged_update = _merge_state_update(merged_update, dict(item.update or {}))
+                    targets = item.goto if isinstance(item.goto, list) else [item.goto]
+                    routes.extend(target for target in targets if isinstance(target, str) and target)
+                    if not child_requests and any(isinstance(target, Send) for target in targets):
+                        raise _parallel_branch_error("Invalid child Send contract.", state=local_state, initial_message_count=initial_message_count)
+                elif isinstance(item, dict):
+                    merged_update = _merge_state_update(merged_update, item)
+                elif not child_requests:
+                    raise _parallel_branch_error("Unsupported branch tool result.", state=local_state, initial_message_count=initial_message_count)
+            if child_requests:
+                local_state = _merge_state_update(local_state, merged_update)
+            else:
+                explicit_routes = set(routes) - {agent_id}
+                if len(explicit_routes) > 1:
+                    raise _parallel_branch_error("Conflicting tool continuation routes.", state=local_state, initial_message_count=initial_message_count)
+                result = Command(goto=next(iter(explicit_routes), agent_id), update=merged_update)
+
+        if isinstance(result, list):
             delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
             delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
             child_requests = _extract_child_delegation_requests(
@@ -2858,21 +2881,7 @@ async def _run_parallel_agent_branch(
                 source_branch=branch,
                 source_agent_id=agent_id,
             )
-            nested_count = len([item for item in result if isinstance(item, (Command, Send))])
-            if not child_requests and nested_count and bool(branch.get("allowChildDelegation")):
-                fallback_summary = {
-                    "invocationId": branch.get("invocationId"),
-                    "delegationId": branch.get("delegationId"),
-                    "taskGoal": branch.get("reason"),
-                    "agentId": agent_id,
-                    "agentName": branch.get("agentName") or agent_id,
-                }
-                child_requests = [
-                    _fallback_child_delegation_request(
-                        branch=branch,
-                        summary=fallback_summary,
-                    )
-                ]
+            nested_count = len(child_requests)
             if child_requests:
                 _publish_parallel_progress(
                     progress_callback,

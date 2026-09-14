@@ -61,6 +61,32 @@ def test_late_resume_claim_cannot_overwrite_new_wait_generation(database):
     assert database.get_run_record("run")["metadata"]["runtimeEpisodeResume"]["waitGeneration"] == 2
 
 
+@pytest.mark.parametrize("command", ["cancel", "interrupt", "pause"])
+def test_terminal_handoff_does_not_schedule_over_control_signal(database, monkeypatch, command):
+    import erc.command_router as router_module
+    import erc.run_service as run_module
+    from erc.command_router import RuntimeCommandRouter
+
+    marker = parked(database)
+    database.complete_runtime_episode("A", state="completed")
+    # The executor may still be stopping: control precedes the terminal status.
+    database.update_run_record("run", status="running", metadata={
+        "runtimeEpisodeResume": marker, "control_signal": {"command": command},
+    })
+    monkeypatch.setattr(router_module, "db", database)
+    monkeypatch.setattr(run_module, "db", database)
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router._schedule_chat_run = lambda *args, **kwargs: scheduled.append(kwargs) or "run"
+    result = router.schedule_runtime_episode_handoff_resume(database.get_runtime_episode("A"))
+    assert not result["resume_scheduled"]
+    assert scheduled == []
+    current = database.get_run_record("run")
+    assert current["status"] == "running"
+    assert current["metadata"]["control_signal"]["command"] == command
+    assert current["metadata"]["runtimeEpisodeResume"] == marker
+
+
 def test_late_scheduled_graph_cannot_consume_a_new_wait_generation(database):
     marker = parked(database, state="scheduled", generation=2)
     result = database.update_run_metadata_key_if_state("run", key="runtimeEpisodeResume", expected_state="scheduled",

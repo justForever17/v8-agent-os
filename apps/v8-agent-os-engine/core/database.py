@@ -4869,6 +4869,10 @@ class DatabaseManager:
                     }
                 metadata = _parse_metadata(run_record.get("metadata"))
                 marker = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
+                control = metadata.get("control_signal") or {}
+                if control.get("command") in {"cancel", "interrupt", "pause"}:
+                    conn.rollback()
+                    return {"claimed": False, "reason": "runtime_resume_blocked_by_control"}
                 marker_state = str((marker or {}).get("state") or "").strip().lower()
                 if marker.get("waitGeneration") != next_marker.get("waitGeneration"):
                     return {"claimed": False, "reason": "runtime_wait_generation_changed"}

@@ -5130,7 +5130,19 @@ class DatabaseManager:
                 return self._hydrate_automation_delivery(item)
         return self._run_write_with_retry(_write)
 
-    def transition_automation_delivery(self, delivery_id, *, owner_id, expected_phases, phase, error=None, receipt_key=None, retry_delay=5):
+    @staticmethod
+    def _automation_delivery_binding_conflict(current, expected):
+        if not current or any(current.get(key) != expected.get(key) for key in (
+            "definition_kind", "definition_id", "definition_revision", "execution_run_id", "attempt_count", "receipt_key",
+        )):
+            return "delivery_binding_changed"
+        if any(current["envelope"].get(key) != expected["envelope"].get(key)
+               for key in ("target", "action_type", "payload", "kwargs")):
+            return "delivery_target_changed"
+        return None
+
+    def transition_automation_delivery(self, delivery_id, *, owner_id, expected_phases, phase, error=None,
+                                       receipt_key=None, retry_delay=5, expected_binding=None, expected_receipt=None):
         now = utc_now_iso()
         lease = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         available = (datetime.now(timezone.utc) + timedelta(seconds=retry_delay)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -5139,7 +5151,18 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 # A cancellation wins even when it arrives between run creation and admission.
-                row = conn.execute("SELECT execution_run_id FROM runtime_automation_deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
+                row = conn.execute("SELECT * FROM runtime_automation_deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
+                if expected_binding is not None:
+                    current = self._hydrate_automation_delivery(row)
+                    if self._automation_delivery_binding_conflict(current, expected_binding):
+                        conn.rollback()
+                        return False
+                    receipt = conn.execute("SELECT * FROM runtime_side_effect_receipts WHERE idempotency_key=?",
+                        (current["receipt_key"],)).fetchone() if current["receipt_key"] else None
+                    if bool(receipt) != bool(expected_receipt) or (receipt and any(
+                            receipt[key] != expected_receipt[key] for key in ("state", "owner_id", "run_id", "session_id"))):
+                        conn.rollback()
+                        return False
                 run = conn.execute("SELECT status FROM run_records WHERE id=?", (row["execution_run_id"],)).fetchone() if row else None
                 if phase in {"admitted", "executing"} and run and run["status"] in {"cancelled", "completed"}:
                     conn.rollback()
@@ -5170,15 +5193,11 @@ class DatabaseManager:
                 current = self._hydrate_automation_delivery(conn.execute(
                     "SELECT * FROM runtime_automation_deliveries WHERE delivery_id=?", (item["delivery_id"],),
                 ).fetchone())
-                if not current or any(current.get(key) != item.get(key) for key in (
-                    "definition_kind", "definition_id", "definition_revision", "execution_run_id", "attempt_count", "receipt_key",
-                )):
+                conflict = self._automation_delivery_binding_conflict(current, item)
+                if conflict:
                     conn.rollback()
-                    return {"updated": False, "reason": "delivery_binding_changed"}
+                    return {"updated": False, "reason": conflict}
                 envelope = current["envelope"]
-                if any(envelope.get(key) != item["envelope"].get(key) for key in ("target", "action_type", "payload", "kwargs")):
-                    conn.rollback()
-                    return {"updated": False, "reason": "delivery_target_changed"}
                 row = conn.execute("SELECT * FROM run_records WHERE id=?", (current["execution_run_id"],)).fetchone()
                 run = dict(row) if row else {}
                 metadata = json.loads(run.get("metadata") or "{}")

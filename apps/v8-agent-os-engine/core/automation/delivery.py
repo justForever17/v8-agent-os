@@ -64,7 +64,7 @@ class AutomationDeliveryService:
         return bool(result.get("updated"))
 
     @staticmethod
-    def settle_run(kwargs, run_handle, *, status, reason=None, error=None, receipt=None):
+    def settle_run(kwargs, run_handle, *, status, reason=None, error=None, receipt=None, binding=None):
         """Called by the actual executor at its terminal boundary, not by Admin."""
         from erc.run_service import run_service
 
@@ -77,7 +77,8 @@ class AutomationDeliveryService:
             else:
                 run_handle.fail(error, node="automation_runtime")
             return status
-        item = db.get_automation_delivery(delivery_id)
+        item = ({**binding, "receipt_key": receipt.idempotency_key if receipt else binding.get("receipt_key")}
+                if binding is not None else db.get_automation_delivery(delivery_id))
         if not item or item["execution_run_id"] != run_handle.run_id:
             return str((db.get_run_record(run_handle.run_id) or {}).get("status") or "failed")
         desired = "completed" if status in {"success", "skipped_duplicate"} else status
@@ -86,6 +87,11 @@ class AutomationDeliveryService:
             receipt_owner_id=receipt.owner_id if receipt else None, error_message=error, reason=reason,
         )
         if not result.get("updated"):
+            if binding is not None:
+                # The same invocation's finally must not overrule this refusal.
+                binding["settlement_binding_rejected"] = result.get("reason") in {
+                    "delivery_binding_changed", "delivery_target_changed", "run_binding_changed",
+                }
             AutomationDeliveryService._mark_run_waiting_for_external_outcome(item, reason="late_worker_after_owner_loss")
             return str((db.get_run_record(run_handle.run_id) or {}).get("status") or "failed")
         AutomationDeliveryService._project_run_status(
@@ -388,6 +394,7 @@ class AutomationDeliveryService:
             db.cancel_automation_delivery(delivery_id, reason="definition_changed_before_admission")
             raise asyncio.CancelledError("automation definition changed before admission")
         self._inline[delivery_id] = kwargs["automation_delivery_owner"]
+        return item
 
     @staticmethod
     def admitted(kwargs):
@@ -436,12 +443,16 @@ class AutomationDeliveryService:
             db.transition_automation_delivery(kwargs["automation_delivery_id"], owner_id=kwargs["automation_delivery_owner"],
                 expected_phases=("admitted",), phase="admitted", receipt_key=receipt.idempotency_key)
 
-    def finished(self, kwargs, *, status, error):
+    def finished(self, kwargs, *, status, error, binding=None, receipt=None):
         delivery_id = kwargs.get("automation_delivery_id")
         if not delivery_id:
             return
         if self._inline.get(delivery_id) == kwargs.get("automation_delivery_owner"):
             self._inline.pop(delivery_id, None)
+        if binding is not None and binding.get("settlement_binding_rejected"):
+            return
+        expected = ({**binding, "receipt_key": receipt.idempotency_key if receipt else binding.get("receipt_key")}
+                    if binding is not None else None)
         item = db.get_automation_delivery(delivery_id)
         if not item or item["owner_id"] != kwargs.get("automation_delivery_owner"):
             return
@@ -464,7 +475,7 @@ class AutomationDeliveryService:
             target = "failed"
         db.transition_automation_delivery(
             delivery_id, owner_id=kwargs["automation_delivery_owner"], expected_phases=(phase,),
-            phase=target, error=error,
+            phase=target, error=error, expected_binding=expected, expected_receipt=receipt,
         )
 
     def execute_inline(self, item):

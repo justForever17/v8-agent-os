@@ -324,3 +324,64 @@ def test_success_without_owned_receipt_parks_persisted_run(state, monkeypatch, p
     run = state.db.get_run_record(handle.run_id)
     assert run["status"] == "waiting_external_tool"
     assert run["finished_at"] is None
+
+
+@pytest.mark.parametrize("action_type", ["command", "agent"])
+@pytest.mark.parametrize("boundary", ["run_settle", "delivery_finished"])
+@pytest.mark.parametrize("drift", ["attempt", "target", "receipt_owner"])
+def test_finally_cannot_complete_drifted_delivery_after_real_execution(state, monkeypatch, action_type, boundary, drift):
+    from core.database import DatabaseManager
+    from types import SimpleNamespace
+
+    base.hook(state, type=action_type)
+    item = base.emit_hook()[0]
+    effects = []
+    def effect():
+        effects.append("one")
+        return {}
+    if action_type == "command":
+        monkeypatch.setattr(base.action.ActionExecutor, "_execute_command", lambda *a, **k: effect())
+    else:
+        async def ainvoke(*a, **k):
+            return effect()
+        monkeypatch.setattr(base.action.ActionExecutor, "_load_agent_graph", lambda target: SimpleNamespace(ainvoke=ainvoke))
+    concurrent = DatabaseManager(state.db.db_path)
+    write_with_retry = state.db._run_write_with_retry
+    injected = []
+    def inject_before_transaction(write):
+        fields = dict(zip(write.__code__.co_freevars, (cell.cell_contents for cell in write.__closure__ or ())))
+        at_run = "DatabaseManager.transition_automation_run" in write.__qualname__ and fields.get("status") == "completed"
+        at_delivery = ("DatabaseManager.transition_automation_delivery" in write.__qualname__
+                       and fields.get("phase") == "completed" and fields.get("expected_binding") is not None)
+        if not injected and (at_run if boundary == "run_settle" else at_delivery):
+            current = concurrent.get_automation_delivery(item["delivery_id"])
+            injected.append(current["owner_id"])
+            # Fault-only same-owner drift: the real claim producer replaces
+            # owner/run on retry. Inject after closure capture, before BEGIN.
+            with concurrent.get_connection() as conn:
+                if drift == "attempt":
+                    conn.execute("UPDATE runtime_automation_deliveries SET attempt_count=attempt_count+1 WHERE delivery_id=?", (item["delivery_id"],))
+                elif drift == "target":
+                    envelope = current["envelope"]
+                    envelope["target"] = "new-unexecuted-target"
+                    conn.execute("UPDATE runtime_automation_deliveries SET envelope_json=? WHERE delivery_id=?", (json.dumps(envelope), item["delivery_id"]))
+                    run = concurrent.get_run_record(item["execution_run_id"])
+                    conn.execute("UPDATE run_records SET metadata=? WHERE id=?",
+                        (json.dumps({**run["metadata"], "action_target": "new-unexecuted-target"}), run["id"]))
+                else:
+                    conn.execute("UPDATE runtime_side_effect_receipts SET owner_id='foreign-worker' WHERE idempotency_key=?", (current["receipt_key"],))
+                conn.commit()
+        return write_with_retry(write)
+    monkeypatch.setattr(state.db, "_run_write_with_retry", inject_before_transaction)
+    asyncio.run(base.drain(state.service))
+    current = state.db.get_automation_delivery(item["delivery_id"])
+    run = state.db.get_run_record(item["execution_run_id"])
+    assert len(injected) == 1 and effects == ["one"]
+    if boundary == "run_settle":
+        assert run["status"] != "completed" and run["finished_at"] is None
+        assert not terminal_hook_attempt(state, run, monkeypatch)
+    else:
+        assert run["status"] == "completed"  # This worker finished before drift.
+    if boundary == "delivery_finished" or drift != "receipt_owner":
+        assert current["phase"] != "completed"
+        assert current["owner_id"] == injected[0]

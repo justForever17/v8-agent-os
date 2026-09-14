@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        const stream = createEngineChatGatewayStream(pythonPayload, userEmail);
+        const stream = createEngineChatGatewayStream(pythonPayload, userEmail, req.signal);
 
         return new NextResponse(stream, {
             headers: {

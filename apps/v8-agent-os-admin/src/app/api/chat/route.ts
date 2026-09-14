@@ -34,6 +34,15 @@ export async function POST(req: NextRequest) {
         
         const provider = data?.provider;
         const modelName = data?.model;
+        const safetyApprovalMode = typeof data?.safetyApprovalMode === "string"
+            ? data.safetyApprovalMode
+            : typeof data?.safety_approval_mode === "string"
+                ? data.safety_approval_mode
+                : undefined;
+        const runtimeData = {
+            ...(supervisorRuntimeMode === undefined ? {} : { supervisorRuntimeMode }),
+            ...(safetyApprovalMode === undefined ? {} : { safetyApprovalMode }),
+        };
         
         // 1. Volcengine Exception (Keep Native Logic for Images if really needed, but ideally engine handles it)
         // Leaving this here for backward compatibility if the frontend still hardcodes provider = volcengine for images
@@ -62,9 +71,7 @@ export async function POST(req: NextRequest) {
             workspace_path: workspacePath,
             scope_hint: scopeHint,
             scope_mode: scopeMode,
-            ...(supervisorRuntimeMode === undefined
-                ? {}
-                : { data: { supervisorRuntimeMode } }),
+            ...(Object.keys(runtimeData).length > 0 ? { data: runtimeData } : {}),
             config: {
                 provider,         // Let python fallback to default if None
                 model_name: modelName, 
@@ -80,7 +87,7 @@ export async function POST(req: NextRequest) {
             }))
         };
 
-        const stream = createEngineChatGatewayStream(pythonPayload, userEmail || "anonymous");
+        const stream = createEngineChatGatewayStream(pythonPayload, userEmail || "anonymous", req.signal);
 
         return new NextResponse(stream, {
             headers: {

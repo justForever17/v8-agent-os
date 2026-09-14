@@ -14,6 +14,9 @@ def _workspace_from_payload(payload: dict[str, Any]) -> str:
 
 
 def _raise_spec_error(error: Exception) -> None:
+    from core.spec_service import SpecApprovalVersionConflict
+    if isinstance(error, SpecApprovalVersionConflict):
+        raise HTTPException(status_code=409, detail=error.detail) from error
     message = str(error)
     status = 404 if "not_found" in message else 400
     raise HTTPException(status_code=status, detail=message)
@@ -40,12 +43,14 @@ async def read_spec(
     spec_id: str,
     workspace_path: str = Query(..., alias="workspace_path"),
     max_chars: int = 60000,
+    full_content: bool = False,
 ):
     try:
         return spec_service.read_spec(
             workspace_path=workspace_path,
             spec_id=spec_id,
             max_chars=max_chars,
+            full_content=full_content,
         )
     except Exception as error:
         _raise_spec_error(error)
@@ -89,13 +94,18 @@ async def read_spec_stage(
 async def approve_spec_stage(spec_id: str, stage: str, payload: dict[str, Any] = Body(default_factory=dict)):
     workspace_path = _workspace_from_payload(payload)
     try:
-        return spec_service.approve_stage(
+        result = spec_service.approve_stage(
             workspace_path=workspace_path,
             spec_id=spec_id,
             stage=stage,
             approver=str(payload.get("approver") or payload.get("userEmail") or "user"),
             comment=str(payload.get("comment") or ""),
+            expected_document_sha256=str(payload.get("documentSha256") or ""),
         )
+        if result.get("kind") in {"spec_approval_version_required", "spec_approval_document_changed"}:
+            from core.spec_service import SpecApprovalVersionConflict
+            raise SpecApprovalVersionConflict(result)
+        return result
     except Exception as error:
         _raise_spec_error(error)
 
@@ -127,6 +137,7 @@ async def edit_spec_stage(spec_id: str, stage: str, payload: dict[str, Any] = Bo
             section_ref=str(payload.get("sectionRef") or payload.get("section_ref") or ""),
             content=str(payload.get("content") or ""),
             reason=str(payload.get("reason") or "client_spec_edit"),
+            expected_document_sha256=payload.get("expectedDocumentSha256"),
         )
     except Exception as error:
         _raise_spec_error(error)

@@ -11,6 +11,14 @@ from typing import Any
 
 
 SPEC_ROOT_PARTS = (".v8", "specs")
+
+
+class SpecApprovalVersionConflict(ValueError):
+    def __init__(self, detail: dict[str, Any]):
+        super().__init__(str(detail.get("summary") or detail.get("kind") or "Spec review changed"))
+        self.detail = {**detail, "code": detail["kind"]}
+
+
 SPEC_DOCS = {
     "requirements": "requirements.md",
     "bugfix": "bugfix.md",
@@ -1154,7 +1162,7 @@ class SpecService:
             "specs": specs[:capped_limit],
         }
 
-    def read_spec(self, *, workspace_path: str, spec_id: str, max_chars: int = 60000) -> dict[str, Any]:
+    def read_spec(self, *, workspace_path: str, spec_id: str, max_chars: int = 60000, full_content: bool = False) -> dict[str, Any]:
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
         manifest = self._load_manifest(paths)
         if not manifest:
@@ -1165,14 +1173,17 @@ class SpecService:
             doc_path = paths.spec_dir / filename
             if not doc_path.exists():
                 continue
-            content = doc_path.read_text(encoding="utf-8", errors="ignore")
+            raw_content = doc_path.read_bytes()
+            content = raw_content.decode("utf-8")
             stages[stage] = {
                 "stage": stage,
                 "documentRef": f"spec://{spec_id}/{stage}",
-                "content": _safe_text(content, limit=capped_chars),
-                "truncated": len(content) > capped_chars,
+                "content": content if full_content else content[:capped_chars],
+                "documentSha256": hashlib.sha256(raw_content).hexdigest(),
+                "truncated": not full_content and len(content) > capped_chars,
                 "ids": self._document_ids(stage, content),
                 "relativePath": str(doc_path.relative_to(paths.workspace)).replace("\\", "/"),
+                "documentPath": str(doc_path.relative_to(paths.workspace)).replace("\\", "/"),
             }
         return {
             "ok": True,
@@ -1343,7 +1354,7 @@ class SpecService:
         version_dir = self._version_dir(paths, stage)
         version_dir.mkdir(parents=True, exist_ok=True)
         version_path = version_dir / f"{created_at.replace(':', '').replace('-', '').replace('Z', '')}_{version_id}.md"
-        version_path.write_text(previous_content, encoding="utf-8")
+        version_path.write_bytes(previous_content.encode("utf-8"))
         entry = {
             "versionId": version_id,
             "stage": stage,
@@ -1942,7 +1953,25 @@ class SpecService:
                 )
         return warnings[:8]
 
-    def validate_stage_approval(self, *, workspace_path: str, spec_id: str, stage: str) -> dict[str, Any]:
+    def capture_stage_review(self, *, workspace_path: str, spec_id: str, stage: str) -> dict[str, Any]:
+        paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+        manifest = self._load_manifest(paths)
+        if not manifest or stage not in (manifest.get("documents") or {}) or stage not in SPEC_DOCS:
+            raise ValueError("spec_review_document_not_found")
+        path = paths.spec_dir / SPEC_DOCS[stage]
+        content = path.read_bytes()
+        return {"documentSha256": hashlib.sha256(content).hexdigest(),
+                "documentPath": path.relative_to(paths.workspace).as_posix(), "content": content.decode("utf-8")}
+
+    @staticmethod
+    def _review_version_error(expected: str, actual: str) -> dict[str, Any] | None:
+        if not re.fullmatch(r"[0-9a-f]{64}", str(expected or "")):
+            return {"ok": False, "kind": "spec_approval_version_required", "summary": "请刷新文档后重新确认此审批卡。"}
+        if expected != actual:
+            return {"ok": False, "kind": "spec_approval_document_changed", "summary": "文档已变更，请查看最新内容后刷新审批卡。"}
+        return None
+
+    def validate_stage_approval(self, *, workspace_path: str, spec_id: str, stage: str, expected_document_sha256: str | None = None) -> dict[str, Any]:
         """Validate a Spec stage without changing approval or run state."""
 
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
@@ -1955,7 +1984,12 @@ class SpecService:
         if normalized_stage not in dict(manifest.get("documents") or {}):
             raise ValueError(f"spec_document_not_found:{normalized_stage}")
         doc_path = paths.spec_dir / SPEC_DOCS[normalized_stage]
-        content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
+        raw_content = doc_path.read_bytes() if doc_path.exists() else b""
+        content = raw_content.decode("utf-8")
+        if expected_document_sha256 is not None:
+            error = self._review_version_error(expected_document_sha256, hashlib.sha256(raw_content).hexdigest())
+            if error:
+                return error
         diagnostics = _stage_format_diagnostics(normalized_stage, content)
         if diagnostics.get("approvalBlocking"):
             return {
@@ -2106,7 +2140,7 @@ class SpecService:
         self._write_manifest(paths, manifest)
         return self._pipeline_control(manifest)
 
-    def approve_stage(self, *, workspace_path: str, spec_id: str, stage: str, approver: str = "user", comment: str = "", approval_id: str = "") -> dict[str, Any]:
+    def approve_stage(self, *, workspace_path: str, spec_id: str, stage: str, approver: str = "user", comment: str = "", approval_id: str = "", expected_document_sha256: str | None = None) -> dict[str, Any]:
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
         manifest = self._load_manifest(paths)
         if not manifest:
@@ -2118,8 +2152,13 @@ class SpecService:
             raise ValueError(f"spec_document_not_found:{normalized_stage}")
         doc_meta = dict((manifest.get("documents") or {}).get(normalized_stage) or {})
         doc_path = paths.spec_dir / SPEC_DOCS[normalized_stage]
-        content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
-        content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        raw_content = doc_path.read_bytes() if doc_path.exists() else b""
+        content = raw_content.decode("utf-8")
+        content_sha256 = hashlib.sha256(raw_content).hexdigest()
+        if approval_id or expected_document_sha256 is not None:
+            error = self._review_version_error(expected_document_sha256 or "", content_sha256)
+            if error:
+                return error
         prior_approval = (manifest.get("approvals") or {}).get(normalized_stage) or {}
         if approval_id and prior_approval.get("approved") and prior_approval.get("approvalId") == approval_id and prior_approval.get("documentSha256"):
             if prior_approval["documentSha256"] != content_sha256:
@@ -2184,6 +2223,10 @@ class SpecService:
                     "warningCount": len(list(analysis.get("warnings") or [])),
                 }
         self._refresh_quality_artifacts(paths, manifest)
+        if expected_document_sha256 is not None:
+            error = self._review_version_error(expected_document_sha256, hashlib.sha256(doc_path.read_bytes()).hexdigest())
+            if error:
+                return error
         self._write_manifest(paths, manifest)
         return {
             "ok": True,
@@ -2274,6 +2317,7 @@ class SpecService:
         content: str,
         section_ref: str = "",
         reason: str = "",
+        expected_document_sha256: str | None = None,
     ) -> dict[str, Any]:
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
         manifest = self._load_manifest(paths)
@@ -2296,8 +2340,13 @@ class SpecService:
         edit_action = str(action or "").strip().lower()
         if edit_action not in {"replace_section", "append_section", "rewrite_stage"}:
             raise ValueError(f"unsupported_spec_edit_action:{edit_action}")
-        previous_content = doc_path.read_text(encoding="utf-8", errors="ignore")
-        new_text = _safe_text(content, limit=20000)
+        previous_bytes = doc_path.read_bytes()
+        previous_content = previous_bytes.decode("utf-8")
+        if expected_document_sha256 is not None:
+            error = self._review_version_error(expected_document_sha256, hashlib.sha256(previous_bytes).hexdigest())
+            if error:
+                raise SpecApprovalVersionConflict(error)
+        new_text = str(content or "")
         if not new_text:
             raise ValueError("spec_edit_content_required")
         if edit_action == "rewrite_stage":
@@ -2330,7 +2379,11 @@ class SpecService:
             reason=reason or "spec_stage_edited",
         )
         paths.spec_dir.mkdir(parents=True, exist_ok=True)
-        doc_path.write_text(next_content, encoding="utf-8")
+        if expected_document_sha256 is not None:
+            error = self._review_version_error(expected_document_sha256, hashlib.sha256(doc_path.read_bytes()).hexdigest())
+            if error:
+                raise SpecApprovalVersionConflict(error)
+        doc_path.write_bytes(next_content.encode("utf-8"))
         self._mark_stage_changed(
             manifest,
             stage=normalized_stage,
@@ -2363,6 +2416,7 @@ class SpecService:
         return {
             "ok": True,
             "kind": "spec_stage_edited",
+            **self.capture_stage_review(workspace_path=workspace_path, spec_id=spec_id, stage=normalized_stage),
             "stage": normalized_stage,
             "action": edit_action,
             "specId": spec_id,

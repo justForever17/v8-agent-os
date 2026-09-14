@@ -106,6 +106,22 @@ class CommandService:
     def request_approval(self, request: ApprovalRequest) -> Dict[str, Any]:
         from core.database import db
 
+        if request.approval_kind == "spec_stage_approval":
+            from core.spec_service import spec_service, SpecApprovalVersionConflict
+            payload = dict(request.request)
+            review = spec_service.capture_stage_review(workspace_path=str(payload.get("workspacePath") or ""),
+                spec_id=str(payload.get("specId") or ""), stage=str(payload.get("stage") or ""))
+            if payload.get("documentSha256"):
+                error = spec_service._review_version_error(payload["documentSha256"], review["documentSha256"])
+                if error:
+                    raise SpecApprovalVersionConflict(error)
+            payload.update({key: review[key] for key in ("documentSha256", "documentPath")})
+            fingerprint = f"spec_stage_approval:{payload['workspacePath']}:{payload['specId']}:{payload['stage']}:{review['documentSha256']}"
+            payload.update(operationFingerprint=fingerprint, operationTargetFingerprint=fingerprint)
+            saved = db.create_spec_review_approval(approval_id=request.approval_id, session_id=request.session_id,
+                run_id=request.run_id, request=payload, expires_at=request.expires_at)
+            return {**saved, "approval_id": saved["id"], "autoApproved": False, "policySource": "manual_review"}
+
         existing = self._find_existing_pending_approval(request)
         if existing:
             return {

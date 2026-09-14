@@ -138,9 +138,17 @@ class RuntimeCommandRouter:
             raise ValueError(f"{topic} requires approval_id")
 
         if topic == "approval.approve":
+            replacement = None
+            if (command.response or {}).get("replaceSpecReview") is True:
+                replacement = self.refresh_spec_review(approval_id, document_sha256=str((command.response or {}).get("documentSha256") or ""))
+                approval_id = replacement["approval"]["id"]
+                command.response = {**dict(command.response or {}), "approvalId": approval_id}
             pending_approval = db.get_pending_approval(approval_id)
             if pending_approval and self._approval_kind(pending_approval) == "spec_stage_approval":
                 preflight = self._preflight_spec_stage_approval(pending_approval)
+                displayed_hash = (command.response or {}).get("documentSha256")
+                if displayed_hash and displayed_hash != (pending_approval.get("request") or {}).get("documentSha256"):
+                    preflight = {"ok": False, "kind": "spec_approval_document_changed", "summary": "显示的文档与此审批卡不一致，请刷新后确认。"}
                 if isinstance(preflight, dict) and preflight.get("ok") is False:
                     run_record = db.get_run_record(str(pending_approval.get("run_id") or ""))
                     if run_record:
@@ -163,6 +171,8 @@ class RuntimeCommandRouter:
                     }
             result = erc_kernel.approve(approval_id, response=command.response)
             if result:
+                if replacement:
+                    result["replacesApprovalId"] = replacement["replacesApprovalId"]
                 decided = result.get("approval") or {}
                 if decided.get("status") == "approved" and result.get("approvalDeliveryRecorded"):
                     result.update(self.deliver_approval_resume(approval_id))
@@ -1690,6 +1700,27 @@ class RuntimeCommandRouter:
             or ""
         ).strip()
 
+    def refresh_spec_review(self, approval_id: str, *, document_sha256: str) -> Dict[str, Any]:
+        from core.spec_service import SpecApprovalVersionConflict
+        from erc.command_service import command_service
+        from erc.models import ApprovalRequest
+        old = db.get_pending_approval(approval_id)
+        if not old or self._approval_kind(old) != "spec_stage_approval":
+            raise ValueError("spec_review_approval_not_found")
+        if not document_sha256:
+            raise SpecApprovalVersionConflict(spec_service._review_version_error("", ""))
+        request = dict(old.get("request") or {})
+        request["documentSha256"] = document_sha256
+        request["replacesApprovalId"] = approval_id
+        replacement_id = f"approval_{uuid.uuid5(uuid.NAMESPACE_URL, approval_id + ':' + document_sha256).hex}"
+        refreshed = command_service.request_approval(ApprovalRequest(approval_id=replacement_id,
+            session_id=old["session_id"], run_id=old["run_id"], approval_kind="spec_stage_approval", request=request))
+        handle = erc_kernel.attach_run(old["run_id"], node="spec_review_refresh")
+        if handle and refreshed["status"] == "pending":
+            handle.emit("approval.requested", refreshed)
+            handle.refresh_chat_snapshot()
+        return {"approval": refreshed, "replacesApprovalId": approval_id}
+
     def _preflight_spec_stage_approval(self, approval: Dict[str, Any]) -> Dict[str, Any]:
         request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
         run_record = db.get_run_record(str(approval.get("run_id") or ""))
@@ -1708,11 +1739,14 @@ class RuntimeCommandRouter:
             return {"ok": False, "kind": "spec_id_missing", "stage": stage}
         if not stage:
             return {"ok": False, "kind": "spec_stage_missing", "specId": spec_id}
+        if not request.get("documentSha256"):
+            return spec_service._review_version_error("", "")
         try:
             return spec_service.validate_stage_approval(
                 workspace_path=workspace_path,
                 spec_id=spec_id,
                 stage=stage,
+                expected_document_sha256=request["documentSha256"],
             )
         except Exception as exc:
             return {
@@ -1761,6 +1795,7 @@ class RuntimeCommandRouter:
                 approver=f"{approver}:{approval_id}" if approval_id else approver,
                 comment=comment,
                 approval_id=approval_id,
+                expected_document_sha256=str(request.get("documentSha256") or ""),
             )
         except Exception as exc:
             return {

@@ -120,15 +120,32 @@ async def approve_pending_approval(approval_id: str, payload: RunCommandPayload,
         )
         if not result:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' not found")
+        version_failure = result.get("spec_stage_approval") or {}
+        if version_failure.get("kind") in {"spec_approval_version_required", "spec_approval_document_changed"}:
+            raise HTTPException(status_code=409, detail={**version_failure, "code": version_failure["kind"]})
         return result
     except ApprovalDecisionConflict as e:
         raise HTTPException(status_code=409, detail=e.detail)
     except ValueError as e:
+        from core.spec_service import SpecApprovalVersionConflict
+        if isinstance(e, SpecApprovalVersionConflict):
+            raise HTTPException(status_code=409, detail=e.detail) from e
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/approvals/{approval_id}/refresh-spec-review")
+async def refresh_spec_review(approval_id: str, payload: RunCommandPayload):
+    from core.spec_service import SpecApprovalVersionConflict
+    try:
+        return runtime_command_router.refresh_spec_review(approval_id, document_sha256=str((payload.response or {}).get("documentSha256") or ""))
+    except SpecApprovalVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/approvals/{approval_id}/reject")

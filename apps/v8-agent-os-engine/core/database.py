@@ -12344,6 +12344,58 @@ class DatabaseManager:
                 rows.append(data)
             return rows
 
+    def create_spec_review_approval(self, *, approval_id: str, session_id: str, run_id: str,
+                                    request: Dict[str, Any], expires_at: Optional[str] = None) -> Dict[str, Any]:
+        """One pending card per current Spec document; old decisions remain immutable."""
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                exact = conn.execute("SELECT * FROM pending_approvals WHERE id=? AND session_id=? AND run_id=?",
+                                     (approval_id, session_id, run_id)).fetchone()
+                if exact:
+                    saved_request = json.loads(exact["request_json"])
+                    if not all(saved_request.get(key) == request.get(key) for key in ("specId", "stage", "workspacePath", "documentSha256")):
+                        raise ValueError("spec_review_identity_conflict")
+                    if exact["status"] == "approved":
+                        return {**dict(exact), "request": saved_request, "response": json.loads(exact["response_json"] or "null")}
+                    if exact["status"] != "pending":
+                        raise ValueError("spec_review_already_superseded")
+                run = conn.execute("SELECT status,metadata FROM run_records WHERE id=? AND session_id=?", (run_id, session_id)).fetchone()
+                metadata = json.loads(run["metadata"] or "{}") if run else {}
+                if not run or run["status"] not in {"running", "waiting_input", "waiting_approval"} or (metadata.get("control_signal") or {}).get("command") in {"cancel", "interrupt", "pause"}:
+                    raise ValueError("spec_review_run_not_available")
+                requested_scope = request.get("scopeRevision", request.get("scope_revision"))
+                current_scope = metadata.get("scopeRevision", metadata.get("scope_revision"))
+                if requested_scope is not None and current_scope is not None and requested_scope != current_scope:
+                    raise ValueError("spec_review_scope_changed")
+                rows = conn.execute("SELECT * FROM pending_approvals WHERE run_id=? AND session_id=? AND approval_kind='spec_stage_approval' AND status IN ('pending','approved')",
+                                    (run_id, session_id)).fetchall()
+                prior_rows = [(row, json.loads(row["request_json"])) for row in rows]
+                same_target = [(row, payload) for row, payload in prior_rows if all(payload.get(key) == request.get(key) for key in ("specId", "stage", "workspacePath"))]
+                selected_id = approval_id
+                if not request.get("replacesApprovalId"):
+                    selected_id = next((row["id"] for row, payload in same_target if row["status"] == "pending"
+                        and payload.get("documentSha256") == request["documentSha256"]), approval_id)
+                for row, payload in same_target:
+                    if row["id"] != selected_id:
+                        delivery = json.loads(row["resume_json"] or "{}")
+                        if delivery.get("state") == "executing":
+                            raise ValueError("spec_review_delivery_in_progress")
+                        if row["status"] == "pending":
+                            conn.execute("UPDATE pending_approvals SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'", (row["id"],))
+                        elif delivery.get("state") in {"pending", "scheduled", "blocked"}:
+                            # Retire the mutable delivery lease, never the historical decision.
+                            conn.execute("UPDATE pending_approvals SET resume_json=? WHERE id=?",
+                                (json.dumps({**delivery, "state": "superseded", "replacedByApprovalId": selected_id}), row["id"]))
+                if selected_id == approval_id and not exact:
+                    conn.execute("INSERT INTO pending_approvals (id,session_id,run_id,approval_kind,status,request_json,expires_at) VALUES (?,?,?,'spec_stage_approval','pending',?,?)",
+                        (selected_id, session_id, run_id, json.dumps(request, ensure_ascii=False), expires_at))
+                conn.execute("UPDATE run_records SET status='waiting_approval' WHERE id=?", (run_id,))
+                row = dict(conn.execute("SELECT * FROM pending_approvals WHERE id=?", (selected_id,)).fetchone())
+                conn.commit()
+                return {**row, "request": json.loads(row["request_json"]), "response": json.loads(row["response_json"] or "null")}
+        return self._run_write_with_retry(_write)
+
     def resolve_pending_approval_if_pending(
         self,
         approval_id: str,

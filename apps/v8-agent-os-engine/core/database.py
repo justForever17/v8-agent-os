@@ -5157,6 +5157,97 @@ class DatabaseManager:
                 return changed
         return self._run_write_with_retry(_write)
 
+    def transition_automation_run(self, item, *, status, owner_id=None, receipt_owner_id=None,
+                                  error_message=None, reason=None):
+        """Fence the delivery, effect receipt and run together at the write boundary."""
+        if status not in {"waiting_external_tool", "completed", "failed", "cancelled"}:
+            raise ValueError("invalid automation run transition")
+
+        def _write():
+            transition_reason = reason
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                current = self._hydrate_automation_delivery(conn.execute(
+                    "SELECT * FROM runtime_automation_deliveries WHERE delivery_id=?", (item["delivery_id"],),
+                ).fetchone())
+                if not current or any(current.get(key) != item.get(key) for key in (
+                    "definition_kind", "definition_id", "definition_revision", "execution_run_id", "attempt_count", "receipt_key",
+                )):
+                    conn.rollback()
+                    return {"updated": False, "reason": "delivery_binding_changed"}
+                envelope = current["envelope"]
+                if any(envelope.get(key) != item["envelope"].get(key) for key in ("target", "action_type", "payload", "kwargs")):
+                    conn.rollback()
+                    return {"updated": False, "reason": "delivery_target_changed"}
+                row = conn.execute("SELECT * FROM run_records WHERE id=?", (current["execution_run_id"],)).fetchone()
+                run = dict(row) if row else {}
+                metadata = json.loads(run.get("metadata") or "{}")
+                if (run.get("run_type") != "automation" or run.get("session_id") != envelope["kwargs"].get("session_id")
+                        or metadata.get("action_target") != envelope["target"]
+                        or metadata.get("action_type") != envelope["action_type"]
+                        or (metadata.get("kwargs") or {}).get("automation_delivery_id") != current["delivery_id"]):
+                    conn.rollback()
+                    return {"updated": False, "reason": "run_binding_changed"}
+                prior = run["status"]
+                expected = {"queued", "running", "waiting_external_tool"} if status == "waiting_external_tool" else {"queued", "running"}
+                if prior not in expected:
+                    conn.rollback()
+                    return {"updated": False, "reason": "run_status_changed", "currentStatus": prior}
+                next_status = status
+                if status == "waiting_external_tool":
+                    if current["phase"] not in {"unknown", "completed", "failed"}:
+                        conn.rollback()
+                        return {"updated": False, "reason": "delivery_not_unknown"}
+                else:
+                    allowed_phases = {"claimed", "admitted", "executing", "blocked"}
+                    if status == "cancelled":
+                        allowed_phases.add("cancelled")  # Definition revoked before the executing CAS.
+                    if (not owner_id or current["owner_id"] != owner_id or envelope.get("reconciliation")
+                            or current["phase"] not in allowed_phases):
+                        conn.rollback()
+                        return {"updated": False, "reason": "execution_owner_lost"}
+                    receipt = conn.execute("SELECT * FROM runtime_side_effect_receipts WHERE idempotency_key=?",
+                        (current["receipt_key"],)).fetchone() if current["receipt_key"] else None
+                    receipt_owned = bool(receipt and receipt_owner_id and receipt["owner_id"] == receipt_owner_id
+                        and receipt["run_id"] == run["id"] and receipt["session_id"] == run["session_id"])
+                    cancelled_before_execution = (status == "cancelled" and current["phase"] != "executing"
+                        and (not current["receipt_key"] or receipt_owned))
+                    unproven = (
+                        (status == "completed" and (not receipt_owned or receipt["state"] != "completed"))
+                        or (current["receipt_key"] and not cancelled_before_execution
+                            and (not receipt_owned or receipt["state"] not in {"completed", "failed"}))
+                        or (status == "cancelled" and current["phase"] == "executing")
+                    )
+                    if unproven:
+                        # A receipt proves the effect, not this worker's exit. A
+                        # cancelled await can also leave an external process alive.
+                        next_status = "waiting_external_tool"
+                        transition_reason = "automation_worker_termination_unproven"
+                        phase = receipt["state"] if receipt and receipt["state"] in {"completed", "failed"} else "unknown"
+                        conn.execute("""UPDATE runtime_automation_deliveries SET phase=?, owner_id=NULL,
+                            lease_expires_at=NULL, last_error=?, updated_at=? WHERE delivery_id=?""",
+                            (phase, transition_reason, utc_now_iso(), current["delivery_id"]))
+                if next_status == "waiting_external_tool":
+                    marker = metadata.get("automationRecovery")
+                    if prior == next_status and marker:
+                        conn.rollback()
+                        return {"updated": False, "reason": "already_waiting", "currentStatus": prior}
+                    metadata.setdefault("automationRecovery", {
+                        "state": "waiting", "deliveryId": current["delivery_id"], "executionRunId": run["id"],
+                        "reason": transition_reason, "processTermination": "unproven", "recoveryRequired": True,
+                    })
+                terminal = next_status in {"completed", "failed", "cancelled"}
+                conn.execute("""UPDATE run_records SET status=?, metadata=?, error_message=?, finished_at=? WHERE id=?""",
+                    (next_status, json.dumps(metadata), (error_message or run.get("error_message")) if terminal else None,
+                     utc_now_iso() if terminal else None, run["id"]))
+                if next_status in {"failed", "cancelled"}:
+                    self._cancel_pending_human_actions_for_run(conn, run["id"])
+                refreshed = dict(conn.execute("SELECT * FROM run_records WHERE id=?", (run["id"],)).fetchone())
+                conn.commit()
+                return {"updated": True, "run_record": refreshed, "previousStatus": prior, "status": next_status}
+
+        return self._run_write_with_retry(_write)
+
     def cancel_automation_delivery(self, delivery_id, *, reason):
         """Cancel queued work; an admitted/running effect is left for its run controller."""
         def _write():

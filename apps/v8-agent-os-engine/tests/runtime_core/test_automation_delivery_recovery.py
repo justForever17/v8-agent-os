@@ -134,7 +134,8 @@ def test_existing_in_progress_receipt_is_not_reported_as_completed(state):
     result = action.ActionExecutor._execute_sync("command", envelope["target"], envelope["payload"], kwargs)
     assert result["status"] == "review_required"
     assert not state.effects
-    assert state.db.get_automation_delivery(row["delivery_id"])["phase"] == "blocked"
+    assert state.db.get_automation_delivery(row["delivery_id"])["phase"] == "unknown"
+    assert state.db.get_run_record(handle.run_id)["status"] == "waiting_external_tool"
 
 
 def test_completed_effect_with_failed_observation_is_not_replayed(state, monkeypatch):
@@ -166,6 +167,53 @@ def test_pending_delivery_survives_database_reopen_and_executes_once(state, monk
     emit_hook()
     asyncio.run(drain(reopened.service))
     assert len(reopened.effects) == 1
+
+
+def _running_unknown_delivery(state):
+    hook(state)
+    row = emit_hook()[0]
+    claimed = state.db.claim_automation_delivery(row["delivery_id"], owner_id="fixture-owner")
+    kwargs = dict(claimed["envelope"]["kwargs"], automation_delivery_owner="fixture-owner")
+    handle = action.automation_runtime.begin_or_attach_run(
+        action_type="command", target="fixture-effect", payload={},
+        trigger_source="hook:on_chat_end", is_async=True, kwargs=kwargs,
+    )
+    state.db.update_run_record(handle.run_id, status="running")
+    state.db.transition_automation_delivery(
+        row["delivery_id"], owner_id="fixture-owner", expected_phases=("claimed",), phase="unknown",
+        error="external_outcome_requires_reconciliation",
+    )
+    return state.db.get_automation_delivery(row["delivery_id"])
+
+
+def test_unknown_poll_moves_running_run_to_recoverable_waiting_without_terminal_claim(state):
+    row = _running_unknown_delivery(state)
+    asyncio.run(state.service.tick())
+    run = state.db.get_run_record(row["execution_run_id"])
+    assert run["status"] == "waiting_external_tool"
+    assert run["metadata"]["automationRecovery"]["processTermination"] == "unproven"
+    assert run["metadata"]["automationRecovery"]["recoveryRequired"] is True
+    assert state.db.get_automation_delivery(row["delivery_id"])["phase"] == "unknown"
+
+
+@pytest.mark.parametrize("terminal", ["completed", "cancelled"])
+def test_unknown_poll_does_not_overwrite_a_trusted_terminal_or_cancel(state, terminal):
+    row = _running_unknown_delivery(state)
+    state.db.update_run_record(row["execution_run_id"], status=terminal)
+    asyncio.run(state.service.tick())
+    assert state.db.get_run_record(row["execution_run_id"])["status"] == terminal
+
+
+def test_manual_reconcile_keeps_run_recoverable_until_worker_terminal_evidence(state):
+    row = _running_unknown_delivery(state)
+    result = state.service.reconcile_from_admin(
+        delivery_id=row["delivery_id"], outcome="completed",
+        evidence={"observation": "operator observed one external effect"}, authenticated_owner="admin@example.test",
+    )
+    assert "reconciled as completed" in result
+    assert state.db.get_automation_delivery(row["delivery_id"])["phase"] == "completed"
+    assert state.db.get_run_record(row["execution_run_id"])["status"] == "waiting_external_tool"
+    assert state.db.get_run_record(row["execution_run_id"])["metadata"]["automationRecovery"]["processTermination"] == "unproven"
 
 
 def test_concurrent_database_claims_have_one_owner_and_fence_the_loser(state):

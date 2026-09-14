@@ -141,6 +141,25 @@ class RunService:
         )
         return result
 
+    def transition_automation_run(self, item, *, status, owner_id=None, receipt_owner_id=None,
+                                  error_message=None, reason=None):
+        result = db.transition_automation_run(item, status=status, owner_id=owner_id,
+            receipt_owner_id=receipt_owner_id, error_message=error_message, reason=reason)
+        if not result.get("updated"):
+            return result
+        run = result["run_record"]
+        actual_status = result["status"]
+        self._cancel_orphaned_runtime_episodes(run["id"], run_status=actual_status, reason=error_message)
+        run_ledger_service.record_event(
+            event_type=f"run.status.{actual_status}", run_id=run["id"], session_id=run["session_id"],
+            runtime_kind=run["run_type"], source="erc.run_service",
+            summary=reason or error_message or f"Run status changed to {actual_status}",
+            refs={"runId": run["id"], "sessionId": run["session_id"]},
+            payload={"status": actual_status, "errorMessage": error_message, "conditional": True,
+                     "previousStatus": result["previousStatus"]},
+        )
+        return result
+
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         return db.get_run_record(run_id)
 

@@ -23,6 +23,77 @@ class AutomationDeliveryService:
         self._loop = None
         self._terminal_cursor = ""
         self._terminal_scan_done = False
+        self._unknown_run_cursor = None
+
+    @staticmethod
+    def _project_run_status(run_id, *, previous_status, reason, terminal=False):
+        from erc.workflow_ledger import workflow_ledger_service
+        from runtimes.automation.runtime import automation_runtime
+
+        run = db.get_run_record(run_id) or {}
+        status = run.get("status")
+        if not status:
+            return
+        workflow_ledger_service.sync_run_status(run_id, run_status=status, reason=reason)
+        # Project current persisted truth even if a cancellation or late worker
+        # won after our CAS; a stale poll must not emit its old waiting state.
+        latest = db.get_run_record(run_id) or {}
+        if latest.get("status") != status:
+            workflow_ledger_service.sync_run_status(run_id, run_status=latest.get("status"), reason="automation_concurrent_transition")
+            return
+        handle = automation_runtime.attach_run(run_id)
+        if handle:
+            handle.emit("run.state.changed", {"from_status": previous_status, "to_status": status, "reason": reason})
+            if terminal and status in {"completed", "failed", "cancelled"}:
+                handle.emit(f"run.{status}", {"status": status, "reason": reason})
+            handle.refresh_chat_snapshot()
+
+    @staticmethod
+    def _mark_run_waiting_for_external_outcome(item, *, reason):
+        """Loss of execution ownership is waiting, never proof of process exit."""
+        from erc.run_service import run_service
+
+        if not item:
+            return False
+        result = run_service.transition_automation_run(item, status="waiting_external_tool", reason=reason)
+        if result.get("updated"):
+            AutomationDeliveryService._project_run_status(
+                item["execution_run_id"], previous_status=result["previousStatus"],
+                reason="automation_worker_termination_unproven",
+            )
+        return bool(result.get("updated"))
+
+    @staticmethod
+    def settle_run(kwargs, run_handle, *, status, reason=None, error=None, receipt=None):
+        """Called by the actual executor at its terminal boundary, not by Admin."""
+        from erc.run_service import run_service
+
+        delivery_id = kwargs.get("automation_delivery_id")
+        if not delivery_id:
+            if status in {"success", "skipped_duplicate"}:
+                run_handle.complete(reason=reason or "automation_finished", node="automation_runtime")
+            elif status == "cancelled":
+                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error)
+            else:
+                run_handle.fail(error, node="automation_runtime")
+            return status
+        item = db.get_automation_delivery(delivery_id)
+        if not item or item["execution_run_id"] != run_handle.run_id:
+            return str((db.get_run_record(run_handle.run_id) or {}).get("status") or "failed")
+        desired = "completed" if status in {"success", "skipped_duplicate"} else status
+        result = run_service.transition_automation_run(
+            item, status=desired, owner_id=kwargs.get("automation_delivery_owner"),
+            receipt_owner_id=receipt.owner_id if receipt else None, error_message=error, reason=reason,
+        )
+        if not result.get("updated"):
+            AutomationDeliveryService._mark_run_waiting_for_external_outcome(item, reason="late_worker_after_owner_loss")
+            return str((db.get_run_record(run_handle.run_id) or {}).get("status") or "failed")
+        AutomationDeliveryService._project_run_status(
+            run_handle.run_id, previous_status=result.get("previousStatus"),
+            reason=reason or error or f"automation_{result['status']}",
+            terminal=result["status"] in {"completed", "failed", "cancelled"},
+        )
+        return status if result["status"] == desired else result["status"]
 
     @staticmethod
     def enqueue(*, kind, source_event_id, source_session_id, source_run_id, event_payload, entries):
@@ -267,13 +338,15 @@ class AutomationDeliveryService:
             raise ValueError(f"delivery is {item['phase']}; only unknown outcomes can be reconciled")
         if outcome not in {"completed", "failed"} or not isinstance(evidence, dict) or not evidence:
             raise ValueError("reconciliation requires observed outcome evidence")
-        if item["receipt_key"]:
-            receipt = db.get_side_effect_receipt(item["receipt_key"])
-            if receipt and receipt["state"] == "indeterminate":
-                if not db.reconcile_side_effect_receipt(idempotency_key=item["receipt_key"], outcome=outcome, evidence=evidence):
-                    raise RuntimeError("effect receipt reconciliation rejected")
-            elif not receipt or receipt["state"] != outcome:
-                raise ValueError("effect receipt is active or conflicts with this outcome")
+        receipt = db.get_side_effect_receipt(item["receipt_key"]) if item["receipt_key"] else None
+        if item["receipt_key"] and (not receipt or receipt["state"] not in {"indeterminate", outcome}):
+            raise ValueError("effect receipt is active or conflicts with this outcome")
+        # This is liveness correction for an already unknown execution, not a
+        # terminal transition or an assertion that the submitted evidence is true.
+        AutomationDeliveryService._mark_run_waiting_for_external_outcome(item, reason="outcome_reconciliation")
+        if receipt and receipt["state"] == "indeterminate":
+            if not db.reconcile_side_effect_receipt(idempotency_key=item["receipt_key"], outcome=outcome, evidence=evidence):
+                raise RuntimeError("effect receipt reconciliation rejected")
         if not db.reconcile_automation_delivery(delivery_id, outcome=outcome, evidence=evidence):
             raise RuntimeError("delivery changed during reconciliation")
         from core.action_executor import ActionExecutor
@@ -467,7 +540,20 @@ class AutomationDeliveryService:
             db.renew_automation_delivery(delivery_id, owner_id=owner)
         for result in db.reconcile_automation_deliveries(limit=64):
             if result["phase"] == "unknown":
-                self._report_attention(db.get_automation_delivery(result["delivery_id"]))
+                item = db.get_automation_delivery(result["delivery_id"])
+                self._mark_run_waiting_for_external_outcome(item, reason="outcome_unknown")
+                self._report_attention(item)
+            elif result["phase"] in {"completed", "failed"}:
+                self._mark_run_waiting_for_external_outcome(
+                    db.get_automation_delivery(result["delivery_id"]), reason=f"receipt_{result['phase']}",
+                )
+        # Finish a bounded cursor pass even when earlier unknown rows remain
+        # unresolved; taking the same first 64 rows would starve later runs.
+        unknown = db.page_unknown_automation_deliveries(after=self._unknown_run_cursor, limit=64)
+        for item in unknown:
+            self._mark_run_waiting_for_external_outcome(item, reason="outcome_unknown")
+        self._unknown_run_cursor = ([unknown[-1]["created_at"], unknown[-1]["delivery_id"]]
+                                    if len(unknown) == 64 else None)
         if not self._terminal_scan_done:
             rows = db.list_automation_terminal_sources(after_run_id=self._terminal_cursor, limit=64)
             from core.terminal_post_run import terminal_post_run_service

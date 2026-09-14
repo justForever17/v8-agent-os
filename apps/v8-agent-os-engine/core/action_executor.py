@@ -604,7 +604,7 @@ class ActionExecutor:
                     if execution_receipt.requires_reconciliation or execution_receipt.state != "completed":
                         status = "review_required"
                         error_message = "外部副作用结果未知，必须核对目标系统状态后再决定完成或重试。"
-                        run_handle.fail(error_message, node="automation_runtime")
+                        automation_delivery_service.settle_run(kwargs, run_handle, status="failed", error=error_message, receipt=execution_receipt)
                         return {
                             "status": status,
                             "run_id": run_handle.run_id,
@@ -621,7 +621,7 @@ class ActionExecutor:
                         title="Automation 收尾",
                         input_payload={"status": status, "receipt": execution_receipt.as_dict()},
                     )
-                    run_handle.complete(reason="side_effect_deduplicated", node="automation_runtime")
+                    status = automation_delivery_service.settle_run(kwargs, run_handle, status="skipped_duplicate", reason="side_effect_deduplicated", receipt=execution_receipt)
                     return {
                         "status": status,
                         "run_id": run_handle.run_id,
@@ -720,13 +720,13 @@ class ActionExecutor:
                 title="Automation 收尾",
                 input_payload={"status": "success"},
             )
-            run_handle.complete(reason="automation_finished", node="automation_runtime")
+            status = automation_delivery_service.settle_run(kwargs, run_handle, status="success", receipt=execution_receipt)
             return result
         except asyncio.CancelledError:
             status = "cancelled"
             error_message = "Automation execution cancelled."
             if run_handle is not None:
-                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+                status = automation_delivery_service.settle_run(kwargs, run_handle, status="cancelled", error=error_message, receipt=execution_receipt)
             raise
         except Exception as e:
             import traceback
@@ -742,7 +742,7 @@ class ActionExecutor:
                     error=error_message,
                 )
             if run_handle is not None:
-                run_handle.fail(error_message, node="automation_runtime")
+                status = automation_delivery_service.settle_run(kwargs, run_handle, status="failed", error=error_message, receipt=execution_receipt)
             raise
         finally:
             try:
@@ -1266,7 +1266,7 @@ class ActionExecutor:
                     if execution_receipt.requires_reconciliation or execution_receipt.state != "completed":
                         status = "review_required"
                         error_message = "外部副作用结果未知，必须核对目标系统状态后再决定完成或重试。"
-                        run_handle.fail(error_message, node="automation_runtime")
+                        automation_delivery_service.settle_run(kwargs, run_handle, status="failed", error=error_message, receipt=execution_receipt)
                         return
                     status = "skipped_duplicate"
                     ActionExecutor._activate_automation_stage(
@@ -1277,7 +1277,7 @@ class ActionExecutor:
                         title="Automation 收尾",
                         input_payload={"status": status, "receipt": execution_receipt.as_dict()},
                     )
-                    run_handle.complete(reason="side_effect_deduplicated", node="automation_runtime")
+                    status = automation_delivery_service.settle_run(kwargs, run_handle, status="skipped_duplicate", reason="side_effect_deduplicated", receipt=execution_receipt)
                     return
             automation_delivery_service.executing(kwargs, execution_receipt)
             with automation_runtime.bind_execution_context(
@@ -1339,13 +1339,13 @@ class ActionExecutor:
                 title="Automation 收尾",
                 input_payload={"status": status},
             )
-            run_handle.complete(reason="automation_finished", node="automation_runtime")
+            status = automation_delivery_service.settle_run(kwargs, run_handle, status="success", receipt=execution_receipt)
 
         except asyncio.CancelledError:
             status = "cancelled"
             error_message = "Automation execution cancelled."
             if run_handle is not None:
-                run_service.transition_run(run_handle.run_id, status="cancelled", error_message=error_message)
+                status = automation_delivery_service.settle_run(kwargs, run_handle, status="cancelled", error=error_message, receipt=execution_receipt)
             raise
         except ModelGovernanceInterventionRequired as e:
             status = "review_required"
@@ -1364,7 +1364,7 @@ class ActionExecutor:
             else:
                 error_message = str(e)
                 status = "failed"
-                run_handle.fail(error_message, node="automation_runtime")
+                status = automation_delivery_service.settle_run(kwargs, run_handle, status="failed", error=error_message, receipt=execution_receipt)
         except Exception as e:
             import traceback
             error_message = f"Async Agent '{target_graph_module_name}' failed in background: {str(e)}\n{traceback.format_exc()}"
@@ -1379,7 +1379,7 @@ class ActionExecutor:
                     error=error_message,
                 )
             if run_handle is not None:
-                run_handle.fail(error_message, node="automation_runtime")
+                status = automation_delivery_service.settle_run(kwargs, run_handle, status="failed", error=error_message, receipt=execution_receipt)
             
         finally:
             try:

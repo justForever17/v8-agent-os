@@ -53,7 +53,7 @@ def delegation_parameter_repair(invalid_fields: list[str]) -> tuple[str, list[st
 
 @tool("delegation_broker")
 def supervisor_delegation_broker(
-    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume", "review_result"] = "observe",
+    mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "accept_partial", "resume", "review_result"] = "observe",
     tasks: Annotated[
         list[ManualLocalDelegationTask | ManualExternalDelegationTask] | None,
         "For dispatch use a flat array. Each local task requires targetAgentName, taskBriefId, goal, expectedOutputs and acceptanceContract. Omit unused optional fields; do not send null strings or taskBrief wrappers.",

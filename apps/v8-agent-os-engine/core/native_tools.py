@@ -317,9 +317,9 @@ def http_request(
 def tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_char: int = 0) -> str:
     """Read evidence at an exact prior toolobs:// raw_ref, without executing its producer.
 
-    max_chars is bounded to 60000. For plain-text evidence, follow the returned
-    next_start_char until the end before claiming complete verification.
-    start_char is only supported for plain-text observations, not JSON previews.
+    max_chars is bounded to 60000. For plain-text evidence, episode inspections,
+    and partial publication receipts, follow next_start_char until the end before
+    claiming complete verification. Other JSON previews do not support start_char.
     """
     return render_tool_observation_detail(raw_ref, max_chars=max_chars, start_char=start_char)
 

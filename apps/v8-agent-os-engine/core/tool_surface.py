@@ -321,11 +321,16 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
     remaining_tokens = max(0, context_window_tokens - used_tokens - output_reserve_tokens - safety_buffer_tokens)
     dynamic_budget_chars = max(MIN_TOOL_OUTPUT_BUDGET_CHARS, remaining_tokens * CHARS_PER_TOKEN_ESTIMATE)
     kind = _tool_output_kind(tool_name)
+    call = getattr(request, "tool_call", None)
+    args = call.get("args") if isinstance(call, dict) else None
+    if (tool_name in {"runtime_broker", "delegation_broker"} and isinstance(args, dict)
+            and args.get("mode") == "inspect" and (args.get("episode_id") or args.get("delegation_id"))):
+        # Inspection carries evidence and exact version/control identities, not
+        # an operation acknowledgement. Keep the existing context/hard ceilings.
+        kind = "diagnostic"
     base_target_chars = TOOL_OUTPUT_TARGET_CHARS.get(kind, TOOL_OUTPUT_TARGET_CHARS["default"])
     target_chars = _scaled_tool_target_chars(kind, base_target_chars, context_window_tokens)
     if tool_name == TOOL_OBSERVATION_DETAIL_NAME:
-        call = getattr(request, "tool_call", None)
-        args = call.get("args") if isinstance(call, dict) else None
         requested_chars = _safe_int(args.get("max_chars"), base_target_chars) if isinstance(args, dict) else base_target_chars
         # Explicit recovery reads can consume more than a summary. The model
         # context reserve, configured hard ceiling and redaction still apply.
@@ -2223,6 +2228,12 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget:
 def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     if payload.get("mode") == "inspect" and payload.get("episodeId"):
         return _render_runtime_broker_surface(payload, raw_ref)
+    handoff = payload.get("handoff")
+    if payload.get("ok") is True and isinstance(handoff, dict) and handoff.get("status") == "partial":
+        receipt = {key: handoff[key] for key in ("handoffRefId", "outputKey", "version", "sourceVersion", "usableFor", "status") if key in handoff}
+        receipt.update({"executionTerminal": payload.get("executionTerminal"), "rawRef": raw_ref,
+                        "nextAction": "Continue the current task. Publication is not final completion or downstream acceptance."})
+        return "Partial handoff published\n" + json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
     mode = _short_text(payload.get("mode") or payload.get("kind") or "dispatch", 40)
     lines = [f"Delegation broker ({mode})"]
     summary = _first_text(payload, "summary", "message", "result", "error", limit=500)
@@ -2823,6 +2834,16 @@ def _decision_agent_visible_surface(
     preserve_full_research = tool_name == "research_broker" and renderer_result.startswith("Research answer\n")
     preserve_focused_media_contract = tool_name == "creative_media_capabilities" and _focused_creative_media_contract(payload) is not None
     if len(renderer_result) > budget and not (preserve_full_research or preserve_focused_media_contract):
+        if renderer_result.startswith(("Runtime episode inspection\n", "Partial handoff published\n")):
+            # Do not splice serialized proof/acceptance arguments. A bounded
+            # recovery view points to the same retained observation and cannot
+            # be mistaken for an inspected or accepted partial result.
+            recovery = {key: payload[key] for key in ("episodeId", "state", "executionTerminal") if key in payload}
+            recovery.update({"truncated": True, "handoffsOmitted": len(payload.get("handoffs") or ([payload["handoff"]] if payload.get("handoff") else [])),
+                             "controlsOmitted": len(payload.get("controls") or []), "rawRef": raw_ref,
+                             "detailTool": f"tool_observation_detail(raw_ref='{raw_ref}')",
+                             "nextAction": "Read detailTool before deciding on the omitted proof or issuing acceptance/control actions."})
+            return renderer_result.split("\n", 1)[0] + "\n" + json.dumps(recovery, ensure_ascii=False, separators=(",", ":"))
         return _head_tail_truncate_text(renderer_result, budget, f"decision surface truncated; rawRef={raw_ref}")
     return renderer_result
 

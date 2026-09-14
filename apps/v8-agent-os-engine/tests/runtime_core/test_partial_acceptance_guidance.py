@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -41,11 +42,11 @@ def publish(database, version):
         worker_id="owner", lease_generation=claim["leaseGeneration"])
 
 
-def tool_call(tool, args, identity):
+def tool_call(tool, args, identity, config=None):
     assistant = AIMessage(content="", tool_calls=[{"id": identity, "name": tool.name, "args": args}])
     node = create_routed_tool_node([tool], "supervisor_tools", "supervisor")
     with bind_runtime_context(session_id="session", run_id="run", actor_role="supervisor"):
-        result = asyncio.run(node({"messages": [HumanMessage(content="public request"), assistant]}, {}))
+        result = asyncio.run(node({"messages": [HumanMessage(content="public request"), assistant]}, config or {}))
     commands = result if isinstance(result, list) else [result]
     reply = next(item for command in commands for item in command.update["messages"] if isinstance(item, ToolMessage))
     return assistant, reply
@@ -130,3 +131,87 @@ def test_terminal_result_keeps_final_review_owner(database):
     assert "accepted" in reply.content
     assert instance.get_runtime_episode("producer-A")["metadata"]["supervisorAcceptance"]["results"]["A"]["status"] == "accepted"
     assert "partial" in supervisor_delegation_broker.description and "runtime_broker" in supervisor_delegation_broker.description
+
+
+@pytest.mark.parametrize("tool", [runtime.runtime_broker, supervisor_delegation_broker])
+def test_inspection_keeps_proof_and_action_whole_in_actual_next_request(database, tool):
+    _, claim = database
+    summary = "Public evidence retained: " + "observed process remains active; " * 100
+    control.publish_partial("producer-A", handoff={"outputKey": "ready", "version": "v1", "sourceVersion": "source-v1",
+        "usableFor": ["consumer-B"], "compactSummary": summary, "proofRefs": ["proof://public/exact-ready"]},
+        worker_id="owner", lease_generation=claim["leaseGeneration"])
+    assistant, reply, view = inspection(tool)
+    assert view["handoffs"][0]["compactSummary"] == summary
+    assert view["handoffs"][0]["proofRefs"] == ["proof://public/exact-ready"]
+    action = view["handoffs"][0]["acceptanceAction"]
+    assert action["arguments"]["mode"] == "accept_partial"
+    model = V8OpenAICompatibleChatModel(model="fixture", api_key="fixture-key", base_url="https://fixture.invalid/v1")
+    wire = model._get_request_payload([HumanMessage(content="public request"), assistant, reply])
+    assert json.loads(wire["messages"][-1]["content"].split("\n", 1)[1]) == view
+
+
+@pytest.mark.parametrize("tool", [runtime.runtime_broker, supervisor_delegation_broker])
+def test_inspection_honors_small_budget_with_complete_recovery_not_broken_proof(database, tool):
+    _, claim = database
+    control.publish_partial("producer-A", handoff={"outputKey": "ready", "version": "v1", "sourceVersion": "source-v1",
+        "usableFor": ["consumer-B"], "compactSummary": "public observation " * 2000, "proofRefs": ["proof://public/full"]},
+        worker_id="owner", lease_generation=claim["leaseGeneration"])
+    key = "delegation_id" if tool.name == "delegation_broker" else "episode_id"
+    _, reply = tool_call(tool, {"mode": "inspect", key: "producer-A"}, "bounded-inspect",
+                         {"configurable": {"toolOutputHardMaxChars": 1200}})
+    view = json.loads(reply.content.split("\n", 1)[1])
+    assert len(reply.content) <= 1200
+    assert view["executionTerminal"] is False and view["truncated"] is True
+    assert view["handoffsOmitted"] == 1 and view["controlsOmitted"] == 0
+    assert view["rawRef"].startswith("toolobs://") and "tool_observation_detail" in view["detailTool"]
+    assert "acceptanceAction" not in reply.content and "read" in view["nextAction"].lower()
+    # The original handoff remains complete; a preview is never an acceptance.
+    stored = database[0].list_runtime_episode_handoffs("producer-A")[0]["payload"]
+    assert len(stored["compactSummary"]) == len("public observation " * 2000)
+    assert database[0].list_runtime_episode_messages(run_id="run", recipient="partial:producer-A", pending_only=False) == []
+    from core.tool_observation_detail import render_tool_observation_detail
+    parts, offset = [], 0
+    for _ in range(50):
+        page = render_tool_observation_detail(view["rawRef"], max_chars=1000, start_char=offset)
+        assert "<preview>\n" in page
+        parts.append(page.split("<preview>\n", 1)[1].split("\n</preview>", 1)[0])
+        next_page = re.search(r"next_start_char=(\d+)", page)
+        if not next_page:
+            assert "[end of observation]" in page
+            break
+        assert int(next_page[1]) > offset
+        offset = int(next_page[1])
+    else:
+        pytest.fail("inspection recovery did not finish")
+    recovered = json.loads("".join(parts))
+    assert recovered["handoffs"][0]["compactSummary"] == stored["compactSummary"]
+    assert recovered["handoffs"][0]["proofRefs"] == stored["proofRefs"]
+    assert recovered["handoffs"][0]["acceptanceAction"]["arguments"]["handoff_id"] == stored["handoffRefId"]
+
+
+def test_child_partial_publication_returns_exact_receipt_and_stays_nonterminal(database):
+    instance, claim = database
+    partial = {"outputKey": "ready", "version": "v1", "sourceVersion": "source-v1", "usableFor": ["consumer-B"],
+               "compactSummary": "Public READY observation", "proofRefs": ["proof://public/ready"]}
+    assistant = AIMessage(content="", tool_calls=[{"id": "publish-public", "name": "delegation_broker",
+                                                 "args": {"mode": "publish_partial", "partial_handoff": partial}}])
+    node = create_routed_tool_node([delegation.delegation_broker], "worker_tools", "worker")
+    with bind_runtime_context(actor_role="direct_subagent", agent_id="child", subagent_id="child",
+                              delegation_id="producer-A", delegation_depth=1, session_id="session", run_id="run",
+                              runtime_episode_lease={"episodeId": "producer-A", "worker_id": "owner",
+                                                     "lease_generation": claim["leaseGeneration"]}):
+        result = asyncio.run(node({"messages": [HumanMessage(content="Publish readiness and continue A."), assistant]}))
+    commands = result if isinstance(result, list) else [result]
+    reply = next(item for command in commands for item in command.update["messages"] if isinstance(item, ToolMessage))
+    assert reply.content.startswith("Partial handoff published\n")
+    receipt = json.loads(reply.content.split("\n", 1)[1])
+    stored = instance.list_runtime_episode_handoffs("producer-A")[0]["payload"]
+    for key in ("handoffRefId", "outputKey", "version", "sourceVersion", "usableFor"):
+        assert receipt[key] == stored[key]
+    assert receipt["executionTerminal"] is False and receipt["status"] == "partial"
+    assert "Continue" in receipt["nextAction"] and "not" in receipt["nextAction"]
+    assert instance.get_runtime_episode("producer-A")["state"] == "active"
+    assert instance.list_runtime_episode_messages(run_id="run", recipient="partial:producer-A", pending_only=False) == []
+    model = V8OpenAICompatibleChatModel(model="fixture", api_key="fixture-key", base_url="https://fixture.invalid/v1")
+    wire = model._get_request_payload([HumanMessage(content="public request"), assistant, reply])
+    assert json.loads(wire["messages"][-1]["content"].split("\n", 1)[1]) == receipt

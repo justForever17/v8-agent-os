@@ -746,6 +746,11 @@ def _delegation_orchestration_guidance(*, correction: bool = False) -> SystemMes
         "[Required Delegation Dispatch]\n"
         + ("This is the single correction attempt. " if correction else "")
         + "The next user-requested execution is delegation_broker(mode='dispatch'), not a runtime_broker route. "
+        "This invocation is temporarily limited to dispatch and its preparation tools. After dispatch, "
+        "the Engine rebuilds the Supervisor's normal configured tool set for the next invocation; "
+        "the current narrowed set is not the capability set for the rest of the task or for the worker. "
+        "Do not replace later partial acceptance or independent file work with another protocol because "
+        "its tool is absent from this dispatch-only invocation. Use the next invocation's actual schemas. "
         "If the exact registered Agent name or capability is not clear, first use agent_broker(mode='list'/'inspect'/'validate'). "
         "Registry reads are preparation only: they do not dispatch work or complete the pending delegation. "
         "You may first read the received Research handoff's exact rawRef with tool_observation_detail, or its evidenceBundleId with research_broker(mode='get_evidence'), when needed to prepare an accurate task. "

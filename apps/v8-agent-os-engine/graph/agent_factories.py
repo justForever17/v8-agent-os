@@ -1521,7 +1521,10 @@ def _format_delegated_task_contract(task_brief: dict | None, *, tool_names: list
                 )
         else:
             lines.append(
-                "- This actor cannot create another delegation layer under the current depth or tool policy. The absence of `delegation_broker` is intentional, not a missing-tool failure."
+                "- This actor cannot dispatch another delegation layer under the current depth or tool policy. "
+                "This does not prohibit progress on your own task: if `delegation_broker` is provided, "
+                "its permitted request_input/publish_partial operations remain scoped to your active episode; "
+                "they do not authorize another worker or replace final-result review."
             )
             lines.append(
                 "- Complete the assigned slice with the tools you have, or return a concrete blocker without attempting to create another worker."

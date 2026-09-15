@@ -107,6 +107,13 @@ def supervisor_delegation_broker(
     executor actually stops. await yields for delegation_id; runtime_broker
     await supports several episode_ids. Avoid busy polling. resume retains its
     external-worker meaning.
+    When task policy permits delegation_broker, the direct worker receives its
+    own schema, including mode='publish_partial',
+    partial_handoff={outputKey, version, sourceVersion,
+    usableFor, compactSummary, proofRefs}, under its active episode lease.
+    That worker-only mode is intentionally absent from this Supervisor schema.
+    Publishing a partial is not child dispatch and does not finish the worker;
+    allowChildDelegation=false does not forbid this scoped progress operation.
     inspect.executionTerminal includes degraded, failed and cancelled outcomes;
     completedAt is the persisted settlement timestamp when available. A missing
     historical timestamp leaves the time unknown; use state to judge activity.

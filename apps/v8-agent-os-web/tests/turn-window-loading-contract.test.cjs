@@ -18,7 +18,11 @@ test("Web renders the newest canonical turn before the optional navigation index
   assert.match(client, /new URLSearchParams\(\{ limit: "1" \}\)/);
   assert.doesNotMatch(client, /const indexPagePromise = loadConversationTurnIndexPage/);
   assert.match(client, /historyLoadControllerRef\.current\?\.abort\(\)/);
-  assert.match(client, /loadConversationTurnPage\(conversationId, \{ signal: controller\.signal \}\)/);
+  // The request uses one composed signal so navigation aborts and the
+  // ten-second timeout cancel the same fetch. Keep the call contract while
+  // avoiding an oracle tied to the old controller.signal spelling.
+  assert.match(client, /const signal = AbortSignal\.any\(\[controller\.signal, AbortSignal\.timeout\(10_000\)\]\)/);
+  assert.match(client, /loadConversationTurnPage\(conversationId, \{ signal \}\)/);
   assert.match(client, /window\.setTimeout\(\(\) => void hydrateTurnIndex\(\), 0\)/);
   const historyStart = client.indexOf("const loadConversationHistory = useCallback");
   const historyEnd = client.indexOf("const loadOlderConversationTurn", historyStart);

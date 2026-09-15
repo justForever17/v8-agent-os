@@ -305,7 +305,11 @@ test("Workbench confirmation status reopens the authoritative interaction and ne
   assert.match(chatClient, /resolvedGovernanceApprovalIds/);
   assert.match(chatClient, /slightly older snapshot can arrive after approval\.requested/);
   assert.match(chatClient, /setDismissedGovernanceApprovalId\(governancePendingApprovalId\)/);
-  assert.match(chatClient, /removeGovernanceApproval\(governancePendingApprovalId\)/);
+  // Resolution removes the ID captured and validated for this request. The
+  // callback intentionally uses approvalId so a stale snapshot cannot clear a
+  // replacement approval.
+  assert.match(chatClient, /removeGovernanceApproval\(approvalId\)/);
+  assert.match(chatClient, /if \(resolvedId && resolvedId !== approvalId\) removeGovernanceApproval\(resolvedId\)/);
   assert.match(chatClient, /normalizedEvent\.topic === "approval\.requested"/);
   assert.match(chatClient, /normalizedEvent\.topic === "approval\.approved" \|\| normalizedEvent\.topic === "approval\.rejected"/);
   assert.match(workbench, /currentRuntime \|\| pendingConfirmation/);

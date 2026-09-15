@@ -2232,6 +2232,20 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget:
 def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget: int = 2500) -> str:
     if payload.get("mode") == "inspect" and payload.get("episodeId"):
         return _render_runtime_broker_surface(payload, raw_ref)
+    items = payload.get("items")
+    if (payload.get("ok") is True and payload.get("mode") == "dispatch" and isinstance(items, list)
+            and any(isinstance(item, dict) and item.get("delegationId") for item in items)):
+        # The exact returned handle is needed on the very next invocation.
+        # Task goals already remain in model history; don't repeat them at the
+        # cost of losing the only identity accepted by the control owner.
+        receipt = {"items": [{key: item[key] for key in (
+            "taskBriefId", "delegationId", "lane", "targetLabel", "status", "effectiveExecution", "toolPolicy",
+            "supervisorAcceptance") if key in item} for item in items if isinstance(item, dict)],
+            "control": {"tool": "delegation_broker", "idArgument": "delegation_id",
+                        "guidance": "For local episodes, copy the exact delegationId into inspect/await/steer/cancel. taskBriefId is a label, not the control ID."},
+            "nextAction": "Continue independent work or await a required episode. Dispatch is not execution proof or acceptance; inspect partial proof and use runtime_broker accept_partial before dependent use.",
+            "rawRef": raw_ref}
+        return "Delegation dispatch receipt\n" + json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
     handoff = payload.get("handoff")
     if payload.get("ok") is True and isinstance(handoff, dict) and handoff.get("status") == "partial":
         receipt = {key: handoff[key] for key in ("handoffRefId", "outputKey", "version", "sourceVersion", "usableFor", "status") if key in handoff}
@@ -2814,11 +2828,6 @@ def _decision_agent_visible_surface(
         renderer_result = "\n".join(line for line in lines if line)
     elif tool_name == "runtime_broker":
         renderer_result = _render_runtime_broker_surface(payload, raw_ref)
-    elif tool_name == "delegation_broker" and payload.get("mode") == "inspect" and payload.get("episodeId"):
-        # delegation's inspect/steer facade delegates to runtime_broker. Keep
-        # the runtime inspection contract (especially acceptanceAction) visible
-        # to the Supervisor instead of collapsing it to a generic delegation summary.
-        renderer_result = _render_runtime_broker_surface(payload, raw_ref)
     elif tool_name == "agent_broker":
         renderer_result = _render_agent_registry_surface(payload, raw_ref)
     elif tool_name == "config_broker":
@@ -2871,7 +2880,7 @@ def _decision_agent_visible_surface(
         renderer_result = _render_generic_json_surface(tool_name, payload_any, raw_ref, budget=budget)
     if renderer_result is None:
         return None
-    if renderer_result.startswith(("Runtime episode inspection\n", "Partial handoff published\n")):
+    if renderer_result.startswith(("Runtime episode inspection\n", "Partial handoff published\n", "Delegation dispatch receipt\n")):
         from core.tool_observation_detail import _redact_tool_observation_preview
         title, structured = renderer_result.split("\n", 1)
         safe = _redact_tool_observation_preview(structured)
@@ -2882,7 +2891,7 @@ def _decision_agent_visible_surface(
     preserve_full_research = tool_name == "research_broker" and renderer_result.startswith("Research answer\n")
     preserve_focused_media_contract = tool_name == "creative_media_capabilities" and _focused_creative_media_contract(payload) is not None
     if len(renderer_result) > budget and not (preserve_full_research or preserve_focused_media_contract):
-        if renderer_result.startswith(("Runtime episode inspection\n", "Partial handoff published\n")):
+        if renderer_result.startswith(("Runtime episode inspection\n", "Partial handoff published\n", "Delegation dispatch receipt\n")):
             # Do not splice serialized proof/acceptance arguments. A bounded
             # recovery view points to the same retained observation and cannot
             # be mistaken for an inspected or accepted partial result.
@@ -2891,6 +2900,8 @@ def _decision_agent_visible_surface(
                              "controlsOmitted": len(payload.get("controls") or []), "rawRef": raw_ref,
                              "detailTool": f"tool_observation_detail(raw_ref='{raw_ref}')",
                              "nextAction": "Read detailTool before deciding on the omitted proof or issuing acceptance/control actions."})
+            if renderer_result.startswith("Delegation dispatch receipt\n"):
+                recovery["dispatchItemsOmitted"] = len(payload.get("items") or [])
             return renderer_result.split("\n", 1)[0] + "\n" + json.dumps(recovery, ensure_ascii=False, separators=(",", ":"))
         return _head_tail_truncate_text(renderer_result, budget, f"decision surface truncated; rawRef={raw_ref}")
     return renderer_result

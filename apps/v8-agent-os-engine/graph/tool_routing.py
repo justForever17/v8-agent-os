@@ -1053,6 +1053,18 @@ def _runtime_parameter_repair_message(
         from core.tools.native.delegation_surface import delegation_parameter_repair, supervisor_delegation_broker
         if getattr(getattr(request, "tool", None), "func", None) is not supervisor_delegation_broker.func:
             return None
+        if (tool_call.get("args") or {}).get("mode") == "accept_partial":
+            return ToolMessage(
+                content=("Partial acceptance was not executed. Use the existing runtime_broker, which owns partial acceptance.\n"
+                         "Inspect the producer's proof, then call runtime_broker(mode='accept_partial', "
+                         "episode_id=<exact producer episode ID>, handoff_id=<current partial handoffRefId>, "
+                         "consumers=<required subset of usableFor>, reason=<evidence basis>).\n"
+                         "Copy the inspected IDs unchanged; delegation_id on the rejected call corresponds to episode_id. "
+                         "This feedback does not accept the partial or grant a consumer. Do not dispatch a replacement task."),
+                name=tool_name, tool_call_id=str(tool_call.get("id") or ""), status="error",
+                additional_kwargs={"riskCode": "delegation_parameter_repair", "invalidFields": input_validation_fields,
+                                   "executionOutcome": "not_executed", "recommendedNextAction": "use_runtime_partial_acceptance"},
+            )
         content, fields = delegation_parameter_repair(input_validation_fields)
         return ToolMessage(content=content, name=tool_name, tool_call_id=str(tool_call.get("id") or ""), status="error",
                            additional_kwargs={"riskCode": "delegation_parameter_repair", "invalidFields": fields,

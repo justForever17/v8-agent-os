@@ -509,9 +509,12 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_ch
                                   and record.get("tool_name") in {"runtime_broker", "delegation_broker"})
         delegation_repair = bool(payload and record.get("tool_name") == "delegation_broker"
                                  and payload.get("error") == "task_context_execution_fields")
+        dispatch_receipt = bool(payload and record.get("tool_name") == "delegation_broker"
+                                and payload.get("mode") == "dispatch" and payload.get("ok") is True
+                                and isinstance(payload.get("items"), list))
         # Inspection recovery must expose the retained proof/control identities,
         # not another summary that drops handoffs. Reuse redacted text pagination.
-        if episode_inspection or delegation_repair:
+        if episode_inspection or delegation_repair or dispatch_receipt:
             payload = None
         if offset and payload:
             return "start_char is only supported for plain-text observations and episode inspections, not other JSON previews."

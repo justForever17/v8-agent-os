@@ -169,6 +169,22 @@ def test_misplaced_task_boundaries_are_rejected_before_dispatch_and_explicit_rep
     assert dispatched[0]["tasks"][0]["toolPolicy"]["allowedTools"] == []
 
 
+def test_wrong_broker_partial_acceptance_explains_canonical_action_without_dispatch(monkeypatch):
+    invoked = []
+    monkeypatch.setattr(surface.delegation_broker, "func", lambda **kwargs: invoked.append(kwargs))
+    call = {"name": "delegation_broker", "id": "wrong-partial-owner", "args": {
+        "mode": "accept_partial", "delegation_id": "subagent::fixture", "handoff_id": "partial:fixture",
+        "consumers": ["dependent-task"], "reason": "Verified the partial proof"}}
+    node = create_routed_tool_node([surface.supervisor_delegation_broker], "supervisor_tools", "supervisor")
+    message = asyncio.run(node({"messages": [AIMessage(content="", tool_calls=[call])]})).update["messages"][0]
+    assert invoked == [] and message.status == "error"
+    assert message.tool_call_id == call["id"]
+    assert "runtime_broker" in message.content and "accept_partial" in message.content
+    assert all(name in message.content for name in ("episode_id", "handoff_id", "consumers", "reason"))
+    assert "targetAgentName" not in message.content, "a control error must not teach creation of a new worker"
+    assert message.additional_kwargs["executionOutcome"] == "not_executed"
+
+
 def test_tool_body_validation_cannot_claim_dispatch_was_not_executed(monkeypatch):
     class InnerPayload(BaseModel):
         required_value: int

@@ -24,7 +24,6 @@ def test_manual_schema_matches_dispatch_but_preserves_internal_and_child_contrac
     schema = convert_to_openai_tool(public)["function"]["parameters"]
     assert "worker_briefs" not in schema["properties"]
     assert "list" not in schema["properties"]["mode"]["enum"]
-    assert "accept_partial" in schema["properties"]["mode"]["enum"]
     # A missing local target cannot reach execution via the new public schema.
     with pytest.raises(ValidationError):
         public.args_schema.model_validate({"mode": "dispatch", "tasks": [original]})

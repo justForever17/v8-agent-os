@@ -2459,7 +2459,7 @@ def delegation_broker(
         except ValueError as exc:
             payload = {"ok": False, "error": str(exc)}
         return Command(update={"messages": [ToolMessage(content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]})
-    if normalized_mode in {"inspect", "steer", "cancel", "await", "accept_partial"} or (normalized_mode == "observe" and delegation_id.startswith("subagent::")):
+    if normalized_mode in {"inspect", "steer", "cancel", "await"} or (normalized_mode == "observe" and delegation_id.startswith("subagent::")):
         from core.tools.native.runtime import runtime_broker
         return runtime_broker.func(mode="inspect" if normalized_mode == "observe" else normalized_mode,
                                    episode_id=delegation_id, followup=followup, tool_call_id=tool_call_id, state=state)

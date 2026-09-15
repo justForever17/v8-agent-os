@@ -48,7 +48,9 @@ from . import system_doctor_routes as system_doctor_routes_module
 from . import system_operation_routes as system_operation_routes_module
 from . import terminal_routes as terminal_routes_module
 from . import ui_patch_routes as ui_patch_routes_module
+from . import auth_routes as auth_routes_module
 router = APIRouter()
+router.include_router(auth_routes_module.router)
 _STARTUP_PROFILE = resolve_startup_profile()
 
 

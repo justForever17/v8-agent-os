@@ -256,6 +256,7 @@ jobs:
           python apps/v8-agent-os-engine/tests/scripts/run_pytest_shard.py
           --shard-index ${{ matrix.index }}
           --shard-count 4
+          --portable-ci
 
   ci-gate:
     name: CI Gate

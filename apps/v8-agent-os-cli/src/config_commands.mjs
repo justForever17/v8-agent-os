@@ -220,6 +220,20 @@ export async function setModelRole(role, modelRef) {
   return { source: "engine", role: normalizedRole, modelRef: normalizedModelRef, transactionId: prepared.transactionId, payload: saved };
 }
 
+/** Read a Supervisor-owned config transaction through the Engine authority. */
+export async function getConfigTransaction(transactionId) {
+  const id = String(transactionId || "").trim();
+  if (!id) throw new Error("config transaction show requires a transaction id");
+  return { source: "engine", payload: await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(id)}`, { timeoutMs: 5000 }) };
+}
+
+/** Roll back a config transaction using the broker's target-scoped CAS checks. */
+export async function rollbackConfigTransaction(transactionId) {
+  const id = String(transactionId || "").trim();
+  if (!id) throw new Error("config transaction rollback requires a transaction id");
+  return { source: "engine", payload: await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(id)}/rollback`, { method: "POST", timeoutMs: 10000 }) };
+}
+
 export async function modelInventory({ category = "", query = "", limit = 20 } = {}) {
   const params = new URLSearchParams();
   if (category) params.set("category", category);

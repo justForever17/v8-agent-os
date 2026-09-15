@@ -53,6 +53,15 @@ export function renderConfigDomains(result) {
   }
 }
 
+export function renderConfigTransaction(result) {
+  const tx = result.payload || result;
+  console.log(`Config transaction (${result.source || "unknown"})`);
+  for (const [key, value] of [["id", tx.transactionId || tx.id], ["target", tx.targetKind || tx.target], ["state", tx.state], ["planDigest", tx.planDigest]]) {
+    if (value !== undefined && value !== null && value !== "") console.log(`${key}: ${value}`);
+  }
+  if (tx.error?.code) console.log(`error: ${tx.error.code}${tx.error.message ? ` - ${tx.error.message}` : ""}`);
+}
+
 export function renderMcpServers(result) {
   console.log(`MCP servers (${result.source})`);
   if (!result.servers.length) {

@@ -13,6 +13,8 @@ import {
   modelRoles,
   phonePairingManifest,
   phonePairingSummary,
+  getConfigTransaction,
+  rollbackConfigTransaction,
   removeMcpServer,
   recommendModel,
   setModelRole,
@@ -29,6 +31,7 @@ import { readRuntimePorts } from "./runtime_ports.mjs";
 import {
   printJson,
   renderConfigDomains,
+  renderConfigTransaction,
   renderDoctor,
   renderMcpServers,
   renderMcpStatus,
@@ -81,6 +84,7 @@ Usage:
   v8os workspace show|doctor|create|select|open [--json]
   v8os doctor [--json]
   v8os config list|get <domain> [--json]
+  v8os config transaction show|rollback <transaction-id> [--json]
   v8os config mcp list|status|install|remove [--json]
   v8os config models list|doctor|roles|recommend|set-role [--category type] [--query text] [--json]
   v8os config phone show|manifest [--json]
@@ -161,6 +165,16 @@ async function commandConfig(args) {
     if (!domain) throw new Error("config get requires a domain");
     const result = await getConfigDomain(domain);
     printJson(result);
+    return;
+  }
+  if (sub === "transaction" && (args[1] === "show" || args[1] === "rollback")) {
+    const result = args[1] === "show"
+      ? await getConfigTransaction(args[2])
+      : await rollbackConfigTransaction(args[2]);
+    json ? printJson(result) : renderConfigTransaction(result);
+    if (args[1] === "rollback" && result.payload?.state && ["conflict", "recovery_required"].includes(result.payload.state)) {
+      process.exitCode = 1;
+    }
     return;
   }
   if (sub === "mcp" && args[1] === "list") {

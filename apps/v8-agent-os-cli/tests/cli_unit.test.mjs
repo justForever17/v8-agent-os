@@ -25,7 +25,7 @@ import {
   resolveChatWorkspaceSelection,
 } from "../src/chat_commands.mjs";
 import { requireOk } from "../src/client_api.mjs";
-import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
+import { buildMcpInstallPayload, extractModelRoles, getConfigTransaction, rollbackConfigTransaction } from "../src/config_commands.mjs";
 import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
@@ -1809,6 +1809,35 @@ test("mcp install payload builds stdio config without inline secrets", () => {
       },
     },
   });
+});
+
+test("config transaction CLI helpers use Supervisor-owned Engine endpoints", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method || "GET", body: init.body });
+    return new Response(JSON.stringify({ transactionId: "tx/demo", state: "rolled_back" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const shown = await getConfigTransaction("tx/demo");
+    const rolled = await rollbackConfigTransaction("tx/demo");
+    assert.equal(shown.payload.transactionId, "tx/demo");
+    assert.equal(rolled.payload.state, "rolled_back");
+    assert.equal(calls[0].method, "GET");
+    assert.match(calls[0].url, /config-broker\/transactions\/tx%2Fdemo$/);
+    assert.equal(calls[1].method, "POST");
+    assert.match(calls[1].url, /config-broker\/transactions\/tx%2Fdemo\/rollback$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("config transaction helpers fail closed on missing ids", async () => {
+  await assert.rejects(() => getConfigTransaction(""), /requires a transaction id/);
+  await assert.rejects(() => rollbackConfigTransaction("   "), /requires a transaction id/);
 });
 
 test("mcp install payload builds http config without inline secrets", () => {

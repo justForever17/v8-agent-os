@@ -18,6 +18,9 @@ PORTABLE_CI_EXCLUDES = {
     "tests/runtime_core/test_command_process_launch.py",
     "tests/runtime_core/test_engineering_sandbox.py",
     "tests/runtime_core/test_computer_use_shortcut_registry.py",
+    "tests/runtime_core/test_computer_use_window_discovery_batch.py",
+    "tests/runtime_core/test_computer_use_p0_capability_truth.py",
+    "tests/runtime_core/test_workspace_capability.py",
     "tests/safety/test_windows_profile_protection.py",
     "tests/safety/test_native_workspace_approval.py",
     "tests/safety/test_safety_guardian_workspace_commands.py",
@@ -25,6 +28,7 @@ PORTABLE_CI_EXCLUDES = {
     "tests/model_control/test_model_protocol_registry.py",
     "tests/memory/test_memory_visual_enrichment.py",
     "tests/memory/test_memory_vector_sync_degraded.py",
+    "tests/memory/test_memory_session_replay.py",
     "tests/workspace_artifacts/test_scoped_workspace_resource.py",
 }
 

@@ -11575,6 +11575,10 @@ class ChatRuntime:
         signal = erc_kernel.consume_control_signal(run_id)
         if signal and self.should_stop_stream(signal):
             return signal
+        # A guidance/coordination command is already the durable wake for its
+        # queue item. Do not issue a second queue read for every stream event.
+        if signal:
+            return signal
         from core.runtime_episode_control import pending_run_guidance
         guidance = pending_run_guidance(run_id)
         if guidance:

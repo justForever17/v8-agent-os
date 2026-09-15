@@ -1886,6 +1886,12 @@ def build_contextual_auto_tool_node(
             route_context=route_context,
             runtime_access=runtime_access,
         )
+        selected_mcp_tools = filter_visible_tools_for_actor(
+            selected_mcp_tools,
+            actor="subagent",
+            route_context=route_context,
+            runtime_access=runtime_access,
+        )
         tools = _apply_task_tool_policy(
             _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools),
             task_brief,

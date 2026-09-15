@@ -4,33 +4,36 @@
 
 ## 首个偏离
 
-工具目录/registry 产生候选；`filter_visible_tools_for_actor` 产生 actor/runtime pool；但 `graph/agent_factories.py` 的 MCP selector 分支曾把 selector 结果直接拼回 `available_tools`。因此 selector 既是相关性选择器又隐式成为授权源。另一个独立偏离是 `toolPolicy.allowedTools=[]` 通过 `or` 回退到顶层 allowlist。
+已复现的策略缺陷：`toolPolicy.mode=allowlist` 且嵌套 `allowedTools=[]` 时，旧 truthiness 合并会回退到更宽的顶层 allowlist。现在按字段存在性解析，并在真实 ToolNode 验证允许、禁止、未选中和显式空集。
+
+MCP 候选来自已配置的 MCP pool，原生 runtime group 只枚举原生工具。将 `filter_visible_tools_for_actor` 再套到自定义 MCP 名称会使已允许的工具不可达，这项错误过滤已撤销；不能把 `runtimeAccess=[]` 单独解释为 MCP 禁用。
 
 ## 唯一决策顺序
 
 ```text
-registry/manifest (候选)
-  -> actor + runtimeAccess projection (授权池)
-  -> MCP/Skill selector (只裁剪)
-  -> ToolAuthorityDecision (task policy + Capsule/domain guard)
-  -> bound schema + ToolNode execution
+native registry -> actor + runtimeAccess projection ─┐
+configured MCP pool -> MCP selector ────────────────┤
+                                                   ↓
+                  task policy + Capsule/domain guard
+                                                   ↓
+                          bound schema + ToolNode execution
 ```
 
-`core/tool_authority.py` 是 task policy 的 canonical owner。策略字段按“是否存在”解析：`mode=none` 永远为空；`mode=allowlist` 的空数组是 deny-all；显式 `mode=default` 的空数组只表示默认继承元数据。每次决策可输出 `policyDigest`、`visibleToolSetDigest` 与拒绝原因，权限变化必须使旧 surface 失效。
+`core/tool_authority.py` 负责 task policy 解析，生产调用者在 `graph/agent_factories.py`。它不取代 MCP 配置池、插件授权或原生 runtime 权限。`mode=none` 永远为空；`mode=allowlist` 的空数组是 deny-all；显式 `mode=default` 的空数组保留当前归一化默认语义。`policyDigest` 进入 route cache key，`visibleToolSetDigest` 描述实际工具集合。别名和其他领域授权尚未全仓收敛。
 
 ## 输出面
 
-Runtime Surface 由原始观察记录保存来源、版本、时间、actor、`rawSha256`；Agent Surface 只保留完成下一步所需的状态、完整 `toolCallId`/`delegationId`/`invocationId`、`detailRef`、修复参数和 proof；Human Surface 只渲染结果、状态、风险和下一步，不解析 raw JSON，也不回退到内部 ID。
+Runtime Surface 继续使用已有观察记录。Agent 回执保留执行所需控制 ID、修复参数、proof 与 detailRef。Human 的结构化 fallback 渲染 typed summary/action，引用提取不再展示内部控制 ID。无生产调用者的独立 output_surface_contract 已删除；这些定向改动不代表三种输出面的整体重构已完成。
 
-成功、拒绝、工具集合变化、partial、超预算和恢复都沿同一结构返回。未知状态保持 `UNKNOWN`；JSON 在执行前不得切半或宽松补全。
+设计目标是让成功、拒绝、工具集合变化、partial、超预算和恢复使用清晰一致的合同；当前仍有各领域投影，需要逐个核对。JSON 在执行前不得切半或宽松补全。
 
 ## 反例
 
-1. `runtimeAccess=[]` + selector=`secret_mcp`：schema 不得进入模型输入，执行回执为 `policy_denied`。
-2. 嵌套 allowlist 为空、顶层有 `read_native_file`：最终 surface 为空。
+1. 已配置 MCP + selector 命中 + task allowlist 允许：模型绑定和 ToolNode 均可达，合成动作执行一次；未选中、forbidden 或显式空 allowlist 时均零次执行。
+2. 嵌套 `mode=allowlist` 且空集、顶层有 `read_native_file`：最终 surface 为空。
 3. dispatch 回执包含 `delegationId=d1`：Agent projection 与 compact cross-episode result 都保留 `d1`，Human projection 不含该字段。
-4. 同一工具集合从 2 变 35：`visibleToolSetDigest` 变化，旧 route cache 不得复用。
+4. 工具集合从 2 变 35：`visibleToolSetDigest` 变化，旧 route cache 不得复用；实际 Agent 是否正确使用新增工具还需真实模型验证。
 
 ## 回滚与边界
 
-本切片只改独占分支；无数据库 schema 迁移、无外部协议删除。回滚为恢复前一提交。未运行 live provider、Preview、UI、安装包和真实桌面动作；这些交给总任务按其发布门禁验收。
+当前为整合候选，无数据库 schema 迁移。MCP 真实 builder/ToolNode 正反例、原错误消融和相邻工具合同已验证；真实跨图 A/B 验收仍未通过，不得从这些局部结果宣称已发布或整体重构完成。

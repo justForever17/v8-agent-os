@@ -114,7 +114,7 @@ function releaseTitle(product, version, channel) {
 }
 
 const RELEASE_HIGHLIGHTS = Object.freeze({
-  "2026.09.13.1": Object.freeze({
+  "2026.09.15.1": Object.freeze({
     all: Object.freeze([
       "控制台采用紧凑的配置面板与就近保存操作，精简说明并统一帮助、错误恢复和明暗主题；记忆星系支持同屏浏览全局与工作区，保留节点编辑和作用域隔离。",
       "桌面 Web 与控制台往返保留原页面、输入草稿和滚动位置；Phone 新增已配对设备快速切换与授权邻居管理，按设备隔离会话、草稿和缓存。",

@@ -110,3 +110,6 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 - 可提交 fixture / expected output 放在对应测试目录或 `tests/fixtures/`。
 - 内部 live 报告默认写入 `~/.v8-agent-os/reports/...`，不要写入仓库。
 - 如必须生成临时仓库内报告，需确认 `.gitignore` 覆盖并在最终交付里说明。
+# CI 平台边界
+
+Ubuntu 的 portable Engine 分片会输出并跳过需要 Windows UIA／shell、Linux Secret Service、原生 sandbox、已安装插件、外部向量／视觉模型或本机 Preview 服务的合同。这些项目仍会被本机全量 pytest 与对应的 Windows／isolated live gate 执行；CI 的 pending 列表不代表测试通过，也不能替代匹配平台证据。分片脚本不带 `--portable-ci` 时不跳过任何文件。

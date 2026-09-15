@@ -24,6 +24,7 @@ PORTABLE_CI_EXCLUDES = {
     "tests/plugin_manager/test_plugin_manager_runtime.py",
     "tests/model_control/test_model_protocol_registry.py",
     "tests/memory/test_memory_visual_enrichment.py",
+    "tests/memory/test_memory_vector_sync_degraded.py",
     "tests/workspace_artifacts/test_scoped_workspace_resource.py",
 }
 
@@ -31,6 +32,7 @@ PORTABLE_CI_DESELECTS = {
     "tests/runtime_core/test_runtime_episode_runner.py::test_runtime_runner_extracts_missing_skill_root_from_goal_text",
     "tests/runtime_core/test_runtime_orchestration_contracts.py::test_direct_delegation_injects_upstream_handoff_content_instead_of_fake_file_paths",
     "tests/chat_runtime/test_supervisor_runtime_finalization.py::test_supervisor_engineering_context_starts_in_bound_workspace_without_worktree",
+    "tests/core/test_ui_patch.py::test_commit_blocks_when_source_changed_after_selection",
 }
 
 
@@ -104,7 +106,8 @@ def main() -> int:
         return 0
     command = [sys.executable, "-m", "pytest", *(str(path) for path in targets), "-q", "--tb=short"]
     if args.portable_ci:
-        command.extend(["--deselect", *PORTABLE_CI_DESELECTS])
+        for node_id in sorted(PORTABLE_CI_DESELECTS):
+            command.extend(["--deselect", node_id])
     return subprocess.call(command, cwd=ENGINE_ROOT)
 
 

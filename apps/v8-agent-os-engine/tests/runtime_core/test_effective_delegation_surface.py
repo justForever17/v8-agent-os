@@ -23,8 +23,13 @@ def test_dispatch_reports_absent_typed_capsule_instead_of_promoting_constraints(
     assert surface["toolSurfaceStatus"] == "not_bound_yet" and surface["commandTools"] is None
     visible = apply_tool_surface_budget(ToolMessage(name="delegation_broker", tool_call_id="dispatch",
         content=json.dumps({"ok": True, "mode": "dispatch", "items": [compact]})), {"agentVisibleBudget": 4000})
-    assert '"capsuleAttached": false' in visible.content
-    assert "constraints do not grant command authority" in visible.content
+    receipt = json.loads(visible.content.split("\n", 1)[1])
+    visible_contract = receipt["items"][0]["effectiveExecution"]
+    assert visible_contract["capsuleAttached"] is False
+    assert visible_contract["commandExecution"] == "unavailable_without_capsule"
+    assert visible_contract["typedReadOnly"] is None
+    assert visible_contract["readSet"] == [] and visible_contract["writeSet"] == []
+    assert receipt["items"][0]["delegationId"] == "fixture"
     assert task == original and compact["status"] == "queued"
 
 

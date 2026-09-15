@@ -304,7 +304,7 @@ def test_responses_reprojects_canonical_tool_ids_to_provider_ids_at_wire_boundar
     assert result.tool_call_id == canonical_id
 
 
-def test_chat_completions_keeps_canonical_tool_ids_on_wire():
+def test_chat_completions_restores_provider_ids_on_wire_without_mutating_canonical_history():
     adapter = V8ChatModelAdapter(
         model_id="chat-model",
         provider_standard="openai",
@@ -334,8 +334,10 @@ def test_chat_completions_keeps_canonical_tool_ids_on_wire():
 
     projected = adapter.normalize_input_for_provider([assistant, result])
 
-    assert projected[0].tool_calls[0]["id"] == canonical_id
-    assert projected[1].tool_call_id == canonical_id
+    assert projected[0].tool_calls[0]["id"] == "call_provider_original"
+    assert projected[1].tool_call_id == "call_provider_original"
+    assert assistant.tool_calls[0]["id"] == canonical_id
+    assert result.tool_call_id == canonical_id
 
 
 def test_provider_hosted_tool_outputs_remain_server_content_not_local_tool_calls():

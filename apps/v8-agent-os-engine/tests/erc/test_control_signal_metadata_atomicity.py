@@ -135,3 +135,47 @@ def test_empty_control_poll_does_not_wait_for_an_unrelated_writer(tmp_path):
         result = future.result(timeout=5)
     assert result["signal"] is None
     assert database.get_run_record("run")["metadata"] == {"humanRevision": "keep"}
+
+
+def test_stream_guidance_is_consumed_once_and_new_cancel_is_not_masked(tmp_path, monkeypatch):
+    from erc.command_service import CommandService
+    import core.runtime_episode_control as episode_control
+    import runtimes.chat.runtime as chat_module
+
+    database = DatabaseManager(tmp_path / "stream-control.sqlite3")
+    database.create_or_update_session("session", "Fixture", user_id="owner")
+    database.create_run_record("run", "session", run_type="chat", status="running")
+    for module in (run_module, episode_control):
+        monkeypatch.setattr(module, "db", database)
+    database.add_chat_user_message_queue_item(queue_id="guide", session_id="session", run_id="run",
+        client_message_id="guide-client", content="Synthetic instruction")
+    database.update_chat_user_message_queue_item("guide", state="promoted", timestamp_field="promoted_at")
+    control = CommandService()
+    runtime = chat_module.ChatRuntime()
+    state = chat_module.ChatStreamState()
+    monkeypatch.setattr(chat_module.time, "monotonic", lambda: 10.0)
+    control.issue_control_signal("run", command="guidance", payload={"queueMessageId": "guide"})
+    assert runtime.consume_control_signal("run", stream_state=state)["payload"]["queueMessageId"] == "guide"
+    database.update_chat_user_message_queue_item("guide", state="injected", timestamp_field="injected_at")
+    assert control.peek_control_signal("run") is None
+    control.issue_control_signal("run", command="cancel", reason="new instruction")
+    assert runtime.consume_control_signal("run", stream_state=state)["command"] == "cancel"
+    assert control.peek_control_signal("run") is None
+    assert runtime.consume_control_signal("run", stream_state=state) is None
+
+
+def test_stale_guidance_signal_does_not_reinject_an_already_delivered_queue_item(tmp_path, monkeypatch):
+    from erc.command_service import CommandService
+    import core.runtime_episode_control as episode_control
+    import runtimes.chat.runtime as chat_module
+
+    database = DatabaseManager(tmp_path / "stale-guidance.sqlite3")
+    database.create_or_update_session("session", "Fixture", user_id="owner")
+    database.create_run_record("run", "session", run_type="chat", status="running")
+    for module in (run_module, episode_control):
+        monkeypatch.setattr(module, "db", database)
+    database.add_chat_user_message_queue_item(queue_id="old-guide", session_id="session", run_id="run",
+        client_message_id="old-guide-client", content="Already delivered")
+    database.update_chat_user_message_queue_item("old-guide", state="injected", timestamp_field="injected_at")
+    CommandService().issue_control_signal("run", command="guidance", payload={"queueMessageId": "old-guide"})
+    assert chat_module.ChatRuntime().consume_control_signal("run", stream_state=chat_module.ChatStreamState()) is None

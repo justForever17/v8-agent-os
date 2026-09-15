@@ -399,7 +399,6 @@ class ChatStreamState:
     supervisor_thinking_finished_run_ids: set[str] = field(default_factory=set)
     chat_projection_failure_run_ids: set[str] = field(default_factory=set)
     control_signal_probe_until: float = 0.0
-    last_control_signal: dict[str, Any] | None = None
 
 
 def _assistant_export_requires_persistence(export_payload: dict[str, Any]) -> bool:
@@ -11577,25 +11576,23 @@ class ChatRuntime:
         if stream_state is not None:
             now = time.monotonic()
             if now < stream_state.control_signal_probe_until:
-                return stream_state.last_control_signal
+                return None
+            stream_state.control_signal_probe_until = 0.0
         signal = erc_kernel.consume_control_signal(run_id)
-        if stream_state is not None:
-            # Two probes surround each graph event. Coalesce them while keeping
-            # a bounded 250ms control latency for cancel/pause/guidance.
-            stream_state.control_signal_probe_until = time.monotonic() + 0.25
-            stream_state.last_control_signal = signal
         if signal and self.should_stop_stream(signal):
-            return signal
-        # A guidance/coordination command is already the durable wake for its
-        # queue item. Do not issue a second queue read for every stream event.
-        if signal:
             return signal
         from core.runtime_episode_control import pending_run_guidance
         guidance = pending_run_guidance(run_id)
         if guidance:
             return {"command": "guidance", "payload": {"queueMessageId": guidance["id"]}}
         if signal and signal.get("command") == "guidance":
-            return None
+            # The queue is authoritative: an old wake must not inject a row
+            # which another continuation has already delivered.
+            signal = None
+        if stream_state is not None and not signal:
+            # Only coalesce empty observations. A consumed command is never a
+            # replayable cache entry, and positive delivery ends the interval.
+            stream_state.control_signal_probe_until = time.monotonic() + 0.25
         return signal
 
     @staticmethod

@@ -4718,7 +4718,7 @@ def test_subagent_prompt_explains_bounded_delegation_authority_without_false_mis
     grandchild = _format_delegated_task_contract(
         {"taskBriefId": "task-3", "goal": "Review one result", "delegationDepth": 2},
     )
-    assert "cannot create another delegation layer" in grandchild
+    assert "cannot dispatch another delegation layer" in grandchild
     assert "terminal depth-two shard" in grandchild
     assert "Select from the visible tools by relevance" in grandchild
 

@@ -368,7 +368,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
 
         self.assertIn("Tool Policy:", content)
         self.assertIn("this task has no tool authority", content)
-        self.assertIn("absence of `delegation_broker`", content)
+        self.assertIn("this task has no tool authority", content)
 
     def test_normalized_default_child_policy_does_not_disable_direct_subagent_delegation(self):
         content = _format_delegated_task_contract(
@@ -395,7 +395,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("absence of `delegation_broker`", content)
+        self.assertIn("cannot dispatch another delegation layer", content)
 
     def test_delegated_task_contract_uses_supervisor_runtime_origin(self):
         content = _format_delegated_task_contract(

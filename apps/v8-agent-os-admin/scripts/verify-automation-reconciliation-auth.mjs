@@ -15,9 +15,9 @@ function load(relativePath) {
         reportDiagnostics: true,
     });
     assert.equal(compiled.diagnostics?.length || 0, 0);
-    const module = { exports: {} };
+    const loadedModule = { exports: {} };
     vm.runInNewContext(compiled.outputText, {
-        module, exports: module.exports, TextEncoder, URLSearchParams,
+        module: loadedModule, exports: loadedModule.exports, TextEncoder, URLSearchParams,
         require(name) {
             if (name === "next/server") return { NextResponse: { json(data, init) { return new Response(JSON.stringify(data), init); } } };
             if (name === "@/lib/auth") return { auth: async () => session };
@@ -32,7 +32,7 @@ function load(relativePath) {
             throw new Error("unexpected import: " + name);
         },
     });
-    return module.exports;
+    return loadedModule.exports;
 }
 const get = load("src/app/api/automation/deliveries/route.ts").GET;
 const post = load("src/app/api/automation/deliveries/[deliveryId]/reconcile/route.ts").POST;

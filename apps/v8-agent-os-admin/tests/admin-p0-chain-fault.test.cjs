@@ -14,12 +14,12 @@ function load(relativePath, { overrides = {}, globals = {}, source } = {}) {
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
         fileName: filename,
     }).outputText;
-    const module = { exports: {} };
+    const loadedModule = { exports: {} };
     new Function("require", "module", "exports", ...Object.keys(globals), compiled)(
         name => Object.hasOwn(overrides, name) ? overrides[name] : require(name),
-        module, module.exports, ...Object.values(globals),
+        loadedModule, loadedModule.exports, ...Object.values(globals),
     );
-    return module.exports;
+    return loadedModule.exports;
 }
 function baseline(relativePath) {
     const ref = process.env.V8_P0_BASELINE_REF;
@@ -48,7 +48,7 @@ function gateway(source) {
         "@/lib/server/client-surface-resource": { buildSignedClientSurfaceUrl: () => assert.fail("no asset in this fixture") },
         "@/lib/server/runtime-event-delivery": load("src/lib/server/runtime-event-delivery.ts"),
     } });
-    const module = load("src/lib/realtime/engine-chat-gateway.ts", { source, overrides: {
+    const gatewayModule = load("src/lib/realtime/engine-chat-gateway.ts", { source, overrides: {
         "@/lib/realtime/session-fanout": { sessionFanoutHub: { publish: (id, event) => fanout.push({ id, event }) } },
         "@/lib/server/runtime-config": { resolveEngineWsBaseUrl: () => "ws://fixture.test", resolveInternalSecret: () => "public-test-key" },
         "@/lib/server/session-realtime-resource": resource,
@@ -57,7 +57,7 @@ function gateway(source) {
         setTimeout: (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, at: now + ms }); return id; },
         clearTimeout: id => timers.delete(id),
     } });
-    return { ...module, sockets, fanout, advance, timers };
+    return { ...gatewayModule, sockets, fanout, advance, timers };
 }
 async function frames(stream) {
     const text = await new Response(stream).text();

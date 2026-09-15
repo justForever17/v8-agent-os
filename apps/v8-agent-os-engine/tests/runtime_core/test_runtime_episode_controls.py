@@ -719,6 +719,21 @@ def test_parked_parent_wakes_for_durable_user_guidance_even_when_signal_is_lost(
     assert len(database.list_runtime_episodes(run_id="run")) == 1
 
 
+def test_stream_control_probes_coalesce_the_two_checks_around_one_graph_event(database, monkeypatch):
+    import runtimes.chat.runtime as chat_module
+
+    calls = []
+    monkeypatch.setattr(chat_module.erc_kernel, "consume_control_signal", lambda _run: calls.append(1) or None)
+    runtime = chat_module.ChatRuntime()
+    state = chat_module.ChatStreamState()
+    state.control_signal_probe_until = 0.0
+    monkeypatch.setattr(chat_module.time, "monotonic", lambda: 10.0)
+
+    assert runtime.consume_control_signal("run", stream_state=state) is None
+    assert runtime.consume_control_signal("run", stream_state=state) is None
+    assert len(calls) == 1
+
+
 def test_partial_acceptance_rechecks_current_version_after_inspection_gap(database, monkeypatch):
     enqueue(database)
     claim = database.claim_runtime_episode(worker_id="producer", lease_seconds=30)

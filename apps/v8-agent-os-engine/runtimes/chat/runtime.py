@@ -398,6 +398,8 @@ class ChatStreamState:
     supervisor_thinking_started_run_ids: set[str] = field(default_factory=set)
     supervisor_thinking_finished_run_ids: set[str] = field(default_factory=set)
     chat_projection_failure_run_ids: set[str] = field(default_factory=set)
+    control_signal_probe_until: float = 0.0
+    last_control_signal: dict[str, Any] | None = None
 
 
 def _assistant_export_requires_persistence(export_payload: dict[str, Any]) -> bool:
@@ -11571,8 +11573,17 @@ class ChatRuntime:
             return
         logger.exception("Chat run '%s' failed during stream execution", run_id)
 
-    def consume_control_signal(self, run_id: str):
+    def consume_control_signal(self, run_id: str, *, stream_state: ChatStreamState | None = None):
+        if stream_state is not None:
+            now = time.monotonic()
+            if now < stream_state.control_signal_probe_until:
+                return stream_state.last_control_signal
         signal = erc_kernel.consume_control_signal(run_id)
+        if stream_state is not None:
+            # Two probes surround each graph event. Coalesce them while keeping
+            # a bounded 250ms control latency for cancel/pause/guidance.
+            stream_state.control_signal_probe_until = time.monotonic() + 0.25
+            stream_state.last_control_signal = signal
         if signal and self.should_stop_stream(signal):
             return signal
         # A guidance/coordination command is already the durable wake for its
@@ -11919,7 +11930,7 @@ class ChatRuntime:
                 or (run_service.get_run(chat_run.active_run_id) or {}).get("status")
                 or "cancelled"
             ).strip().lower()
-            interrupted_signal = self.consume_control_signal(chat_run.active_run_id)
+            interrupted_signal = self.consume_control_signal(chat_run.active_run_id, stream_state=stream_state)
             if self.should_stop_stream(interrupted_signal):
                 for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
                     yield final_event
@@ -12060,7 +12071,7 @@ class ChatRuntime:
                                     # A parked graph may resume because guidance
                                     # became durable while no stream consumer was
                                     # alive. Check before invoking its first model.
-                                    early_control = self.consume_control_signal(chat_run.active_run_id)
+                                    early_control = self.consume_control_signal(chat_run.active_run_id, stream_state=stream_state)
                                     if early_control and early_control.get("command") == "guidance":
                                         guidance_signal = early_control
                                         break
@@ -12096,7 +12107,7 @@ class ChatRuntime:
                                             yield emitted_event
                                         continue
                                     try:
-                                        control_signal = self.consume_control_signal(chat_run.active_run_id)
+                                        control_signal = self.consume_control_signal(chat_run.active_run_id, stream_state=stream_state)
                                         if control_signal and control_signal.get("command") == "guidance":
                                             guidance_signal = control_signal
                                             break

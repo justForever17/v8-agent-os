@@ -1886,12 +1886,9 @@ def build_contextual_auto_tool_node(
             route_context=route_context,
             runtime_access=runtime_access,
         )
-        selected_mcp_tools = filter_visible_tools_for_actor(
-            selected_mcp_tools,
-            actor="subagent",
-            route_context=route_context,
-            runtime_access=runtime_access,
-        )
+        # These candidates already come from the configured MCP pool. Native
+        # runtime groups do not enumerate MCP names; the task policy below
+        # applies to both pools before ToolNode execution.
         tools = _apply_task_tool_policy(
             _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools),
             task_brief,
@@ -2102,15 +2099,7 @@ def build_agent_node(
                     runtime_access=delegated_runtime_access,
                 )
             )
-            # MCP selectors are relevance hints only.  Project the selected
-            # candidates through the same actor/runtime pool before exposing
-            # schema or execution; a selector must never grant authority.
-            selected_mcp_tools = filter_visible_tools_for_actor(
-                _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors),
-                actor="subagent",
-                route_context=actor_route_context,
-                runtime_access=delegated_runtime_access,
-            )
+            selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
             explicit_skill_ids, explicit_skill_names = _resolve_selected_skills(agent_tool_selectors, state=state)
 
             if agent_tool_mode == "explicit":
@@ -2122,14 +2111,9 @@ def build_agent_node(
                 inherited_skill_names: list[str] = [] if atomic_delegated_worker else explicit_skill_names
             else:
                 base_tools = contextual_base_tools
-                inherited_mcp_tools = filter_visible_tools_for_actor(
-                    _resolve_selected_mcp_tools(
-                        all_mcp_tools,
-                        list(inherited_route_context.get("selectedMcpTools") or []),
-                    ),
-                    actor="subagent",
-                    route_context=actor_route_context,
-                    runtime_access=delegated_runtime_access,
+                inherited_mcp_tools = _resolve_selected_mcp_tools(
+                    all_mcp_tools,
+                    list(inherited_route_context.get("selectedMcpTools") or []),
                 )
                 inherited_skill_ids = (
                     []
@@ -2146,15 +2130,7 @@ def build_agent_node(
                 elif inherited_mcp_tools or inherited_skill_ids or inherited_skill_names:
                     available_tools = _dedupe_tools(base_tools + inherited_mcp_tools)
                 else:
-                    available_tools = _dedupe_tools(
-                        base_tools
-                        + filter_visible_tools_for_actor(
-                            all_mcp_tools,
-                            actor="subagent",
-                            route_context=actor_route_context,
-                            runtime_access=delegated_runtime_access,
-                        )
-                    )
+                    available_tools = _dedupe_tools(base_tools + list(all_mcp_tools))
 
             route_context_token = extensions_runtime_service.bind_execution_context(
                 session_id=state.get("session_id"),

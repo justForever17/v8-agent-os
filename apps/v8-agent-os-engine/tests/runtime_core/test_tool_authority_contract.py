@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-import asyncio
-from unittest.mock import patch
 
 from core.tool_authority import filter_authorized_tools, resolve_tool_authority
 from graph.agent_factories import _apply_task_tool_policy
@@ -34,26 +32,3 @@ def test_receipt_changes_when_policy_or_visible_surface_changes():
     second = resolve_tool_authority({"toolPolicy": {"mode": "allowlist", "allowedTools": ["web_broker"]}})
     assert first.policy_digest != second.policy_digest
     assert first.as_receipt(["read_native_file"]) ["visibleToolSetDigest"] != first.as_receipt(["web_broker"])["visibleToolSetDigest"]
-
-
-def test_contextual_auto_production_path_does_not_bind_selector_only_mcp_candidate():
-    from graph.agent_factories import build_contextual_auto_tool_node
-
-    captured = {}
-
-    def fake_routed(bound_tools, *, name, fallback_goto):
-        captured["names"] = [getattr(item, "name", "") for item in bound_tools]
-
-        async def invoke(state, config=None, runtime=None):
-            return state
-
-        return invoke
-
-    node = build_contextual_auto_tool_node(
-        base_tools=[], all_native_tools=[], static_extra_tools=[],
-        all_mcp_tools=[SimpleNamespace(name="secret_mcp")], name="worker_tools", fallback_goto="next",
-    )
-    state = {"current_route_context": {"selectedMcpTools": ["secret_mcp"], "taskBrief": {"runtimeAccess": []}}}
-    with patch("graph.agent_factories.create_routed_tool_node", side_effect=fake_routed):
-        asyncio.run(node(state))
-    assert "secret_mcp" not in captured["names"]

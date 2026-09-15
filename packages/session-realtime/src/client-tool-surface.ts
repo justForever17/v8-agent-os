@@ -189,8 +189,7 @@ function extractProgress(record: Record<string, unknown> | null): string | undef
 export function extractClientToolRefIds(resultText: string, maxRefs = 4): string[] {
     const refs = new Set<string>();
     const patterns = [
-        /["']?\b(?:rawRef|detailRef|sectionRef|skillRef|relativeFileRef|memoryRef|answerPackRef|chunkRef|fileRef|episodeId|handoffId|jobId|artifactId)\b["']?\s*[:=]\s*["']?([^"'`,\s，)）\]}]+)/gi,
-        /\btoolobs:\/\/[^"'`,\s，)）\]}]+/gi,
+        /["']?\b(?:sectionRef|relativeFileRef|skillRef|memoryRef|answerPackRef|chunkRef|fileRef)\b["']?\s*[:=]\s*["']?([^"'`,\s，)）\]}]+)/gi,
     ];
     for (const pattern of patterns) {
         for (const match of resultText.matchAll(pattern)) {

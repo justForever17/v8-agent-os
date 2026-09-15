@@ -88,3 +88,11 @@ test("human structured fallback never renders raw secrets or internal control id
   assert.match(result, /完成一次受控读取/);
   assert.doesNotMatch(result, /SYNTHETIC_SECRET|delegation-secret|handoff-secret/);
 });
+
+test("human reference extraction excludes runtime control identifiers", () => {
+  const surface = buildClientToolSurface({
+    toolName: "delegation_broker", state: "result",
+    result: {summary: "partial", episodeId: "e-1", handoffId: "h-1", artifactId: "a-1", detailRef: "toolobs://r-1"},
+  });
+  assert.deepEqual(surface.refIds, []);
+});

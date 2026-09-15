@@ -107,3 +107,31 @@ def test_control_consumption_is_single_claim_across_service_instances(tmp_path, 
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: consume(), range(4)))
     assert sum(result is not None for result in results) == 1
+
+
+def test_empty_control_poll_does_not_wait_for_an_unrelated_writer(tmp_path):
+    """Streaming observes no command without competing for the episode writer."""
+    database = DatabaseManager(tmp_path / "idle-control.sqlite3")
+    database.create_or_update_session("session", "Fixture", user_id="owner")
+    database.create_run_record("run", "session", run_type="chat", status="running",
+                               metadata={"humanRevision": "keep"})
+    finished = Event()
+
+    def poll():
+        try:
+            return database.consume_run_control_signal("run")
+        finally:
+            finished.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool, database.get_connection() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        future = pool.submit(poll)
+        try:
+            # The writer stays locked until this assertion resolves. This is a
+            # deadlock counterexample, not a wall-clock performance threshold.
+            assert finished.wait(3), "empty stream poll waits for the SQLite writer"
+        finally:
+            writer.rollback()
+        result = future.result(timeout=5)
+    assert result["signal"] is None
+    assert database.get_run_record("run")["metadata"] == {"humanRevision": "keep"}

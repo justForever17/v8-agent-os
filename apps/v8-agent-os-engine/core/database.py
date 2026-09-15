@@ -4807,6 +4807,15 @@ class DatabaseManager:
 
     def consume_run_control_signal(self, run_id: str, *, expected_signal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Consume the current control field without rewriting run state or other metadata."""
+        # Empty streaming polls are reads. Taking a writer lock for each model
+        # chunk stalls the event consumer behind unrelated episode writes.
+        # A positive observation is rechecked inside the transaction below;
+        # this read is never authority to clear a newer command.
+        record = self.get_run_record(run_id)
+        signal = (record or {}).get("metadata", {}).get("control_signal")
+        if not isinstance(signal, dict) or not signal or (expected_signal is not None and signal != expected_signal):
+            return {"signal": None, "run_record": record}
+
         def _write():
             with self.get_connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")

@@ -32,6 +32,81 @@ def _is_supervisor_agent_id(value: Any) -> bool:
     return _canonical_agent_id(value) in _SUPERVISOR_AGENT_IDS
 
 
+def _agent_surface_for_missing_tool_result(tool_name: str, raw_result: Any) -> tuple[str, str | None]:
+    """Render a legacy tool result through the existing Agent-surface owner.
+
+    History/projection must not persist a second observation or copy arbitrary
+    provider JSON. Known tools reuse ``tool_surface``'s renderer; unknown
+    payloads receive only a bounded status line and remain recoverable through
+    their durable Runtime detail reference.
+    """
+    content = raw_result if isinstance(raw_result, str) else json.dumps(to_jsonable(raw_result), ensure_ascii=False, default=str)
+    detail_ref: str | None = None
+    try:
+        payload = json.loads(content) if content.lstrip().startswith(("{", "[")) else None
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("detailRef", "detail_ref", "rawRef", "raw_ref"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                detail_ref = value
+                break
+    normalized_name = str(tool_name or "").strip().lower()
+    known_surface = (
+        normalized_name in {"runtime_broker", "agent_broker", "config_broker", "plugin_broker",
+                             "session_context_broker", "session_command_broker", "session_message_broker",
+                             "system_operations", "read_native_file", "grep_search"}
+        or normalized_name.startswith(("research", "web_", "delegation", "subagent_", "computer_use_", "creative_media_", "rpa_", "memory_"))
+    )
+    if known_surface:
+        try:
+            from core.tool_surface import _decision_agent_visible_surface
+
+            rendered = _decision_agent_visible_surface(
+                tool_name=str(tool_name or "unknown"), content=content, raw_ref="", budget=6000,
+            )
+            if rendered and not str(rendered).lstrip().startswith(("{", "[")):
+                return str(rendered).strip(), detail_ref
+        except Exception:
+            pass
+    status = "unknown"
+    if isinstance(payload, dict):
+        raw_status = str(payload.get("status") or payload.get("state") or "").strip().lower()
+        if payload.get("ok") is False or raw_status in {"failed", "error", "blocked"}:
+            status = "failed"
+        elif payload.get("ok") is True or raw_status in {"completed", "success", "ok"}:
+            status = "completed"
+    return (
+        f"Tool result has no Agent Surface; status: {status}. "
+        "Use the preserved tool call and detail reference for recovery; no raw result was projected.",
+        detail_ref,
+    )
+
+
+def _tool_result_lineage(raw_result: Any) -> Dict[str, str]:
+    """Keep recovery identifiers as fields without exposing the raw payload."""
+    content = raw_result if isinstance(raw_result, str) else json.dumps(to_jsonable(raw_result), ensure_ascii=False, default=str)
+    try:
+        payload = json.loads(content) if content.lstrip().startswith(("{", "[")) else None
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return {}
+    fields: Dict[str, str] = {}
+    for target, keys in {
+        "delegationId": ("delegationId", "delegation_id"),
+        "invocationId": ("invocationId", "invocation_id"),
+        "handoffId": ("handoffId", "handoff_id", "handoffRefId", "handoff_ref_id"),
+    }.items():
+        for key in keys:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                fields[target] = value
+                break
+    return fields
+
+
 def _durable_agent_profile(row: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
     agent_id = (
         row.get("agent_id")
@@ -850,14 +925,23 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                 or tool.get("agentVisibleOutput")
                 or tool.get("agent_visible_output")
             )
+            raw_result = tool.get("result") if tool.get("result") is not None else tool.get("result_preview")
+            detail_ref = None
+            lineage = _tool_result_lineage(raw_result)
+            if agent_visible_result is None and raw_result is not None:
+                agent_visible_result, detail_ref = _agent_surface_for_missing_tool_result(
+                    str(tool.get("toolName") or tool.get("tool_name") or "unknown"), raw_result,
+                )
             assistant["parts"].append(
                 {
                     "type": "tool_result",
                     "toolCallId": tool.get("toolCallId") or tool.get("tool_call_id"),
                     "toolName": tool.get("toolName") or tool.get("tool_name"),
-                    "result": agent_visible_result if agent_visible_result is not None else (tool.get("result") or tool.get("result_preview")),
+                    "result": agent_visible_result,
                     "agentVisibleResult": agent_visible_result,
                     "agentVisibleChars": tool.get("agentVisibleChars") or tool.get("agent_visible_chars"),
+                    **({"detailRef": detail_ref} if detail_ref else {}),
+                    **lineage,
                     **({"mcpApp": tool.get("mcpApp") or tool.get("mcp_app")} if (tool.get("mcpApp") or tool.get("mcp_app")) else {}),
                     **active_agent_profile,
                 }

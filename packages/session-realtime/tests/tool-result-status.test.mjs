@@ -76,3 +76,15 @@ test("human tool result redacts local paths without removing parsed document con
   assert.match(result, /机房巡检/);
   assert.match(result, /负责人/);
 });
+
+test("human structured fallback never renders raw secrets or internal control ids", () => {
+  const result = formatClientToolResult({
+    ok: true,
+    summary: "完成一次受控读取",
+    delegationId: "delegation-secret",
+    handoffId: "handoff-secret",
+    token: "SYNTHETIC_SECRET",
+  });
+  assert.match(result, /完成一次受控读取/);
+  assert.doesNotMatch(result, /SYNTHETIC_SECRET|delegation-secret|handoff-secret/);
+});

@@ -66,11 +66,14 @@ export function formatClientToolResult(value: unknown): string {
     if (typeof value === "string") {
         return redactClientToolText(value);
     }
-    try {
-        return redactClientToolText(JSON.stringify(value ?? "", null, 2));
-    } catch {
-        return redactClientToolText(String(value ?? ""));
-    }
+    // Human Surface must never fall back to arbitrary structured output.  The
+    // typed client projection is the only allowed renderer for objects; raw
+    // JSON remains available through the Runtime/Agent detail reference.
+    const surface = buildClientToolSurface({toolName: "tool", state: "result", result: value});
+    const lines = [surface.summary];
+    if (surface.actionable) lines.push(`Next: ${surface.actionable}`);
+    if (!surface.summary && !surface.actionable) lines.push(`Status: ${surface.status}`);
+    return redactClientToolText(lines.filter(Boolean).join("\n"));
 }
 
 function visibleLines(text: string): string[] {

@@ -21,6 +21,7 @@ from core.delegation_broker import (
     task_brief_route_query_text,
 )
 from core.engineering_capsule import effective_engineering_capsule, engineering_tool_allowed
+from core.tool_authority import filter_authorized_tools, resolve_tool_authority
 from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
@@ -520,43 +521,11 @@ def _resolve_delegated_runtime_access(
 
 
 def _apply_task_tool_policy(tools: list, task_brief: dict[str, Any] | None) -> list:
-    task_brief = dict(task_brief or {})
-    policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
-    mode = str(policy.get("mode") or "default").strip().lower()
-    allowed = {
-        str(item or "").strip()
-        for item in list(policy.get("allowedTools") or task_brief.get("allowedTools") or [])
-        if str(item or "").strip()
-    }
-    forbidden = {
-        str(item or "").strip()
-        for item in list(policy.get("forbiddenTools") or task_brief.get("forbiddenTools") or [])
-        if str(item or "").strip()
-    }
-    if mode == "none":
-        return []
-
-    def _names(tool_ref: Any) -> set[str]:
-        return {
-            value
-            for value in (
-                str(getattr(tool_ref, "name", "") or "").strip(),
-                _canonical_tool_name(tool_ref),
-                _raw_tool_name(tool_ref),
-            )
-            if value
-        }
-
-    filtered: list[Any] = []
-    for tool_ref in list(tools or []):
-        names = _names(tool_ref)
-        if not all(engineering_tool_allowed(name, task_brief) for name in names):
-            continue
-        if names & forbidden:
-            continue
-        if mode == "allowlist" and not (names & allowed):
-            continue
-        filtered.append(tool_ref)
+    filtered, _decision, _denied = filter_authorized_tools(
+        tools,
+        task_brief,
+        domain_guard=lambda name: engineering_tool_allowed(name, task_brief),
+    )
     return _dedupe_tools(filtered)
 
 
@@ -2127,7 +2096,15 @@ def build_agent_node(
                     runtime_access=delegated_runtime_access,
                 )
             )
-            selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
+            # MCP selectors are relevance hints only.  Project the selected
+            # candidates through the same actor/runtime pool before exposing
+            # schema or execution; a selector must never grant authority.
+            selected_mcp_tools = filter_visible_tools_for_actor(
+                _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors),
+                actor="subagent",
+                route_context=actor_route_context,
+                runtime_access=delegated_runtime_access,
+            )
             explicit_skill_ids, explicit_skill_names = _resolve_selected_skills(agent_tool_selectors, state=state)
 
             if agent_tool_mode == "explicit":
@@ -2139,9 +2116,14 @@ def build_agent_node(
                 inherited_skill_names: list[str] = [] if atomic_delegated_worker else explicit_skill_names
             else:
                 base_tools = contextual_base_tools
-                inherited_mcp_tools = _resolve_selected_mcp_tools(
-                    all_mcp_tools,
-                    list(inherited_route_context.get("selectedMcpTools") or []),
+                inherited_mcp_tools = filter_visible_tools_for_actor(
+                    _resolve_selected_mcp_tools(
+                        all_mcp_tools,
+                        list(inherited_route_context.get("selectedMcpTools") or []),
+                    ),
+                    actor="subagent",
+                    route_context=actor_route_context,
+                    runtime_access=delegated_runtime_access,
                 )
                 inherited_skill_ids = (
                     []
@@ -2158,7 +2140,15 @@ def build_agent_node(
                 elif inherited_mcp_tools or inherited_skill_ids or inherited_skill_names:
                     available_tools = _dedupe_tools(base_tools + inherited_mcp_tools)
                 else:
-                    available_tools = _dedupe_tools(base_tools + list(all_mcp_tools))
+                    available_tools = _dedupe_tools(
+                        base_tools
+                        + filter_visible_tools_for_actor(
+                            all_mcp_tools,
+                            actor="subagent",
+                            route_context=actor_route_context,
+                            runtime_access=delegated_runtime_access,
+                        )
+                    )
 
             route_context_token = extensions_runtime_service.bind_execution_context(
                 session_id=state.get("session_id"),
@@ -2179,6 +2169,7 @@ def build_agent_node(
                 delegation_id=str(inherited_route_context.get("delegationId") or ""),
             )
             try:
+                authority_decision = resolve_tool_authority(delegated_task_brief)
                 available_tool_signature = sorted(
                     _canonical_tool_name(tool_ref) or str(getattr(tool_ref, "name", "") or "").strip()
                     for tool_ref in available_tools
@@ -2195,6 +2186,7 @@ def build_agent_node(
                         "tools": available_tool_signature,
                         "skills": inherited_skill_ids,
                         "mcp": inherited_route_context.get("selectedMcpTools") or [],
+                        "policyDigest": authority_decision.policy_digest,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -2248,6 +2240,7 @@ def build_agent_node(
                     if len(route_reuse_cache) > 256:
                         route_reuse_cache.pop(next(iter(route_reuse_cache)))
                 tool_surface = _tool_surface_names(combined_tools)
+                tool_surface_receipt = authority_decision.as_receipt(tool_surface)
                 write_required = _task_brief_requires_artifact_write(delegated_task_brief)
                 write_tool_visible = "write_native_file" in {
                     variant
@@ -2295,7 +2288,10 @@ def build_agent_node(
             )
             sys_msg = SystemMessage(
                 content=str(system_bundle["content"]),
-                additional_kwargs={"v8_prompt_segments": list(system_bundle.get("segments") or [])},
+                additional_kwargs={
+                    "v8_prompt_segments": list(system_bundle.get("segments") or []),
+                    "v8_tool_authority": tool_surface_receipt,
+                },
             )
 
             run_messages = [sys_msg] + task_messages

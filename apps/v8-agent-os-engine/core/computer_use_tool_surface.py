@@ -99,9 +99,12 @@ def normalize_supervisor_native_allowlist(
     supervisor_allowed_tools,
     config_allowed_tools,
 ):
+    # Presence is authoritative.  An explicitly supplied empty list is a
+    # deliberate deny-all grant and must not fall through to another source.
+    source = supervisor_allowed_tools if supervisor_allowed_tools is not None else config_allowed_tools
     normalized = {
         str(name).strip()
-        for name in list(supervisor_allowed_tools or config_allowed_tools or [])
+        for name in list(source or [])
         if str(name).strip()
     }
     low_level_requested = bool(normalized & SUPERVISOR_LOW_LEVEL_COMPUTER_USE_TOOLS)

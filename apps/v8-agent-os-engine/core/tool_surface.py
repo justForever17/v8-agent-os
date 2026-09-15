@@ -3251,6 +3251,8 @@ def record_raw_observation(
     try:
         from core.observability_db import observability_db
 
+        metadata_payload.setdefault("surfaceContract", "runtime-v1")
+        metadata_payload.setdefault("rawSha256", _hash_text(raw_content or ""))
         observability_db.add_tool_observation_record(
             {
                 "id": observation_id,

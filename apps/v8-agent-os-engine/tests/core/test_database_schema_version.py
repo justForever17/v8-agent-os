@@ -213,8 +213,14 @@ def test_version_one_database_upgrades_runtime_safety_ledgers(tmp_path: Path) ->
 
 def test_current_schema_self_heals_missing_runtime_safety_ledgers(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
+    DatabaseManager(path)
+    # A current database retains its canonical base tables. Reproduce missing
+    # additive ledgers, rather than declaring an empty file a valid schema.
     with sqlite3.connect(path) as conn:
-        conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
+        for table in {"runtime_episode_idempotency", "runtime_side_effect_receipts", "runtime_event_sequence_heads",
+                      "creative_canvas_graph_run_event_outbox", "creative_canvas_graph_remote_terminal_receipts",
+                      "creative_canvas_output_reviews", "creative_canvas_output_review_heads", *CREATIVE_MEDIA_STORE_TABLES}:
+            conn.execute(f"DROP TABLE {table}")
 
     DatabaseManager(path)
     DatabaseManager(path)
@@ -381,3 +387,27 @@ def test_newer_schema_is_not_opened_by_older_binary(tmp_path: Path) -> None:
         DatabaseManager(path)
 
     assert _schema_version(path) == DATABASE_SCHEMA_VERSION + 1
+
+
+def test_v3_conversation_migration_preserves_messages_and_blocks_binary_downgrade(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    original = DatabaseManager(path)
+    original.create_or_update_session("preserved", "Existing conversation", user_id="owner")
+    original.create_chat_canonical_message(message_id="msg", session_id="preserved", run_id=None, ordinal=1,
+        role="user", state="completed", nodes=[{"kind": "narrative", "content": "existing text"}], content_text="existing text")
+    with original.get_connection() as conn:
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'chat_%'").fetchall():
+            conn.execute(f"DROP TRIGGER {row[0]}")
+        for table in ("chat_branch_artifact_refs", "chat_conversation_branches", "chat_message_revisions", "chat_session_transcript_state"):
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("PRAGMA user_version=3")
+        conn.commit()
+    upgraded = DatabaseManager(path)
+    assert upgraded.get_chat_transcript_state("preserved")["context_epoch"] == 0
+    assert upgraded.get_chat_transcript_state("preserved")["transcript_revision"] == 1
+    assert upgraded.get_chat_canonical_message("msg")["content_text"] == "existing text"
+    assert DatabaseManager(path).get_chat_transcript_state("preserved") == upgraded.get_chat_transcript_state("preserved")
+    monkeypatch.setattr(database_module, "DATABASE_SCHEMA_VERSION", 3)
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        DatabaseManager(path)
+    assert upgraded.get_chat_canonical_message("msg")["content_text"] == "existing text"

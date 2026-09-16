@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
-from PIL import Image
-
 from core.v8_agent_os_paths import ensure_v8_agent_os_tmp_path
 from runtimes.computer_use.types import ComputerUseElement, ComputerUseObservation
 from runtimes.computer_use.window_scene import window_title_match_score
@@ -80,7 +78,7 @@ class MacAXUIDriver:
             platform=self.platform,
             backend=self.backend,
             input=DesktopInputCapabilities(
-                strategy_order=["axui_semantic", "cg_event"],
+                strategy_order=["cg_event"],
                 supports_send_keys=input_available,
                 supports_sendinput=False,
                 supports_window_message=False,
@@ -88,7 +86,7 @@ class MacAXUIDriver:
                 supports_clipboard_files=False,
                 supports_modifier_normalization=True,
                 supports_coordinate_typing=False,
-                notes=["macOS 输入仅走 AXUIElement 与 CGEvent；当前未实现 Apple Events 自动化。"],
+                notes=["AXUIElement 用于观察；当前输入由 CGEvent 执行，未实现 AXPress/AXSetValue。"],
             ),
             accessibility=DesktopAccessibilityCapabilities(
                 primary_backend="axui",
@@ -108,7 +106,7 @@ class MacAXUIDriver:
                 supports_window_candidates=True,
                 supports_foreground_window=True,
                 supports_root_capture_recovery=True,
-                notes=["窗口聚焦通过 NSRunningApplication.activate 与 AXRaise 协同完成。"],
+                notes=["窗口聚焦通过 NSRunningApplication.activate，必须核对返回的窗口身份；尚未实现 AXRaise。"],
             ),
             pointer=DesktopPointerCapabilities(
                 supports_move=input_available,
@@ -135,7 +133,7 @@ class MacAXUIDriver:
             ),
             verification=DesktopVerificationCapabilities(
                 supports_window_verification=True,
-                supports_focus_verification=True,
+                supports_focus_verification=False,
                 supports_text_verification=accessibility_granted,
                 supports_file_verification=False,
                 supports_viewport_verification=True,
@@ -143,17 +141,16 @@ class MacAXUIDriver:
             ),
             execution=DesktopExecutionRouteCapabilities(
                 supports_native_command=True,
-                supports_semantic_route=accessibility_granted,
+                supports_semantic_route=False,
                 supports_visual_route=screenshot_available,
                 supports_coordinate_fallback=input_available,
                 preferred_route_order=[
                     "native_command",
-                    "structured_accessibility",
                     "visual_locator",
                     "coordinate_fallback",
                     "human_approval",
                 ],
-                notes=["macOS 默认优先 AXUIElement/CGEvent，visual 与 coordinate 只是降级链。"],
+                notes=["AX 提供定位观察，动作使用 CGEvent；动作回执不能冒充 AX 语义执行。"],
             ),
             permission=DesktopPermissionCapabilities(
                 accessibility_status="granted" if accessibility_granted else "blocked",
@@ -278,6 +275,7 @@ class MacAXUIDriver:
         self,
         *,
         title_filter: str | None = None,
+        window_handle: int | None = None,
         title_filters: Iterable[str] | None = None,
         class_name: str | None = None,
         class_names: Iterable[str] | None = None,
@@ -297,12 +295,16 @@ class MacAXUIDriver:
                 process_ids=process_ids,
                 process_names=process_names,
                 backend_name=backend_name,
-                limit=1,
+                limit=200 if window_handle not in (None, "") else 2,
             )
+            if window_handle not in (None, ""):
+                windows = [item for item in windows if item.get("handle") == int(window_handle)]
             if windows:
+                if len(windows) > 1:
+                    raise MacAXUIDriverError("target_ambiguous: macOS 窗口匹配不唯一。")
                 return windows[0]
             time.sleep(max(50, poll_ms) / 1000.0)
-        raise MacAXUIDriverError("等待 macOS 窗口超时。")
+        raise MacAXUIDriverError("target_lost: 等待 macOS 窗口超时。")
 
     def focus_window(
         self,
@@ -319,6 +321,7 @@ class MacAXUIDriver:
         self.ensure_available()
         matched = self.wait_for_window(
             title_filter=window_title,
+            window_handle=window_handle,
             title_filters=window_title_candidates,
             class_name=class_name,
             class_names=class_name_candidates,
@@ -340,7 +343,20 @@ class MacAXUIDriver:
         focused = dict(payload.get("window") or {})
         if not focused:
             raise MacAXUIDriverError("macOS 窗口聚焦失败。")
-        return self._normalize_window(focused)
+        normalized = self._normalize_window(focused)
+        if normalized.get("handle") != matched.get("handle"):
+            raise MacAXUIDriverError("target_lost: macOS 聚焦回执与绑定窗口不一致。")
+        siblings = self.list_windows(process_ids=[matched.get("processId")], limit=200)
+        if len(siblings) != 1:
+            raise MacAXUIDriverError("target_lost: 当前 macOS helper 不能确认同一应用多个窗口的焦点，已阻止全局输入。")
+        foreground = self.foreground_window()
+        if not foreground or foreground.get("handle") != matched.get("handle"):
+            raise MacAXUIDriverError("target_lost: macOS 前台窗口与绑定目标不一致。")
+        return normalized
+
+    def _focus_bound_input(self, *, window_title: str | None, window_handle: int | None) -> None:
+        if window_handle not in (None, "") or str(window_title or "").strip():
+            self.focus_window(window_title=window_title, window_handle=window_handle)
 
     def foreground_window(self, *, backend_name: str = "axui") -> Dict[str, Any] | None:
         self.ensure_available()
@@ -362,10 +378,7 @@ class MacAXUIDriver:
         self.ensure_available()
         window = self.foreground_window()
         if window_handle not in (None, "") or str(window_title or "").strip():
-            try:
-                window = self.wait_for_window(title_filter=window_title, timeout_ms=1200, poll_ms=120)
-            except Exception:
-                window = self.foreground_window()
+            window = self.wait_for_window(title_filter=window_title, window_handle=window_handle, timeout_ms=1200, poll_ms=120)
         snapshot = self._helper_command(
             "ax_snapshot",
             {
@@ -377,6 +390,8 @@ class MacAXUIDriver:
             timeout_seconds=18.0,
         )
         normalized_window = self._normalize_window(dict(snapshot.get("window") or window or {}))
+        if window_handle not in (None, "") and normalized_window.get("handle") != int(window_handle):
+            raise MacAXUIDriverError("target_lost: AX 观察回执与绑定窗口不一致。")
         elements = [
             self._normalize_element(item, window_handle=normalized_window.get("handle"))
             for item in list(snapshot.get("elements") or [])
@@ -410,8 +425,6 @@ class MacAXUIDriver:
         limit: int = 20,
     ) -> List[ComputerUseElement]:
         self._selector_metrics["resolveCalls"] += 1
-        if element_id and element_id in self._element_cache:
-            return [self._element_cache[element_id]]
         observation = self.observe_desktop(
             window_title=window_title,
             window_handle=window_handle,
@@ -421,6 +434,10 @@ class MacAXUIDriver:
         )
         ranked: List[tuple[int, ComputerUseElement]] = []
         for element in observation.elements:
+            if element_id and element.element_id != element_id:
+                continue
+            if window_handle not in (None, "") and element.window_handle != int(window_handle):
+                continue
             score = self._element_match_score(
                 element,
                 name=name,
@@ -483,14 +500,11 @@ class MacAXUIDriver:
         prefer_sendinput_click: bool = False,
     ) -> Dict[str, Any]:
         self._ensure_input_granted()
-        if window_handle not in (None, "") or str(window_title or "").strip():
-            try:
-                self.focus_window(window_title=window_title, window_handle=window_handle)
-            except Exception:
-                pass
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         payload = self._helper_command("click_point", {"point": [int(point[0]), int(point[1])]})
         clicked = self._normalize_point_result(payload, point)
         if double:
+            self._focus_bound_input(window_title=window_title, window_handle=window_handle)
             time.sleep(0.06)
             second = self._helper_command("click_point", {"point": [int(point[0]), int(point[1])]})
             clicked["metadata"]["doubleClick"] = True
@@ -505,6 +519,7 @@ class MacAXUIDriver:
         window_handle: int | None = None,
     ) -> Dict[str, Any]:
         self._ensure_input_granted()
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         payload = self._helper_command("hover_point", {"point": [int(point[0]), int(point[1])]})
         return self._normalize_point_result(payload, point)
 
@@ -516,6 +531,7 @@ class MacAXUIDriver:
         window_handle: int | None = None,
     ) -> Dict[str, Any]:
         self._ensure_input_granted()
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         payload = self._helper_command("right_click_point", {"point": [int(point[0]), int(point[1])]})
         return self._normalize_point_result(payload, point)
 
@@ -529,6 +545,7 @@ class MacAXUIDriver:
         steps: int = 12,
     ) -> Dict[str, Any]:
         self._ensure_input_granted()
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         payload = self._helper_command(
             "drag_between_points",
             {
@@ -562,7 +579,7 @@ class MacAXUIDriver:
             clear_first=clear_first,
             press_enter=press_enter,
         )
-        return self.wait_for_element(
+        refreshed = self.wait_for_element(
             element_id=element.element_id,
             window_title=query.get("window_title"),
             window_handle=query.get("window_handle") or element.window_handle,
@@ -575,6 +592,8 @@ class MacAXUIDriver:
             timeout_ms=1200,
             poll_ms=120,
         )
+        refreshed.metadata = {**dict(refreshed.metadata or {}), "route": "coordinate_fallback", "inputBackend": "cg_event"}
+        return refreshed
 
     def type_text_in_window(
         self,
@@ -595,21 +614,26 @@ class MacAXUIDriver:
         self._ensure_input_granted()
         if file_paths:
             raise MacAXUIDriverError("macOS 首版 common-core 不支持文件载荷粘贴，请改走文本或后续原生适配。")
-        if window_handle not in (None, "") or str(window_title or "").strip():
-            try:
-                self.focus_window(window_title=window_title, window_handle=window_handle)
-            except Exception:
-                pass
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         click_point = point or (list(point_candidates or [])[0] if point_candidates else None)
         if isinstance(click_point, (list, tuple)) and len(click_point) == 2:
             self.click_point(point=click_point, window_title=window_title, window_handle=window_handle)
             time.sleep(0.05)
         payload = {
             "text": str(text or ""),
-            "clear_first": bool(clear_first),
-            "press_enter": bool(press_enter),
+            "clear_first": False,
+            "press_enter": False,
         }
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
+        if clear_first:
+            self.hotkey("^a", window_title=window_title, window_handle=window_handle)
+            self.hotkey("{delete}", window_title=window_title, window_handle=window_handle)
         result = self._helper_command("type_text", payload, timeout_seconds=max(12.0, min(30.0, len(text) / 8.0 + 6.0)))
+        if press_enter:
+            try:
+                self.hotkey("{enter}", window_title=window_title, window_handle=window_handle)
+            except Exception:
+                raise MacAXUIDriverError("partial_input: 文本已派发，但 Enter 未确认成功；禁止重复输入文本。") from None
         target_window = self.foreground_window() or {}
         return {
             "windowHandle": target_window.get("handle") or window_handle,
@@ -619,17 +643,14 @@ class MacAXUIDriver:
                 **dict(result.get("metadata") or {}),
                 "focusProbeMode": focus_probe_mode,
                 "inputStrategy": "cg_event_unicode",
+                "route": "coordinate_fallback",
                 "filePasteStrategy": file_paste_strategy,
             },
         }
 
     def hotkey(self, sequence: str, *, window_title: str | None = None, window_handle: int | None = None) -> Dict[str, Any]:
         self._ensure_input_granted()
-        if window_handle not in (None, "") or str(window_title or "").strip():
-            try:
-                self.focus_window(window_title=window_title, window_handle=window_handle)
-            except Exception:
-                pass
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         for combo in self._parse_hotkey_sequence(sequence):
             self._helper_command("hotkey", {"key": combo["key"], "modifiers": combo["modifiers"]})
             time.sleep(0.03)
@@ -637,7 +658,7 @@ class MacAXUIDriver:
         return {
             "windowHandle": foreground.get("handle") or window_handle,
             "windowTitle": foreground.get("title") or window_title,
-            "metadata": {"sequence": sequence, "route": "structured_accessibility"},
+            "metadata": {"sequence": sequence, "route": "coordinate_fallback"},
         }
 
     def read_selected_text_via_clipboard(
@@ -652,7 +673,7 @@ class MacAXUIDriver:
         if tool_exists("pbpaste"):
             completed = run_command(["pbpaste"], check=False, timeout_seconds=3.0)
             text = str(completed.stdout or "")
-        return {"text": text, "metadata": {"route": "structured_accessibility"}}
+        return {"text": text, "metadata": {"route": "coordinate_fallback"}}
 
     def scroll(
         self,
@@ -663,11 +684,9 @@ class MacAXUIDriver:
         window_handle: int | None = None,
     ) -> Dict[str, Any]:
         self._ensure_input_granted()
+        self._focus_bound_input(window_title=window_title, window_handle=window_handle)
         if isinstance(point, (list, tuple)) and len(point) == 2:
-            try:
-                self.hover_point(point=point, window_title=window_title, window_handle=window_handle)
-            except Exception:
-                pass
+            self.hover_point(point=point, window_title=window_title, window_handle=window_handle)
         payload = self._helper_command("scroll", {"delta": int(amount)})
         return {"amount": int(amount), "metadata": dict(payload.get("metadata") or {"viewportStrategy": "scroll_wheel"})}
 
@@ -686,7 +705,7 @@ class MacAXUIDriver:
         return {
             "direction": str(direction or "down").strip().lower() or "down",
             "count": repeat,
-            "metadata": {"viewportStrategy": "page_scroll", "route": "structured_accessibility"},
+            "metadata": {"viewportStrategy": "page_scroll", "route": "coordinate_fallback"},
         }
 
     def capture_screenshot(
@@ -700,23 +719,29 @@ class MacAXUIDriver:
         self.ensure_available()
         self._ensure_screen_capture_granted()
         target_path = Path(output_path)
+        bounds = None
+        if element_id:
+            cached = self._element_cache.get(element_id)
+            matches = self.find_elements(element_id=element_id, window_title=window_title, window_handle=window_handle or (cached.window_handle if cached else None))
+            if len(matches) != 1:
+                raise MacAXUIDriverError("target_lost: 截图元素无法重新定位。")
+            bounds = list(matches[0].bounds)
+        elif window_handle not in (None, "") or str(window_title or "").strip():
+            window = self.wait_for_window(title_filter=window_title, window_handle=window_handle, timeout_ms=1200, poll_ms=120)
+            bounds = normalize_bounds(window.get("bounds"))
+            if not bounds or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                raise MacAXUIDriverError("target_lost: 绑定窗口没有可用截图范围。")
+        if element_id and (len(bounds or []) != 4 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]):
+            raise MacAXUIDriverError("target_lost: 绑定元素没有可用截图范围。")
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        if bounds is not None:
+            return capture_with_mss(target_path, bounds=bounds)
         if tool_exists("screencapture"):
             full_capture = ensure_v8_agent_os_tmp_path(scope="computer_use") / f"mac_full_{int(time.time() * 1000)}.png"
             run_command(["screencapture", "-x", str(full_capture)], check=False, timeout_seconds=8.0)
             if not full_capture.exists():
                 return capture_with_mss(target_path)
-            bounds = None
-            if element_id and element_id in self._element_cache:
-                bounds = list(self._element_cache[element_id].bounds)
-            elif window_handle not in (None, "") or str(window_title or "").strip():
-                window = self.wait_for_window(title_filter=window_title, timeout_ms=1200, poll_ms=120)
-                bounds = normalize_bounds(window.get("bounds"))
-            if bounds and len(bounds) == 4:
-                with Image.open(full_capture) as image:
-                    image.crop((bounds[0], bounds[1], bounds[2], bounds[3])).save(target_path)
-            else:
-                shutil.copyfile(full_capture, target_path)
+            shutil.copyfile(full_capture, target_path)
             try:
                 full_capture.unlink(missing_ok=True)
             except Exception:
@@ -744,26 +769,15 @@ class MacAXUIDriver:
             "beforeScreenHash": (before_observation or {}).get("screenHash"),
             "afterScreenHash": (after_observation or {}).get("screenHash"),
         }
-        if action_type in {"click", "double_click", "right_click", "hover"}:
-            changed = self._observation_hash_changed(before_observation, after_observation)
-            focused = self._window_matches(after_observation, title=details["windowTitle"], handle=details["windowHandle"])
-            if changed:
-                return {"passed": True, "status": "verified", "reason": "动作后界面状态已变化。", "details": {**details, "changeObserved": True}, "level": "verified"}
-            if focused:
-                return {"passed": True, "status": "focus_verified", "reason": "动作后目标窗口仍处于前台。", "details": {**details, "foregroundMatched": True}, "level": "soft_verified"}
-            return {"passed": True, "status": "soft_verified_target_only", "reason": "动作已执行，但缺少更强的业务结果证据。", "details": details, "level": "soft_verified"}
+        details["changeObserved"] = self._observation_hash_changed(before_observation, after_observation)
+        details["targetWindowObserved"] = self._window_matches(after_observation, title=details["windowTitle"], handle=details["windowHandle"])
         if action_type == "type_text":
             normalized_text = str(text or "").strip()
-            if normalized_text and self._observation_contains_text(after_observation, normalized_text):
+            element_id = str(target.get("elementId") or target.get("element_id") or "")
+            if normalized_text and element_id and details["targetWindowObserved"] and self._observation_contains_text(after_observation, normalized_text, element_id=element_id):
                 return {"passed": True, "status": "text_verified", "reason": "输入后的界面中已出现目标文本。", "details": {**details, "targetTextVisible": True}, "level": "verified"}
-            if self._observation_hash_changed(before_observation, after_observation):
-                return {"passed": True, "status": "soft_verified_target_only", "reason": "输入动作后界面状态发生变化，但未获得稳定文本回读。", "details": details, "level": "soft_verified"}
             return {"passed": False, "status": "review_required_unconfirmed_input", "reason": "输入动作缺少稳定文本回读或明确界面变化证据。", "details": details, "level": "review_required"}
-        if action_type in {"hotkey", "scroll"}:
-            if self._observation_hash_changed(before_observation, after_observation):
-                return {"passed": True, "status": "verified", "reason": "动作后界面状态发生变化。", "details": details, "level": "verified"}
-            return {"passed": False, "status": "soft_verified_target_only" if action_type == "hotkey" else "scroll_no_change", "reason": "动作已执行，但界面状态未提供足够变化证据。", "details": details, "level": "soft_verified" if action_type == "hotkey" else "failed"}
-        return {"passed": True, "status": "verified", "reason": "动作已执行。", "details": details, "level": "verified"}
+        return {"passed": False, "status": "review_required_postcondition", "reason": "输入回执、窗口身份和画面变化不能证明业务结果；需要目标后置条件。", "details": details, "level": "review_required"}
 
     def _probe(self) -> Dict[str, Any]:
         if sys.platform != "darwin":
@@ -811,9 +825,19 @@ class MacAXUIDriver:
 
     def _helper_command(self, command: str, payload: Dict[str, Any] | None = None, *, timeout_seconds: float = 12.0) -> Dict[str, Any]:
         binary = self._ensure_helper_binary()
-        result = json_command([str(binary), command], payload or {}, timeout_seconds=timeout_seconds)
+        input_command = command in {"click_point", "right_click_point", "hover_point", "drag_between_points", "type_text", "hotkey", "scroll"}
+        try:
+            result = json_command([str(binary), command], payload or {}, timeout_seconds=timeout_seconds)
+        except Exception:
+            if input_command:
+                raise MacAXUIDriverError("execution_unknown: macOS 输入 helper 未返回确认回执，禁止自动重放。") from None
+            raise
         if result.get("error"):
+            if input_command:
+                raise MacAXUIDriverError("execution_unknown: macOS 输入 helper 回执失败，禁止自动重放。")
             raise MacAXUIDriverError(str(result.get("error")))
+        if input_command and not result:
+            raise MacAXUIDriverError("execution_unknown: macOS 输入 helper 回执为空，禁止自动重放。")
         return result
 
     def _normalize_window(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -910,7 +934,7 @@ class MacAXUIDriver:
 
     def _with_element_action_metadata(self, element: ComputerUseElement, payload: Dict[str, Any]) -> ComputerUseElement:
         metadata = dict(element.metadata or {})
-        metadata.update({"clickedPoint": payload.get("clickedPoint"), "route": dict(payload.get("metadata") or {}).get("route") or "structured_accessibility", "windowTitle": payload.get("windowTitle"), "windowHandle": payload.get("windowHandle")})
+        metadata.update({"clickedPoint": payload.get("clickedPoint"), "route": "coordinate_fallback", "windowTitle": payload.get("windowTitle"), "windowHandle": payload.get("windowHandle")})
         return ComputerUseElement(element_id=element.element_id, backend=element.backend, role=element.role, name=element.name, bounds=list(element.bounds), actions=list(element.actions), confidence=element.confidence, path=list(element.path), automation_id=element.automation_id, class_name=element.class_name, window_handle=element.window_handle, metadata=metadata)
 
     def _parse_hotkey_sequence(self, sequence: str) -> List[Dict[str, Any]]:
@@ -945,24 +969,25 @@ class MacAXUIDriver:
         observed_handle = metadata.get("windowHandle") or observation.get("windowHandle")
         observed_title = str(observation.get("windowTitle") or "").strip().lower()
         target_title = str(title or "").strip().lower()
-        if handle not in (None, "") and observed_handle not in (None, ""):
+        if handle not in (None, ""):
             try:
-                if int(handle) == int(observed_handle):
-                    return True
+                return int(handle) == int(observed_handle)
             except Exception:
-                pass
+                return False
         if target_title and observed_title:
             return target_title in observed_title or observed_title in target_title
         return False
 
-    def _observation_contains_text(self, observation: Dict[str, Any] | None, text: str) -> bool:
+    def _observation_contains_text(self, observation: Dict[str, Any] | None, text: str, *, element_id: str) -> bool:
         normalized = str(text or "").strip().lower()
         if not normalized or not isinstance(observation, dict):
             return False
         for element in list(observation.get("elements") or [])[:80]:
             if not isinstance(element, dict):
                 continue
-            candidates = [element.get("name"), element.get("automationId"), element.get("className"), dict(element.get("metadata") or {}).get("value"), dict(element.get("metadata") or {}).get("description")]
+            if str(element.get("elementId") or element.get("element_id") or "") != element_id:
+                continue
+            candidates = [dict(element.get("metadata") or {}).get("value")]
             haystack = " ".join(str(item or "").strip().lower() for item in candidates if str(item or "").strip())
             if normalized in haystack:
                 return True

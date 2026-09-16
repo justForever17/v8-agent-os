@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from core.audit_logger import audit_logger
 from core.database import db
 from core.process_launch import run_windowless
+from core.interprocess_lock import interprocess_file_lock
 from core.realtime_protocol import utc_now_iso
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -36,7 +37,7 @@ from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
 from runtimes.rpa.execution_semantics import normalize_script_assessment_status, outcome_family_for_execution_state
 from runtimes.rpa.recording import RPARecordingManager
 from runtimes.rpa.robot_adapter import RobotFrameworkAdapter, robot_framework_adapter
-from runtimes.rpa.store import RPAScriptStore, rpa_script_store
+from runtimes.rpa.store import RPAScriptStore, rpa_script_store, DraftRevisionConflict
 from runtimes.rpa.template_service import RPATemplateService, rpa_template_service
 
 
@@ -841,7 +842,7 @@ class RPARuntime:
             metadata = dict(draft.get("metadata") or {})
             metadata.update(metadata_patch)
             draft["metadata"] = metadata
-        saved = self.script_store.save_draft(draft)
+        saved = self.script_store.save_draft(draft, expected_updated_at=patch.get("expectedUpdatedAt") or draft.get("updatedAt"))
         self._log_audit(
             action=f"Patch RPA draft: {script_id}",
             status="SUCCESS",
@@ -1587,7 +1588,8 @@ class RPARuntime:
         return self.recording_manager.list(limit=limit)
 
     def get_recording(self, recording_id: str) -> Optional[Dict[str, Any]]:
-        return self.recording_manager.get(recording_id)
+        session = self.recording_manager.get(recording_id)
+        return self.recording_manager._public_session(session) if session else None
 
     def start_recording(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         recording = self.recording_manager.start(payload)
@@ -1612,6 +1614,7 @@ class RPARuntime:
         return self.recording_manager.resume(recording_id)
 
     def cancel_recording(self, recording_id: str) -> Dict[str, Any]:
+        self.capture_broker.stop(recording_id)
         return self.recording_manager.cancel(recording_id)
 
     def append_recording_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -3029,6 +3032,9 @@ class RPARuntime:
         return self.recording_manager.save_capture_pool_item(recording_id, temp_element_id, name=name)
 
     def stop_capture_assistant(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        sidecars = self.capture_broker.stop(recording_id)
+        if not sidecars["ok"]:
+            return sidecars
         recording = self.recording_manager.get(recording_id)
         if not recording:
             raise ValueError(f"Recording session '{recording_id}' not found.")
@@ -3065,13 +3071,25 @@ class RPARuntime:
         return self.stop_capture_assistant(recording_id, payload or {})
 
     def stop_recording(self, recording_id: str, *, compile_draft: bool = True, save: bool = True) -> Dict[str, Any]:
+        sidecars = self.capture_broker.stop(recording_id)
+        if not sidecars["ok"]:
+            return {"recording": self.get_recording(recording_id), "draft": None,
+                    "compileError": "; ".join(sidecars["errors"])}
         recording = self.recording_manager.stop(recording_id)
+        if recording.get("state") == "cancelled":
+            return {"recording": recording, "draft": None, "compileError": None}
+        if recording.get("state") == "draft_ready" and recording.get("createdDraftId"):
+            return {"recording": recording, "draft": self.get_draft(recording["createdDraftId"]), "compileError": None}
         draft = None
         compile_error = None
         if compile_draft and int(recording.get("stepCount") or 0) > 0:
             self.recording_manager.mark_compiling(recording_id)
             try:
-                draft = self.compile_trace_to_draft(str(recording.get("traceRunId")), save=save)
+                draft = self.compile_trace_to_draft(str(recording.get("traceRunId")), save=False)
+                draft["id"] = f"{draft['id']}-{recording_id}"
+                if save:
+                    draft = self.script_store.save_draft(draft)
+                    draft = self.compiler.sync_template_for_script(draft, save=True)
                 recording = self.recording_manager.mark_draft_ready(recording_id, draft)
             except Exception as exc:
                 compile_error = str(exc)
@@ -3280,10 +3298,12 @@ class RPARuntime:
         *,
         script_id: str,
         output_dir: str | Path | None = None,
+        expected_updated_at: str | None = None,
     ) -> Dict[str, Any]:
         draft = self.get_draft(script_id)
         if not draft:
             raise ValueError(f"未找到 draft: {script_id}")
+        self._check_draft_revision(draft, expected_updated_at)
         exported = self.adapter.export_script(
             script=draft,
             output_dir=Path(output_dir) if output_dir is not None else None,
@@ -3301,18 +3321,29 @@ class RPARuntime:
         script_id: str,
         variables: Optional[Dict[str, Any]] = None,
         output_dir: str | Path | None = None,
+        expected_updated_at: str | None = None,
     ) -> Dict[str, Any]:
+        draft = self.get_draft(script_id)
+        if not draft:
+            raise ValueError(f"未找到 draft: {script_id}")
+        self._check_draft_revision(draft, expected_updated_at)
         prepared = self.adapter.prepare_draft_run(
             script_id=script_id,
+            script=draft,
             variables=variables,
             output_dir=Path(output_dir) if output_dir is not None else None,
         )
         self._log_audit(
             action=f"Prepare RPA draft run: {script_id}",
             status="INFO",
-            details=json.dumps({"scriptId": script_id, "variables": _jsonable(variables or {})}, ensure_ascii=False),
+            details=json.dumps({"scriptId": script_id, "variableNames": sorted((variables or {}).keys())}, ensure_ascii=False),
         )
         return prepared
+
+    @staticmethod
+    def _check_draft_revision(draft: Dict[str, Any], expected_updated_at: str | None) -> None:
+        if expected_updated_at is not None and draft.get("updatedAt") != expected_updated_at:
+            raise DraftRevisionConflict("草稿已更新，本次操作未执行；请保留编辑并重新加载。")
 
     def prepare_template_run(
         self,
@@ -3339,6 +3370,7 @@ class RPARuntime:
         metadata["templateGovernance"] = deepcopy(script.get("governance") or {})
         script["metadata"] = metadata
 
+        RobotFrameworkAdapter.validate_variable_inputs(script, variables)
         target_dir = Path(output_dir) if output_dir is not None else None
         uses_computer_use_playbook = self._uses_computer_use_playbook(script)
         exported = {} if uses_computer_use_playbook else self.adapter.export_script(script=script, output_dir=target_dir)
@@ -3598,6 +3630,34 @@ class RPARuntime:
         )
 
     def _begin_run(
+        self, *, session_id, user_id, trigger_source, metadata, title, run_id=None, resume_approval_id=None,
+    ):
+        key = hashlib.sha256(str(run_id or uuid.uuid4().hex).encode()).hexdigest()
+        with interprocess_file_lock(self.script_store.base_dir / "run_locks" / f"{key}.lock"):
+            existing = db.get_run_record(run_id) if run_id else None
+            if existing:
+                previous = existing.get("metadata") or {}
+                session = db.get_session(existing.get("session_id")) or {}
+                if previous.get("executionIdentity") != metadata.get("executionIdentity") or session.get("user_id") != user_id:
+                    raise ValueError("RPA run ID already belongs to a different execution version or actor.")
+                if resume_approval_id and previous.get("executionState") == "review_required":
+                    approval = db.get_pending_approval(resume_approval_id) or {}
+                    request = approval.get("request") or {}
+                    control = previous.get("control_signal") or {}
+                    if (approval.get("status") == "approved" and approval.get("run_id") == run_id
+                            and request.get("operationFingerprint") == metadata["executionIdentity"]
+                            and existing.get("status") == "running"
+                            and control.get("command") not in {"cancel", "interrupt", "pause"}):
+                        self._update_run_metadata(run_id, executionState="resuming")
+                        return erc_kernel.attach_run(run_id, component="rpa_runtime", node="run_manager")
+                return {"status": previous.get("executionState") or existing.get("status"),
+                        "runId": run_id, "sessionId": existing.get("session_id"), "skippedDuplicate": True,
+                        "reconciliationRequired": bool(previous.get("reconciliationRequired")),
+                        "error": previous.get("error")}
+            return self._begin_new_run(session_id=session_id, user_id=user_id, trigger_source=trigger_source,
+                                       metadata=metadata, title=title, run_id=run_id)
+
+    def _begin_new_run(
         self,
         *,
         session_id: str,
@@ -3667,6 +3727,13 @@ class RPARuntime:
         run_handle.emit("safety.preflight.checked", decision.to_payload())
         return decision
 
+    def _has_execution_approval(self, run_id: str, kind: str) -> bool:
+        identity = ((db.get_run_record(run_id) or {}).get("metadata") or {}).get("executionIdentity")
+        return bool(identity) and any(
+            item.get("approval_kind") == kind and (item.get("request") or {}).get("operationFingerprint") == identity
+            for item in db.list_pending_approvals(run_id=run_id, status="approved")
+        )
+
     def _handle_preflight_decision(
         self,
         *,
@@ -3684,16 +3751,18 @@ class RPARuntime:
         if decision.is_allow():
             return None
         if decision.is_review():
+            if self._has_execution_approval(run_handle.run_id, "safety_review"):
+                return None
             approval = run_handle.request_approval(
                 approval_kind="safety_review",
-                request=safety_guardian.build_runtime_preflight_request(
+                request={**safety_guardian.build_runtime_preflight_request(
                     runtime_kind="rpa",
                     trigger_source=trigger_source or "manual",
                     decision=decision,
                     subject=subject,
-                ),
+                ), "operationFingerprint": ((db.get_run_record(run_handle.run_id) or {}).get("metadata") or {}).get("executionIdentity")},
             )
-            if str(approval.get("status") or "").strip().lower() != "pending":
+            if str(approval.get("status") or "").strip().lower() in {"approved", "auto_approved"}:
                 self._log_audit(
                     action=f"RPA preflight auto-approved: {subject}",
                     status="INFO",
@@ -3732,59 +3801,12 @@ class RPARuntime:
             "sessionId": run_handle.session_id,
         }
 
-    def _rpa_safety_gate_enabled(self) -> bool:
-        # RPA flows are user-authored or user-approved automations. By default
-        # the runtime records Safety evidence but does not gate execution.
-        return False
-
-    def _audit_preflight_decision(
-        self,
-        *,
-        run_handle,
-        decision: SafetyDecision,
-        trigger_source: str | None,
-        subject: str,
-    ) -> None:
-        safety_guardian.log_decision_event(
-            action="rpa_preflight_audit_only",
-            decision=decision,
-            subject=subject,
-            metadata={
-                "runId": run_handle.run_id,
-                "sessionId": run_handle.session_id,
-                "triggerSource": trigger_source,
-                "gate": "audit_only",
-            },
-        )
-        run_handle.emit(
-            "rpa.safety.audit_only",
-            {
-                "subject": subject,
-                "triggerSource": trigger_source,
-                "decision": decision.to_payload(),
-            },
-        )
-        self._log_audit(
-            action=f"RPA preflight audit-only: {subject}",
-            status="INFO" if decision.is_allow() else "WARNING",
-            details=json.dumps(
-                {
-                    "runId": run_handle.run_id,
-                    "sessionId": run_handle.session_id,
-                    "reason": decision.reason,
-                    "decision": decision.to_payload(),
-                },
-                ensure_ascii=False,
-            ),
-        )
-
     def _resolve_template_execution_policy(self, *, mode: str, prepared: Dict[str, Any]) -> Dict[str, Any]:
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
         metadata = dict(script.get("metadata") or {}) if script else {}
         source = dict(script.get("source") or {}) if script else {}
         governance = dict(metadata.get("templateGovernance") or {})
         promotion_gate = dict(metadata.get("templatePromotionGate") or {})
-        source_kind = str(source.get("kind") or metadata.get("source") or metadata.get("createdFrom") or "").strip()
         has_template_governance = bool(governance) or bool(source.get("templateId") or source.get("templateStage") or source.get("templateStatus"))
         stage = str(governance.get("stage") or source.get("templateStage") or "").strip() or ("candidate" if has_template_governance else "unmanaged")
         status = str(metadata.get("templateStatus") or governance.get("templateStatus") or source.get("templateStatus") or "").strip() or ("candidate" if has_template_governance else "unmanaged")
@@ -3795,9 +3817,7 @@ class RPARuntime:
         approval_required = bool(governance.get("approvalRequired", True))
         has_computer_use_source = self._has_computer_use_replay_capability(mode=mode, prepared=prepared)
         promotion_gate_blocked = bool(promotion_gate.get("blockedPromotion"))
-        if source_kind == "manual_canvas" and has_computer_use_source:
-            rollout_mode = "computer_use_first"
-        elif promotion_gate_blocked:
+        if promotion_gate_blocked and has_computer_use_source:
             rollout_mode = "computer_use_first"
         execution_path = "robot"
         if has_computer_use_source and self._uses_computer_use_playbook(script):
@@ -3842,23 +3862,9 @@ class RPARuntime:
         if mode not in {"draft", "template"}:
             return False
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
-        if not script or not list(script.get("steps") or []):
-            return False
-        metadata = script.get("metadata") if isinstance(script.get("metadata"), dict) else {}
-        source = script.get("source") if isinstance(script.get("source"), dict) else {}
-        source_type = str(source.get("type") or "").strip()
-        source_kind = str(source.get("kind") or metadata.get("source") or metadata.get("createdFrom") or "").strip()
-        if source_kind == "manual_canvas":
-            return True
-        if source_type in {"computer_use_trace", "computer_use_trace_merge", "rpa_template_candidate"}:
-            return True
-        if any(str(step.get("use") or "").strip() == "computer_use_playbook" for step in list(script.get("steps") or []) if isinstance(step, dict)):
-            return True
-        if str(source.get("traceRunId") or "").strip():
-            return True
-        if [item for item in list(source.get("traceRunIds") or []) if str(item).strip()]:
-            return True
-        return False
+        # A trace is provenance, not a second executable version of an edited
+        # workflow. Only explicit playbooks use the Computer Use executor.
+        return self._uses_computer_use_playbook(script)
 
     def _required_approvals(self, prepared: Dict[str, Any], *, template_policy: Dict[str, Any] | None = None) -> list[Dict[str, Any]]:
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
@@ -3936,45 +3942,6 @@ class RPARuntime:
             "assessment": assessment,
             "templateExecutionPolicy": template_policy or self._resolve_template_execution_policy(mode="draft", prepared=prepared),
         }
-
-    def _supports_computer_use_fallback(self, *, mode: str, prepared: Dict[str, Any]) -> bool:
-        if not self._has_computer_use_replay_capability(mode=mode, prepared=prepared):
-            return False
-        policy = self._resolve_template_execution_policy(mode=mode, prepared=prepared)
-        return bool(policy.get("allowComputerUseFallback", True))
-
-    def _extract_failed_step_context(self, *, execution: Dict[str, Any], script: Dict[str, Any]) -> Dict[str, Any]:
-        script_steps = [item for item in list(script.get("steps") or []) if isinstance(item, dict)]
-        if not script_steps:
-            return {}
-        output_chunks = [str(execution.get("stdout") or ""), str(execution.get("stderr") or "")]
-        joined_output = "\n".join(chunk for chunk in output_chunks if chunk).strip()
-        logged_step_ids = re.findall(r"STEP_ID:([A-Za-z0-9._:-]+)", joined_output)
-        step_id_to_index = {
-            str(step.get("stepId") or ""): index
-            for index, step in enumerate(script_steps)
-            if str(step.get("stepId") or "").strip()
-        }
-        if logged_step_ids:
-            last_step_id = str(logged_step_ids[-1]).strip()
-            if last_step_id in step_id_to_index:
-                index = step_id_to_index[last_step_id]
-                return {
-                    "stepId": last_step_id,
-                    "stepIndex": index,
-                    "matchedFrom": "stdout_marker",
-                    "remainingSteps": max(0, len(script_steps) - index),
-                }
-        for index, step in enumerate(script_steps):
-            step_id = str(step.get("stepId") or "").strip()
-            if step_id and step_id in joined_output:
-                return {
-                    "stepId": step_id,
-                    "stepIndex": index,
-                    "matchedFrom": "output_match",
-                    "remainingSteps": max(0, len(script_steps) - index),
-                }
-        return {}
 
     def _draft_to_computer_use_steps(
         self,
@@ -4293,21 +4260,25 @@ class RPARuntime:
         approvals = self._required_approvals(prepared, template_policy=template_policy)
         if not approvals:
             return None
+        if self._has_execution_approval(run_handle.run_id, "rpa_review"):
+            return None
         approval = run_handle.request_approval(
             approval_kind="rpa_review",
             request={
                 "question": f"RPA 流程包含高风险步骤，是否继续执行？\n\n目标：{subject}",
                 "prompt": f"RPA 流程包含高风险步骤，是否继续执行？\n\n目标：{subject}",
                 "approvalKind": "rpa_review",
+                "operationFingerprint": prepared.get("executionIdentity"),
                 "rpa": {
                     "subject": subject,
+                    "executionIdentity": prepared.get("executionIdentity"),
                     "scriptId": (prepared.get("script") or {}).get("id"),
                     "robotFile": prepared.get("robotFile") or (prepared.get("export") or {}).get("path"),
                     "requiredApprovals": approvals,
                 },
             },
         )
-        if str(approval.get("status") or "").strip().lower() != "pending":
+        if str(approval.get("status") or "").strip().lower() in {"approved", "auto_approved"}:
             self._log_audit(
                 action=f"RPA step approval auto-approved: {subject}",
                 status="INFO",
@@ -4334,45 +4305,6 @@ class RPARuntime:
             "runId": run_handle.run_id,
             "sessionId": run_handle.session_id,
         }
-
-    def _rpa_step_approval_gate_enabled(self) -> bool:
-        # Same policy as Safety preflight: RPA records governance evidence by
-        # default, while execution remains frictionless unless a future config
-        # explicitly re-enables the gate.
-        return False
-
-    def _audit_step_approvals(
-        self,
-        *,
-        run_handle,
-        prepared: Dict[str, Any],
-        subject: str,
-        template_policy: Dict[str, Any],
-    ) -> None:
-        approvals = self._required_approvals(prepared, template_policy=template_policy)
-        if not approvals:
-            return
-        run_handle.emit(
-            "rpa.approval.audit_only",
-            {
-                "subject": subject,
-                "requiredApprovals": approvals,
-                "scriptId": (prepared.get("script") or {}).get("id") if isinstance(prepared.get("script"), dict) else None,
-                "robotFile": prepared.get("robotFile") or (prepared.get("export") or {}).get("path"),
-            },
-        )
-        self._log_audit(
-            action=f"RPA step approval audit-only: {subject}",
-            status="WARNING",
-            details=json.dumps(
-                {
-                    "runId": run_handle.run_id,
-                    "sessionId": run_handle.session_id,
-                    "steps": approvals,
-                },
-                ensure_ascii=False,
-            ),
-        )
 
     def _execute_computer_use_primary(
         self,
@@ -4534,6 +4466,33 @@ class RPARuntime:
             **({"repair": repair_payload} if repair_payload is not None else {}),
         }
 
+    def resume_approved_run(self, approval: Dict[str, Any]) -> None:
+        """Consume the ERC delivery once; execute the exact persisted preparation."""
+        delivery = approval.get("_resumeDelivery") or {}
+        approval_id = str(approval.get("id") or approval.get("approval_id") or "")
+        run_id = str(approval.get("run_id") or "")
+        claim = dict(run_id=run_id, generation=delivery.get("generation"), attempt=delivery.get("attempt"))
+        if not db.transition_approval_resume(approval_id, **claim, expected_state="scheduled", state="executing"):
+            return
+        try:
+            record = db.get_run_record(run_id) or {}
+            metadata = record.get("metadata") or {}
+            options = dict(metadata.get("resumeExecution") or {})
+            if not options or (approval.get("request") or {}).get("operationFingerprint") != metadata.get("executionIdentity"):
+                raise ValueError("RPA approval does not match the saved execution version.")
+            prepared = {key: metadata.get(key) for key in ("script", "export", "robotFile", "command")}
+            prepared["available"] = metadata.get("availability") or {}
+            self._execute_prepared(prepared=prepared, variables=metadata.get("variables") or {},
+                cwd=metadata.get("cwd"), session_id=record.get("session_id"), run_id=run_id,
+                _resume_approval_id=approval_id, **options)
+            db.transition_approval_resume(approval_id, **claim, expected_state="executing", state="delivered")
+        except Exception as exc:
+            db.transition_approval_resume(approval_id, **claim, expected_state="executing", state="blocked", error=type(exc).__name__)
+            handle = erc_kernel.attach_run(run_id, component="rpa_runtime")
+            if handle:
+                handle.fail("RPA approval continuation failed; inspect the saved execution before retrying.", node="rpa_runtime")
+            self._update_run_metadata(run_id, executionState="blocked", reason="approval_continuation_failed")
+
     def _execute_prepared(
         self,
         *,
@@ -4552,11 +4511,19 @@ class RPARuntime:
         workspace_path: str | None = None,
         trigger_source: str | None = "manual",
         non_chat_run: bool = False,
+        _resume_approval_id: str | None = None,
     ) -> Dict[str, Any]:
+        prepared = {**prepared, "executionIdentity": hashlib.sha256(json.dumps({
+            "script": prepared.get("script") or {}, "robotFile": prepared.get("robotFile"),
+            "robotHash": (prepared.get("export") or {}).get("sha256"),
+            "command": list(prepared.get("command") or []),
+            "variables": variables or {}, "actor": user_id, "workspace": workspace_path, "cwd": cwd,
+        }, sort_keys=True, default=str).encode()).hexdigest()}
+        run_id = run_id or f"rpa_{uuid.uuid4().hex}"
         effective_session_id = self._resolve_session_id(
             script_id=(prepared.get("script") or {}).get("id"),
             robot_file=prepared.get("robotFile") or (prepared.get("export") or {}).get("path"),
-            session_id=session_id,
+            session_id=session_id or f"rpa:run:{run_id}",
         )
         metadata = self._build_run_metadata(
             mode=mode,
@@ -4565,6 +4532,10 @@ class RPARuntime:
             trigger_source=trigger_source,
             cwd=cwd,
         )
+        metadata["executionIdentity"] = prepared["executionIdentity"]
+        metadata["resumeExecution"] = dict(subject=subject, mode=mode, output_dir=str(output_dir) if output_dir else None,
+            timeout_ms=timeout_ms, user_id=user_id, project_id=project_id, workspace_id=workspace_id,
+            workspace_path=workspace_path, trigger_source=trigger_source, non_chat_run=non_chat_run)
         if non_chat_run:
             metadata["nonChatRun"] = True
             metadata["manualRpaRun"] = True
@@ -4578,7 +4549,10 @@ class RPARuntime:
                 robot_file=prepared.get("robotFile") or (prepared.get("export") or {}).get("path"),
             ),
             run_id=run_id,
+            resume_approval_id=_resume_approval_id,
         )
+        if isinstance(run_handle, dict):
+            return run_handle
         workflow_ledger_service.activate_runtime_step(
             run_handle.run_id,
             owner_runtime="rpa",
@@ -4599,28 +4573,20 @@ class RPARuntime:
             },
         )
         preflight_decision = self._run_preflight(run_handle=run_handle, trigger_source=trigger_source, user_id=user_id)
-        if self._rpa_safety_gate_enabled():
-            preflight = self._handle_preflight_decision(
-                run_handle=run_handle,
-                decision=preflight_decision,
-                trigger_source=trigger_source,
-                subject=subject,
+        preflight = self._handle_preflight_decision(
+            run_handle=run_handle,
+            decision=preflight_decision,
+            trigger_source=trigger_source,
+            subject=subject,
+        )
+        if preflight is not None:
+            self._update_run_metadata(
+                run_handle.run_id,
+                executionState=preflight.get("status"),
+                reason=preflight.get("reason"),
+                approvalId=preflight.get("approvalId"),
             )
-            if preflight is not None:
-                self._update_run_metadata(
-                    run_handle.run_id,
-                    executionState=preflight.get("status"),
-                    reason=preflight.get("reason"),
-                    approvalId=preflight.get("approvalId"),
-                )
-                return {**prepared, **preflight, "templateExecutionPolicy": self._resolve_template_execution_policy(mode=mode, prepared=prepared)}
-        else:
-            self._audit_preflight_decision(
-                run_handle=run_handle,
-                decision=preflight_decision,
-                trigger_source=trigger_source,
-                subject=subject,
-            )
+            return {**prepared, **preflight, "templateExecutionPolicy": self._resolve_template_execution_policy(mode=mode, prepared=prepared)}
 
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
         assessment = script.get("assessment") if isinstance(script.get("assessment"), dict) else {}
@@ -4657,32 +4623,24 @@ class RPARuntime:
                 },
             )
 
-        if self._rpa_step_approval_gate_enabled():
-            step_approval = self._request_step_approval(run_handle=run_handle, prepared=prepared, subject=subject)
-            if step_approval is not None:
-                self._update_run_metadata(
-                    run_handle.run_id,
-                    executionState="review_required",
-                    approvalId=step_approval.get("approvalId"),
-                    requiredApprovals=step_approval.get("requiredApprovals"),
-                    trustStatus=normalized_assessment_status,
-                    templateExecutionPolicy=template_policy,
-                    templateExecutionPath=template_policy.get("executionPath"),
-                )
-                self._record_run_feedback(prepared=prepared, execution_state="review_required")
-                return {
-                    **prepared,
-                    **step_approval,
-                    "outcomeFamily": outcome_family_for_execution_state("review_required"),
-                    "templateExecutionPolicy": template_policy,
-                }
-        else:
-            self._audit_step_approvals(
-                run_handle=run_handle,
-                prepared=prepared,
-                subject=subject,
-                template_policy=template_policy,
+        step_approval = self._request_step_approval(run_handle=run_handle, prepared=prepared, subject=subject)
+        if step_approval is not None:
+            self._update_run_metadata(
+                run_handle.run_id,
+                executionState="review_required",
+                approvalId=step_approval.get("approvalId"),
+                requiredApprovals=step_approval.get("requiredApprovals"),
+                trustStatus=normalized_assessment_status,
+                templateExecutionPolicy=template_policy,
+                templateExecutionPath=template_policy.get("executionPath"),
             )
+            self._record_run_feedback(prepared=prepared, execution_state="review_required")
+            return {
+                **prepared,
+                **step_approval,
+                "outcomeFamily": outcome_family_for_execution_state("review_required"),
+                "templateExecutionPolicy": template_policy,
+            }
 
         if str(template_policy.get("executionPath") or "").strip() == "computer_use_first":
             return self._execute_computer_use_primary(
@@ -4708,6 +4666,14 @@ class RPARuntime:
         )
         if controlled is not None:
             return controlled
+        exported = prepared.get("export") or {}
+        if exported.get("sha256"):
+            robot_path = Path(exported["path"])
+            if not robot_path.is_file() or hashlib.sha256(robot_path.read_bytes()).hexdigest() != exported["sha256"]:
+                run_handle.fail("Prepared Robot artifact changed; prepare the selected version again.", node="rpa_runtime")
+                self._update_run_metadata(run_handle.run_id, executionState="blocked", reason="prepared_artifact_changed")
+                return {**prepared, "status": "blocked", "reason": "prepared_artifact_changed",
+                        "runId": run_handle.run_id, "sessionId": run_handle.session_id}
         run_handle.transition("running", reason=trigger_source or "manual", node="rpa_runtime")
         self._update_run_metadata(
             run_handle.run_id,
@@ -4740,6 +4706,7 @@ class RPARuntime:
             details=json.dumps({"runId": run_handle.run_id, "mode": mode}, ensure_ascii=False),
         )
 
+        command_receipt = None
         try:
             command_receipt = side_effect_idempotency_service.begin(
                 run_handle=run_handle,
@@ -4765,7 +4732,7 @@ class RPARuntime:
                 metadata={"subject": subject, "mode": mode},
             )
             if not command_receipt.execute:
-                if command_receipt.requires_reconciliation:
+                if command_receipt.requires_reconciliation or command_receipt.state != "completed":
                     run_handle.emit(
                         "rpa.execution.reconciliation_required",
                         {
@@ -4801,22 +4768,26 @@ class RPARuntime:
                     user_id=user_id,
                     project_id=project_id,
                     workspace_id=workspace_id,
+                    workspace_path=workspace_path,
+                    agent_id="rpa_runtime",
+                    actor_role="runtime",
                 ):
                     execution = self.adapter.run_command(
                         command=list(prepared["command"]),
                         timeout_ms=timeout_ms,
                         cwd=cwd or workspace_path,
                     )
-                receipt_completed = side_effect_idempotency_service.complete(
-                    run_handle=run_handle,
-                    receipt=command_receipt,
-                    node="rpa_runtime",
-                    result={"returncode": execution.get("returncode"), "subject": subject, "mode": mode},
-                )
-                if not receipt_completed:
-                    raise RuntimeError(
-                        "RPA 副作用 receipt 终结被拒绝；外部结果需要人工核对。"
+                if int(execution.get("returncode") or 0) == 0:
+                    receipt_completed = side_effect_idempotency_service.complete(
+                        run_handle=run_handle,
+                        receipt=command_receipt,
+                        node="rpa_runtime",
+                        result={"returncode": execution.get("returncode"), "subject": subject, "mode": mode},
                     )
+                    if not receipt_completed:
+                        raise RuntimeError(
+                            "RPA 副作用 receipt 终结被拒绝；外部结果需要人工核对。"
+                        )
             run_handle.emit(
                 "rpa.execution.finished",
                 {
@@ -4838,227 +4809,12 @@ class RPARuntime:
             if controlled is not None:
                 return controlled
             if int(execution.get("returncode") or 0) != 0:
-                error_message = execution.get("stderr") or execution.get("stdout") or f"Robot 流程执行失败: {subject}"
-                controlled = self._consume_or_finalize_control(
-                    run_handle=run_handle,
-                    stage="before_fallback",
-                    prepared=prepared,
-                    assessment=assessment,
-                    template_policy=template_policy,
-                    extra_payload={"execution": execution},
+                return self._robot_outcome_unknown(
+                    run_handle=run_handle, prepared=prepared, assessment=assessment,
+                    template_policy=template_policy, receipt=command_receipt,
+                    error="Robot failed; effects require reconciliation before retry.",
+                    execution=execution,
                 )
-                if controlled is not None:
-                    return controlled
-                fallback_payload = None
-                failed_step = self._extract_failed_step_context(execution=execution, script=script)
-                if self._supports_computer_use_fallback(mode=mode, prepared=prepared):
-                    run_handle.emit(
-                        "rpa.execution.fallback.started",
-                        {
-                            "mode": mode,
-                            "subject": subject,
-                            "reason": error_message,
-                            "fallback": "computer_use",
-                            "failedStep": failed_step or None,
-                        },
-                    )
-                    try:
-                        self._update_run_metadata(
-                            run_handle.run_id,
-                            executionState="fallback_running",
-                            trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                            fallbackStepId=failed_step.get("stepId") if failed_step else None,
-                            fallbackStepIndex=failed_step.get("stepIndex") if failed_step else None,
-                            templateExecutionPolicy=template_policy,
-                            templateExecutionPath=template_policy.get("executionPath"),
-                        )
-                        fallback_payload = self._run_computer_use_fallback(
-                            prepared=prepared,
-                            run_id=run_handle.run_id,
-                            variables=dict(variables or {}),
-                            session_id=run_handle.session_id,
-                            user_id=user_id,
-                            project_id=project_id,
-                            workspace_id=workspace_id,
-                            workspace_path=workspace_path,
-                            failed_step=failed_step,
-                        )
-                        if isinstance(fallback_payload, dict) and isinstance(fallback_payload.get("control"), dict):
-                            return self._finalize_controlled(
-                                run_handle=run_handle,
-                                prepared=prepared,
-                                control=dict(fallback_payload.get("control") or {}),
-                                assessment=assessment,
-                                template_policy=template_policy,
-                                execution_state=str(fallback_payload.get("status") or "paused"),
-                                extra_payload={
-                                    "execution": execution,
-                                    "fallback": fallback_payload,
-                                },
-                            )
-                        repair_payload = None
-                        try:
-                            repair_payload = self._repair_trace_from_fallback(
-                                prepared=prepared,
-                                fallback_payload=fallback_payload,
-                                failed_step=failed_step,
-                            )
-                            if repair_payload is not None:
-                                run_handle.emit(
-                                    "rpa.execution.repair.completed",
-                                    {
-                                        "mode": mode,
-                                        "subject": subject,
-                                        "repair": repair_payload,
-                                    },
-                                )
-                        except Exception as repair_exc:
-                            repair_payload = {
-                                "status": "failed",
-                                "error": str(repair_exc),
-                            }
-                            run_handle.emit(
-                                "rpa.execution.repair.failed",
-                                {
-                                    "mode": mode,
-                                    "subject": subject,
-                                    "repair": repair_payload,
-                                },
-                            )
-                        run_handle.emit(
-                            "rpa.execution.fallback.completed",
-                            {
-                                "mode": mode,
-                                "subject": subject,
-                                "fallback": fallback_payload,
-                                "repair": repair_payload,
-                            },
-                        )
-                        controlled = self._consume_or_finalize_control(
-                            run_handle=run_handle,
-                            stage="fallback_finalize",
-                            prepared=prepared,
-                            assessment=assessment,
-                            template_policy=template_policy,
-                            extra_payload={"execution": execution, "fallback": fallback_payload, "repair": repair_payload},
-                        )
-                        if controlled is not None:
-                            return controlled
-                        run_handle.complete(reason="computer_use_fallback", node="rpa_runtime")
-                        self._update_run_metadata(
-                            run_handle.run_id,
-                            executionState="completed_with_fallback",
-                            trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                            templateExecutionPolicy=template_policy,
-                            templateExecutionPath=template_policy.get("executionPath"),
-                            fallback={
-                                "type": "computer_use",
-                                "mode": fallback_payload.get("mode") if isinstance(fallback_payload, dict) else None,
-                                "sourceScriptId": fallback_payload.get("sourceScriptId") if isinstance(fallback_payload, dict) else None,
-                                "sourceTraceRunId": fallback_payload.get("sourceTraceRunId") if isinstance(fallback_payload, dict) else None,
-                                "sourceTraceRunIds": fallback_payload.get("sourceTraceRunIds") if isinstance(fallback_payload, dict) else None,
-                                "fallbackStepId": fallback_payload.get("fallbackStepId") if isinstance(fallback_payload, dict) else None,
-                                "fallbackStepIndex": fallback_payload.get("fallbackStepIndex") if isinstance(fallback_payload, dict) else None,
-                                "recoveredStepCount": fallback_payload.get("recoveredStepCount") if isinstance(fallback_payload, dict) else None,
-                            },
-                            repair=repair_payload,
-                        )
-                        self._log_audit(
-                            action=f"RPA execution completed via fallback: {subject}",
-                            status="SUCCESS",
-                            details=json.dumps(
-                                {
-                                    "runId": run_handle.run_id,
-                                    "returncode": execution.get("returncode"),
-                                    "fallback": "computer_use",
-                                },
-                                ensure_ascii=False,
-                            ),
-                        )
-                        self._record_run_feedback(
-                            prepared=prepared,
-                            execution_state="completed_with_fallback",
-                            feedback={
-                                "stepLevelFallback": bool(isinstance(fallback_payload, dict) and fallback_payload.get("mode") == "step_level"),
-                                "recoveredSteps": int(fallback_payload.get("recoveredStepCount") or 0) if isinstance(fallback_payload, dict) else 0,
-                                "localRepairApplied": bool(isinstance(repair_payload, dict) and repair_payload.get("scriptId")),
-                                "repairedSteps": int(repair_payload.get("patchedStepCount") or 0) if isinstance(repair_payload, dict) else 0,
-                                **self._merged_feedback_suggestions(
-                                    fallback_payload.get("feedbackSuggestions") if isinstance(fallback_payload, dict) else {}
-                                ),
-                            },
-                        )
-                        return {
-                            **prepared,
-                            "status": "completed_with_fallback",
-                            "outcomeFamily": outcome_family_for_execution_state("completed_with_fallback"),
-                            "runId": run_handle.run_id,
-                            "sessionId": run_handle.session_id,
-                            "execution": execution,
-                            "templateExecutionPolicy": template_policy,
-                            "fallback": fallback_payload,
-                            **({"repair": repair_payload} if repair_payload is not None else {}),
-                        }
-                    except Exception as fallback_exc:
-                        fallback_payload = {
-                            "status": "failed",
-                            "type": "computer_use_fallback",
-                            "error": str(fallback_exc),
-                        }
-                        run_handle.emit(
-                            "rpa.execution.fallback.failed",
-                            {
-                                "mode": mode,
-                                "subject": subject,
-                                "reason": error_message,
-                                "fallback": fallback_payload,
-                            },
-                        )
-                        self._update_run_metadata(
-                            run_handle.run_id,
-                            executionState="fallback_failed",
-                            trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                            templateExecutionPolicy=template_policy,
-                            templateExecutionPath=template_policy.get("executionPath"),
-                            fallback=fallback_payload,
-                        )
-                run_handle.fail(error_message, node="rpa_runtime")
-                self._update_run_metadata(
-                    run_handle.run_id,
-                    executionState="failed",
-                    trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                    templateExecutionPolicy=template_policy,
-                    templateExecutionPath=template_policy.get("executionPath"),
-                    error=error_message,
-                )
-                self._log_audit(
-                    action=f"RPA execution failed: {subject}",
-                    status="ERROR",
-                    details=json.dumps({"runId": run_handle.run_id, "returncode": execution.get("returncode")}, ensure_ascii=False),
-                )
-                self._record_run_feedback(
-                    prepared=prepared,
-                    execution_state="fallback_failed"
-                    if isinstance(fallback_payload, dict) and str(fallback_payload.get("type") or "").strip() == "computer_use_fallback"
-                    else "failed",
-                    feedback={
-                        "stepLevelFallback": bool(isinstance(fallback_payload, dict) and fallback_payload.get("mode") == "step_level"),
-                        "recoveredSteps": int(fallback_payload.get("recoveredStepCount") or 0) if isinstance(fallback_payload, dict) else 0,
-                        **self._merged_feedback_suggestions(
-                            fallback_payload.get("feedbackSuggestions") if isinstance(fallback_payload, dict) else {}
-                        ),
-                    },
-                )
-                return {
-                    **prepared,
-                    "status": "failed",
-                    "outcomeFamily": outcome_family_for_execution_state("failed"),
-                    "runId": run_handle.run_id,
-                    "sessionId": run_handle.session_id,
-                    "execution": execution,
-                    "templateExecutionPolicy": template_policy,
-                    **({"fallback": fallback_payload} if fallback_payload is not None else {}),
-                }
             controlled = self._consume_or_finalize_control(
                 run_handle=run_handle,
                 stage="success_finalize",
@@ -5093,217 +4849,32 @@ class RPARuntime:
                 "templateExecutionPolicy": template_policy,
             }
         except Exception as exc:
-            error_message = str(exc)
-            controlled = self._consume_or_finalize_control(
-                run_handle=run_handle,
-                stage="exception",
-                prepared=prepared,
-                assessment=assessment,
-                template_policy=template_policy,
-                extra_payload={"error": error_message},
+            return self._robot_outcome_unknown(
+                run_handle=run_handle, prepared=prepared, assessment=assessment,
+                template_policy=template_policy, receipt=command_receipt,
+                error=f"{type(exc).__name__}: Robot interrupted; reconcile effects before retry.",
             )
-            if controlled is not None:
-                return controlled
-            fallback_payload = None
-            failed_step = {}
-            if self._supports_computer_use_fallback(mode=mode, prepared=prepared):
-                run_handle.emit(
-                    "rpa.execution.fallback.started",
-                    {
-                        "mode": mode,
-                        "subject": subject,
-                        "reason": error_message,
-                        "fallback": "computer_use",
-                    },
-                )
-                try:
-                    self._update_run_metadata(
-                        run_handle.run_id,
-                        executionState="fallback_running",
-                        trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                        templateExecutionPolicy=template_policy,
-                        templateExecutionPath=template_policy.get("executionPath"),
-                    )
-                    fallback_payload = self._run_computer_use_fallback(
-                        prepared=prepared,
-                        run_id=run_handle.run_id,
-                        variables=dict(variables or {}),
-                        session_id=run_handle.session_id,
-                        user_id=user_id,
-                        project_id=project_id,
-                        workspace_id=workspace_id,
-                        workspace_path=workspace_path,
-                        failed_step=failed_step,
-                    )
-                    if isinstance(fallback_payload, dict) and isinstance(fallback_payload.get("control"), dict):
-                        return self._finalize_controlled(
-                            run_handle=run_handle,
-                            prepared=prepared,
-                            control=dict(fallback_payload.get("control") or {}),
-                            assessment=assessment,
-                            template_policy=template_policy,
-                            execution_state=str(fallback_payload.get("status") or "paused"),
-                            extra_payload={"fallback": fallback_payload, "error": error_message},
-                        )
-                    repair_payload = None
-                    try:
-                        repair_payload = self._repair_trace_from_fallback(
-                            prepared=prepared,
-                            fallback_payload=fallback_payload,
-                            failed_step=failed_step,
-                        )
-                        if repair_payload is not None:
-                            run_handle.emit(
-                                "rpa.execution.repair.completed",
-                                {
-                                    "mode": mode,
-                                    "subject": subject,
-                                    "repair": repair_payload,
-                                },
-                            )
-                    except Exception as repair_exc:
-                        repair_payload = {
-                            "status": "failed",
-                            "error": str(repair_exc),
-                        }
-                        run_handle.emit(
-                            "rpa.execution.repair.failed",
-                            {
-                                "mode": mode,
-                                "subject": subject,
-                                "repair": repair_payload,
-                            },
-                        )
-                    run_handle.emit(
-                        "rpa.execution.fallback.completed",
-                        {
-                            "mode": mode,
-                            "subject": subject,
-                            "fallback": fallback_payload,
-                            "repair": repair_payload,
-                        },
-                    )
-                    controlled = self._consume_or_finalize_control(
-                        run_handle=run_handle,
-                        stage="exception_fallback_finalize",
-                        prepared=prepared,
-                        assessment=assessment,
-                        template_policy=template_policy,
-                        extra_payload={"fallback": fallback_payload, "repair": repair_payload, "error": error_message},
-                    )
-                    if controlled is not None:
-                        return controlled
-                    run_handle.complete(reason="computer_use_fallback", node="rpa_runtime")
-                    self._update_run_metadata(
-                        run_handle.run_id,
-                        executionState="completed_with_fallback",
-                        trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                        templateExecutionPolicy=template_policy,
-                        templateExecutionPath=template_policy.get("executionPath"),
-                        fallback={
-                            "type": "computer_use",
-                            "mode": fallback_payload.get("mode") if isinstance(fallback_payload, dict) else None,
-                            "sourceScriptId": fallback_payload.get("sourceScriptId") if isinstance(fallback_payload, dict) else None,
-                            "sourceTraceRunId": fallback_payload.get("sourceTraceRunId") if isinstance(fallback_payload, dict) else None,
-                            "sourceTraceRunIds": fallback_payload.get("sourceTraceRunIds") if isinstance(fallback_payload, dict) else None,
-                            "fallbackStepId": fallback_payload.get("fallbackStepId") if isinstance(fallback_payload, dict) else None,
-                            "fallbackStepIndex": fallback_payload.get("fallbackStepIndex") if isinstance(fallback_payload, dict) else None,
-                            "recoveredStepCount": fallback_payload.get("recoveredStepCount") if isinstance(fallback_payload, dict) else None,
-                        },
-                        repair=repair_payload,
-                    )
-                    self._log_audit(
-                        action=f"RPA execution completed via fallback: {subject}",
-                        status="SUCCESS",
-                        details=json.dumps(
-                            {"runId": run_handle.run_id, "fallback": "computer_use"},
-                            ensure_ascii=False,
-                        ),
-                    )
-                    self._record_run_feedback(
-                        prepared=prepared,
-                        execution_state="completed_with_fallback",
-                        feedback={
-                            "stepLevelFallback": bool(isinstance(fallback_payload, dict) and fallback_payload.get("mode") == "step_level"),
-                            "recoveredSteps": int(fallback_payload.get("recoveredStepCount") or 0) if isinstance(fallback_payload, dict) else 0,
-                            "localRepairApplied": bool(isinstance(repair_payload, dict) and repair_payload.get("scriptId")),
-                            "repairedSteps": int(repair_payload.get("patchedStepCount") or 0) if isinstance(repair_payload, dict) else 0,
-                            **self._merged_feedback_suggestions(
-                                fallback_payload.get("feedbackSuggestions") if isinstance(fallback_payload, dict) else {}
-                            ),
-                        },
-                    )
-                    return {
-                        **prepared,
-                        "status": "completed_with_fallback",
-                        "outcomeFamily": outcome_family_for_execution_state("completed_with_fallback"),
-                        "runId": run_handle.run_id,
-                        "sessionId": run_handle.session_id,
-                        "error": error_message,
-                        "templateExecutionPolicy": template_policy,
-                        "fallback": fallback_payload,
-                        **({"repair": repair_payload} if repair_payload is not None else {}),
-                    }
-                except Exception as fallback_exc:
-                    fallback_payload = {
-                        "status": "failed",
-                        "type": "computer_use_fallback",
-                        "error": str(fallback_exc),
-                    }
-                    run_handle.emit(
-                        "rpa.execution.fallback.failed",
-                        {
-                            "mode": mode,
-                            "subject": subject,
-                            "reason": error_message,
-                            "fallback": fallback_payload,
-                        },
-                    )
-                    self._update_run_metadata(
-                        run_handle.run_id,
-                        executionState="fallback_failed",
-                        trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                        templateExecutionPolicy=template_policy,
-                        templateExecutionPath=template_policy.get("executionPath"),
-                        fallback=fallback_payload,
-                    )
-            run_handle.emit(
-                "rpa.execution.failed",
-                {"mode": mode, "subject": subject, "error": error_message},
+
+    def _robot_outcome_unknown(self, *, run_handle, prepared, assessment, template_policy,
+                               receipt, error, execution=None):
+        if receipt is not None:
+            side_effect_idempotency_service.mark_indeterminate(
+                run_handle=run_handle, receipt=receipt, node="rpa_runtime", error=error,
             )
-            run_handle.fail(error_message, node="rpa_runtime")
-            self._update_run_metadata(
-                run_handle.run_id,
-                executionState="failed",
-                trustStatus=normalize_script_assessment_status(assessment.get("status")),
-                templateExecutionPolicy=template_policy,
-                templateExecutionPath=template_policy.get("executionPath"),
-                error=error_message,
-            )
-            self._log_audit(action=f"RPA execution failed: {subject}", status="ERROR", details=error_message)
-            self._record_run_feedback(
-                prepared=prepared,
-                execution_state="fallback_failed"
-                if isinstance(fallback_payload, dict) and str(fallback_payload.get("type") or "").strip() == "computer_use_fallback"
-                else "failed",
-                feedback={
-                    "stepLevelFallback": bool(isinstance(fallback_payload, dict) and fallback_payload.get("mode") == "step_level"),
-                    "recoveredSteps": int(fallback_payload.get("recoveredStepCount") or 0) if isinstance(fallback_payload, dict) else 0,
-                    **self._merged_feedback_suggestions(
-                        fallback_payload.get("feedbackSuggestions") if isinstance(fallback_payload, dict) else {}
-                    ),
-                },
-            )
-            return {
-                **prepared,
-                "status": "failed",
-                "outcomeFamily": outcome_family_for_execution_state("failed"),
-                "runId": run_handle.run_id,
-                "sessionId": run_handle.session_id,
-                "error": error_message,
-                "templateExecutionPolicy": template_policy,
-                **({"fallback": fallback_payload} if fallback_payload is not None else {}),
-            }
+        evidence = {"reconciliationRequired": True, "error": error, "execution": execution or {}}
+        run_handle.emit("rpa.execution.reconciliation_required", evidence)
+        controlled = self._consume_or_finalize_control(
+            run_handle=run_handle, stage="robot_stopped", prepared=prepared,
+            assessment=assessment, template_policy=template_policy, extra_payload=evidence,
+        )
+        if controlled is not None:
+            return controlled
+        run_handle.fail(error, node="rpa_runtime")
+        self._update_run_metadata(run_handle.run_id, executionState="unknown", **evidence)
+        self._record_run_feedback(prepared=prepared, execution_state="unknown")
+        return {**prepared, **evidence, "status": "unknown", "outcomeFamily": "failed",
+                "runId": run_handle.run_id, "sessionId": run_handle.session_id,
+                "templateExecutionPolicy": template_policy}
 
     def run_draft(
         self,
@@ -5321,8 +4892,10 @@ class RPARuntime:
         workspace_path: str | None = None,
         trigger_source: str | None = "manual",
         non_chat_run: bool = False,
+        expected_updated_at: str | None = None,
     ) -> Dict[str, Any]:
-        prepared = self.prepare_draft_run(script_id=script_id, variables=variables, output_dir=output_dir)
+        prepared = self.prepare_draft_run(script_id=script_id, variables=variables, output_dir=output_dir,
+                                          expected_updated_at=expected_updated_at)
         subject = str(((prepared.get("script") or {}).get("name")) or script_id)
         return self._execute_prepared(
             prepared=prepared,

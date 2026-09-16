@@ -9,13 +9,11 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
-from PIL import Image
 
 
 LOCAL_IMAGE_MAX_LONG_EDGE = 1344
 LOCAL_IMAGE_MAX_TOTAL_PIXELS = 1_800_000
 LOCAL_REMOTE_IMAGE_MAX_BYTES = 12 * 1024 * 1024
-_RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 _PROBE_CACHE_TTL_SECONDS = 60.0
 _probe_cache: dict[tuple[str, str, str], tuple[float, Dict[str, Any]]] = {}
 
@@ -195,6 +193,7 @@ def _scale_size(width: int, height: int) -> tuple[int, int]:
 
 
 def _normalize_image(image: Image.Image) -> bytes:
+    from PIL import Image
     normalized = image
     if normalized.mode not in {"RGB", "RGBA"}:
         normalized = normalized.convert("RGBA" if "A" in normalized.getbands() else "RGB")
@@ -207,7 +206,7 @@ def _normalize_image(image: Image.Image) -> bytes:
 
     target_size = _scale_size(*normalized.size)
     if tuple(normalized.size) != target_size:
-        normalized = normalized.resize(target_size, _RESAMPLE_LANCZOS)
+        normalized = normalized.resize(target_size, Image.Resampling.LANCZOS)
 
     buffer = BytesIO()
     normalized.save(buffer, format="PNG", optimize=True)
@@ -215,6 +214,10 @@ def _normalize_image(image: Image.Image) -> bytes:
 
 
 def build_inline_image_data_from_bytes(raw_bytes: bytes) -> Dict[str, Any]:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ValueError("图片处理依赖未安装，请安装媒体创作基础能力包 creative_media 并重启 Engine。") from exc
     if not raw_bytes:
         raise ValueError("图片内容为空，无法构造本地视觉请求。")
     with Image.open(BytesIO(raw_bytes)) as image:

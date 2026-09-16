@@ -561,12 +561,15 @@ class RPADraftPreparePayload(RPARuntimeBasePayload):
     model_config = ConfigDict(populate_by_name=True)
 
     variables: Dict[str, Any] = Field(default_factory=dict)
+    expected_updated_at: Optional[str] = Field(default=None, alias="expectedUpdatedAt")
 
 
 class RPADraftPatchPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: Optional[str] = None
+    expected_updated_at: Optional[str] = Field(default=None, alias="expectedUpdatedAt")
+    object_library: Optional[List[Dict[str, Any]]] = Field(default=None, alias="objectLibrary")
     goal: Optional[str] = None
     app_id: Optional[str] = Field(default=None, alias="appId")
     steps: Optional[List[Dict[str, Any]]] = None
@@ -620,6 +623,7 @@ class RPARecordingStartPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     session_id: Optional[str] = Field(default=None, alias="sessionId")
+    source: str = "human"
     user_id: Optional[str] = Field(default="admin_ui", alias="userId")
     name: Optional[str] = None
     goal: Optional[str] = None

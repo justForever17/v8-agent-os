@@ -5,6 +5,8 @@ import mimetypes
 import re
 import sys
 import time
+from functools import wraps
+from inspect import signature
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Dict, Optional
@@ -33,7 +35,7 @@ from core.tools.native.rpa import (
     _rpa_compact_run_existing_flow_response,
     _rpa_compact_script_list,
 )
-from erc.runtime_context import get_runtime_context
+from erc.runtime_context import get_runtime_context, bind_runtime_context
 from runtimes.computer_use.primitives import list_computer_use_primitives, primitive_validation_matrix
 from runtimes.computer_use.verification_contract import (
     build_environment_signal_summary_payload,
@@ -271,6 +273,17 @@ def _get_computer_use_runtime():
     return computer_use_runtime
 
 
+def _with_computer_use_call_context(function):
+    call_signature = signature(function)
+    @wraps(function)
+    def invoke(*args, **kwargs):
+        bound = call_signature.bind_partial(*args, **kwargs)
+        call_id = bound.arguments.get("tool_call_id")
+        with bind_runtime_context(tool_call_id=call_id or None):
+            return function(*args, **kwargs)
+    return invoke
+
+
 def _computer_use_runtime_kwargs(goal: str) -> dict:
     runtime_context = get_runtime_context()
     root_goal = str(runtime_context.get("goal") or "").strip()
@@ -306,6 +319,7 @@ def _computer_use_runtime_kwargs(goal: str) -> dict:
         "workspace_path": runtime_context.get("workspace_path"),
         "goal": effective_goal,
         "invocation_metadata": {
+            "toolCallId": runtime_context.get("tool_call_id"),
             "requestedGoal": normalized_goal or None,
             "rootGoal": root_goal or None,
         },
@@ -2351,6 +2365,7 @@ def computer_use_find_element(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_click(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     *,
@@ -2411,6 +2426,7 @@ def computer_use_click(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_type_text(
     text: str,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -2482,6 +2498,7 @@ def computer_use_type_text(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_hotkey(
     sequence: str,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -2532,6 +2549,7 @@ def computer_use_hotkey(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_scroll(
     amount: int,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -2585,6 +2603,7 @@ def computer_use_scroll(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_wait_for_element(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     *,
@@ -2920,6 +2939,7 @@ def computer_use_click_toolbar_action(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_execute_plan(
     steps_json: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -3738,6 +3758,7 @@ def computer_use_observe_scene(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_click_target(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     *,
@@ -3901,6 +3922,7 @@ def computer_use_click_target(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_input_text(
     text: str,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -4064,6 +4086,7 @@ def computer_use_input_text(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_paste_text(
     text: str,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -4213,6 +4236,7 @@ def computer_use_paste_text(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_paste_files(
     paths_json: str,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -4414,6 +4438,7 @@ def computer_use_paste_files(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_right_click_target(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     *,
@@ -4554,6 +4579,7 @@ def computer_use_right_click_target(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_hover_target(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     *,
@@ -4689,6 +4715,7 @@ def computer_use_hover_target(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_send_hotkey(
     sequence: str,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -4774,6 +4801,7 @@ def computer_use_send_hotkey(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_scroll_view(
     amount: int,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -4877,6 +4905,7 @@ def computer_use_scroll_view(
 
 
 @tool
+@_with_computer_use_call_context
 def computer_use_drag_pointer(
     start_point_json: str = "",
     end_point_json: str = "",

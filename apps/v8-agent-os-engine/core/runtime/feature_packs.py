@@ -4,6 +4,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import os
 import platform
 import re
 import sys
@@ -42,6 +43,27 @@ class FeaturePackDefinition:
 
 
 FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
+    FeaturePackDefinition(
+        id="vector_memory", product_name="向量记忆能力包", short_name="向量记忆",
+        description="在 SQLite/FTS5 基础记忆上启用向量检索。",
+        hover="安装并重启后，从权威知识库重建向量索引；需要配置 embedding 模型。",
+        recommended_order=7, runtime_families=(), requirements_file="vector-memory.txt",
+        probe_modules=("chromadb", "langchain_text_splitters"),
+    ),
+    FeaturePackDefinition(
+        id="creative_media", product_name="媒体创作基础包", short_name="媒体创作",
+        description="启用媒体创作 runtime 与图像处理、媒体下载依赖。",
+        hover="安装并重启后启用媒体工具；视频处理仍需可用 FFmpeg 和相应 provider。",
+        recommended_order=8, runtime_families=("creative_media",), requirements_file="creative-media.txt",
+        probe_modules=("PIL", "numpy", "yt_dlp"),
+    ),
+    FeaturePackDefinition(
+        id="cloud_voice", product_name="云语音能力包", short_name="云语音",
+        description="启用云端语音输入输出，不安装本地 ASR 或声卡采集。",
+        hover="安装并重启后启用语音 API；仍需相应 provider 配置。",
+        recommended_order=9, runtime_families=(), requirements_file="cloud-voice.txt",
+        probe_modules=("edge_tts",),
+    ),
     FeaturePackDefinition(
         id="document_ingestion",
         product_name="文档读取能力包",
@@ -116,6 +138,11 @@ FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
 )
 
 FEATURE_PACK_BY_ID = {definition.id: definition for definition in FEATURE_PACK_DEFINITIONS}
+
+
+def feature_pack_allowed(pack_id: str, registry: dict[str, Any]) -> bool:
+    profile = str(os.getenv("ENGINE_INSTALL_PROFILE") or registry.get("installProfile") or "").strip().lower()
+    return profile != "server" or pack_id not in {"computer_use_desktop", "rpa_automation"}
 RUNTIME_FAMILY_TO_FEATURE_PACK = {
     runtime_family: definition.id
     for definition in FEATURE_PACK_DEFINITIONS
@@ -613,7 +640,7 @@ def apply_feature_pack_python_paths(runtime_registry: dict[str, Any] | None = No
         if str(pack_state.get("status") or "") != "installed":
             continue
         definition = definitions.get(pack_id)
-        if definition is None or not definition.enabled:
+        if definition is None or not definition.enabled or not feature_pack_allowed(pack_id, registry):
             continue
         compatible, _, _, _ = _feature_pack_receipt_runtime_compatibility(pack_id, registry)
         if not compatible:
@@ -650,7 +677,7 @@ def build_feature_pack_statuses(
     statuses: list[dict[str, Any]] = []
     for definition in sorted(FEATURE_PACK_DEFINITIONS, key=lambda item: item.recommended_order):
         configured = configured_packs[definition.id]
-        definition_enabled = definition.enabled
+        definition_enabled = definition.enabled and feature_pack_allowed(definition.id, registry)
         target_dir = Path(str(configured.get("targetDir") or feature_pack_target_dir(definition.id))).expanduser()
         configured_status = str(configured.get("status") or "not_installed")
         legacy_runtime_match = bool(set(definition.runtime_families) & legacy_families)

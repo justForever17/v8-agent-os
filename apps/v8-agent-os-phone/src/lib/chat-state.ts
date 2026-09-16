@@ -228,8 +228,10 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
     const preferIncomingId = nextId && (!currentId || currentId.startsWith("user-") || currentId.startsWith("assistant-"));
     const existingContent = String(existing.content || "");
     const incomingContent = String(incoming.content || "");
-    const existingTranscriptVersion = Number((existing.metadata || {}).transcriptVersion || 0);
-    const incomingTranscriptVersion = Number((incoming.metadata || {}).transcriptVersion || 0);
+    const existingTranscriptVersion = Number(existing.version || (existing.metadata || {}).transcriptVersion || 0);
+    const incomingTranscriptVersion = Number(incoming.version || (incoming.metadata || {}).transcriptVersion || 0);
+    if (existingTranscriptVersion > incomingTranscriptVersion && incomingTranscriptVersion > 0) return existing;
+    if (incoming.editedBy === "user" && incomingTranscriptVersion >= existingTranscriptVersion) return incoming;
     const existingCanonical = existingTranscriptVersion > 0 || (existing.nodes?.length || 0) > 0;
     const incomingCanonical = incomingTranscriptVersion > 0 || (incoming.nodes?.length || 0) > 0;
     const content = incomingCanonical
@@ -400,7 +402,9 @@ export function normalizeMessagesForState(messages: ChatMessage[]) {
         const identifiedMessage: ChatMessage = { ...message, ...identity };
         const candidate: ChatMessage = {
             ...identifiedMessage,
-            nodes: normalizeProjectedPartsToNodes(identifiedMessage),
+            nodes: normalizeProjectedPartsToNodes(identifiedMessage).map((node) => ({
+                ...node, ...(node.kind === "narrative" && (message.editedBy || message.metadata?.editedBy) === "user" ? { editedBy: "user" } : {}),
+            })),
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
             metadata: message.metadata ? { ...message.metadata } : undefined,

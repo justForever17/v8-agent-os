@@ -99,9 +99,9 @@ test("Web waits for the trusted local session before hydrating conversation hist
 test("Web realtime recovery merges only the active session while normal navigation replaces history", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
 
-  assert.match(client, /options\?: \{ mergeWithCurrent\?: boolean; preserveCurrentOnEmpty\?: boolean \}/);
+  assert.match(client, /options\?: \{ mergeWithCurrent\?: boolean; preserveCurrentOnEmpty\?: boolean; replaceTranscript\?: boolean \}/);
   assert.match(client, /options\?\.mergeWithCurrent === false\s+\? normalizeProjectedMessages\(projectedMessages\)\s+: mergeProjectedSnapshotMessages/);
-  assert.match(client, /mergeWithCurrent: options\?\.mergeWithCurrent === true/);
+  assert.match(client, /mergeWithCurrent: !\(epochChanged \|\| options\?\.replaceTranscript\) && \(options\?\.mergeWithCurrent === true/);
   assert.match(client, /const localStreamActive = isLocalStreamActive\(activeConversationId\)/);
   assert.match(client, /authoritativeSnapshotOmitsMessages\(snapshotPayload\)/);
   assert.match(client, /Array\.isArray\(nestedSnapshot\.messages\)[\s\S]*?Array\.isArray\(snapshotRecord\.messages\)/);

@@ -42,6 +42,8 @@ jobs:
       publish: ${{ steps.release-plan.outputs.publish }}
       desktop_enabled: ${{ steps.release-plan.outputs.desktop_enabled }}
       desktop_required: ${{ steps.release-plan.outputs.desktop_required }}
+      server_enabled: ${{ steps.release-plan.outputs.server_enabled }}
+      server_required: ${{ steps.release-plan.outputs.server_required }}
       desktop_targets_json: ${{ steps.release-plan.outputs.desktop_targets_json }}
       phone_enabled: ${{ steps.release-plan.outputs.phone_enabled }}
       phone_required: ${{ steps.release-plan.outputs.phone_required }}
@@ -73,6 +75,11 @@ jobs:
             args+=(--tag "$GITHUB_REF_NAME")
           fi
           node scripts/release/resolve-release-plan.mjs "${args[@]}"
+
+  server-build:
+    needs: [plan]
+    if: needs.plan.outputs.run_builds == 'true' && needs.plan.outputs.server_enabled == 'true'
+    uses: ./.github/workflows/server-build.yml
 
   desktop-build:
     name: Build required Desktop targets
@@ -189,6 +196,7 @@ jobs:
       - plan
       - desktop-build
       - phone-build-contract
+      - server-build
     if: ${{ always() && !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -210,6 +218,9 @@ jobs:
           PHONE_ENABLED: ${{ needs.plan.outputs.phone_enabled }}
           PHONE_REQUIRED: ${{ needs.plan.outputs.phone_required }}
           PHONE_RESULT: ${{ needs.phone-build-contract.result }}
+          SERVER_ENABLED: ${{ needs.plan.outputs.server_enabled }}
+          SERVER_REQUIRED: ${{ needs.plan.outputs.server_required }}
+          SERVER_RESULT: ${{ needs.server-build.result }}
         run: |
           set -euo pipefail
           echo "publish_ready=false" >> "$GITHUB_OUTPUT"
@@ -233,11 +244,13 @@ jobs:
             [[ "$PUBLISH" == "false" ]]
             [[ "$DESKTOP_RESULT" == "skipped" ]]
             [[ "$PHONE_RESULT" == "skipped" ]]
+            [[ "$SERVER_RESULT" == "skipped" ]]
             exit 0
           fi
 
           verify_product desktop "$DESKTOP_ENABLED" "$DESKTOP_REQUIRED" "$DESKTOP_RESULT"
           verify_product phone "$PHONE_ENABLED" "$PHONE_REQUIRED" "$PHONE_RESULT"
+          verify_product server "$SERVER_ENABLED" "$SERVER_REQUIRED" "$SERVER_RESULT"
 
           if [[ "$PUBLISH" == "true" ]]; then
             echo "publish_ready=true" >> "$GITHUB_OUTPUT"
@@ -263,6 +276,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      - name: Download Server build artifact
+        if: needs.plan.outputs.server_enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: v8os-server-linux-x64
+          path: release-input/server
 
       - name: Download Desktop build artifacts
         if: needs.plan.outputs.desktop_enabled == 'true'
@@ -302,7 +322,7 @@ jobs:
           test -f release-assets/SHA256SUMS.txt
           while IFS= read -r asset; do
             case "$asset" in
-              V8-Agent-OS-*|V8OS-Phone-*|SHA256SUMS.txt) ;;
+              V8-Agent-OS-*|V8OS-Phone-*|V8OS-Server-*|SHA256SUMS.txt) ;;
               *) echo "Unexpected public release asset: $asset" >&2; exit 1 ;;
             esac
           done < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)

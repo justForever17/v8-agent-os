@@ -6,8 +6,9 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from ctypes import wintypes
-from typing import Any
+from typing import Any, Callable
 
 
 _CMD_META_CHARS = re.compile(r'([()\[\]%!^"`<>&|;, *?])')
@@ -254,7 +255,13 @@ def _reap_process_bounded(process: subprocess.Popen[Any]) -> None:
         pass
 
 
-def run_windowless_bounded(*args: Any, timeout: float, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+class ProcessCancelled(subprocess.TimeoutExpired):
+    """Execution was stopped; partial output is evidence, never permission to replay."""
+
+
+def run_windowless_bounded(
+    *args: Any, timeout: float, cancel_requested: Callable[[], bool] | None = None, **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
     """Run a bounded Engine subprocess and terminate its process tree on timeout."""
 
     check = bool(kwargs.pop("check", False))
@@ -272,10 +279,29 @@ def run_windowless_bounded(*args: Any, timeout: float, **kwargs: Any) -> subproc
     if sys.platform != "win32":
         kwargs.setdefault("start_new_session", True)
 
+    if cancel_requested is not None and cancel_requested():
+        raise ProcessCancelled(args[0] if args else kwargs.get("args"), timeout)
     process = popen_windowless(*args, **kwargs)
     process_job = _attach_windows_process_job(process)
     try:
-        stdout, stderr = process.communicate(input=input_value, timeout=timeout)
+        if cancel_requested is None:
+            stdout, stderr = process.communicate(input=input_value, timeout=timeout)
+        else:
+            deadline = time.monotonic() + timeout
+            first = True
+            while True:
+                if cancel_requested():
+                    raise ProcessCancelled(process.args, timeout)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(process.args, timeout)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=input_value if first else None, timeout=min(0.2, remaining)
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    first = False
     except subprocess.TimeoutExpired as exc:
         if process_job is None or not process_job.terminate():
             _terminate_process_tree(process)
@@ -291,6 +317,12 @@ def run_windowless_bounded(*args: Any, timeout: float, **kwargs: Any) -> subproc
             _close_process_pipes(process)
         exc.stdout = stdout
         exc.stderr = stderr
+        raise
+    except BaseException:
+        if process_job is None or not process_job.terminate():
+            _terminate_process_tree(process)
+        _reap_process_bounded(process)
+        _close_process_pipes(process)
         raise
     finally:
         if process_job is not None:

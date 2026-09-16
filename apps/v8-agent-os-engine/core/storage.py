@@ -2991,7 +2991,7 @@ class StorageManager:
         install_profile = str(data.get("installProfile") or data.get("startupProfile") or "minimal").strip().lower()
         if install_profile == "standard":
             install_profile = "minimal"
-        if install_profile not in {"minimal", "desktop"}:
+        if install_profile not in {"minimal", "desktop", "server"}:
             install_profile = "minimal"
         data["installProfile"] = install_profile
         data["startupProfile"] = install_profile
@@ -3019,7 +3019,7 @@ class StorageManager:
         install_profile = str(payload.get("installProfile") or payload.get("startupProfile") or "minimal").strip().lower()
         if install_profile == "standard":
             install_profile = "minimal"
-        if install_profile not in {"minimal", "desktop"}:
+        if install_profile not in {"minimal", "desktop", "server"}:
             install_profile = "minimal"
         payload["installProfile"] = install_profile
         payload["startupProfile"] = install_profile

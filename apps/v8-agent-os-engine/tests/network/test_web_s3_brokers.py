@@ -252,10 +252,10 @@ class WebAndS3BrokerTests(unittest.TestCase):
                 "profileDir": "E:/tmp/v8-agent-browser-profile/edge",
             },
         ), patch(
-            "runtimes.computer_use.browser_automation.agent_browser_automation.read_profile_page",
+            "core.agent_browser_automation.agent_browser_automation.read_profile_page",
             return_value=profile_page,
         ) as profile_read, patch(
-            "runtimes.computer_use.browser_automation.agent_browser_automation.configure",
+            "core.agent_browser_automation.agent_browser_automation.configure",
         ), patch(
             "core.tools.web_fetcher._fetch_with_reader_fallback",
             side_effect=AssertionError("authenticated read must not fall through to a public reader"),

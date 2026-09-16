@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
-from PIL import Image
-
 from runtimes.computer_use.types import ComputerUseElement, ComputerUseObservation
 from runtimes.computer_use.window_scene import window_title_match_score
 
@@ -270,6 +268,7 @@ class LinuxATSPIADriver:
         self,
         *,
         title_filter: str | None = None,
+        window_handle: int | None = None,
         title_filters: Iterable[str] | None = None,
         class_name: str | None = None,
         class_names: Iterable[str] | None = None,
@@ -281,11 +280,15 @@ class LinuxATSPIADriver:
     ) -> Dict[str, Any]:
         deadline = time.time() + (max(timeout_ms, 250) / 1000.0)
         while time.time() < deadline:
-            windows = self.list_windows(title_filter=title_filter, title_filters=title_filters, class_name=class_name, class_names=class_names, process_ids=process_ids, process_names=process_names, backend_name=backend_name, limit=1)
+            windows = self.list_windows(title_filter=title_filter, title_filters=title_filters, class_name=class_name, class_names=class_names, process_ids=process_ids, process_names=process_names, backend_name=backend_name, limit=200 if window_handle not in (None, "") else 2)
+            if window_handle not in (None, ""):
+                windows = [item for item in windows if item.get("handle") == int(window_handle)]
             if windows:
+                if len(windows) > 1:
+                    raise LinuxATSPIError("target_ambiguous: Linux 窗口匹配不唯一。")
                 return windows[0]
             time.sleep(max(50, poll_ms) / 1000.0)
-        raise LinuxATSPIError("等待 Linux 窗口超时。")
+        raise LinuxATSPIError("target_lost: 等待 Linux 窗口超时。")
 
     def focus_window(
         self,
@@ -302,29 +305,24 @@ class LinuxATSPIADriver:
         self.ensure_available()
         if self._session_type() != "x11":
             raise LinuxATSPIError("当前 Linux session 不是 X11，已阻止不可靠的窗口聚焦。")
-        if window_handle not in (None, ""):
-            cached = self._window_cache.get(int(window_handle))
-            if self._session_type() == "x11" and tool_exists("xdotool"):
-                run_command(["xdotool", "windowactivate", str(int(window_handle))], check=False, timeout_seconds=4.0)
-                return dict(cached or {"handle": int(window_handle), "title": window_title, "windowHandle": int(window_handle), "windowTitle": window_title})
-            if tool_exists("wmctrl"):
-                run_command(["wmctrl", "-ia", self._wmctrl_handle(window_handle)], check=False, timeout_seconds=4.0)
-                return dict(cached or {"handle": int(window_handle), "title": window_title, "windowHandle": int(window_handle), "windowTitle": window_title})
-        window = self.wait_for_window(title_filter=window_title, title_filters=window_title_candidates, class_name=class_name, class_names=class_name_candidates, process_ids=process_ids, process_names=process_names, backend_name=backend_name, timeout_ms=4000, poll_ms=180)
+        window = self.wait_for_window(title_filter=window_title, window_handle=window_handle, title_filters=window_title_candidates, class_name=class_name, class_names=class_name_candidates, process_ids=process_ids, process_names=process_names, backend_name=backend_name, timeout_ms=4000, poll_ms=180)
         if self._session_type() == "x11" and tool_exists("xdotool") and window.get("handle") not in (None, ""):
-            run_command(["xdotool", "windowactivate", str(int(window["handle"]))], check=False, timeout_seconds=4.0)
-            return window
-        if tool_exists("wmctrl") and window.get("handle") not in (None, ""):
-            run_command(["wmctrl", "-ia", self._wmctrl_handle(window["handle"])], check=False, timeout_seconds=4.0)
-            return window
-        if self._focus_via_atspi(window):
-            return window
-        raise LinuxATSPIError("当前 Linux session 无法可靠聚焦目标窗口。")
+            self._run_input_command(["xdotool", "windowactivate", "--sync", str(int(window["handle"]))])
+        elif tool_exists("wmctrl") and window.get("handle") not in (None, ""):
+            self._run_input_command(["wmctrl", "-ia", self._wmctrl_handle(window["handle"])])
+        elif not self._focus_via_atspi(window):
+            raise LinuxATSPIError("target_lost: 当前 Linux session 无法可靠聚焦目标窗口。")
+        foreground = self.foreground_window()
+        if not foreground or foreground.get("handle") != window.get("handle"):
+            raise LinuxATSPIError("target_lost: Linux 聚焦后前台窗口与绑定目标不一致。")
+        return window
 
     def foreground_window(self, *, backend_name: str = "atspi") -> Dict[str, Any] | None:
         self.ensure_available()
         if self._session_type() == "x11" and tool_exists("xdotool"):
             completed = run_command(["xdotool", "getwindowfocus"], check=False, timeout_seconds=2.5)
+            if completed.returncode != 0:
+                return None
             handle = str(completed.stdout or "").strip()
             if handle:
                 windows = self.list_windows(limit=200)
@@ -334,8 +332,7 @@ class LinuxATSPIADriver:
                             return window
                     except Exception:
                         continue
-        windows = self.list_windows(limit=1)
-        return windows[0] if windows else None
+        return None
 
     def observe_desktop(
         self,
@@ -348,14 +345,8 @@ class LinuxATSPIADriver:
     ) -> ComputerUseObservation:
         self.ensure_available()
         window = self.foreground_window()
-        if window_handle not in (None, ""):
-            window = dict(self._window_cache.get(int(window_handle)) or {"handle": int(window_handle), "title": window_title})
         if window_handle not in (None, "") or str(window_title or "").strip():
-            try:
-                if str(window_title or "").strip():
-                    window = self.wait_for_window(title_filter=window_title, timeout_ms=1200, poll_ms=120)
-            except Exception:
-                window = self.foreground_window()
+            window = self.wait_for_window(title_filter=window_title, window_handle=window_handle, timeout_ms=1200, poll_ms=120)
         normalized_window = dict(window or {})
         elements = self._snapshot_elements(window=normalized_window, depth_limit=depth_limit, element_limit=element_limit)
         return build_observation(
@@ -387,8 +378,6 @@ class LinuxATSPIADriver:
         limit: int = 20,
     ) -> List[ComputerUseElement]:
         self._selector_metrics["resolveCalls"] += 1
-        if element_id and element_id in self._element_cache:
-            return [self._element_cache[element_id]]
         observation = self.observe_desktop(
             window_title=window_title,
             window_handle=window_handle,
@@ -398,6 +387,10 @@ class LinuxATSPIADriver:
         )
         ranked: List[tuple[int, ComputerUseElement]] = []
         for element in observation.elements:
+            if element_id and element.element_id != element_id:
+                continue
+            if window_handle not in (None, "") and element.window_handle != int(window_handle):
+                continue
             score = self._element_match_score(
                 element,
                 name=name,
@@ -473,9 +466,10 @@ class LinuxATSPIADriver:
         _ = prefer_sendinput_click
         self._require_coordinate_input("点击")
         self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
-        run_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))], check=False, timeout_seconds=4.0)
+        self._run_input_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))])
+        self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
         click_count = 2 if double else 1
-        run_command(["xdotool", "click", "--repeat", str(click_count), "1"], check=False, timeout_seconds=4.0)
+        self._run_input_command(["xdotool", "click", "--repeat", str(click_count), "1"])
         return self._normalize_point_result(
             {
                 "clickedPoint": [int(point[0]), int(point[1])],
@@ -493,7 +487,7 @@ class LinuxATSPIADriver:
     ) -> Dict[str, Any]:
         self._require_coordinate_input("悬停")
         self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
-        run_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))], check=False, timeout_seconds=4.0)
+        self._run_input_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))])
         return self._normalize_point_result(
             {
                 "clickedPoint": [int(point[0]), int(point[1])],
@@ -511,8 +505,9 @@ class LinuxATSPIADriver:
     ) -> Dict[str, Any]:
         self._require_coordinate_input("右键")
         self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
-        run_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))], check=False, timeout_seconds=4.0)
-        run_command(["xdotool", "click", "3"], check=False, timeout_seconds=4.0)
+        self._run_input_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))])
+        self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
+        self._run_input_command(["xdotool", "click", "3"])
         return self._normalize_point_result(
             {
                 "clickedPoint": [int(point[0]), int(point[1])],
@@ -533,10 +528,13 @@ class LinuxATSPIADriver:
         _ = steps
         self._require_coordinate_input("拖拽")
         self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
-        run_command(["xdotool", "mousemove", "--sync", str(int(start_point[0])), str(int(start_point[1]))], check=False, timeout_seconds=4.0)
-        run_command(["xdotool", "mousedown", "1"], check=False, timeout_seconds=4.0)
-        run_command(["xdotool", "mousemove", "--sync", str(int(end_point[0])), str(int(end_point[1]))], check=False, timeout_seconds=4.0)
-        run_command(["xdotool", "mouseup", "1"], check=False, timeout_seconds=4.0)
+        self._run_input_command(["xdotool", "mousemove", "--sync", str(int(start_point[0])), str(int(start_point[1]))])
+        self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
+        try:
+            self._run_input_command(["xdotool", "mousedown", "1"])
+            self._run_input_command(["xdotool", "mousemove", "--sync", str(int(end_point[0])), str(int(end_point[1]))])
+        finally:
+            self._run_input_command(["xdotool", "mouseup", "1"])
         return {
             "startPoint": [int(start_point[0]), int(start_point[1])],
             "endPoint": [int(end_point[0]), int(end_point[1])],
@@ -618,16 +616,16 @@ class LinuxATSPIADriver:
         if isinstance(click_point, (list, tuple)) and len(click_point) == 2:
             self.click_point(point=click_point, window_title=window_title, window_handle=window_handle)
             time.sleep(0.05)
+        self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
         if clear_first:
-            run_command(["xdotool", "key", "--clearmodifiers", "ctrl+a", "BackSpace"], check=False, timeout_seconds=4.0)
+            self._run_input_command(["xdotool", "key", "--clearmodifiers", "ctrl+a", "BackSpace"])
         if str(text or ""):
-            run_command(
+            self._run_input_command(
                 ["xdotool", "type", "--delay", "1", str(text or "")],
-                check=False,
                 timeout_seconds=max(8.0, min(30.0, len(str(text or "")) / 8.0 + 4.0)),
             )
         if press_enter:
-            run_command(["xdotool", "key", "--clearmodifiers", "Return"], check=False, timeout_seconds=4.0)
+            self._run_input_command(["xdotool", "key", "--clearmodifiers", "Return"])
         foreground = self.foreground_window() or {}
         return {
             "windowHandle": foreground.get("handle") or window_handle,
@@ -646,7 +644,7 @@ class LinuxATSPIADriver:
         self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
         for combo in self._parse_hotkey_sequence(sequence):
             key_combo = "+".join([*combo["modifiers"], combo["key"]])
-            run_command(["xdotool", "key", "--clearmodifiers", key_combo], check=False, timeout_seconds=4.0)
+            self._run_input_command(["xdotool", "key", "--clearmodifiers", key_combo])
             time.sleep(0.03)
         foreground = self.foreground_window() or {}
         return {
@@ -675,10 +673,10 @@ class LinuxATSPIADriver:
         self._require_coordinate_input("滚动")
         self._maybe_focus_window(window_title=window_title, window_handle=window_handle)
         if isinstance(point, (list, tuple)) and len(point) == 2:
-            run_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))], check=False, timeout_seconds=4.0)
+            self._run_input_command(["xdotool", "mousemove", "--sync", str(int(point[0])), str(int(point[1]))])
         button = "4" if int(amount or 0) > 0 else "5"
         repeat = max(1, abs(int(amount or 0)) // 120 or 1)
-        run_command(["xdotool", "click", "--repeat", str(repeat), button], check=False, timeout_seconds=4.0)
+        self._run_input_command(["xdotool", "click", "--repeat", str(repeat), button])
         return {
             "amount": int(amount),
             "metadata": {"viewportStrategy": "scroll_wheel", "route": "coordinate_fallback", "inputBackend": "xdotool"},
@@ -717,16 +715,23 @@ class LinuxATSPIADriver:
                 "Wayland 截图必须通过用户授权的 ScreenCast portal；当前 driver 尚未实现该会话，已阻止直接抓屏。"
             )
         target_path = Path(output_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
         bounds = None
-        if element_id and element_id in self._element_cache:
-            bounds = list(self._element_cache[element_id].bounds)
+        if element_id:
+            cached = self._element_cache.get(element_id)
+            matches = self.find_elements(element_id=element_id, window_title=window_title, window_handle=window_handle or (cached.window_handle if cached else None))
+            if len(matches) != 1:
+                raise LinuxATSPIError("target_lost: 截图元素无法重新定位。")
+            bounds = list(matches[0].bounds)
         elif window_handle not in (None, "") or str(window_title or "").strip():
-            try:
-                window = self.wait_for_window(title_filter=window_title, timeout_ms=1200, poll_ms=120)
-                bounds = normalize_bounds(window.get("bounds"))
-            except Exception:
-                bounds = None
+            window = self.wait_for_window(title_filter=window_title, window_handle=window_handle, timeout_ms=1200, poll_ms=120)
+            bounds = normalize_bounds(window.get("bounds"))
+            if not bounds or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                raise LinuxATSPIError("target_lost: 绑定窗口没有可用截图范围。")
+        if element_id and (len(bounds or []) != 4 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]):
+            raise LinuxATSPIError("target_lost: 绑定元素没有可用截图范围。")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if bounds is not None:
+            return capture_with_mss(target_path, bounds=bounds)
         if tool_exists("grim") or tool_exists("gnome-screenshot"):
             full_capture = target_path.with_name(f"{target_path.stem}_full_{int(time.time() * 1000)}.png")
             if tool_exists("grim"):
@@ -734,11 +739,7 @@ class LinuxATSPIADriver:
             else:
                 run_command(["gnome-screenshot", "-f", str(full_capture)], check=False, timeout_seconds=8.0)
             if full_capture.exists():
-                if bounds and len(bounds) == 4:
-                    with Image.open(full_capture) as image:
-                        image.crop((bounds[0], bounds[1], bounds[2], bounds[3])).save(target_path)
-                else:
-                    shutil.copyfile(full_capture, target_path)
+                shutil.copyfile(full_capture, target_path)
                 try:
                     full_capture.unlink(missing_ok=True)
                 except Exception:
@@ -766,26 +767,15 @@ class LinuxATSPIADriver:
             "beforeScreenHash": (before_observation or {}).get("screenHash"),
             "afterScreenHash": (after_observation or {}).get("screenHash"),
         }
-        if action_type in {"click", "double_click", "right_click", "hover"}:
-            changed = self._observation_hash_changed(before_observation, after_observation)
-            focused = self._window_matches(after_observation, title=details["windowTitle"], handle=details["windowHandle"])
-            if changed:
-                return {"passed": True, "status": "verified", "reason": "动作后界面状态已变化。", "details": {**details, "changeObserved": True}, "level": "verified"}
-            if focused:
-                return {"passed": True, "status": "focus_verified", "reason": "动作后目标窗口仍处于前台。", "details": {**details, "foregroundMatched": True}, "level": "soft_verified"}
-            return {"passed": True, "status": "soft_verified_target_only", "reason": "动作已执行，但缺少更强的业务结果证据。", "details": details, "level": "soft_verified"}
+        details["changeObserved"] = self._observation_hash_changed(before_observation, after_observation)
+        details["targetWindowObserved"] = self._window_matches(after_observation, title=details["windowTitle"], handle=details["windowHandle"])
         if action_type == "type_text":
             normalized_text = str(text or "").strip()
-            if normalized_text and self._observation_contains_text(after_observation, normalized_text):
+            element_id = str(target.get("elementId") or target.get("element_id") or "")
+            if normalized_text and element_id and details["targetWindowObserved"] and self._observation_contains_text(after_observation, normalized_text, element_id=element_id):
                 return {"passed": True, "status": "text_verified", "reason": "输入后的界面中已出现目标文本。", "details": {**details, "targetTextVisible": True}, "level": "verified"}
-            if self._observation_hash_changed(before_observation, after_observation):
-                return {"passed": True, "status": "soft_verified_target_only", "reason": "输入动作后界面状态发生变化，但未获得稳定文本回读。", "details": details, "level": "soft_verified"}
             return {"passed": False, "status": "review_required_unconfirmed_input", "reason": "输入动作缺少稳定文本回读或明确界面变化证据。", "details": details, "level": "review_required"}
-        if action_type in {"hotkey", "scroll"}:
-            if self._observation_hash_changed(before_observation, after_observation):
-                return {"passed": True, "status": "verified", "reason": "动作后界面状态发生变化。", "details": details, "level": "verified"}
-            return {"passed": False, "status": "soft_verified_target_only" if action_type == "hotkey" else "scroll_no_change", "reason": "动作已执行，但界面状态未提供足够变化证据。", "details": details, "level": "soft_verified" if action_type == "hotkey" else "failed"}
-        return {"passed": True, "status": "verified", "reason": "动作已执行。", "details": details, "level": "verified"}
+        return {"passed": False, "status": "review_required_postcondition", "reason": "输入回执、窗口身份和画面变化不能证明业务结果；需要目标后置条件。", "details": details, "level": "review_required"}
 
     def _session_type(self) -> str:
         explicit = str(os.environ.get("XDG_SESSION_TYPE") or "").strip().lower()
@@ -1094,7 +1084,8 @@ class LinuxATSPIADriver:
             return False
 
     def _synthetic_element_id(self, payload: Dict[str, Any]) -> str:
-        return f"atspi_{hashlib.md5(str(payload).encode('utf-8')).hexdigest()[:16]}"
+        identity = {key: value for key, value in payload.items() if key != "value"}
+        return f"atspi_{hashlib.md5(str(identity).encode('utf-8')).hexdigest()[:16]}"
 
     def _element_match_score(
         self,
@@ -1180,9 +1171,11 @@ class LinuxATSPIADriver:
             for index in range(int(getattr(action, "nActions", 0) or 0)):
                 action_name = str(action.getName(index) or "").strip().lower()
                 if action_name in preferred or any(token in action_name for token in preferred):
-                    return bool(action.doAction(index))
+                    if not action.doAction(index):
+                        raise LinuxATSPIError("execution_unknown: AT-SPI 动作未确认成功，禁止自动重放。")
+                    return True
         except Exception:
-            return False
+            raise LinuxATSPIError("execution_unknown: AT-SPI 动作回执失败，禁止自动重放。") from None
         return False
 
     def _set_element_text(self, element: ComputerUseElement, *, text: str, clear_first: bool, press_enter: bool) -> bool:
@@ -1191,13 +1184,25 @@ class LinuxATSPIADriver:
             return False
         try:
             editable = accessible.queryEditableText()
-            _ = clear_first
-            editable.setTextContents(str(text or ""))
-            if press_enter:
-                self.hotkey("{ENTER}", window_handle=element.window_handle)
-            return True
         except Exception:
             return False
+        value = str(text or "")
+        if not clear_first:
+            try:
+                value = str(accessible.queryText().getText(0, -1) or "") + value
+            except Exception:
+                raise LinuxATSPIError("target_unreadable: 无法读取已有文本，未执行追加。") from None
+        try:
+            if not editable.setTextContents(value):
+                raise LinuxATSPIError("execution_unknown: AT-SPI 文本写入未确认成功，禁止自动重放。")
+        except Exception:
+            raise LinuxATSPIError("execution_unknown: AT-SPI 文本写入回执失败，禁止自动重放。") from None
+        if press_enter:
+            try:
+                self.hotkey("{ENTER}", window_handle=element.window_handle)
+            except Exception:
+                raise LinuxATSPIError("partial_input: 文本已写入，但 Enter 未确认成功；禁止重复输入文本。") from None
+        return True
 
     def _parse_hotkey_sequence(self, sequence: str) -> List[Dict[str, Any]]:
         raw = str(sequence or "").strip()
@@ -1248,24 +1253,25 @@ class LinuxATSPIADriver:
         observed_handle = metadata.get("windowHandle") or observation.get("windowHandle")
         observed_title = str(observation.get("windowTitle") or "").strip().lower()
         target_title = str(title or "").strip().lower()
-        if handle not in (None, "") and observed_handle not in (None, ""):
+        if handle not in (None, ""):
             try:
-                if int(handle) == int(observed_handle):
-                    return True
+                return int(handle) == int(observed_handle)
             except Exception:
-                pass
+                return False
         if target_title and observed_title:
             return target_title in observed_title or observed_title in target_title
         return False
 
-    def _observation_contains_text(self, observation: Dict[str, Any] | None, text: str) -> bool:
+    def _observation_contains_text(self, observation: Dict[str, Any] | None, text: str, *, element_id: str) -> bool:
         normalized = str(text or "").strip().lower()
         if not normalized or not isinstance(observation, dict):
             return False
         for element in list(observation.get("elements") or [])[:80]:
             if not isinstance(element, dict):
                 continue
-            candidates = [element.get("name"), element.get("automationId"), element.get("className"), dict(element.get("metadata") or {}).get("value"), dict(element.get("metadata") or {}).get("description")]
+            if str(element.get("elementId") or element.get("element_id") or "") != element_id:
+                continue
+            candidates = [dict(element.get("metadata") or {}).get("value")]
             haystack = " ".join(str(item or "").strip().lower() for item in candidates if str(item or "").strip())
             if normalized in haystack:
                 return True
@@ -1278,10 +1284,15 @@ class LinuxATSPIADriver:
     def _maybe_focus_window(self, *, window_title: str | None = None, window_handle: int | None = None) -> None:
         if window_handle in (None, "") and not str(window_title or "").strip():
             return
+        self.focus_window(window_title=window_title, window_handle=window_handle)
+
+    def _run_input_command(self, command: Sequence[str], *, timeout_seconds: float = 4.0) -> None:
         try:
-            self.focus_window(window_title=window_title, window_handle=window_handle)
+            completed = run_command(command, check=False, timeout_seconds=timeout_seconds)
         except Exception:
-            return
+            raise LinuxATSPIError("execution_unknown: Linux 输入命令未返回确认回执，禁止自动重放。") from None
+        if completed.returncode != 0:
+            raise LinuxATSPIError(f"execution_unknown: Linux 输入命令失败（退出码 {completed.returncode}），禁止自动重放。")
 
     def _read_clipboard_text(self) -> str:
         if tool_exists("wl-paste"):

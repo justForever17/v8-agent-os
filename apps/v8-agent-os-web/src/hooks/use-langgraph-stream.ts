@@ -43,6 +43,7 @@ interface UseLangGraphStreamOptions {
     onFinish?: (messages: Message[]) => void;
     onConnect?: (conversationId: string, transport: 'stream' | 'submit') => void;
     onCustomEvent?: (event: any) => void;
+    acceptsRuntimeEvent?: (event: unknown) => boolean;
 }
 
 function appendAssistantPlaceholderIfNeeded(messages: Message[]) {
@@ -105,7 +106,7 @@ function isVisualUrl(value: string) {
     return isClientVisualAttachment({ url: value });
 }
 
-export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId, onResync, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
+export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId, onResync, onError, onFinish, onConnect, onCustomEvent, acceptsRuntimeEvent }: UseLangGraphStreamOptions) {
     const { messages, setMessages, isLoading, setIsLoading } = useChatStore();
     const [submittedRunId, setSubmittedRunId] = useState<string | null>(null);
     const abortControllerRef = useRef<AbortableTransport | null>(null);
@@ -130,8 +131,8 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId
     );
 
     // Use a ref for callbacks to avoid stale closures in the long-running stream loop
-    const handlersRef = useRef({ onError, onFinish, onConnect, onCustomEvent, onResync });
-    handlersRef.current = { onError, onFinish, onConnect, onCustomEvent, onResync };
+    const handlersRef = useRef({ onError, onFinish, onConnect, onCustomEvent, onResync, acceptsRuntimeEvent });
+    handlersRef.current = { onError, onFinish, onConnect, onCustomEvent, onResync, acceptsRuntimeEvent };
 
     useEffect(() => {
         messagesRef.current = messages;
@@ -211,6 +212,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId
             return false;
         }
 
+        if (handlersRef.current.acceptsRuntimeEvent?.(event) === false) return false;
         if (event.type === 'error') {
             console.error('Stream Error Event:', event.error);
         } else if (event.type === 'custom_event') {

@@ -203,7 +203,7 @@ RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_sear
 SUBAGENT_PLUGIN_TOOL_NAMES = {"plugin_broker"}
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_", "creative_media_")
-FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa"}
+FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa", "creative_media"}
 SUBAGENT_RUNTIME_BINDING_KINDS = {"research", "engineering", "creative_media"}
 BUILTIN_RUNTIME_ACTOR_KINDS = {"computer_use", "rpa", "memory", "safety"}
 SUBAGENT_RUNTIME_BINDING_DEFAULT_GROUPS: dict[str, list[str]] = {
@@ -269,6 +269,9 @@ def runtime_tool_group_available(group_name: Any) -> bool:
 def runtime_kind_for_tool_name(tool_name: Any) -> str:
     normalized = str(tool_name or "").strip()
     if normalized in {"computer_use_list_apps", "computer_use_desktop_capabilities"}:
+        from core.runtime.startup_profile import get_configured_install_profile
+        if get_configured_install_profile() == "server":
+            return "computer_use"
         # Querying apps/backend readiness neither requires nor enables desktop control.
         return ""
     if normalized.startswith("computer_use_"):
@@ -277,6 +280,10 @@ def runtime_kind_for_tool_name(tool_name: Any) -> str:
         return "rpa"
     if normalized.startswith("creative_media_"):
         return "creative_media"
+    if normalized in {"vision_media_analyzer", "download_media_for_vision"}:
+        from core.runtime.startup_profile import get_configured_install_profile
+        if get_configured_install_profile() == "server":
+            return "creative_media"
     return ""
 
 

@@ -98,7 +98,7 @@ test("runtime activity is a persistent Workbench timeline with bounded micro mot
 });
 
 test("Agent Browser remains Engine-managed and parent-bounded outside Workbench", () => {
-  const service = readText("apps/v8-agent-os-engine/runtimes/computer_use/browser_session_service.py");
+  const service = readText("apps/v8-agent-os-engine/core/agent_browser_sessions.py");
   const proxy = readText("apps/v8-agent-os-engine/scripts/browser_cdp_proxy.mjs");
   assert.match(service, /action == "set_viewport"/);
   assert.match(proxy, /Emulation\.setDeviceMetricsOverride/);

@@ -1,0 +1,2 @@
+chromadb
+langchain-text-splitters

@@ -8,6 +8,7 @@ import { readDraft, setDraftField } from "@/lib/composer-drafts";
 import { useDraftHydrated, useDraftField } from "@/hooks/use-composer-draft";
 import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
+import { ConversationRecoveryActions, type ConversationRecoveryProps } from "./ConversationRecoveryActions";
 import { ChatTurnIndexEntry, TurnNavigator } from "./TurnNavigator";
 import { ContextReferencesHUD } from "./ContextReferencesHUD";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -27,6 +28,7 @@ import {
 const EMPTY_RUNTIME_ACTIVITIES: RuntimeStageActivity[] = [];
 
 interface ChatWindowProps {
+    recovery?: ConversationRecoveryProps;
     viewKey?: string;
     messages: Message[];
     processes: AdminProcessRef[];
@@ -51,6 +53,7 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({
+    recovery,
     viewKey = "",
     messages,
     processes,
@@ -351,6 +354,10 @@ export function ChatWindow({
                                             executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
                                             animateEntrance={Boolean(isLoading && index >= messages.length - 2)}
                                         />
+                                        {recovery && <ConversationRecoveryActions message={m} recovery={recovery}
+                                            hasDescendants={index < messages.length - 1 || Number(m.turnPosition || 0) < totalTurnCount}
+                                            laterTurnCount={Math.max(0, totalTurnCount - Number(m.turnPosition || 0)) + (messages[index + 1]?.turnId === m.turnId ? 1 : 0)}
+                                            turnEnd={messages[index + 1]?.turnId !== m.turnId} />}
                                     </div>
                                 ))
                             )}

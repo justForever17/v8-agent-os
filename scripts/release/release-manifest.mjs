@@ -6,6 +6,7 @@ export const UNIFIED_TAG_RE = /^v8-os-v(20\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[1
 export const LEGACY_PRODUCT_TAG_RE = /^v8-os-(phone|desktop)-v(20\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])\.(?:[1-9]|[1-9]\d))$/;
 
 export const PRODUCT_TARGETS = Object.freeze({
+  server: Object.freeze(["linux-x64", "linux-arm64"]),
   desktop: Object.freeze([
     "windows-x64",
     "windows-arm64",
@@ -22,7 +23,7 @@ export function toUnifiedTag(version) {
 }
 
 export function toLegacyProductTag(product, version) {
-  if (!Object.hasOwn(PRODUCT_TARGETS, product)) {
+  if (!["desktop", "phone"].includes(product)) {
     throw new Error(`Unknown release product: ${product}`);
   }
   return `v8-os-${product}-v${version}`;
@@ -243,17 +244,22 @@ export function validateReleaseManifest(manifest) {
     }
     for (const product of Object.keys(PRODUCT_TARGETS)) {
       const entry = products[product];
+      // Historical schema-2 desktop/phone manifests predate this optional product.
+      if (product === "server" && !entry) continue;
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
         problems.push(`products.${product} must be an object`);
         continue;
       }
       validateBoolean(entry.enabled, `products.${product}.enabled`, problems);
       validateBoolean(entry.required, `products.${product}.required`, problems);
-      if (entry.enabled !== true || entry.required !== true) {
+      if (product !== "server" && (entry.enabled !== true || entry.required !== true)) {
         problems.push(`products.${product} must be enabled and required`);
       }
       if (entry.required === true && entry.enabled !== true) {
         problems.push(`products.${product} cannot be required when it is disabled`);
+      }
+      if (product === "server" && !entry.enabled && !String(entry.reason || "").trim()) {
+        problems.push("products.server.reason is required when the product is disabled");
       }
       for (const duplicateField of ["version", "channel", "tag"]) {
         if (Object.hasOwn(entry, duplicateField)) {
@@ -365,6 +371,7 @@ export function resolveReleasePlan(manifest) {
   validateReleaseManifest(manifest);
   const desktop = manifest.products.desktop;
   const phone = manifest.products.phone;
+  const server = manifest.products.server;
   const android = phone.targets.android;
   const ios = phone.targets.ios;
   const phonePlatform = android.enabled && ios.enabled
@@ -381,6 +388,7 @@ export function resolveReleasePlan(manifest) {
     channel: manifest.release.channel,
     tag: manifest.release.tag,
     prerelease: manifest.release.channel !== "stable",
+    server: { enabled: Boolean(server?.enabled), required: Boolean(server?.required), targets: server ? targetList(server) : [] },
     desktop: {
       enabled: desktop.enabled,
       required: desktop.required,

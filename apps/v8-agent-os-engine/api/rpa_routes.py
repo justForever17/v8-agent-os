@@ -1,3 +1,4 @@
+from runtimes.rpa.store import DraftRevisionConflict
 import asyncio
 from copy import deepcopy
 from time import monotonic
@@ -151,6 +152,8 @@ async def patch_rpa_draft(script_id: str, payload: RPADraftPatchPayload):
     try:
         patch = payload.model_dump(by_alias=True, exclude_none=True)
         return _rpa_runtime().patch_draft(script_id, patch)
+    except DraftRevisionConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -778,7 +781,11 @@ async def compile_rpa_draft_from_traces(payload: RPACompileTracePayload):
 @router.post("/rpa/drafts/{script_id}/export")
 async def export_rpa_draft(script_id: str, payload: RPADraftPreparePayload):
     try:
-        return await run_in_threadpool(_rpa_runtime().export_draft_to_robot, script_id=script_id, output_dir=payload.output_dir)
+        return await run_in_threadpool(_rpa_runtime().export_draft_to_robot, script_id=script_id, output_dir=payload.output_dir, expected_updated_at=payload.expected_updated_at)
+    except DraftRevisionConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -789,9 +796,14 @@ async def prepare_rpa_draft_run(script_id: str, payload: RPADraftPreparePayload)
         return await run_in_threadpool(
             _rpa_runtime().prepare_draft_run,
             script_id=script_id,
+            expected_updated_at=payload.expected_updated_at,
             variables=dict(payload.variables or {}),
             output_dir=payload.output_dir,
         )
+    except DraftRevisionConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -799,31 +811,13 @@ async def prepare_rpa_draft_run(script_id: str, payload: RPADraftPreparePayload)
 @router.post("/rpa/drafts/{script_id}/run")
 async def run_rpa_draft(script_id: str, payload: RPADraftRunPayload):
     try:
-        draft_patch: dict[str, Any] = {}
-        if payload.name is not None:
-            draft_patch["name"] = payload.name
-        if payload.goal is not None:
-            draft_patch["goal"] = payload.goal
-        if payload.app_id is not None:
-            draft_patch["appId"] = payload.app_id
-        if payload.steps is not None:
-            draft_patch["steps"] = payload.steps
-        if payload.draft_variables is not None:
-            draft_patch["variables"] = payload.draft_variables
-        if payload.object_library is not None:
-            draft_patch["objectLibrary"] = payload.object_library
-        if payload.metadata_patch:
-            draft_patch["metadataPatch"] = {
-                **dict(payload.metadata_patch or {}),
-                "lastDebugRunSnapshotAt": utc_now_iso(),
-            }
-        elif draft_patch:
-            draft_patch["metadataPatch"] = {"lastDebugRunSnapshotAt": utc_now_iso()}
-        if draft_patch:
-            _rpa_runtime().patch_draft(script_id, draft_patch)
+        if any(value is not None for value in (payload.steps, payload.name, payload.goal, payload.app_id,
+                                               payload.draft_variables, payload.object_library)) or payload.metadata_patch:
+            raise HTTPException(status_code=400, detail="Save draft edits before running a version.")
         return await run_in_threadpool(
             _rpa_runtime().run_draft,
             script_id=script_id,
+            expected_updated_at=payload.expected_updated_at,
             variables=dict(payload.variables or {}),
             output_dir=payload.output_dir,
             timeout_ms=payload.timeout_ms,
@@ -837,6 +831,10 @@ async def run_rpa_draft(script_id: str, payload: RPADraftRunPayload):
             trigger_source=payload.trigger_source or "manual",
             non_chat_run=payload.non_chat_run,
         )
+    except DraftRevisionConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

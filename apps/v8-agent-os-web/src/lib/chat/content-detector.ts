@@ -29,7 +29,9 @@ export function parseContentToBlocks(
     isStreaming: boolean,
     startId: number,
     parseInlineThinking = true,
+    userEditedText = false,
 ): ContentBlock[] {
+    if (userEditedText) return [{ id: `text-${startId}`, type: 'text', content }];
     const blocks: ContentBlock[] = [];
     let blockIndex = startId;
     let processedContent = content;

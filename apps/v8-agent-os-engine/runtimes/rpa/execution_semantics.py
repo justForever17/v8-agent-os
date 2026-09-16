@@ -17,6 +17,10 @@ _OUTCOME_FAMILY_MAP = {
     "blocked": "blocked",
     "failed": "failed",
     "fallback_failed": "failed",
+    "unknown": "failed",
+    "cancelled": "cancelled",
+    "interrupted": "cancelled",
+    "paused": "paused",
 }
 
 

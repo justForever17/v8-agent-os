@@ -25,3 +25,4 @@ export * from "./session-source-projection.js";
 export * from "./composer-inline-references.js";
 export * from "./creative-canvas-contract.js";
 export * from "./run-status.js";
+export * from "./conversation-recovery.js";

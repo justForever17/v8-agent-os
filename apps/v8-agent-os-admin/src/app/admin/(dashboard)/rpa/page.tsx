@@ -116,6 +116,7 @@ export default function RpaRuntimePage() {
     const [saved, setSaved] = useState(false);
     const [saveError, setSaveError] = useState("");
     const [runtimeSaving, setRuntimeSaving] = useState(false);
+    const [runtimeError, setRuntimeError] = useState("");
     const [featurePackState, setFeaturePackState] = useState<FeaturePackGateState>(initialState.featurePackState);
 
     const [loadError, setLoadError] = useState("");
@@ -147,9 +148,6 @@ export default function RpaRuntimePage() {
                         .catch(() => null);
                     setFeaturePackState(
                         availability?.robotFramework === true
-                            && availability?.rpaFramework === true
-                            && availability?.libraries?.["RPA.Browser.Selenium"] === true
-                            && availability?.libraries?.["RPA.Excel.Files"] === true
                             ? "ready"
                             : "restart_required"
                     );
@@ -200,8 +198,9 @@ export default function RpaRuntimePage() {
             return;
         }
         setRuntimeSaving(true);
+        setRuntimeError("");
         try {
-            await fetch("/api/runtime-capabilities/rpa/policy", {
+            const response = await fetch("/api/runtime-capabilities/rpa/policy", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -211,13 +210,17 @@ export default function RpaRuntimePage() {
                     notes: enabled ? "Admin rpa enabled" : "Admin rpa disabled",
                 }),
             });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.detail || result.error || `HTTP ${response.status}`);
+            }
             await loadData(true);
+        } catch (error) {
+            setRuntimeError(error instanceof Error ? error.message : String(error));
         } finally {
             setRuntimeSaving(false);
         }
     };
-
-    if (loading || !envelope) return <AdminLoadState title="app.admin.dashboard.rpa.page.kf4573dc1" error={loadError} onRetry={() => void loadData()}/>;
 
     return (
         <AdminPageShell>
@@ -227,14 +230,16 @@ export default function RpaRuntimePage() {
                 actions={
                     <div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
-                        <AdminSaveBar error={saveError}><Button onClick={() => void handleSave()} disabled={saving}>
+                        <AdminSaveBar error={saveError}><Button onClick={() => void handleSave()} disabled={saving || !envelope}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Workflow className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.rpa.page.k6010e1ed")}
                         </Button></AdminSaveBar>
                     </div>
                 }
             />
-
+            <RPAWorkbench />
+            <AdvancedSection title="app.admin.dashboard.rpa.runtimeSettings" defaultOpen={false}>
+            {loading || !envelope ? <AdminLoadState title="app.admin.dashboard.rpa.page.kf4573dc1" error={loadError} onRetry={() => void loadData()}/> : <>
             <DomainSummaryStrip
                 items={[
                     { label: "app.admin.dashboard.rpa.page.kac114a5d", value: envelope.data.modelBindings.discoveryModel ? t("app.admin.dashboard.rpa.page.k7b68df0c") : t("app.admin.dashboard.rpa.page.k54745147"), description: "app.admin.dashboard.rpa.page.k091a9e28" },
@@ -281,6 +286,7 @@ export default function RpaRuntimePage() {
 
             <ConfigCard title={"app.admin.dashboard.rpa.page.kb6443896"} description={"app.admin.dashboard.rpa.page.kb0b0faae"}>
                 <div className="space-y-3">
+                    {runtimeError ? <p role="alert" className="text-sm text-destructive">{runtimeError}</p> : null}
                     <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
                         <div className="rounded-2xl border border-border bg-muted/80 p-4">
                             <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.rpa.page.k73b0e79c")}</div>
@@ -311,11 +317,7 @@ export default function RpaRuntimePage() {
             </ConfigCard>
 
             <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={envelope.reloadRequired} />
-
-            <AdvancedSection
-                description={"app.admin.dashboard.rpa.page.k6bc68ae7"}
-                defaultOpen={false}
-            >
+            </>}
                 {featurePackState !== "ready" ? (
                     <div className="flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-500/35 dark:bg-amber-500/10">
                         <span className="text-sm text-amber-800 dark:text-amber-200">
@@ -341,9 +343,7 @@ export default function RpaRuntimePage() {
                                 : "app.admin.dashboard.rpa.featurePackRetry")}
                         </Button>
                     </div>
-                ) : (
-                    <RPAWorkbench />
-                )}
+                ) : null}
             </AdvancedSection>
         </AdminPageShell>
     );

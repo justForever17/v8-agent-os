@@ -116,6 +116,7 @@ class _FakeSnapshotDb:
     def __init__(self) -> None:
         self.latest_seq = 0
         self.canonical_version = 0
+        self.transcript_revision = 0
         self.legacy_messages: list[dict] = []
         self.runtime_events: list[dict] = []
         self.snapshots: list[dict] = []
@@ -126,6 +127,9 @@ class _FakeSnapshotDb:
 
     def get_chat_canonical_max_version(self, session_id: str):
         return self.canonical_version
+
+    def get_chat_transcript_state(self, session_id: str):
+        return {"transcript_revision": self.transcript_revision, "context_epoch": 0}
 
     def get_messages(self, session_id: str):
         return list(self.legacy_messages)
@@ -816,7 +820,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual(legacy["content"], "开始完成")
         self.assertEqual(legacy["reasoning_content"], "先想再想")
 
-    def test_snapshot_refresh_uses_canonical_version_even_without_new_runtime_seq(self):
+    def test_snapshot_refresh_uses_transcript_revision_without_new_runtime_seq_or_max_version(self):
         fake_db = _FakeSnapshotDb()
         service = SnapshotService()
         canonical_messages = [
@@ -838,14 +842,16 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         ):
             fake_db.latest_seq = 10
             fake_db.canonical_version = 1
+            fake_db.transcript_revision = 1
             first = service.ensure_chat_projection_row("session-snapshot")
             self.assertEqual(first["snapshot"]["canonicalVersion"], 1)
             self.assertEqual(first["snapshot"]["messages"][0]["content"], "完整正文")
 
-            fake_db.canonical_version = 2
+            fake_db.transcript_revision = 2
             second = service.ensure_chat_projection_row("session-snapshot")
 
-        self.assertEqual(second["snapshot"]["canonicalVersion"], 2)
+        self.assertEqual(second["snapshot"]["canonicalVersion"], 1)
+        self.assertEqual(second["snapshot"]["transcriptRevision"], 2)
         self.assertEqual(len(fake_db.snapshots), 2)
 
     def test_legacy_only_chat_fails_closed_instead_of_rebuilding_from_events(self):

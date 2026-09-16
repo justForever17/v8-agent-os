@@ -2435,6 +2435,21 @@ class KnowledgeDB:
                 )
             return len(fact_ids)
 
+    def mark_stale_for_conversation_revision(self, *, session_id: str, revised_at: str) -> int:
+        """Retire derived facts through the existing lifecycle/projection owner."""
+        with self._conn() as conn:
+            rows = conn.execute("""SELECT DISTINCT k.id FROM knowledge k
+                LEFT JOIN knowledge_observations o ON o.fact_id=k.id
+                WHERE (k.source_session=? OR o.source_session=?)
+                  AND julianday(k.updated_at) <= julianday(?)
+                  AND COALESCE(k.lifecycle_state,'active') NOT IN ('stale','tombstoned','superseded')""",
+                (session_id, session_id, revised_at)).fetchall()
+            for row in rows:
+                conn.execute("UPDATE knowledge SET lifecycle_state='stale',updated_at=? WHERE id=?", (revised_at, row["id"]))
+                self._deactivate_unsupported_relations(conn, fact_id=row["id"])
+                self._enqueue_projection(conn, fact_id=row["id"], operation="remove")
+            return len(rows)
+
     def revalidate_knowledge(
         self,
         fact_id: str,

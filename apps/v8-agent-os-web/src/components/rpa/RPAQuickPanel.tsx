@@ -17,6 +17,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { rpaRunPresentation } from "./rpa-run-state";
 
 type TemplateVariable = {
     name?: string;
@@ -48,6 +49,8 @@ type AvailabilityPayload = {
 };
 
 type ExtraField = { id: number; name: string; value: string };
+type TemplateInputs = { values: Record<string, string>; extraFields: ExtraField[] };
+type RunReceipt = { template: string; runId: string; status: string; detail: string };
 type Translator = ReturnType<typeof useT>;
 
 const GITHUB_STAR_TEMPLATE_ID = "system.github.star_repository";
@@ -127,37 +130,57 @@ function coerceValue(value: string, type: string) {
 export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {}) {
     const t = useT();
     const nextExtraId = useRef(1);
+    const startInFlight = useRef(false);
+    const loadGeneration = useRef(0);
     const [loading, setLoading] = useState(true);
     const [starting, setStarting] = useState(false);
     const [availability, setAvailability] = useState<AvailabilityPayload>({});
     const [templates, setTemplates] = useState<RpaTemplate[]>([]);
     const [selectedTemplateId, setSelectedTemplateId] = useState("");
-    const [values, setValues] = useState<Record<string, string>>({});
-    const [extraFields, setExtraFields] = useState<ExtraField[]>([]);
+    const [inputsByTemplate, setInputsByTemplate] = useState<Record<string, TemplateInputs>>({});
     const [error, setError] = useState("");
-    const [notice, setNotice] = useState("");
+    const [receipt, setReceipt] = useState<RunReceipt | null>(null);
+    const [recentRuns, setRecentRuns] = useState<RunReceipt[]>([]);
+    const [stopping, setStopping] = useState(false);
 
     const selectedTemplate = useMemo(
         () => templates.find((template) => text(template.id) === selectedTemplateId) || null,
         [selectedTemplateId, templates],
     );
     const variableDefinitions = useMemo(() => normalizedVariables(selectedTemplate), [selectedTemplate]);
+    const defaultValues = Object.fromEntries(variableDefinitions.map(variable => [text(variable.name), initialValue(variable)]));
+    const values = { ...defaultValues, ...inputsByTemplate[selectedTemplateId]?.values };
+    const extraFields = inputsByTemplate[selectedTemplateId]?.extraFields || [];
+    const setValues = (update: (current: Record<string, string>) => Record<string, string>) => {
+        setInputsByTemplate(current => ({ ...current, [selectedTemplateId]: {
+            values: update({ ...defaultValues, ...current[selectedTemplateId]?.values }),
+            extraFields: current[selectedTemplateId]?.extraFields || [],
+        } }));
+    };
+    const setExtraFields = (update: (current: ExtraField[]) => ExtraField[]) => {
+        setInputsByTemplate(current => ({ ...current, [selectedTemplateId]: {
+            values: current[selectedTemplateId]?.values || {},
+            extraFields: update(current[selectedTemplateId]?.extraFields || []),
+        } }));
+    };
+    const presentation = receipt ? rpaRunPresentation(receipt.status) : null;
     const runtimeReady = Boolean(
         usesComputerUsePlaybook(selectedTemplate)
-        || availability.robotFramework
-        || availability.rpaFramework,
+        || availability.robotFramework,
     );
 
     const load = useCallback(async () => {
+        const generation = ++loadGeneration.current;
         setLoading(true);
         setError("");
         try {
             const [availabilityResponse, templatesResponse] = await Promise.all([
-                fetch("/api/rpa/availability", { cache: "no-store" }),
-                fetch("/api/rpa/templates?status=approved&limit=100", { cache: "no-store" }),
+                fetch("/api/rpa/availability", { cache: "no-store", signal: AbortSignal.timeout(15_000) }),
+                fetch("/api/rpa/templates?status=approved&limit=100", { cache: "no-store", signal: AbortSignal.timeout(15_000) }),
             ]);
             const availabilityPayload = await availabilityResponse.json().catch(() => ({}));
             const templatePayload = await templatesResponse.json().catch(() => ({}));
+            if (generation !== loadGeneration.current) return;
             if (!templatesResponse.ok) {
                 throw new Error(text(templatePayload?.detail || templatePayload?.error) || t("web.rpa.loadFailed"));
             }
@@ -170,9 +193,10 @@ export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {})
                 ? current
                 : text(nextTemplates[0]?.id));
         } catch (reason) {
+            if (generation !== loadGeneration.current) return;
             setError(reason instanceof Error ? reason.message : t("web.rpa.loadFailed"));
         } finally {
-            setLoading(false);
+            if (generation === loadGeneration.current) setLoading(false);
         }
     }, [t]);
 
@@ -181,15 +205,39 @@ export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {})
     }, [load]);
 
     useEffect(() => {
-        const nextValues: Record<string, string> = {};
-        for (const variable of normalizedVariables(selectedTemplate)) {
-            nextValues[text(variable.name)] = initialValue(variable);
-        }
-        setValues(nextValues);
-        setExtraFields([]);
-        setError("");
-        setNotice("");
-    }, [selectedTemplate]);
+        let disposed = false;
+        let timer: number;
+        const refresh = async () => {
+            try {
+                const response = await fetch("/api/runs?limit=40", { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+                const data = response.ok ? await response.json() : {};
+                const runs = Array.isArray(data.runs) ? data.runs : [];
+                if (disposed) return;
+                const mapped: RunReceipt[] = runs.filter((run: { run_type?: string; metadata?: { runtime?: string; mode?: string } }) => run.run_type === "rpa" || run.metadata?.runtime === "rpa" || ["draft", "template", "existing_robot"].includes(run.metadata?.mode || "")).slice(0, 12).map((run: { run_id?: string; id?: string; status?: string; metadata?: { executionState?: string; subject?: string; scriptName?: string; script?: { name?: string }; error?: string } }) => ({
+                    runId: text(run.run_id || run.id), template: text(run.metadata?.script?.name || run.metadata?.scriptName || run.metadata?.subject || run.run_id || run.id),
+                    status: text(run.metadata?.executionState || run.status), detail: text(run.metadata?.error),
+                }));
+                setRecentRuns(mapped);
+                setReceipt(current => current ? mapped.find(run => run.runId === current.runId) ? { ...mapped.find(run => run.runId === current.runId)!, template: current.template } : current : mapped.find(run => rpaRunPresentation(run.status).active) || null);
+            } catch { /* Keep the last confirmed receipt while reconnecting. */ }
+            if (!disposed) timer = window.setTimeout(refresh, 2000);
+        };
+        void refresh();
+        return () => { disposed = true; window.clearTimeout(timer); };
+    }, []);
+
+    const stopRun = async () => {
+        if (!receipt?.runId || !presentation?.active || stopping) return;
+        setStopping(true);
+        try {
+            const response = await fetch(`/api/runs/${encodeURIComponent(receipt.runId)}/commands/cancel`, {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "RPA user requested stop" }),
+            });
+            if (!response.ok) throw new Error(t("web.rpa.stopFailed"));
+            setReceipt(current => current ? { ...current, detail: t("web.rpa.stopping") } : current);
+        } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+        finally { setStopping(false); }
+    };
 
     const addExtraField = () => {
         const id = nextExtraId.current++;
@@ -197,7 +245,7 @@ export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {})
     };
 
     const startTemplate = async () => {
-        if (!selectedTemplateId || !selectedTemplate) return;
+        if (!selectedTemplateId || !selectedTemplate || startInFlight.current) return;
         const missing = variableDefinitions
             .filter((variable) => variable.required && !text(values[text(variable.name)]))
             .map((variable) => variableLabel(selectedTemplate, variable, t));
@@ -225,23 +273,30 @@ export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {})
             payloadVariables[name] = field.value;
         }
 
+        startInFlight.current = true;
         setStarting(true);
         setError("");
-        setNotice("");
+        const submittedTemplate = templateName(selectedTemplate, t);
+        const runId = `rpa-web-${crypto.randomUUID()}`;
+        // A client-generated ID is not a persisted Engine run yet. Polling
+        // replaces this receipt once the canonical run can receive commands.
+        setReceipt({ template: submittedTemplate, runId, status: "preparing", detail: "" });
         try {
             const response = await fetch(`/api/rpa/templates/${encodeURIComponent(selectedTemplateId)}/run`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ variables: payloadVariables, triggerSource: "rpa_web", nonChatRun: true }),
+                body: JSON.stringify({ runId, variables: payloadVariables, triggerSource: "rpa_web", nonChatRun: true }),
             });
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok || ["failed", "blocked"].includes(text(payload?.status).toLowerCase())) {
+            if (!response.ok) {
                 throw new Error(text(payload?.detail || payload?.error || payload?.reason) || t("web.rpa.startFailed"));
             }
-            setNotice(t("web.rpa.started", { template: templateName(selectedTemplate, t) }));
+            setReceipt({ template: submittedTemplate, runId: text(payload?.runId || payload?.run_id), status: text(payload?.status), detail: text(payload?.detail || payload?.error || payload?.reason || payload?.summary) });
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : t("web.rpa.startFailed"));
+            setReceipt(current => current?.runId === runId ? { ...current, status: "unknown", detail: t("web.rpa.inspectBeforeRetry") } : current);
         } finally {
+            startInFlight.current = false;
             setStarting(false);
         }
     };
@@ -277,7 +332,14 @@ export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {})
                 </header>
 
                 {error ? <div role="alert" className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
-                {notice ? <div className="flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" />{notice}</div> : null}
+                {receipt && presentation ? <div role="status" className={`rounded-xl border px-4 py-3 text-sm ${presentation.tone === "success" ? "border-emerald-500/25 bg-emerald-500/5" : presentation.tone === "error" ? "border-destructive/25 bg-destructive/5 text-destructive" : "border-border bg-muted/30"}`}>
+                    <div className="flex items-center gap-2">{presentation.tone === "success" ? <CheckCircle2 className="h-4 w-4" /> : null}<strong>{receipt.template}</strong><span>{t(presentation.key)}</span></div>
+                    {receipt.detail ? <p className="mt-1 break-words">{receipt.detail}</p> : null}
+                    {receipt.runId ? <p className="mt-1 break-all text-xs text-muted-foreground">{t("web.rpa.runReference", { runId: receipt.runId })}</p> : null}
+                    {presentation.active || receipt.status === "preparing" ? <Button variant="outline" size="sm" className="mt-2" onClick={() => void stopRun()} disabled={stopping || !presentation.active}>{stopping ? t("web.rpa.stopping") : t("web.rpa.stop")}</Button> : null}
+                    {presentation.tone === "warning" ? <p className="mt-1 text-xs">{t("web.rpa.inspectBeforeRetry")}</p> : null}
+                </div> : null}
+                {recentRuns.length ? <details className="rounded-xl border px-4 py-3"><summary className="cursor-pointer text-sm font-medium">{t("web.rpa.recentRuns")}</summary><div className="mt-3 space-y-2">{recentRuns.map(run => <button key={run.runId} type="button" className="flex w-full items-center justify-between gap-3 rounded-lg border p-2 text-left text-xs" onClick={() => setReceipt(run)}><span className="truncate">{run.template}</span><span>{t(rpaRunPresentation(run.status).key)}</span></button>)}</div></details> : null}
 
                 <section className={embedded ? "grid gap-4 md:grid-cols-[minmax(0,0.86fr)_minmax(0,1.4fr)]" : "grid gap-5 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.4fr)]"}>
                     <div className="rounded-2xl border border-border/65 bg-background/82 p-4 shadow-sm backdrop-blur-sm sm:p-5">
@@ -287,7 +349,7 @@ export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {})
                             <select
                                 value={selectedTemplateId}
                                 onChange={(event) => setSelectedTemplateId(event.target.value)}
-                                disabled={loading || templates.length === 0}
+                                disabled={loading || starting || templates.length === 0}
                                 className="h-11 w-full appearance-none rounded-xl border border-input bg-background px-3 pr-10 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-50"
                             >
                                 {templates.length === 0 ? <option value="">{loading ? t("web.rpa.loading") : t("web.rpa.noTemplates")}</option> : null}

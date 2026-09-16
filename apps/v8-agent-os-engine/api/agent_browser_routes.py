@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from core.storage import storage
-from runtimes.computer_use.browser_automation import agent_browser_automation
+from core.agent_browser_automation import agent_browser_automation
 
 from .models import ComputerUseAgentBrowserOpenPayload
 

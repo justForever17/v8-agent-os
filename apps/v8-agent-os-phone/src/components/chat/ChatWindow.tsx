@@ -16,6 +16,7 @@ import { type AdminProcessRef, type ContextReferenceItem } from "@v8/session-rea
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
 import { MessageBubble } from "@/src/components/chat/MessageBubble";
+import { ConversationRecoveryActions, type ConversationRecoveryProps } from "./ConversationRecoveryActions";
 import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
@@ -31,6 +32,7 @@ type ChatPendingInteraction = PendingApproval | AskUserInteraction;
 const EMPTY_RUNTIME_ACTIVITIES: PhoneRuntimeStageActivity[] = [];
 
 type ChatWindowProps = {
+    recovery?: ConversationRecoveryProps;
     cacheKey: string;
     adminBaseUrl: string;
     sessionId?: string;
@@ -130,6 +132,7 @@ function hasRenderableMessage(message: ChatMessage) {
 }
 
 export const ChatWindow = memo(function ChatWindow({
+    recovery,
     cacheKey,
     adminBaseUrl,
     sessionId,
@@ -328,6 +331,7 @@ export const ChatWindow = memo(function ChatWindow({
                         </View>
                     )}
                     renderItem={({ item: message, index }) => (
+                        <View>
                         <MessageBubble
                             key={message.renderKey || message.id}
                             adminBaseUrl={adminBaseUrl}
@@ -351,6 +355,11 @@ export const ChatWindow = memo(function ChatWindow({
                             sessionId={sessionId}
                             workspaceId={workspaceId}
                         />
+                        {recovery && <ConversationRecoveryActions message={message} recovery={recovery}
+                            hasDescendants={index < visibleMessages.length - 1}
+                            laterTurnCount={new Set(visibleMessages.slice(index + 1).map((item) => item.turnId)).size}
+                            turnEnd={visibleMessages[index + 1]?.turnId !== message.turnId} />}
+                        </View>
                     )}
                     onScroll={(event) => {
                         const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;

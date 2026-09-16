@@ -143,6 +143,9 @@ def assert_episode_execution_allowed(context: dict[str, Any]) -> None:
     run_id = str(context.get("run_id") or "")
     if not run_id:
         return
+    session_id = str(context.get("session_id") or context.get("sessionId") or "")
+    if session_id:
+        db.assert_chat_run_epoch(session_id, run_id)
     for episode_id in {str(context.get(key) or "") for key in ("delegation_id", "episode_id", "parent_delegation_id")} - {""}:
         episode = db.get_runtime_episode(episode_id) or {}
         assert_episode_deadline_current(episode, run_id)

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from runtimes.computer_use import browser_session_service as module
-from runtimes.computer_use.browser_automation import BrowserAutomationProvider
+from core import agent_browser_sessions as module
+from core.agent_browser_automation import BrowserAutomationProvider
 from runtimes.computer_use.runtime import ComputerUseRuntime
 
 

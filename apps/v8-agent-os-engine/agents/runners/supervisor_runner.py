@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from erc.checkpoint_store import checkpoint_store
+from core.database import db
 
 # Framework node executions, not a model output/token budget. The SDK default
 # of 25 stops ordinary observe/act/verify tasks after roughly ten tool rounds.
@@ -27,6 +28,7 @@ class SupervisorExecutionBundle:
     graph_config: dict
     mode: str = "start"
     diagnostics: dict[str, Any] | None = None
+    session_id: str | None = None
 
 
 class SupervisorAgentRunner:
@@ -162,7 +164,10 @@ class SupervisorAgentRunner:
         return state
 
     def build_graph_config(self, session_id: str) -> dict:
-        return {"configurable": {"thread_id": session_id}, "recursion_limit": SUPERVISOR_GRAPH_STEP_LIMIT}
+        state = db.get_chat_transcript_state(session_id)
+        return {"configurable": {"thread_id": state["active_checkpoint_thread_id"],
+                                 "context_epoch": state["context_epoch"]},
+                "recursion_limit": SUPERVISOR_GRAPH_STEP_LIMIT}
 
     @staticmethod
     def _message_id(message: Any) -> str:
@@ -241,8 +246,18 @@ class SupervisorAgentRunner:
         session_coordination: dict[str, Any] | None = None,
         transport: str | None = None,
     ):
-        graph, diagnostics = await self.build_graph(config)
         graph_config = self.build_graph_config(session_id)
+        run_id = str((current_route_context or {}).get("run_id") or (current_route_context or {}).get("runId") or "")
+        if run_id:
+            db.assert_chat_run_epoch(session_id, run_id)
+        if graph_config["configurable"]["context_epoch"]:
+            from erc.conversation_derivations import ensure_conversation_derivations_current
+            ensure_conversation_derivations_current(db, session_id)
+            from erc.conversation_context import rebuild_effective_messages
+            messages = rebuild_effective_messages(db, session_id, list(messages or []))
+        current_route_context = {**(current_route_context or {}),
+                                 "contextEpoch": graph_config["configurable"]["context_epoch"]}
+        graph, diagnostics = await self.build_graph(config)
         reconciled_messages, reconciliation = await self._reconcile_persistent_input(
             graph=graph,
             graph_config=graph_config,
@@ -264,23 +279,31 @@ class SupervisorAgentRunner:
             ),
             graph_config=graph_config,
             mode="start",
+            session_id=session_id,
             diagnostics={**dict(diagnostics or {}), **reconciliation},
         )
 
     def build_resume_input(self, resume_value):
         return Command(resume=resume_value)
 
-    async def create_resume_bundle(self, *, config: EngineConfig, session_id: str, resume_value):
+    async def create_resume_bundle(self, *, config: EngineConfig, session_id: str, resume_value, run_id: str | None = None):
+        if run_id:
+            db.assert_chat_run_epoch(session_id, run_id)
+        elif db.get_chat_transcript_state(session_id)["context_epoch"]:
+            raise ValueError("conversation_resume_run_required")
         graph, diagnostics = await self.build_graph(config)
         return SupervisorExecutionBundle(
             graph=graph,
             payload=self.build_resume_input(resume_value),
             graph_config=self.build_graph_config(session_id),
             mode="resume",
+            session_id=session_id,
             diagnostics=diagnostics,
         )
 
     def open_bundle_stream(self, bundle: SupervisorExecutionBundle):
+        if bundle.session_id and bundle.graph_config["configurable"]["thread_id"] != db.get_chat_transcript_state(bundle.session_id)["active_checkpoint_thread_id"]:
+            raise ValueError("conversation_context_superseded")
         return bundle.graph.astream_events(bundle.payload, config=bundle.graph_config, version="v2")
 
     async def get_state_snapshot(self, bundle: SupervisorExecutionBundle) -> dict[str, Any] | None:

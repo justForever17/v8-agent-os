@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { ChatWindow } from "@/components/chat/ChatWindow";
+import { conversationEventDisposition, isStaleTranscript, readTranscriptIdentity, type TranscriptIdentity } from "@v8/session-realtime";
 import type { ChatTurnIndexEntry } from "@/components/chat/TurnNavigator";
 import { InputArea } from "@/components/chat/InputArea";
 import { draftOwnerKey, hydrateDraft, readDraft, removeDrafts, setDraftField } from "@/lib/composer-drafts";
@@ -1112,6 +1113,8 @@ export default function ChatClient() {
     const [supervisorReasoningEffortControl, setSupervisorReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const reasoningEffortRequestSeqRef = useRef(0);
     const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
+    const transcriptIdentitiesRef = useRef(new Map<string, TranscriptIdentity>());
+    const [transcriptIdentity, setTranscriptIdentity] = useState<TranscriptIdentity>({ transcriptRevision: 0, contextEpoch: 0 });
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [hasOlderTurns, setHasOlderTurns] = useState(false);
     const [isLoadingOlderTurns, setIsLoadingOlderTurns] = useState(false);
@@ -1561,6 +1564,7 @@ export default function ChatClient() {
     } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
         submitEndpoint: `/api/chat-submit`,
+        acceptsRuntimeEvent: (event) => conversationEventDisposition(transcriptIdentitiesRef.current.get(activeConversationId || "") || { transcriptRevision: 0, contextEpoch: 0 }, event) === "apply",
         conversationId: activeConversationId,
         onResync: async (conversationId) => {
             if (activeConversationIdRef.current !== conversationId) return;
@@ -2652,7 +2656,7 @@ export default function ChatClient() {
 
     const loadConversationHistory = useCallback(async (
         conversationId: string,
-        options?: { mergeWithCurrent?: boolean; preserveCurrentOnEmpty?: boolean },
+        options?: { mergeWithCurrent?: boolean; preserveCurrentOnEmpty?: boolean; replaceTranscript?: boolean },
     ) => {
         historyLoadControllerRef.current?.abort();
         const controller = new AbortController();
@@ -2666,7 +2670,7 @@ export default function ChatClient() {
         let turnPage: Awaited<ReturnType<typeof loadConversationTurnPage>>;
         try {
             [detailRes, turnPage] = await Promise.all([
-                fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=1`, {
+                fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=${options?.replaceTranscript ? "0" : "1"}`, {
                     cache: "no-store",
                     signal,
                 }),
@@ -2689,6 +2693,20 @@ export default function ChatClient() {
         const data = await detailRes.json();
         if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
         const detailPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+        const incomingIdentity = readTranscriptIdentity(detailPayload);
+        const previousIdentity = transcriptIdentitiesRef.current.get(conversationId);
+        if (previousIdentity && isStaleTranscript(previousIdentity, incomingIdentity)) return;
+        const epochChanged = incomingIdentity.contextEpoch > (previousIdentity?.contextEpoch || 0);
+        if (epochChanged && !options?.replaceTranscript) {
+            const full = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}`, { cache: "no-store", signal });
+            if (!full.ok) throw new Error("transcript_refresh_failed");
+            const authoritative = await full.json();
+            if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+            Object.assign(detailPayload, authoritative);
+        }
+        transcriptIdentitiesRef.current.set(conversationId, readTranscriptIdentity(detailPayload));
+        setTranscriptIdentity(readTranscriptIdentity(detailPayload));
+        if (epochChanged || options?.replaceTranscript) realtimeMessageStateRef.current.pendingRuntimeEvents = [];
         const projectionPayload = (detailPayload?.projection && typeof detailPayload.projection === "object")
             ? detailPayload.projection
             : detailPayload;
@@ -2719,7 +2737,7 @@ export default function ChatClient() {
         }
 
         const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
-        const normalized = normalizeMessagesForState(turnPage.messages);
+        const normalized = normalizeMessagesForState((epochChanged || options?.replaceTranscript) && Array.isArray(detailPayload.messages) ? normalizeProjectedMessages(detailPayload.messages) : turnPage.messages);
         const preserveCurrentHistory = shouldPreserveCurrentHistoryOnEmpty({
             preserveCurrentOnEmpty: options?.preserveCurrentOnEmpty,
             currentMessageCount: messagesRef.current.length,
@@ -2744,7 +2762,7 @@ export default function ChatClient() {
             preserveCurrentHistory ? messagesRef.current : normalized,
             latestSeq,
             {
-                mergeWithCurrent: options?.mergeWithCurrent === true || messagesRef.current.length > normalized.length,
+                mergeWithCurrent: !(epochChanged || options?.replaceTranscript) && (options?.mergeWithCurrent === true || messagesRef.current.length > normalized.length),
             },
         );
         messageCacheRef.current.set(conversationId, cloneMessages(nextMessages));
@@ -3451,6 +3469,8 @@ export default function ChatClient() {
         if (!normalizedEvent) {
             return;
         }
+        const recoveryDisposition = conversationEventDisposition(transcriptIdentitiesRef.current.get(conversationId) || { transcriptRevision: 0, contextEpoch: 0 }, normalizedEvent);
+        if (recoveryDisposition === "ignore") return;
         const rawSeq = typeof rawEvent === "object" && rawEvent !== null
             ? Number((rawEvent as Record<string, unknown>).seq || 0)
             : 0;
@@ -3469,6 +3489,10 @@ export default function ChatClient() {
         seenRealtimeEventIdentitiesRef.current.remember(acceptance.identity, eventSeq);
         if (eventSeq) {
             latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, eventSeq);
+        }
+        if (recoveryDisposition === "refresh") {
+            void loadConversationHistory(conversationId, { replaceTranscript: true }).catch(() => undefined);
+            return;
         }
 
         ingestWorkbenchRuntimeEvent(rawEvent);
@@ -4183,6 +4207,17 @@ export default function ChatClient() {
             try {
                 const data = attachSseEventId(JSON.parse(event.data), event) as Record<string, unknown>;
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+                const incomingIdentity = readTranscriptIdentity(snapshotPayload);
+                const previousIdentity = transcriptIdentitiesRef.current.get(activeConversationId);
+                if (previousIdentity && isStaleTranscript(previousIdentity, incomingIdentity)) return;
+                const epochChanged = incomingIdentity.contextEpoch > (previousIdentity?.contextEpoch || 0);
+                transcriptIdentitiesRef.current.set(activeConversationId, incomingIdentity);
+                setTranscriptIdentity(incomingIdentity);
+                if (epochChanged) {
+                    realtimeMessageStateRef.current.pendingRuntimeEvents = [];
+                    void loadConversationHistory(activeConversationId, { replaceTranscript: true }).catch(() => undefined);
+                    return;
+                }
                 const snapshotRecord = snapshotPayload && typeof snapshotPayload === "object"
                     ? snapshotPayload as Record<string, unknown>
                     : {};
@@ -4528,6 +4563,18 @@ export default function ChatClient() {
                             processes={hudProcesses}
                             contextReferences={projectionContextReferences}
                             conversationId={activeConversationId}
+                            recovery={activeConversationId ? {
+                                sessionId: activeConversationId, draftKey, transcriptRevision: transcriptIdentity.transcriptRevision,
+                                busy: activeConversationRunning || localConversationLoading || hasAskUserSurface || visibleQueuedMessages.length > 0 || Boolean(governancePendingApprovalId),
+                                onCommitted: async (result) => {
+                                    if (result.sessionId === activeConversationIdRef.current) {
+                                        transcriptIdentitiesRef.current.set(result.sessionId, readTranscriptIdentity(result));
+                                        realtimeMessageStateRef.current.pendingRuntimeEvents = [];
+                                        await loadConversationHistory(result.sessionId, { replaceTranscript: true });
+                                    }
+                                    await refreshConversations();
+                                },
+                            } : undefined}
                             isLoading={localConversationLoading}
                             userAvatar={chatUserAvatar}
                             userName={chatUserName}

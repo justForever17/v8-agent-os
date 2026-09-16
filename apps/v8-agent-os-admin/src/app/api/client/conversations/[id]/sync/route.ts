@@ -51,6 +51,8 @@ export async function GET(
             deletions: Array.isArray(syncData.deletions) ? syncData.deletions : [],
             syncCursor: syncData.syncCursor,
             sessionId: id,
+            transcriptRevision: syncData.transcriptRevision ?? 0,
+            contextEpoch: syncData.contextEpoch ?? 0,
         });
 
     } catch (error) {

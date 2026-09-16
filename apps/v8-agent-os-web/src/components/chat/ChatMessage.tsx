@@ -202,7 +202,7 @@ function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[], anchorIndex:
         if (node.kind !== "narrative" || node.role !== "assistant") {
             continue;
         }
-        const text = parseContentToBlocks(String(node.content || ""), false, 0, false)
+        const text = parseContentToBlocks(String(node.content || ""), false, 0, false, node.editedBy === "user")
             .filter((block) => block.type !== "voice")
             .map((block) => block.content.trim())
             .filter(Boolean)
@@ -313,6 +313,7 @@ function extractContextSessionRefs(message: Message): string[] {
 }
 
 function extractComposerPresentation(message: Message): ComposerPresentation | null {
+    if ((message.editedBy || message.metadata?.editedBy) === "user") return null;
     const raw = message.metadata?.composerPresentation;
     if (!raw || typeof raw !== "object") return null;
     const record = raw as Record<string, unknown>;
@@ -484,8 +485,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const mentionReferences = useMemo(() => extractMentionReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
     const canvasHumanSurface = useMemo(
-        () => message.role === "user" && isCreativeCanvasCanonicalMessage(message.content, message.metadata),
-        [message.content, message.metadata, message.role],
+        () => message.role === "user" && message.editedBy !== "user" && isCreativeCanvasCanonicalMessage(message.content, message.metadata),
+        [message.content, message.metadata, message.role, message.editedBy],
     );
     const composerPresentation = useMemo(
         () => canvasHumanSurface
@@ -503,11 +504,12 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         || (!composerPresentation && (commandPresetName || skillReferences.length > 0 || mentionReferences.length > 0)),
     );
     const normalizedContent = useMemo(() => {
+        if (message.editedBy === "user") return message.content || "";
         const content = message.role === "user"
             ? normalizeHumanAuthoredListMarkers(message.content || "")
             : message.content || "";
         return normalizeWorkspaceLinks(content);
-    }, [message.content, message.role]);
+    }, [message.content, message.role, message.editedBy]);
     const copyLabel = t("web.generated.8095bb5671");
     const deleteLabel = t("web.generated.2f98d36496");
     const userDisplayName = String(userName || "").trim() || t("web.generated.d2ccadbbf7");

@@ -26,6 +26,7 @@ from core.response_normalizer import extract_text_and_reasoning
 from core.model_budget_service import model_budget_service
 from core.provider_compatibility import normalize_provider_error
 from core.provider_health_service import provider_health_service
+from core.provider_circuit import ProviderCircuitOpen
 from erc.runtime_context import get_runtime_context
 from erc.run_service import run_service
 
@@ -38,7 +39,7 @@ _LOCAL_RETRY_ERROR_CODES = {
     "provider_unavailable",
     _RESPONSE_CONTRACT_ERROR_CODE,
 }
-_FAILOVER_ERROR_CODES = _LOCAL_RETRY_ERROR_CODES | {"quota_exceeded"}
+_FAILOVER_ERROR_CODES = _LOCAL_RETRY_ERROR_CODES | {"quota_exceeded", "provider_circuit_open"}
 _STREAM_QUEUE_POLL_SECONDS = 0.25
 
 
@@ -339,6 +340,9 @@ class ModelFailoverService:
             capability_gate = evaluate_capability_matrix(effective_capability_matrix, capability_requirements)
             if not capability_gate["effectiveCapabilityMatch"]:
                 continue
+            provider_state = provider_states.get(model["providerId"], {})
+            if not provider_state.get("circuitAllowsAttempt", provider_state.get("circuitState") != "open"):
+                continue
             if str(model["modelId"]) == preferred_model_id or model_runtime_id == preferred_model_id:
                 candidates.insert(
                     0,
@@ -358,12 +362,8 @@ class ModelFailoverService:
                 )
                 continue
 
-            provider_state = provider_states.get(model["providerId"], {})
-            if provider_state.get("circuitState") == "open":
-                continue
-
             same_provider = model["providerId"] == preferred_provider_id
-            if not allow_failover and not same_provider:
+            if not allow_failover:
                 continue
             if same_api_standard_failover and preferred_api_standard and api_standard != preferred_api_standard:
                 continue
@@ -475,6 +475,16 @@ class ModelFailoverService:
             capability_requirements=capability_requirements,
         )
         if not candidates:
+            preferred_record = model_control_plane.get_model_record(effective_preferred_model_id, config) or {}
+            preferred_provider_id = str(preferred_record.get('provider_id') or '')
+            statuses = provider_health_service.build_provider_statuses(
+                config, model_control_plane.list_models(config), model_control_plane._build_resolved_roles(config))
+            blocked_provider = next((item for item in statuses if item.get('providerId') == preferred_provider_id
+                and not item.get('circuitAllowsAttempt', item.get('circuitState') != 'open')), None)
+            if blocked_provider:
+                raise ProviderCircuitOpen(preferred_provider_id,
+                    retry_after_seconds=float(blocked_provider.get('retryAfterSeconds') or 0),
+                    reason=str(blocked_provider.get('circuitReason') or 'circuit_open'))
             raise V8LLMCapabilityMismatchError(
                 code="model_capability_unavailable",
                 message="Model Hub 中没有满足当前运行能力要求的已配置模型。",
@@ -739,6 +749,13 @@ class ModelFailoverService:
                     break
 
         last_attempt = attempts[-1] if attempts else {}
+        if last_attempt.get('code') == 'provider_circuit_open':
+            diagnostic = dict(last_attempt.get('diagnostic') or {})
+            error = ProviderCircuitOpen(str(last_attempt.get('providerId') or 'unknown'),
+                retry_after_seconds=float(diagnostic.get('retryAfterSeconds') or 0),
+                reason=str(diagnostic.get('reason') or 'circuit_open'))
+            error.details['attempts'] = attempts
+            raise error
         raise build_llm_error_from_normalized(
             {
                 "code": str(last_attempt.get("code") or "model_invocation_failed"),

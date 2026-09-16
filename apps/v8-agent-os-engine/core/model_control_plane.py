@@ -194,6 +194,8 @@ DEFAULT_GOVERNANCE = {
     "providerHealthWindowDays": 7,
     "providerFailureThreshold": 3,
     "providerErrorRateThreshold": 0.6,
+    "providerCircuitCooldownSeconds": 60,
+    "providerCircuitProbeLeaseSeconds": 120,
     "budgets": {
         "enabled": True,
         "globalDailyCostLimit": 0.0,
@@ -202,6 +204,7 @@ DEFAULT_GOVERNANCE = {
         "runMaxTokens": 0,
         "defaultProjectDailyCostLimit": 0.0,
         "defaultProjectDailyTokenLimit": 0,
+        "estimatedOutputTokens": 1024,
         "projectBudgets": [],
     },
 }
@@ -939,6 +942,20 @@ class ModelControlPlane:
                     min(_safe_float(governance_in.get("providerErrorRateThreshold"), DEFAULT_GOVERNANCE["providerErrorRateThreshold"]), 1.0),
                     0.0,
                 ),
+                "providerCircuitCooldownSeconds": max(
+                    _safe_float(
+                        governance_in.get("providerCircuitCooldownSeconds"),
+                        DEFAULT_GOVERNANCE["providerCircuitCooldownSeconds"],
+                    ),
+                    1.0,
+                ),
+                "providerCircuitProbeLeaseSeconds": max(
+                    _safe_float(
+                        governance_in.get("providerCircuitProbeLeaseSeconds"),
+                        DEFAULT_GOVERNANCE["providerCircuitProbeLeaseSeconds"],
+                    ),
+                    1.0,
+                ),
                 "maxLocalRetries": DEFAULT_GOVERNANCE["maxLocalRetries"]
                 if _safe_int(governance_in.get("maxLocalRetries")) is None
                 else _safe_int(governance_in.get("maxLocalRetries")),
@@ -979,6 +996,13 @@ class ModelControlPlane:
                         )
                         or 0,
                         0,
+                    ),
+                    "estimatedOutputTokens": max(
+                        _safe_int(
+                            budgets_in.get("estimatedOutputTokens"),
+                            DEFAULT_GOVERNANCE["budgets"]["estimatedOutputTokens"],
+                        ) or 1,
+                        1,
                     ),
                     "projectBudgets": [
                         normalized_budget

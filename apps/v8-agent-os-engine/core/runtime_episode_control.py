@@ -9,11 +9,35 @@ import json
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from core.database import db
-from core.runtime_episodes import TERMINAL_EPISODE_STATES, emit_runtime_episode_event
+from core.runtime_episodes import (
+    TERMINAL_EPISODE_STATES, emit_runtime_episode_event, runtime_episode_deadline_at,
+    runtime_episode_deadline_remaining, runtime_episode_parent_id,
+)
 
 
 class EpisodeControlCancelled(asyncio.CancelledError):
     pass
+
+
+class EpisodeDeadlineExceeded(EpisodeControlCancelled):
+    def __init__(self, episode_id: str, deadline_at: str):
+        self.episode_id, self.deadline_at = episode_id, deadline_at
+        super().__init__(f"Runtime episode {episode_id} exceeded deadlineAt {deadline_at}.")
+
+
+def assert_episode_deadline_current(episode: dict[str, Any], run_id: str) -> None:
+    """Also fence descendants whose parent expired before its watchdog ran."""
+    seen = set()
+    while episode:
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "")
+        if episode_id in seen or str(episode.get("run_id") or episode.get("runId") or "") != run_id:
+            return
+        seen.add(episode_id)
+        remaining = runtime_episode_deadline_remaining(episode)
+        if remaining is not None and remaining <= 0:
+            raise EpisodeDeadlineExceeded(episode_id, runtime_episode_deadline_at(episode))
+        parent_id = runtime_episode_parent_id(episode)
+        episode = db.get_runtime_episode(parent_id) if parent_id else None
 
 
 def inspect_episode(episode_id: str, *, session_id: str, run_id: str, detail: bool = False) -> dict[str, Any]:
@@ -121,6 +145,7 @@ def assert_episode_execution_allowed(context: dict[str, Any]) -> None:
         return
     for episode_id in {str(context.get(key) or "") for key in ("delegation_id", "episode_id", "parent_delegation_id")} - {""}:
         episode = db.get_runtime_episode(episode_id) or {}
+        assert_episode_deadline_current(episode, run_id)
         if cancellation_requested(episode_id, run_id) or episode.get("state") in TERMINAL_EPISODE_STATES:
             raise EpisodeControlCancelled(episode_id)
     assert_partial_dependencies_current(list(context.get("dependency_results") or []))
@@ -148,6 +173,7 @@ def apply_worker_controls(state: dict[str, Any], *, episode_id: str, run_id: str
     """
     if not episode_id or not run_id:
         return False
+    assert_episode_execution_allowed({"episode_id": episode_id, "run_id": run_id})
     cursors = dict(state.get("runtime_control_cursors") or {})
     controls = db.list_runtime_episode_messages(run_id=run_id, recipient=episode_id, pending_only=False,
                                                after_seq=int(cursors.get(episode_id) or 0))

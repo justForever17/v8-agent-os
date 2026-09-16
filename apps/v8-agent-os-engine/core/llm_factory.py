@@ -4,6 +4,7 @@ import sys
 import time
 import re
 import math
+import uuid
 from datetime import datetime, timezone
 
 from langchain_anthropic import ChatAnthropic
@@ -52,6 +53,7 @@ from core.provider_compatibility import (
     install_provider_compatibility_patches,
     normalize_provider_error,
 )
+from core.provider_circuit import provider_circuit_service
 from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
 from erc.runtime_context import get_runtime_context
 from langchain_core.embeddings import Embeddings
@@ -383,7 +385,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         request_kwargs: Dict[str, Any] = {"json": payload, "headers": headers}
         if self.auth_query:
             request_kwargs["params"] = self.auth_query
-        res = requests.post(self.endpoint, **request_kwargs)
+        res = self._post_embedding(request_kwargs)
         if res.status_code != 200:
             observed_limit = _extract_observed_token_limit(res.text)
             current_limit = self._effective_max_tokens()
@@ -398,7 +400,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
                 retry_kwargs: Dict[str, Any] = {"json": retry_payload, "headers": headers}
                 if self.auth_query:
                     retry_kwargs["params"] = self.auth_query
-                retry_res = requests.post(self.endpoint, **retry_kwargs)
+                retry_res = self._post_embedding(retry_kwargs)
                 if retry_res.status_code == 200:
                     res = retry_res
                     texts = retry_texts
@@ -475,6 +477,35 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             },
         )
         return [item["embedding"] for item in data]
+
+    def _post_embedding(self, request_kwargs: Dict[str, Any]):
+        """Admit exactly one circuit attempt for this one HTTP request."""
+        config = model_control_plane.get_config()
+        permit = provider_circuit_service.acquire(
+            str(self.provider_id or self.provider_name or ""), config=config,
+            attempt_id=f"aux:embedding:{uuid.uuid4()}",
+        )
+        try:
+            import requests
+            response = requests.post(self.endpoint, **request_kwargs)
+        except BaseException:
+            provider_circuit_service.finish(
+                permit, success=False, config=config, error_code="provider_unavailable",
+            )
+            raise
+        error_kind = _classify_embedding_provider_error(int(response.status_code or 0), response.text)
+        circuit_error = {
+            "input_limit_exceeded": "invalid_request",
+            "rate_limited": "rate_limit",
+            "auth_failed": "auth_error",
+            "quota_exceeded": "quota_exceeded",
+            "network_error": "provider_unavailable",
+            "provider_error": "provider_unavailable",
+        }.get(error_kind)
+        provider_circuit_service.finish(
+            permit, success=response.status_code == 200, config=config, error_code=circuit_error,
+        )
+        return response
         
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._call_api(texts)
@@ -651,7 +682,31 @@ class RestReranker(BaseReranker):
         request_kwargs: Dict[str, Any] = {"json": payload, "headers": headers, "timeout": 30}
         if self.auth_query:
             request_kwargs["params"] = self.auth_query
-        return requests.post(endpoint, **request_kwargs)
+        config = model_control_plane.get_config()
+        permit = provider_circuit_service.acquire(
+            str(self.provider_id or self.provider_name or ""), config=config,
+            attempt_id=f"aux:reranker:{uuid.uuid4()}",
+        )
+        try:
+            response = requests.post(endpoint, **request_kwargs)
+        except BaseException:
+            provider_circuit_service.finish(
+                permit, success=False, config=config, error_code="provider_unavailable",
+            )
+            raise
+        error_kind = _classify_rerank_provider_error(int(response.status_code or 0), response.text)
+        circuit_error = {
+            "input_limit_exceeded": "invalid_request",
+            "rate_limited": "rate_limit",
+            "auth_failed": "auth_error",
+            "quota_exceeded": "quota_exceeded",
+            "network_error": "provider_unavailable",
+            "provider_error": "provider_unavailable",
+        }.get(error_kind)
+        provider_circuit_service.finish(
+            permit, success=response.status_code == 200, config=config, error_code=circuit_error,
+        )
+        return response
 
     def rerank(self, query: str, documents: list[str], top_k: int = 3) -> list[Dict[str, Any]]:
         import requests
@@ -1341,6 +1396,7 @@ class LLMFactory:
                 stream_mode=stream_mode,
                 requested_max_tokens=int(kwargs.get("max_tokens") or meta.get("global_max_tokens") or 0),
                 stream_usage_requested=bool(kwargs.get("stream_usage")),
+                governance_config_getter=model_control_plane.get_config,
             )
         )
         kwargs["callbacks"] = callbacks

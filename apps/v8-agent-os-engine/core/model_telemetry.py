@@ -11,6 +11,9 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
 from core.database import db
+from core.model_budget_service import model_budget_service
+from core.provider_circuit import provider_circuit_service
+from core.prompt_budget import estimate_prompt_tokens
 from core.model_usage import cache_token_counts, normalize_usage_mapping
 from core.response_normalizer import extract_text_and_reasoning
 from core.time_truth import utc_now_iso
@@ -459,10 +462,16 @@ class _InvocationStart:
     chunk_count: int = 0
     chunk_char_count: int = 0
     max_inter_chunk_gap_ms: float = 0.0
+    reservation_id: str | None = None
+    circuit_permit: Dict[str, Any] | None = None
 
 
 class ModelTelemetryCallback(BaseCallbackHandler):
-    raise_error = False
+    # Admission failures (budget/circuit) must reach the model caller. The
+    # persistence path below is kept best-effort by the existing database
+    # owners, but governance decisions cannot be silently swallowed by the
+    # callback manager.
+    raise_error = True
     run_inline = True
 
     def __init__(
@@ -484,6 +493,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         stream_mode: str = "",
         requested_max_tokens: int = 0,
         stream_usage_requested: bool = False,
+        governance_config_getter=None,
     ):
         self.model_id = model_id
         self.provider_id = provider_id
@@ -501,6 +511,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         self.stream_mode = stream_mode
         self.requested_max_tokens = max(0, _safe_int(requested_max_tokens))
         self.stream_usage_requested = bool(stream_usage_requested)
+        self.governance_config_getter = governance_config_getter
         self._starts: Dict[str, _InvocationStart] = {}
         self._streaming_diagnostics: Dict[str, Dict[str, Any]] = {}
 
@@ -508,18 +519,52 @@ class ModelTelemetryCallback(BaseCallbackHandler):
     def ignore_chat_model(self) -> bool:
         return False
 
-    def _record_start(self, run_id: Any, message_batches: int) -> None:
+    def _record_start(self, run_id: Any, message_batches: int, estimated_input_tokens: int = 1) -> None:
         key = str(run_id)
         if key in self._starts:
             return
         context = get_runtime_context()
         context["context_preparation_ms"] = _context_preparation_timings(context.get("context_preparation_ms"))
+        admission = self._admit(run_id, context, estimated_input_tokens)
         self._starts[key] = _InvocationStart(
             started_at=time.perf_counter(),
             started_at_iso=_utc_now(),
             context=context,
             message_batches=max(int(message_batches or 0), 0),
+            reservation_id=admission.get("reservation_id"),
+            circuit_permit=admission.get("circuit_permit"),
         )
+
+    def _admit(self, run_id: Any, context: Dict[str, Any], estimated_input_tokens: int) -> Dict[str, Any]:
+        if self.governance_config_getter is None:
+            return {}
+        config = self.governance_config_getter() or {}
+        run_value = context.get("run_id") or str(run_id)
+        project_id = context.get("project_id")
+        output_tokens = max(1, _safe_int((config.get("governance") or {}).get("budgets", {}).get("estimatedOutputTokens"), 1024))
+        estimated_tokens = max(1, int(estimated_input_tokens) + output_tokens)
+        estimated_cost = None
+        if self.cost_per_input is not None or self.cost_per_output is not None:
+            estimated_cost = _estimate_cost(max(1, int(estimated_input_tokens)), self.cost_per_input) + _estimate_cost(output_tokens, self.cost_per_output)
+        reservation_id = model_budget_service.reserve(
+            config=config, run_id=run_value, project_id=project_id,
+            provider_id=self.provider_id, model_id=self.model_id, role=self.role,
+            capability_class=self.capability_class, estimated_tokens=estimated_tokens,
+            estimated_cost=estimated_cost, reservation_id=str(run_id),
+        )
+        permit = None
+        try:
+            permit = provider_circuit_service.acquire(
+                self.provider_id, config=config, attempt_id=str(run_id),
+                explicit_probe=self.request_kind.endswith("_test"),
+            )
+            model_budget_service.mark_dispatched(reservation_id)
+        except BaseException:
+            if permit:
+                provider_circuit_service.release(permit, reason="admission_failed")
+            model_budget_service.release(reservation_id, reason="admission_failed")
+            raise
+        return {"reservation_id": reservation_id, "circuit_permit": permit, "config": config}
 
     def on_chat_model_start(
         self,
@@ -532,7 +577,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         metadata=None,
         **kwargs: Any,
     ) -> None:
-        self._record_start(run_id, sum(len(batch) for batch in messages or []))
+        estimated = sum(estimate_prompt_tokens(getattr(message, "content", "")) for batch in messages or [] for message in batch)
+        self._record_start(run_id, sum(len(batch) for batch in messages or []), estimated)
 
     def on_llm_start(
         self,
@@ -548,7 +594,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         # Some compatible adapters expose the generic LLM callback contract
         # instead of the chat-model contract. Keep the same timing truth for
         # both surfaces without resetting a chat start event for one run.
-        self._record_start(run_id, len(prompts or []))
+        self._record_start(run_id, len(prompts or []), sum(estimate_prompt_tokens(prompt) for prompt in prompts or []))
 
     def on_llm_end(
         self,
@@ -614,7 +660,12 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "streamUsageRequested": self.stream_usage_requested,
                 **self._stream_timing_metadata(start, finished_at),
             },
+            reservation_id=start.reservation_id if start else None,
+            circuit_permit=start.circuit_permit if start else None,
         )
+        if start and start.circuit_permit:
+            finish_reason = str(runtime_diagnostics.get("finishReason") or "").lower()
+            provider_circuit_service.finish(start.circuit_permit, success=not finish_reason in {"refusal", "content_filter", "safety"}, config=self.governance_config_getter() if self.governance_config_getter else {}, error_code="content_policy_block" if finish_reason in {"refusal", "content_filter", "safety"} else None)
 
     def on_llm_error(
         self,
@@ -662,7 +713,11 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "streamUsageRequested": self.stream_usage_requested,
                 **self._stream_timing_metadata(start, finished_at),
             },
+            reservation_id=start.reservation_id if start else None,
+            circuit_permit=start.circuit_permit if start else None,
         )
+        if start and start.circuit_permit:
+            provider_circuit_service.finish(start.circuit_permit, success=False, config=self.governance_config_getter() if self.governance_config_getter else {}, error_code=str(getattr(error, "code", "") or "") or None)
 
     def on_llm_new_token(
         self,
@@ -742,6 +797,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         error_code: Optional[str],
         error_message: Optional[str],
         metadata: Dict[str, Any],
+        reservation_id: str | None = None,
+        circuit_permit: Dict[str, Any] | None = None,
     ) -> None:
         invocation_id = str(uuid.uuid4())
         finished_at = _utc_now()
@@ -775,8 +832,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             "finished_at": finished_at,
         }
         db.add_model_invocation_log(log_record)
-        db.upsert_usage_ledger(
-            {
+        ledger = {
                 "id": str(uuid.uuid4()),
                 "bucket_date": finished_at[:10],
                 "scope_type": scope_type,
@@ -794,7 +850,18 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "cost_total": cost_total,
                 "latency_ms_total": latency_ms,
             }
-        )
+        if reservation_id:
+            with model_budget_service.settlement(
+                reservation_id,
+                usage_reported=bool(metadata.get("usageReported")),
+                actual_tokens=usage.get("total_tokens", 0),
+                actual_cost=cost_total,
+            ) as (connection, should_write):
+                if should_write and bool(metadata.get("usageReported")):
+                    db.upsert_usage_ledger(ledger, connection=connection)
+                    model_budget_service.mark_ledger_accounted(reservation_id, connection=connection)
+        else:
+            db.upsert_usage_ledger(ledger)
         db.add_provider_health_log(
             {
                 "id": str(uuid.uuid4()),
@@ -836,6 +903,7 @@ class ModelTelemetryService:
         stream_mode: str = "",
         requested_max_tokens: int = 0,
         stream_usage_requested: bool = False,
+        governance_config_getter=None,
     ) -> ModelTelemetryCallback:
         return ModelTelemetryCallback(
             model_id=model_id,
@@ -854,6 +922,7 @@ class ModelTelemetryService:
             stream_mode=stream_mode,
             requested_max_tokens=requested_max_tokens,
             stream_usage_requested=stream_usage_requested,
+            governance_config_getter=governance_config_getter,
         )
 
     def record_aux_model_invocation(

@@ -16,10 +16,10 @@ from pydantic import BaseModel as PydanticModel, ConfigDict, PrivateAttr
 
 from core.model_capability_matrix import build_effective_capability_matrix
 from core.model_token_policy import OUTPUT_TOKEN_KEYS, prepare_output_token_kwargs
-from core.llm_exceptions import V8LLMStructuredOutputError, raise_as_v8_llm_error
+from core.llm_exceptions import V8LLMContentPolicyError, V8LLMStructuredOutputError, raise_as_v8_llm_error
 from core.prompt_cache_gateway import PreparedPromptCacheRequest, prompt_cache_gateway
 from core.provider_hosted_tools import provider_hosted_tool_schemas
-from core.provider_compatibility import normalize_provider_error
+from core.provider_compatibility import normalize_provider_error, provider_rejection_details
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls, sanitize_model_tool_calls
 from core.model_text_protocol import NativeToolTextGuard, has_native_tool_text
 
@@ -839,6 +839,9 @@ class V8ChatModelAdapter(BaseChatModel):
         )
 
     def _coerce_ai_message(self, response: Any, *, force_prompt_emulated_tools: bool = False) -> AIMessage:
+        rejection = self._provider_rejection(response, stage="output")
+        if rejection:
+            raise rejection
         self._validate_complete_tool_response(response)
         if isinstance(response, AIMessage):
             return self._apply_prompt_emulated_tool_calls(
@@ -876,6 +879,18 @@ class V8ChatModelAdapter(BaseChatModel):
                 tool_mode="prompt_emulated" if force_prompt_emulated_tools else None,
             ),
             force=force_prompt_emulated_tools,
+        )
+
+    def _provider_rejection(self, response: Any, *, stage: str, partial_output: bool = False):
+        details = provider_rejection_details(response, stage=stage)
+        if not details:
+            return None
+        details["partialOutputAvailable"] = bool(partial_output or _message_text(response))
+        return V8LLMContentPolicyError(
+            code="content_policy_block", message="供应商拒绝了本轮内容。",
+            provider=self.provider_standard, model=self.model_id, retryable=False,
+            user_action="请修改后发送新请求，或明确选择其他已配置模型；已收到的正文会保留。",
+            details=details,
         )
 
     def _validate_complete_tool_response(self, response: Any) -> None:
@@ -1049,10 +1064,14 @@ class V8ChatModelAdapter(BaseChatModel):
         )
 
     def _should_fallback_prompt_tools(self, exc: Exception) -> bool:
+        if isinstance(exc, V8LLMContentPolicyError):
+            return False
         matrix = self.effective_capability_matrix()
         if not bool(matrix.get("supports_prompt_emulated_tools")):
             return False
         normalized = normalize_provider_error(exc, provider=self.provider_standard, model=self.model_id)
+        if normalized.get("code") == "content_policy_block":
+            return False
         if str(normalized.get("code") or "") in {"capability_mismatch", "invalid_request"}:
             return True
         raw = str(exc or "").lower()
@@ -1327,6 +1346,14 @@ class V8ChatModelAdapter(BaseChatModel):
                 stop=stop,
                 **prepared.kwargs,
             ):
+                rejection = self._provider_rejection(
+                    chunk, stage="stream", partial_output=bool(aggregate_chunk and _message_text(aggregate_chunk)),
+                )
+                if rejection:
+                    partial = _message_text(chunk)
+                    if partial:
+                        yield ChatGenerationChunk(message=AIMessageChunk(content=partial), text=partial)
+                    raise rejection
                 ai_chunk = self._decorate_prompt_cache_chunk(
                     self._coerce_chunk(
                         chunk,
@@ -1452,6 +1479,14 @@ class V8ChatModelAdapter(BaseChatModel):
                 stop=stop,
                 **prepared.kwargs,
             ):
+                rejection = self._provider_rejection(
+                    chunk, stage="stream", partial_output=bool(aggregate_chunk and _message_text(aggregate_chunk)),
+                )
+                if rejection:
+                    partial = _message_text(chunk)
+                    if partial:
+                        yield ChatGenerationChunk(message=AIMessageChunk(content=partial), text=partial)
+                    raise rejection
                 ai_chunk = self._decorate_prompt_cache_chunk(
                     self._coerce_chunk(
                         chunk,

@@ -12,13 +12,7 @@ Extract the archive into a permanent, version-specific directory owned by a dedi
 ./install.sh
 ```
 
-The installer checks Python dependencies and the shared Agent browser against a temporary state directory. If Chromium reports missing system libraries, an administrator can run the installed interpreter's `-m playwright install-deps chromium`, then rerun the verifier:
-
-```bash
-env -u DISPLAY -u WAYLAND_DISPLAY \
-  PLAYWRIGHT_BROWSERS_PATH="$PWD/apps/v8-agent-os-engine/.playwright-browsers" \
-  apps/v8-agent-os-engine/.venv/bin/python3 scripts/server/verify_server.py --bundle "$PWD" --browser
-```
+The installer checks Python dependencies and the shared Agent browser against a temporary state directory. If Chromium reports missing system libraries, an administrator can run the installed interpreter's `-m playwright install-deps chromium`. After fixing a dependency, download or system-library error, rerun `./install.sh` in the same directory to resume. The installer verifies the archive checksums and its saved progress before continuing. It refuses to adopt a pre-existing unmanaged virtual environment; use a fresh version directory in that case.
 
 Use the existing Engine credential owner to create a key. Keep the key directory private and back up the key separately from the encrypted state. A path is passed to the service; key contents are never passed on the command line.
 
@@ -66,7 +60,9 @@ The default eight runtime families are chat, memory, extensions, automation, net
 
 Available optional packs include `document_ingestion`, `vector_memory`, `creative_media` and `cloud_voice`. Installation uses the same transaction, receipt verification and recovery mechanism as Admin. Explicit installation requires a running Engine, downloads dependencies and does not automatically restart a running task. A failed or incompatible receipt is reported as unavailable. After restart, installed capabilities become visible.
 
-Base memory uses the canonical SQLite/FTS5 store and knowledge graph. Unselected vector support is a normal state. Selecting vector support requires an embedding model; failures then appear as degraded, while text memory remains available. Startup rebuilds vector projections from current canonical revisions and tombstones. Media processing may additionally require FFmpeg and configured providers; local ASR/OCR and large models are not included.
+Document ingestion adds Office/PDF parsing and keeps text retrieval available without a vector model.
+
+Base memory uses the canonical SQLite/FTS5 store and knowledge graph. Unselected vector support is a normal state. Selecting vector support requires configuring an embedding model and restarting Engine; a reranker is optional. Failures then appear as degraded, while text memory remains available. Startup rebuilds vector projections from current canonical revisions and tombstones. Media processing may additionally require FFmpeg and configured providers; local ASR/OCR and large models are not included.
 
 Headless Chromium uses the governed Agent browser profile and domain permissions. It does not reuse personal browser cookies. Sites requiring interactive challenges may need user assistance. Browser control and web research remain distinct from excluded desktop automation.
 

@@ -421,9 +421,8 @@ async def client_api(request: Request, path: str):
                     raise HTTPException(400, "runIds_invalid")
                 for run_id in run_ids:
                     _record_session(request, principal, "get_run_record", str(run_id))
-            if _is_phone_principal(principal):
-                body = dict(body)
-                body["userId"] = body["user_id"] = principal.subject
+            body = dict(body)
+            body["userId"] = body["user_id"] = principal.subject
         from starlette.routing import Match
         from core.client_transport import internal_scope
         target_path = "/" + path

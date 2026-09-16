@@ -5,6 +5,24 @@ from datetime import date, datetime, time
 from enum import Enum
 from pathlib import Path
 from typing import Any
+import json
+import os
+import uuid
+
+
+def atomic_write_json(path: Path, value: Any) -> None:
+    """Publish a complete JSON revision; readers see either the old or new file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(to_jsonable(value), handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def to_jsonable(value: Any) -> Any:

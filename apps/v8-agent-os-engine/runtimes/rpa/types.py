@@ -12,6 +12,9 @@ class RPAScriptVariable:
     placeholder: str = ""
     source: str = "computer_use_trace"
     example_value: Any = None
+    default_value: Any = None
+    sensitive: bool = False
+    secret_name: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -20,7 +23,9 @@ class RPAScriptVariable:
             "required": self.required,
             "placeholder": self.placeholder or f"{{{{{self.name}}}}}",
             "source": self.source,
-            "exampleValue": self.example_value,
+            "exampleValue": None if self.sensitive else self.example_value,
+            **({"defaultValue": self.default_value} if self.default_value is not None and not self.sensitive else {}),
+            **({"sensitive": True, "secretName": self.secret_name or self.name} if self.sensitive else {}),
         }
 
 

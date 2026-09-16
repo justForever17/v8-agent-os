@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 
@@ -15,6 +18,7 @@ function loadRequest() {
   const requestFile = argValue("--request-file");
   if (!requestFile) throw new Error("--request-file is required");
   const request = JSON.parse(fs.readFileSync(requestFile, "utf8"));
+  if (!request.oneTimeToken || !request.generation) throw new Error("Inspector token and generation are required");
   request.__requestFile = requestFile;
   request.__requestDir = path.dirname(requestFile);
   return request;
@@ -30,15 +34,16 @@ function loadPlaywright(request) {
   }
 }
 
-function postJson(url, payload) {
+export function postJson(url, payload) {
   return new Promise((resolve) => {
     const body = JSON.stringify(payload ?? {});
     const parsed = new URL(url);
-    const req = http.request(
+    const transport = parsed.protocol === "https:" ? https : http;
+    const req = transport.request(
       {
         method: "POST",
         hostname: parsed.hostname,
-        port: parsed.port || 80,
+        port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
         path: `${parsed.pathname}${parsed.search}`,
         headers: {
           "content-type": "application/json; charset=utf-8",
@@ -47,11 +52,17 @@ function postJson(url, payload) {
         timeout: 5000,
       },
       (res) => {
-        res.resume();
-        res.on("end", () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, statusCode: res.statusCode }));
+        let acknowledgement = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { if (acknowledgement.length < 1_000_000) acknowledgement += chunk; });
+        res.on("end", () => {
+          let confirmed = false;
+          try { confirmed = JSON.parse(acknowledgement).ok === true; } catch {}
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300 && confirmed, statusCode: res.statusCode });
+        });
       },
     );
-    req.on("error", (error) => resolve({ ok: false, error: error.message }));
+    req.on("error", () => resolve({ ok: false, error: "Inspector callback transport failed" }));
     req.on("timeout", () => {
       req.destroy(new Error("request timeout"));
     });
@@ -66,46 +77,70 @@ function callbackUrl(request) {
   return `${base}${request?.callback?.path || ""}`;
 }
 
-async function postEvent(request, type, payload = {}) {
-  const url = callbackUrl(request);
-  const body = {
-    type,
-    oneTimeToken: request.oneTimeToken,
-    ...payload,
+export function createEventSender(request, send = postJson) {
+  let sequence = 0;
+  let active = Promise.resolve();
+  let stopped = false;
+  const queue = [];
+  const shouldStop = () => request.__requestFile && (!fs.existsSync(request.__requestFile) || JSON.parse(fs.readFileSync(request.__requestFile, "utf8")).stopRequested);
+  return (type, payload = {}) => {
+    const action = async () => {
+      if (stopped || shouldStop()) return { ok: false, statusCode: 410 };
+      let requested = queue.find(item => item.payload === payload || payload.eventId && item.eventId === payload.eventId || type !== "candidate" && item.type === type);
+      if (!requested) {
+        requested = { type, payload, eventId: payload.eventId || randomUUID(), body: null };
+        queue.push(requested);
+      }
+      while (queue.length) {
+        if (stopped || shouldStop()) return { ok: false, statusCode: 410 };
+        const item = queue[0];
+        item.body ||= structuredClone({ ...item.payload, type: item.type, oneTimeToken: request.oneTimeToken, generation: request.generation, seq: sequence + 1, eventId: item.eventId });
+        const result = await send(callbackUrl(request), item.body);
+        if (!result.ok) {
+          if ([401, 403, 404, 410].includes(result.statusCode)) stopped = true;
+          return result;
+        }
+        queue.shift();
+        sequence++;
+        if (item === requested) return result;
+      }
+      return { ok: true };
+    };
+    const result = active.then(action);
+    active = result.catch(() => {});
+    return result;
   };
-  const result = await postJson(url, body);
-  if (!result.ok) {
-    console.error(`failed to post ${type}: ${result.error || result.statusCode || "unknown"}`);
-  }
-  return result;
 }
 
-async function resolvePage(browser, attach) {
+const eventSenders = new WeakMap();
+async function postEvent(request, type, payload = {}) {
+  if (!eventSenders.has(request)) eventSenders.set(request, createEventSender(request));
+  return eventSenders.get(request)(type, payload);
+}
+
+export async function resolvePage(browser, attach) {
   const targetId = String(attach.targetId || attach.proxyTargetId || "").trim();
   const urlHint = String(attach.url || attach.currentUrl || "").trim();
   const titleHint = String(attach.title || "").trim();
-  const pages = browser.contexts().flatMap((context) => context.pages());
-  if (!pages.length) throw new Error("Agent Browser has no open page to inspect.");
-  if (urlHint) {
-    const exact = pages.find((page) => page.url() === urlHint);
-    if (exact) return exact;
-    const contains = pages.find((page) => page.url() && urlHint.includes(page.url()));
-    if (contains) return contains;
-  }
-  if (titleHint) {
-    for (const page of pages) {
-      const title = await page.title().catch(() => "");
-      if (title && (title === titleHint || titleHint.includes(title) || title.includes(titleHint))) return page;
+  const matches = [];
+  for (const context of browser.contexts()) {
+    for (const page of context.pages()) {
+      if (targetId) {
+        const cdp = await context.newCDPSession(page);
+        try {
+          const { targetInfo } = await cdp.send("Target.getTargetInfo");
+          if (targetInfo.targetId === targetId) matches.push(page);
+        } finally { await cdp.detach(); }
+      } else if (urlHint ? page.url() === urlHint : titleHint && await page.title() === titleHint) {
+        matches.push(page);
+      }
     }
   }
-  if (targetId) {
-    const byUrl = pages.find((page) => page.url().includes(targetId));
-    if (byUrl) return byUrl;
-  }
-  return pages[0];
+  if (matches.length !== 1) throw new Error(matches.length ? "browser_target_ambiguous" : "browser_target_lost");
+  return matches[0];
 }
 
-function inspectorInstallScript(options = {}) {
+export function inspectorInstallScript(options = {}) {
   const configJson = JSON.stringify({
     captureMode: options.captureMode || "modifier_click",
     instruction: options.captureMode === "next_click" ? "V8 RPA: click the target element to capture it once." : "V8 RPA: hold Alt / Ctrl / Cmd and click to capture.",
@@ -255,10 +290,13 @@ function inspectorInstallScript(options = {}) {
     dispose() {
       this.enabled = false;
       this.armed = false;
+      this.installed = false;
+      listenerController.abort();
       overlay.remove();
       banner.remove();
     },
   };
+  const listenerController = new AbortController();
   inspector.configure(config);
   const highlight = (el) => {
     if (!el || !el.getBoundingClientRect) return;
@@ -273,12 +311,15 @@ function inspectorInstallScript(options = {}) {
     const el = ev.target && ev.target.nodeType === 1 ? ev.target : document.activeElement;
     const rect = el && el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
     const selectorCandidates = selectors(el);
+    const elementMarker = "capture_" + Date.now() + "_" + Math.random().toString(16).slice(2);
+    el.setAttribute("data-v8-rpa-capture-id", elementMarker);
     return {
       label: safeText(el && (el.getAttribute("aria-label") || el.innerText || el.textContent || el.value || el.getAttribute("title")), 120) || "browser element",
       source: "rpa_playwright_node_sidecar",
       platform: "browser",
       action: "click",
       selectorCandidates,
+      elementMarker,
       targetWindow: { title: document.title, url: location.href },
       anchorBundle: {
         window: { title: document.title, url: location.href },
@@ -294,18 +335,25 @@ function inspectorInstallScript(options = {}) {
       },
     };
   };
-  document.addEventListener("mousemove", (ev) => {
+  window.addEventListener("mousemove", (ev) => {
     if (!inspector.enabled) return;
     const el = ev.target && ev.target.nodeType === 1 ? ev.target : null;
     if (el && el !== overlay) highlight(el);
-  }, true);
-  document.addEventListener("click", (ev) => {
+  }, { capture: true, signal: listenerController.signal });
+  for (const eventName of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+    window.addEventListener(eventName, (ev) => {
+      if (!inspector.enabled || !(inspector.armed || ev.altKey || ev.ctrlKey || ev.metaKey)) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+    }, { capture: true, signal: listenerController.signal });
+  }
+  window.addEventListener("click", (ev) => {
     if (!inspector.enabled) return;
     const modifierClick = ev.altKey || ev.ctrlKey || ev.metaKey;
     const nextClick = inspector.captureMode === "next_click" && inspector.armed;
     if (!(nextClick || modifierClick)) return;
     ev.preventDefault();
-    ev.stopPropagation();
+    ev.stopImmediatePropagation();
     const candidate = build(ev);
     candidate.metadata = { ...(candidate.metadata || {}), captureMode: inspector.captureMode, nextClickCapture: nextClick };
     queue.push({ eventId: "browser_" + Date.now() + "_" + Math.random().toString(16).slice(2), recordedAt: new Date().toISOString(), candidate });
@@ -316,55 +364,52 @@ function inspectorInstallScript(options = {}) {
       updateBanner("V8 RPA: target captured. Return to Studio to review proof.", true);
       window.setTimeout(() => updateBanner("", false), 1400);
     }
-  }, true);
+  }, { capture: true, signal: listenerController.signal });
   return { installed: true, reused: false, captureMode: inspector.captureMode };
 })()
 `;
 }
 
-async function countForCandidate(page, candidate) {
-  const selectors = Array.isArray(candidate.selectorCandidates) ? candidate.selectorCandidates : [];
+function locatorFor(page, selector) {
+  if (selector.kind === "role" && selector.role) return page.getByRole(selector.role, { name: selector.name, exact: true });
+  if (selector.kind === "label") return page.getByLabel(selector.name, { exact: true });
+  if (selector.kind === "text") return page.getByText(selector.text, { exact: true });
+  if (selector.kind === "css" && selector.css) return page.locator(selector.css);
+  if (selector.kind === "xpath" && selector.xpath) return page.locator(`xpath=${selector.xpath}`);
+  return null;
+}
+
+export async function countForCandidate(page, candidate) {
+  const selectors = [...(candidate.selectorCandidates || [])].sort((a, b) => Number(b.kind === "css") - Number(a.kind === "css"));
+  let last = { selector: {}, count: 0, source: "playwright_locator_unresolved" };
   for (const selector of selectors) {
-    try {
-      if (selector.kind === "role" && selector.role && selector.name) {
-        const count = await page.getByRole(selector.role, { name: selector.name }).count();
-        return { selector, count, source: "playwright_get_by_role" };
-      }
-      if (selector.kind === "label" && selector.name) {
-        const count = await page.getByLabel(selector.name).count();
-        return { selector, count, source: "playwright_get_by_label" };
-      }
-      if (selector.kind === "text" && selector.text) {
-        const count = await page.getByText(selector.text).count();
-        return { selector, count, source: "playwright_get_by_text" };
-      }
-      if (selector.kind === "css" && selector.css) {
-        const count = await page.locator(selector.css).count();
-        return { selector, count, source: "playwright_css" };
-      }
-      if (selector.kind === "xpath" && selector.xpath) {
-        const count = await page.locator(`xpath=${selector.xpath}`).count();
-        return { selector, count, source: "playwright_xpath" };
-      }
-    } catch {}
+    const locator = locatorFor(page, selector);
+    if (!locator) continue;
+    const count = await locator.count();
+    last = { selector, count, source: "playwright_live_locator" };
+    if (count === 1 && candidate.elementMarker && await locator.evaluate((el, marker) => el.getAttribute("data-v8-rpa-capture-id") === marker, candidate.elementMarker)) return last;
   }
-  return { selector: selectors[0] || {}, count: 0, source: "playwright_locator_unresolved" };
+  return { ...last, sameElement: false };
 }
 
 async function highlightAndScreenshot(page, request, selector) {
+  const locator = locatorFor(page, selector);
+  if (!locator || await locator.count() !== 1) return { ok: false };
+  let previous;
   try {
-    if (selector.kind === "css" && selector.css) {
-      await page.locator(selector.css).first().evaluate((el) => {
-        el.setAttribute("data-v8-rpa-proof-highlight", "true");
-        el.style.outline = "3px solid #22d3ee";
-        el.style.outlineOffset = "3px";
-      });
-    }
+    previous = await locator.evaluate((el) => {
+      const style = el.getAttribute("style");
+      el.style.outline = "3px solid #22d3ee";
+      el.style.outlineOffset = "3px";
+      return style;
+    });
     const file = path.join(request.__requestDir, `${request.sessionId}-browser-proof-${Date.now()}.png`);
     await page.screenshot({ path: file, fullPage: false });
     return { ok: true, screenshotRef: file, highlightRef: file };
   } catch (error) {
     return { ok: false, warning: error?.message || String(error) };
+  } finally {
+    if (previous !== undefined) await locator.evaluate((el, style) => style === null ? el.removeAttribute("style") : el.setAttribute("style", style), previous).catch(() => {});
   }
 }
 
@@ -383,7 +428,7 @@ function candidateWithProof(candidate, countResult, proofShot) {
       source: "rpa_playwright_node_sidecar",
     },
     proof: {
-      status: countResult.count === 1 && proofShot.ok ? "verified" : countResult.count > 1 ? "locator_ambiguous" : "locator_unresolved",
+      status: countResult.count === 1 && countResult.sameElement !== false && proofShot.ok ? "captured" : countResult.count > 1 ? "locator_ambiguous" : "locator_unresolved",
       findCount: countResult.count,
       highlightRef: proofShot.highlightRef,
       screenshotRef: proofShot.screenshotRef,
@@ -407,35 +452,42 @@ async function main() {
   await postEvent(request, "ready", {
     sidecar: { kind: "rpa_playwright_node_sidecar", status: "attached", targetId: attach.targetId, url: page.url(), captureMode },
   });
-  setInterval(() => {
-    void postEvent(request, "heartbeat", {
-      sidecar: { kind: "rpa_playwright_node_sidecar", status: "attached", targetId: attach.targetId, url: page.url(), captureMode },
-    });
-  }, 3000);
-  setInterval(async () => {
-    try {
-      const drained = await page.evaluate(() => window.__v8RpaInspector?.drain?.() || { events: [] });
-      for (const raw of drained.events || []) {
-        const candidate = raw.candidate || raw;
-        const countResult = await countForCandidate(page, candidate);
-        const proofShot = await highlightAndScreenshot(page, request, countResult.selector || {});
-        await postEvent(request, "candidate", { candidate: candidateWithProof(candidate, countResult, proofShot), sidecar: { kind: "rpa_playwright_node_sidecar", status: "candidate_received", captureMode } });
+  const pending = [];
+  let heartbeatAt = Date.now();
+  try {
+    while (!page.isClosed()) {
+      if (!fs.existsSync(request.__requestFile) || JSON.parse(fs.readFileSync(request.__requestFile, "utf8")).stopRequested) break;
+      // Navigation replaces the document; reinstall only this page's observer.
+      if (!await page.evaluate(() => Boolean(window.__v8RpaInspector?.installed))) {
+        await page.evaluate(inspectorInstallScript({ captureMode }));
       }
-    } catch (error) {
-      await postEvent(request, "error", { error: error?.message || String(error), sidecar: { kind: "rpa_playwright_node_sidecar", status: "poll_failed" } });
+      if (!pending.length) {
+        const drained = await page.evaluate(() => window.__v8RpaInspector?.drain?.() || { events: [] });
+        for (const raw of drained.events || []) {
+          const candidate = raw.candidate || raw;
+          const countResult = await countForCandidate(page, candidate);
+          const proofShot = countResult.sameElement === false ? { ok: false } : await highlightAndScreenshot(page, request, countResult.selector || {});
+          pending.push({ eventId: raw.eventId, candidate: candidateWithProof(candidate, countResult, proofShot) });
+        }
+      }
+      if (pending.length) {
+        const result = await postEvent(request, "candidate", pending[0]);
+        if (result.ok) pending.shift();
+        else if ([403, 404, 410].includes(result.statusCode)) break;
+      } else if (Date.now() - heartbeatAt >= 3000) {
+        const result = await postEvent(request, "heartbeat");
+        if ([403, 404, 410].includes(result.statusCode)) break;
+        if (result.ok) heartbeatAt = Date.now();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-  }, 500);
+  } finally {
+    await page.evaluate(() => window.__v8RpaInspector?.dispose?.()).catch(() => {});
+    // Exit closes this CDP connection; never close the user's browser or page.
+  }
 }
 
-main().catch(async (error) => {
-  const request = (() => {
-    try {
-      return loadRequest();
-    } catch {
-      return {};
-    }
-  })();
-  if (request.callback) await postEvent(request, "error", { error: error?.message || String(error), sidecar: { kind: "rpa_playwright_node_sidecar", status: "failed" } });
-  console.error(error?.stack || error?.message || String(error));
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().then(() => process.exit(0)).catch(() => {
+  console.error("Browser inspector stopped after an unconfirmed error; inspect its runtime session before restarting.");
   process.exitCode = 1;
 });

@@ -5793,6 +5793,21 @@ class DatabaseManager:
 
         return bool(self._run_write_with_retry(_write))
 
+    def mark_side_effect_indeterminate(self, *, idempotency_key: str, owner_id: str, error: str) -> bool:
+        """Fence an interrupted executor immediately; retry requires reconciliation."""
+        def _write() -> bool:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """UPDATE runtime_side_effect_receipts
+                       SET state='indeterminate', owner_id=NULL, lease_expires_at=NULL,
+                           last_error=?, updated_at=?
+                       WHERE idempotency_key=? AND owner_id=? AND state='claimed'""",
+                    (str(error), utc_now_iso(), str(idempotency_key), str(owner_id)),
+                )
+                conn.commit()
+                return cursor.rowcount == 1
+        return bool(self._run_write_with_retry(_write))
+
     def reconcile_side_effect_receipt(
         self,
         *,
@@ -12632,7 +12647,8 @@ class DatabaseManager:
                     operations = [item for item in operations if isinstance(item, dict) and item.get("fingerprint") != approved_operation.get("fingerprint")]
                     metadata["approvedSafetyOperations"] = [*operations, approved_operation][-100:]
                 if (status == "approved" and not mcp and not control and not pending and next_status == "running"
-                        and run_record.get("run_type") == "chat"
+                        and (run_record.get("run_type") == "chat" or
+                             (run_record.get("run_type") == "rpa" and metadata.get("resumeExecution")))
                         and approval["approval_kind"] not in {"checkpoint_replay", "checkpoint_fork"}
                         and "runtimeContinuation" not in request):
                     conn.execute("UPDATE pending_approvals SET resume_json=? WHERE id=?",
@@ -12730,6 +12746,55 @@ class DatabaseManager:
                 "AND COALESCE(json_extract(resume_json,'$.generation'),'')<>''", (run_id,)).fetchall()
             states = {json.loads(row["resume_json"]).get("state") for row in rows}
             return {"recorded": bool(rows), "requiresDelivery": bool(states & {"pending", "scheduled", "executing", "blocked"})}
+
+    def recover_interrupted_rpa_approval_resumes(self) -> List[Dict[str, Any]]:
+        """Fence RPA approval workers lost across Engine startup; never replay them."""
+        from core.realtime_protocol import build_runtime_event
+
+        def _write():
+            recovered = []
+            now = utc_now_iso()
+            reason = "rpa_approval_execution_interrupted"
+            message = "RPA execution was interrupted by an Engine restart. Inspect external effects before retrying."
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT a.id AS approval_id,a.resume_json,r.* FROM pending_approvals a "
+                    "JOIN run_records r ON r.id=a.run_id AND r.session_id=a.session_id "
+                    "WHERE a.status='approved' AND r.run_type='rpa' "
+                    "AND json_extract(a.resume_json,'$.state')='executing' "
+                    "AND json_type(r.metadata,'$.resumeExecution')='object'"
+                ).fetchall()
+                for row in rows:
+                    delivery = json.loads(row["resume_json"])
+                    metadata = json.loads(row["metadata"] or "{}")
+                    delivery.update(state="blocked", lastError=reason, recoveredAt=now)
+                    metadata.update(executionState="unknown", reconciliationRequired=True, outcomeFamily="failed",
+                                    error=message, approvalResumeRecovery={"approvalId": row["approval_id"], "reason": reason, "at": now})
+                    previous_status = row["status"]
+                    # Cancellation, interruption and terminal states remain authoritative.
+                    status = "failed" if previous_status in {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool"} else previous_status
+                    conn.execute("UPDATE pending_approvals SET resume_json=? WHERE id=?",
+                                 (json.dumps(delivery), row["approval_id"]))
+                    conn.execute("UPDATE run_records SET status=?,metadata=?,error_message=COALESCE(error_message,?),finished_at=COALESCE(finished_at,?) WHERE id=?",
+                                 (status, json.dumps(metadata, ensure_ascii=False), message, now, row["id"]))
+                    for topic, payload in (
+                        ("run.state.changed", {"from_status": previous_status, "to_status": status, "reason": reason}),
+                        ("rpa.execution.reconciliation_required", {"runId": row["id"], "approvalId": row["approval_id"],
+                            "status": "unknown", "reconciliationRequired": True, "reason": reason, "error": message}),
+                    ):
+                        event = build_runtime_event(topic=topic, session_id=row["session_id"], run_id=row["id"],
+                            conversation_id=row["conversation_id"] or row["session_id"], payload=payload,
+                            source={"plane": "engine", "component": "erc", "node": "rpa_approval_recovery", "agent_id": None})
+                        seq = self._allocate_runtime_event_seq(conn, row["session_id"])
+                        conn.execute("INSERT INTO runtime_events (id,session_id,run_id,seq,kind,topic,event_ts,source_json,payload_json) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (event["event_id"], row["session_id"], row["id"], seq, event["kind"], topic, event["ts"],
+                             json.dumps(event["source"]), json.dumps(payload)))
+                    recovered.append({"runId": row["id"], "sessionId": row["session_id"], "approvalId": row["approval_id"],
+                                      "status": status, "reason": reason})
+                conn.commit()
+            return recovered
+        return self._run_write_with_retry(_write)
 
     def list_undelivered_approval_resumes(self, *, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:

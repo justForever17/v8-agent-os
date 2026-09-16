@@ -1,6 +1,6 @@
 "use client";
 
-import { type DragEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, GitBranch, MousePointerClick, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,7 @@ type AssessmentTrustModel = {
 };
 type DraftPayload = {
   id: string;
+  updatedAt?: string;
   name?: string;
   appId?: string;
   goal?: string;
@@ -264,6 +265,8 @@ type RecordingSessionPayload = {
   recordingSessionId: string;
   traceRunId: string;
   sessionId?: string;
+  source?: string;
+  workflowSnapshot?: Record<string, unknown>;
   state?: string;
   targetMode?: string;
   name?: string;
@@ -631,10 +634,20 @@ function friendlyRpaRunStatusKey(status?: string) {
   const keys: Record<string, string> = {
     queued: "components.rpa.RPAWorkbench.runStatus.queued",
     running: "components.rpa.RPAWorkbench.runStatus.running",
+    running_robot: "components.rpa.RPAWorkbench.runStatus.running",
+    running_computer_use_primary: "components.rpa.RPAWorkbench.runStatus.running",
+    resuming: "components.rpa.RPAWorkbench.runStatus.running",
     completed: "components.rpa.RPAWorkbench.runStatus.completed",
     succeeded: "components.rpa.RPAWorkbench.runStatus.completed",
+    completed_via_computer_use_primary: "components.rpa.RPAWorkbench.runStatus.completed",
+    completed_with_fallback: "components.rpa.RPAWorkbench.runStatus.completed",
     failed: "components.rpa.RPAWorkbench.runStatus.failed",
     cancelled: "components.rpa.RPAWorkbench.runStatus.cancelled",
+    interrupted: "components.rpa.RPAWorkbench.runStatus.cancelled",
+    unknown: "components.rpa.RPAWorkbench.runStatus.unknown",
+    blocked: "components.rpa.RPAWorkbench.runStatus.failed",
+    compile_blocked: "components.rpa.RPAWorkbench.runStatus.failed",
+    review_required: "components.rpa.RPAWorkbench.runStatus.waitingApproval",
     paused: "components.rpa.RPAWorkbench.runStatus.paused",
     waiting_input: "components.rpa.RPAWorkbench.runStatus.waitingInput",
     waiting_approval: "components.rpa.RPAWorkbench.runStatus.waitingApproval",
@@ -644,6 +657,7 @@ function friendlyRpaRunStatusKey(status?: string) {
 function friendlyRpaRunTitle(run: RunRecord, t: (key: string) => string) {
   const metadata = run.metadata || {};
   return firstString(
+    isPlainRecord(metadata.script) ? metadata.script.name : "",
     metadata.scriptName,
     metadata.templateName,
     metadata.draftName,
@@ -656,7 +670,7 @@ function friendlyRpaRunTitle(run: RunRecord, t: (key: string) => string) {
 function friendlyRpaRunDetail(run: RunRecord, t: (key: string, params?: Record<string, string | number>) => string) {
   const metadata = run.metadata || {};
   return firstString(
-    metadata.executionState,
+    readRunExecutionState(metadata) ? t(friendlyRpaRunStatusKey(readRunExecutionState(metadata) || undefined)) : "",
     metadata.currentStepTitle,
     metadata.reason,
     metadata.error,
@@ -911,6 +925,11 @@ export function RPAWorkbench() {
   const [selectedDraftId, setSelectedDraftId] = useState<string>("");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(initialTemplates[0]?.id || "");
   const [studioDirty, setStudioDirty] = useState(false);
+  const [draftConflict, setDraftConflict] = useState(false);
+  const loadedDraft = useRef<{ id: string; updatedAt?: string } | null>(null);
+  const loadGeneration = useRef(0);
+  const appSearchGeneration = useRef(0);
+  const actionInFlight = useRef(false);
   const [templateNote, setTemplateNote] = useState("");
   const [variablesText, setVariablesText] = useState("{}");
   const [existingRobotFile, setExistingRobotFile] = useState("");
@@ -920,6 +939,11 @@ export function RPAWorkbench() {
   const [timeoutMs, setTimeoutMs] = useState("600000");
   const [latestResult, setLatestResult] = useState<unknown>(null);
   const [activeRecording, setActiveRecording] = useState<RecordingSessionPayload | null>(null);
+  const [recordings, setRecordings] = useState<RecordingSessionPayload[]>([]);
+  const [recordingSessionId, setRecordingSessionId] = useState("");
+  const [recordableSessions, setRecordableSessions] = useState<Array<{ id: string; title?: string }>>([]);
+  const [recordingError, setRecordingError] = useState("");
+  const recordingPollGeneration = useRef(0);
   const [recordingName, setRecordingName] = useState("");
   const [recordingGoal, setRecordingGoal] = useState("");
   const [computerSampling, setComputerSampling] = useState(false);
@@ -939,6 +963,38 @@ export function RPAWorkbench() {
   const [selectedDraftStepKey, setSelectedDraftStepKey] = useState("");
   const [draftVariableRows, setDraftVariableRows] = useState<DraftVariableRow[]>([]);
   const [stepValidation, setStepValidation] = useState<StepValidationResult | null>(null);
+  const editorSnapshot = JSON.stringify([selectedDraftId, draftStepEdits, draftStepOrder, draftVariableRows, recordingName, recordingGoal]);
+  const currentEditor = useRef({ draftId: selectedDraftId, snapshot: editorSnapshot, dirty: studioDirty, stepKey: selectedDraftStepKey, variables: variablesText });
+  currentEditor.current = { draftId: selectedDraftId, snapshot: editorSnapshot, dirty: studioDirty, stepKey: selectedDraftStepKey, variables: variablesText };
+  const restoredEditor = useRef(false);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("v8.rpa.studio.unsaved") || "null");
+      if (saved?.steps && Array.isArray(saved.order)) {
+        setSelectedDraftId(saved.draftId || "");
+        setDraftStepEdits(saved.steps); setDraftStepOrder(saved.order);
+        setDraftVariableRows(saved.variables || []);
+        setRecordingName(saved.name || ""); setRecordingGoal(saved.goal || "");
+        loadedDraft.current = saved.base || { id: saved.draftId || "" };
+        setStudioDirty(true);
+      }
+    } catch { /* A malformed local draft never replaces the saved version. */ }
+    restoredEditor.current = true;
+  }, []);
+  useEffect(() => {
+    if (!restoredEditor.current) return;
+    if (!studioDirty) return;
+    const timer = window.setTimeout(() => {
+      try {
+        sessionStorage.setItem("v8.rpa.studio.unsaved", JSON.stringify({
+          draftId: selectedDraftId, steps: draftStepEdits, order: draftStepOrder,
+          variables: draftVariableRows.map(variable => variable.sensitive ? { ...variable, defaultValue: "" } : variable),
+          name: recordingName, goal: recordingGoal, base: loadedDraft.current,
+        }));
+      } catch { /* Saving to the Engine remains available if browser storage is full. */ }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [editorSnapshot, studioDirty, selectedDraftId, draftStepEdits, draftStepOrder, draftVariableRows, recordingName, recordingGoal]);
   const selectedDraft = useMemo(() => drafts.find(item => item.id === selectedDraftId) || null, [drafts, selectedDraftId]);
   const selectedTemplate = useMemo(() => templates.find(item => item.id === selectedTemplateId) || null, [templates, selectedTemplateId]);
   const orderedDraftSteps = useMemo(() => draftStepOrder.map(key => ({
@@ -1269,7 +1325,17 @@ export function RPAWorkbench() {
   const inspectorSidecarLive = Boolean(latestInspectorSession && ["starting", "starting_sidecar", "waiting_sidecar", "attached", "ready", "heartbeat", "candidate_received"].includes(String(latestInspectorStatus || "").toLowerCase()));
   const browserNextClickArmed = canvasTargetMode === "agent_browser" && latestInspectorCaptureMode !== "modifier_click" && inspectorSidecarLive && String(latestInspectorStatus || "").toLowerCase() !== "candidate_received";
   const browserCaptureRecovery = canvasTargetMode === "agent_browser" || latestInspectorKind === "rpa_playwright_node_sidecar" || String(latestInspectorFailureStatus || "").toLowerCase().includes("browser");
-  const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
+  const objectLibraryItems = useMemo(() => {
+    const recordingDraft = firstString(activeRecording?.createdDraftId, activeRecording?.workflowSnapshot?.draftId);
+    if ((!selectedDraftId && !recordingDraft || recordingDraft === selectedDraftId) && Array.isArray(activeRecording?.objectLibrary)) return activeRecording.objectLibrary;
+    return Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [];
+  }, [activeRecording, selectedDraft, selectedDraftId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/conversations", { signal: controller.signal }).then(response => response.ok ? response.json() : [])
+      .then(rows => setRecordableSessions(Array.isArray(rows) ? rows : [])).catch(() => {});
+    return () => controller.abort();
+  }, []);
   const selectableElements = useMemo(() => [
     ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
     ...selectedCapturePoolItems.map(item => ({ ...item, sourceBucket: "pool" as const, optionId: item.tempElementId || captureItemLabel(item) }))
@@ -1278,13 +1344,20 @@ export function RPAWorkbench() {
   const selectedLoopEndKey = firstString(selectedBuilderParams.loopEndStepKey, selectedBuilderParams.endStepKey);
   const selectedLoopStartIndex = selectedLoopStartKey ? orderedDraftSteps.findIndex(item => item.key === selectedLoopStartKey) : -1;
   const selectedLoopEndIndex = selectedLoopEndKey ? orderedDraftSteps.findIndex(item => item.key === selectedLoopEndKey) : -1;
-  const selectedLoopInvalid = selectedBuilderActionKind === "loop" && selectedLoopStartKey && selectedLoopEndKey && (selectedLoopStartIndex < 0 || selectedLoopEndIndex < 0 || selectedLoopStartIndex >= selectedLoopEndIndex);
+  const selectedControlStep = ["if", "loop", "try_catch"].includes(stepActionName(selectedBuilderStep));
+  const selectedLoopInvalid = selectedControlStep && selectedLoopStartKey && selectedLoopEndKey && (selectedLoopStartIndex < 0 || selectedLoopEndIndex < 0 || selectedLoopStartIndex > selectedLoopEndIndex);
   const isArchivedDraft = useCallback((draft?: DraftPayload | null) => Boolean(draft?.archivedAt || draft?.metadata?.archivedAt), []);
   const isArchivedTemplate = useCallback((template?: TemplatePayload | null) => Boolean(template?.archivedAt || template?.metadata?.archivedAt), []);
   useEffect(() => {
     if (!selectedDraft) {
       return;
     }
+    if (loadedDraft.current?.id === selectedDraft.id && currentEditor.current.dirty) {
+      setDraftConflict(loadedDraft.current.updatedAt !== selectedDraft.updatedAt);
+      return;
+    }
+    loadedDraft.current = { id: selectedDraft.id, updatedAt: selectedDraft.updatedAt };
+    setDraftConflict(false);
     const next: Record<string, string> = {};
     const order: string[] = [];
     (selectedDraft.steps || []).forEach((step, index) => {
@@ -1309,11 +1382,15 @@ export function RPAWorkbench() {
       sensitive: Boolean(variable.sensitive || variable.secretName),
     })));
   }, [selectedDraft]);
+  useEffect(() => {
+    setStepValidation(null);
+  }, [editorSnapshot, selectedDraftStepKey, variablesText]);
   const isRpaRun = (run: RunRecord) => run.run_type === "rpa" || run.metadata?.runtime === "rpa" || run.metadata?.mode === "draft" || run.metadata?.mode === "existing_robot" || String(run.session_id || "").startsWith("rpa:");
   const isRpaApproval = (approval: ApprovalRecord) => String(approval.approval_kind || "").startsWith("rpa") || !!approval.request?.rpa || String(approval.session_id || "").startsWith("rpa:");
   const rpaRuns = useMemo(() => runs.filter(isRpaRun).slice(0, 8), [runs]);
   const rpaApprovals = useMemo(() => approvals.filter(isRpaApproval), [approvals]);
   const loadAll = useCallback(async (force = false) => {
+    const generation = ++loadGeneration.current;
     const draftsUrl = rpaDraftsUrl(showArchivedDrafts);
     const templatesUrl = rpaTemplatesUrl(showArchivedTemplates);
     if ([RPA_AVAILABILITY_URL, draftsUrl, RPA_SCRIPTS_URL, templatesUrl, RPA_APPROVALS_URL, RPA_RUNS_URL]
@@ -1321,14 +1398,16 @@ export function RPAWorkbench() {
       setLoading(true);
     }
     try {
-      const [nextAvailability, nextDraftsPayload, nextScriptsPayload, nextTemplatesPayload, approvalsData, runsData] = await Promise.all([
+      const [nextAvailability, nextDraftsPayload, nextScriptsPayload, nextTemplatesPayload, approvalsData, runsData, recordingsData] = await Promise.all([
         fetchAdminJson<AvailabilityPayload>(RPA_AVAILABILITY_URL, { force }),
         fetchAdminJson<DraftListPayload>(draftsUrl, { force }),
         fetchAdminJson<ScriptListPayload>(RPA_SCRIPTS_URL, { force }),
         fetchAdminJson<TemplateListPayload>(templatesUrl, { force }),
         fetchAdminJson<ApprovalListPayload>(RPA_APPROVALS_URL, { force }),
         fetchAdminJson<RunListPayload>(RPA_RUNS_URL, { force }),
+        fetchAdminJson<{ recordings?: RecordingSessionPayload[] }>("/api/rpa/recordings?limit=100", { force }),
       ]);
+      if (generation !== loadGeneration.current) return;
       setAvailability(nextAvailability || {});
       const nextDrafts = Array.isArray(nextDraftsPayload.drafts) ? nextDraftsPayload.drafts : [];
       const nextScripts = Array.isArray(nextScriptsPayload.scripts) ? nextScriptsPayload.scripts : [];
@@ -1339,11 +1418,13 @@ export function RPAWorkbench() {
       setTemplateSummary(nextTemplatesPayload.summary || {});
       setApprovals(Array.isArray(approvalsData.approvals) ? approvalsData.approvals : []);
       setRuns(Array.isArray(runsData.runs) ? runsData.runs : []);
-      setSelectedDraftId((currentId) => currentId && nextDrafts.some((draft) => draft.id === currentId) ? currentId : "");
+      setRecordings(Array.isArray(recordingsData.recordings) ? recordingsData.recordings : []);
+      setSelectedDraftId((currentId) => currentEditor.current.dirty || currentId && nextDrafts.some((draft) => draft.id === currentId) ? currentId : "");
       setSelectedTemplateId((currentId) => currentId && nextTemplates.some((template) => template.id === currentId)
         ? currentId
         : nextTemplates[0]?.id || "");
     } catch (error) {
+      if (generation !== loadGeneration.current) return;
       console.error("[RPAWorkbench] load failed:", error);
       toast({
         variant: "destructive",
@@ -1351,13 +1432,14 @@ export function RPAWorkbench() {
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
       });
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }, [showArchivedDrafts, showArchivedTemplates, toast, t]);
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
   const loadComputerApps = useCallback(async (force = false, queryOverride = "") => {
+    const generation = ++appSearchGeneration.current;
     setComputerAppsLoading(true);
     setComputerAppsError("");
     try {
@@ -1376,6 +1458,7 @@ export function RPAWorkbench() {
         })
       });
       const payload = await response.json().catch(() => ({}));
+      if (generation !== appSearchGeneration.current) return;
       if (!response.ok) {
         const message = firstString(payload?.detail, payload?.error, payload?.message) || `HTTP ${response.status}`;
         setComputerAppsError(message);
@@ -1398,6 +1481,7 @@ export function RPAWorkbench() {
         setComputerAppsError(t("components.rpa.RPAWorkbench.studioAppListEmpty"));
       }
     } catch (error) {
+      if (generation !== appSearchGeneration.current) return;
       console.warn("[RPAWorkbench] app list failed:", error);
       const message = error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError");
       setComputerAppsError(message);
@@ -1407,7 +1491,7 @@ export function RPAWorkbench() {
         description: message
       });
     } finally {
-      setComputerAppsLoading(false);
+      if (generation === appSearchGeneration.current) setComputerAppsLoading(false);
     }
   }, [toast, t]);
   useEffect(() => {
@@ -1456,19 +1540,29 @@ export function RPAWorkbench() {
     };
   }, [selectedTemplateId]);
   const runAction = async (actionKey: string, runner: () => Promise<Response>, successTitle: string) => {
+    if (actionInFlight.current) return null;
+    actionInFlight.current = true;
     setBusyAction(actionKey);
     try {
       const res = await runner();
       const data = await res.json().catch(() => ({}));
       setLatestResult(data);
       if (!res.ok) {
+        if (res.status === 409) setDraftConflict(true);
         throw new Error(data?.detail || data?.error || tg(t, "8fdc4112"));
       }
+      const status = String(data?.status || "").toLowerCase();
+      if (/^(draft:(run|prepare|export)|run-existing|prepare-existing)$/.test(actionKey)
+        && (["failed", "blocked", "compile_blocked", "unknown", "partial", "cancelled", "canceled", "interrupted", "review_required"].includes(status)
+          || /^(draft:run|run-existing)$/.test(actionKey) && !["running", "queued", "started", "completed", "completed_with_fallback", "completed_via_computer_use_primary"].includes(status))) {
+        throw new Error(firstString(data?.detail, data?.error, data?.reason, data?.summary) || formatRunStatusLabel(status, t));
+      }
       toast({
-        title: successTitle,
-        description: typeof data?.status === "string" ? tg(t, "2bf0d2b2", {
+        variant: data?.compileError ? "destructive" : undefined,
+        title: data?.compileError ? t("components.rpa.RPAWorkbench.k2e9cdd7b") : successTitle,
+        description: data?.compileError || (typeof data?.status === "string" ? tg(t, "2bf0d2b2", {
           value1: data.status
-        }) : tg(t, "3d8c4a5f")
+        }) : tg(t, "3d8c4a5f"))
       });
       await loadAll(true);
       return data;
@@ -1479,8 +1573,9 @@ export function RPAWorkbench() {
         title: t("components.rpa.RPAWorkbench.k2e9cdd7b"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
       });
-      throw error;
+      return null;
     } finally {
+      actionInFlight.current = false;
       setBusyAction(null);
     }
   };
@@ -1549,13 +1644,18 @@ export function RPAWorkbench() {
     setRecordingGoal("");
     setLatestResult(null);
     setStudioDirty(false);
+    loadedDraft.current = null;
+    setDraftConflict(false);
   };
 
   const handleSelectDraft = (draftId: string) => {
     if (draftId === selectedDraftId) return;
+    if (!draftId) { resetStudioWorkspace(); return; }
     if (!confirmLoseStudioChanges()) return;
     setSelectedDraftId(draftId);
     setStudioDirty(false);
+    loadedDraft.current = null;
+    setDraftConflict(false);
   };
 
   const buildDraftStudioPayload = (options?: { saveAs?: boolean }) => {
@@ -1564,7 +1664,7 @@ export function RPAWorkbench() {
       name: row.name.trim(),
       type: row.type,
       required: row.required,
-      ...(row.defaultValue ? {
+      ...(!row.sensitive && row.defaultValue ? {
         defaultValue: row.defaultValue
       } : {}),
       ...(row.sensitive ? {
@@ -1590,6 +1690,7 @@ export function RPAWorkbench() {
   };
 
   const handleCreateDraftFromStudio = async (options?: { saveAs?: boolean }) => {
+    const submittedSnapshot = currentEditor.current.snapshot;
     let payload: ReturnType<typeof buildDraftStudioPayload>;
     try {
       payload = buildDraftStudioPayload(options);
@@ -1610,11 +1711,77 @@ export function RPAWorkbench() {
     }), options?.saveAs ? t("components.rpa.RPAWorkbench.studioDraftSavedAs") : t("components.rpa.RPAWorkbench.studioDraftCreated"));
     if (data?.id) {
       const draft = data as DraftPayload;
+      loadedDraft.current = { id: draft.id, updatedAt: draft.updatedAt };
       setDrafts(current => [draft, ...current.filter(item => item.id !== draft.id)]);
       setSelectedDraftId(draft.id);
-      setStudioDirty(false);
+      if (currentEditor.current.snapshot === submittedSnapshot) {
+        setStudioDirty(false);
+        try { sessionStorage.removeItem("v8.rpa.studio.unsaved"); } catch {}
+      }
+      return draft;
+    }
+    return null;
+  };
+
+  const startComputerUseRecording = async () => {
+    if (!recordingSessionId.trim()) return;
+    setRecordingError("");
+    const data = await runAction("recording:computer-use:start", () => fetch("/api/rpa/recordings/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...buildRecordingStartPayload(), source: "computer_use", sessionId: recordingSessionId.trim() }),
+    }), t("components.rpa.RPAWorkbench.recordingStarted"));
+    if (data?.recordingSessionId) setActiveRecording(data as RecordingSessionPayload);
+  };
+
+  const stopComputerUseRecording = async () => {
+    if (!activeRecording?.recordingSessionId) return;
+    const stoppingRecording = activeRecording;
+    ++recordingPollGeneration.current;
+    setActiveRecording({ ...stoppingRecording, state: "stopping" });
+    setRecordingError("");
+    const data = await runAction("recording:computer-use:stop", () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ compileDraft: true, save: true }),
+    }), t("components.rpa.RPAWorkbench.studioRecordingStopped"));
+    if (!data) { setActiveRecording(stoppingRecording); return; }
+    if (data.recording) setActiveRecording(data.recording as RecordingSessionPayload);
+    if (data.compileError || data.error) {
+      setRecordingError(String(data.compileError || data.error));
+      return;
+    }
+    if (data.draft?.id) {
+      setDrafts(current => [data.draft as DraftPayload, ...current.filter(item => item.id !== data.draft.id)]);
+      if (!currentEditor.current.dirty) handleSelectDraft(data.draft.id);
+    } else {
+      setRecordingError(t("components.rpa.RPAWorkbench.studioRecordingEmpty"));
     }
   };
+
+  useEffect(() => {
+    if (activeRecording?.source !== "computer_use" || activeRecording.state !== "recording") return;
+    const recordingId = activeRecording.recordingSessionId;
+    const generation = ++recordingPollGeneration.current;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/rpa/recordings/${encodeURIComponent(recordingId)}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) });
+        const result = await response.json().catch(() => ({}));
+        if (controller.signal.aborted || generation !== recordingPollGeneration.current) return;
+        if (!response.ok) throw new Error(result.detail || result.error || `HTTP ${response.status}`);
+        setActiveRecording(result as RecordingSessionPayload);
+        setRecordingError("");
+      } catch (error) {
+        if (!controller.signal.aborted && generation === recordingPollGeneration.current) setRecordingError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!controller.signal.aborted && generation === recordingPollGeneration.current) timer = setTimeout(poll, 1500);
+      }
+    };
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [activeRecording?.recordingSessionId, activeRecording?.source, activeRecording?.state]);
 
   const recordingMatchesCaptureContext = (recording: RecordingSessionPayload | null | undefined, captureContext?: StepCaptureContext | null) => {
     if (!recording?.recordingSessionId || !captureContext) {
@@ -1778,6 +1945,7 @@ export function RPAWorkbench() {
         reason: "admin_stop"
       })
     }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStopped"));
+    if (!data) return;
     if (data?.recording) {
       setActiveRecording(data.recording as RecordingSessionPayload);
     }
@@ -2256,6 +2424,7 @@ export function RPAWorkbench() {
     setStepValidation(null);
   };
   const handleValidateSelectedStep = async (mode: "dry_run" | "selector" | "assertion") => {
+    if (actionInFlight.current) return;
     if (!selectedDraft || !selectedBuilderStep) {
       toast({
         variant: "destructive",
@@ -2271,6 +2440,11 @@ export function RPAWorkbench() {
       variables = {};
     }
     const actionKey = `draft:validate:${selectedDraft.id}:${mode}`;
+    actionInFlight.current = true;
+    const submitted = { ...currentEditor.current };
+    const stillCurrent = () => currentEditor.current.snapshot === submitted.snapshot
+      && currentEditor.current.stepKey === submitted.stepKey
+      && currentEditor.current.variables === submitted.variables;
     setBusyAction(actionKey);
     try {
       const res = await fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraft.id)}/validate-step`, {
@@ -2286,6 +2460,7 @@ export function RPAWorkbench() {
         })
       });
       const data = await res.json().catch(() => ({}));
+      if (!stillCurrent()) return;
       setLatestResult(data);
       if (!res.ok) {
         throw new Error(data?.detail || data?.error || tg(t, "8fdc4112"));
@@ -2296,12 +2471,14 @@ export function RPAWorkbench() {
         description: typeof data?.summary === "string" ? data.summary : tg(t, "3d8c4a5f")
       });
     } catch (error) {
+      if (!stillCurrent()) return;
       toast({
         variant: "destructive",
         title: t("components.rpa.RPAWorkbench.k2e9cdd7b"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
       });
     } finally {
+      actionInFlight.current = false;
       setBusyAction(null);
     }
   };
@@ -2334,9 +2511,9 @@ export function RPAWorkbench() {
   };
   const handlePatchDraftSteps = async () => {
     if (!selectedDraft) {
-      await handleCreateDraftFromStudio();
-      return;
+      return handleCreateDraftFromStudio();
     }
+    const submittedSnapshot = currentEditor.current.snapshot;
     let payload: ReturnType<typeof buildDraftStudioPayload>;
     try {
       payload = buildDraftStudioPayload();
@@ -2354,6 +2531,10 @@ export function RPAWorkbench() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
+        expectedUpdatedAt: loadedDraft.current?.updatedAt || selectedDraft.updatedAt,
+        name: payload.name,
+        goal: payload.goal,
+        appId: payload.appId,
         steps: payload.steps,
         variables: payload.variables,
         objectLibrary: payload.objectLibrary,
@@ -2367,9 +2548,17 @@ export function RPAWorkbench() {
     if (data?.id) {
       const draft = data as DraftPayload;
       setDrafts(current => current.map(item => item.id === draft.id ? draft : item));
-      setSelectedDraftId(data.id);
-      setStudioDirty(false);
+      if (currentEditor.current.draftId === draft.id) {
+        loadedDraft.current = { id: draft.id, updatedAt: draft.updatedAt };
+        setDraftConflict(false);
+        if (currentEditor.current.snapshot === submittedSnapshot) {
+          setStudioDirty(false);
+          try { sessionStorage.removeItem("v8.rpa.studio.unsaved"); } catch {}
+        }
+      }
+      return draft;
     }
+    return null;
   };
   const handleDeleteDraftStep = (stepKey: string) => {
     setStudioDirty(true);
@@ -2420,41 +2609,25 @@ export function RPAWorkbench() {
       });
       return;
     }
+    const submittedSnapshot = currentEditor.current.snapshot;
+    const savedDraft = studioDirty ? await handlePatchDraftSteps() : selectedDraft;
+    if (!savedDraft) return;
+    if (currentEditor.current.snapshot !== submittedSnapshot) {
+      toast({ title: t("components.rpa.RPAWorkbench.studioEditedDuringSave") });
+      return;
+    }
     const payload = {
       variables,
+      expectedUpdatedAt: savedDraft.updatedAt,
       timeoutMs: Number(timeoutMs || 600000),
       ...commonPayload()
     };
-    if (mode === "run") {
-      try {
-        const studioPayload = buildDraftStudioPayload();
-        Object.assign(payload, {
-          name: studioPayload.name,
-          goal: studioPayload.goal,
-          appId: studioPayload.appId,
-          steps: studioPayload.steps,
-          draftVariables: studioPayload.variables,
-          objectLibrary: studioPayload.objectLibrary,
-          metadataPatch: {
-            ...(isPlainRecord(studioPayload.metadata) ? studioPayload.metadata : {}),
-            debugRunSnapshot: true,
-          },
-        });
-      } catch (error) {
-        toast({
-          variant: "destructive",
-          title: t("components.rpa.RPAWorkbench.invalidDraftStep"),
-          description: error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")
-        });
-        return;
-      }
-    }
-    await runAction(`draft:${mode}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraftId)}/${mode}`, {
+    await runAction(`draft:${mode}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(savedDraft.id)}/${mode}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(mode === "export" ? commonPayload() : payload)
+      body: JSON.stringify(payload)
     }), mode === "run" ? tg(t, "be524bf1") : tg(t, "e9e44bf1"));
   };
   const handleDraftGovernanceAction = async (action: "archive" | "restore" | "delete") => {
@@ -2683,7 +2856,7 @@ export function RPAWorkbench() {
                             <Button variant="outline" onClick={() => setShowLegacyPanel(current => !current)}>
                                 {showLegacyPanel ? t("components.rpa.RPAWorkbench.studioHideLegacy") : t("components.rpa.RPAWorkbench.studioLegacyDiagnostics")}
                             </Button>
-                            <Button onClick={() => void handlePatchDraftSteps()} disabled={busyAction === `draft:patch:${selectedDraft?.id}` || busyAction === "draft:create"}>
+                            <Button onClick={() => void handlePatchDraftSteps()} disabled={!!busyAction}>
                                 <Save className="mr-2 h-4 w-4" />
                                 {selectedDraft ? t("components.rpa.RPAWorkbench.studioSaveChanges") : t("components.rpa.RPAWorkbench.studioSaveNewDraft")}
                             </Button>
@@ -2695,6 +2868,39 @@ export function RPAWorkbench() {
                     </div>
                 </CardHeader>
                 <CardContent className="p-0">
+                    {draftConflict ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+                        <span>{t("components.rpa.RPAWorkbench.studioDraftConflict")}</span>
+                        <Button size="sm" variant="outline" onClick={() => {
+                          if (!confirmLoseStudioChanges()) return;
+                          setStudioDirty(false);
+                          loadedDraft.current = null;
+                          setDraftConflict(false);
+                          void loadAll(true);
+                        }}>{t("components.rpa.RPAWorkbench.studioReloadSaved")}</Button>
+                    </div> : null}
+                    <div className="grid gap-3 border-b border-border/50 px-4 py-3 sm:grid-cols-2">
+                        <div className="space-y-1"><Label htmlFor="rpa-flow-name">{t("components.rpa.RPAWorkbench.studioFlowName")}</Label><Input id="rpa-flow-name" value={recordingName} onChange={event => { setRecordingName(event.target.value); setStudioDirty(true); }} /></div>
+                        <div className="space-y-1"><Label htmlFor="rpa-flow-goal">{t("components.rpa.RPAWorkbench.studioFlowGoal")}</Label><Input id="rpa-flow-goal" value={recordingGoal} onChange={event => { setRecordingGoal(event.target.value); setStudioDirty(true); }} /></div>
+                    </div>
+                    <div className="space-y-2 border-b border-border/50 bg-muted/20 px-4 py-3">
+                        <div className="flex flex-wrap items-end gap-2">
+                            <div className="min-w-[15rem] flex-1 space-y-1"><Label htmlFor="rpa-recording-session">{t("components.rpa.RPAWorkbench.studioComputerUseSession")}</Label><Input id="rpa-recording-session" list="rpa-recordable-sessions" value={recordingSessionId} onChange={event => setRecordingSessionId(event.target.value)} disabled={activeRecording?.state === "recording" || activeRecording?.state === "stopping"} placeholder={t("components.rpa.RPAWorkbench.studioComputerUseSessionHint")} /><datalist id="rpa-recordable-sessions">{recordableSessions.map(session => <option key={session.id} value={session.id}>{session.title || session.id}</option>)}</datalist></div>
+                            <Button variant="outline" onClick={() => void startComputerUseRecording()} disabled={!recordingSessionId.trim() || !!busyAction || activeRecording?.state === "recording" || activeRecording?.state === "stopping"}>{t("components.rpa.RPAWorkbench.studioRecordComputerUse")}</Button>
+                            <Button onClick={() => void stopComputerUseRecording()} disabled={activeRecording?.source !== "computer_use" || activeRecording.state !== "recording" || !!busyAction}>{t("components.rpa.RPAWorkbench.studioStopAndDraft")}</Button>
+                            <select aria-label={t("components.rpa.RPAWorkbench.studioRestoreRecording")} className="h-9 max-w-xs rounded-md border border-input bg-background px-2 text-xs" value={activeRecording?.recordingSessionId || ""} disabled={!!busyAction} onChange={event => {
+                                const recording = recordings.find(item => item.recordingSessionId === event.target.value) || null;
+                                setActiveRecording(recording);
+                                setRecordingSessionId(recording?.sessionId || "");
+                                setRecordingError("");
+                            }}>
+                                <option value="">{t("components.rpa.RPAWorkbench.studioRestoreRecording")}</option>
+                                {recordings.filter(item => item.source === "computer_use").map(item => <option key={item.recordingSessionId} value={item.recordingSessionId}>{item.name || item.sessionId || item.recordingSessionId} · {item.state} · {item.stepCount || 0}</option>)}
+                            </select>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioComputerUseRecordingHelp")}</p>
+                        {activeRecording?.source === "computer_use" ? <div role="status" className="flex flex-wrap items-center gap-2 text-xs"><Badge variant="outline">{activeRecording.state}</Badge><span>{t("components.rpa.RPAWorkbench.studioRecordedSteps", { count: activeRecording.stepCount || 0 })}</span>{activeRecording.createdDraftId ? <Button variant="link" size="sm" onClick={() => handleSelectDraft(activeRecording.createdDraftId || "")}>{t("components.rpa.RPAWorkbench.studioOpenRecordedDraft")}</Button> : null}</div> : null}
+                        {recordingError ? <p role="alert" className="text-xs text-destructive">{recordingError}</p> : null}
+                    </div>
                     <div className="grid min-h-[660px] xl:grid-cols-[minmax(200px,0.17fr)_minmax(0,1fr)_minmax(300px,0.24fr)] 2xl:grid-cols-[220px_minmax(0,1fr)_320px]">
                         <aside className="border-r border-border/50 bg-muted/10 p-3">
                             <div className="mb-3">
@@ -2723,15 +2929,15 @@ export function RPAWorkbench() {
                                 <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
                                     <div className="grid min-w-0 gap-2">
                                         <Label className="text-xs">{t("components.rpa.RPAWorkbench.studioRecordingTarget")}</Label>
-                                        <div className="grid gap-2 md:grid-cols-[minmax(16rem,0.9fr)_minmax(0,1.1fr)]">
-                                            <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-input bg-background px-2.5 text-xs">
+                                        <div className="grid min-w-0 gap-2">
+                                            <div className="flex min-h-9 min-w-0 flex-wrap items-center gap-2 rounded-md border border-input bg-background px-2.5 py-2 text-xs">
                                                 <span className="shrink-0 text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCanvasTargetFromStep")}</span>
                                                 <AdminHoverInfo content={selectedComputerAppLabel} panelClassName="w-auto max-w-[28rem] whitespace-normal">
                                                     <span className="min-w-0 truncate font-medium">{selectedComputerAppLabel}</span>
                                                 </AdminHoverInfo>
                                                 <Badge variant="outline" className="ml-auto shrink-0 text-[10px]">{canvasTargetMode}</Badge>
                                             </div>
-                                            <div className="flex h-9 min-w-0 items-center rounded-md border border-border/60 bg-muted/20 px-2.5 text-xs text-muted-foreground">
+                                            <div className="flex min-h-9 min-w-0 items-center rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
                                                 {t("components.rpa.RPAWorkbench.studioCanvasTargetHint")}
                                             </div>
                                         </div>
@@ -2932,25 +3138,26 @@ export function RPAWorkbench() {
                                                     </details>
                                                 </div> : null}
 
-                                            {selectedBuilderActionKind === "loop" ? <div className="space-y-3">
+                                            {selectedControlStep ? <div className="space-y-3">
+                                                    {stepActionName(selectedBuilderStep) === "if" ? <div className="grid gap-2"><Label>{t("components.rpa.RPAWorkbench.studioCondition")}</Label><Input value={String(selectedBuilderParams.condition ?? selectedBuilderParams.expression ?? "")} onChange={event => updateSelectedStepParam("condition", event.target.value)} /></div> : null}
                                                     <div className="grid gap-2">
-                                                        <Label>{t("components.rpa.RPAWorkbench.studioLoopStart")}</Label>
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioBodyStart")}</Label>
                                                         <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={selectedLoopStartKey} onChange={event => updateSelectedStepParam("loopStartStepKey", event.target.value)}>
                                                             <option value="">{t("components.rpa.RPAWorkbench.studioSelectLoopNode")}</option>
                                                             {orderedDraftSteps.filter(item => item.key !== selectedDraftStepKey).map((item, index) => <option key={item.key} value={item.key}>{index + 1}. {stepIntentLabel(item.step)}</option>)}
                                                         </select>
                                                     </div>
                                                     <div className="grid gap-2">
-                                                        <Label>{t("components.rpa.RPAWorkbench.studioLoopEnd")}</Label>
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioBodyEnd")}</Label>
                                                         <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={selectedLoopEndKey} onChange={event => updateSelectedStepParam("loopEndStepKey", event.target.value)}>
                                                             <option value="">{t("components.rpa.RPAWorkbench.studioSelectLoopNode")}</option>
                                                             {orderedDraftSteps.filter(item => item.key !== selectedDraftStepKey).map((item, index) => <option key={item.key} value={item.key}>{index + 1}. {stepIntentLabel(item.step)}</option>)}
                                                         </select>
                                                     </div>
-                                                    <div className="grid gap-2">
+                                                    {selectedBuilderActionKind === "loop" ? <div className="grid gap-2">
                                                         <Label>{t("components.rpa.RPAWorkbench.studioLoopCount")}</Label>
-                                                        <Input className="h-9 text-xs" value={String(selectedBuilderParams.count || "")} onChange={event => updateSelectedStepParam("count", Number(event.target.value || 0))} placeholder="3" />
-                                                    </div>
+                                                        <Input type="number" min={0} className="h-9 text-xs" value={String(selectedBuilderParams.count ?? "")} onChange={event => updateSelectedStepParam("count", event.target.value === "" ? "" : Number(event.target.value))} placeholder="3" />
+                                                    </div> : null}
                                                     {selectedLoopInvalid ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">{t("components.rpa.RPAWorkbench.studioLoopInvalid")}</div> : null}
                                                 </div> : null}
 
@@ -2966,6 +3173,14 @@ export function RPAWorkbench() {
                                                 <Button size="sm" variant="ghost" onClick={() => handleDeleteDraftStep(selectedDraftStepKey)}><Trash2 className="mr-1 h-4 w-4" />{t("components.rpa.RPAWorkbench.studioDelete")}</Button>
                                             </div>
                                         </> : <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioSelectNodeHint")}</div>}
+                                    {selectedDraftStepKey ? <details className="rounded-lg border border-border/60 p-3">
+                                        <summary className="cursor-pointer text-xs font-medium">{t("components.rpa.RPAWorkbench.studioStepJson")}</summary>
+                                        <Textarea aria-label={t("components.rpa.RPAWorkbench.studioStepJson")} className="mt-2 min-h-56 font-mono text-xs" value={draftStepEdits[selectedDraftStepKey] || ""} onChange={event => {
+                                            setStudioDirty(true);
+                                            setDraftStepEdits(current => ({ ...current, [selectedDraftStepKey]: event.target.value }));
+                                        }} />
+                                        {!selectedBuilderStep ? <p role="alert" className="mt-2 text-xs text-destructive">{t("components.rpa.RPAWorkbench.invalidDraftStep")}</p> : null}
+                                    </details> : null}
                                 </div> : null}
                             {studioRightPanel === "variables" ? <div className="space-y-3">
                                     <div className="flex items-center justify-between">
@@ -2989,7 +3204,10 @@ export function RPAWorkbench() {
                                                         </select>
                                                         <Input value={row.secretName} onChange={event => updateVariableRow(row.id, { secretName: event.target.value, sensitive: Boolean(event.target.value) })} placeholder="secret name" />
                                                     </div>
+                                                    <Label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={row.required} onChange={event => updateVariableRow(row.id, { required: event.target.checked })} />{t("components.rpa.RPAWorkbench.required")}</Label>
+                                                    {!row.sensitive ? <Input className="mt-2" value={row.defaultValue} onChange={event => updateVariableRow(row.id, { defaultValue: event.target.value })} placeholder={t("components.rpa.RPAWorkbench.defaultValue")} /> : null}
                                                     <Button className="mt-2" size="sm" variant="ghost" onClick={() => handleInsertVariableIntoSelectedStep(row.name)} disabled={!row.name || !selectedBuilderStep}>{t("components.rpa.RPAWorkbench.studioInsertIntoStep")}</Button>
+                                                    <Button className="mt-2" size="sm" variant="ghost" onClick={() => handleDeleteVariableRow(row.id)} aria-label={t("components.rpa.RPAWorkbench.studioDelete")}><Trash2 className="h-4 w-4" /></Button>
                                                 </div>)}
                                             {!draftVariableRows.length ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioNoVariables")}</div> : null}
                                         </div>
@@ -3174,7 +3392,7 @@ export function RPAWorkbench() {
                                                     <div className="flex items-center justify-between gap-2">
                                                         <div className="min-w-0 truncate font-medium">{friendlyRpaRunTitle(run, t)}</div>
                                                         <Badge variant={String(run.status || "").toLowerCase() === "failed" ? "destructive" : "outline"} className="shrink-0 text-[10px]">
-                                                            {t(friendlyRpaRunStatusKey(run.status))}
+                                                            {t(friendlyRpaRunStatusKey(readRunExecutionState(run.metadata) || run.status))}
                                                         </Badge>
                                                     </div>
                                                     {friendlyRpaRunDetail(run, t) ? <div className="mt-1 truncate text-muted-foreground">{friendlyRpaRunDetail(run, t)}</div> : null}
@@ -3288,7 +3506,7 @@ export function RPAWorkbench() {
                 const highRisk = (draft.steps || []).some(item => item.approval?.mode);
                 const assessment = draft.assessment;
                 const reviewRequired = String(assessment?.status || "").includes("review");
-                return <button key={draft.id} type="button" onClick={() => setSelectedDraftId(draft.id)} className={`w-full rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border/60 hover:border-primary/40 hover:bg-muted/30"}`}>
+                return <button key={draft.id} type="button" onClick={() => handleSelectDraft(draft.id)} className={`w-full rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border/60 hover:border-primary/40 hover:bg-muted/30"}`}>
 
                                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                                     <div>

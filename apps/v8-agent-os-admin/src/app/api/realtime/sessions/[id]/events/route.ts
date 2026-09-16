@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
@@ -21,7 +22,7 @@ export async function GET(
     const search = afterSeq ? `?after_seq=${encodeURIComponent(afterSeq)}` : "";
 
     try {
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}/runtime-events${search}`, {
+        const res = await engineFetch(`${ENGINE_URL}/sessions/${id}/runtime-events${search}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

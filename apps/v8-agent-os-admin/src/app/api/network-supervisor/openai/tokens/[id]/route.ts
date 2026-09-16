@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -19,7 +20,7 @@ export async function DELETE(
     const unauthorized = await requireAdminIdentity(req);
     if (unauthorized) return unauthorized;
     const { id } = await params;
-    const response = await fetch(`${resolveEngineBaseUrl()}/network-supervisor/openai/compat/tokens/${encodeURIComponent(id)}`, {
+    const response = await engineFetch(`${resolveEngineBaseUrl()}/network-supervisor/openai/compat/tokens/${encodeURIComponent(id)}`, {
         method: "DELETE",
         cache: "no-store",
         headers: relayHeaders(),

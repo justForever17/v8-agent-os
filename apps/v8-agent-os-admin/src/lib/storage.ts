@@ -52,7 +52,6 @@ export const initializeStorage = () => {
     const baseDir = getBaseDir();
     ensureDir(baseDir);
     cleanupLegacyFiles(baseDir);
-    ensureFile(path.join(baseDir, 'users.json'), JSON.stringify({ users: [] }, null, 2));
 };
 
 export const readJson = <T>(filename: string, defaultValue: T): T => {

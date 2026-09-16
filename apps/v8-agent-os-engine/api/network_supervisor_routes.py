@@ -1248,9 +1248,7 @@ async def network_supervisor_peer_ws(websocket: WebSocket):
 @router.get("/network-supervisor/openai/models")
 async def get_network_supervisor_openai_models(
     authorization: str | None = Header(default=None, alias="Authorization"),
-    x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
 ):
-    _verify_admin_relay_secret(x_v8_agent_os_secret)
     bearer_token = extract_bearer_token(authorization)
     network_supervisor_service.verify_openai_compat_token(bearer_token)
     compat_config = network_supervisor_service.get_config_model().openai_compat
@@ -1262,9 +1260,7 @@ async def get_network_supervisor_openai_models(
 async def get_network_supervisor_anthropic_models(
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
-    x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
 ):
-    _verify_admin_relay_secret(x_v8_agent_os_secret)
     network_supervisor_service.verify_openai_compat_token(extract_anthropic_api_key(authorization, x_api_key))
     compat_config = network_supervisor_service.get_config_model().openai_compat
     return build_anthropic_compat_models_response(compat_config.model_aliases)
@@ -1274,10 +1270,8 @@ async def get_network_supervisor_anthropic_models(
 async def post_network_supervisor_openai_chat_completions(
     request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
-    x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
     x_v8_compat_memory: str | None = Header(default=None, alias="X-V8-Compat-Memory"),
 ):
-    _verify_admin_relay_secret(x_v8_agent_os_secret)
     bearer_token = extract_bearer_token(authorization)
     token_entry = network_supervisor_service.verify_openai_compat_token(bearer_token)
     origin_token_hash = hashlib.sha256(bearer_token.encode()).hexdigest()
@@ -1463,9 +1457,7 @@ async def post_network_supervisor_anthropic_messages(
     request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
-    x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
 ):
-    _verify_admin_relay_secret(x_v8_agent_os_secret)
     token_entry = network_supervisor_service.verify_openai_compat_token(extract_anthropic_api_key(authorization, x_api_key))
     origin_token_hash = hashlib.sha256(extract_anthropic_api_key(authorization, x_api_key).encode()).hexdigest()
     compat_config = network_supervisor_service.get_config_model().openai_compat

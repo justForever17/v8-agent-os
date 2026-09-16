@@ -78,11 +78,11 @@ Phone 是唯一远程交互入口。它用于查看正在运行的会话、接�
 .\v8os.cmd preview --rebuild
 ```
 
-该命令会重新构建 Admin、Web 与原生 sandbox helper，停止当前源码树拥有的旧预览进程，再启动 Engine、Admin、Web 和桌面 Shell。完成后你会看到 V8OS 桌面窗口，而不是多个开发服务器页面。
+该命令会重新构建 Admin、Web 与原生 sandbox helper，停止当前源码树拥有的旧预览进程，再启动 Engine、Web 和桌面 Shell。打开控制台时才启动 Admin；本机聊天和桌宠自动连接，无须登录或扫码。
 
 ### 连接手机
 
-手机端仍通过桌面控制台生成的配对二维码连接。扫码成功后，Phone 会保存本地连接档案；以后即使网络短暂失败，也不会丢失已保存的连接。
+在桌面控制台生成配对二维码，或使用 `v8os config phone pair --base-url https://你的网关地址` 生成配对信息，在 Phone 扫码或粘贴即可。配对和会话由 Engine 提供，关闭控制台后仍可使用。Phone 会保存各服务器的连接档案，网络暂时中断时保留草稿和已保存连接。
 
 ## 当前状态
 

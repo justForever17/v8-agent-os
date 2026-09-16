@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -6,7 +7,7 @@ const ENGINE_ORIGIN = resolveEngineOrigin();
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/skills/install/zip`, {
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/skills/install/zip`, {
       method: "POST",
       body: formData, // FormData matches multipart/form-data
     });

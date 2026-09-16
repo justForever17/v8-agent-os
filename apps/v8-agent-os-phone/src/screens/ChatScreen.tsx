@@ -627,7 +627,7 @@ function buildUploadTransportError(asset: DocumentPicker.DocumentPickerAsset, er
     const rawMessage = error instanceof Error ? String(error.message || "").trim() : "";
     const lowered = rawMessage.toLowerCase();
     const label = asset.name ? `“${asset.name}”` : translateCurrent("shared.upload.file_fallback_label");
-    const adminHint = adminBaseUrl ? `Admin: ${adminBaseUrl}` : translateCurrent("shared.upload.admin_url_missing");
+    const adminHint = adminBaseUrl ? `V8OS: ${adminBaseUrl}` : translateCurrent("shared.upload.admin_url_missing");
     const networkHint = translateCurrent("shared.upload.admin_transport_hint", {
         reason: rawMessage || translateCurrent("shared.upload.admin_proxy_unreachable"),
         adminHint,

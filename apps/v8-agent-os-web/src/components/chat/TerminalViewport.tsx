@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isSurfaceVisible, useSurfaceVisible } from "@/hooks/use-surface-visible";
 import "@xterm/xterm/css/xterm.css";
 import { useT } from "@/components/providers/LocaleProvider";
+import { readTerminalInstance } from "@/lib/terminal-instance";
 
 type Lease = { terminal: Terminal; fit: FitAddon; element: HTMLDivElement; cursor: number; generation: string; running: boolean; touched: number };
 const leases = new Map<string, Lease>();
@@ -42,8 +43,23 @@ export function TerminalViewport({ path, kind, canInput = true, canTerminate = t
             if (generation !== epoch.current || !attached.current) return;
             const response = await fetch(`${path}/${target}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kind === "manual" ? { inputText: text } : { input_text: text, ...(target === "sensitive-input" ? { secret_type: "terminal_secret" } : {}) }) });
             if (!response.ok) throw new Error("web.terminal.inputFailed");
+            if (generation === epoch.current) setError("");
         }).catch((reason) => { if (generation === epoch.current) { attached.current = false; setError(reason.message); setState("disconnected"); } }).finally(() => { inputBytes.current -= bytes; });
     }, [path, kind]);
+    const paste = useCallback(async () => {
+        const generation = epoch.current;
+        const lease = leaseRef.current;
+        if (!attached.current || !live.current.canInput || !lease?.running) { setError("web.terminal.inputOffline"); return; }
+        try {
+            if (!navigator.clipboard?.readText) throw new Error("clipboard_unavailable");
+            const text = await navigator.clipboard.readText();
+            if (generation !== epoch.current || leaseRef.current !== lease) return;
+            lease.terminal.focus();
+            // xterm owns bracketed-paste/newline semantics and emits the normal
+            // onData path. Mutating its helper textarea does not send stdin.
+            if (text) lease.terminal.paste(text);
+        } catch { if (generation === epoch.current) setError("web.terminal.pasteFailed"); }
+    }, []);
     useEffect(() => {
         releaseOtherPrincipals(principal);
         if (!principal || !host.current) return;
@@ -59,11 +75,9 @@ export function TerminalViewport({ path, kind, canInput = true, canTerminate = t
         leaseRef.current = null;
         setState(visible ? "connecting" : "detached"); setError("");
         const initialize = async () => {
-            const response = await fetch("/api/client/instance", { cache: "no-store", signal: controller.signal });
-            const identity = await response.json();
-            if (!response.ok || !identity.instanceId) throw new Error("web.terminal.identityFailed");
+            const instanceId = await readTerminalInstance(controller.signal);
             if (cancelled || !host.current) return;
-            const key = `${principal}\n${identity.instanceId}\n${path}`;
+            const key = `${principal}\n${instanceId}\n${path}`;
             let lease = leases.get(key);
             if (lease?.element.isConnected) { setState("detached"); setError("web.terminal.openElsewhere"); return; }
             if (!lease) {
@@ -96,6 +110,23 @@ export function TerminalViewport({ path, kind, canInput = true, canTerminate = t
             };
             observer = new ResizeObserver(resize); observer.observe(host.current); resize();
             data = lease.terminal.onData(send);
+            lease.terminal.attachCustomKeyEventHandler(event => {
+                if (event.type !== "keydown" || !event.ctrlKey || event.altKey || event.metaKey) return true;
+                const key = event.key.toLowerCase();
+                if (key === "v" && event.shiftKey) {
+                    event.preventDefault(); event.stopPropagation(); void paste(); return false;
+                }
+                if (key !== "c") return true;
+                event.preventDefault(); event.stopPropagation();
+                if (lease.terminal.hasSelection()) {
+                    const selected = lease.terminal.getSelection();
+                    void navigator.clipboard?.writeText(selected).catch(() => setError("web.terminal.copyFailed"));
+                    lease.terminal.clearSelection();
+                } else if (!event.shiftKey) {
+                    send("\x03");
+                }
+                return false;
+            });
             if (!visible) { setState("detached"); return; }
             let failures = 0;
             const poll = async () => {
@@ -119,7 +150,7 @@ export function TerminalViewport({ path, kind, canInput = true, canTerminate = t
                     if (cancelled) return;
                     const isRunning = payload.isRunning ?? payload.is_running ?? payload.process?.is_running;
                     if (typeof isRunning === "boolean") lease.running = isRunning;
-                    setRunning(lease.running); setState(lease.running ? "attached" : "exited"); setError(""); attached.current = lease.running; failures = 0;
+                    setRunning(lease.running); setState(lease.running ? "attached" : "exited"); setError(current => current === "web.terminal.connectionInterrupted" ? "" : current); attached.current = lease.running; failures = 0;
                     if (!lease.running && !payload.outputHasMore) { live.current.onExit?.(); return; }
                     timer = setTimeout(poll, text ? 0 : 250);
                 } catch (reason) {
@@ -134,8 +165,8 @@ export function TerminalViewport({ path, kind, canInput = true, canTerminate = t
         // epoch is a monotonic request token, not a DOM ref. Invalidate only our
         // own attachment so a stale cleanup cannot invalidate a replacement.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        return () => { cancelled = true; if (epoch.current === currentEpoch) { epoch.current++; attached.current = false; } controller.abort(); clearTimeout(timer); clearTimeout(resizeTimer); observer?.disconnect(); data?.dispose(); attachedLease?.element.remove(); };
-    }, [principal, path, kind, visible, retry, send]);
+        return () => { cancelled = true; if (epoch.current === currentEpoch) { epoch.current++; attached.current = false; } controller.abort(); clearTimeout(timer); clearTimeout(resizeTimer); observer?.disconnect(); data?.dispose(); attachedLease?.terminal.attachCustomKeyEventHandler(() => true); attachedLease?.element.remove(); };
+    }, [principal, path, kind, visible, retry, send, paste]);
     const terminate = async () => {
         const generation = epoch.current;
         try {
@@ -146,7 +177,7 @@ export function TerminalViewport({ path, kind, canInput = true, canTerminate = t
         } catch (reason) { if (generation === epoch.current) setError(reason instanceof Error ? reason.message : "web.terminal.terminateFailed"); }
     };
     return <div className="flex h-full min-h-0 flex-col bg-[#05070b]">
-        <div ref={host} className="min-h-0 flex-1 p-2" />
+        <div ref={host} className="min-h-0 flex-1 p-2" data-v8-context-menu-ignore onContextMenuCapture={event => { event.preventDefault(); event.stopPropagation(); void paste(); }} />
         <div className="flex items-center gap-2 border-t border-white/10 px-3 py-1 text-[11px] text-slate-300" role="status">
             <span>{t(`web.terminal.state.${state}`)}</span>
             {error ? <span className="truncate text-red-300" title={t(error)}>{t(error)}</span> : null}

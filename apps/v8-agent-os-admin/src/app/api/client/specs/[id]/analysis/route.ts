@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -18,7 +19,7 @@ export async function GET(
     try {
         const search = req.nextUrl.searchParams.toString();
         const suffix = search ? `?${search}` : "";
-        const response = await fetch(`${ENGINE_URL}/specs/${encodeURIComponent(id)}/analysis${suffix}`, {
+        const response = await engineFetch(`${ENGINE_URL}/specs/${encodeURIComponent(id)}/analysis${suffix}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

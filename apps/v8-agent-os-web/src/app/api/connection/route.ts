@@ -1,81 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-
-import {
-    ADMIN_CONNECTION_COOKIE,
-    deriveAdminApiBaseUrl,
-    getActiveAdminConnection,
-    normalizeAdminBaseUrl,
-    serializeAdminConnection,
-    type AdminConnection,
-} from "@/lib/server/admin-connection";
-import { shouldUseSecureCookies } from "@/lib/server/cookie-policy";
-import { resolveLocalAdminRootUrl } from "@/lib/server/runtime-config";
+import { getClientProxyConfig, resolveLocalAdminRootUrl } from "@/lib/server/runtime-config";
 
 export async function GET(req: NextRequest) {
-    const local = resolveLocalAdminRootUrl();
-    if (req.nextUrl.searchParams.get("open") === "admin") return NextResponse.redirect(`${local}/admin`);
-    const current = req.nextUrl.searchParams.get("local") === "1" ? null : await getActiveAdminConnection();
-    return NextResponse.json({ connection: current || { adminBaseUrl: local, adminApiBaseUrl: `${local}/api`, bridgeMode: "admin_only" } });
-}
-
-export async function POST(req: NextRequest) {
+    if (req.nextUrl.searchParams.get("open") === "admin") return NextResponse.redirect(`${resolveLocalAdminRootUrl()}/admin`);
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
+    if (!internalSecret) return NextResponse.json({ error: "Local Engine is not configured" }, { status: 503 });
     try {
-        const body = await req.json().catch(() => ({}));
-        const requestedAdminBase = normalizeAdminBaseUrl(body?.adminBaseUrl);
-        const persist = body?.persist !== false;
-        if (!requestedAdminBase) {
-            return NextResponse.json({ error: "管理台地址不能为空" }, { status: 400 });
-        }
-
-        const bootstrapUrl = `${requestedAdminBase}/api/bootstrap/bridge`;
-        const response = await fetch(bootstrapUrl, { cache: "no-store" });
-        if (!response.ok) {
-            const text = await response.text().catch(() => "");
-            return NextResponse.json(
-                { error: text || `连接管理台失败 (${response.status})` },
-                { status: 502 },
-            );
-        }
-
-        const payload = await response.json();
-        const connection: AdminConnection = {
-            adminBaseUrl: normalizeAdminBaseUrl(String(payload?.adminBaseUrl || requestedAdminBase)),
-            adminApiBaseUrl: deriveAdminApiBaseUrl(String(payload?.adminBaseUrl || requestedAdminBase)),
-            bridgeMode: String(payload?.bridgeMode || "admin_only"),
-            reachable: Boolean(payload?.reachable ?? true),
-            version: String(payload?.version || ""),
-        };
-        if (!connection.adminBaseUrl) {
-            return NextResponse.json({ error: "管理台返回的 bridge 信息不完整" }, { status: 502 });
-        }
-
-        const result = NextResponse.json({ connection });
-        if (persist) {
-            result.cookies.set({
-                name: ADMIN_CONNECTION_COOKIE,
-                value: serializeAdminConnection(connection),
-                httpOnly: true,
-                sameSite: "lax",
-                secure: shouldUseSecureCookies(),
-                path: "/",
-            });
-        }
-        return result;
-    } catch (error) {
-        return NextResponse.json(
-            { error: error instanceof Error ? error.message : "保存连接失败" },
-            { status: 500 },
-        );
+        const response = await fetch(`${clientApiBaseUrl}/connection`, {
+            headers: { "x-v8-agent-os-secret": internalSecret }, cache: "no-store", redirect: "error",
+        });
+        return NextResponse.json(await response.json(), { status: response.status });
+    } catch {
+        return NextResponse.json({ error: "Local Engine is unavailable" }, { status: 503 });
     }
-}
-
-export async function DELETE() {
-    const result = NextResponse.json({ success: true });
-    result.cookies.set({
-        name: ADMIN_CONNECTION_COOKIE,
-        value: "",
-        maxAge: 0,
-        path: "/",
-    });
-    return result;
 }

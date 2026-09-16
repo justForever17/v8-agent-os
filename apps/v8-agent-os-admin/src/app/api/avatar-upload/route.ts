@@ -22,7 +22,7 @@ const AVATAR_DIR = path.join(process.cwd(), "public", "Avatar");
 async function resolveAuthorizedUser(req: NextRequest) {
     const serviceIdentifier = await verifyServiceAuth(req);
     if (serviceIdentifier) {
-        const user = findUserByIdentifier(serviceIdentifier);
+        const user = await findUserByIdentifier(serviceIdentifier);
         return user?.login || null;
     }
 

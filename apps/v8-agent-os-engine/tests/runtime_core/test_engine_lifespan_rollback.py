@@ -650,6 +650,50 @@ def test_supervisor_graph_prewarm_failure_is_non_fatal(monkeypatch: pytest.Monke
     assert result == {"ok": False, "errorType": "RuntimeError"}
 
 
+def test_cold_prewarm_imports_cannot_block_http_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    import main
+    import threading
+    from core.chat_run_scheduler import ChatRunScheduler
+
+    async def exercise():
+        request_thread = threading.get_ident()
+        imported = threading.Event()
+        release_import = threading.Event()
+        scheduler = ChatRunScheduler()
+        await scheduler.start()
+
+        class Resolver:
+            resolve_engine_config_for_role = staticmethod(lambda role: {})
+            require_engine_config = staticmethod(lambda resolved, role: object())
+
+        class Runner:
+            async def build_graph(self, config):
+                assert threading.get_ident() != request_thread
+                return object(), {}
+
+        def load(name):
+            assert threading.get_ident() != request_thread, 'cold import blocked HTTP loop'
+            imported.set()
+            assert release_import.wait(3), 'HTTP loop could not release the cold import'
+            return Resolver if name == 'core.engine_config_resolver' else SimpleNamespace(supervisor_runner=Runner())
+
+        monkeypatch.setattr(main, '_import_module', load)
+        monkeypatch.setattr(main, '_get_chat_run_scheduler', lambda: scheduler)
+        task = asyncio.create_task(main._prewarm_supervisor_graph())
+        try:
+            assert await asyncio.to_thread(imported.wait, 2)
+            # This callback models a newly accepted HTTP request while imports
+            # are still blocked. Waiting for warmup cannot produce this proof.
+            assert not task.done()
+            release_import.set()
+            assert (await task)['ok'] is True
+        finally:
+            release_import.set()
+            await scheduler.stop()
+
+    asyncio.run(exercise())
+
+
 def test_supervisor_graph_prewarm_rebuilds_after_late_extension_inventory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
     const query = req.nextUrl.searchParams.toString();
     const suffix = query ? `?${query}` : "";
     try {
-        const response = await fetch(`${ENGINE_V1_URL}/model-cache/stats${suffix}`, { cache: "no-store" });
+        const response = await engineFetch(`${ENGINE_V1_URL}/model-cache/stats${suffix}`, { cache: "no-store" });
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });
     } catch (error) {

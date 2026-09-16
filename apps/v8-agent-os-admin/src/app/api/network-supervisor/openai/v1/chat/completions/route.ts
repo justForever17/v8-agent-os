@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
@@ -90,7 +91,7 @@ function copyCompatHeaders(req: NextRequest) {
 export async function POST(req: NextRequest) {
     try {
         const bodyText = await req.text();
-        const response = await fetch(ENGINE_TARGET, {
+        const response = await engineFetch(ENGINE_TARGET, {
             method: "POST",
             cache: "no-store",
             headers: copyCompatHeaders(req),

@@ -11,6 +11,7 @@ export async function fetchJson(url, { method = "GET", body, timeoutMs = 2500, h
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
       cache: "no-store",
+      redirect: "error",
     });
     const text = await response.text();
     let data = null;

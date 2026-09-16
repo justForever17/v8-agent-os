@@ -8,7 +8,7 @@ import { listUsers } from "@/lib/users";
 export default async function UsersPage() {
     const locale = parseLocale((await cookies()).get("v8-agent-os-locale")?.value) || "zh-CN";
     const t = createTranslator(locale);
-    const owner = listUsers().find((user) => user.role === "ADMIN") || null;
+    const owner = (await listUsers()).find((user) => user.role === "ADMIN") || null;
 
     return (
         <div className="space-y-6">

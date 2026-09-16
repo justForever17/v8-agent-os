@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
         if (!refreshToken) {
             return NextResponse.json({ error: "Refresh token is required" }, { status: 400 });
         }
-        revokeMobileRefreshToken(refreshToken);
+        await revokeMobileRefreshToken(refreshToken);
         return NextResponse.json({ success: true });
     } catch (error) {
         console.error("[ClientAuth] logout failed:", error);

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
 
@@ -45,12 +46,12 @@ export async function GET(
 
     try {
         const [snapshotResponse, historyResponse] = await Promise.all([
-            fetch(`${ENGINE_URL}/sessions/${id}/snapshot${omitMessages ? "?compact=1" : ""}`, {
+            engineFetch(`${ENGINE_URL}/sessions/${id}/snapshot${omitMessages ? "?compact=1" : ""}`, {
                 method: "GET",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
             }),
-            omitMessages ? Promise.resolve(null) : fetch(`${ENGINE_URL}/sessions/${id}/history`, {
+            omitMessages ? Promise.resolve(null) : engineFetch(`${ENGINE_URL}/sessions/${id}/history`, {
                 method: "GET",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
@@ -183,7 +184,7 @@ export async function DELETE(
     const { id } = await params;
 
     try {
-        const response = await fetch(`${ENGINE_URL}/sessions/${id}`, {
+        const response = await engineFetch(`${ENGINE_URL}/sessions/${id}`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
         });
@@ -212,7 +213,7 @@ export async function PATCH(
     const { id } = await params;
     const body = await req.json().catch(() => ({}));
     try {
-        const response = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
+        const response = await engineFetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

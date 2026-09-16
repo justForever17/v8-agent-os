@@ -176,7 +176,7 @@ export default function SettingsScreen() {
                     <GlassCard>
                         <Text style={styles.sectionTitle}>{t("src.screens.settingsscreen.connection_summary")}</Text>
                         <View style={styles.summaryGroup}>
-                            <Text style={styles.summaryLabel}>Admin BFF</Text>
+                            <Text style={styles.summaryLabel}>V8OS</Text>
                             <Text style={styles.summaryValue}>{adminBaseUrl || t("src.screens.connectscreen.not_connected")}</Text>
                         </View>
                         <View style={styles.summaryGroup}>

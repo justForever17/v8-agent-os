@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
     const resolvedParams = await params;
@@ -10,7 +10,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ path
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
 
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ path
     try {
         const pathSegments = resolvedParams.path;
         // e.g. /api/workspace/files/uploads/file.png
-        const targetUrl = `${adminApiBaseUrl}/workspace/files/${pathSegments.join('/')}`;
+        const targetUrl = `${clientApiBaseUrl}/workspace/files/${pathSegments.join('/')}`;
 
         const res = await fetch(targetUrl, {
             method: "GET",

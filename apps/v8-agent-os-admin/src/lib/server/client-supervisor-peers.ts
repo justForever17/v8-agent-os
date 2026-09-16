@@ -27,7 +27,7 @@ export async function supervisorPeerContext(req: NextRequest) {
     // Network discovery is deliberately excluded. Only previously authorized links.
     const links: Link[] = (Array.isArray(payload.items) ? payload.items : [])
         .filter((link: Link) => link.trustStatus === "trusted" && (link.linkId || link.id));
-    const manifest = buildClientLinkManifest(resolveRequestOrigin(req));
+    const manifest = await buildClientLinkManifest(resolveRequestOrigin(req));
     return { links, servingInstanceId: manifest.instanceId };
 }
 

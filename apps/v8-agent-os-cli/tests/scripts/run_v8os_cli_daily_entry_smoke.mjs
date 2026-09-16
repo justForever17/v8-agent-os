@@ -249,7 +249,7 @@ async function main() {
       ...process.env,
       V8_AGENT_OS_HOME: stateRoot,
       V8_REPO_ROOT: repoRoot,
-      V8OS_ADMIN_URL: `http://127.0.0.1:${port}`,
+      V8OS_ENGINE_URL: `http://127.0.0.1:${port}`,
       NO_COLOR: "1",
     };
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveRouteUserEmail } from "@/lib/route-auth";
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +15,7 @@ export async function GET(
     if (!userEmail) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
 
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
@@ -27,7 +27,7 @@ export async function GET(
         // Web is the rich local workbench surface. Phone/desktop compact
         // snapshots are intentionally bounded, but collapsing the Web stream
         // drops subagent timeline nodes and delays durable artifact refresh.
-        const res = await fetch(`${adminApiBaseUrl}/realtime/sessions/${encodeURIComponent(id)}/stream?surface=web`, {
+        const res = await fetch(`${clientApiBaseUrl}/realtime/sessions/${encodeURIComponent(id)}/stream?surface=web`, {
             method: "GET",
             headers: {
                 "Content-Type": "text/event-stream",

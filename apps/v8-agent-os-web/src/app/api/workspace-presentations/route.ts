@@ -1,19 +1,19 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 async function proxyToAdmin(method: "GET" | "PUT", body?: unknown) {
     const session = await auth();
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
     }
     try {
-        const response = await fetch(`${adminApiBaseUrl}/workspace-presentations`, {
+        const response = await fetch(`${clientApiBaseUrl}/workspace-presentations`, {
             method,
             headers: {
                 "Content-Type": "application/json",

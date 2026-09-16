@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const formData = await req.formData();
-        const response = await fetch(`${resolveEngineBaseUrl()}/audio/stt/transcribe`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/audio/stt/transcribe`, {
             method: "POST",
             headers: {
                 "x-v8-agent-os-user-email": userEmail,

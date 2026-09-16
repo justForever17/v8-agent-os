@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -21,7 +22,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const res = await fetch(`${ENGINE_URL}/projects`, {
+        const res = await engineFetch(`${ENGINE_URL}/projects`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
@@ -42,7 +43,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const payload = await req.json();
-        const res = await fetch(`${ENGINE_URL}/projects`, {
+        const res = await engineFetch(`${ENGINE_URL}/projects`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),

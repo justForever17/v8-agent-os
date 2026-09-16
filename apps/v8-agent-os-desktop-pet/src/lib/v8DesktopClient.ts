@@ -1,7 +1,10 @@
 export type V8AuthSession = {
-  adminBaseUrl: string;
+  engineBaseUrl: string;
+  /** @deprecated retained for stored session migration only. */
+  adminBaseUrl?: string;
   accessToken: string;
   refreshToken: string;
+  localSession?: boolean;
   user?: { email?: string; name?: string; login?: string } | null;
 };
 
@@ -90,7 +93,7 @@ export type V8DesktopPetConfig = {
 
 const SESSION_STORAGE_KEY = "v8.desktopPet.auth";
 const ACTIVE_CONVERSATION_KEY = "v8.desktopPet.activeConversationId";
-const ADMIN_BASE_KEY = "v8.desktopPet.adminBaseUrl";
+const ENGINE_BASE_KEY = "v8.desktopPet.engineBaseUrl";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const MEDIA_REQUEST_TIMEOUT_MS = 125_000;
 
@@ -127,6 +130,10 @@ export async function fetchWithTimeout(
 export function normalizeAdminBaseUrl(input: string) {
   const trimmed = String(input || "").trim();
   return (trimmed || "http://127.0.0.1:9528").replace(/\/+$/, "");
+}
+
+export function normalizeEngineBaseUrl(input: string) {
+  return (String(input || '').trim() || 'http://127.0.0.1:9530/v1').replace(/\/+$/, '');
 }
 
 function readJson<T>(value: string | null): T | null {
@@ -169,10 +176,10 @@ export class V8DesktopClientAdapter {
 
   loadSession() {
     const stored = readJson<V8AuthSession>(localStorage.getItem(SESSION_STORAGE_KEY));
-    if (!stored?.accessToken) return null;
+    if (!stored?.accessToken || !stored.localSession) return null;
     return {
       ...stored,
-      adminBaseUrl: normalizeAdminBaseUrl(stored.adminBaseUrl),
+      engineBaseUrl: normalizeEngineBaseUrl(stored.engineBaseUrl || stored.adminBaseUrl || ''),
     };
   }
 
@@ -181,11 +188,7 @@ export class V8DesktopClientAdapter {
   }
 
   getStoredAdminBaseUrl() {
-    return normalizeAdminBaseUrl(
-      this.session?.adminBaseUrl
-      || localStorage.getItem(ADMIN_BASE_KEY)
-      || "http://127.0.0.1:9528",
-    );
+    return normalizeEngineBaseUrl(this.session?.engineBaseUrl || localStorage.getItem(ENGINE_BASE_KEY) || 'http://127.0.0.1:9530/v1');
   }
 
   getActiveConversationId() {
@@ -213,16 +216,15 @@ export class V8DesktopClientAdapter {
   private persistSession(session: V8AuthSession) {
     this.session = session;
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    localStorage.setItem(ADMIN_BASE_KEY, session.adminBaseUrl);
+    localStorage.setItem(ENGINE_BASE_KEY, session.engineBaseUrl);
   }
 
-  async signInLocal(input?: { adminBaseUrl?: string; deviceName?: string }) {
-    const adminBaseUrl = normalizeAdminBaseUrl(input?.adminBaseUrl || "");
-    const response = await fetchWithTimeout(localProxyPath("/api/client/auth/local-session"), {
+  async signInLocal(input?: { engineBaseUrl?: string; adminBaseUrl?: string; deviceName?: string }) {
+    const engineBaseUrl = normalizeEngineBaseUrl(input?.engineBaseUrl || input?.adminBaseUrl || "");
+    const response = await fetchWithTimeout("/api/pet/local-session", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-v8-admin-base": adminBaseUrl,
       },
       body: JSON.stringify({
         surface: "desktop_pet",
@@ -234,9 +236,10 @@ export class V8DesktopClientAdapter {
       throw new Error(payload?.error || "V8OS 本机连接失败");
     }
     const session = {
-      adminBaseUrl,
+      engineBaseUrl: normalizeEngineBaseUrl(payload.engineBaseUrl || engineBaseUrl),
       accessToken: String(payload.accessToken),
       refreshToken: String(payload.refreshToken || ""),
+      localSession: true,
       user: payload.user || null,
     };
     this.persistSession(session);
@@ -249,7 +252,6 @@ export class V8DesktopClientAdapter {
       cache: "no-store",
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
-        "x-v8-admin-base": session.adminBaseUrl,
       },
     });
     if (response.status === 401 || response.status === 403) return false;
@@ -260,11 +262,8 @@ export class V8DesktopClientAdapter {
     return true;
   }
 
-  async ensureLocalSession(input?: { adminBaseUrl?: string; deviceName?: string }) {
-    const requestedAdminBaseUrl = normalizeAdminBaseUrl(input?.adminBaseUrl || "");
-    if (this.session && this.session.adminBaseUrl !== requestedAdminBaseUrl) {
-      this.clearSession();
-    }
+  async ensureLocalSession(input?: { engineBaseUrl?: string; adminBaseUrl?: string; deviceName?: string }) {
+    const requestedEngineBaseUrl = normalizeEngineBaseUrl(input?.engineBaseUrl || input?.adminBaseUrl || "");
     if (this.session) {
       if (await this.validateSession(this.session)) return this.session;
       try {
@@ -275,7 +274,7 @@ export class V8DesktopClientAdapter {
       }
     }
     return this.signInLocal({
-      adminBaseUrl: requestedAdminBaseUrl,
+      engineBaseUrl: requestedEngineBaseUrl,
       deviceName: input?.deviceName || "v8-desktop-pet",
     });
   }
@@ -287,7 +286,6 @@ export class V8DesktopClientAdapter {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-v8-admin-base": current.adminBaseUrl,
       },
       body: JSON.stringify({
         refreshToken: current.refreshToken,
@@ -303,9 +301,10 @@ export class V8DesktopClientAdapter {
       throw new Error(payload?.error || `V8OS 会话刷新失败：${response.status}`);
     }
     const session = {
-      adminBaseUrl: current.adminBaseUrl,
+      engineBaseUrl: current.engineBaseUrl,
       accessToken: String(payload.accessToken),
       refreshToken: String(payload.refreshToken || current.refreshToken),
+      localSession: true,
       user: payload.user || current.user || null,
     };
     this.persistSession(session);
@@ -315,11 +314,10 @@ export class V8DesktopClientAdapter {
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const session = this.session;
     if (!session?.accessToken) {
-      throw new Error("尚未连接 V8OS Admin");
+      throw new Error("尚未连接 V8OS Engine");
     }
     const headers = new Headers(init.headers || {});
     headers.set("Authorization", `Bearer ${session.accessToken}`);
-    headers.set("x-v8-admin-base", session.adminBaseUrl);
     const response = await fetchWithTimeout(localProxyPath(path), {
       ...init,
       headers,
@@ -387,14 +385,13 @@ export class V8DesktopClientAdapter {
   async synthesizeSpeech(text: string, input?: { voiceRef?: string }) {
     const session = this.session;
     if (!session?.accessToken) {
-      throw new Error("尚未连接 V8OS Admin");
+      throw new Error("尚未连接 V8OS Engine");
     }
     const response = await fetchWithTimeout(localProxyPath("/api/client/audio/tts"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${session.accessToken}`,
-        "x-v8-admin-base": session.adminBaseUrl,
       },
       body: JSON.stringify({ text, voiceRef: input?.voiceRef || undefined }),
     }, MEDIA_REQUEST_TIMEOUT_MS);
@@ -408,7 +405,7 @@ export class V8DesktopClientAdapter {
   async transcribeSpeech(audio: Blob, input?: { language?: string; filename?: string }) {
     const session = this.session;
     if (!session?.accessToken) {
-      throw new Error("尚未连接 V8OS Admin");
+      throw new Error("尚未连接 V8OS Engine");
     }
     const form = new FormData();
     const filename = input?.filename || "cybercore-voice.webm";
@@ -420,7 +417,6 @@ export class V8DesktopClientAdapter {
       method: "POST",
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
-        "x-v8-admin-base": session.adminBaseUrl,
       },
       body: form,
     }, MEDIA_REQUEST_TIMEOUT_MS);
@@ -448,7 +444,7 @@ export class V8DesktopClientAdapter {
   async uploadFile(file: File, scope: { conversationId?: string; workspacePath?: string; sourceKind?: "desktop_pet_upload" | "desktop_pet_voice" }) {
     const session = this.session;
     if (!session?.accessToken) {
-      throw new Error("尚未连接 V8OS Admin");
+      throw new Error("尚未连接 V8OS Engine");
     }
     const form = new FormData();
     form.append("file", file);
@@ -464,7 +460,6 @@ export class V8DesktopClientAdapter {
       method: "POST",
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
-        "x-v8-admin-base": session.adminBaseUrl,
       },
       body: form,
     }, MEDIA_REQUEST_TIMEOUT_MS);
@@ -611,7 +606,6 @@ export class V8DesktopClientAdapter {
     const response = await fetch(localProxyPath(path), {
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
-        "x-v8-admin-base": session.adminBaseUrl,
       },
       signal,
     });

@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 
 import {
-    requireAdminProxyContext,
-    safeAdminProxyFetch,
-} from "@/lib/server/proxy/admin-proxy";
+    requireClientProxyContext,
+    safeClientProxyFetch,
+} from "@/lib/server/proxy/client-proxy";
 import { relayJsonProxyResponse } from "@/lib/server/proxy/proxy-response";
 
 export const runtime = "nodejs";
@@ -14,14 +14,14 @@ type RouteContext = {
 };
 
 async function relay(req: NextRequest, context: RouteContext, method: "PATCH" | "DELETE") {
-    const contextResult = await requireAdminProxyContext();
+    const contextResult = await requireClientProxyContext();
     if (contextResult.response) {
         return contextResult.response;
     }
 
     const { id } = await context.params;
     const body = method === "PATCH" ? await req.text() : undefined;
-    const result = await safeAdminProxyFetch(
+    const result = await safeClientProxyFetch(
         contextResult.context,
         `/client/chat-queue/${encodeURIComponent(id)}`,
         {

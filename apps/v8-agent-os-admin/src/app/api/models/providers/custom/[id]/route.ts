@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -8,7 +9,7 @@ export async function DELETE(_req: NextRequest, context: { params: Promise<{ id:
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await context.params;
-    const response = await fetch(`${resolveEngineBaseUrl()}/models/providers/custom/${encodeURIComponent(id)}`, {
+    const response = await engineFetch(`${resolveEngineBaseUrl()}/models/providers/custom/${encodeURIComponent(id)}`, {
         method: "DELETE",
     });
     const data = await response.json().catch(() => ({}));

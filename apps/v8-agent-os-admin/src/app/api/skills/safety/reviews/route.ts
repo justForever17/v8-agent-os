@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -11,7 +12,7 @@ export async function GET(req: NextRequest) {
   }
   const search = req.nextUrl.search || "";
   try {
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/skills/safety/reviews${search}`, { cache: "no-store" });
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/skills/safety/reviews${search}`, { cache: "no-store" });
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });
   } catch (error) {

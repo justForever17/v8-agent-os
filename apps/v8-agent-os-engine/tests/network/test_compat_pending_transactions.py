@@ -245,7 +245,7 @@ def test_invalid_request_cannot_consume_pending_before_corrected_retry(service, 
         async def json(self):
             return self.payload
     route = routes.post_network_supervisor_openai_chat_completions if protocol == "openai" else routes.post_network_supervisor_anthropic_messages
-    kwargs = {"authorization": "Bearer " + token, "x_v8_agent_os_secret": "fixture-relay"}
+    kwargs = {"authorization": "Bearer " + token}
     kwargs.update({"x_v8_compat_memory": None} if protocol == "openai" else {"x_api_key": None})
     with pytest.raises(HTTPException) as rejected:
         asyncio.run(route(Request(invalid), **kwargs))

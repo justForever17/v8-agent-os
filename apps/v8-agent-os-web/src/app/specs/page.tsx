@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 
-import { requireAdminConnection } from "@/lib/server/page-guards";
+import { requireLocalEngine } from "@/lib/server/page-guards";
 import SpecApprovalClient, { SpecApprovalLoading } from "./SpecApprovalClient";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +18,7 @@ export default async function SpecsPage({
         }
     }
     const nextPath = `/specs${query.toString() ? `?${query.toString()}` : ""}`;
-    await requireAdminConnection(nextPath);
+    await requireLocalEngine(nextPath);
     const workspacePath = typeof params.workspace === "string" ? params.workspace : "";
     const specId = typeof params.specId === "string" ? params.specId : "";
     const stage = typeof params.stage === "string" ? params.stage : "";

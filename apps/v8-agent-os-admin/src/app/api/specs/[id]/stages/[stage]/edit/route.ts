@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -11,7 +12,7 @@ export async function POST(
     const { id, stage } = await params;
     try {
         const payload = await req.json().catch(() => ({}));
-        const response = await fetch(`${ENGINE_URL}/specs/${encodeURIComponent(id)}/stages/${encodeURIComponent(stage)}/edit`, {
+        const response = await engineFetch(`${ENGINE_URL}/specs/${encodeURIComponent(id)}/stages/${encodeURIComponent(stage)}/edit`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),

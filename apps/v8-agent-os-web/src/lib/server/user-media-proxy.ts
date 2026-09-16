@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { resolveAdminRootUrl } from "@/lib/server/runtime-config";
+import { resolveEngineRootUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 type UserMediaProxyOptions = {
     allowedKinds: Array<"avatar" | "background">;
@@ -32,31 +32,36 @@ export async function proxyUserMedia(req: NextRequest, options: UserMediaProxyOp
         return NextResponse.json({ error: "Missing user media source" }, { status: 400 });
     }
 
-    let adminRoot: URL;
+    let engineRoot: URL;
     try {
-        adminRoot = new URL(await resolveAdminRootUrl());
+        engineRoot = new URL(await resolveEngineRootUrl());
     } catch {
-        return NextResponse.json({ error: "Invalid admin root configuration" }, { status: 500 });
+        return NextResponse.json({ error: "Invalid Engine configuration" }, { status: 500 });
     }
 
     let target: URL;
     try {
-        target = source.startsWith("/") ? new URL(source, adminRoot) : new URL(source);
+        target = source.startsWith("/") ? new URL(source, engineRoot) : new URL(source);
         if (!isAllowedPath(target.pathname, options)) {
             return NextResponse.json({ error: "Unsupported user media source" }, { status: 400 });
         }
-        if (target.origin !== adminRoot.origin && !LOOPBACK_HOST_PATTERN.test(target.hostname)) {
+        if (target.origin !== engineRoot.origin && !LOOPBACK_HOST_PATTERN.test(target.hostname)) {
             return NextResponse.json({ error: "Unsupported user media origin" }, { status: 400 });
         }
+        // Old localhost links identify a file, never a destination for credentials.
+        target = new URL(target.pathname + target.search, engineRoot);
     } catch {
         return NextResponse.json({ error: "Invalid user media source" }, { status: 400 });
     }
 
     try {
         const range = req.headers.get("range");
+        const secret = await resolveInternalSecret();
+        if (!secret) return NextResponse.json({ error: "Configuration Error" }, { status: 503 });
         const upstream = await fetch(target, {
             cache: "no-store",
-            headers: range ? { Range: range } : undefined,
+            redirect: "error",
+            headers: { "x-v8-agent-os-secret": secret, ...(range ? { Range: range } : {}) },
         });
         if (upstream.status === 416) {
             const headers = new Headers({

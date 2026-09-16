@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -42,7 +43,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
         }
         const isAvailability = method === "GET" && segments?.length === 1 && segments[0] === "availability";
         if (isAvailability) init.signal = AbortSignal.timeout(7_000);
-        const res = await fetch(target, init);
+        const res = await engineFetch(target, init);
         const data = await res.json().catch(() => ({}));
         const publicData = isAvailability
             ? projectPublicRpaAvailability(data)

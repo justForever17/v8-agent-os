@@ -1,20 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
-    requireAdminProxyContext,
-    safeAdminProxyFetch,
-} from "@/lib/server/proxy/admin-proxy";
+    requireClientProxyContext,
+    safeClientProxyFetch,
+} from "@/lib/server/proxy/client-proxy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-    const contextResult = await requireAdminProxyContext();
+    const contextResult = await requireClientProxyContext();
     if (contextResult.response) {
         return contextResult.response;
     }
 
-    const result = await safeAdminProxyFetch(
+    const result = await safeClientProxyFetch(
         contextResult.context,
         `/workspace/resource${req.nextUrl.search}`,
         {

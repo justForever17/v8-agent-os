@@ -20,7 +20,9 @@ const desktopPetMainSource = fs.readFileSync(
 test('GPU recovery delegates relaunch to governed Shell and desktop pet shutdown', () => {
   assert.match(bootstrapSource, /app\.emit\([\s\S]{0,80}'v8os-gpu-recovery-requested'/);
   assert.doesNotMatch(bootstrapSource, /app\.relaunch/);
-  assert.match(shellMainSource, /quitApplication:[\s\S]{0,240}app\.relaunch\([\s\S]{0,120}app\.quit\(\)/);
+  assert.match(shellMainSource, /recoverShellAfterGpuFailure[\s\S]{0,1500}app\.relaunch\([\s\S]{0,120}app\.quit\(\)/);
+  assert.match(shellMainSource, /recoverShellAfterGpuFailure[\s\S]{0,550}removeShellProcessRecord/);
+  assert.match(shellMainSource, /recoverShellAfterGpuFailure[\s\S]{0,550}stopDesktopPetGracefully/);
   assert.match(desktopPetMainSource, /function finalizeShutdown[\s\S]{0,700}app\.relaunch\([\s\S]{0,120}app\.exit\(0\)/);
   assert.match(shellMainSource, /app\.emit\('v8os-governed-shutdown-started'\)/);
   assert.match(desktopPetMainSource, /app\.emit\('v8os-governed-shutdown-started'\)/);
@@ -93,4 +95,6 @@ test('GPU recovery remains fail-closed after a governed shutdown attempt', () =>
   assert.match(bootstrap, /app\.on\('v8os-governed-shutdown-started', \(\) => gpuRecovery\.disable\(\)\)/);
   assert.match(shell, /if \(!failure\) return;[\s\S]{0,120}gpuRecoveryRelaunchArgs = null;/);
   assert.match(shell, /quitting = false;/);
+  assert.match(shell, /app\.on\('v8os-gpu-recovery-requested',[\s\S]{0,180}recoverShellAfterGpuFailure/);
+  assert.doesNotMatch(shell, /app\.on\('v8os-gpu-recovery-requested',[\s\S]{0,180}quitV8OS/);
 });

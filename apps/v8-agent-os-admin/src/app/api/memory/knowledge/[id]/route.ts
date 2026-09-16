@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -9,7 +10,7 @@ export async function DELETE(
 ) {
     try {
         const { id } = await params;
-        const response = await fetch(`${ENGINE_URL}/v1/memory/knowledge/${id}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/knowledge/${id}`, {
             method: "DELETE",
         });
         if (!response.ok) throw new Error(`Failed: ${response.status}`);
@@ -26,7 +27,7 @@ export async function PUT(
     try {
         const { id } = await params;
         const body = await req.json();
-        const response = await fetch(`${ENGINE_URL}/v1/memory/knowledge/${id}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/knowledge/${id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),

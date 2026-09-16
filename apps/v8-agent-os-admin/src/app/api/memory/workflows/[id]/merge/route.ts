@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
@@ -14,7 +15,7 @@ export async function POST(req: Request, context: RouteContext) {
     try {
         const params = await context.params;
         const body = await req.json().catch(() => ({}));
-        const response = await fetch(`${ENGINE_URL}/v1/memory/workflows/${encodeURIComponent(params.id)}/merge`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/workflows/${encodeURIComponent(params.id)}/merge`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),

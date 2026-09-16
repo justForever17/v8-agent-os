@@ -141,13 +141,10 @@ function checkPhoneConnectionManifest() {
   try {
     const config = readJsonFile(CONFIG_PATH, {});
     const systemBase = config?.systemBase || config?.["system-base"] || {};
-    const manifest = systemBase.remoteLinkManifest || systemBase.pairingManifest || null;
     const remoteLink = systemBase.remoteLink || null;
-    const urls = [
-      ...(Array.isArray(manifest?.adminUrls) ? manifest.adminUrls : []),
-      ...(Array.isArray(remoteLink?.adminUrls) ? remoteLink.adminUrls : []),
-      remoteLink?.adminUrl,
-      remoteLink?.manualUrl,
+    const urls = remoteLink?.enabled === false || remoteLink?.phoneGateway?.enabled === false ? [] : [
+      remoteLink?.phoneGateway?.publicBaseUrl,
+      ...(remoteLink?.transportProfiles || []).filter(item => item.enabled !== false).map(item => item.phoneBaseUrl),
     ].filter(Boolean);
     return {
       id: "phone_connection_manifest",

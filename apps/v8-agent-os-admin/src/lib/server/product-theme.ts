@@ -1,6 +1,7 @@
 import { normalizeProductTheme, type UiTheme } from "@v8/product-ui/theme-bootstrap";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { engineFetch } from "@/lib/server/engine-fetch";
 
 export type InitialProductTheme = {
   theme: UiTheme;
@@ -11,7 +12,7 @@ export async function resolveInitialProductTheme(fallbackTheme: UiTheme = "syste
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 500);
   try {
-    const response = await fetch(`${resolveEngineBaseUrl()}/config-registry/ui`, {
+    const response = await engineFetch(`${resolveEngineBaseUrl()}/config-registry/ui`, {
       cache: "no-store",
       signal: controller.signal,
     });

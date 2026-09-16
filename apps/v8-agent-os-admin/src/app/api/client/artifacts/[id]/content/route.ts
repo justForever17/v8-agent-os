@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { fetchClientAdmin } from "@/lib/server/client-proxy";
-import { fetchSignedClientAdminPath, verifySignedClientSurfaceRequest } from "@/lib/server/client-surface-resource";
+import { fetchEngineClientIdentity } from "@/lib/server/engine-identity";
 
 function passthroughContentHeaders(response: Response) {
     const headers = new Headers();
@@ -36,9 +36,9 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
         if (req.nextUrl.searchParams.get("download") === "1") {
             query.set("download", "1");
         }
-        const target = `/memory/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`;
-        const response = verifySignedClientSurfaceRequest(req)
-            ? await fetchSignedClientAdminPath(target, { method: "GET", headers })
+        const target = `/artifacts/${encodeURIComponent(id)}/content?${query.toString()}${req.nextUrl.searchParams.get("v8sig") ? `&v8exp=${encodeURIComponent(req.nextUrl.searchParams.get("v8exp") || "")}&v8sig=${encodeURIComponent(req.nextUrl.searchParams.get("v8sig") || "")}` : ""}`;
+        const response = req.nextUrl.searchParams.has("v8sig")
+            ? await fetchEngineClientIdentity(target, { method: "GET", headers })
             : await fetchClientAdmin(req, target, {
                 method: "GET",
                 headers,

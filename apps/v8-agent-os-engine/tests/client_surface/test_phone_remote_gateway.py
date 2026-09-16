@@ -13,8 +13,30 @@ from core.remote_link.phone_gateway import (
     PhoneGatewayConfig,
     PhoneGatewayServer,
     _WindowRateLimiter,
-    create_phone_gateway_app,
+    create_phone_gateway_app as create_engine_gateway_app,
 )
+
+
+def create_phone_gateway_app(config=None, *, transport=None, **kwargs):
+    """Existing HTTP-shaped fixtures run as direct ASGI handlers, never sockets."""
+    async def client_app(scope, receive, send):
+        chunks = []
+        while True:
+            message = await receive()
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body"):
+                break
+        url = "http://engine.local" + scope["path"]
+        if scope.get("query_string"):
+            url += "?" + scope["query_string"].decode()
+        request = httpx.Request(scope["method"], url, headers=scope["headers"], content=b"".join(chunks))
+        response = await transport.handle_async_request(request)
+        await send({"type": "http.response.start", "status": response.status_code, "headers": response.headers.raw})
+        async for chunk in response.aiter_bytes():
+            await send({"type": "http.response.body", "body": chunk, "more_body": True})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        await response.aclose()
+    return create_engine_gateway_app(config, client_app=client_app if transport is not None else None, **kwargs)
 
 
 def _run(coro):
@@ -51,14 +73,10 @@ async def _request(
 def test_gateway_configuration_is_loopback_only() -> None:
     config = PhoneGatewayConfig()
     assert config.listen_host == "127.0.0.1"
-    assert config.upstream_origin == "http://127.0.0.1:9528"
+    assert not hasattr(config, "upstream_base_url")
 
     with pytest.raises(ValueError, match="phone_gateway_must_listen_on_ipv4_loopback"):
         PhoneGatewayConfig(listen_host="0.0.0.0")
-    with pytest.raises(ValueError, match="phone_gateway_upstream_must_be_loopback_http"):
-        PhoneGatewayConfig(upstream_base_url="https://admin.example.com")
-    with pytest.raises(ValueError, match="phone_gateway_upstream_must_be_loopback_http"):
-        PhoneGatewayConfig(upstream_base_url="http://127.0.0.1:9528/api/client")
     with pytest.raises(ValueError, match="phone_gateway_origin_must_be_explicit"):
         PhoneGatewayConfig(allowed_origins=("*",))
 
@@ -97,6 +115,28 @@ def test_public_pairing_and_refresh_routes_forward_without_bearer() -> None:
         "/api/client/pairing/consume",
         "/api/client/auth/refresh",
     ]
+
+
+@pytest.mark.parametrize("path", [
+    "/api/client/chat",
+    "/api/client/chat-submit",
+    "/api/client/approvals/approval-1/refresh-spec-review",
+    "/api/client/runs/run-1/commands/cancel",
+    "/api/client/runs/run-1/commands/resume",
+    "/api/client/runs/run-1/commands/pause",
+])
+def test_current_phone_actions_reach_engine_without_admin(path: str) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(409, json={"detail": "synthetic_engine_conflict"})
+
+    app = create_phone_gateway_app(transport=httpx.MockTransport(handler))
+    response = _run(_request(app, "POST", path, headers={"authorization": "Bearer synthetic-fixture"}, content=b"{}"))
+    assert response.status_code == 409
+    assert response.json() == {"detail": "synthetic_engine_conflict"}
+    assert seen == [path]
 
 
 def test_protected_route_requires_bearer_and_upstream_remains_authoritative() -> None:
@@ -196,19 +236,9 @@ def test_gateway_strips_spoofable_headers_and_preserves_phone_headers() -> None:
         ("POST", "/api/client/auth/local-session"),
         ("GET", "/api/admin/config"),
         ("GET", "/v1/config/system-base"),
-        ("GET", "/api/client/workspace/files/private.txt"),
-        ("GET", "/api/client/workspace/resource?path=private.txt"),
-        ("GET", "/api/client/sessions/session-1/workbench/files/read?path=private.txt"),
-        ("GET", "/api/client/sessions/session-1/processes"),
-        ("PUT", "/api/client/sessions/session-1/scope"),
-        ("POST", "/api/client/sessions/session-1/scope/re-resolve"),
-        ("PATCH", "/api/client/auth/profile"),
-        ("POST", "/api/client/user-avatar-upload"),
-        ("POST", "/api/client/user-background-upload"),
-        ("GET", "/api/client/terminal/profiles"),
-        ("GET", "/api/client/desktop-live/status"),
-        ("GET", "/api/client/rpa/availability"),
-        ("POST", "/api/client/projects"),
+        ("POST", "/api/client/terminal/arbitrary-host-command"),
+        ("GET", "/api/client/desktop-live/private-config"),
+        ("POST", "/api/client/rpa/native-inspector/config"),
         ("POST", "/api/client/conversations/session-1/turns"),
     ],
 )
@@ -226,6 +256,22 @@ def test_privileged_and_unlisted_routes_are_rejected(method: str, path: str) -> 
     assert response.status_code == 404
     assert response.json()["error"] == "phone_gateway_route_not_allowed"
     assert upstream_calls == 0
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/client/terminal/profiles"),
+    ("POST", "/api/client/terminal/sessions/term-one/input"),
+    ("POST", "/api/client/bg_processes/command-one/sensitive-input"),
+    ("GET", "/api/client/rpa/availability"),
+    ("POST", "/api/client/rpa/templates/template-one/run"),
+    ("POST", "/api/client/rpa/compile/run-one"),
+    ("POST", "/api/client/desktop-live/prepare"),
+    ("POST", "/api/client/desktop-live/offer"),
+])
+def test_existing_phone_native_actions_reach_authoritative_engine_guard(method, path):
+    app = create_phone_gateway_app(transport=httpx.MockTransport(lambda request: httpx.Response(403, json={"detail": "synthetic_owner_mismatch"})))
+    response = _run(_request(app, method, path, headers={"authorization": "Bearer fixture"}, content=b"{}"))
+    assert response.status_code == 403 and response.json()["detail"] == "synthetic_owner_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -455,13 +501,9 @@ def test_artifact_content_preserves_range_and_streaming_headers() -> None:
     assert response.headers["accept-ranges"] == "bytes"
 
 
-def test_upstream_failure_is_compact_and_audited_without_trace() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("secret upstream detail", request=request)
-
+def test_unbound_engine_is_compact_and_audited_without_trace() -> None:
     events: list[dict[str, object]] = []
     app = create_phone_gateway_app(
-        transport=httpx.MockTransport(handler),
         audit_sink=events.append,
     )
     response = _run(
@@ -473,10 +515,10 @@ def test_upstream_failure_is_compact_and_audited_without_trace() -> None:
         )
     )
 
-    assert response.status_code == 502
-    assert response.json()["error"] == "phone_gateway_upstream_unavailable"
+    assert response.status_code == 503
+    assert response.json()["error"] == "phone_gateway_engine_unavailable"
     assert "secret upstream detail" not in response.text
-    assert events[-1]["outcome"] == "phone_gateway_upstream_unavailable"
+    assert events[-1]["outcome"] == "phone_gateway_engine_unavailable"
 
 
 def test_server_lifecycle_binds_only_configured_loopback() -> None:
@@ -492,4 +534,39 @@ def test_server_lifecycle_binds_only_configured_loopback() -> None:
         stopped = await server.stop()
         assert stopped["state"] == "stopped"
 
+    _run(exercise())
+
+
+def test_server_stop_cancels_an_open_sse_request_within_deadline() -> None:
+    from fastapi import FastAPI
+    from fastapi.responses import StreamingResponse
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    async def exercise():
+        closed = asyncio.Event()
+        engine = FastAPI()
+        async def chunks():
+            try:
+                yield "event: ready\ndata: {}\n\n"
+                await asyncio.sleep(60)
+            finally:
+                closed.set()
+        @engine.get("/api/client/realtime/session-activity/stream")
+        async def stream():
+            return StreamingResponse(chunks(), media_type="text/event-stream")
+        server = PhoneGatewayServer(PhoneGatewayConfig(listen_port=port), app=engine)
+        await server.start()
+        try:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                async with client.stream("GET", f"http://127.0.0.1:{port}/api/client/realtime/session-activity/stream",
+                                         headers={"authorization": "Bearer synthetic-fixture"}) as response:
+                    first = await anext(response.aiter_lines())
+                    assert first == "event: ready"
+                    await asyncio.wait_for(server.stop(timeout_seconds=0.25), timeout=2)
+                    await asyncio.wait_for(closed.wait(), timeout=1)
+                    assert not server.running
+        finally:
+            await server.stop(timeout_seconds=0.25)
     _run(exercise())

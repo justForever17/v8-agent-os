@@ -36,6 +36,7 @@ _configure_pycache_behavior()
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from core.client_auth_boundary import EngineControlBoundary
 
 from core.runtime.startup_profile import (
     build_installation_snapshot,
@@ -159,7 +160,8 @@ async def _prewarm_provider_compatibility() -> None:
     """Warm expensive LangChain provider patches without delaying readiness."""
 
     try:
-        install = _import_module("core.provider_compatibility").install_provider_compatibility_patches
+        def install():
+            _import_module("core.provider_compatibility").install_provider_compatibility_patches()
         await asyncio.to_thread(install)
     except Exception as exc:
         print(f"[Engine] Provider compatibility prewarm failed (non-fatal): {type(exc).__name__}")
@@ -186,10 +188,15 @@ async def _prewarm_supervisor_graph(
             )
 
         async def _build_once(*, task_name: str) -> dict[str, object]:
-            resolver = _import_module("core.engine_config_resolver")
-            resolved = resolver.resolve_engine_config_for_role("supervisor")
-            config = resolver.require_engine_config(resolved, role="supervisor")
-            runner = _import_module("agents.runners.supervisor_runner").supervisor_runner
+            def prepare():
+                # A cold runner import loads providers and their Pydantic schemas.
+                # Keep this work off the HTTP loop as well as graph compilation.
+                resolver = _import_module("core.engine_config_resolver")
+                resolved = resolver.resolve_engine_config_for_role("supervisor")
+                config = resolver.require_engine_config(resolved, role="supervisor")
+                runner = _import_module("agents.runners.supervisor_runner").supervisor_runner
+                return runner, config
+            runner, config = await asyncio.to_thread(prepare)
             _graph, diagnostics = await _get_chat_run_scheduler().run(
                 runner.build_graph(config),
                 task_name=task_name,
@@ -433,6 +440,21 @@ async def _shutdown_ui_patch_preview() -> None:
     await asyncio.to_thread(ui_patch_service.shutdown)
 
 
+async def _start_client_listeners(app: FastAPI) -> None:
+    from core.client_listeners import ClientListeners
+    from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+    listeners = ClientListeners(app, V8_AGENT_OS_HOME, storage.get_system_base_config())
+    app.state.client_listeners = listeners
+    app.state.client_listener_status = await listeners.start()
+
+
+async def _stop_client_listeners(app: FastAPI) -> None:
+    listeners = getattr(app.state, "client_listeners", None)
+    if listeners:
+        await listeners.stop()
+        app.state.client_listeners = None
+
+
 async def _shutdown_lifespan_services(
     app: FastAPI,
     state: dict[str, object],
@@ -464,6 +486,8 @@ async def _shutdown_lifespan_services(
             print(f"[Engine] Lifespan cleanup action '{label}' failed: {type(exc).__name__}: {exc}")
 
     # Services are stopped in the exact reverse order in which startup invokes them.
+    if started.get("client_listeners"):
+        await _attempt("client_listeners.stop", lambda: _stop_client_listeners(app))
     if started.get("episode_runner"):
         await _attempt("episode_runner.stop", lambda: _get_runtime_episode_runner().stop())
     if started.get("network_relay"):
@@ -1011,6 +1035,9 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
         2,
     )
 
+    _mark_lifespan_service_starting(state, "client_listeners")
+    await _start_client_listeners(app)
+
     startup_metrics["serviceStartMs"] = round((time.perf_counter() - service_start_started_at) * 1000, 2)
     startup_metrics["lifespanMs"] = round((time.perf_counter() - startup_started_at) * 1000, 2)
     startup_metrics["readyMs"] = round((time.perf_counter() - _PROCESS_BOOT_STARTED_AT) * 1000, 2)
@@ -1070,6 +1097,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(EngineControlBoundary)
 
 
 @app.middleware("http")
@@ -1080,8 +1108,15 @@ async def attach_engine_now_header(request, call_next):
 
 # Register API routers
 app.include_router(routes.router, prefix="/v1")
+from api import client_identity_routes, client_asset_routes, client_routes
+app.state.client_internal_router = routes.router
+app.include_router(client_identity_routes.management_router)
+app.include_router(client_identity_routes.router)
+app.include_router(client_asset_routes.router)
+app.include_router(client_routes.router)
 if _service_flags()["audio"]:
-    app.include_router(_get_audio_routes().router)
+    app.state.client_audio_router = _get_audio_routes().router
+    app.include_router(app.state.client_audio_router)
 
 _MODULE_IMPORT_COMPLETED_AT = time.perf_counter()
 
@@ -1185,11 +1220,11 @@ if __name__ == "__main__":
     # V8 Agent OS uses 9528 for admin and 9527 for web by default.
     # The canonical stable entry is explicit interpreter + foreground single-process.
     port = int(os.getenv("ENGINE_PORT", 9530))
-    host = os.getenv("ENGINE_HOST", "0.0.0.0")
+    host = os.getenv("ENGINE_HOST", "127.0.0.1")
     reload_enabled = _env_flag("ENGINE_RELOAD", default=False)
     if os.name == "nt" and reload_enabled:
         print("[Engine] ENGINE_RELOAD=1 on Windows is development-only and does not guarantee interpreter consistency.")
     if reload_enabled:
-        uvicorn.run("main:app", host=host, port=port, reload=True)
+        uvicorn.run("main:app", host=host, port=port, reload=True, access_log=False)
     else:
-        uvicorn.run(app, host=host, port=port, reload=False)
+        uvicorn.run(app, host=host, port=port, reload=False, access_log=False)

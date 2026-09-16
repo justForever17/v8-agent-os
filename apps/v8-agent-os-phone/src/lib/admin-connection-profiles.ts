@@ -240,7 +240,7 @@ export async function readAdminConnectionProfiles() {
 }
 
 const PROFILES_KEY = "v8.phone.profiles.v2";
-export type ProfileCredentials = { accessToken: string; refreshToken: string };
+export type ProfileCredentials = { accessToken: string; refreshToken: string; refreshRotationId?: string };
 export async function readProfileCredentials(profile: AdminConnectionProfile): Promise<ProfileCredentials | null> {
     if (!profile.credentialRef) return null;
     const raw = await readSecureItem(profile.credentialRef);
@@ -250,6 +250,19 @@ export async function readProfileCredentials(profile: AdminConnectionProfile): P
 }
 
 let directoryMutations: Promise<unknown> = Promise.resolve();
+/** Persist a refresh attempt before dispatch, without adding credentials to metadata. */
+export function persistProfileRefreshAttempt(profileId: string, credentialRef: string, expectedRefreshToken: string, rotationId: string) {
+    const transaction = directoryMutations.catch(() => undefined).then(async () => {
+        const profiles = await readAdminConnectionProfiles();
+        const profile = profiles.find(item => item.id === profileId);
+        if (!profile || profile.credentialRef !== credentialRef) throw new Error("Connection changed while refreshing.");
+        const current = await readProfileCredentials(profile);
+        if (!current || current.refreshToken !== expectedRefreshToken) throw new Error("Connection credentials changed while refreshing.");
+        await writeSecureItem(credentialRef, JSON.stringify({ ...current, refreshRotationId: rotationId }));
+    });
+    directoryMutations = transaction;
+    return transaction;
+}
 export function updateAdminConnectionProfiles(update: (current: AdminConnectionProfile[]) => AdminConnectionProfile[]) {
     const transaction = directoryMutations.catch(() => undefined).then(async () => {
         const current = await readAdminConnectionProfiles();

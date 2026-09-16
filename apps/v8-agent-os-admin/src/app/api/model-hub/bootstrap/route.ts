@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { listEngineModels } from "@/lib/models/model-admin";
@@ -24,8 +25,8 @@ export async function GET(req: NextRequest) {
     try {
         const [hubResult, catalogResponse, audioResponse] = await Promise.all([
             proxyEngineJson("/config-registry/models"),
-            fetch(`${engineBaseUrl}/models/catalog`, { next: { revalidate: 60 } }),
-            fetch(`${engineBaseUrl}/audio/config`, { cache: "no-store" }),
+            engineFetch(`${engineBaseUrl}/models/catalog`, { next: { revalidate: 60 } }),
+            engineFetch(`${engineBaseUrl}/audio/config`, { cache: "no-store" }),
         ]);
 
         const hubEnvelope = hubResult.data as { data?: { config?: EngineModelsPayload } };

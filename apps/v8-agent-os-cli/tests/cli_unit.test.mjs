@@ -120,14 +120,14 @@ function runIsolatedModuleScript(script, env = {}) {
 }
 
 test("default start components exclude CyberCore", () => {
-  assert.deepEqual(DEFAULT_START_COMPONENTS, ["engine", "admin", "web"]);
-  assert.deepEqual(parseComponentSelection([]), ["engine", "admin", "web"]);
+  assert.deepEqual(DEFAULT_START_COMPONENTS, ["engine", "web"]);
+  assert.deepEqual(parseComponentSelection([]), ["engine", "web"]);
   assert.equal(DEFAULT_START_COMPONENTS.includes("shell"), false);
   assert.equal(DEFAULT_START_COMPONENTS.includes("desktop-pet"), false);
 });
 
 test("--with adds optional components without replacing defaults", () => {
-  assert.deepEqual(parseComponentSelection(["--with", "cybercore"]), ["engine", "admin", "web", "cybercore"]);
+  assert.deepEqual(parseComponentSelection(["--with", "cybercore"]), ["engine", "web", "cybercore"]);
 });
 
 test("--only narrows component set", () => {
@@ -1658,7 +1658,7 @@ test("preview rebuild restarts shell and adopts verified Next/Engine port owners
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
   const previewSource = fs.readFileSync(path.join(cliRoot, "src", "preview_commands.mjs"), "utf8");
   assert.match(previewSource, /stopVerifiedPortOwners:\s*\["admin", "web", "engine"\]/);
-  assert.match(previewSource, /assertStarted\(serviceResults, \["engine", "admin", "web"\]/);
+  assert.match(previewSource, /assertStarted\(serviceResults, \["engine", "web"\]/);
   assert.match(previewSource, /assertStarted\(shellResults, \["shell"\]/);
   assert.match(previewSource, /waitForShellControlDescriptor\(\{/);
   assert.match(previewSource, /timeoutMs:\s*readiness\.SHELL_STARTUP_TIMEOUT_MS/);

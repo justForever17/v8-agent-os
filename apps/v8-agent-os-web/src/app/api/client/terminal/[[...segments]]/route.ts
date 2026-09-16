@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST") {
     const session = await auth();
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
     }
@@ -17,7 +17,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
         const { segments } = await context.params;
         const suffix = (segments || []).map((item) => encodeURIComponent(item)).join("/");
         const search = req.nextUrl.searchParams.toString();
-        const target = `${adminApiBaseUrl}/terminal${suffix ? `/${suffix}` : ""}${search ? `?${search}` : ""}`;
+        const target = `${clientApiBaseUrl}/terminal${suffix ? `/${suffix}` : ""}${search ? `?${search}` : ""}`;
         const init: RequestInit = {
             method,
             headers: {

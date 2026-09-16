@@ -1,20 +1,20 @@
 import { NextRequest } from "next/server";
 
 import {
-    requireAdminProxyContext,
-    safeAdminProxyFetch,
-} from "@/lib/server/proxy/admin-proxy";
+    requireClientProxyContext,
+    safeClientProxyFetch,
+} from "@/lib/server/proxy/client-proxy";
 import { relayJsonProxyResponse } from "@/lib/server/proxy/proxy-response";
 
 export async function GET(req: NextRequest) {
-    const contextResult = await requireAdminProxyContext();
+    const contextResult = await requireClientProxyContext();
     if (contextResult.response) {
         return contextResult.response;
     }
 
     const search = req.nextUrl.searchParams.toString();
     const suffix = search ? `?${search}` : "";
-    const result = await safeAdminProxyFetch(
+    const result = await safeClientProxyFetch(
         contextResult.context,
         `/approvals${suffix}`,
         { method: "GET" },

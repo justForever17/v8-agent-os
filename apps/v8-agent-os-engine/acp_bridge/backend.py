@@ -19,22 +19,22 @@ class V8SessionRef:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-class AdminBffBackend:
-    """Small HTTP backend for the local Admin BFF / Engine public routes.
+class EngineClientBackend:
+    """Small HTTP backend for the local Engine client routes.
 
     The ACP bridge does not own V8OS runtime truth. This backend only forwards
-    requests into the existing client BFF/Engine entry points. Tests normally
+    requests into the Engine-owned client entry points. Tests normally
     inject a fake backend so the bridge contract stays deterministic.
     """
 
     def __init__(
         self,
         *,
-        admin_url: str | None = None,
+        engine_url: str | None = None,
         bearer_token: str | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
-        self.admin_url = (admin_url or os.environ.get("V8OS_ADMIN_URL") or "http://127.0.0.1:9528").rstrip("/")
+        self.engine_url = (engine_url or os.environ.get("V8OS_ENGINE_URL") or os.environ.get("V8_AGENT_OS_ENGINE_URL") or "http://127.0.0.1:9530").rstrip("/")
         self.bearer_token = bearer_token
         self.timeout_seconds = timeout_seconds
         self._auth_lock = threading.Lock()
@@ -45,11 +45,11 @@ class AdminBffBackend:
         with self._auth_lock:
             if self.bearer_token:
                 return
-            target = urllib.parse.urlsplit(self.admin_url)
+            target = urllib.parse.urlsplit(self.engine_url)
             if target.hostname not in {"localhost", "127.0.0.1", "::1"} or target.username or target.password:
-                raise RuntimeError("ACP local authentication requires a loopback Admin URL.")
+                raise RuntimeError("ACP local authentication requires a loopback Engine URL.")
             request = urllib.request.Request(
-                f"{self.admin_url}/api/client/auth/local-session",
+                f"{self.engine_url}/api/client/auth/local-session",
                 data=b'{"surface":"cli","deviceName":"v8os-acp"}',
                 headers={"Content-Type": "application/json"}, method="POST",
             )
@@ -57,7 +57,7 @@ class AdminBffBackend:
                 record = json.load(response)
             token = record.get("accessToken")
             if not isinstance(token, str) or not token:
-                raise RuntimeError("Local Admin did not issue an ACP client session. Initialize the owner in Admin first.")
+                raise RuntimeError("Local Engine did not issue an ACP client session. Initialize the owner in Admin first.")
             self.bearer_token = token
 
     @staticmethod
@@ -85,7 +85,7 @@ class AdminBffBackend:
             # Do not reflect response bodies: an upstream error may contain a
             # submitted prompt or credential. The status is enough to retry or
             # find the detailed error in the authenticated V8OS surface.
-            raise RuntimeError(f"ACP Admin request failed: HTTP {exc.code} ({urllib.parse.urlsplit(url).path}).") from exc
+            raise RuntimeError(f"ACP Engine request failed: HTTP {exc.code} ({urllib.parse.urlsplit(url).path}).") from exc
         except Exception as exc:
             raise RuntimeError(f"{method} {url} failed: {exc}") from exc
 
@@ -93,13 +93,13 @@ class AdminBffBackend:
         # The local editor selected cwd explicitly, just like `v8os chat
         # --workspace`. Reuse the same project/trust owner, without selecting or
         # mutating a global workspace. No ACP-owned grants or bypass flags.
-        project = self._request("POST", f"{self.admin_url}/api/client/projects", {
+        project = self._request("POST", f"{self.engine_url}/api/client/projects", {
             "name": Path(workspace_path).name, "workspacePath": workspace_path,
             "workspaceTrustState": "trusted", "workspaceTrustSource": "cli_user_confirmed",
         })
         project_id = project.get("id") or project.get("projectId")
         if not project_id or not project.get("workspaceId"):
-            raise RuntimeError("Admin did not confirm the selected workspace project.")
+            raise RuntimeError("Engine did not confirm the selected workspace project.")
         payload = {
             "title": title or "V8OS ACP Session",
             "workspacePath": workspace_path,
@@ -118,14 +118,14 @@ class AdminBffBackend:
                 "historyGroup": "external_agent_clients",
             },
         }
-        data = self._request("POST", f"{self.admin_url}/api/client/conversations", payload)
+        data = self._request("POST", f"{self.engine_url}/api/client/conversations", payload)
         session_id = str(data.get("id") or data.get("sessionId") or data.get("conversationId") or "").strip()
         if not session_id:
-            raise RuntimeError("Admin BFF did not return a session id.")
+            raise RuntimeError("Engine did not return a session id.")
         return V8SessionRef(session_id=session_id, workspace_path=workspace_path, title=title, raw=data)
 
     def load_session(self, *, session_id: str) -> V8SessionRef:
-        data = self._request("GET", f"{self.admin_url}/api/client/conversations/{urllib.parse.quote(session_id, safe='')}")
+        data = self._request("GET", f"{self.engine_url}/api/client/conversations/{urllib.parse.quote(session_id, safe='')}")
         summary = data.get("summary") or {}
         metadata = summary.get("metadata") or {}
         scope = metadata.get("resolved_scope") or metadata.get("scopeBinding") or {}
@@ -145,7 +145,7 @@ class AdminBffBackend:
     def cancel_session(self, *, session_id: str, run_id: str | None = None) -> dict[str, Any]:
         if not run_id:
             raise RuntimeError("Cannot cancel a run before its Engine identity is known.")
-        return self._request("POST", f"{self.admin_url}/api/client/runs/{urllib.parse.quote(run_id, safe='')}/commands/cancel", {"reason": "acp_client_cancel"})
+        return self._request("POST", f"{self.engine_url}/api/client/runs/{urllib.parse.quote(run_id, safe='')}/commands/cancel", {"reason": "acp_client_cancel"})
 
     def stream_prompt(self, *, session_id: str, prompt: str, metadata: dict[str, Any]):
         payload = {
@@ -163,7 +163,7 @@ class AdminBffBackend:
 
     def _stream(self, method: str, path: str, payload=None, *, sse=False):
         request = urllib.request.Request(
-            f"{self.admin_url}{path}",
+            f"{self.engine_url}{path}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None,
             headers=self._headers(), method=method,
         )
@@ -198,12 +198,12 @@ class AdminBffBackend:
 
     def respond_permission(self, *, permission_id: str, approved: bool) -> dict[str, Any]:
         action = "approve" if approved else "reject"
-        return self._request("POST", f"{self.admin_url}/api/client/approvals/{urllib.parse.quote(permission_id, safe='')}/{action}", {})
+        return self._request("POST", f"{self.engine_url}/api/client/approvals/{urllib.parse.quote(permission_id, safe='')}/{action}", {})
 
     def pending_interaction(self, *, session_id: str, run_id: str, kind: str) -> dict:
         if kind == "approval_requested":
             query = urllib.parse.urlencode({"session_id": session_id, "run_id": run_id, "status": "pending"})
-            data = self._request("GET", f"{self.admin_url}/api/client/approvals?{query}")
+            data = self._request("GET", f"{self.engine_url}/api/client/approvals?{query}")
             records = data.get("approvals") or []
         else:
             records = self.load_session(session_id=session_id).raw.get("askUserInteractions") or []
@@ -213,4 +213,4 @@ class AdminBffBackend:
         raise RuntimeError("Engine reports a waiting run without a corresponding pending interaction.")
 
     def respond_ask_user(self, *, interaction_id: str, answer: str) -> dict[str, Any]:
-        return self._request("POST", f"{self.admin_url}/api/client/ask-user/{urllib.parse.quote(interaction_id, safe='')}/respond", {"answer": answer})
+        return self._request("POST", f"{self.engine_url}/api/client/ask-user/{urllib.parse.quote(interaction_id, safe='')}/respond", {"answer": answer})

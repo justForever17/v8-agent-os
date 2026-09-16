@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
@@ -5,7 +6,7 @@ import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
 export async function POST() {
   try {
-    const response = await fetch(`${resolveEngineOrigin()}/v1/storage-retention/registry/refresh`, {
+    const response = await engineFetch(`${resolveEngineOrigin()}/v1/storage-retention/registry/refresh`, {
       method: "POST",
       cache: "no-store",
     });

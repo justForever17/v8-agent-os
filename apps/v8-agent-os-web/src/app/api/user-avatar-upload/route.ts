@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import { resolveClientApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 export const runtime = "nodejs";
 
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
 
         const upstreamForm = new FormData();
         upstreamForm.append("file", file);
-        const upstream = await fetch(`${await resolveAdminApiBaseUrl()}/client/user-avatar-upload`, {
+        const upstream = await fetch(`${await resolveClientApiBaseUrl()}/user-avatar-upload`, {
             method: "POST",
             headers: {
                 "x-v8-agent-os-secret": internalSecret,

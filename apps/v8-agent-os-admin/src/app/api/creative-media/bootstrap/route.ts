@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -19,7 +20,7 @@ async function fetchEngineJson(
 ) {
     const headers = new Headers(init?.headers);
     headers.set("x-v8-agent-os-secret", internalSecret);
-    const response = await fetch(`${engineBaseUrl}/creative-media/${path}`, {
+    const response = await engineFetch(`${engineBaseUrl}/creative-media/${path}`, {
         ...init,
         headers,
     });

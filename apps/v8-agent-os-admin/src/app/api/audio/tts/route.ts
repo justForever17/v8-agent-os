@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const response = await fetch(`${resolveEngineBaseUrl()}/audio/tts/stream`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/audio/tts/stream`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",

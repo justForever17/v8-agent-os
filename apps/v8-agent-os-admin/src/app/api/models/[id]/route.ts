@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { buildModelMutationPayload, parseModelRef } from "@/lib/models/model-admin";
@@ -28,7 +29,7 @@ export async function PUT(
         if (!desiredModelId) {
             return NextResponse.json({ error: "modelId is required" }, { status: 400 });
         }
-        const resPost = await fetch(`${ENGINE_URL}/models/bindings`, {
+        const resPost = await engineFetch(`${ENGINE_URL}/models/bindings`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -67,7 +68,7 @@ export async function DELETE(
         if (!providerId) {
             return NextResponse.json({ error: "provider-qualified modelRef is required" }, { status: 400 });
         }
-        const response = await fetch(`${ENGINE_URL}/models/bindings`, {
+        const response = await engineFetch(`${ENGINE_URL}/models/bindings`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ providerId, modelId: sourceModelId }),

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const response = await fetch(`${resolveEngineBaseUrl()}/commands`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/commands`, {
             headers: {
                 "x-v8-agent-os-secret": resolveInternalSecret(),
                 "x-v8-agent-os-user-email": userEmail,

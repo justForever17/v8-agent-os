@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import {
     normalizeAuthoritativeSessionHistoryList,
@@ -27,10 +28,10 @@ export async function GET(req: NextRequest) {
             query.set("cursor", req.nextUrl.searchParams.get("cursor") || "");
             query.set("q", (req.nextUrl.searchParams.get("q") || "").slice(0, 200));
         }
-        let response = await fetch(`${ENGINE_URL}/sessions/quick-index${paged ? `?${query}` : ""}`, {
+        let response = await engineFetch(`${ENGINE_URL}/sessions/quick-index${paged ? `?${query}` : ""}`, {
             method: "GET",
             headers: { "Content-Type": "application/json", ...(paged ? {
-                "x-v8-authority-instance-id": buildClientLinkManifest(resolveRequestOrigin(req)).instanceId,
+                "x-v8-authority-instance-id": (await buildClientLinkManifest(resolveRequestOrigin(req))).instanceId,
                 "x-v8-agent-os-user-email": userEmail,
             } : {}) },
             cache: "no-store",
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest) {
 
         if (!response.ok && !paged) {
             console.warn("[Client Conversations] Quick index unavailable, falling back to live sessions:", response.status);
-            response = await fetch(`${ENGINE_URL}/sessions`, {
+            response = await engineFetch(`${ENGINE_URL}/sessions`, {
                 method: "GET",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
@@ -104,7 +105,7 @@ export async function POST(req: NextRequest) {
         const metadata = body?.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
             ? body.metadata
             : undefined;
-        const response = await fetch(`${ENGINE_URL}/sessions`, {
+        const response = await engineFetch(`${ENGINE_URL}/sessions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -147,7 +148,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     try {
-        const listResponse = await fetch(`${ENGINE_URL}/sessions`, {
+        const listResponse = await engineFetch(`${ENGINE_URL}/sessions`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
@@ -163,7 +164,7 @@ export async function DELETE(req: NextRequest) {
         for (const sessionRow of sessions) {
             const sessionId = String(sessionRow?.id || "");
             if (!sessionId) continue;
-            const deleteResponse = await fetch(`${ENGINE_URL}/sessions/${sessionId}`, {
+            const deleteResponse = await engineFetch(`${ENGINE_URL}/sessions/${sessionId}`, {
                 method: "DELETE",
                 headers: { "Content-Type": "application/json" },
             });

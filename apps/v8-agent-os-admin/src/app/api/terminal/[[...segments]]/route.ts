@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { verifyServiceAuth } from "@/lib/service-auth";
@@ -16,7 +17,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
     if (!userEmail) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const user = findUserByIdentifier(userEmail);
+    const user = await findUserByIdentifier(userEmail);
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const internalSecret = resolveInternalSecret();
     if (!internalSecret) {
@@ -40,7 +41,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
         if (method === "POST") {
             init.body = JSON.stringify(await req.json().catch(() => ({})));
         }
-        const response = await fetch(buildTarget(req, segments), init);
+        const response = await engineFetch(buildTarget(req, segments), init);
         const data = await response.json().catch(() => ({}));
         if (response.ok && segments?.[2] === "ws-ticket" && data.ticket) data.wsUrl = `${resolveEngineWsBaseUrl()}/terminal/sessions/${encodeURIComponent(segments[1])}/ws?ticket=${encodeURIComponent(data.ticket)}`;
         return NextResponse.json(data, { status: response.status });

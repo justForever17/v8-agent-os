@@ -209,7 +209,7 @@ export const COMPONENTS = {
   },
 };
 
-export const DEFAULT_START_COMPONENTS = ["engine", "admin", "web"];
+export const DEFAULT_START_COMPONENTS = ["engine", "web"];
 export const ALL_COMPONENTS = ["engine", "admin", "web", "cybercore", "desktop-pet", "shell"];
 
 export function parseComponentSelection(args) {

@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any, AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -30,11 +30,14 @@ class DesktopLiveCandidatePayload(BaseModel):
     candidate: dict[str, Any] | None = None
 
 
-async def _frame_stream(session_id: str) -> AsyncIterator[bytes]:
+async def _frame_stream(session_id: str, principal=None) -> AsyncIterator[bytes]:
     boundary = b"--frame\r\n"
     desktop_live_service = _get_desktop_live_service()
     while True:
         try:
+            if principal is not None:
+                from core.auth_context import revalidate_client_principal
+                revalidate_client_principal(principal)
             frame = await asyncio.to_thread(desktop_live_service.capture_frame, session_id)
         except Exception as exc:
             yield boundary
@@ -52,7 +55,16 @@ async def _frame_stream(session_id: str) -> AsyncIterator[bytes]:
 
 @router.get("/desktop-live/status")
 async def get_desktop_live_status():
-    return _get_desktop_live_service().get_status()
+    return await asyncio.to_thread(_get_desktop_live_service().get_status)
+
+
+@router.post("/desktop-live/prepare")
+async def prepare_desktop_live():
+    """Return the Engine-owned live surface readiness without spawning an Admin bridge."""
+    service = _get_desktop_live_service()
+    payload = dict(await asyncio.to_thread(service.get_status) or {})
+    payload.update({"prepared": True, "bridgeOwner": "engine", "bridgePhase": payload.get("bridgePhase") or "engine_service"})
+    return payload
 
 
 @router.post("/desktop-live/session")
@@ -87,14 +99,14 @@ async def create_desktop_live_candidate(payload: DesktopLiveCandidatePayload):
 
 
 @router.get("/desktop-live/stream")
-async def stream_desktop_live(session_id: str = Query(..., alias="sessionId")):
+async def stream_desktop_live(request: Request, session_id: str = Query(..., alias="sessionId")):
     try:
         _get_desktop_live_service().touch_session(session_id)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
     return StreamingResponse(
-        _frame_stream(session_id),
+        _frame_stream(session_id, request.scope.get("state", {}).get("engine_auth_context")),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",

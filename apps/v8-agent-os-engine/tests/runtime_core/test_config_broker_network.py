@@ -71,3 +71,43 @@ def test_bootstrap_accepts_peer_ids_without_inventing_url_discovery(broker):
     _, _, tool = broker
     plan = invoke(tool, mode="network_prepare", network_settings={"discovery": {"wanBootstrapPeers": ["peer_fixture-node"]}})
     assert plan["ok"]
+
+
+def test_network_schema_is_broker_owned_and_secret_free(broker):
+    _, service, _ = broker
+    result = service.network_schema()
+    assert result["ok"] is True
+    assert result["secretFields"] == []
+    assert set(result["schema"]["properties"]) == {
+        "enabled", "node", "discovery", "wake", "delegation", "relay", "openaiCompat",
+    }
+    assert "peerId" not in result["schema"]["properties"]["node"].get("properties", {})
+
+
+def test_client_gateway_transaction_is_secret_free_cas_and_rollbackable(broker):
+    module, service, _ = broker
+    prepared = service.prepare_client_gateway(
+        settings={"enabled": False, "port": 19532, "publicBaseUrl": "https://phone.example.invalid"},
+        owner_id="gateway-test", session_id="", run_id="",
+    )
+    assert prepared["ok"]
+    committed = service.commit(prepared["transactionId"], owner_id="gateway-test")
+    assert committed["ok"] and committed["result"]["settings"]["port"] == 19532
+    current = module.storage.get_system_base_config()["remoteLink"]["phoneGateway"]
+    assert current == {"enabled": False, "port": 19532, "publicBaseUrl": "https://phone.example.invalid"}
+    rolled_back = service.rollback(prepared["transactionId"], owner_id="gateway-test")
+    assert rolled_back["ok"]
+    restored = module.storage.get_system_base_config()["remoteLink"]["phoneGateway"]
+    assert restored["enabled"] is True and restored["port"] == 9532
+
+
+@pytest.mark.parametrize("patch", [
+    {"port": 0}, {"port": 65536}, {"port": True},
+    {"publicBaseUrl": "http://phone.example.invalid"},
+    {"publicBaseUrl": "https://user:pass@phone.example.invalid"},
+    {"unexpected": True},
+])
+def test_client_gateway_rejects_unsafe_or_unknown_fields(broker, patch):
+    module, service, _ = broker
+    with pytest.raises(module.ConfigBrokerError):
+        service.prepare_client_gateway(settings=patch, owner_id="gateway-test", session_id="", run_id="")

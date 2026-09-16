@@ -235,6 +235,7 @@ export function ManualTerminalPanel({
                     <X className="h-3.5 w-3.5" />
                 </button>
             </div>
+            {error && activeTab ? <div role="alert" className="bg-[#05070b] px-3 py-1 text-[11px] text-red-300">{error}</div> : null}
             {activeTab?.kind === 'manual' ? (
                 <TerminalViewport key={activeTab.session.sessionId} path={`/api/client/terminal/sessions/${encodeURIComponent(activeTab.session.sessionId || "")}`} kind="manual" initialRunning={activeTab.session.isRunning !== false} canInput={activeTab.session.usesTty !== false} />
             ) : activeTab?.kind === 'process' ? (

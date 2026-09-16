@@ -57,10 +57,13 @@ function normalizeAdminSurfacePath(path: string) {
     if (normalized.startsWith("/api/client/")) {
         return normalized.replace(/^\/api\/client\b/i, "/api");
     }
+    if (normalized.startsWith("/api/memory/")) {
+        return normalized.replace(/^\/api\/memory\b/i, "/api/client");
+    }
     return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
 
-function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, req: NextRequest) {
+async function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, req: NextRequest, sessionId: string) {
     if (!resourceRef || resourceRef.kind === "external_url") {
         return resourceRef;
     }
@@ -70,7 +73,7 @@ function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, req: NextR
     }
     const clientOrigin = resolveClientOrigin(req);
     const signedUrl = clientOrigin
-        ? buildSignedClientSurfaceUrl(adminPath, { publicBaseUrl: clientOrigin })
+        ? await buildSignedClientSurfaceUrl(adminPath, { publicBaseUrl: clientOrigin, sessionId })
         : "";
     return {
         ...resourceRef,
@@ -78,7 +81,7 @@ function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, req: NextR
     };
 }
 
-export function normalizeArtifactForAdminSurface(record: unknown, req: NextRequest) {
+export async function normalizeArtifactForAdminSurface(record: unknown, req: NextRequest) {
     if (!record || typeof record !== "object" || Array.isArray(record)) {
         return record;
     }
@@ -86,9 +89,10 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
     const next = { ...(record as Record<string, unknown>) };
     const artifactId = artifactIdOf(next);
     const sessionId = artifactSessionIdOf(next);
-    const derivedResourceRef = attachSignedSurfaceUrl(
+    const derivedResourceRef = await attachSignedSurfaceUrl(
         deriveAdminResourceRefFromArtifactLike(next),
         req,
+        artifactSessionIdOf(next),
     );
     if (!derivedResourceRef || (!artifactId && !hasLocalBacking(next))) {
         return next;
@@ -96,7 +100,7 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
 
     const encodedId = encodeURIComponent(artifactId);
     const adminContentParams = new URLSearchParams({ sessionId });
-    const adminContentPath = `/api/memory/artifacts/${encodedId}/content?${adminContentParams.toString()}`;
+    const adminContentPath = `/api/client/artifacts/${encodedId}/content?${adminContentParams.toString()}`;
     const adminSurfacePath = derivedResourceRef.kind === "artifact_content"
         ? adminContentPath
         : normalizeAdminSurfacePath(stringValue(derivedResourceRef.adminPath));
@@ -117,9 +121,9 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
     return next;
 }
 
-export function normalizeArtifactsForAdminSurface(records: unknown, req: NextRequest) {
+export async function normalizeArtifactsForAdminSurface(records: unknown, req: NextRequest) {
     if (!Array.isArray(records)) {
         return [];
     }
-    return records.map((record) => normalizeArtifactForAdminSurface(record, req));
+    return Promise.all(records.map((record) => normalizeArtifactForAdminSurface(record, req)));
 }

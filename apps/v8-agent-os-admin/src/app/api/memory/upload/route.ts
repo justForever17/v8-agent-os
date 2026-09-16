@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -7,7 +8,7 @@ export async function POST(req: Request) {
     try {
         const formData = await req.formData();
         
-        const response = await fetch(`${ENGINE_URL}/v1/memory/upload`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/upload`, {
             method: "POST",
             body: formData, // passing raw FormData
         });

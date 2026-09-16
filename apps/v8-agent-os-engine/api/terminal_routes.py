@@ -4,10 +4,11 @@ import asyncio
 import hmac
 import json
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from core.system_base import get_internal_secret
+from core.auth_context import EngineAuthContext, is_local_client
 from core.client_terminal_broker import (
     consume_terminal_ws_ticket,
     consume_terminal_session_output,
@@ -27,7 +28,10 @@ from core.client_terminal_broker import (
 router = APIRouter(prefix="/terminal")
 
 
-def require_terminal_internal_secret(x_v8_agent_os_secret: str | None = Header(default=None)) -> None:
+def require_terminal_internal_secret(x_v8_agent_os_secret: str | None = Header(default=None), request: Request = None) -> None:
+    context = request.scope.get("state", {}).get("engine_auth_context") if request else None
+    if isinstance(context, EngineAuthContext) and (is_local_client(context) or context.device_kind == "human_phone"):
+        return
     expected_secret = get_internal_secret()
     if not expected_secret or not hmac.compare_digest(str(x_v8_agent_os_secret or ""), expected_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -121,11 +125,11 @@ async def issue_terminal_session_ws_ticket_route(
     x_v8_agent_os_secret: str | None = Header(default=None),
     x_v8_agent_os_user_email: str | None = Header(default=None),
     x_v8_terminal_origin: str | None = Header(default=None),
+    request: Request = None,
 ):
-    expected_secret = get_internal_secret()
-    if not expected_secret or not hmac.compare_digest(str(x_v8_agent_os_secret or ""), expected_secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    user_email = str(x_v8_agent_os_user_email or "").strip()
+    require_terminal_internal_secret(x_v8_agent_os_secret, request)
+    context = request.scope.get("state", {}).get("engine_auth_context") if request else None
+    user_email = context.session_id if isinstance(context, EngineAuthContext) else str(x_v8_agent_os_user_email or "").strip()
     if not user_email:
         raise HTTPException(status_code=401, detail="Terminal user is required")
     try:

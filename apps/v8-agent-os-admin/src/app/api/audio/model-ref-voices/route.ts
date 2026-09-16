@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
         const contentType = req.headers.get("content-type") || "";
         const isMultipart = contentType.includes("multipart/form-data");
         const body = isMultipart ? await req.formData() : JSON.stringify(asObject(await req.json().catch(() => ({}))));
-        const response = await fetch(`${ENGINE_URL}/audio/model-ref-voices`, {
+        const response = await engineFetch(`${ENGINE_URL}/audio/model-ref-voices`, {
             method: "POST",
             headers: engineHeaders(!isMultipart),
             body,

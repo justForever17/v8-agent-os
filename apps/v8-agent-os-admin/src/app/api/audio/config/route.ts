@@ -1,10 +1,11 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
 export async function GET() {
   try {
-    const res = await fetch(`${ENGINE_URL}/audio/config`);
+    const res = await engineFetch(`${ENGINE_URL}/audio/config`);
     if (!res.ok) throw new Error("Failed to fetch audio config from engine");
     const data = await res.json();
     return Response.json(data);
@@ -17,7 +18,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const res = await fetch(`${ENGINE_URL}/audio/config`, {
+    const res = await engineFetch(`${ENGINE_URL}/audio/config`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -17,7 +18,7 @@ function relayHeaders() {
 export async function GET(req: NextRequest) {
     const unauthorized = await requireAdminIdentity(req);
     if (unauthorized) return unauthorized;
-    const response = await fetch(ENGINE_TARGET, {
+    const response = await engineFetch(ENGINE_TARGET, {
         method: "GET",
         cache: "no-store",
         headers: relayHeaders(),
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
     const unauthorized = await requireAdminIdentity(req);
     if (unauthorized) return unauthorized;
     const bodyText = await req.text();
-    const response = await fetch(ENGINE_TARGET, {
+    const response = await engineFetch(ENGINE_TARGET, {
         method: "POST",
         cache: "no-store",
         headers: relayHeaders(),

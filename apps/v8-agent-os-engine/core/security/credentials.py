@@ -292,6 +292,18 @@ class LinuxSecretServiceCredentialBackend(_KeyringCredentialBackend):
         )
 
 
+def create_linux_server_credential_backend(
+    state_root: str | os.PathLike[str],
+    *,
+    key_file: str | os.PathLike[str] | None = None,
+    instance_id: str = "default",
+) -> CredentialBackend:
+    """Explicit server-profile selection; desktop defaults remain unchanged."""
+    from .server_credentials import LinuxServerCredentialBackend
+
+    return LinuxServerCredentialBackend(state_root, key_file=key_file, instance_id=instance_id)
+
+
 class MacOSKeychainCredentialBackend(_KeyringCredentialBackend):
     def __init__(self, backend: Any | None = None) -> None:
         super().__init__(backend, platform_name="darwin", label="macOS Keychain")
@@ -380,6 +392,9 @@ def _default_backend(platform_name: str | None = None) -> CredentialBackend:
         if resolved_platform == "win32":
             return WindowsCredentialBackend()
         if resolved_platform == "linux":
+            if os.environ.get("V8_AGENT_OS_CREDENTIAL_KEY_FILE") or os.environ.get("CREDENTIALS_DIRECTORY"):
+                state_root = Path(os.environ.get("V8_AGENT_OS_HOME") or Path.home() / ".v8-agent-os")
+                return create_linux_server_credential_backend(state_root)
             return LinuxSecretServiceCredentialBackend()
         if resolved_platform == "darwin":
             return MacOSKeychainCredentialBackend()
@@ -431,6 +446,7 @@ __all__ = [
     "CredentialStatus",
     "CredentialStoreError",
     "LinuxSecretServiceCredentialBackend",
+    "create_linux_server_credential_backend",
     "MacOSKeychainCredentialBackend",
     "MemoryCredentialBackend",
     "UnavailableCredentialBackend",

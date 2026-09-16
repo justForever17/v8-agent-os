@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -5,7 +6,7 @@ const ENGINE_URL = resolveEngineBaseUrl();
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const res = await fetch(`${ENGINE_URL}/hooks/toggle`, {
+    const res = await engineFetch(`${ENGINE_URL}/hooks/toggle`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

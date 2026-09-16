@@ -16,13 +16,13 @@ export function acpLaunchSpec() {
 }
 
 export async function commandAcp(args) {
-  if (args.length) throw new Error("v8os acp takes no arguments. Configure the optional V8OS_ADMIN_URL for a different local Admin.");
+  if (args.length) throw new Error("v8os acp takes no arguments. Configure the optional V8OS_ENGINE_URL for a different local Engine.");
   const spec = acpLaunchSpec();
   const ports = readRuntimePorts();
   return new Promise((resolve, reject) => {
     const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd, stdio: "inherit", windowsHide: true,
-      env: { ...process.env, V8OS_ADMIN_URL: process.env.V8OS_ADMIN_URL || `http://127.0.0.1:${ports.admin}` },
+      env: { ...process.env, V8OS_ENGINE_URL: process.env.V8OS_ENGINE_URL || `http://127.0.0.1:${ports.engine}` },
     });
     child.once("error", reject);
     child.once("exit", (code) => { process.exitCode = code ?? 1; resolve(); });

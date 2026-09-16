@@ -1,8 +1,7 @@
 import NextAuth from "next-auth"
 import CredentialsProvider from "next-auth/providers/credentials"
 import { authConfig } from "./auth.config"
-import { verifyPassword } from "@/lib/password"
-import { findUserByIdentifier, getSessionIdentifier } from "./users"
+import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config"
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
     ...authConfig,
@@ -18,22 +17,29 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                 const login = String(credentials?.login || "").trim();
                 const password = String(credentials?.password || "");
                 if (!login || !password) return null;
-
-                const user = findUserByIdentifier(login);
-
-                if (!user || user.role !== "ADMIN") return null;
-
-                const isValid = await verifyPassword(password, user.password || "");
-
-                if (isValid) {
+                const secret = resolveInternalSecret();
+                if (!secret) return null;
+                const response = await fetch(`${resolveEngineBaseUrl()}/client-identity/verify-credentials`, {
+                    method: "POST",
+                    cache: "no-store",
+                    redirect: "error",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-v8-agent-os-secret": secret,
+                    },
+                    body: JSON.stringify({ login, password }),
+                }).catch(() => null);
+                if (response?.ok) {
+                    const user = await response.json().catch(() => null);
+                    if (!user?.user || user.user.role !== "ADMIN") return null;
                     return {
-                        id: user.id,
-                        email: getSessionIdentifier(user),
-                        login: user.login,
-                        name: user.name,
-                        image: user.image,
+                        id: user.user.id,
+                        email: user.user.email || user.user.login,
+                        login: user.user.login,
+                        name: user.user.name,
+                        image: user.user.image,
                         role: "ADMIN",
-                        mustChangePassword: Boolean(user.mustChangePassword),
+                        mustChangePassword: Boolean(user.user.mustChangePassword),
                     };
                 }
                 return null;

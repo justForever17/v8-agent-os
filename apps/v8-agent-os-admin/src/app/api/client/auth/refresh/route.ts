@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Refresh token is required" }, { status: 400 });
         }
 
-        const session = await rotateMobileSession(refreshToken, deviceName);
+        const session = await rotateMobileSession(refreshToken, deviceName, String(payload?.rotationId || ""));
         if (!session) {
             return NextResponse.json({ error: "Invalid refresh token" }, { status: 401 });
         }

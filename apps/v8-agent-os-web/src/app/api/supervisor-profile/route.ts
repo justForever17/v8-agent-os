@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 export const dynamic = "force-dynamic";
 
@@ -11,12 +11,12 @@ export async function GET() {
     if (!userEmail) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
     }
     try {
-        const response = await fetch(`${adminApiBaseUrl}/client/supervisor-profile`, {
+        const response = await fetch(`${clientApiBaseUrl}/supervisor-profile`, {
             headers: {
                 "x-v8-agent-os-secret": internalSecret,
                 "x-v8-agent-os-user-email": userEmail,

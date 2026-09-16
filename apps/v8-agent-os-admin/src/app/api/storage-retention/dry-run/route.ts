@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -6,7 +7,7 @@ const ENGINE_URL = resolveEngineOrigin();
 export async function POST(request: NextRequest) {
     try {
         const payload = await request.json().catch(() => ({}));
-        const response = await fetch(`${ENGINE_URL}/v1/storage-retention/dry-run`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/storage-retention/dry-run`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload || {}),

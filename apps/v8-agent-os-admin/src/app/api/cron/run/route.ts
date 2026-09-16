@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -6,7 +7,7 @@ const ENGINE_ORIGIN = resolveEngineOrigin();
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/cron/run`, {
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/cron/run`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

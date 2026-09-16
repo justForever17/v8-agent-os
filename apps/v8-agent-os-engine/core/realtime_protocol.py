@@ -128,7 +128,7 @@ def build_runtime_event(
 def verify_ws_ticket(ticket: Optional[str]) -> Optional[Dict[str, Any]]:
     secret = get_internal_secret()
     if not secret:
-        return {"sub": "anonymous", "aud": "chat_ws", "mode": "insecure"}
+        return None
 
     if not ticket:
         return None

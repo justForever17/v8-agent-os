@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONFIG_PATH, STATE_ROOT } from "./paths.mjs";
-import { adminJson, requireOk } from "./client_api.mjs";
+import { engineJson, requireOk } from "./client_api.mjs";
 import { backupFile, ensureDir, readJsonFile, writeJsonFile } from "./json_file.mjs";
 
 function hasFlag(args, flag) {
@@ -70,7 +70,7 @@ function workspaceProjectName(workspacePath) {
 export async function registerTrustedWorkspaceProject(workspacePath, { projectId = "", workspaceId = "", required = false } = {}) {
   const target = resolveWorkspacePath(workspacePath);
   try {
-    const project = requireOk(await adminJson("/api/client/projects", {
+    const project = requireOk(await engineJson("/api/client/projects", {
       method: "POST",
       body: {
         ...(projectId ? { id: projectId } : {}),

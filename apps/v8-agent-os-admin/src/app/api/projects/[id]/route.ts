@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { verifyServiceAuth } from "@/lib/service-auth";
@@ -25,7 +26,7 @@ export async function GET(
     const { id } = await params;
 
     try {
-        const res = await fetch(`${ENGINE_URL}/projects/${id}`, {
+        const res = await engineFetch(`${ENGINE_URL}/projects/${id}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
@@ -50,7 +51,7 @@ export async function PATCH(
 
     try {
         const payload = await req.json();
-        const res = await fetch(`${ENGINE_URL}/projects/${id}`, {
+        const res = await engineFetch(`${ENGINE_URL}/projects/${id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -74,7 +75,7 @@ export async function DELETE(
     const { id } = await params;
 
     try {
-        const res = await fetch(`${ENGINE_URL}/projects/${id}`, {
+        const res = await engineFetch(`${ENGINE_URL}/projects/${id}`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
         });

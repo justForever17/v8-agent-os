@@ -54,6 +54,7 @@ test('Mobile refresh BFF authenticates before body/Engine and preserves immutabl
       unauthorizedClientJson: () => NextResponse.json({ code: 'auth_pre_execution' }, { status: 401, headers: { 'X-V8-Auth-Stage': 'pre_execution' } }),
     },
     '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveInternalSecret: () => 'synthetic-internal' },
+    '@/lib/server/engine-fetch': { engineFetch: (url, init) => global.fetch(url, init) },
   });
   try {
     global.fetch = async (url, init) => { calls.push({ url, init }); return Response.json({ detail: { code: 'spec_approval_document_changed' } }, { status: 409 }); };
@@ -97,6 +98,7 @@ test('Phone and existing mobile detail BFF request and forward full Spec content
     'next/server': { NextResponse },
     '@/lib/server/client-request-auth': { resolveClientUserEmail: async () => 'fixture@invalid' },
     '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid' },
+    '@/lib/server/engine-fetch': { engineFetch: (url, init) => global.fetch(url, init) },
   });
   try {
     let forwarded;

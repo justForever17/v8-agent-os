@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -6,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
     try {
         const limit = new URL(request.url).searchParams.get("limit") || "100";
-        const response = await fetch(
+        const response = await engineFetch(
             `${resolveEngineOrigin()}/v1/memory/knowledge-resolution-candidates?limit=${encodeURIComponent(limit)}`,
             { cache: "no-store" },
         );

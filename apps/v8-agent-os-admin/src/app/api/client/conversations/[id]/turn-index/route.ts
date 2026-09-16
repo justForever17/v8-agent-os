@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -27,7 +28,7 @@ export async function GET(
     }
 
     try {
-        const response = await fetch(
+        const response = await engineFetch(
             `${ENGINE_URL}/sessions/${encodeURIComponent(id)}/turn-index?${searchParams.toString()}`,
             { method: "GET", headers: { "Content-Type": "application/json" }, cache: "no-store" },
         );

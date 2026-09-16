@@ -19,7 +19,7 @@ type ClientContext = {
 const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 function normalizeClientIdentifier(user: AdminUserRecord) {
-    return String(user.email || user.login || "").trim();
+    return String(user.sessionIdentifier || user.email || user.login || "").trim();
 }
 
 function mergeHeaders(base: HeadersInit | undefined, extra: Record<string, string>) {
@@ -170,12 +170,19 @@ export async function fetchClientEngine(
     }
 
     const clientSurfaceOrigin = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
+    const internalSecret = resolveInternalSecret();
+    if (!internalSecret) {
+        throw new Error("Configuration Error");
+    }
+    const bearer = req.headers.get("authorization");
 
     return fetch(`${resolveEngineBaseUrl()}${targetPath}`, {
         cache: "no-store",
         ...init,
         headers: mergeHeaders(init?.headers, {
+            "x-v8-agent-os-secret": internalSecret,
             "x-v8-agent-os-user-email": context.userEmail,
+            ...(bearer ? { authorization: bearer } : {}),
             ...(clientSurfaceOrigin ? { "x-v8-client-surface-origin": clientSurfaceOrigin } : {}),
         }),
     });

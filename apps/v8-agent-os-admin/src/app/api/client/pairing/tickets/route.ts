@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { resolveClientUser } from "@/lib/server/client-request-auth";
-import { createDevicePairingTicket } from "@/lib/server/device-pairing";
+import { resolveAdminIdentity } from "@/lib/server/engine-proxy";
+import { findUserByIdentifier } from "@/lib/users";
+import { createDevicePairingTicket, revokeDevicePairingTicket } from "@/lib/server/device-pairing";
+import { identityErrorResponse } from "@/lib/server/identity-route";
 import { buildClientLinkManifest, resolvePairingAdminBaseUrlFromRequest } from "@/lib/server/runtime-config";
 
-function collectAdminUrls(linkManifest: ReturnType<typeof buildClientLinkManifest>, fallbackBaseUrl: string) {
+function collectAdminUrls(linkManifest: Awaited<ReturnType<typeof buildClientLinkManifest>>, fallbackBaseUrl: string) {
     const urls = [
         fallbackBaseUrl,
         linkManifest.admin?.baseUrl || "",
@@ -16,7 +18,8 @@ function collectAdminUrls(linkManifest: ReturnType<typeof buildClientLinkManifes
 }
 
 export async function POST(req: NextRequest) {
-    const owner = await resolveClientUser(req);
+    const identifier = await resolveAdminIdentity(req);
+    const owner = identifier ? await findUserByIdentifier(identifier) : null;
     if (!owner || owner.role !== "ADMIN") {
         return NextResponse.json({ error: "owner_admin_required" }, { status: 403 });
     }
@@ -29,14 +32,14 @@ export async function POST(req: NextRequest) {
 
     const adminBaseUrl = resolvePairingAdminBaseUrlFromRequest(req);
     try {
-        const ticket = createDevicePairingTicket({
+        const ticket = await createDevicePairingTicket({
             owner,
             surface: "phone",
             adminBaseUrl,
             deviceName: payload?.deviceName,
             ttlMs: payload?.ttlMs,
         });
-        const linkManifest = buildClientLinkManifest(adminBaseUrl);
+        const linkManifest = await buildClientLinkManifest(adminBaseUrl);
         const pairingManifest = {
             kind: "v8_device_pairing_manifest",
             version: 2,
@@ -73,9 +76,15 @@ export async function POST(req: NextRequest) {
             pairingUri: `v8agentosphone://pair?${query.toString()}`,
         });
     } catch (error) {
-        return NextResponse.json(
-            { error: error instanceof Error ? error.message : "pairing_ticket_create_failed" },
-            { status: 400 },
-        );
+        return identityErrorResponse(error);
     }
+}
+
+export async function DELETE(req: NextRequest) {
+    try {
+        if (!await resolveAdminIdentity(req)) return NextResponse.json({ error: "owner_admin_required" }, { status: 403 });
+        const { pairingId } = await req.json();
+        if (typeof pairingId !== "string" || !pairingId) return NextResponse.json({ error: "pairing_id_required" }, { status: 400 });
+        return NextResponse.json(await revokeDevicePairingTicket(pairingId));
+    } catch (error) { return identityErrorResponse(error); }
 }

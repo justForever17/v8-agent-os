@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -10,7 +11,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ entryId
     }
     try {
         const { entryId } = await context.params;
-        const response = await fetch(`${resolveEngineBaseUrl()}/engineering-lane/proof-ledger/${encodeURIComponent(entryId)}`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/engineering-lane/proof-ledger/${encodeURIComponent(entryId)}`, {
             method: "GET",
             cache: "no-store",
         });

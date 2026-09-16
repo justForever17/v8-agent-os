@@ -64,7 +64,7 @@ test('packaged shell checks only governed unified releases without installing up
 test('packaged shell starts core services before waiting for them', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(mainSource, /ensureCoreServicesStarted/);
-  assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'admin', 'web'\]/);
+  assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'web'\]/);
   assert.match(mainSource, /shellStartWithRuntimePorts\(CORE_SERVICE_IDS, \{ mode: 'start' \}\)/);
   assert.match(mainSource, /const \{ profile, results \} = await shellStartWithRuntimePorts/);
   assert.match(mainSource, /applyRuntimePortProfile\(profile\)/);
@@ -94,9 +94,8 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(mainSource, /v8os-shell:retry-startup/);
   assert.match(mainSource, /replaceAll\('\\\\', '\/'\)/);
   assert.doesNotMatch(mainSource, /isAdminLoggedIn/);
-  assert.match(mainSource, /api\/client\/instance/);
-  assert.match(mainSource, /payload\?\.kind !== 'v8_instance_manifest'/);
-  assert.match(mainSource, /typeof payload\?\.initialized !== 'boolean'/);
+  assert.match(mainSource, /await ensureLocalEngineIdentity\(net.fetch.bind\(net\), engineBaseUrl\)/);
+  assert.doesNotMatch(mainSource, /isInstanceInitialized/);
   assert.match(mainSource, /initialProductSurfaceUrl\(\{/);
   assert.match(mainSource, /async function openWeb\(\)[\s\S]*?return loadInMainWindow\(chatUrl, \{ resume: true \}\)/);
   assert.match(mainSource, /mainWindow\.once\('ready-to-show',[\s\S]*?showMainWindow\(\)/);
@@ -104,10 +103,12 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(preloadSource, /retryStartup/);
   const installSmokeSource = fs.readFileSync(path.join(shellRoot, 'tests', 'scripts', 'run_desktop_install_smoke.mjs'), 'utf8');
   assert.match(installSmokeSource, /api\/client\/instance/);
-  assert.match(installSmokeSource, /rawInitialInstanceManifest\.payload\?\.initialized === false/);
-  assert.match(installSmokeSource, /initialShellSurface\.surfaceKind === "admin-login"/);
-  assert.match(installSmokeSource, /\/api\/auth\/bootstrap/);
-  assert.match(installSmokeSource, /\/api\/client\/auth\/login/);
+  assert.match(installSmokeSource, /rawInitialInstanceManifest\.payload\?\.initialized === true/);
+  assert.match(installSmokeSource, /initialShellSurface\.surfaceKind === "web"/);
+  assert.match(installSmokeSource, /\/v1\/client-identity\/bootstrap/);
+  assert.match(installSmokeSource, /\/v1\/client-identity\/local-session/);
+  assert.doesNotMatch(installSmokeSource, /\/api\/client\/auth\/login/);
+  assert.match(installSmokeSource, /\["start", "--only", "admin"/);
   assert.match(installSmokeSource, /packagedRuntimeLayout/);
   assert.match(installSmokeSource, /packaged_dev_venv_present/);
   assert.match(installSmokeSource, /result\.status === 200/);
@@ -116,10 +117,10 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /result\.payload\?\.user\?\.role === "ADMIN"/);
   assert.match(installSmokeSource, /stop", "--only", "shell"/);
   assert.match(installSmokeSource, /shellStopItem\?\.reason === "governed_shell_restart"/);
-  assert.match(installSmokeSource, /waitForShellSurface\([\s\S]{0,180}"admin-login"/);
-  assert.match(installSmokeSource, /shellSurface\.surfaceKind === "admin-login"/);
+  assert.match(installSmokeSource, /waitForShellSurface\([\s\S]{0,180}"web"/);
+  assert.match(installSmokeSource, /shellSurface\.surfaceKind === "web"/);
   assert.match(installSmokeSource, /initial_bootstrap_surface_mismatch/);
-  assert.match(installSmokeSource, /admin_auth_lock_surface_mismatch/);
+  assert.match(installSmokeSource, /trusted_local_web_surface_mismatch/);
   assert.match(installSmokeSource, /typeof value\.checked !== "boolean"/);
   assert.match(installSmokeSource, /permittedBooleans\.some\(\(key\) => typeof value\[key\] !== "boolean"\)/);
   assert.match(installSmokeSource, /function appImageRuntimeEnvironment\(appImageRoot, noSandbox\)/);
@@ -168,15 +169,15 @@ test('shell recovers a failed local surface without an unbounded reload loop', (
   assert.match(mainSource, /界面连续恢复失败/);
 });
 
-test('shell keeps every desktop surface on Admin login after sign-out', () => {
+test('shell keeps Admin login as an optional configuration lock without locking Web', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   const preloadSource = fs.readFileSync(path.join(shellRoot, 'electron', 'preload.cjs'), 'utf8');
 
   assert.match(mainSource, /credentials: 'include'/);
   assert.match(mainSource, /validateAdminSessionResponse/);
-  assert.match(mainSource, /setAdminSessionLocked\(!adminAuthenticated/);
+  assert.match(mainSource, /setAdminSessionLocked\(locked/);
   assert.match(mainSource, /function guardedSurfaceUrl\(url\)/);
-  assert.match(mainSource, /adminSessionLocked && isWebSurfaceUrl\(url\) \? adminLoginUrl\(\) : url/);
+  assert.doesNotMatch(mainSource, /adminSessionLocked && isWebSurfaceUrl/);
   assert.match(mainSource, /handleTrustedAdminAuthIpc\('v8os-shell:lock-admin-session'/);
   assert.match(mainSource, /surfaceKind === 'admin-login'/);
   assert.match(mainSource, /surfaceKind === 'admin'/);
@@ -1102,7 +1103,7 @@ test('Admin and Web release builds use Next standalone servers', () => {
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
   assert.match(runner, /V8_ADMIN_HOSTNAME/);
-  assert.match(runner, /\|\| "0\.0\.0\.0"/);
+    assert.match(runner, /\|\| "127\.0\.0\.1"/);
   assert.match(runner, /return "127\.0\.0\.1"/);
   assert.match(runner, /HOSTNAME:\s*runtimeHostname/);
   assert.match(runner, /PORT:\s*port/);

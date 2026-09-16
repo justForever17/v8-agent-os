@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
@@ -18,7 +19,7 @@ async function getId(context: RouteContext) {
 export async function GET(_req: Request, context: RouteContext) {
     try {
         const id = await getId(context);
-        const response = await fetch(`${ENGINE_URL}/v1/memory/workflows/${id}`, { cache: "no-store" });
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/workflows/${id}`, { cache: "no-store" });
         const payload = await response.json().catch(() => ({}));
         return NextResponse.json(payload, { status: response.status });
     } catch (error) {
@@ -30,7 +31,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     try {
         const id = await getId(context);
         const body = await req.json().catch(() => ({}));
-        const response = await fetch(`${ENGINE_URL}/v1/memory/workflows/${id}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/workflows/${id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
@@ -45,7 +46,7 @@ export async function PATCH(req: Request, context: RouteContext) {
 export async function DELETE(_req: Request, context: RouteContext) {
     try {
         const id = await getId(context);
-        const response = await fetch(`${ENGINE_URL}/v1/memory/workflows/${id}`, { method: "DELETE" });
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/workflows/${id}`, { method: "DELETE" });
         const payload = await response.json().catch(() => ({}));
         return NextResponse.json(payload, { status: response.status });
     } catch (error) {

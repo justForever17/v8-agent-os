@@ -91,10 +91,8 @@ export function assertStandaloneAssetsReady(appDir, serverPath) {
 
 export function runtimeHostnameForApp(app, environment = process.env) {
   if (app === "admin") {
-    // Admin is the authenticated Phone BFF as well as the local console.  An
-    // IPv4 wildcard is portable on hosts where an IPv6 `::` listener does not
-    // accept IPv4 connections (for example Ubuntu with bindv6only=1).
-    return String(environment?.V8_ADMIN_HOSTNAME || "").trim() || "0.0.0.0";
+    // Remote clients use Engine's narrow gateway. The configuration page is local.
+    return String(environment?.V8_ADMIN_HOSTNAME || "").trim() || "127.0.0.1";
   }
   return "127.0.0.1";
 }
@@ -144,14 +142,17 @@ function main(args = process.argv.slice(2)) {
   if (!['admin', 'web'].includes(app) || !['dev', 'build', 'start'].includes(mode)) {
     throw new Error("Usage: --app admin|web --mode dev|build|start [--port 9528]");
   }
-  // Phone is the only remote client and reaches Engine exclusively through the
-  // authenticated Admin BFF. Web remains a local-only desktop surface.
+  // Phone reaches Engine's dedicated gateway. Web and Admin remain local surfaces.
   const runtimeHostname = runtimeHostnameForApp(app);
   const appDir = path.join(repoRoot, "apps", `v8-agent-os-${app}`);
   const buildHome = path.join(repoRoot, ".next-v8os-home");
   const buildAppData = path.join(buildHome, "AppData", "Roaming");
   const buildLocalAppData = path.join(buildHome, "AppData", "Local");
   if (mode === "build") {
+    // Next's dev validator can retain route imports after an internal route is
+    // retired. It is generated state, never a source or user-data directory;
+    // remove only this app's own dev type cache before a production build.
+    fs.rmSync(path.join(appDir, ".next", "dev"), { recursive: true, force: true });
     fs.mkdirSync(buildHome, { recursive: true });
     fs.mkdirSync(buildAppData, { recursive: true });
     fs.mkdirSync(buildLocalAppData, { recursive: true });

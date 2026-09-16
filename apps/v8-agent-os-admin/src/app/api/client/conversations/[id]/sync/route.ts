@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -27,7 +28,7 @@ export async function GET(
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
 
     try {
-        const syncResponse = await fetch(`${ENGINE_URL}/sessions/${id}/timeline/sync?since=${encodeURIComponent(since)}`, {
+        const syncResponse = await engineFetch(`${ENGINE_URL}/sessions/${id}/timeline/sync?since=${encodeURIComponent(since)}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

@@ -1,20 +1,20 @@
 "use server";
 
 import { auth } from "@/lib/auth";
-import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import { resolveClientApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 import type { UserAppearancePreferences } from "@/lib/personalization";
 
-async function createAdminRequest(path: string, init: RequestInit = {}) {
+async function createClientRequest(path: string, init: RequestInit = {}) {
     const session = await auth();
     const userIdentifier = String(session?.user?.email || session?.user?.login || "").trim();
     const internalSecret = await resolveInternalSecret();
-    const adminBaseUrl = await resolveAdminApiBaseUrl();
+    const clientBaseUrl = await resolveClientApiBaseUrl();
 
     if (!userIdentifier || !internalSecret) {
         throw new Error("未找到当前用户或内部服务密钥");
     }
 
-    return fetch(`${adminBaseUrl}${path}`, {
+    return fetch(`${clientBaseUrl}${path}`, {
         ...init,
         headers: {
             "Content-Type": "application/json",
@@ -39,7 +39,7 @@ export type SharedUserProfile = {
 
 export async function getUserProfile() {
     try {
-        const response = await createAdminRequest("/auth/profile", {
+        const response = await createClientRequest("/auth/profile", {
             method: "GET",
         });
         const data = await response.json().catch(() => ({}));
@@ -59,7 +59,7 @@ export async function updateUserNickname(nickname: string) {
     }
 
     try {
-        const response = await createAdminRequest("/auth/profile", {
+        const response = await createClientRequest("/auth/profile", {
             method: "PATCH",
             body: JSON.stringify({ name: nickname.trim() }),
         });
@@ -76,7 +76,7 @@ export async function updateUserNickname(nickname: string) {
 
 export async function updateUserAvatar(image: string) {
     try {
-        const response = await createAdminRequest("/auth/profile", {
+        const response = await createClientRequest("/auth/profile", {
             method: "PATCH",
             body: JSON.stringify({ image }),
         });
@@ -93,7 +93,7 @@ export async function updateUserAvatar(image: string) {
 
 export async function updateUserAppearance(appearance: UserAppearancePreferences) {
     try {
-        const response = await createAdminRequest("/auth/profile", {
+        const response = await createClientRequest("/auth/profile", {
             method: "PATCH",
             body: JSON.stringify({ appearance }),
         });

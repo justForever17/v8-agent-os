@@ -178,7 +178,7 @@ export default function GraphViewer({ filterNode = "" }: { filterNode?: string }
         </div>
         {error ? <div role="alert" className="rounded-lg border border-destructive/40 px-3 py-2 text-sm text-destructive">{error}</div> : null}
         <div className="relative rounded-xl border border-border bg-card">
-            <GalaxyCanvas clusters={clusters} selected={selected} paused={paused} reduced={reduced} label={t("admin.galaxy.canvas")} onCluster={selectCluster} onNode={selectNode} onBackground={background}/>
+            <GalaxyCanvas clusters={clusters} selected={selected} selectedNode={nodeSelection?.node.id} paused={paused} reduced={reduced} label={t("admin.galaxy.canvas")} onCluster={selectCluster} onNode={selectNode} onBackground={background}/>
             {loading && !clusters.length ? <div role="status" className="absolute inset-0 flex items-center justify-center gap-2"><Loader2 size={18} className="animate-spin"/>{t("admin.galaxy.loading")}</div> : null}
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"><span>{t("admin.galaxy.scopeHint", { count: total })}</span><span>{reduced ? t("admin.galaxy.reduced") : t("admin.galaxy.gestures")}</span></div>

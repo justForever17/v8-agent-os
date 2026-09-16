@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { fetchClientAdmin } from "@/lib/server/client-proxy";
-import { fetchSignedClientAdminPath, verifySignedClientSurfaceRequest } from "@/lib/server/client-surface-resource";
+import { fetchEngineClientIdentity } from "@/lib/server/engine-identity";
 
 export async function GET(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
     try {
         const { path } = await context.params;
         const targetPath = `/workspace/files/${path.join("/")}`;
-        const response = verifySignedClientSurfaceRequest(req)
-            ? await fetchSignedClientAdminPath(targetPath, { method: "GET" })
+        const response = req.nextUrl.searchParams.has("v8sig")
+            ? await fetchEngineClientIdentity(targetPath + (req.nextUrl.search ? `?${req.nextUrl.searchParams.toString()}` : ""), { method: "GET" })
             : await fetchClientAdmin(req, targetPath, { method: "GET" });
         if (!response.ok || !response.body) {
             return new NextResponse(await response.arrayBuffer(), { status: response.status });

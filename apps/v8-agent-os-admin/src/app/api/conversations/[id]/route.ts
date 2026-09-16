@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
 import { isSupervisorRuntimeMode } from "@/lib/realtime/supervisor-runtime-mode";
@@ -26,7 +27,7 @@ export async function GET(
     const { id } = await params;
 
     try {
-        const snapshotRes = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
+        const snapshotRes = await engineFetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json' },
             cache: 'no-store'
@@ -84,7 +85,7 @@ export async function DELETE(
     const { id } = await params;
 
     try {
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}`, {
+        const res = await engineFetch(`${ENGINE_URL}/sessions/${id}`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' }
         });
@@ -113,7 +114,7 @@ export async function PATCH(
     const { id } = await params;
     const body = await req.json().catch(() => ({}));
     try {
-        const response = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
+        const response = await engineFetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -8,7 +9,7 @@ export async function GET(req: NextRequest) {
     try {
         const search = req.nextUrl.searchParams.toString();
         const suffix = search ? `?${search}` : "";
-        const response = await fetch(`${ENGINE_URL}/specs${suffix}`, {
+        const response = await engineFetch(`${ENGINE_URL}/specs${suffix}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

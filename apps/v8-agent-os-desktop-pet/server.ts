@@ -5,6 +5,7 @@ import { createServer } from "http";
 import os from "os";
 import path from "path";
 import { WebSocket, WebSocketServer } from "ws";
+import { readLocalBridge, localEngineOrigin, engineClientTarget } from "./lib/local-engine";
 
 const app = express();
 const configuredPort = process.env.V8_DESKTOP_PORT;
@@ -22,6 +23,18 @@ if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
   throw new Error(`Invalid V8_DESKTOP_PORT: ${configuredPort}`);
 }
 
+app.use((req, res, next) => {
+  const origin = req.header("origin");
+  const expected = `http://${req.headers.host}`;
+  const hostname = String(req.hostname || "");
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname) || (origin && origin !== expected)
+      || req.header("sec-fetch-site") === "cross-site") {
+    res.status(403).json({ error: "local_desktop_origin_required" });
+    return;
+  }
+  next();
+});
+
 // Increase request size limit to handle webcam frame base64 uploads
 app.use(express.json({ limit: "15mb" }));
 
@@ -36,16 +49,13 @@ app.get("/api/pet/health", (_req, res) => {
   });
 });
 
-function normalizeAdminBaseUrl(input: unknown) {
-  const raw = String(input || process.env.V8_ADMIN_BASE_URL || "http://127.0.0.1:9528").trim();
-  return raw.replace(/\/+$/, "") || "http://127.0.0.1:9528";
-}
-
 function stripProxyOnlyQuery(originalUrl: string) {
   const [rawPath, rawQuery = ""] = originalUrl.split("?");
   const targetPath = rawPath.replace(/^\/api\/v8/, "") || "/";
   const params = new URLSearchParams(rawQuery);
   params.delete("adminBaseUrl");
+  params.delete("engineBaseUrl");
+  params.delete("engineWsBaseUrl");
   const suffix = params.toString();
   return suffix ? `${targetPath}?${suffix}` : targetPath;
 }
@@ -63,14 +73,7 @@ type V8BridgeConfig = {
 };
 
 function readV8BridgeConfig(): V8BridgeConfig {
-  const configPath = path.join(os.homedir(), ".v8-agent-os", "config.json");
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    const bridge = parsed?.systemBase?.bridge;
-    return bridge && typeof bridge === "object" ? bridge : {};
-  } catch {
-    return {};
-  }
+  return readLocalBridge();
 }
 
 function normalizeWsBaseUrl(value: unknown, fallback = "ws://127.0.0.1:9530/v1") {
@@ -82,9 +85,7 @@ function normalizeWsBaseUrl(value: unknown, fallback = "ws://127.0.0.1:9530/v1")
 }
 
 function resolveEngineWsUrl() {
-  const bridge = readV8BridgeConfig();
-  const base = normalizeWsBaseUrl(bridge.engineWsBaseUrl || bridge.engineBaseUrl);
-  return `${base.replace(/\/+$/, "")}/chat/ws`;
+  return localEngineOrigin().replace(/^http:/, "ws:") + "/v1/chat/ws";
 }
 
 function buildEngineWsTicket(subject = "cybercore-desktop") {
@@ -100,12 +101,27 @@ function buildEngineWsTicket(subject = "cybercore-desktop") {
   return `${payloadB64}.${signature}`;
 }
 
-// V8OS Admin BFF local proxy.
-// Renderer code talks to same-origin /api/v8/*; this server forwards to Admin /api/client/*.
+app.post("/api/pet/local-session", async (_req, res) => {
+  try {
+    const origin = localEngineOrigin();
+    const secret = String(readLocalBridge().internalSecret || "");
+    if (!secret) { res.status(503).json({ error: "local_engine_credential_unavailable" }); return; }
+    const response = await fetch(`${origin}/v1/client-identity/local-session`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { "Content-Type": "application/json", "x-v8-agent-os-secret": secret },
+      body: JSON.stringify({ surface: "desktop_pet", deviceName: "V8 Desktop Pet" }),
+    });
+    const data = await response.json();
+    res.status(response.status).json({ ...data, engineBaseUrl: `${origin}/v1`, localSession: true });
+  } catch { res.status(503).json({ error: "local_engine_unavailable" }); }
+});
+
+// Same-origin renderer transport. Only this native server holds the service key.
 app.all("/api/v8/*", async (req, res) => {
-  const adminBaseUrl = normalizeAdminBaseUrl(req.header("x-v8-admin-base") || req.query.adminBaseUrl);
   const targetPath = stripProxyOnlyQuery(req.originalUrl);
-  const targetUrl = `${adminBaseUrl}${targetPath}`;
+  let targetUrl: string;
+  try { targetUrl = engineClientTarget(localEngineOrigin(), targetPath); }
+  catch { res.status(400).json({ error: "invalid_client_resource" }); return; }
   const headers = new Headers();
 
   for (const [key, value] of Object.entries(req.headers)) {
@@ -115,15 +131,21 @@ app.all("/api/v8/*", async (req, res) => {
       lowered === "host"
       || lowered === "content-length"
       || lowered === "x-v8-admin-base"
+      || lowered.startsWith("x-v8-agent-os-")
+      || lowered === "cookie"
     ) {
       continue;
     }
     headers.set(key, Array.isArray(value) ? value.join(",") : String(value));
   }
+  const secret = String(readLocalBridge().internalSecret || "");
+  if (!secret) { res.status(503).json({ error: "local_engine_credential_unavailable" }); return; }
+  headers.set("x-v8-agent-os-secret", secret);
 
   const init: RequestInit & { duplex?: "half" } = {
     method: req.method,
     headers,
+    redirect: "error",
   };
   if (req.method !== "GET" && req.method !== "HEAD") {
     const contentType = String(req.headers["content-type"] || "");

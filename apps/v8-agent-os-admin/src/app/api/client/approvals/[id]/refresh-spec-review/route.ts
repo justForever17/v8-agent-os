@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -9,7 +10,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     try {
         const payload = await req.json();
-        const response = await fetch(`${resolveEngineBaseUrl()}/approvals/${encodeURIComponent(id)}/refresh-spec-review`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/approvals/${encodeURIComponent(id)}/refresh-spec-review`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-v8-agent-os-user-email": userEmail,
                 "x-v8-agent-os-secret": resolveInternalSecret() },

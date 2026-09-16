@@ -1,12 +1,21 @@
 import path from "node:path";
-import { DEFAULT_PORTS, STATE_ROOT } from "./paths.mjs";
+import { CONFIG_PATH, DEFAULT_PORTS, STATE_ROOT } from "./paths.mjs";
 import { fetchJson } from "./http.mjs";
 import { ensureDir, readJsonFile, writeJsonFile } from "./json_file.mjs";
 
 const SESSION_FILE = path.join(STATE_ROOT, "runtime", "cli", "local-session.json");
 
-export function adminOrigin() {
-  return process.env.V8OS_ADMIN_URL || `http://127.0.0.1:${DEFAULT_PORTS.admin}`;
+export function engineOrigin() {
+  const configured = String(process.env.V8OS_ENGINE_URL || process.env.V8_AGENT_OS_ENGINE_URL || readJsonFile(CONFIG_PATH, {})?.systemBase?.bridge?.engineBaseUrl || "").trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      return `${url.protocol}//${url.host}`;
+    } catch {
+      // Fall through to the governed loopback default.
+    }
+  }
+  return `http://127.0.0.1:${DEFAULT_PORTS.engine}`;
 }
 
 function decodeJwtPayload(token) {
@@ -32,7 +41,7 @@ function cachedAccessToken() {
 export async function issueLocalCliSession() {
   let response;
   try {
-    response = await fetchJson(`${adminOrigin()}/api/client/auth/local-session`, {
+    response = await fetchJson(`${engineOrigin()}/api/client/auth/local-session`, {
       method: "POST",
       timeoutMs: 5000,
       body: {
@@ -41,7 +50,7 @@ export async function issueLocalCliSession() {
       },
     });
   } catch (error) {
-    throw new Error(`无法连接本机 Admin（${adminOrigin()}）。请先运行 v8os start，或设置 V8OS_ADMIN_URL。原始错误：${error.message}`);
+    throw new Error(`无法连接本机 Engine（${engineOrigin()}）。请先运行 v8os start，或设置 V8OS_ENGINE_URL。原始错误：${error.message}`);
   }
   if (!response.ok || !response.data?.accessToken) {
     throw new Error(`无法获取本机 CLI 会话：${response.status} ${response.data?.error || ""}`.trim());
@@ -49,7 +58,7 @@ export async function issueLocalCliSession() {
   ensureDir(path.dirname(SESSION_FILE));
   writeJsonFile(SESSION_FILE, {
     createdAt: new Date().toISOString(),
-    adminOrigin: adminOrigin(),
+    engineOrigin: engineOrigin(),
     accessToken: response.data.accessToken,
     accessTokenExpiresAt: response.data.accessTokenExpiresAt,
     refreshToken: response.data.refreshToken,
@@ -66,10 +75,10 @@ export async function localCliAccessToken({ force = false } = {}) {
   return issueLocalCliSession();
 }
 
-export async function adminJson(pathname, { method = "GET", body, timeoutMs = 10_000, headers = {} } = {}) {
+export async function engineJson(pathname, { method = "GET", body, timeoutMs = 10_000, headers = {} } = {}) {
   const makeRequest = async (token) => {
     try {
-      return await fetchJson(`${adminOrigin()}${pathname}`, {
+      return await fetchJson(`${engineOrigin()}${pathname}`, {
         method,
         body,
         timeoutMs,
@@ -79,7 +88,7 @@ export async function adminJson(pathname, { method = "GET", body, timeoutMs = 10
         },
       });
     } catch (error) {
-      throw new Error(`无法连接本机 Admin（${adminOrigin()}）。请先运行 v8os start，或设置 V8OS_ADMIN_URL。原始错误：${error.message}`);
+      throw new Error(`无法连接本机 Engine（${engineOrigin()}）。请先运行 v8os start，或设置 V8OS_ENGINE_URL。原始错误：${error.message}`);
     }
   };
   let token = await localCliAccessToken();

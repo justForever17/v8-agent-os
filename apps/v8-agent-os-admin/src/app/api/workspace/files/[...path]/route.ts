@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ path: s
 
     try {
         const { path } = await context.params;
-        const response = await fetch(`${resolveEngineOrigin()}/workspace/${path.join("/")}`, {
+        const response = await engineFetch(`${resolveEngineOrigin()}/workspace/${path.join("/")}`, {
             headers: {
                 "x-v8-agent-os-user-email": userEmail,
             },

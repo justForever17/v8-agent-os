@@ -2,7 +2,7 @@ import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { authConfig } from "./auth.config";
 import { shouldUseSecureCookies } from "./server/cookie-policy";
-import { resolveLocalAdminRootUrl } from "./server/runtime-config";
+import { resolveEngineBaseUrl, resolveInternalSecret } from "./server/runtime-config";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
     ...authConfig,
@@ -33,12 +33,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             async authorize(credentials) {
                 const localSession = String(credentials?.localSession || "").trim() === "1";
                 if (!localSession) return null;
-                const adminBaseUrl = String(credentials?.adminBaseUrl || resolveLocalAdminRootUrl()).trim().replace(/\/+$/, "");
-                if (!adminBaseUrl) return null;
+                const engineBaseUrl = await resolveEngineBaseUrl();
+                const internalSecret = await resolveInternalSecret();
+                if (!internalSecret) return null;
                 try {
-                    const response = await fetch(`${adminBaseUrl}/api/client/auth/local-session`, {
+                    const response = await fetch(`${engineBaseUrl}/client-identity/local-session`, {
                         method: "POST",
-                        headers: { "Content-Type": "application/json" },
+                        headers: { "Content-Type": "application/json", "x-v8-agent-os-secret": internalSecret },
                         body: JSON.stringify({
                             surface: "web",
                             deviceName: "v8-web-local",

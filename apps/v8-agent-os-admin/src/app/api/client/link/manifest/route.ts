@@ -8,5 +8,5 @@ export async function GET(req: NextRequest) {
     if (context instanceof NextResponse) {
         return context;
     }
-    return NextResponse.json(buildClientLinkManifest(resolveRequestOrigin(req)));
+    return NextResponse.json(await buildClientLinkManifest(resolveRequestOrigin(req)));
 }

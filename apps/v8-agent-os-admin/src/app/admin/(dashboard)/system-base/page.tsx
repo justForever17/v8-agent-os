@@ -68,6 +68,11 @@ type SystemBaseData = {
     remoteLink?: {
         enabled?: boolean;
         activeProfileId?: string;
+        phoneGateway?: {
+            enabled?: boolean;
+            port?: number;
+            publicBaseUrl?: string;
+        };
         transportProfiles?: Array<{
             id?: string;
             kind?: string;
@@ -76,6 +81,7 @@ type SystemBaseData = {
             adminBaseUrl?: string;
             engineBaseUrl?: string;
             peerBaseUrl?: string;
+            phoneBaseUrl?: string;
         }>;
         meshProviders?: Array<{
             id?: string;
@@ -90,6 +96,7 @@ type SystemBaseData = {
     remoteLinkManifest?: {
         transportKind?: string;
         activeProfileId?: string;
+        endpoints?: Array<{ id?: string; baseUrl?: string; enabled?: boolean }>;
         admin?: {
             baseUrl?: string;
             apiBaseUrl?: string;
@@ -439,14 +446,14 @@ export default function SystemBasePage() {
         const profile = (envelope?.data.remoteLink?.transportProfiles || []).find((item) => (
             item.id === (envelope?.data.remoteLink?.activeProfileId || "")
         ));
-        const adminBaseUrl = String(profile?.adminBaseUrl || "").trim();
+        const phoneBaseUrl = String(profile?.phoneBaseUrl || remoteLink.phoneGateway?.publicBaseUrl || "").trim();
         setCloudflareProbeState("probing");
         setCloudflareProbeMessage("");
         try {
             const response = await fetch("/api/client/link/verify-cloudflare", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ adminBaseUrl }),
+                body: JSON.stringify({ phoneBaseUrl }),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || !payload?.ok) {
@@ -574,8 +581,11 @@ export default function SystemBasePage() {
     const activeRemoteLinkProfile = remoteLinkProfiles.find((profile) => profile.id === remoteLink.activeProfileId) || remoteLinkProfiles[0] || {};
     const activeRemoteLinkKind = String(activeRemoteLinkProfile.kind || "").replace(/-/g, "_");
     const activeRemoteLinkUrlFields = activeRemoteLinkKind === "cloudflare_tunnel"
-        ? (["adminBaseUrl"] as const)
-        : (["adminBaseUrl", "engineBaseUrl", "peerBaseUrl"] as const);
+        ? (["phoneBaseUrl"] as const)
+        : (["phoneBaseUrl", "peerBaseUrl"] as const);
+    const phoneGateway = remoteLink.phoneGateway || {};
+    const phonePairingUrl = remoteLinkManifest.endpoints?.find((item) => item.id === remoteLinkManifest.activeProfileId && item.enabled !== false)?.baseUrl
+        || remoteLinkManifest.endpoints?.find((item) => item.enabled !== false)?.baseUrl || "";
     const desktopLivePreset = deriveDesktopLivePreset(desktopLive);
     const s3 = envelope.data.s3 || {};
     const runtimeInfo = envelope.data.runtimeInfo || {};
@@ -728,6 +738,60 @@ export default function SystemBasePage() {
                             }
                             className="bg-muted/80 hover:bg-muted/80 rounded-2xl px-4 py-3"
                         />
+                        <div className="rounded-2xl border border-border bg-card p-4">
+                            <div className="mb-3">
+                                <div className="font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.phoneGateway")}</div>
+                                <div className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.remoteLink.phoneGatewayHelp")}</div>
+                            </div>
+                            <SettingToggleCard
+                                title={t("app.admin.dashboard.system.base.remoteLink.phoneGatewayEnabled")}
+                                description={t("app.admin.dashboard.system.base.remoteLink.phoneGatewayRestart")}
+                                checked={phoneGateway.enabled !== false}
+                                onCheckedChange={(checked) => updateData((current) => ({
+                                    ...current,
+                                    remoteLink: { ...(current.remoteLink || {}), phoneGateway: { ...(current.remoteLink?.phoneGateway || {}), enabled: checked } },
+                                }))}
+                                className="mb-4"
+                            />
+                            <div className="grid gap-4 md:grid-cols-3">
+                                <div className="space-y-2">
+                                    <Label>{t("app.admin.dashboard.system.base.remoteLink.phoneGatewayPort")}</Label>
+                                    <Input
+                                        type="number"
+                                        min={1}
+                                        max={65535}
+                                        value={phoneGateway.port ?? 9532}
+                                        onChange={(event) => updateData((current) => ({
+                                            ...current,
+                                            remoteLink: {
+                                                ...(current.remoteLink || {}),
+                                                phoneGateway: {
+                                                    ...(current.remoteLink?.phoneGateway || {}),
+                                                    port: Math.max(1, Math.min(65535, Number(event.target.value) || 9532)),
+                                                },
+                                            },
+                                        }))}
+                                    />
+                                </div>
+                                <div className="space-y-2 md:col-span-2">
+                                    <Label>{t("app.admin.dashboard.system.base.remoteLink.phoneGatewayPublicUrl")}</Label>
+                                    <Input
+                                        value={phoneGateway.publicBaseUrl || ""}
+                                        onChange={(event) => updateData((current) => ({
+                                            ...current,
+                                            remoteLink: {
+                                                ...(current.remoteLink || {}),
+                                                phoneGateway: {
+                                                    ...(current.remoteLink?.phoneGateway || {}),
+                                                    publicBaseUrl: event.target.value,
+                                                },
+                                            },
+                                        }))}
+                                        placeholder="https://phone.example.com"
+                                    />
+                                </div>
+                            </div>
+                        </div>
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.system.base.remoteLink.activeProfile")}</Label>
@@ -762,15 +826,13 @@ export default function SystemBasePage() {
                                 </div>
                             </div>
                         </div>
-                        <div className={`grid gap-4 ${activeRemoteLinkKind === "cloudflare_tunnel" ? "md:grid-cols-1" : "md:grid-cols-3"}`}>
+                        <div className={`grid gap-4 ${activeRemoteLinkKind === "cloudflare_tunnel" ? "md:grid-cols-1" : "md:grid-cols-2"}`}>
                             {activeRemoteLinkUrlFields.map((field) => (
                                 <div key={field} className="space-y-2">
                                     <Label>
-                                        {field === "adminBaseUrl"
-                                            ? t("app.admin.dashboard.system.base.remoteLink.adminUrl")
-                                            : field === "engineBaseUrl"
-                                                ? t("app.admin.dashboard.system.base.remoteLink.engineUrl")
-                                                : t("app.admin.dashboard.system.base.remoteLink.peerUrl")}
+                                        {field === "peerBaseUrl"
+                                            ? t("app.admin.dashboard.system.base.remoteLink.peerUrl")
+                                            : t("app.admin.dashboard.system.base.remoteLink.phoneUrl")}
                                     </Label>
                                     <Input
                                         value={String(activeRemoteLinkProfile[field] || "")}
@@ -791,9 +853,7 @@ export default function SystemBasePage() {
                                                 };
                                             });
                                         }}
-                                        placeholder={activeRemoteLinkKind === "cloudflare_tunnel"
-                                            ? "https://v8.example.com"
-                                            : field === "adminBaseUrl" ? "http://192.168.x.x:9528" : "http://192.168.x.x:9530"}
+                                        placeholder={field === "peerBaseUrl" ? "https://peer.example.com" : "https://phone.example.com"}
                                     />
                                 </div>
                             ))}
@@ -1097,9 +1157,10 @@ export default function SystemBasePage() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => void navigator.clipboard?.writeText(remoteLinkManifest.admin?.baseUrl || bridge.adminBaseUrl || "")}
+                                disabled={!phonePairingUrl}
+                                onClick={() => void navigator.clipboard?.writeText(phonePairingUrl)}
                             >
-                                {t("app.admin.dashboard.system.base.remoteLink.copyAdmin")}
+                                {t("app.admin.dashboard.system.base.remoteLink.copyPhone")}
                             </Button>
                             <Button
                                 type="button"

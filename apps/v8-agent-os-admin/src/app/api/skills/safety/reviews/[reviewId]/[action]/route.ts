@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -19,7 +20,7 @@ export async function POST(
     return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
   }
   try {
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/skills/safety/reviews/${encodeURIComponent(reviewId)}/${normalizedAction}`, {
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/skills/safety/reviews/${encodeURIComponent(reviewId)}/${normalizedAction}`, {
       method: "POST",
     });
     const data = await res.json().catch(() => ({}));

@@ -4,22 +4,95 @@ import { fetchJson } from "./http.mjs";
 import { readJsonFile } from "./json_file.mjs";
 
 async function engineConfigDomain(domain) {
-  const response = await fetchJson(`http://127.0.0.1:${DEFAULT_PORTS.engine}/v1/config-registry/${domain}`, { timeoutMs: 3000 });
+  const response = await fetchJson(`${engineOrigin()}/v1/config-registry/${domain}`, { timeoutMs: 3000, headers: engineHeaders() });
   if (!response.ok) throw new Error(`Engine config registry returned ${response.status}`);
   return response.data;
 }
 
+function engineOrigin() {
+  const configured = String(readJsonFile(CONFIG_PATH, {})?.systemBase?.bridge?.engineBaseUrl || "").trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      return `${url.protocol}//${url.host}`;
+    } catch {
+      // Fall through to the governed default.
+    }
+  }
+  return `http://127.0.0.1:${DEFAULT_PORTS.engine}`;
+}
+
+function engineHeaders() {
+  const localConfig = readJsonFile(CONFIG_PATH, {});
+  const internalSecret = String(localConfig?.systemBase?.bridge?.internalSecret || "").trim();
+  return internalSecret ? { "x-v8-agent-os-secret": internalSecret } : undefined;
+}
+
 async function engineRequest(path, options = {}) {
-  const response = await fetchJson(`http://127.0.0.1:${DEFAULT_PORTS.engine}${path}`, {
+  const response = await fetchJson(`${engineOrigin()}${path}`, {
     timeoutMs: options.timeoutMs || 5000,
     method: options.method || "GET",
     body: options.body,
+    headers: engineHeaders(),
   });
   if (!response.ok) {
     const message = response.data?.detail?.message || response.data?.detail || response.data?.message || `Engine returned ${response.status}`;
     throw new Error(typeof message === "string" ? message : JSON.stringify(message));
   }
   return response.data;
+}
+
+export async function getNetworkConfig() {
+  return { source: "engine", payload: await engineRequest("/v1/config-broker/network", { timeoutMs: 5000 }) };
+}
+
+export async function getNetworkSchema() {
+  return { source: "engine", payload: await engineRequest("/v1/config-broker/network/schema", { timeoutMs: 5000 }) };
+}
+
+export async function prepareNetworkConfig(settings) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error("config network prepare requires a JSON object");
+  }
+  return {
+    source: "engine",
+    payload: await engineRequest("/v1/config-broker/network/prepare", {
+      method: "POST",
+      body: { settings },
+      timeoutMs: 10000,
+    }),
+  };
+}
+
+export async function commitNetworkConfig(transactionId, planDigest) {
+  const id = String(transactionId || "").trim();
+  if (!id) throw new Error("config network commit requires a transaction id");
+  return { source: "engine", payload: await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(id)}/commit`, {
+    method: "POST", body: planDigest ? { planDigest } : {}, timeoutMs: 10000,
+  }) };
+}
+
+export async function rollbackNetworkConfig(transactionId) {
+  const id = String(transactionId || "").trim();
+  if (!id) throw new Error("config network rollback requires a transaction id");
+  return { source: "engine", payload: await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(id)}/rollback`, {
+    method: "POST", timeoutMs: 10000,
+  }) };
+}
+
+export async function getClientGatewayConfig() {
+  return { source: "engine", payload: await engineRequest("/v1/config-broker/client-gateway", { timeoutMs: 5000 }) };
+}
+
+export async function getClientGatewaySchema() {
+  return { source: "engine", payload: await engineRequest("/v1/config-broker/client-gateway/schema", { timeoutMs: 5000 }) };
+}
+
+export async function prepareClientGatewayConfig(settings) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("config phone prepare requires a JSON object");
+  return { source: "engine", payload: await engineRequest("/v1/config-broker/client-gateway/prepare", {
+    method: "POST", body: { settings }, timeoutMs: 10000,
+  }) };
 }
 
 function readOfflineDomain(domain) {
@@ -43,7 +116,7 @@ export async function getConfigDomain(domain) {
 
 export async function listConfigDomains() {
   try {
-    const response = await fetchJson(`http://127.0.0.1:${DEFAULT_PORTS.engine}/v1/config-registry`, { timeoutMs: 3000 });
+    const response = await fetchJson(`${engineOrigin()}/v1/config-registry`, { timeoutMs: 3000, headers: engineHeaders() });
     if (response.ok && response.data?.domains) {
       return { source: "engine", domains: response.data.domains.map((item) => ({ domain: item.domain, title: item.title, source: item.source })) };
     }
@@ -171,7 +244,7 @@ export async function removeMcpServer(name) {
 
 export async function modelRoleDoctor() {
   try {
-    const response = await fetchJson(`http://127.0.0.1:${DEFAULT_PORTS.engine}/v1/models/role-doctor`, { timeoutMs: 5000 });
+    const response = await fetchJson(`${engineOrigin()}/v1/models/role-doctor`, { timeoutMs: 5000, headers: engineHeaders() });
     if (response.ok) return { source: "engine", payload: response.data };
   } catch {
     // Fall through.
@@ -250,31 +323,59 @@ export async function recommendModel(role, limit = 5) {
 export async function phonePairingSummary() {
   const systemBase = await getConfigDomain("system-base");
   const data = systemBase.payload?.data || systemBase.payload || {};
+  let gateway = null;
+  try { gateway = (await getClientGatewayConfig()).payload; } catch { /* Engine may be offline; keep the manifest fallback. */ }
   return {
     source: systemBase.source,
     remoteLink: data.remoteLink || data.systemBase?.remoteLink || null,
-    manifest: data.remoteLinkManifest || null,
+    manifest: gateway ? await clientIdentityRequest("/link-manifest", { timeoutMs: 5000 }) : null,
+    gateway,
   };
 }
 
 export async function phonePairingManifest() {
-  const summary = await phonePairingSummary();
-  const manifest = summary.manifest || {};
-  const remoteLink = summary.remoteLink || {};
-  const adminUrls = [
-    ...(Array.isArray(manifest.adminUrls) ? manifest.adminUrls : []),
-    ...(Array.isArray(remoteLink.adminUrls) ? remoteLink.adminUrls : []),
-    remoteLink.adminUrl,
-    remoteLink.manualUrl,
-  ].filter(Boolean);
-  return {
-    source: summary.source,
-    manifest: {
-      serverId: manifest.serverId || remoteLink.serverId || "local-v8os",
-      instanceId: manifest.instanceId || remoteLink.instanceId || "local",
-      adminUrls: [...new Set(adminUrls)],
-      surface: "phone",
-    },
-    remoteLink,
-  };
+  return { source: "engine", manifest: await clientIdentityRequest("/link-manifest", { timeoutMs: 5000 }) };
+}
+
+async function clientIdentityRequest(path, options = {}) {
+  return engineRequest(`/v1/client-identity${path}`, options);
+}
+
+export async function phoneOwner() {
+  return { source: "engine", payload: await clientIdentityRequest("/owner", { timeoutMs: 5000 }) };
+}
+
+export async function phoneInitialize({ login = "owner", name = "" } = {}) {
+  const owner = await phoneOwner();
+  let result = { user: owner.payload?.user || null };
+  if (!owner.payload?.initialized) {
+    result = await clientIdentityRequest("/bootstrap", {
+      method: "POST", body: { login, name }, timeoutMs: 10_000,
+    });
+  }
+  // Establish the hidden trusted-local session in the same governed owner path.
+  const localSession = await clientIdentityRequest("/local-session", {
+    method: "POST", body: { surface: "cli", deviceName: "v8os-cli" }, timeoutMs: 10_000,
+  });
+  const safeLocalSession = localSession && typeof localSession === "object"
+    ? Object.fromEntries(Object.entries(localSession).filter(([key]) => !/token|secret|credential|password/i.test(key)))
+    : null;
+  return { source: "engine", initialized: true, owner: result.user || null, localSession: safeLocalSession };
+}
+
+export async function phonePairingTicket({ deviceName = "", ttlMs = 300000, baseUrl = "" } = {}) {
+  if (!String(baseUrl || "").trim()) throw new Error("config phone pair requires --base-url with a reachable HTTPS URL");
+  return { source: "engine", payload: await clientIdentityRequest("/pairing-ticket", {
+    method: "POST", body: { deviceName, ttlMs, adminBaseUrl: baseUrl }, timeoutMs: 10_000,
+  }) };
+}
+
+export async function phoneDevices() {
+  return { source: "engine", payload: await clientIdentityRequest("/devices", { timeoutMs: 5000 }) };
+}
+
+export async function revokePhoneDevice(deviceId) {
+  const id = String(deviceId || "").trim();
+  if (!id) throw new Error("config phone revoke requires a device id");
+  return { source: "engine", payload: await clientIdentityRequest(`/devices/${encodeURIComponent(id)}`, { method: "DELETE", timeoutMs: 10_000 }) };
 }

@@ -3,6 +3,16 @@ import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 const pending = new Map<string, Promise<string>>();
 let sequence = 0;
 
+/** Capabilities authorize a fetch; immutable filenames identify cached content. */
+export function resourceCacheIdentity(source: string): string {
+    try {
+        const url = new URL(source);
+        url.searchParams.delete("v8sig");
+        url.searchParams.delete("v8exp");
+        return url.toString();
+    } catch { return source; }
+}
+
 /** Full identity stays in SQLite. Filesystem names remain short on Android/iOS. */
 export async function resourceCacheDirectory(root: string, kind: string, identity: string) {
     if (!identity) throw new Error("Missing resource identity");

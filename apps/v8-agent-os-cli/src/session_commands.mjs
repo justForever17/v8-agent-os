@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { readRuntimePorts } from "./runtime_ports.mjs";
-import { adminJson, requireOk } from "./client_api.mjs";
+import { engineJson } from "./engine_client.mjs";
 import { sendChatMessage } from "./chat_commands.mjs";
 
 function hasFlag(args, flag) {
@@ -98,8 +98,8 @@ function openUrl(url) {
 export async function listSessions(args) {
   const json = hasFlag(args, "--json");
   const limit = optionNumber(args, "--limit", 20);
-  const response = await adminJson("/api/client/conversations", { timeoutMs: 10_000 });
-  const sessions = Array.isArray(requireOk(response, "列出会话")) ? response.data.slice(0, limit) : [];
+  const payload = await engineJson(`/v1/sessions?limit=${limit}`, { timeoutMs: 10_000 });
+  const sessions = Array.isArray(payload?.sessions) ? payload.sessions.slice(0, limit) : [];
   if (json) console.log(JSON.stringify(sessions.map(summarizeSession), null, 2));
   else renderSessions(sessions);
   return sessions;
@@ -108,8 +108,7 @@ export async function listSessions(args) {
 export async function showSession(args) {
   const sessionId = String(args[0] || "").trim();
   if (!sessionId) throw new Error("sessions show requires <sessionId>");
-  const response = await adminJson(`/api/client/conversations/${encodeURIComponent(sessionId)}?omitMessages=1`, { timeoutMs: 10_000 });
-  const session = requireOk(response, "读取会话");
+  const session = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/snapshot`, { timeoutMs: 10_000 });
   if (hasFlag(args, "--json")) console.log(JSON.stringify(session, null, 2));
   else renderSessions([session]);
   return session;
@@ -119,8 +118,7 @@ export async function showSessionTurns(args) {
   const sessionId = String(args[0] || "").trim();
   if (!sessionId) throw new Error("sessions turns requires <sessionId>");
   const limit = optionNumber(args, "--limit", 1);
-  const response = await adminJson(`/api/client/conversations/${encodeURIComponent(sessionId)}/turns?limit=${limit}`, { timeoutMs: 10_000 });
-  const payload = requireOk(response, "读取会话轮次");
+  const payload = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=${limit}`, { timeoutMs: 10_000 });
   if (hasFlag(args, "--json")) console.log(JSON.stringify(payload, null, 2));
   else renderTurnMessages(Array.isArray(payload.messages) ? payload.messages : []);
   return payload;
@@ -129,10 +127,8 @@ export async function showSessionTurns(args) {
 export function openSession(args) {
   const sessionId = String(args[0] || "").trim();
   if (!sessionId) throw new Error("sessions open requires <sessionId>");
-  const url = `http://127.0.0.1:${readRuntimePorts().web}/chat?id=${encodeURIComponent(sessionId)}`;
-  openUrl(url);
-  console.log(url);
-  return url;
+  console.log(`session: ${sessionId}`);
+  return sessionId;
 }
 
 export async function resumeSession(args) {

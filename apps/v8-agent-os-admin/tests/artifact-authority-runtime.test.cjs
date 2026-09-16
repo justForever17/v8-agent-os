@@ -35,6 +35,7 @@ function loadRequestAuth() {
     requireOverrides: {
       "@/i18n/internal-readable": { INTERNAL_READABLE: { k4b0c4c45f3: "missing secret" } },
       "@/lib/server/runtime-config": { resolveInternalSecret: () => internalSecret },
+      "@/lib/server/engine-identity": { engineIdentity: async () => ({ user: { id: "fixture-owner", login: "owner", sessionIdentifier: "fixture-owner", email: "owner@example.invalid", role: "ADMIN" } }) },
     },
   });
   return loadTypeScriptModule("src/lib/server/request-auth.ts", {
@@ -46,7 +47,7 @@ function loadRequestAuth() {
   });
 }
 
-function memoryRouteOverrides(requestAuth) {
+function memoryRouteOverrides(requestAuth, fetchImpl = global.fetch) {
   return {
     "next/server": { NextRequest, NextResponse },
     "@/lib/server/artifact-surface": {
@@ -55,6 +56,7 @@ function memoryRouteOverrides(requestAuth) {
     },
     "@/lib/server/request-auth": requestAuth,
     "@/lib/server/runtime-config": { resolveEngineOrigin: () => "http://engine.test" },
+    "@/lib/server/engine-fetch": { engineFetch: (input, init) => fetchImpl(input, init) },
   };
 }
 
@@ -74,7 +76,7 @@ test("memory artifact list, detail, and content routes return 401 before Engine 
   };
   const options = {
     fetchImpl,
-    requireOverrides: memoryRouteOverrides(requestAuth),
+    requireOverrides: memoryRouteOverrides(requestAuth, fetchImpl),
   };
   const listRoute = loadTypeScriptModule("src/app/api/memory/artifacts/route.ts", options);
   const detailRoute = loadTypeScriptModule("src/app/api/memory/artifacts/[id]/route.ts", options);
@@ -99,74 +101,47 @@ test("memory artifact list, detail, and content routes return 401 before Engine 
 test("valid service headers authorize memory content origin fetch with exact session scope", async () => {
   const requestAuth = loadRequestAuth();
   let originRequest = null;
-  const contentRoute = loadTypeScriptModule("src/app/api/memory/artifacts/[id]/content/route.ts", {
-    requireOverrides: memoryRouteOverrides(requestAuth),
-    fetchImpl: async (url, init) => {
+  const fetchImpl = async (url, init) => {
       originRequest = { url: String(url), init };
-      return new Response("artifact-body", {
-        status: 206,
-        headers: {
-          "Accept-Ranges": "bytes",
-          "Content-Range": "bytes 0-12/13",
-          "Content-Type": "image/png",
-        },
-      });
-    },
+      return new Response("artifact-body", { status: 206, headers: { "Accept-Ranges": "bytes", "Content-Range": "bytes 0-12/13", "Content-Type": "image/png" } });
+  };
+  const contentRoute = loadTypeScriptModule("src/app/api/memory/artifacts/[id]/content/route.ts", {
+    requireOverrides: memoryRouteOverrides(requestAuth, fetchImpl),
+    fetchImpl,
   });
   const req = new NextRequest(
     "http://admin.test/api/memory/artifacts/artifact-a/content?sessionId=session-a&download=1",
     { headers: { ...serviceHeaders(), Range: "bytes=0-12" } },
   );
 
-  assert.equal(await requestAuth.resolveAuthorizedUserEmail(req), internalSurfaceUser);
+  assert.equal(await requestAuth.resolveAuthorizedUserEmail(req), "fixture-owner");
   const response = await contentRoute.GET(req, { params: Promise.resolve({ id: "artifact-a" }) });
 
   assert.equal(response.status, 206);
   assert.equal(await response.text(), "artifact-body");
   assert.equal(originRequest.url, "http://engine.test/v1/artifacts/artifact-a/content?sessionId=session-a&download=true");
-  assert.equal(originRequest.init.headers.get("Range"), "bytes=0-12");
+  assert.equal(new Headers(originRequest.init.headers).get("Range"), "bytes=0-12");
 });
 
-test("signed content URL covers session and internal signed fetch remains service-authorized", async () => {
+test("signed content URL delegates the full session-scoped path to Engine", async () => {
   let internalRequest = null;
-  const runtimeConfig = {
-    resolveAdminApiBaseUrl: () => "http://admin.internal/api",
-    resolveInternalSecret: () => internalSecret,
-    resolveReachableAdminPublicBaseUrl: () => "http://admin.test",
-    resolveReachableClientSurfaceOrigin: (value) => String(value || "http://admin.test").replace(/\/+$/, ""),
-  };
+  const runtimeConfig = {};
   const signing = loadTypeScriptModule("src/lib/server/client-surface-resource.ts", {
-    requireOverrides: { "@/lib/server/runtime-config": runtimeConfig },
+    requireOverrides: { "@/lib/server/runtime-config": runtimeConfig, "@/lib/server/engine-identity": {
+      engineIdentity: async (_path, init) => { internalRequest = { url: "engine-identity", init }; return { signedUrl: "/api/client/artifacts/artifact-a/content?sessionId=session-a&v8exp=9&v8sig=engine" }; },
+      fetchEngineClientIdentity: async (url, init) => { internalRequest = { url: String(url), init }; return new Response("ok"); },
+    } },
     fetchImpl: async (url, init) => {
       internalRequest = { url: String(url), init };
       return new Response("ok");
     },
   });
-  const signedUrl = signing.buildSignedClientSurfaceUrl(
+  const signedUrl = await signing.buildSignedClientSurfaceUrl(
     "/api/client/artifacts/artifact-a/content?sessionId=session-a",
     { publicBaseUrl: "http://admin.test" },
   );
 
-  assert.equal(signing.verifySignedClientSurfaceRequest(new NextRequest(signedUrl)), true);
-  const tampered = new URL(signedUrl);
-  tampered.searchParams.set("sessionId", "session-b");
-  assert.equal(signing.verifySignedClientSurfaceRequest(new NextRequest(tampered)), false);
-  const missingSession = new URL(signedUrl);
-  missingSession.searchParams.delete("sessionId");
-  assert.equal(signing.verifySignedClientSurfaceRequest(new NextRequest(missingSession)), false);
+  assert.match(signedUrl, /v8sig=engine/);
+  assert.deepEqual(JSON.parse(internalRequest.init.body), { path: "/api/client/artifacts/artifact-a/content?sessionId=session-a", sessionId: "" });
 
-  await signing.fetchSignedClientAdminPath(
-    "/memory/artifacts/artifact-a/content?sessionId=session-a",
-    { headers: { Range: "bytes=0-7" } },
-  );
-  assert.equal(internalRequest.url, "http://admin.internal/api/memory/artifacts/artifact-a/content?sessionId=session-a");
-  assert.equal(internalRequest.init.headers.get("x-v8-agent-os-secret"), internalSecret);
-  assert.equal(internalRequest.init.headers.get("x-v8-agent-os-user-email"), internalSurfaceUser);
-  assert.equal(internalRequest.init.headers.get("Range"), "bytes=0-7");
-
-  const requestAuth = loadRequestAuth();
-  const internalAuthProbe = new NextRequest("http://admin.test/api/memory/artifacts", {
-    headers: internalRequest.init.headers,
-  });
-  assert.equal(await requestAuth.resolveAuthorizedUserEmail(internalAuthProbe), internalSurfaceUser);
 });

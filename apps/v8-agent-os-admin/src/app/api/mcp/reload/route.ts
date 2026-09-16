@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -9,7 +10,7 @@ export async function POST() {
   if (!session) return new NextResponse("Unauthorized", { status: 401 });
 
   try {
-    const res = await fetch(`${ENGINE_URL}/mcp/reload`, {
+    const res = await engineFetch(`${ENGINE_URL}/mcp/reload`, {
       method: "POST",
     });
     const data = await res.json();

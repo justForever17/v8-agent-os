@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -10,7 +11,7 @@ export async function POST(req: NextRequest) {
     }
     try {
         const payload = await req.json().catch(() => ({}));
-        const response = await fetch(`${resolveEngineBaseUrl()}/engineering-lane/proof-ledger/refresh`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/engineering-lane/proof-ledger/refresh`, {
             method: "POST",
             cache: "no-store",
             headers: { "Content-Type": "application/json" },

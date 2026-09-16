@@ -1047,7 +1047,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             payload = asyncio.run(
                 get_network_supervisor_openai_models(
                     authorization="Bearer compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
 
@@ -1069,7 +1068,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 get_network_supervisor_anthropic_models(
                     authorization=None,
                     x_api_key="compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
 
@@ -1219,7 +1217,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                     FakeRequest(),
                     authorization=None,
                     x_api_key="compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
 
@@ -1260,7 +1257,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                     FakeRequest(),
                     authorization=None,
                     x_api_key="compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
 
@@ -1316,7 +1312,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                     FakeRequest(),
                     authorization=None,
                     x_api_key="compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
 
@@ -1612,7 +1607,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 post_network_supervisor_openai_chat_completions(
                     FakeRequest(),
                     authorization="Bearer compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
             body = asyncio.run(collect(response))
@@ -1660,7 +1654,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                     FakeRequest(),
                     authorization=None,
                     x_api_key="compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
             body = asyncio.run(collect(response))
@@ -1787,7 +1780,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 post_network_supervisor_openai_chat_completions(
                     FakeRequest(),
                     authorization="Bearer compat-token",
-                    x_v8_agent_os_secret="secret",
                 )
             )
 
@@ -1831,7 +1823,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 post_network_supervisor_openai_chat_completions(
                     FakeRequest(),
                     authorization="Bearer compat-token",
-                    x_v8_agent_os_secret="secret",
                     x_v8_compat_memory="persist",
                 )
             )
@@ -1865,7 +1856,6 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                     post_network_supervisor_openai_chat_completions(
                         FakeRequest(),
                         authorization="Bearer compat-token",
-                        x_v8_agent_os_secret="secret",
                     )
                 )
 

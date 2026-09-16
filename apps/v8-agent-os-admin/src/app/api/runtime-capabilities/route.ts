@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -24,7 +25,7 @@ export async function GET(req: NextRequest) {
     try {
         const search = req.nextUrl.searchParams.toString();
         const suffix = search ? `?${search}` : "";
-        const res = await fetch(`${ENGINE_URL}/runtime-capabilities${suffix}`, {
+        const res = await engineFetch(`${ENGINE_URL}/runtime-capabilities${suffix}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

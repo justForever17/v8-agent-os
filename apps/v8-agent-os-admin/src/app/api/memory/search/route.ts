@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -13,7 +14,7 @@ export async function GET(req: Request) {
         if (q) params.set("q", q);
         if (scope) params.set("scope", scope);
         
-        const response = await fetch(`${ENGINE_URL}/v1/memory/search?${params.toString()}`);
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/search?${params.toString()}`);
         if (!response.ok) throw new Error(`Failed: ${response.status}`);
         return NextResponse.json(await response.json());
     } catch (error) {

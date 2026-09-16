@@ -233,9 +233,9 @@ export async function commandPreview(args = {}) {
       const logs = runNextBuild(PREVIEW_NEXT_APPS[item.app]);
       buildResults.push({ ...item, status: "built", logOut: logs.out, logErr: logs.err });
     }
-    const serviceResults = await startComponents(["engine", "admin", "web"], { mode: "start" });
+    const serviceResults = await startComponents(["engine", "web"], { mode: "start" });
     startedByThisAttempt.push(...serviceResults.filter((item) => item.status === "started").map((item) => item.id));
-    assertStarted(serviceResults, ["engine", "admin", "web"], "Core service startup");
+    assertStarted(serviceResults, ["engine", "web"], "Core service startup");
     const shellStartedAtMs = Date.now();
     const shellResults = await startComponents(["shell"], { mode: "start" });
     startedByThisAttempt.push(...shellResults.filter((item) => item.status === "started").map((item) => item.id));

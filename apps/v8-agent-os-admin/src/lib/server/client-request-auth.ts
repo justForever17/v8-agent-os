@@ -6,9 +6,10 @@ import { verifyServiceAuth } from "@/lib/service-auth";
 import { findUserByIdentifier, type AdminUserRecord } from "@/lib/users";
 
 export async function resolveClientUser(req: NextRequest): Promise<AdminUserRecord | null> {
+    if (req.headers.has("authorization")) return resolveMobileAccessUser(req);
     const serviceIdentifier = await verifyServiceAuth(req);
     if (serviceIdentifier) {
-        const serviceUser = findUserByIdentifier(serviceIdentifier);
+        const serviceUser = await findUserByIdentifier(serviceIdentifier);
         if (serviceUser) {
             return serviceUser;
         }
@@ -29,7 +30,7 @@ export async function resolveClientUser(req: NextRequest): Promise<AdminUserReco
 
 export async function resolveClientUserEmail(req: NextRequest) {
     const user = await resolveClientUser(req);
-    return user?.email || user?.login || null;
+    return user?.sessionIdentifier || user?.email || user?.login || null;
 }
 
 export function unauthorizedClientJson() {

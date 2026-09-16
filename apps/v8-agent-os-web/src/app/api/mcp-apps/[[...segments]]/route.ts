@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 function buildTarget(baseUrl: string, req: NextRequest, segments?: string[]) {
     const suffix = (segments || []).map((segment) => encodeURIComponent(segment)).join("/");
-    return `${baseUrl}/mcp/apps${suffix ? `/${suffix}` : ""}${req.nextUrl.search || ""}`;
+    return `${baseUrl}/mcp-apps${suffix ? `/${suffix}` : ""}${req.nextUrl.search || ""}`;
 }
 
 async function proxy(req: NextRequest, segments: string[] | undefined, method: "GET" | "POST" | "DELETE") {
@@ -13,13 +13,13 @@ async function proxy(req: NextRequest, segments: string[] | undefined, method: "
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     try {
-        const engineBaseUrl = await resolveEngineBaseUrl();
+        const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
         const body = method === "POST" ? await req.text() : undefined;
-        const response = await fetch(buildTarget(engineBaseUrl, req, segments), {
+        const response = await fetch(buildTarget(clientApiBaseUrl, req, segments), {
             method,
             headers: {
                 "Content-Type": "application/json",
-                "x-v8-agent-os-user-email": session.user.email,
+                "x-v8-agent-os-secret": internalSecret,
             },
             body,
             cache: "no-store",

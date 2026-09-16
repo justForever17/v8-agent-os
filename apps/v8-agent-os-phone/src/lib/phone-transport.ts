@@ -18,6 +18,8 @@ export class PhoneTransport {
     private disposed = false;
     private controllers = new Set<AbortController>();
     private refreshInFlight: Promise<void> | null = null;
+    private refreshRotationId?: string;
+    private pendingRefresh?: ProfileCredentials & { user: PhoneUser };
     private streams = new Map<string, AbortController>();
     private activeReads = 0;
     private waitingReads: Array<() => void> = [];
@@ -38,11 +40,13 @@ export class PhoneTransport {
         principalId: string;
         native: boolean;
         persistRefresh: (credentials: ProfileCredentials, user: PhoneUser) => Promise<void>;
+        persistRefreshAttempt?: (refreshToken: string, rotationId: string) => Promise<void>;
         onEndpoint: (endpoint: string) => void;
         onClock: (header: string | null) => void;
     }) {
         if (!options.instanceId) throw new Error("The saved connection has no verified instance. Pair it again.");
         this.credentials = options.credentials;
+        this.refreshRotationId = options.credentials.refreshRotationId;
         this.endpoint = options.endpoints[0];
     }
 
@@ -215,24 +219,41 @@ export class PhoneTransport {
 
     private refresh = async (endpoint: string, signal: AbortSignal) => {
         if (this.refreshInFlight) return abortable(this.refreshInFlight, signal);
+        // A view cancelling its read must not cancel the credential rotation
+        // shared by another view. Disposal still aborts this transport's scope.
+        const scope = this.controller(undefined, 8_000);
+        const refreshSignal = scope.controller.signal;
         const request = (async () => {
-            await this.verifyEndpoint(endpoint, signal);
-            const response = await this.fetch(endpoint, "/api/client/auth/refresh", {
-                method: "POST", headers: { "Content-Type": "application/json" }, signal,
-                body: JSON.stringify({ refreshToken: this.credentials.refreshToken, deviceName: "v8-phone" }),
-            }, 6_000);
-            if (!response.ok) { await response.text(); throw new Error("This connection needs pairing again."); }
-            const payload = await parseJsonSafe<ProfileCredentials & { user: PhoneUser }>(response);
-            this.assertCurrent(signal);
+            await this.verifyEndpoint(endpoint, refreshSignal);
+            let payload = this.pendingRefresh;
+            if (!payload) {
+                this.refreshRotationId ||= globalThis.crypto?.randomUUID?.()
+                    || `rotation-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+                await this.options.persistRefreshAttempt?.(this.credentials.refreshToken, this.refreshRotationId);
+                this.assertCurrent(refreshSignal);
+                const response = await this.fetch(endpoint, "/api/client/auth/refresh", {
+                    method: "POST", headers: { "Content-Type": "application/json" }, signal: refreshSignal,
+                    body: JSON.stringify({ refreshToken: this.credentials.refreshToken, deviceName: "v8-phone", rotationId: this.refreshRotationId }),
+                }, 6_000);
+                if (!response.ok) { await response.text(); throw new Error("This connection needs pairing again."); }
+                payload = await parseJsonSafe<ProfileCredentials & { user: PhoneUser }>(response) || undefined;
+            }
+            this.assertCurrent(refreshSignal);
             if (!payload?.accessToken || !payload.refreshToken || payload.user?.id !== this.options.principalId) {
                 throw new Error("The paired account changed. Pair this connection again.");
             }
+            // If SecureStore fails, retry its exact result; do not consume the
+            // previous refresh token again or publish an unsaved login.
+            this.pendingRefresh = payload;
             await this.options.persistRefresh(payload, payload.user);
-            this.assertCurrent(signal);
+            this.assertCurrent(refreshSignal);
             this.credentials = { accessToken: payload.accessToken, refreshToken: payload.refreshToken };
-        })();
+            this.pendingRefresh = undefined;
+            this.refreshRotationId = undefined;
+        })().finally(() => scope.release());
         this.refreshInFlight = request;
-        try { await request; } finally { if (this.refreshInFlight === request) this.refreshInFlight = null; }
+        void request.finally(() => { if (this.refreshInFlight === request) this.refreshInFlight = null; }).catch(() => undefined);
+        await abortable(request, signal);
     };
 
     private async requestEndpoint(endpoint: string, path: string, init: RequestInit, signal: AbortSignal, deadline: number) {

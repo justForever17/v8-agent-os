@@ -297,8 +297,30 @@ function adminBoundary() {
     '@/lib/storage': { readJson: (key, fallback) => structuredClone(store.get(key) ?? fallback), writeJson: (key, value) => store.set(key, structuredClone(value)) },
     '@/lib/users': { PERSONAL_OWNER_MODE: true, findUserById: id => id === user.id ? user : null,
       findUserByIdentifier: id => id === user.email || id === user.login ? user : null, getSessionIdentifier: value => value.email },
-    '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveAdminApiBaseUrl: () => 'http://admin.invalid/api',
+    '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveEngineOrigin: () => 'http://engine.invalid', resolveAdminApiBaseUrl: () => 'http://admin.invalid/api',
       resolveClientSurfaceOriginFromRequest: () => '', resolveInternalSecret: () => 'synthetic-internal-fixture' },
+    '@/lib/server/engine-identity': (() => {
+      class EngineIdentityError extends Error { constructor(code, status) { super(code); this.code = code; this.status = status; } }
+      const pair = (accessToken, refreshToken) => ({ accessToken, accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(), refreshToken, refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), user, deviceId: 'synthetic-device' });
+      return {
+        EngineIdentityError,
+        engineClientIdentity: async (path, init = {}) => {
+          if (path === '/auth/me') {
+            const token = String(new Headers(init.headers).get('authorization') || '').replace(/^Bearer\s+/i, '');
+            if (token === 'expired-access') throw new EngineIdentityError('invalid_token', 401);
+            if (token !== 'valid-access' && token !== 'new-access') throw new EngineIdentityError('invalid_token', 401);
+            return { user };
+          }
+          if (path === '/auth/refresh') return pair('new-access', 'new-refresh');
+          if (path === '/auth/logout') return { revoked: true };
+          throw new EngineIdentityError('not_found', 404);
+        },
+        engineIdentity: async (path) => {
+          if (path === '/devices') return { devices: [] };
+          throw new EngineIdentityError('not_found', 404);
+        },
+      };
+    })(),
     '@/lib/server/client-perf-metrics': { jsonSizeBytes: () => 0, readEngineElapsedMs: () => 0, recordAdminApiMetric() {} },
   };
   function load(name, from = adminRoot) {
@@ -312,11 +334,12 @@ function adminBoundary() {
     modules.set(file, module.exports); return module.exports;
   }
   const mobile = load('@/lib/mobile-auth');
-  const now = Date.now;
-  let expired;
-  try { Date.now = () => now() - 2 * 24 * 60 * 60 * 1000; expired = mobile.issueMobileSessionForUser(user, 'synthetic-device'); }
-  finally { Date.now = now; }
-  return { load, expired, user, mobile, NextResponse };
+  return {
+    load,
+    expired: { accessToken: 'expired-access', refreshToken: 'expired-refresh', accessTokenExpiresAt: new Date(Date.now() - 60_000).toISOString(), refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), user, deviceId: 'synthetic-device' },
+    valid: { accessToken: 'valid-access', refreshToken: 'valid-refresh', accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(), refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), user, deviceId: 'synthetic-valid' },
+    user, mobile, NextResponse,
+  };
 }
 
 test('real BFF auth rejects before Engine and expired-token send plus approval recover with one refresh', async () => {
@@ -363,7 +386,7 @@ test('real BFF auth rejects before Engine and expired-token send plus approval r
 
 test('real BFF forwarding does not label downstream 401 or lost responses as pre-execution; no write replay', async () => {
   const old = global.fetch, boundary = adminBoundary();
-  const credentials = boundary.mobile.issueMobileSessionForUser(boundary.user, 'synthetic-valid');
+  const credentials = boundary.valid;
   let executed = 0, refreshes = 0, mode = '401';
   const chat = boundary.load('@/app/api/client/chat-submit/route');
   const approval = boundary.load('@/app/api/client/approvals/[id]/approve/route');
@@ -424,6 +447,79 @@ test('read auth recovery retries exactly once and consumes no orphan response', 
   try {
     assert.deepEqual(await (await transport.authorizedFetch('/read')).json(), { ok: true });
     assert.equal(reads, 2); assert.equal(transport.activeReads, 0); assert.equal(transport.controllers.size, 0);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+test('refresh response loss retries the persisted rotation id and does not replay a write', async () => {
+  const old = global.fetch, attempts = [], persisted = [], writes = [];
+  const transport = create({ endpoints: ['https://remote.invalid'],
+    persistRefreshAttempt: async (token, id) => persisted.push({ token, id }),
+  });
+  global.fetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.endsWith('/auth/refresh')) {
+      const payload = JSON.parse(init.body); attempts.push(payload);
+      assert.equal(persisted.at(-1).id, payload.rotationId, 'attempt must be durable before dispatch');
+      if (attempts.length === 1) throw new Error('response lost after rotation');
+      return Response.json({ accessToken: 'new', refreshToken: 'new-r', user: { id: 'owner' } });
+    }
+    if (new Headers(init.headers).get('authorization') === 'Bearer new') { writes.push(init.body); return Response.json({ ok: true }); }
+    return new Response('', { status: 401, headers: { 'X-V8-Auth-Stage': 'pre_execution' } });
+  };
+  try {
+    await assert.rejects(transport.authorizedFetch('/write', { method: 'POST', body: 'intent-A' }), /response lost/);
+    assert.deepEqual(writes, []);
+    assert.deepEqual(await (await transport.authorizedFetch('/write', { method: 'POST', body: 'intent-A' })).json(), { ok: true });
+    assert.equal(attempts.length, 2);
+    assert.ok(attempts[0].rotationId);
+    assert.deepEqual(attempts[0], attempts[1]);
+    assert.deepEqual(writes, ['intent-A']);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+test('SecureStore failure retries the received pair without rotating again or publishing unsaved tokens', async () => {
+  const old = global.fetch; let refreshes = 0, saves = 0;
+  const transport = create({ endpoints: ['https://remote.invalid'], persistRefresh: async () => {
+    if (++saves === 1) throw new Error('SecureStore unavailable');
+  } });
+  global.fetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.endsWith('/auth/refresh')) {
+      refreshes++; return Response.json({ accessToken: 'new', refreshToken: 'new-r', user: { id: 'owner' } });
+    }
+    return new Headers(init.headers).get('authorization') === 'Bearer new'
+      ? Response.json({ ok: true }) : new Response('', { status: 401 });
+  };
+  try {
+    await assert.rejects(transport.authorizedFetch('/read'), /SecureStore/);
+    assert.equal(transport.credentials.accessToken, 'synthetic-access');
+    assert.deepEqual(await (await transport.authorizedFetch('/read')).json(), { ok: true });
+    assert.equal(refreshes, 1); assert.equal(saves, 2);
+    assert.equal(transport.refreshRotationId, undefined);
+  } finally { transport.dispose(); global.fetch = old; }
+});
+
+test('cancelling the first view leaves the shared refresh available to another view', async () => {
+  const old = global.fetch; let releaseRefresh, refreshStarted;
+  const started = new Promise(resolve => { refreshStarted = resolve; });
+  const transport = create({ endpoints: ['https://remote.invalid'] });
+  global.fetch = async (url, init) => {
+    if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });
+    if (url.endsWith('/auth/refresh')) {
+      refreshStarted(); return new Promise(resolve => { releaseRefresh = () => resolve(Response.json({ accessToken: 'new', refreshToken: 'new-r', user: { id: 'owner' } })); });
+    }
+    return new Headers(init.headers).get('authorization') === 'Bearer new'
+      ? Response.json({ ok: true }) : new Response('', { status: 401 });
+  };
+  try {
+    const cancel = new AbortController();
+    const first = assert.rejects(transport.authorizedFetch('/read-A', { signal: cancel.signal }), { name: 'AbortError' });
+    await started;
+    const second = transport.authorizedFetch('/read-B');
+    await tick(); cancel.abort(); await first;
+    releaseRefresh();
+    assert.deepEqual(await (await second).json(), { ok: true });
+    assert.equal(transport.controllers.size, 0);
   } finally { transport.dispose(); global.fetch = old; }
 });
 

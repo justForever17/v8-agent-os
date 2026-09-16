@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -14,7 +15,7 @@ export async function DELETE(_req: Request, context: RouteContext) {
 
     try {
         const { serverName } = await context.params;
-        const res = await fetch(`${ENGINE_URL}/mcp/config/${encodeURIComponent(serverName)}`, {
+        const res = await engineFetch(`${ENGINE_URL}/mcp/config/${encodeURIComponent(serverName)}`, {
             method: "DELETE",
         });
         const data = await res.json();

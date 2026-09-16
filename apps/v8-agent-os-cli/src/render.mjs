@@ -116,11 +116,11 @@ export function renderPhoneManifest(result) {
   const manifest = result.manifest || {};
   console.log(`serverId: ${manifest.serverId || ""}`);
   console.log(`instanceId: ${manifest.instanceId || ""}`);
-  const urls = manifest.adminUrls || [];
+  const urls = [...new Set((manifest.endpoints || []).filter(item => item.enabled !== false).map(item => item.baseUrl).filter(Boolean))];
   if (!urls.length) {
-    console.log("adminUrls: none");
+    console.log("Phone URL 尚未配置；请设置网关 publicBaseUrl 或连接方案 phoneBaseUrl。");
     return;
   }
-  console.log("adminUrls:");
+  console.log("Phone gateway URLs:");
   for (const url of urls) console.log(`- ${url}`);
 }

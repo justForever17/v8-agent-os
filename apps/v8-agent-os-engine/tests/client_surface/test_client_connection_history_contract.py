@@ -41,7 +41,6 @@ def test_phone_pairing_uses_manifest_and_ordered_server_profiles() -> None:
 def test_cloudflare_phone_remote_link_is_verified_and_separate_from_network_supervisor() -> None:
     verify_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/link/verify-cloudflare/route.ts")
     pairing_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/pairing/tickets/route.ts")
-    runtime_config = _read_repo_file("apps/v8-agent-os-admin/src/lib/server/runtime-config.ts")
     phone_api = _read_repo_file("apps/v8-agent-os-phone/src/lib/phone-api.ts")
     phone_profiles = _read_repo_file("apps/v8-agent-os-phone/src/lib/admin-connection-profiles.ts")
     phone_session = _read_repo_file("apps/v8-agent-os-phone/src/providers/app-session.tsx")
@@ -57,7 +56,8 @@ def test_cloudflare_phone_remote_link_is_verified_and_separate_from_network_supe
         assert "network_supervisor" not in source
         assert "peerToken" not in source
         assert "wakeSupervisor" not in source
-    assert '"cloudflare_stable_https_origin_required"' in runtime_config
+    # Stable endpoint enforcement is owned and exercised by Engine's identity
+    # manifest tests; an obsolete Admin helper is not an authorization oracle.
 
 
 def test_phone_connection_failure_keeps_cached_identity_readable() -> None:
@@ -97,7 +97,7 @@ def test_local_trusted_client_boundary_is_documented() -> None:
 
     assert "Shell 通过本机可信会话和受控通道编排这些入口" in doc
     assert "不得直连 Engine 数据库" in doc
-    assert "Phone 通过 Admin 暴露的配对与 BFF 接口访问产品能力，不应该直连 Engine" in doc
+    assert "Phone 通过 Engine 的受鉴权客户端网关访问产品能力；Admin 不参与会话传输" in doc
     assert "CyberCore companion" not in doc
 
 

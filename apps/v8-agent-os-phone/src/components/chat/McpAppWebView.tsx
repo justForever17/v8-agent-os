@@ -221,7 +221,7 @@ export const McpAppWebView = memo(function McpAppWebView({ mcpApp }: { mcpApp: M
         async function loadResource() {
             setError(""); setHtml("");
             try {
-                const query = new URLSearchParams({ serverName: mcpApp.serverName || "", uri: mcpApp.resourceUri });
+                const query = new URLSearchParams({ serverName: mcpApp.serverName || "", uri: mcpApp.resourceUri, appInstanceId: mcpApp.appInstanceId });
                 const response = await authorizedFetch(`/api/client/mcp-apps/resources/read?${query.toString()}`);
                 const payload = await response.json();
                 if (!response.ok) throw new Error(String(payload?.detail || payload?.error || response.statusText));
@@ -230,7 +230,7 @@ export const McpAppWebView = memo(function McpAppWebView({ mcpApp }: { mcpApp: M
         }
         void loadResource();
         return () => { cancelled = true; };
-    }, [authorizedFetch, mcpApp.renderer, mcpApp.resourceUri, mcpApp.serverName]);
+    }, [authorizedFetch, mcpApp.renderer, mcpApp.resourceUri, mcpApp.serverName, mcpApp.appInstanceId]);
 
     const source = useMemo(() => ({ html, baseUrl: "https://v8-mcp-app.local/" }), [html]);
     const handleMessage = async (event: { nativeEvent: { data?: string } }) => {

@@ -1,6 +1,6 @@
 # V8OS 本地入口、CLI、工作区与客户端连接
 
-更新时间：2026-07-07
+更新时间：2026-09-16（Engine 身份迁移候选；是否发布以统一 tag 为准）
 
 产品线总纲见：`docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md`。
 发布版本基线见：`docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md`。
@@ -10,7 +10,7 @@
 这篇文档只说明 V8OS 本地产品入口和客户端连接边界。核心原则很简单：
 
 - 本机 Web、Admin、桌宠、CLI 属于本地可信入口，不需要像手机一样扫码配对。
-- Phone 是唯一远程交互入口，需要通过 Admin 生成的一次性二维码配对。
+- Phone 是唯一远程人类交互入口，通过终端或控制台请求 Engine 生成的一次性配对信息连接。
 - Network Supervisor 的多设备协作是另一件事，不是普通用户打开本机 V8OS 的登录方式。
 
 ## 当前已落地
@@ -44,8 +44,9 @@
 `v8os start` 默认看护：
 
 - Engine：`9530`
-- Admin：`9528`
 - Web：`9527`
+
+Admin 配置页在打开时按需启动（`9528`）。Engine 同进程网关默认监听 `127.0.0.1:9532`，远端地址通过 HTTPS/VPN 接入配置，不暴露本机管理 API。
 
 CyberCore / 桌宠属于可选本地伴随端，不作为基础启动失败的阻塞项。
 
@@ -64,7 +65,7 @@ Web 和桌宠是本地可信客户端：
 - 不走 Phone 配对票据。
 - 不出现在已配对设备列表。
 - 不需要用户手动复制连接地址。
-- 通过本机 Admin BFF / 本机可信会话进入。
+- 通过本机 Web/桌宠适配层和 Engine 签发的本机可信会话进入。
 
 Web 是桌面版本地聊天界面；桌宠是会话运行状态伴随器，负责会话监听、动作反馈、语音发送和播报。Shell 通过本机可信会话和受控通道编排这些入口；任何本地客户端都不得直连 Engine 数据库。三者都不需要用户理解端口或配对链接。
 
@@ -72,14 +73,14 @@ Web 是桌面版本地聊天界面；桌宠是会话运行状态伴随器，负�
 
 Phone 是唯一需要配对的远程交互端。
 
-Phone 通过 Admin 暴露的配对与 BFF 接口访问产品能力，不应该直连 Engine。
+Phone 通过 Engine 的受鉴权客户端网关访问产品能力；Admin 不参与会话传输。Phone token 不允许访问 Engine 的本机管理接口。
 
 流程：
 
-1. Admin 顶部“连接手机”生成一次性二维码。
+1. 控制台“连接手机”或 CLI `config phone pair --base-url <HTTPS地址>` 请求 Engine 生成一次性配对信息。
 2. Phone 扫码后直接连接。
 3. 扫码失败时在 Phone 端显示错误。
-4. 备用链接只作为无法扫码时的兜底，不在 Admin 主界面外显。
+4. 无法扫码时可粘贴配对信息；不再提供手机账号密码登录。
 
 Phone 登录成功后会保存 server profile。一次网络失败不应删除旧配置，也不应把用户打回空白登录页。
 
@@ -91,7 +92,7 @@ Phone 登录成功后会保存 server profile。一次网络失败不应删除�
 ~/.v8-agent-os/config.json
 ```
 
-CLI 的 `config` 命令优先走 Engine/Admin API；离线时只做安全只读或明确的低风险操作。
+CLI 的 `config` 命令由 Engine API 和 Config Broker 执行；离线时只做安全只读或明确的低风险操作。完整接口与执行器预留见 `docs/architecture/engine-client-boundaries.md`。
 
 ### 已有验证入口
 
@@ -111,7 +112,9 @@ node apps/v8-agent-os-cli/tests/scripts/run_v8os_cli_cold_start_smoke.mjs
 
 冷启动脚本要求 `9530 / 9528 / 9527` 没有被外部进程占用；如果被占用，它会报告阻塞原因，不会自动清理。
 
-## 近期要做
+## 早期规划记录（不代表当前待办）
+
+以下保留早期规划线索；与上文及 Engine 身份合同冲突时，以当前源码和验证证据为准。
 
 ### CLI 从“骨架入口”补到“日常入口”
 

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -7,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
     try {
-        const response = await fetch(`${ENGINE_URL}/v1/memory/documents`);
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/documents`);
         if (!response.ok) throw new Error(`Failed: ${response.status}`);
         return NextResponse.json(await response.json());
     } catch (error) {

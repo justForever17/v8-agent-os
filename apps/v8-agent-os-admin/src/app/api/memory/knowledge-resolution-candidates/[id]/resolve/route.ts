@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -7,7 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     try {
         const { id } = await context.params;
         const body = await request.json();
-        const response = await fetch(
+        const response = await engineFetch(
             `${resolveEngineOrigin()}/v1/memory/knowledge-resolution-candidates/${encodeURIComponent(id)}/resolve`,
             {
                 method: "POST",

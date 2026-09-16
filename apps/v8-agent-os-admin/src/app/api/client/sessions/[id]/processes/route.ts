@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -69,7 +70,7 @@ export async function GET(
     try {
         const controller = new AbortController();
         timeout = setTimeout(() => controller.abort(), PROCESS_SURFACE_TIMEOUT_MS);
-        const response = await fetch(`${ENGINE_URL}/sessions/${id}/processes`, {
+        const response = await engineFetch(`${ENGINE_URL}/sessions/${id}/processes`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

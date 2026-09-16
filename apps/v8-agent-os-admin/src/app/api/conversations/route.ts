@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import {
     normalizeAuthoritativeSessionHistoryList,
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        let res = await fetch(`${ENGINE_URL}/sessions/quick-index`, {
+        let res = await engineFetch(`${ENGINE_URL}/sessions/quick-index`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest) {
 
         if (!res.ok) {
             console.warn("Quick session index unavailable, falling back to live sessions:", res.status);
-            res = await fetch(`${ENGINE_URL}/sessions`, {
+            res = await engineFetch(`${ENGINE_URL}/sessions`, {
                 method: "GET",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json().catch(() => ({}));
-        const res = await fetch(`${ENGINE_URL}/sessions`, {
+        const res = await engineFetch(`${ENGINE_URL}/sessions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -116,7 +117,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     try {
-        const listRes = await fetch(`${ENGINE_URL}/sessions`, {
+        const listRes = await engineFetch(`${ENGINE_URL}/sessions`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
@@ -131,7 +132,7 @@ export async function DELETE(req: NextRequest) {
         for (const sessionRow of sessions) {
             const sessionId = String(sessionRow?.id || "");
             if (!sessionId) continue;
-            const deleteRes = await fetch(`${ENGINE_URL}/sessions/${sessionId}`, {
+            const deleteRes = await engineFetch(`${ENGINE_URL}/sessions/${sessionId}`, {
                 method: "DELETE",
                 headers: { "Content-Type": "application/json" },
             });

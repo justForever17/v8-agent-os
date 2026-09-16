@@ -15,14 +15,14 @@ def source_checkout_command() -> str:
 
 
 def build_launch_manifest() -> dict[str, Any]:
-    admin_url = os.environ.get("V8OS_ADMIN_URL") or "http://127.0.0.1:9528"
+    engine_url = os.environ.get("V8OS_ENGINE_URL") or os.environ.get("V8_AGENT_OS_ENGINE_URL") or "http://127.0.0.1:9530"
     return {
         "command": "v8os acp",
         "sourceCheckoutCommand": source_checkout_command(),
         "transport": "stdio",
-        "adminUrl": admin_url,
+        "engineUrl": engine_url,
         "requiredEnv": [],
-        "optionalEnv": ["V8OS_ADMIN_URL"],
+        "optionalEnv": ["V8OS_ENGINE_URL", "V8_AGENT_OS_ENGINE_URL"],
         "authentication": "Local CLI session issued in memory by the loopback Admin; no credential required in client configuration.",
         "cwdHint": str(Path.cwd()),
         "failureTips": [

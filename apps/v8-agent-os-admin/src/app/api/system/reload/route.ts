@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -5,7 +6,7 @@ const ENGINE_ORIGIN = resolveEngineOrigin();
 
 export async function POST() {
   try {
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/system/reload`, {
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/system/reload`, {
       method: "POST",
     });
     const data = await res.json();

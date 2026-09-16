@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-    requireAdminProxyContext,
-    safeAdminProxyFetch,
-} from "@/lib/server/proxy/admin-proxy";
+    requireClientProxyContext,
+    safeClientProxyFetch,
+} from "@/lib/server/proxy/client-proxy";
 import {
     jsonProxyError,
     relayStreamProxyResponse,
@@ -12,7 +12,7 @@ export const runtime = "nodejs"; // Use Node.js runtime for stability
 
 export async function POST(req: NextRequest) {
     try {
-        const contextResult = await requireAdminProxyContext();
+        const contextResult = await requireClientProxyContext();
         if (contextResult.response) {
             return contextResult.response;
         }
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
             scope_mode: body?.scope_mode ?? body?.scopeMode ?? data?.scopeMode ?? "explicit",
         };
 
-        const result = await safeAdminProxyFetch(
+        const result = await safeClientProxyFetch(
             contextResult.context,
             "/chat",
             {

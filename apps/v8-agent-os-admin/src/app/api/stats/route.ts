@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
 
     try {
         const days = req.nextUrl.searchParams.get("days") || "7";
-        const response = await fetch(`${resolveEngineBaseUrl()}/telemetry/overview?days=${encodeURIComponent(days)}`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/telemetry/overview?days=${encodeURIComponent(days)}`, {
             cache: "no-store",
             signal: AbortSignal.timeout(8_000),
         });

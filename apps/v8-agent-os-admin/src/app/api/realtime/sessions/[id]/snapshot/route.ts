@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import {
     resolveClientSurfaceOriginFromRequest,
@@ -29,7 +30,7 @@ export async function GET(
         || req.nextUrl.searchParams.get("compact") === "1";
 
     try {
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot${compactPhone ? "?compact=1" : ""}`, {
+        const res = await engineFetch(`${ENGINE_URL}/sessions/${id}/snapshot${compactPhone ? "?compact=1" : ""}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

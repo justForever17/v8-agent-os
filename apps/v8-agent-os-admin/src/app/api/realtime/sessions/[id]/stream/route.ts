@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { sessionFanoutHub } from "@/lib/realtime/session-fanout";
 import {
@@ -118,7 +119,7 @@ export async function GET(
 
                 try {
                     const snapshotStartedAt = Date.now();
-                    const snapshotRes = await fetch(
+                    const snapshotRes = await engineFetch(
                         `${ENGINE_URL}/sessions/${encodeURIComponent(id)}/snapshot${compactPhone ? "?compact=1" : ""}`,
                         {
                             method: "GET",
@@ -268,7 +269,7 @@ export async function GET(
                 while (!closed) {
                     try {
                         const eventsStartedAt = Date.now();
-                        const eventsRes = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/runtime-events?after_seq=${runtimeCursor.contiguousSeq}&limit=${RUNTIME_EVENT_PAGE_LIMIT}`, {
+                        const eventsRes = await engineFetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/runtime-events?after_seq=${runtimeCursor.contiguousSeq}&limit=${RUNTIME_EVENT_PAGE_LIMIT}`, {
                             method: "GET",
                             headers: { "Content-Type": "application/json" },
                             cache: "no-store",

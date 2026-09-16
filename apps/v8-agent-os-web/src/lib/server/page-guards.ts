@@ -1,11 +1,5 @@
-import { redirect } from "next/navigation";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
-import { getActiveAdminConnection } from "@/lib/server/admin-connection";
-
-export async function requireAdminConnection(_nextPath: string) {
-    const connection = await getActiveAdminConnection();
-    if (!connection) {
-        redirect("/chat");
-    }
-    return connection;
+export async function requireLocalEngine(_nextPath: string) {
+    if (!(await getClientProxyConfig()).internalSecret) throw new Error("Local Engine is not configured");
 }

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -8,7 +9,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ filen
         const { filename: rawFilename } = await params;
         const filename = encodeURIComponent(rawFilename);
         
-        const response = await fetch(`${ENGINE_URL}/v1/memory/documents/${filename}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/documents/${filename}`, {
             method: "DELETE"
         });
         

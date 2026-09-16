@@ -2953,8 +2953,9 @@ class KnowledgeDB:
             rows = conn.execute(f"""WITH active AS ({active_sql}), endpoints AS (
                 SELECT subject AS name FROM active UNION ALL SELECT object FROM active),
                 degrees AS (SELECT name, COUNT(*) AS degree FROM endpoints GROUP BY name)
-                SELECT e.name, e.type, degrees.degree FROM entities e JOIN degrees ON degrees.name = e.name
-                ORDER BY degrees.degree DESC, e.name LIMIT ?""", [*params, node_limit]).fetchall()
+                SELECT degrees.name, COALESCE(e.type, 'concept'), degrees.degree
+                FROM degrees LEFT JOIN entities e ON degrees.name = e.name
+                ORDER BY degrees.degree DESC, degrees.name LIMIT ?""", [*params, node_limit]).fetchall()
             nodes = [{"id": row[0], "label": row[0], "type": row[1], "val": row[2]} for row in rows]
             names = [row[0] for row in rows]
             links = []

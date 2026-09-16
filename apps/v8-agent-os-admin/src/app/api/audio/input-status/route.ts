@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const response = await fetch(`${resolveEngineBaseUrl()}/audio/input-status`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/audio/input-status`, {
             method: "GET",
             headers: {
                 "x-v8-agent-os-user-email": userEmail,

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -9,7 +10,7 @@ export async function POST(
 ) {
     try {
         const { id } = await params;
-        const response = await fetch(`${ENGINE_URL}/v1/memory/knowledge/${id}/revalidate`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/knowledge/${id}/revalidate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ maintainerSource: "human_admin" }),

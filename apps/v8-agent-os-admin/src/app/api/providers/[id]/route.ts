@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -11,7 +12,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     try {
         const { id } = await params;
-        const res = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
+        const res = await engineFetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Python API returned ${res.status}`);
         const routesData = await res.json();
         const providerData = routesData.providers?.[id];
@@ -61,7 +62,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         }
         if (currentCredential && currentCredential !== "****") providerPatch.api_key = currentCredential;
 
-        const response = await fetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(id)}`, {
+        const response = await engineFetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(id)}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(providerPatch),
@@ -80,7 +81,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     try {
         const { id } = await params;
-        const response = await fetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+        const response = await engineFetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
         const payload = await response.json().catch(() => ({}));
         return NextResponse.json(payload, { status: response.status });
     } catch (error: unknown) {

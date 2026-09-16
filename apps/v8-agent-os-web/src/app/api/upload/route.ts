@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 function toWebResourceUrl(value: unknown) {
     const url = String(value || "").trim();
@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
 
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
         const contentLength = req.headers.get("content-length");
         if (contentType) headers.set("content-type", contentType);
         if (contentLength) headers.set("content-length", contentLength);
-        const res = await fetch(`${adminApiBaseUrl}/client/upload`, {
+        const res = await fetch(`${clientApiBaseUrl}/upload`, {
             method: "POST",
             headers,
             body: req.body,

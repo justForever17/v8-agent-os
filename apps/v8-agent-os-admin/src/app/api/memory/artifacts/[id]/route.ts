@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeArtifactForAdminSurface } from "@/lib/server/artifact-surface";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -18,11 +19,11 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
             return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
         }
         const query = new URLSearchParams({ sessionId });
-        const response = await fetch(`${ENGINE_URL}/v1/artifacts/${encodeURIComponent(id)}?${query.toString()}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/artifacts/${encodeURIComponent(id)}?${query.toString()}`, {
             cache: "no-store",
         });
         const data = await response.json().catch(() => ({}));
-        return NextResponse.json(normalizeArtifactForAdminSurface(data, req), { status: response.status });
+        return NextResponse.json(await normalizeArtifactForAdminSurface(data, req), { status: response.status });
     } catch (error) {
         console.error("[ArtifactsAPI] DETAIL failed:", error);
         return NextResponse.json({ error: String(error) }, { status: 500 });

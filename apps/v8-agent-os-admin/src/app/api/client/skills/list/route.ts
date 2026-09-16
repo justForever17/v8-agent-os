@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
                 upstream.searchParams.set(key, value);
             }
         }
-        const response = await fetch(upstream.toString());
+        const response = await engineFetch(upstream.toString());
         const data = await response.json();
         return NextResponse.json(data);
     } catch (error) {

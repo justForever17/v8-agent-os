@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -42,7 +43,7 @@ async function proxy(req: NextRequest, context: RouteContext, method: "GET" | "P
             headers.set("Content-Type", "application/json");
             init.body = JSON.stringify(payload);
         }
-        const response = await fetch(buildTarget(req, path), init);
+        const response = await engineFetch(buildTarget(req, path), init);
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });
     } catch (error) {

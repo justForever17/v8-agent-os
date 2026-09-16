@@ -1,4 +1,4 @@
-import { adminJson, requireOk } from "./client_api.mjs";
+import { engineJson } from "./engine_client.mjs";
 import { sessionIdOf, sessionTitle, summarizeSession } from "./session_commands.mjs";
 
 function hasFlag(args, flag) {
@@ -57,24 +57,22 @@ export function filterPendingInboxItems(items) {
 }
 
 async function listApprovals() {
-  const response = await adminJson("/api/client/approvals?status=pending", { timeoutMs: 10_000 });
-  if (!response.ok) return [];
-  const data = response.data || {};
+  let data;
+  try { data = await engineJson("/v1/approvals?status=pending", { timeoutMs: 10_000 }); } catch { return []; }
   const approvals = Array.isArray(data.approvals) ? data.approvals : Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
   return filterPendingInboxItems(approvals.map(normalizePendingApproval));
 }
 
 async function listAskUserInteractions(limit = 30) {
-  const response = await adminJson("/api/client/conversations", { timeoutMs: 10_000 });
-  if (!response.ok || !Array.isArray(response.data)) return [];
-  const sessions = response.data.slice(0, limit);
+  let data;
+  try { data = await engineJson(`/v1/sessions?limit=${limit}`, { timeoutMs: 10_000 }); } catch { return []; }
+  const sessions = Array.isArray(data?.sessions) ? data.sessions.slice(0, limit) : [];
   const results = [];
   for (const session of sessions) {
     const sessionId = sessionIdOf(session);
     if (!sessionId) continue;
-    const detail = await adminJson(`/api/client/conversations/${encodeURIComponent(sessionId)}?omitMessages=1`, { timeoutMs: 10_000 });
-    if (!detail.ok) continue;
-    const record = detail.data || {};
+    let record;
+    try { record = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/snapshot`, { timeoutMs: 10_000 }); } catch { continue; }
     const interactions = Array.isArray(record.askUserInteractions) ? record.askUserInteractions : [];
     results.push(...interactions.map((item) => normalizeAskUser(item, record)));
   }
@@ -107,12 +105,11 @@ export async function approveInbox(args) {
   const id = String(args[0] || "").trim();
   if (!id) throw new Error("inbox approve requires <approvalId>");
   const reason = optionValue(args, "--reason", "") || remainingText(args, 1);
-  const response = await adminJson(`/api/client/approvals/${encodeURIComponent(id)}/approve`, {
+  const result = await engineJson(`/v1/approvals/${encodeURIComponent(id)}/approve`, {
     method: "POST",
     body: reason ? { note: reason, reason } : {},
     timeoutMs: 10_000,
   });
-  const result = requireOk(response, "审批通过");
   if (hasFlag(args, "--json")) console.log(JSON.stringify(result, null, 2));
   else console.log(`已同意：${id}`);
   return result;
@@ -122,12 +119,11 @@ export async function rejectInbox(args) {
   const id = String(args[0] || "").trim();
   if (!id) throw new Error("inbox reject requires <approvalId>");
   const reason = optionValue(args, "--reason", "") || remainingText(args, 1);
-  const response = await adminJson(`/api/client/approvals/${encodeURIComponent(id)}/reject`, {
+  const result = await engineJson(`/v1/approvals/${encodeURIComponent(id)}/reject`, {
     method: "POST",
     body: reason ? { note: reason, reason } : {},
     timeoutMs: 10_000,
   });
-  const result = requireOk(response, "拒绝审批");
   if (hasFlag(args, "--json")) console.log(JSON.stringify(result, null, 2));
   else console.log(`已拒绝：${id}`);
   return result;
@@ -138,12 +134,11 @@ export async function answerAskUser(args) {
   if (!id) throw new Error("inbox answer requires <askUserId>");
   const answer = optionValue(args, "--answer", "") || remainingText(args, 1);
   if (!answer) throw new Error("inbox answer requires answer text");
-  const response = await adminJson(`/api/client/ask-user/${encodeURIComponent(id)}/respond`, {
+  const result = await engineJson(`/v1/ask-user/${encodeURIComponent(id)}/respond`, {
     method: "POST",
     body: { answer },
     timeoutMs: 10_000,
   });
-  const result = requireOk(response, "回复 ask_user");
   if (hasFlag(args, "--json")) console.log(JSON.stringify(result, null, 2));
   else console.log(`已回复：${id}`);
   return result;

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -23,7 +24,7 @@ export async function POST(
             : typeof payload?.response?.answer === "string"
                 ? payload.response.answer
                 : "";
-        const response = await fetch(`${ENGINE_URL}/ask-user/${encodeURIComponent(id)}/respond`, {
+        const response = await engineFetch(`${ENGINE_URL}/ask-user/${encodeURIComponent(id)}/respond`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

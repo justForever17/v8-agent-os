@@ -5,7 +5,6 @@ import {
     type AdminProcessRef,
     type AdminResourceRef,
 } from "@v8/session-realtime";
-import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resource";
 import {
     buildRuntimeEventDedupeKey,
     shouldOmitRealtimeRawEnvelope,
@@ -125,7 +124,7 @@ function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, options?: 
     if (!adminPath) {
         return resourceRef;
     }
-    const signedUrl = buildSignedClientSurfaceUrl(adminPath, { publicBaseUrl: options?.publicBaseUrl });
+    const signedUrl = String(resourceRef.signedUrl || "").trim();
     if (!signedUrl) {
         return {
             ...resourceRef,

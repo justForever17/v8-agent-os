@@ -45,6 +45,8 @@
   "web.terminal.inputOffline": "终端未连接，输入未发送。",
   "web.terminal.inputBusy": "输入发送中，请稍后粘贴。",
   "web.terminal.inputFailed": "终端输入失败；请核对执行结果后再试。",
+  "web.terminal.pasteFailed": "无法读取剪贴板，请使用 Ctrl+V 或允许剪贴板访问。",
+  "web.terminal.copyFailed": "无法复制终端选中的内容。",
   "web.terminal.identityFailed": "无法确认终端实例。",
   "web.terminal.openElsewhere": "终端已在另一面板打开。",
   "web.terminal.connectionInterrupted": "终端连接中断。",

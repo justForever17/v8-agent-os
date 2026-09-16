@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_COMMAND_TIMEOUT_MS = 15_000;
@@ -18,7 +19,7 @@ export async function proxyEngineCommand(req: NextRequest, path: string, target:
     try {
         signal.throwIfAborted();
         dispatched = true;
-        response = await fetch(`${resolveEngineBaseUrl()}${path}`, {
+        response = await engineFetch(`${resolveEngineBaseUrl()}${path}`, {
             method: "POST", headers, body: JSON.stringify(payload), cache: "no-store", signal,
         });
         // A truncated body after 200 is not a successful decision receipt.

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { verifyServiceAuth } from "@/lib/service-auth";
@@ -26,7 +27,7 @@ export async function POST(
 
     try {
         const payload = await req.json().catch(() => ({}));
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}/scope/re-resolve`, {
+        const res = await engineFetch(`${ENGINE_URL}/sessions/${id}/scope/re-resolve`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),

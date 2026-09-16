@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -47,7 +48,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             system_prompt: systemPrompt || ""
         };
 
-        const res = await fetch(`${ENGINE_URL}/agents`, {
+        const res = await engineFetch(`${ENGINE_URL}/agents`, {
             method: "POST", // The python engine uses POST for both insert and update based on filename
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -71,7 +72,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
     try {
         const { id } = await params;
-        const res = await fetch(`${ENGINE_URL}/agents/${id}`, {
+        const res = await engineFetch(`${ENGINE_URL}/agents/${id}`, {
             method: "DELETE"
         });
 

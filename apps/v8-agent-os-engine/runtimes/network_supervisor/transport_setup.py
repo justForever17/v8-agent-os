@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 from fastapi import HTTPException
 
-from core.v8_link import _candidate_ips, _url_for_host, build_mesh_provider_status, strip_api_suffix
+from core.v8_link import strip_api_suffix
 
 
 def parse_connection_invitation(value: str | dict, *, local_peer_id: str) -> dict:
@@ -74,46 +74,54 @@ def normalize_peer_origin(value: str) -> str:
         raise HTTPException(status_code=400, detail="peer_origin_invalid_or_not_shareable") from exc
 
 
-def advertised_endpoint(node: dict, admin_base: str) -> dict:
-    """Use a concrete Admin LAN ingress only when the configured origin is loopback."""
+def advertised_endpoint(node: dict) -> dict:
+    """Return only an explicitly configured peer ingress.
+
+    The historical fallback derived LAN addresses from Admin :9528.  Admin is
+    now an optional configuration surface, so that address is not a peer
+    transport and must never be advertised as one.
+    """
     configured = str(node.get("peerBaseUrl") or node.get("advertisedBaseUrl") or "")
     try:
-        host = urlsplit(configured).hostname or ""
-        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        origin = normalize_peer_origin(configured)
+    except HTTPException:
+        return {"advertisedBaseUrl": "", "advertisedWsUrl": "", "peerBaseUrl": ""}
+    ws_url = str(node.get("advertisedWsUrl") or "")
+    try:
+        ws_host = urlsplit(ws_url).hostname or ""
+        if not ws_host or ws_host == "localhost" or ipaddress.ip_address(ws_host).is_loopback:
+            ws_url = ""
     except ValueError:
-        loopback = False
-    if not loopback:
-        return {"advertisedBaseUrl": configured, "advertisedWsUrl": node.get("advertisedWsUrl") or "",
-                "peerBaseUrl": node.get("peerBaseUrl") or ""}
-    for item in _candidate_ips():
-        try:
-            origin = normalize_peer_origin(_url_for_host(admin_base, item["address"], 9528))
-            return {"advertisedBaseUrl": origin, "advertisedWsUrl": "", "peerBaseUrl": origin}
-        except HTTPException:
-            continue
-    return {"advertisedBaseUrl": configured, "advertisedWsUrl": node.get("advertisedWsUrl") or "", "peerBaseUrl": ""}
+        pass
+    return {"advertisedBaseUrl": origin, "advertisedWsUrl": ws_url,
+            "peerBaseUrl": str(node.get("peerBaseUrl") or "")}
 
 
 def connection_setup(service) -> dict:
     from core.storage import storage
+    from core.v8_link import normalize_remote_link_config
     system = storage.get_system_base_config()
-    admin = str((system.get("bridge") or {}).get("adminBaseUrl") or "http://127.0.0.1:9528")
+    bridge = dict(system.get("bridge") or {})
+    remote = normalize_remote_link_config(
+        dict(system.get("remoteLink") or {}),
+        admin_base_url=str(bridge.get("adminBaseUrl") or ""),
+        engine_base_url=str(bridge.get("engineBaseUrl") or ""),
+    )
     candidates = []
-    for item in _candidate_ips():
-        try:
-            origin = normalize_peer_origin(_url_for_host(admin, item["address"], 9528))
-        except HTTPException:
-            continue
-        candidates.append({"kind": "lan", "origin": origin})
-    mesh = build_mesh_provider_status(admin_base_url=admin)
-    for provider in mesh.get("providers", []):
-        if provider.get("kind") != "tailscale" or not provider.get("loggedIn"):
+    # Peer ingress must be explicit.  Do not synthesize LAN :9528/:9530
+    # addresses because those listeners are loopback or Admin-only by default.
+    for profile in remote.get("transportProfiles") or []:
+        explicit = str((profile or {}).get("peerBaseUrl") or "").strip()
+        if not explicit:
             continue
         try:
-            origin = normalize_peer_origin((provider.get("recommendedUrls") or {}).get("adminBaseUrl") or "")
-            candidates.insert(0, {"kind": "tailscale", "origin": origin})
+            origin = normalize_peer_origin(explicit)
         except HTTPException:
-            pass
+            continue
+        candidates.append({"kind": str((profile or {}).get("kind") or "manual_url"),
+                           "profileId": str((profile or {}).get("id") or ""), "origin": origin})
+    active_id = str(remote.get("activeProfileId") or "")
+    candidates.sort(key=lambda item: item.get("profileId") != active_id)
     config = service.get_config_model()
     current = config.node.peer_base_url or config.node.advertised_base_url
     try:
@@ -123,6 +131,8 @@ def connection_setup(service) -> dict:
         warning = "advertised_address_not_shareable"
     return {"currentOrigin": current, "suggestions": candidates, "warning": warning,
             "discoveryError": service._discovery_error, "httpPeerProxy": True, "adminWebSocket": False,
+            "gatewayPort": int((remote.get("phoneGateway") or {}).get("port") or 9532),
+            "ingressTarget": "engine_gateway", "requiresExplicitForwarding": True,
             "remoteReachabilityVerified": False}
 
 

@@ -241,29 +241,28 @@ function createSmokeOwnerCredentials() {
 }
 
 async function bootstrapSmokeOwner(credentials) {
-  const result = await fetchJson("http://127.0.0.1:9528/api/auth/bootstrap", {
+  const headers = serviceAuthHeaders(readLocalConfig().data);
+  const result = await fetchJson(`http://127.0.0.1:${runtimePorts.engine}/v1/client-identity/bootstrap`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify(credentials),
     timeoutMs: 15_000,
   });
   return {
-    ok: Boolean(result.ok && result.payload?.success === true),
+    ok: Boolean(result.ok && result.payload?.user?.login === credentials.login),
     durationMs: result.durationMs || null,
-    error: result.ok && result.payload?.success === true
+    error: result.ok && result.payload?.user?.login === credentials.login
       ? ""
       : safeErrorCode(result.error, "owner_bootstrap_failed"),
   };
 }
 
 async function loginSmokeOwner(credentials) {
-  const result = await fetchJson("http://127.0.0.1:9528/api/client/auth/login", {
+  const headers = serviceAuthHeaders(readLocalConfig().data);
+  const result = await fetchJson(`http://127.0.0.1:${runtimePorts.engine}/v1/client-identity/local-session`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      login: credentials.login,
-      password: credentials.password,
-    }),
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ surface: "shell", deviceName: "install-smoke" }),
     timeoutMs: 15_000,
   });
   const httpOk = result.ok && result.status === 200;
@@ -1148,17 +1147,15 @@ let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArg
 const runtimePortProfile = await waitForRuntimePorts(runtimePortsPath, Math.min(serviceTimeoutMs, 15_000));
 const runtimePorts = runtimePortProfile?.ports || { engine: 9530, admin: 9528, web: 9527 };
 
-const [engine, admin, web, initialShellSurface] = await Promise.all([
+const [engine, web, initialShellSurface] = await Promise.all([
   waitForReadiness("engine", `http://127.0.0.1:${runtimePorts.engine}/readyz`, serviceTimeoutMs),
-  waitForReadiness("admin", `http://127.0.0.1:${runtimePorts.admin}/login`, serviceTimeoutMs),
   waitForReadiness("web", `http://127.0.0.1:${runtimePorts.web}/chat`, serviceTimeoutMs),
   waitForShellSurface(shellControlPath, child.pid || 0, serviceTimeoutMs),
 ]);
 const startupDurationMs = Date.now() - startedAtMs;
 await sleep(stabilityWindowMs);
-const [stableEngine, stableAdmin, stableWeb, stableShellSurface] = await Promise.all([
+const [stableEngine, stableWeb, stableShellSurface] = await Promise.all([
   waitForReadiness("engine", `http://127.0.0.1:${runtimePorts.engine}/readyz`, 3_000),
-  waitForReadiness("admin", `http://127.0.0.1:${runtimePorts.admin}/login`, 3_000),
   waitForReadiness("web", `http://127.0.0.1:${runtimePorts.web}/chat`, 3_000),
   waitForShellSurface(shellControlPath, child.pid || 0, 3_000),
 ]);
@@ -1167,7 +1164,6 @@ const initialRuntimeStability = {
   ok: Boolean(
     isPidAlive(child.pid || 0)
     && stableEngine.ok
-    && stableAdmin.ok
     && stableWeb.ok
     && stableShellSurface.ok
   ),
@@ -1176,7 +1172,6 @@ const initialRuntimeStability = {
   shellAlive: isPidAlive(child.pid || 0),
   services: {
     engine: stableEngine.ok,
-    admin: stableAdmin.ok,
     web: stableWeb.ok,
     shellSurface: stableShellSurface.ok,
   },
@@ -1194,21 +1189,21 @@ const sandboxMode = {
       ? "no_sandbox_flag_observed"
       : "",
 };
-const rawInitialInstanceManifest = admin.ok
-  ? await fetchJson("http://127.0.0.1:9528/api/client/instance", { timeoutMs: 3_000 })
-  : { ok: false, error: "admin_not_ready" };
+const rawInitialInstanceManifest = engine.ok
+  ? await fetchJson(`http://127.0.0.1:${runtimePorts.engine}/api/client/instance`, { timeoutMs: 3_000 })
+  : { ok: false, error: "engine_not_ready" };
 const initialInstanceManifestValid = rawInitialInstanceManifest.ok
   && rawInitialInstanceManifest.payload?.kind === "v8_instance_manifest"
-  && rawInitialInstanceManifest.payload?.initialized === false;
+  && rawInitialInstanceManifest.payload?.initialized === true;
 const bootstrapSurface = {
   ok: Boolean(initialInstanceManifestValid
     && initialShellSurface.ok
-    && initialShellSurface.surfaceKind === "admin-login"),
-  initialized: initialInstanceManifestValid ? false : null,
+    && initialShellSurface.surfaceKind === "web"),
+  initialized: initialInstanceManifestValid ? true : null,
   surfaceKind: initialShellSurface.surfaceKind || null,
   error: !initialInstanceManifestValid
     ? "initial_instance_manifest_invalid"
-    : initialShellSurface.surfaceKind !== "admin-login"
+    : initialShellSurface.surfaceKind !== "web"
       ? "initial_bootstrap_surface_mismatch"
       : initialShellSurface.error || "",
 };
@@ -1256,9 +1251,9 @@ if (bootstrapSurface.ok) {
         shellControlPath,
         child.pid || 0,
         serviceTimeoutMs,
-        "admin-login",
+        "web",
       );
-      rawInstanceManifest = await fetchJson("http://127.0.0.1:9528/api/client/instance", { timeoutMs: 3_000 });
+      rawInstanceManifest = await fetchJson(`http://127.0.0.1:${runtimePorts.engine}/api/client/instance`, { timeoutMs: 3_000 });
       existingOwnerLogin = await loginSmokeOwner(ownerCredentials);
     }
   }
@@ -1269,19 +1264,25 @@ const instanceManifestValid = rawInstanceManifest.ok
 shellSurface.ok = Boolean(
   shellSurface.ok
   && instanceManifestValid
-  && shellSurface.surfaceKind === "admin-login",
+  && shellSurface.surfaceKind === "web",
 );
-shellSurface.expectedSurfaceKind = "admin-login";
+shellSurface.expectedSurfaceKind = "web";
 shellSurface.error = shellSurface.ok
   ? ""
   : instanceManifestValid
-    ? "admin_auth_lock_surface_mismatch"
+    ? "trusted_local_web_surface_mismatch"
     : "initialized_instance_manifest_invalid";
 const instanceManifest = {
   ok: Boolean(instanceManifestValid),
   initialized: instanceManifestValid ? true : null,
   error: instanceManifestValid ? "" : safeErrorCode(rawInstanceManifest.error, "instance_manifest_invalid"),
 };
+// The configuration console starts only after cold-start and restart prove the
+// desktop works with Engine + Web alone.
+const adminLaunch = await runPackagedCli(shellExe, resourceRoot, ["start", "--only", "admin", "--mode", "start", "--json"], runtimeEnvironment);
+const admin = adminLaunch.ok
+  ? await waitForReadiness("admin", `http://127.0.0.1:${runtimePorts.admin}/login`, serviceTimeoutMs)
+  : { ok: false, error: "optional_admin_launch_failed" };
 const serviceChecks = { engine, admin, web };
 const desktopPetStartedAtMs = Date.now();
 const coreSurfaceReady = Object.values(serviceChecks).every((item) => item.ok) && shellSurface.ok;
@@ -1524,7 +1525,7 @@ const payload = {
   checks,
   failureStage: firstFailureStage(checks),
   passed: Object.values(checks).every((item) => item.ok),
-  note: "Automated packaged startup, product-surface, existing-Owner login, fixed ordinary/interactive command backend probes, Windows/macOS desktop-pet process/health, or governed Linux desktop-pet unavailability/no-process proof. Tray interaction and physical display behavior still require a matching host.",
+  note: "Automated packaged Engine/Web startup without Admin, trusted-local Owner session and restart, optional configuration console launch, ordinary/interactive command backend probes, and desktop-pet lifecycle. Tray interaction and physical display behavior still require a matching host.",
 };
 
 const output = reportPath();

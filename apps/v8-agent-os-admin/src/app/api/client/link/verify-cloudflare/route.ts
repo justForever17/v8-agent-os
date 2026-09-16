@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const payload = await req.json().catch(() => ({}));
-        const origin = normalizeStableTunnelOrigin(payload?.adminBaseUrl);
+        const origin = normalizeStableTunnelOrigin(payload?.phoneBaseUrl || payload?.publicBaseUrl || payload?.adminBaseUrl);
         const hostname = new URL(origin).hostname;
         const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
         if (addresses.length === 0 || addresses.some((item) => isBlockedAddress(item.address))) {
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
         }).finally(() => clearTimeout(timer));
         if (!response.ok) throw new Error(`cloudflare_probe_http_${response.status}`);
         const remote = await response.json().catch(() => ({}));
-        const local = readOrCreateInstanceIdentity();
+        const local = await readOrCreateInstanceIdentity();
         if (String(remote?.instanceId || "") !== local.instanceId) {
             throw new Error("cloudflare_instance_mismatch");
         }

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -16,7 +17,7 @@ export async function GET(
     }
 
     try {
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}/messages`, {
+        const res = await engineFetch(`${ENGINE_URL}/sessions/${id}/messages`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

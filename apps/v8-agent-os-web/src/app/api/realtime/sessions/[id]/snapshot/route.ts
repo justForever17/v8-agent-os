@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveRouteUserEmail } from "@/lib/route-auth";
-import { getAdminProxyConfig } from "@/lib/server/runtime-config";
+import { getClientProxyConfig } from "@/lib/server/runtime-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,14 +10,14 @@ async function proxyToAdmin(path: string, userEmail: string | null) {
     if (!userEmail) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const { adminApiBaseUrl, internalSecret } = await getAdminProxyConfig();
+    const { clientApiBaseUrl, internalSecret } = await getClientProxyConfig();
 
     if (!internalSecret) {
         return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
     }
 
     try {
-        const res = await fetch(`${adminApiBaseUrl}${path}`, {
+        const res = await fetch(`${clientApiBaseUrl}${path}`, {
             method: "GET",
             headers: {
                 "Content-Type": "application/json",

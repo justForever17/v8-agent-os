@@ -67,6 +67,10 @@ def default_remote_link_config(*, admin_base_url: str = "", engine_base_url: str
     return {
         "enabled": True,
         "activeProfileId": "manual-local",
+        # Phone is the only remote human surface.  Keep its listener settings
+        # under the existing remoteLink owner so config-broker and identity
+        # manifest read the same canonical values.
+        "phoneGateway": {"enabled": True, "port": 9532, "publicBaseUrl": ""},
         "transportProfiles": [
             {
                 "id": "manual-local",
@@ -76,6 +80,7 @@ def default_remote_link_config(*, admin_base_url: str = "", engine_base_url: str
                 "adminBaseUrl": admin_base,
                 "engineBaseUrl": engine_base,
                 "peerBaseUrl": engine_base,
+                "phoneBaseUrl": "",
             },
             {"id": "lan", "kind": "lan", "label": "LAN", "enabled": True},
             {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},
@@ -124,7 +129,7 @@ def normalize_remote_link_config(config: dict[str, Any] | None, *, admin_base_ur
         merged["id"] = profile_id
         merged["kind"] = normalize_transport_kind(merged.get("kind"))
         merged["enabled"] = bool(merged.get("enabled", True))
-        for key in ("adminBaseUrl", "engineBaseUrl", "peerBaseUrl"):
+        for key in ("adminBaseUrl", "engineBaseUrl", "peerBaseUrl", "phoneBaseUrl"):
             if key in merged:
                 merged[key] = strip_api_suffix(merged.get(key))
         profiles_by_id[profile_id] = merged
@@ -133,10 +138,22 @@ def normalize_remote_link_config(config: dict[str, Any] | None, *, admin_base_ur
     active_profile_id = str(incoming.get("activeProfileId") or base["activeProfileId"]).strip()
     if active_profile_id not in profiles_by_id and profiles:
         active_profile_id = str(profiles[0].get("id") or "")
+    gateway = incoming.get("phoneGateway") if isinstance(incoming.get("phoneGateway"), dict) else {}
+    try:
+        gateway_port = int(gateway.get("port") or 9532)
+    except (TypeError, ValueError):
+        gateway_port = 9532
+    if not 1 <= gateway_port <= 65535:
+        gateway_port = 9532
 
     return {
         "enabled": bool(incoming.get("enabled", base["enabled"])),
         "activeProfileId": active_profile_id,
+        "phoneGateway": {
+            "enabled": bool(gateway.get("enabled", True)),
+            "port": gateway_port,
+            "publicBaseUrl": strip_api_suffix(gateway.get("publicBaseUrl")),
+        },
         "transportProfiles": profiles,
         "diagnostics": {"readOnly": True, **dict(incoming.get("diagnostics") or {})},
         "meshProviders": normalize_mesh_provider_config(incoming.get("meshProviders")),

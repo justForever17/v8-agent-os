@@ -35,6 +35,34 @@ from erc.safety_guardian import safety_guardian
 _PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _API_STANDARD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _CREATIVE_MEDIA_PREFERENCES_FILE = "creative_media/model_preferences.json"
+_CLIENT_GATEWAY_DEFAULTS = {"enabled": True, "port": 9532, "publicBaseUrl": ""}
+
+
+def _client_gateway_snapshot(config: dict[str, Any]) -> dict[str, Any]:
+    config = config if isinstance(config, dict) else {}
+    raw = config.get("phoneGateway") if "phoneGateway" in config and "remoteLink" not in config else (config.get("remoteLink") or {}).get("phoneGateway")
+    value = dict(_CLIENT_GATEWAY_DEFAULTS)
+    if isinstance(raw, dict):
+        value.update({key: raw[key] for key in _CLIENT_GATEWAY_DEFAULTS if key in raw})
+    return value
+
+
+def _validate_client_gateway_patch(settings: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(settings, dict) or not settings or set(settings) - set(_CLIENT_GATEWAY_DEFAULTS):
+        raise ValueError("client_gateway_fields_invalid")
+    patch = dict(settings)
+    if "enabled" in patch and not isinstance(patch["enabled"], bool):
+        raise ValueError("client_gateway_enabled_invalid")
+    if "port" in patch and (isinstance(patch["port"], bool) or not isinstance(patch["port"], int) or not 1 <= patch["port"] <= 65535):
+        raise ValueError("client_gateway_port_invalid")
+    if "publicBaseUrl" in patch:
+        value = str(patch["publicBaseUrl"] or "").strip()
+        if value:
+            parsed = urlparse(value)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("client_gateway_public_url_invalid")
+        patch["publicBaseUrl"] = value
+    return patch
 
 _PROVIDER_PATCH_KEYS = {
     "name",
@@ -809,6 +837,8 @@ class ConfigBrokerService:
         if target_kind == "network_settings":
             from core.network_config_broker import settings_snapshot
             return settings_snapshot(config)
+        if target_kind == "client_gateway":
+            return _client_gateway_snapshot(config)
         if target_kind == "model_snapshot_restore":
             return _model_snapshot_authority_projection(config)
         if target_kind in _MODEL_CONTROL_PLANE_TARGET_KINDS:
@@ -933,6 +963,8 @@ class ConfigBrokerService:
     def _target_config(target_kind: str) -> dict[str, Any]:
         if target_kind == "network_settings":
             return deepcopy(storage.get_network_supervisor_runtime_config())
+        if target_kind == "client_gateway":
+            return deepcopy(storage.get_system_base_config())
         if target_kind == "mcp":
             return deepcopy(storage.get_mcp_config() or {"mcpServers": {}})
         if target_kind == "creative_media_operation":
@@ -3476,6 +3508,25 @@ class ConfigBrokerService:
             "network_settings", "network", self._target_config("network_settings")),
             "activation": "Compat settings apply on next request; discovery/listener changes require runtime reload."}
 
+    def network_schema(self) -> dict[str, Any]:
+        """Return the public, secret-free schema owned by the Network broker."""
+        from core.network_config_broker import SECTIONS
+        from runtimes.network_supervisor.models import NetworkSupervisorRuntimeConfig
+
+        schema = NetworkSupervisorRuntimeConfig.model_json_schema(by_alias=True)
+        properties = dict(schema.get("properties") or {})
+        schema["properties"] = {key: value for key, value in properties.items() if key in SECTIONS}
+        schema["required"] = [key for key in list(schema.get("required") or []) if key in SECTIONS]
+        # The node peer identity is paired/owned by the network identity service;
+        # exposing it as a writable broker field would advertise an invalid patch.
+        node_schema = dict(schema["properties"].get("node") or {})
+        node_properties = dict(node_schema.get("properties") or {})
+        node_properties.pop("peerId", None)
+        node_schema["properties"] = node_properties
+        node_schema["required"] = [key for key in list(node_schema.get("required") or []) if key != "peerId"]
+        schema["properties"]["node"] = node_schema
+        return {"ok": True, "mode": "network_schema", "schema": schema, "secretFields": []}
+
     def prepare_network(self, *, settings: dict[str, Any], owner_id: str, session_id: str, run_id: str) -> dict[str, Any]:
         from core.network_config_broker import apply_patch, settings_snapshot, validate_patch
         try:
@@ -3492,6 +3543,48 @@ class ConfigBrokerService:
         return {"ok": True, "mode": "network_prepare", "state": transaction["state"],
                 "transactionId": transaction["transactionId"], "planDigest": transaction["planDigest"],
                 "summary": "网络设置已准备；提交后核对运行状态。", "nextAction": "commit"}
+
+    def client_gateway_status(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "mode": "client_gateway_status",
+            "settings": _client_gateway_snapshot(self._target_config("client_gateway")),
+            "activation": "enabled/port changes require Engine restart; publicBaseUrl applies on the next request.",
+        }
+
+    def client_gateway_schema(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "mode": "client_gateway_schema",
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "enabled": {"type": "boolean", "default": True},
+                    "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 9532},
+                    "publicBaseUrl": {"type": "string", "format": "uri", "description": "HTTPS origin without credentials, query, or fragment."},
+                },
+            },
+            "secretFields": [],
+        }
+
+    def prepare_client_gateway(self, *, settings: dict[str, Any], owner_id: str, session_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            patch = _validate_client_gateway_patch(settings)
+        except (ValueError, TypeError) as exc:
+            raise ConfigBrokerError("Phone gateway settings are invalid.", code=str(exc), status_code=400) from None
+        before = self._target_config("client_gateway")
+        before_settings = _client_gateway_snapshot(before)
+        after_settings = {**before_settings, **patch}
+        transaction = self._insert_transaction(
+            target_kind="client_gateway", target_id="phoneGateway", operation="patch", state="ready_to_commit",
+            owner_id=_session_owner(session_id, owner_id), session_id=session_id, run_id=run_id,
+            before={"phoneGateway": before_settings}, proposed={"settings": patch},
+            validation={"targetSettings": after_settings},
+        )
+        return {"ok": True, "mode": "client_gateway_prepare", "state": transaction["state"],
+                "transactionId": transaction["transactionId"], "planDigest": transaction["planDigest"],
+                "summary": "Phone gateway settings prepared; commit or rollback the transaction.", "nextAction": "commit"}
 
     def _credentialize_mcp_config(self, raw: dict[str, Any]) -> dict[str, Any]:
         safe = deepcopy(raw or {"mcpServers": {}})
@@ -4542,6 +4635,22 @@ class ConfigBrokerService:
                     _capture_working_target(saved)
                     public_result = {"settings": self._target_snapshot("network_settings", "network", saved),
                                      "runtimeReloadRequired": bool(set(proposed.get("settings") or {}) - {"openaiCompat"})}
+                elif transaction["targetKind"] == "client_gateway":
+                    patch = _validate_client_gateway_patch(dict(proposed.get("settings") or {}))
+                    def _mutate_client_gateway(current: dict[str, Any]) -> dict[str, Any]:
+                        self._assert_target_revision_in_config(transaction, current)
+                        remote = dict(current.get("remoteLink") or {})
+                        gateway = {**_client_gateway_snapshot(current), **patch}
+                        remote["phoneGateway"] = gateway
+                        current["remoteLink"] = remote
+                        _capture_planned_target(current)
+                        return current
+                    saved_gateway = storage.mutate_config_domain("systemBase", _mutate_client_gateway)
+                    target_mutated = True
+                    _capture_working_target(saved_gateway)
+                    settings = _client_gateway_snapshot(saved_gateway)
+                    public_result = {"settings": settings,
+                                     "runtimeReloadRequired": bool(set(patch) & {"enabled", "port"})}
                 elif transaction["targetKind"] == "mcp":
                     server_name = str(proposed.get("name") or "")
 
@@ -4784,6 +4893,15 @@ class ConfigBrokerService:
                     _assert_restore_revision(current)
                     return apply_patch(current, before_target)
                 storage.mutate_config_domain("networkSupervisorRuntime", _restore_network)
+                target_restored = True
+            elif target_kind == "client_gateway":
+                def _restore_client_gateway(current: dict[str, Any]) -> dict[str, Any]:
+                    _assert_restore_revision(current)
+                    remote = dict(current.get("remoteLink") or {})
+                    remote["phoneGateway"] = _client_gateway_snapshot(before_config)
+                    current["remoteLink"] = remote
+                    return current
+                storage.mutate_config_domain("systemBase", _restore_client_gateway)
                 target_restored = True
             elif target_kind == "model_policy_bundle":
                 def _restore_model_policy(config: dict[str, Any]) -> dict[str, Any]:

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -9,7 +10,7 @@ export async function GET() {
   if (!session) return new NextResponse("Unauthorized", { status: 401 });
 
   try {
-    const res = await fetch(`${ENGINE_URL}/mcp/tools`);
+    const res = await engineFetch(`${ENGINE_URL}/mcp/tools`);
     const data = await res.json();
     return NextResponse.json(data);
   } catch {

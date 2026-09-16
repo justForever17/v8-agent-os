@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -9,7 +10,7 @@ export async function GET() {
     if (!session) return new NextResponse("Unauthorized", { status: 401 });
 
     try {
-        const res = await fetch(`${ENGINE_URL}/agents`);
+        const res = await engineFetch(`${ENGINE_URL}/agents`);
         if (!res.ok) {
             throw new Error(`Python API returned ${res.status}`);
         }
@@ -74,7 +75,7 @@ export async function POST(req: NextRequest) {
             createdBy: data.createdBy || "human"
         };
 
-        const res = await fetch(`${ENGINE_URL}/agents`, {
+        const res = await engineFetch(`${ENGINE_URL}/agents`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -14,7 +15,7 @@ export async function GET(
 
     const { id } = await params;
     try {
-        const response = await fetch(
+        const response = await engineFetch(
             `${resolveEngineBaseUrl()}/sessions/${encodeURIComponent(id)}/workbench/files/read${req.nextUrl.search}`,
             {
                 method: "GET",

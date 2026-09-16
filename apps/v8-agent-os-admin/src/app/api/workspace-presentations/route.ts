@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     try {
-        const response = await fetch(`${ENGINE_URL}/workspace-presentations`, { cache: "no-store" });
+        const response = await engineFetch(`${ENGINE_URL}/workspace-presentations`, { cache: "no-store" });
         return NextResponse.json(await response.json().catch(() => ({})), { status: response.status });
     } catch (error) {
         console.error("[WorkspacePresentationsAPI] GET failed:", error);
@@ -34,7 +35,7 @@ export async function PUT(req: NextRequest) {
     }
     try {
         const body = await req.json().catch(() => ({}));
-        const response = await fetch(`${ENGINE_URL}/workspace-presentations`, {
+        const response = await engineFetch(`${ENGINE_URL}/workspace-presentations`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),

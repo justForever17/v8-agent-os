@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -40,7 +41,7 @@ export async function GET(
         || req.nextUrl.searchParams.get("surface") === "web";
 
     try {
-        const turnsResponse = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/turns?${searchParams.toString()}`, {
+        const turnsResponse = await engineFetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/turns?${searchParams.toString()}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

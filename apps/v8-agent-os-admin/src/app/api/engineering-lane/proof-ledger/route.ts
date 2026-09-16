@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -14,7 +15,7 @@ export async function GET(req: NextRequest) {
         return unauthorized;
     }
     try {
-        const response = await fetch(targetUrl(req), { method: "GET", cache: "no-store" });
+        const response = await engineFetch(targetUrl(req), { method: "GET", cache: "no-store" });
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });
     } catch (error) {
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
     }
     try {
         const payload = await req.json().catch(() => ({}));
-        const response = await fetch(targetUrl(req), {
+        const response = await engineFetch(targetUrl(req), {
             method: "POST",
             cache: "no-store",
             headers: { "Content-Type": "application/json" },

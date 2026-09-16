@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from 'next/server';
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
@@ -5,7 +6,7 @@ const ENGINE_URL = resolveEngineBaseUrl();
 
 export async function GET() {
   try {
-    const res = await fetch(`${ENGINE_URL}/mcp/status`, {
+    const res = await engineFetch(`${ENGINE_URL}/mcp/status`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',

@@ -647,13 +647,14 @@ class NetworkSupervisorService:
             self.save_config_model(config)
 
         from runtimes.network_supervisor.transport_setup import advertised_endpoint
-        admin_base = str((storage.get_system_base_config().get("bridge") or {}).get("adminBaseUrl") or "http://127.0.0.1:9528")
-        address_key = (config.node.advertised_base_url, config.node.advertised_ws_url, config.node.peer_base_url or "", admin_base)
+        # Admin :9528 is a configuration surface and cannot be used as a peer
+        # ingress.  Only an explicit node.peerBaseUrl is shareable.
+        address_key = (config.node.advertised_base_url, config.node.advertised_ws_url, config.node.peer_base_url or "", "")
         cached_address = self._advertised_endpoint_cache
         if cached_address and cached_address[0] == address_key and time.monotonic() - cached_address[1] < 10:
             public_endpoint = cached_address[2]
         else:
-            public_endpoint = advertised_endpoint(config.node.model_dump(by_alias=True), admin_base)
+            public_endpoint = advertised_endpoint(config.node.model_dump(by_alias=True))
             self._advertised_endpoint_cache = (address_key, time.monotonic(), public_endpoint)
         return {
             "peerId": config.node.peer_id,
@@ -1546,6 +1547,19 @@ class NetworkSupervisorService:
         config = self.get_config_model()
         identity = self._local_identity()
         state = self.read_state()
+        # Compatibility clients must target an explicit Engine/peer ingress.
+        # Admin :9528 is intentionally absent from this projection.
+        try:
+            from core.storage import storage
+            system_base = storage.get_system_base_config()
+            bridge = dict(system_base.get("bridge") or {})
+            remote = dict(system_base.get("remoteLink") or {})
+            gateway = dict(remote.get("phoneGateway") or {})
+            local_compat_origin = f"http://127.0.0.1:{int(gateway.get('port') or 9532)}" if gateway.get("enabled") is not False else bridge.get("engineBaseUrl")
+            compat_origin = str(gateway.get("publicBaseUrl") or config.node.peer_base_url or local_compat_origin or "").strip().rstrip("/")
+            compat_origin = compat_origin.removesuffix("/v1").removesuffix("/api")
+        except Exception:
+            compat_origin = ""
         discovered = dict(state.get("discoveredPeers") or {})
         delegations = dict(state.get("delegations") or {})
         openai_compat_tokens = self._openai_compat_token_entries()
@@ -1595,7 +1609,7 @@ class NetworkSupervisorService:
                 "available": bool(config.enabled and config.openai_compat.enabled and openai_compat_tokens),
                 "tokenCount": len(openai_compat_tokens),
                 "modelAliases": list(config.openai_compat.model_aliases or ["v8os"]),
-                "baseUrlHint": "http://localhost:9528/api/network-supervisor/openai/v1",
+                "baseUrlHint": f"{compat_origin}/v1/network-supervisor/openai" if compat_origin else "",
                 "chatCompletionsPath": "/chat/completions",
                 "modelsPath": "/models",
                 "maxExternalTools": int(config.openai_compat.max_external_tools or 0),
@@ -1623,7 +1637,7 @@ class NetworkSupervisorService:
                 "available": bool(config.enabled and config.openai_compat.enabled and openai_compat_tokens),
                 "tokenCount": len(openai_compat_tokens),
                 "modelAliases": list(config.openai_compat.model_aliases or ["v8os"]),
-                "baseUrlHint": "http://localhost:9528/api/network-supervisor/anthropic",
+                "baseUrlHint": f"{compat_origin}/v1/network-supervisor/anthropic" if compat_origin else "",
                 "messagesPath": "/v1/messages",
                 "modelsPath": "/v1/models",
                 "authSchemes": ["x-api-key", "Authorization: Bearer"],

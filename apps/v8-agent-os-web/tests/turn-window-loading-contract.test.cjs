@@ -44,7 +44,7 @@ test("Web renders the newest canonical turn before the optional navigation index
   assert.match(client, /onReachTop=\{loadOlderConversationTurn\}/);
   assert.match(client, /mergeTurnIndexEntries\(incoming\.flatMap<ChatTurnIndexEntry>/);
   assert.match(window, /<TurnNavigator/);
-  assert.match(route, /requireAdminProxyContext/);
+  assert.match(route, /requireClientProxyContext/);
 });
 
 test("Web keeps historical messages mounted without replaying entrance motion", () => {

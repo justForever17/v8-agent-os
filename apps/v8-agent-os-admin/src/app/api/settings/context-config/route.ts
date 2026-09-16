@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -5,7 +6,7 @@ const ENGINE_URL = resolveEngineOrigin();
 
 export async function GET() {
     try {
-        const response = await fetch(`${ENGINE_URL}/v1/context/config`);
+        const response = await engineFetch(`${ENGINE_URL}/v1/context/config`);
         if (!response.ok) {
             throw new Error(`Failed to fetch context config: ${response.status}`);
         }
@@ -20,7 +21,7 @@ export async function GET() {
 export async function POST(req: Request) {
     try {
         const body = await req.json();
-        const response = await fetch(`${ENGINE_URL}/v1/context/config`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/context/config`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"

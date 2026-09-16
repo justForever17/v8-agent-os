@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ name: s
 
     try {
         const { name } = await context.params;
-        const response = await fetch(`${resolveEngineBaseUrl()}/commands/${encodeURIComponent(name)}`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/commands/${encodeURIComponent(name)}`, {
             headers: {
                 "x-v8-agent-os-secret": resolveInternalSecret(),
                 "x-v8-agent-os-user-email": userEmail,

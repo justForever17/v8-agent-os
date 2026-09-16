@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
-import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import { resolveClientApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 function passthroughContentHeaders(response: Response) {
     const headers = new Headers();
@@ -45,7 +45,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
         });
         const range = req.headers.get("range");
         if (range) headers.set("Range", range);
-        const response = await fetch(`${await resolveAdminApiBaseUrl()}/memory/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`, {
+        const response = await fetch(`${await resolveClientApiBaseUrl()}/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`, {
             headers: {
                 ...Object.fromEntries(headers.entries()),
             },

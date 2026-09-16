@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     }
 
     const requestOrigin = resolveRequestOrigin(req);
-    const linkManifest = buildClientLinkManifest(requestOrigin);
+    const linkManifest = await buildClientLinkManifest(requestOrigin);
     return NextResponse.json({
         connection: {
             adminBaseUrl: requestOrigin,

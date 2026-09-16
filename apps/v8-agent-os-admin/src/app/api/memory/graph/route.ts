@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
@@ -14,7 +15,7 @@ export async function GET(req: NextRequest) {
                 const value = searchParams.get(key);
                 if (value !== null) query.set(key, value);
             }
-            const response = await fetch(`${ENGINE_URL}/v1/memory/graph/overview?${query}`, { signal: req.signal, cache: "no-store" });
+            const response = await engineFetch(`${ENGINE_URL}/v1/memory/graph/overview?${query}`, { signal: req.signal, cache: "no-store" });
             return NextResponse.json(await response.json(), { status: response.status });
         }
         const entity = searchParams.get("entity");
@@ -25,12 +26,12 @@ export async function GET(req: NextRequest) {
         const workspaceQuery = workspaceKey ? `&workspaceKey=${encodeURIComponent(workspaceKey)}` : "";
 
         const response = workspaces === "1"
-            ? await fetch(`${ENGINE_URL}/v1/memory/graph/workspaces`)
+            ? await engineFetch(`${ENGINE_URL}/v1/memory/graph/workspaces`)
             : entity
-            ? await fetch(`${ENGINE_URL}/v1/memory/graph/entity/${encodeURIComponent(entity)}?workspaceKey=${encodeURIComponent(workspaceKey || "")}`)
+            ? await engineFetch(`${ENGINE_URL}/v1/memory/graph/entity/${encodeURIComponent(entity)}?workspaceKey=${encodeURIComponent(workspaceKey || "")}`)
             : keyword
-                ? await fetch(`${ENGINE_URL}/v1/memory/graph/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}${workspaceQuery}`)
-                : await fetch(`${ENGINE_URL}/v1/memory/graph/all?limit=${limit}${workspaceQuery}`);
+                ? await engineFetch(`${ENGINE_URL}/v1/memory/graph/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}${workspaceQuery}`)
+                : await engineFetch(`${ENGINE_URL}/v1/memory/graph/all?limit=${limit}${workspaceQuery}`);
         return NextResponse.json(await response.json(), { status: response.status });
     } catch (error) {
         return NextResponse.json({ error: String(error) }, { status: 500 });
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Unsupported graph action" }, { status: 400 });
         }
 
-        const response = await fetch(target, {
+        const response = await engineFetch(target, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
@@ -83,7 +84,7 @@ export async function DELETE(req: NextRequest) {
             return NextResponse.json({ error: "Unsupported graph action" }, { status: 400 });
         }
 
-        const response = await fetch(target, {
+        const response = await engineFetch(target, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),

@@ -163,7 +163,7 @@ async function engineServer(t) {
 }
 function commandRoutes(engine, { authorized = true, fetchImpl = fetch } = {}) {
     const overrides = {
-        "@/lib/server/runtime-config": { resolveEngineBaseUrl: engine.origin, resolveInternalSecret: () => "public-test-key" },
+        "@/lib/server/runtime-config": { resolveEngineBaseUrl: engine.origin, resolveEngineOrigin: () => engine.origin().replace(/\/v1$/, ""), resolveInternalSecret: () => "public-test-key" },
         "@/lib/server/request-auth": { resolveAuthorizedUserEmail: async () => authorized ? "fixture-owner" : null, unauthorizedJson: () => Response.json({ error: "Unauthorized" }, { status: 401 }) },
         "@/lib/auth": { auth: async () => authorized ? { user: { email: "fixture-owner" } } : null },
         "@/lib/service-auth": { verifyServiceAuth: async () => authorized ? "fixture-owner" : null },
@@ -174,6 +174,10 @@ function commandRoutes(engine, { authorized = true, fetchImpl = fetch } = {}) {
         // streaming body parser and route serialization remain production code.
         setTimeout: (fn, ms) => { assert.equal(ms, 15_000); return setTimeout(fn, 100); },
     };
+    overrides["@/lib/server/engine-fetch"] = load("src/lib/server/engine-fetch.ts", {
+        overrides: { "@/lib/server/runtime-config": overrides["@/lib/server/runtime-config"] },
+        globals: { fetch: fetchImpl },
+    });
     overrides["@/lib/server/engine-command-proxy"] = load("src/lib/server/engine-command-proxy.ts", { overrides, globals });
     return ["approvals/[id]/approve", "approvals/[id]/reject", "runs/[runId]/commands/[command]"].map(value =>
         load(`src/app/api/${value}/route.ts`, { overrides, globals }));
@@ -267,4 +271,24 @@ test("trusted chat sends minimal even without runtime mode; absent authorization
     }
     assert.equal(payloads[0].data.safetyApprovalMode, "minimal");
     assert.equal(payloads[1].data?.safetyApprovalMode, undefined);
+});
+
+test("Engine fetch boundary injects only canonical secret and preserves external stream headers", async () => {
+    const calls = [];
+    const module = load("src/lib/server/engine-fetch.ts", {
+        overrides: { "@/lib/server/runtime-config": {
+            resolveEngineOrigin: () => "http://engine.fixture",
+            resolveInternalSecret: () => "synthetic-service-secret",
+        } },
+        globals: { fetch: async (input, init) => {
+            calls.push({ input: String(input), headers: new Headers(init?.headers) });
+            return new Response("ok");
+        } },
+    });
+    await module.engineFetch("http://engine.fixture/v1/health", { headers: { "x-v8-agent-os-user-email": "owner" } });
+    assert.equal(calls[0].headers.get("x-v8-agent-os-secret"), "synthetic-service-secret");
+    const external = new Request("https://provider.fixture/upload", { headers: { "x-v8-agent-os-secret": "copied-secret", "Authorization": "Bearer provider" } });
+    await module.engineFetch(external);
+    assert.equal(calls[1].headers.get("x-v8-agent-os-secret"), null);
+    assert.equal(calls[1].headers.get("authorization"), "Bearer provider");
 });

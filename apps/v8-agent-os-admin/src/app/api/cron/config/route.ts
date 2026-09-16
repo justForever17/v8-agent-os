@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -5,7 +6,7 @@ const ENGINE_ORIGIN = resolveEngineOrigin();
 
 export async function GET() {
   try {
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/cron/config`, {
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/cron/config`, {
       method: "GET",
       // Important to skip caching for real-time config
       headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
@@ -33,7 +34,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/cron/config`, {
+    const res = await engineFetch(`${ENGINE_ORIGIN}/v1/cron/config`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -7,7 +7,7 @@ import logging
 import uuid
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .models import ModelConnectionTestPayload, ModelReasoningRepairPayload
@@ -31,6 +31,7 @@ from core.skills_install_service import SkillInstallValidationError, install_ski
 from core.storage import storage
 from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
 from core.realtime_protocol import build_runtime_event
+from core.auth_context import require_engine_auth
 from erc.command_service import command_service
 from erc.models import ApprovalRequest
 from erc.safety_guardian import safety_guardian
@@ -1329,10 +1330,13 @@ async def submit_ui_action(action_id: str, request: Request, data: dict = Body(.
 
 
 def _config_actor(request: Request) -> str:
-    return str(request.headers.get("x-v8-agent-os-user-email") or "local-cli").strip() or "local-cli"
+    # Config transaction ownership follows the verified Engine principal.  The
+    # legacy user/role headers are display hints and must never select an owner.
+    context = require_engine_auth(request=request)
+    return str(context.subject or "local-cli").strip() or "local-cli"
 
 
-@router.get("/config-broker/models")
+@router.get("/config-broker/models", dependencies=[Depends(require_engine_auth)])
 async def config_broker_models(
     category: str = Query(default=""),
     query: str = Query(default=""),
@@ -1342,12 +1346,59 @@ async def config_broker_models(
     return config_broker_service.inventory(category=category, query=query, limit=limit, offset=offset)
 
 
-@router.get("/config-broker/roles")
+@router.get("/config-broker/roles", dependencies=[Depends(require_engine_auth)])
 async def config_broker_roles():
     return config_broker_service.role_matrix()
 
 
-@router.get("/config-broker/recommend")
+@router.get("/config-broker/network", dependencies=[Depends(require_engine_auth)])
+async def config_broker_network():
+    """Expose the broker-owned, secret-free network settings projection."""
+    return config_broker_service.network_status()
+
+
+@router.get("/config-broker/network/schema", dependencies=[Depends(require_engine_auth)])
+async def config_broker_network_schema():
+    return config_broker_service.network_schema()
+
+
+@router.get("/config-broker/client-gateway", dependencies=[Depends(require_engine_auth)])
+async def config_broker_client_gateway():
+    return config_broker_service.client_gateway_status()
+
+
+@router.get("/config-broker/client-gateway/schema", dependencies=[Depends(require_engine_auth)])
+async def config_broker_client_gateway_schema():
+    return config_broker_service.client_gateway_schema()
+
+
+@router.post("/config-broker/network/prepare", dependencies=[Depends(require_engine_auth)])
+async def config_broker_prepare_network(request: Request, data: dict = Body(...)):
+    try:
+        settings = data.get("settings") if isinstance(data.get("settings"), dict) else data
+        return config_broker_service.prepare_network(
+            settings=dict(settings or {}),
+            owner_id=_config_actor(request),
+            session_id=str(data.get("sessionId") or ""),
+            run_id=str(data.get("runId") or ""),
+        )
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/config-broker/client-gateway/prepare", dependencies=[Depends(require_engine_auth)])
+async def config_broker_prepare_client_gateway(request: Request, data: dict = Body(...)):
+    try:
+        settings = data.get("settings") if isinstance(data.get("settings"), dict) else data
+        return config_broker_service.prepare_client_gateway(
+            settings=dict(settings or {}), owner_id=_config_actor(request),
+            session_id=str(data.get("sessionId") or ""), run_id=str(data.get("runId") or ""),
+        )
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.get("/config-broker/recommend", dependencies=[Depends(require_engine_auth)])
 async def config_broker_recommend(role: str = Query(...), limit: int = Query(default=5, ge=1, le=10)):
     try:
         return config_broker_service.recommend(role=role, limit=limit)
@@ -1355,7 +1406,7 @@ async def config_broker_recommend(role: str = Query(...), limit: int = Query(def
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.post("/config-broker/roles/prepare")
+@router.post("/config-broker/roles/prepare", dependencies=[Depends(require_engine_auth)])
 async def config_broker_prepare_role(request: Request, data: dict = Body(...)):
     try:
         return config_broker_service.prepare_role_assignment(
@@ -1369,7 +1420,7 @@ async def config_broker_prepare_role(request: Request, data: dict = Body(...)):
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.post("/config-broker/mcp/prepare")
+@router.post("/config-broker/mcp/prepare", dependencies=[Depends(require_engine_auth)])
 async def config_broker_prepare_mcp(request: Request, data: dict = Body(...)):
     try:
         return config_broker_service.prepare_mcp(
@@ -1389,7 +1440,7 @@ async def config_broker_prepare_mcp(request: Request, data: dict = Body(...)):
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.get("/config-broker/transactions/{transaction_id}")
+@router.get("/config-broker/transactions/{transaction_id}", dependencies=[Depends(require_engine_auth)])
 async def config_broker_transaction(transaction_id: str, request: Request):
     try:
         return config_broker_service.get_transaction(transaction_id, owner_id=_config_actor(request))
@@ -1397,7 +1448,7 @@ async def config_broker_transaction(transaction_id: str, request: Request):
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.post("/config-broker/transactions/{transaction_id}/commit")
+@router.post("/config-broker/transactions/{transaction_id}/commit", dependencies=[Depends(require_engine_auth)])
 async def config_broker_commit(transaction_id: str, request: Request, data: dict = Body(...)):
     try:
         transaction = config_broker_service.get_transaction(transaction_id, owner_id=_config_actor(request))
@@ -1408,7 +1459,7 @@ async def config_broker_commit(transaction_id: str, request: Request, data: dict
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.post("/config-broker/transactions/{transaction_id}/rollback")
+@router.post("/config-broker/transactions/{transaction_id}/rollback", dependencies=[Depends(require_engine_auth)])
 async def config_broker_rollback(transaction_id: str, request: Request):
     try:
         return config_broker_service.rollback(transaction_id, owner_id=_config_actor(request))

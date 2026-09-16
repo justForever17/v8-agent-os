@@ -232,7 +232,7 @@ export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
         let cancelled = false;
         setError("");
         setResource(null);
-        const query = new URLSearchParams({ serverName: mcpApp.serverName || "", uri: mcpApp.resourceUri });
+        const query = new URLSearchParams({ serverName: mcpApp.serverName || "", uri: mcpApp.resourceUri, appInstanceId: mcpApp.appInstanceId });
         void fetch(`/api/mcp-apps/resources/read?${query.toString()}`, { cache: "no-store" })
             .then(async (response) => {
                 const payload = await response.json().catch(() => ({})) as Record<string, unknown>;

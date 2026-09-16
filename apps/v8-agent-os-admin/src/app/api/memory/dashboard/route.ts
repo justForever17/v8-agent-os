@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -5,7 +6,7 @@ const ENGINE_URL = resolveEngineOrigin();
 
 export async function GET() {
     try {
-        const response = await fetch(`${ENGINE_URL}/v1/memory/dashboard`);
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/dashboard`);
         if (!response.ok) {
             throw new Error(`Failed: ${response.status}`);
         }
@@ -18,7 +19,7 @@ export async function GET() {
 
 export async function DELETE() {
     try {
-        const response = await fetch(`${ENGINE_URL}/v1/memory/dashboard`, { method: "DELETE" });
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/dashboard`, { method: "DELETE" });
         if (!response.ok) {
             throw new Error(`Failed: ${response.status}`);
         }

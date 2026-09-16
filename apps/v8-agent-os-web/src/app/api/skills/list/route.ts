@@ -1,18 +1,18 @@
 import {
-    requireAdminProxyContext,
-    safeAdminProxyFetch,
-} from "@/lib/server/proxy/admin-proxy";
+    requireClientProxyContext,
+    safeClientProxyFetch,
+} from "@/lib/server/proxy/client-proxy";
 import { relayJsonProxyResponse } from "@/lib/server/proxy/proxy-response";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-    const contextResult = await requireAdminProxyContext();
+    const contextResult = await requireClientProxyContext();
     if (contextResult.response) {
         return contextResult.response;
     }
 
-    const result = await safeAdminProxyFetch(
+    const result = await safeClientProxyFetch(
         contextResult.context,
         "/skills/list",
         { method: "GET" },

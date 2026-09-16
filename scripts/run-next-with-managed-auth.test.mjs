@@ -77,7 +77,7 @@ test("start validation fails before launch when the standalone server is missing
 });
 
 test("Admin binds an IPv4-compatible default while Web remains loopback-only", () => {
-  assert.equal(runtimeHostnameForApp("admin", {}), "0.0.0.0");
+  assert.equal(runtimeHostnameForApp("admin", {}), "127.0.0.1");
   assert.equal(runtimeHostnameForApp("admin", { V8_ADMIN_HOSTNAME: "::" }), "::");
   assert.equal(runtimeHostnameForApp("web", {}), "127.0.0.1");
 });

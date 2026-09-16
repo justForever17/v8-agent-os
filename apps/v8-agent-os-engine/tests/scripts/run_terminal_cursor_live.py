@@ -51,10 +51,19 @@ try:
         time.sleep(.05)
     assert "V8_CWD:"+str(workspace) in output,"PTY cwd was not observed"
     pty.write_input("while ($true) { Write-Output 'fixture flood'; Start-Sleep -Milliseconds 10 }\r")
-    time.sleep(.3);pty.write_input("\x03");time.sleep(.3)
+    time.sleep(.3);pty.write_input("\x03");time.sleep(.15);pty.write_input("\x03");time.sleep(.15)
+    # An input receipt is not interruption proof. The foreground loop must end
+    # and the same shell must execute a fresh command before we terminate it.
+    interrupt_proof=workspace/"ctrl-c-proof.txt"
+    pty.write_input("Set-Content -LiteralPath '"+str(interrupt_proof).replace("'", "''")+"' -Value 'interrupt-returned'\r")
+    deadline=time.monotonic()+10
+    while time.monotonic()<deadline and not interrupt_proof.exists():time.sleep(.05)
+    assert interrupt_proof.exists(),"Ctrl+C did not return execution to the same shell"
+    assert interrupt_proof.read_text(encoding="utf-8-sig").strip()=="interrupt-returned"
+    assert pty.is_running,"Ctrl+C terminated the shell instead of its foreground command"
     stop_start=time.monotonic();pty.terminate()
     assert not pty.is_running and pty._read_return_code() is not None
-    result={"level":"ACTUAL_WINDOWS_PTY_AND_PIPE","cwdVerified":True,"pipeBytes":process.output_log.size,"twoObserverHashMatch":True,"memoryTailChunks":len(process.output_history),"ctrlCSent":True,"terminationConfirmed":True,"terminationMs":(time.monotonic()-stop_start)*1000}
+    result={"level":"ACTUAL_WINDOWS_PTY_AND_PIPE","cwdVerified":True,"pipeBytes":process.output_log.size,"twoObserverHashMatch":True,"memoryTailChunks":len(process.output_history),"doubleCtrlCInterruptedForeground":True,"sameShellExecutedProofAfterInterrupt":True,"terminationConfirmed":True,"terminationMs":(time.monotonic()-stop_start)*1000}
     out=root/"tmp/resident-web-evidence/terminal-native.json";out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(result,indent=2),encoding="utf-8");print(json.dumps(result))
 finally:
     if pty.is_running:pty.terminate()

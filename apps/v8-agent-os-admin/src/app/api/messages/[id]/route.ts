@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -21,7 +22,7 @@ export async function DELETE(
 
     try {
         const query = req.nextUrl.search || "";
-        const res = await fetch(`${ENGINE_URL}/messages/${encodeURIComponent(id)}${query}`, {
+        const res = await engineFetch(`${ENGINE_URL}/messages/${encodeURIComponent(id)}${query}`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
         });

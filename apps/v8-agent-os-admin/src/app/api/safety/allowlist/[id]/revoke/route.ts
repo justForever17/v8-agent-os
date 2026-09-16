@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -15,7 +16,7 @@ export async function POST(
     const { id } = await params;
 
     try {
-        const res = await fetch(`${ENGINE_URL}/safety/allowlist/${encodeURIComponent(id)}/revoke`, {
+        const res = await engineFetch(`${ENGINE_URL}/safety/allowlist/${encodeURIComponent(id)}/revoke`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
         });

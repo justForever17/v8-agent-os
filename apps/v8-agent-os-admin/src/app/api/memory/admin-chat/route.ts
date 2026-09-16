@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -6,7 +7,7 @@ const ENGINE_BASE = resolveEngineOrigin();
 export async function POST(req: NextRequest) {
     const body = await req.json();
 
-    const engineRes = await fetch(`${ENGINE_BASE}/v1/memory/admin-chat`, {
+    const engineRes = await engineFetch(`${ENGINE_BASE}/v1/memory/admin-chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

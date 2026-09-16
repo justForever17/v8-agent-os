@@ -1,6 +1,7 @@
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, dialog, nativeImage, ipcMain, net, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { readLocalEngineSecret, ensureLocalEngineIdentity } = require('../lib/engine-identity.cjs');
 const { pathToFileURL } = require('node:url');
 const { createDesktopPetShutdownCoordinator } = require('../lib/desktop-pet-shutdown.cjs');
 const { createShellControlServer, isValidSessionId } = require('../lib/shell-control.cjs');
@@ -48,7 +49,7 @@ let engineBaseUrl = process.env.V8_ENGINE_BASE_URL || 'http://127.0.0.1:9530';
 const cliApiUrl = pathToFileURL(path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'shell_api.mjs')).href;
 const releaseManifestPath = path.join(repoRoot, 'release-manifest.json');
 let productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
-const CORE_SERVICE_IDS = ['engine', 'admin', 'web'];
+const CORE_SERVICE_IDS = ['engine', 'web'];
 const CORE_SERVICE_LABELS = { engine: 'Engine', admin: 'Admin', web: 'Web' };
 const MANAGED_SHELL_SHUTDOWN_ARG = '--v8os-managed-shutdown';
 const MANAGED_SHELL_RESTART_ARG = '--v8os-managed-restart';
@@ -221,10 +222,7 @@ function isWebSurfaceUrl(url) {
   }
 }
 
-function guardedSurfaceUrl(url) {
-  return adminSessionLocked && isWebSurfaceUrl(url) ? adminLoginUrl() : url;
-}
-
+function guardedSurfaceUrl(url) { return url; }
 function loadInMainWindow(url, options = {}) {
   const targetUrl = guardedSurfaceUrl(url);
   pendingSurfaceUrl = targetUrl;
@@ -250,11 +248,22 @@ function loadInMainWindow(url, options = {}) {
 }
 
 async function openAdmin() {
+  await ensureAdminServiceStarted();
   return loadInMainWindow(adminSessionLocked ? adminLoginUrl() : `${adminBaseUrl}/admin`, { resume: !adminSessionLocked });
 }
 
 async function openDesktopPetSettings() {
+  await ensureAdminServiceStarted();
   return loadInMainWindow(`${adminBaseUrl}/admin/desktop-pet`);
+}
+
+async function ensureAdminServiceStarted() {
+  const { shellStartWithRuntimePorts } = await cliApi();
+  const { profile, results } = await shellStartWithRuntimePorts(['admin'], { mode: 'start' });
+  applyRuntimePortProfile(profile);
+  const failures = results.filter(item => !['started', 'already_running'].includes(item.status));
+  if (failures.length) throw coreServiceStartupError(failures);
+  await waitForUrl(`${adminBaseUrl}/login`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'admin' });
 }
 
 async function openWeb() {
@@ -354,7 +363,8 @@ async function waitForUrl(url, options = {}) {
         {
           cache: 'no-store',
           credentials: 'omit',
-          headers: { Accept: 'text/html' },
+          headers: { Accept: options.kind === 'engine' ? 'application/json' : 'text/html',
+            ...(options.kind === 'engine' ? { 'x-v8-agent-os-secret': readLocalEngineSecret() } : {}) },
         },
       );
       const validation = validateReadinessResponse(options.kind, {
@@ -454,13 +464,8 @@ async function waitForServices(startResults) {
   const readiness = Promise.all([
     waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'engine', isCancelled: () => complete })
       .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'engine' })),
-    waitForUrl(`${adminBaseUrl}/login`, {
-      timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS,
-      kind: 'admin',
-      expectedOrigin: new URL(adminBaseUrl).origin,
-      isCancelled: () => complete,
-    })
-      .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'admin' })),
+    // Admin is an optional configuration surface. Web and Engine readiness are
+    // sufficient for the trusted local client startup path.
     waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'web', isCancelled: () => complete })
       .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'web' })),
   ]);
@@ -511,30 +516,6 @@ async function ensureCoreServicesStarted() {
     return await currentAttempt;
   } finally {
     if (coreServicesStartPromise === currentAttempt) coreServicesStartPromise = null;
-  }
-}
-
-async function isInstanceInitialized() {
-  try {
-    const { response, body } = await fetchTextWithTimeout(
-      net.fetch.bind(net),
-      `${adminBaseUrl}/api/client/instance`,
-      2000,
-      {
-        cache: 'no-store',
-        credentials: 'omit',
-      },
-    );
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = JSON.parse(body || '{}');
-    if (payload?.kind !== 'v8_instance_manifest' || typeof payload?.initialized !== 'boolean') {
-      throw new Error('instance manifest contract mismatch');
-    }
-    return payload.initialized;
-  } catch (error) {
-    const failure = new Error('无法确认本机初始化状态 / Unable to confirm local initialization state.');
-    failure.cause = error;
-    throw failure;
   }
 }
 
@@ -643,7 +624,6 @@ function isLocalProductSurface(url) {
 function isTrustedShellIpc(event, options = {}) {
   const frame = event?.senderFrame;
   const mainFrame = event?.sender?.mainFrame;
-  if (adminSessionLocked && isWebSurfaceUrl(frame?.url)) return false;
   return isTrustedIpcSource({
     senderMatches: Boolean(residentSurfaces?.owns(event?.sender, frame?.url, options.allowStartup === true)),
     isMainFrame: Boolean(frame
@@ -707,7 +687,6 @@ function scheduleSurfaceRecovery(reason, targetUrl = '', contents = mainWindow?.
     entry.recoveryTimer = setTimeout(() => {
       entry.recoveryTimer = null;
       if (!contents.isDestroyed() && !quitting) {
-        if (adminSessionLocked && isWebSurfaceUrl(targetUrl)) { void openAdmin(); return; }
         void contents.loadURL(targetUrl).then(() => { entry.loaded = true; }).catch(() => scheduleSurfaceRecovery(reason, targetUrl, contents));
       }
     }, 700);
@@ -755,16 +734,10 @@ async function performInitialSurfaceLoad() {
     reportSurfaceStage('core_services_ready');
     coreServicesReady = true;
     const defaultChatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
-    const initialized = await isInstanceInitialized();
-    const adminAuthenticated = initialized ? await isAdminSessionAuthenticated() : false;
-    setAdminSessionLocked(!adminAuthenticated, initialized ? 'startup_auth_probe' : 'owner_not_initialized');
-    const targetUrl = initialProductSurfaceUrl({
-      initialized,
-      adminAuthenticated,
-      pendingSurfaceUrl,
-      defaultChatUrl,
-      adminBaseUrl,
-    });
+    await ensureLocalEngineIdentity(net.fetch.bind(net), engineBaseUrl);
+    const targetUrl = initialProductSurfaceUrl({ initialized: true, adminAuthenticated: true,
+      pendingSurfaceUrl, defaultChatUrl });
+    if (new URL(targetUrl).origin === new URL(adminBaseUrl).origin) await ensureAdminServiceStarted();
     const expectedSurfaceKind = classifyProductSurface({
       coreServicesReady: true,
       loadedUrl: targetUrl,
@@ -1306,7 +1279,7 @@ async function quitV8OS() {
   try {
     const { removeShellProcessRecord, shellStatus, shellStop } = await cliApi();
     const result = await runManagedV8OSShutdown({
-      coreIds: CORE_SERVICE_IDS,
+      coreIds: [...CORE_SERVICE_IDS, 'admin'],
       desktopPetId: 'desktop-pet',
       shouldStopDesktopPet: desktopPetProcessRunning || Boolean(shellControl?.hasAuthenticatedClient()),
       stopDesktopPetGracefully,
@@ -1379,6 +1352,35 @@ async function quitShellForRestart() {
   app.quit();
 }
 
+// A renderer/GPU fault belongs to the Shell surface. Restarting the whole
+// product here would terminate Engine episodes and make an appearance glitch
+// look like an Agent failure. Keep Engine/Web alive and only recycle the
+// Electron owner plus the optional pet process.
+async function recoverShellAfterGpuFailure(relaunchArgs = []) {
+  if (quitting) return;
+  quitting = true;
+  app.emit('v8os-governed-shutdown-started');
+  gpuRecoveryRelaunchArgs = Array.isArray(relaunchArgs) ? relaunchArgs.map(String) : [];
+  try {
+    const { removeShellProcessRecord } = await cliApi();
+    if (desktopPetProcessRunning) await stopDesktopPetGracefully();
+    await removeShellProcessRecord(shellProcessRecordIdentity);
+  } catch (error) {
+    console.warn('[V8OS Shell] GPU recovery kept Engine alive but local Shell cleanup was incomplete', {
+      reason: error?.message || 'unknown_error',
+    });
+  }
+  try { await shellControl?.stop(); } catch (error) {
+    console.warn('[V8OS Shell] GPU recovery could not close Shell control channel', {
+      reason: error?.message || 'unknown_error',
+    });
+  }
+  const args = gpuRecoveryRelaunchArgs;
+  gpuRecoveryRelaunchArgs = null;
+  app.relaunch({ args });
+  app.quit();
+}
+
 function updateTrayMenu() {
   if (!tray) return;
   const model = buildTrayMenuModel({
@@ -1389,7 +1391,7 @@ function updateTrayMenu() {
   });
   const template = model.map((item) => {
     if (item.type === 'separator') return { type: 'separator' };
-    if (item.id === 'open-web') return { label: item.label, enabled: !adminSessionLocked, click: openWeb };
+    if (item.id === 'open-web') return { label: item.label, enabled: true, click: openWeb };
     if (item.id === 'open-admin') return { label: item.label, click: openAdmin };
     if (item.id === 'start-desktop-pet' || item.id === 'stop-desktop-pet') return { label: item.label, enabled: item.enabled !== false, click: () => { void toggleDesktopPet(); } };
     if (item.id === 'check-update') return { label: item.label, click: () => { void requestDesktopUpdateCheck({ manual: true }); } };
@@ -1453,7 +1455,7 @@ function createMainWindow() {
   mainWindow.on('closed', () => { residentSurfaces?.dispose(); residentSurfaces = null; mainWindow = null; });
   observeSurfaceContents(mainWindow.webContents);
   void loadUrlSafely(
-    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web... / Starting Engine, Admin, and Web...')),
+    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Web... / Starting Engine and Web...')),
     (error) => console.error('[v8os-shell] failed to show startup surface', error),
   ).finally(() => { void loadInitialSurface(); });
 }
@@ -1471,11 +1473,6 @@ function observeSurfaceContents(contents) {
       contents.downloadURL(destination);
       return;
     }
-    if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
-      event.preventDefault();
-      setImmediate(() => { void loadInMainWindow(adminLoginUrl()); });
-      return;
-    }
     if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
     else if (mainFrameNavigation !== false && !residentSurfaces?.owns(contents, destination)) {
       event.preventDefault(); void loadInMainWindow(destination, { resume: true });
@@ -1484,11 +1481,6 @@ function observeSurfaceContents(contents) {
   contents.on('will-redirect', (event, targetUrl, _isInPlace, isMainFrame) => {
     const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const destination = event.url || targetUrl;
-    if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
-      event.preventDefault();
-      setImmediate(() => { void loadInMainWindow(adminLoginUrl()); });
-      return;
-    }
     if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
     else if (mainFrameNavigation !== false && !residentSurfaces?.owns(contents, destination)) {
       event.preventDefault(); void loadInMainWindow(destination, { resume: true });
@@ -1553,10 +1545,6 @@ function observeSurfaceContents(contents) {
         shellControl?.setSurfaceStatus({ surfaceReady: false });
         void loadInMainWindow(adminLoginUrl());
       });
-    } else if (surfaceKind === 'web' && adminSessionLocked) {
-      shellControl?.setSurfaceStatus({ surfaceReady: false });
-      void loadInMainWindow(adminLoginUrl());
-      return;
     }
     if (!surfaceKind || !contents) {
       shellControl?.setSurfaceStatus({ surfaceReady: false });
@@ -1757,8 +1745,7 @@ function registerShellProtocol() {
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 app.on('v8os-gpu-recovery-requested', (relaunchArgs) => {
   if (quitting || gpuRecoveryRelaunchArgs) return;
-  gpuRecoveryRelaunchArgs = Array.isArray(relaunchArgs) ? relaunchArgs.map(String) : [];
-  void quitV8OS();
+  void recoverShellAfterGpuFailure(relaunchArgs);
 });
 if (!hasSingleInstanceLock) {
   app.quit();

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -21,7 +22,7 @@ async function proxy(req: NextRequest, id: string, suffix = "", method = "GET") 
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     try {
-        const response = await fetch(
+        const response = await engineFetch(
             `${ENGINE_URL}/projects/${encodeURIComponent(id)}/engineering-workspace${suffix}`,
             { method, headers: { "Content-Type": "application/json" }, cache: "no-store" },
         );

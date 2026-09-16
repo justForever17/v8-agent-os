@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { buildModelMutationPayload, listEngineModels } from "@/lib/models/model-admin";
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
     const providerIdFilter = searchParams.get("providerId");
 
     try {
-        const res = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
+        const res = await engineFetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Python API returned ${res.status}`);
         
         const routesData = await res.json();
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
         if (!providerCode) throw new Error("providerId is required");
         const modelCode = String(data.modelId || "").trim();
         if (!modelCode) throw new Error("modelId is required");
-        const resPost = await fetch(`${ENGINE_URL}/models/bindings`, {
+        const resPost = await engineFetch(`${ENGINE_URL}/models/bindings`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

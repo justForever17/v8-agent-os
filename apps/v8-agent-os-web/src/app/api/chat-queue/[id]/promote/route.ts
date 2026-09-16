@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 
 import {
-    requireAdminProxyContext,
-    safeAdminProxyFetch,
-} from "@/lib/server/proxy/admin-proxy";
+    requireClientProxyContext,
+    safeClientProxyFetch,
+} from "@/lib/server/proxy/client-proxy";
 import { relayJsonProxyResponse } from "@/lib/server/proxy/proxy-response";
 
 export const runtime = "nodejs";
@@ -14,13 +14,13 @@ type RouteContext = {
 };
 
 export async function POST(_req: NextRequest, context: RouteContext) {
-    const contextResult = await requireAdminProxyContext();
+    const contextResult = await requireClientProxyContext();
     if (contextResult.response) {
         return contextResult.response;
     }
 
     const { id } = await context.params;
-    const result = await safeAdminProxyFetch(
+    const result = await safeClientProxyFetch(
         contextResult.context,
         `/client/chat-queue/${encodeURIComponent(id)}/promote`,
         { method: "POST" },

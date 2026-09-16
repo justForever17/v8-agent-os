@@ -61,9 +61,9 @@ test('Web and Admin refresh preserve the shown hash and old id, with auth checke
     });
     const web = load('apps/v8-agent-os-web/src/app/api/approvals/[id]/refresh-spec-review/route.ts', {
         'next/server': {},
-        '@/lib/server/proxy/admin-proxy': {
-            requireAdminProxyContext: async () => webAuthorized ? {context: {}} : {response: json({error: 'Unauthorized'}, {status: 401})},
-            safeAdminProxyFetch: async (_context, url, init) => {
+        '@/lib/server/proxy/client-proxy': {
+            requireClientProxyContext: async () => webAuthorized ? {context: {}} : {response: json({error: 'Unauthorized'}, {status: 401})},
+            safeClientProxyFetch: async (_context, url, init) => {
                 assert.equal(url, '/approvals/old/refresh-spec-review');
                 return {response: await admin.POST(new Request('http://synthetic.invalid' + url, init), {params: Promise.resolve({id: 'old'})})};
             },

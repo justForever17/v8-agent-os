@@ -36,6 +36,6 @@ test("client supervisor endpoint exposes profile fields only", () => {
   assert.match(adminRoute, /name: String\(profile\.name/);
   assert.match(adminRoute, /roleLabel: String\(profile\.roleLabel/);
   assert.doesNotMatch(adminRoute, /systemPrompt|allowedTools|bindings/);
-  assert.match(webRoute, /\/client\/supervisor-profile/);
+  assert.match(webRoute, /\/supervisor-profile/);
   assert.match(webRoute, /"Cache-Control": "no-store"/);
 });

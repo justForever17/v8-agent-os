@@ -1,6 +1,6 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { adminJson, requireOk } from "./client_api.mjs";
+import { engineJson } from "./engine_client.mjs";
 import { currentWorkspaceBinding, registerTrustedWorkspaceProject } from "./workspace_commands.mjs";
 
 function optionValue(args, name, fallback = "") {
@@ -102,7 +102,7 @@ export function buildChatSubmitPayload({
 
 async function ensureSession({ sessionId, message, workspacePath, workspaceId, projectId }) {
   if (sessionId) return sessionId;
-  const response = await adminJson("/api/client/conversations", {
+  const data = await engineJson("/v1/sessions", {
     method: "POST",
     body: {
       title: message.slice(0, 40) || "CLI Chat",
@@ -115,7 +115,6 @@ async function ensureSession({ sessionId, message, workspacePath, workspaceId, p
     },
     timeoutMs: 10_000,
   });
-  const data = requireOk(response, "创建会话");
   return String(data.id || data.sessionId || data.conversationId || "");
 }
 
@@ -160,18 +159,18 @@ export function assistantTerminalFailure(message) {
 }
 
 async function latestMessageIds(sessionId) {
-  const response = await adminJson(`/api/client/conversations/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 });
-  if (!response.ok) return new Set();
-  const messages = Array.isArray(response.data?.messages) ? response.data.messages : [];
+  let data;
+  try { data = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 }); } catch { return new Set(); }
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
   return new Set(messages.map((message, index) => String(message.id || message.messageId || `${index}:${extractMessageText(message).slice(0, 48)}`)));
 }
 
 async function waitForAssistant(sessionId, beforeIds, { timeoutMs = 120_000 } = {}) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    const response = await adminJson(`/api/client/conversations/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 });
-    if (response.ok) {
-      const messages = Array.isArray(response.data?.messages) ? response.data.messages : [];
+    try {
+      const data = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 });
+      const messages = Array.isArray(data?.messages) ? data.messages : [];
       const candidate = [...messages].reverse().find((message, index) => {
         if (!isAssistantMessage(message)) return false;
         const id = String(message.id || message.messageId || `${messages.length - index - 1}:${extractMessageText(message).slice(0, 48)}`);
@@ -186,6 +185,9 @@ async function waitForAssistant(sessionId, beforeIds, { timeoutMs = 120_000 } = 
       if (terminalFailure) {
         throw new Error(assistantTerminalFailure(terminalFailure).message);
       }
+    } catch (error) {
+      if (String(error?.message || "").startsWith("主理人运行已")) throw error;
+      // Retry transient Engine reads until the bounded timeout.
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
@@ -238,11 +240,11 @@ export async function sendChatMessage(args, { print = true } = {}) {
     specMode: hasFlag(args, "--spec"),
     safetyApprovalMode,
   });
-  const submit = requireOk(await adminJson("/api/client/chat-submit", {
+  const submit = await engineJson("/v1/chat/submit", {
     method: "POST",
     body: payload,
     timeoutMs: 15_000,
-  }), "提交消息");
+  });
   const timeoutMs = Number(optionValue(args, "--timeout", "120")) * 1000;
   const assistant = hasFlag(args, "--no-wait") ? null : await waitForAssistant(sessionId, beforeIds, { timeoutMs });
   const result = {

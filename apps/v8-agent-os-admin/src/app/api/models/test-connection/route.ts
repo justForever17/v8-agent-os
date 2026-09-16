@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
         if (!target) {
             return NextResponse.json({ error: "modelId is required" }, { status: 422 });
         }
-        const response = await fetch(ENGINE_URL, {
+        const response = await engineFetch(ENGINE_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ modelRef, model_ref: modelRef, modelId: modelId || target, model_id: modelId || target, providerId, provider_id: providerId }),

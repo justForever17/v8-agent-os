@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -9,7 +10,7 @@ export async function GET(req: NextRequest) {
     const userEmail = await resolveClientUserEmail(req);
     if (!userEmail) return unauthorizedClientJson();
     try {
-        const response = await fetch(`${ENGINE_ORIGIN}/v1/api/plugins/mentions`, { cache: "no-store" });
+        const response = await engineFetch(`${ENGINE_ORIGIN}/v1/api/plugins/mentions`, { cache: "no-store" });
         const data = await response.json();
         return NextResponse.json(data, { status: response.status });
     } catch (error) {

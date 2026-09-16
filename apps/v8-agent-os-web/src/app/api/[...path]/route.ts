@@ -1,14 +1,14 @@
 import { NextRequest } from "next/server";
-import { requireAdminProxyContext, safeAdminProxyFetch } from "@/lib/server/proxy/admin-proxy";
+import { requireClientProxyContext, safeClientProxyFetch } from "@/lib/server/proxy/client-proxy";
 export const dynamic = "force-dynamic";
 async function relay(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
-    const auth = await requireAdminProxyContext();
+    const auth = await requireClientProxyContext();
     if (auth.response) return auth.response;
     const { path } = await context.params;
     const target = `/${path.map(encodeURIComponent).join("/")}${req.nextUrl.search}`;
     const headers: Record<string,string> = {};
     for (const name of ["content-type", "range", "if-none-match", "if-modified-since"]) { const value = req.headers.get(name); if (value) headers[name] = value; }
-    const result = await safeAdminProxyFetch(auth.context, target, {
+    const result = await safeClientProxyFetch(auth.context, target, {
         method: req.method, headers, signal: req.signal, cache: "no-store",
         ...(!["GET","HEAD"].includes(req.method) ? { body: req.body, duplex: "half" } : {}),
     } as RequestInit, "/runtime-admin-proxy");

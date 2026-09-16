@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -16,7 +17,7 @@ export async function POST(
     const body = await req.json().catch(() => ({}));
 
     try {
-        const res = await fetch(`${ENGINE_URL}/safety/active-defense/incidents/${encodeURIComponent(id)}/confirm`, {
+        const res = await engineFetch(`${ENGINE_URL}/safety/active-defense/incidents/${encodeURIComponent(id)}/confirm`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),

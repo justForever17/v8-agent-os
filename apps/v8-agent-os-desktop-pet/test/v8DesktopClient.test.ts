@@ -34,7 +34,7 @@ test('ensureLocalSession signs in immediately when no token exists', async () =>
   try {
     const session = await new V8DesktopClientAdapter().ensureLocalSession();
     assert.equal(session.accessToken, 'access-1');
-    assert.deepEqual(calls, ['/api/v8/api/client/auth/local-session']);
+    assert.deepEqual(calls, ['http://127.0.0.1:9530/v1/client-identity/local-session']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -43,7 +43,7 @@ test('ensureLocalSession signs in immediately when no token exists', async () =>
 test('ensureLocalSession refreshes an expired access token before issuing a new local session', async () => {
   const storage = installLocalStorage();
   storage.set('v8.desktopPet.auth', JSON.stringify({
-    adminBaseUrl: 'http://127.0.0.1:9528',
+    engineBaseUrl: 'http://127.0.0.1:9530/v1',
     accessToken: 'expired-access',
     refreshToken: 'refresh-1',
   }));
@@ -52,9 +52,9 @@ test('ensureLocalSession refreshes an expired access token before issuing a new 
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
-    if (url.endsWith('/auth/me') && calls.length === 1) return jsonResponse(401, { error: 'Unauthorized' });
-    if (url.endsWith('/auth/refresh')) return jsonResponse(200, { accessToken: 'access-2', refreshToken: 'refresh-2' });
-    if (url.endsWith('/auth/me')) return jsonResponse(200, { user: { name: 'owner' } });
+    if (url.endsWith('/client-identity/me') && calls.length === 1) return jsonResponse(401, { error: 'Unauthorized' });
+    if (url.endsWith('/client-identity/refresh')) return jsonResponse(200, { accessToken: 'access-2', refreshToken: 'refresh-2' });
+    if (url.endsWith('/client-identity/me')) return jsonResponse(200, { user: { name: 'owner' } });
     return jsonResponse(500, { error: 'unexpected' });
   }) as typeof fetch;
   try {
@@ -69,7 +69,7 @@ test('ensureLocalSession refreshes an expired access token before issuing a new 
 test('ensureLocalSession falls back to a trusted local session after refresh rejection', async () => {
   const storage = installLocalStorage();
   storage.set('v8.desktopPet.auth', JSON.stringify({
-    adminBaseUrl: 'http://127.0.0.1:9528',
+    engineBaseUrl: 'http://127.0.0.1:9530/v1',
     accessToken: 'expired-access',
     refreshToken: 'expired-refresh',
   }));
@@ -78,15 +78,15 @@ test('ensureLocalSession falls back to a trusted local session after refresh rej
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
-    if (url.endsWith('/auth/me')) return jsonResponse(401, { error: 'Unauthorized' });
-    if (url.endsWith('/auth/refresh')) return jsonResponse(401, { error: 'Invalid refresh token' });
-    if (url.endsWith('/auth/local-session')) return jsonResponse(200, { accessToken: 'access-3', refreshToken: 'refresh-3' });
+    if (url.endsWith('/client-identity/me')) return jsonResponse(401, { error: 'Unauthorized' });
+    if (url.endsWith('/client-identity/refresh')) return jsonResponse(401, { error: 'Invalid refresh token' });
+    if (url.endsWith('/client-identity/local-session')) return jsonResponse(200, { accessToken: 'access-3', refreshToken: 'refresh-3' });
     return jsonResponse(500, { error: 'unexpected' });
   }) as typeof fetch;
   try {
     const session = await new V8DesktopClientAdapter().ensureLocalSession();
     assert.equal(session.accessToken, 'access-3');
-    assert.equal(calls.filter((url) => url.endsWith('/auth/local-session')).length, 1);
+    assert.equal(calls.filter((url) => url.endsWith('/client-identity/local-session')).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -95,7 +95,7 @@ test('ensureLocalSession falls back to a trusted local session after refresh rej
 test('ensureLocalSession reissues a trusted local session after a non-auth refresh failure', async () => {
   const storage = installLocalStorage();
   storage.set('v8.desktopPet.auth', JSON.stringify({
-    adminBaseUrl: 'http://127.0.0.1:9528',
+    engineBaseUrl: 'http://127.0.0.1:9530/v1',
     accessToken: 'expired-access',
     refreshToken: 'refresh-1',
   }));
@@ -105,9 +105,9 @@ test('ensureLocalSession reissues a trusted local session after a non-auth refre
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
-    if (url.endsWith('/auth/me')) return jsonResponse(401, { error: 'Unauthorized' });
-    if (url.endsWith('/auth/refresh')) return jsonResponse(500, { error: 'Refresh temporarily unavailable' });
-    if (url.endsWith('/auth/local-session')) return jsonResponse(200, { accessToken: 'access-4', refreshToken: 'refresh-4' });
+    if (url.endsWith('/client-identity/me')) return jsonResponse(401, { error: 'Unauthorized' });
+    if (url.endsWith('/client-identity/refresh')) return jsonResponse(500, { error: 'Refresh temporarily unavailable' });
+    if (url.endsWith('/client-identity/local-session')) return jsonResponse(200, { accessToken: 'access-4', refreshToken: 'refresh-4' });
     return jsonResponse(500, { error: 'unexpected' });
   }) as typeof fetch;
   try {
@@ -115,7 +115,7 @@ test('ensureLocalSession reissues a trusted local session after a non-auth refre
     const session = await client.ensureLocalSession();
     assert.equal(session.accessToken, 'access-4');
     assert.equal(client.getActiveConversationId(), 'session-live-preserved');
-    assert.equal(calls.filter((url) => url.endsWith('/auth/local-session')).length, 1);
+    assert.equal(calls.filter((url) => url.endsWith('/client-identity/local-session')).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

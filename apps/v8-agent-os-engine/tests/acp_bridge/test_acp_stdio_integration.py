@@ -138,7 +138,7 @@ def bff(tmp_path):
 class Client:
     def __init__(self, url, workspace):
         env = {k: v for k, v in os.environ.items() if k not in {"V8OS_CLIENT_TOKEN", "V8OS_ADMIN_TOKEN"}}
-        env.update({"V8OS_ADMIN_URL": url, "V8_ENGINE_PYTHON": sys.executable})
+        env.update({"V8OS_ENGINE_URL": url, "V8_ENGINE_PYTHON": sys.executable})
         self.process = subprocess.Popen([shutil.which("node") or "node", str(CLI), "acp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env, cwd=workspace)
         self.incoming = queue.Queue()
         threading.Thread(target=self.read, daemon=True).start()

@@ -2,7 +2,7 @@ import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
-import { resourceCacheDirectory } from "@/src/lib/resource-cache-directory";
+import { resourceCacheDirectory, resourceCacheIdentity } from "@/src/lib/resource-cache-directory";
 
 type BackgroundCacheRecord = {
     source: string;
@@ -42,14 +42,15 @@ export async function cacheProfileBackground(source: string, mediaType: "image" 
     if (!root || !/^https?:\/\//i.test(normalizedSource)) return normalizedSource;
 
     if (!authorityKey) return normalizedSource;
+    const identity = resourceCacheIdentity(normalizedSource);
     const stored = parseStoredRecord(await readMetadata(`v8.phone.background.${authorityKey}`));
-    if (stored?.source === normalizedSource && await localFileExists(stored.localUri)) {
+    if (stored?.source === identity && await localFileExists(stored.localUri)) {
         return stored.localUri;
     }
 
     const directory = await resourceCacheDirectory(root, "background", authorityKey);
     const extension = mediaType === "video" ? "mp4" : "webp";
-    const localUri = `${directory}background-${stableHash(normalizedSource)}.${extension}`;
+    const localUri = `${directory}background-${stableHash(identity)}.${extension}`;
     await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);
     if (!await localFileExists(localUri)) {
         const temporaryUri = `${localUri}.download`;
@@ -64,7 +65,7 @@ export async function cacheProfileBackground(source: string, mediaType: "image" 
         }
     }
 
-    await writeMetadata(`v8.phone.background.${authorityKey}`, JSON.stringify({ source: normalizedSource, localUri } satisfies BackgroundCacheRecord));
+    await writeMetadata(`v8.phone.background.${authorityKey}`, JSON.stringify({ source: identity, localUri } satisfies BackgroundCacheRecord));
     const files = await FileSystem.readDirectoryAsync(directory).catch(() => [] as string[]);
     await Promise.all(files
         .filter((name) => name !== localUri.slice(directory.length))

@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const res = await fetch(`${ENGINE_URL}/runtime-stability`, {
+        const res = await engineFetch(`${ENGINE_URL}/runtime-stability`, {
             cache: "no-store",
         });
         const data = await res.json().catch(() => ({}));
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const payload = await req.json().catch(() => ({}));
-        const res = await fetch(`${ENGINE_URL}/runtime-stability`, {
+        const res = await engineFetch(`${ENGINE_URL}/runtime-stability`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),

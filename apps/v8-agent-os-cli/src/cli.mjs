@@ -13,14 +13,28 @@ import {
   modelRoles,
   phonePairingManifest,
   phonePairingSummary,
+  phoneOwner,
+  phoneInitialize,
+  phonePairingTicket,
+  phoneDevices,
+  revokePhoneDevice,
   getConfigTransaction,
   rollbackConfigTransaction,
+  getNetworkConfig,
+  getNetworkSchema,
+  prepareNetworkConfig,
+  commitNetworkConfig,
+  rollbackNetworkConfig,
+  getClientGatewayConfig,
+  getClientGatewaySchema,
+  prepareClientGatewayConfig,
   removeMcpServer,
   recommendModel,
   setModelRole,
 } from "./config_commands.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { commandInbox } from "./inbox_commands.mjs";
+import { initializeServerCredentials, serverCredentialStatus } from "./credentials_commands.mjs";
 import { commandPreview } from "./preview_commands.mjs";
 import { runRepair } from "./repair.mjs";
 import { LOG_DIR, REPO_ROOT } from "./paths.mjs";
@@ -85,9 +99,11 @@ Usage:
   v8os doctor [--json]
   v8os config list|get <domain> [--json]
   v8os config transaction show|rollback <transaction-id> [--json]
+  v8os config network show|schema|prepare|commit|rollback ... [--json]
   v8os config mcp list|status|install|remove [--json]
   v8os config models list|doctor|roles|recommend|set-role [--category type] [--query text] [--json]
-  v8os config phone show|manifest [--json]
+  v8os config phone show|manifest|owner|init|pair|devices|revoke|schema|prepare|commit|rollback [--json]
+  v8os config credentials init|status --key-file <absolute-path> [--json]
   v8os repair [--dry-run|--yes] [--json]
   v8os logs
   v8os open admin|web
@@ -154,6 +170,12 @@ async function commandDoctor(args) {
 
 async function commandConfig(args) {
   const sub = args[0] || "list";
+  if (sub === "credentials" && ["init", "status"].includes(args[1])) {
+    const keyFile = optionValue(args, "--key-file", "");
+    const result = args[1] === "init" ? initializeServerCredentials(keyFile) : serverCredentialStatus(keyFile);
+    printJson(result);
+    return;
+  }
   const json = hasFlag(args, "--json");
   if (sub === "list") {
     const result = await listConfigDomains();
@@ -175,6 +197,34 @@ async function commandConfig(args) {
     if (args[1] === "rollback" && result.payload?.state && ["conflict", "recovery_required"].includes(result.payload.state)) {
       process.exitCode = 1;
     }
+    return;
+  }
+  if (sub === "network" && args[1] === "show") {
+    const result = await getNetworkConfig();
+    json ? printJson(result) : renderConfigTransaction({ source: result.source, payload: { state: result.payload?.mode, target: "network", ...(result.payload?.settings || {}) } });
+    return;
+  }
+  if (sub === "network" && args[1] === "schema") {
+    const result = await getNetworkSchema();
+    json ? printJson(result) : printJson(result.payload || result);
+    return;
+  }
+  if (sub === "network" && args[1] === "prepare") {
+    const raw = optionValue(args, "--settings-json");
+    if (!raw) throw new Error("config network prepare requires --settings-json");
+    let settings;
+    try { settings = JSON.parse(raw); } catch { throw new Error("--settings-json must be valid JSON"); }
+    const result = await prepareNetworkConfig(settings);
+    json ? printJson(result) : renderConfigTransaction(result);
+    return;
+  }
+  if (sub === "network" && ["commit", "rollback"].includes(args[1])) {
+    const transactionId = args[2];
+    const planDigest = optionValue(args.slice(3), "--plan-digest", "") || optionValue(args, "--plan-digest", "");
+    const result = args[1] === "commit"
+      ? await commitNetworkConfig(transactionId, planDigest)
+      : await rollbackNetworkConfig(transactionId);
+    json ? printJson(result) : renderConfigTransaction(result);
     return;
   }
   if (sub === "mcp" && args[1] === "list") {
@@ -228,6 +278,57 @@ async function commandConfig(args) {
   if (sub === "phone" && args[1] === "manifest") {
     const result = await phonePairingManifest();
     json ? printJson(result) : renderPhoneManifest(result);
+    return;
+  }
+  if (sub === "phone" && args[1] === "schema") {
+    const result = await getClientGatewaySchema();
+    json ? printJson(result) : printJson(result.payload || result);
+    return;
+  }
+  if (sub === "phone" && args[1] === "prepare") {
+    const raw = optionValue(args, "--settings-json");
+    if (!raw) throw new Error("config phone prepare requires --settings-json");
+    let settings;
+    try { settings = JSON.parse(raw); } catch { throw new Error("--settings-json must be valid JSON"); }
+    const result = await prepareClientGatewayConfig(settings);
+    json ? printJson(result) : renderConfigTransaction(result);
+    return;
+  }
+  if (sub === "phone" && ["commit", "rollback"].includes(args[1])) {
+    const transactionId = args[2];
+    const planDigest = optionValue(args.slice(3), "--plan-digest", "") || optionValue(args, "--plan-digest", "");
+    const result = args[1] === "commit"
+      ? await commitNetworkConfig(transactionId, planDigest)
+      : await rollbackNetworkConfig(transactionId);
+    json ? printJson(result) : renderConfigTransaction(result);
+    return;
+  }
+  if (sub === "phone" && args[1] === "owner") {
+    printJson(await phoneOwner());
+    return;
+  }
+  if (sub === "phone" && args[1] === "init") {
+    const result = await phoneInitialize({ login: optionValue(args, "--login", "owner"), name: optionValue(args, "--name", "") });
+    json ? printJson(result) : console.log(result.initialized ? "Engine owner/local session 已就绪。" : "Engine owner 尚未初始化。");
+    return;
+  }
+  if (sub === "phone" && args[1] === "pair") {
+    const result = await phonePairingTicket({
+      deviceName: optionValue(args, "--device-name", ""),
+      ttlMs: Number(optionValue(args, "--ttl-ms", "300000")),
+      baseUrl: optionValue(args, "--base-url", ""),
+    });
+    json ? printJson(result) : printJson(result.payload || result);
+    return;
+  }
+  if (sub === "phone" && args[1] === "devices") {
+    const result = await phoneDevices();
+    printJson(result);
+    return;
+  }
+  if (sub === "phone" && args[1] === "revoke") {
+    const result = await revokePhoneDevice(args[2]);
+    json ? printJson(result) : console.log(`Phone 设备已撤销：${args[2]}`);
     return;
   }
   throw new Error(`Unknown config command: ${args.join(" ")}`);

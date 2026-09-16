@@ -11,7 +11,7 @@ test("avatar upload uses durable client media and has a visual fallback", () => 
   const settings = read("src/components/settings/SettingsDialog.tsx");
   const avatarProxy = read("src/app/api/avatar/route.ts");
 
-  assert.match(upload, /\/client\/user-avatar-upload/);
+  assert.match(upload, /\/user-avatar-upload/);
   assert.match(settings, /<AvatarFallback>/);
   assert.match(settings, /data\.user \|\|/);
   assert.doesNotMatch(settings, /customAvatarUrl|customBackgroundUrl/);
@@ -89,6 +89,13 @@ test("profile refreshes across clients while retaining the canonical profile", (
   assert.match(profile, /visibilitychange/);
   assert.match(profile, /window\.addEventListener\("focus"/);
   assert.match(profile, /10_000/);
+});
+
+test("composer does not mount before a stable Engine scope draft key exists", () => {
+  const chat = read("src/app/chat/ChatClient.tsx");
+  assert.match(chat, /Do not mount the composer against an empty\/temporary scope/);
+  assert.match(chat, /activeConversationId && draftKey/);
+  assert.match(chat, /__global__/);
 });
 
 test("wallpaper bootstrap and profile projection share one appearance truth", () => {

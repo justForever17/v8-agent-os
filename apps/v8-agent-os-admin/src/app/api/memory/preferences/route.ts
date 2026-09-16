@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
@@ -5,7 +6,7 @@ const ENGINE_URL = resolveEngineOrigin();
 
 export async function GET() {
     try {
-        const response = await fetch(`${ENGINE_URL}/v1/memory/preferences`, { cache: "no-store" });
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/preferences`, { cache: "no-store" });
         if (!response.ok) {
             throw new Error(`Failed: ${response.status}`);
         }
@@ -18,7 +19,7 @@ export async function GET() {
 export async function PUT(req: Request) {
     try {
         const body = await req.json();
-        const response = await fetch(`${ENGINE_URL}/v1/memory/preferences`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/preferences`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
@@ -33,7 +34,7 @@ export async function PUT(req: Request) {
 export async function DELETE(req: Request) {
     try {
         const body = await req.json();
-        const response = await fetch(`${ENGINE_URL}/v1/memory/preferences`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/preferences`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),

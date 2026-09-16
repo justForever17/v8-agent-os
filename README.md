@@ -78,11 +78,11 @@ For developers and early testers:
 .\v8os.cmd preview --rebuild
 ```
 
-This rebuilds Admin, Web, and the native sandbox helper, stops preview processes owned by the current source tree, and then starts Engine, Admin, Web, and the desktop Shell. You should see a V8OS desktop window rather than a set of development server pages.
+This rebuilds Admin, Web, and the native sandbox helper, stops preview processes owned by the current source tree, and starts Engine, Web, and the desktop Shell. Admin starts when you open the control center. Local chat and the companion connect automatically without a login or pairing step.
 
 ### Connect Phone
 
-Phone is paired through the desktop control center. Once paired, it keeps a local server profile and can reconnect without asking you to scan again after a temporary network failure.
+Generate a pairing code in the desktop control center or with `v8os config phone pair --base-url https://your-gateway.example`, then scan or paste it in Phone. Engine owns pairing and sessions, so the control center can stay closed. Phone keeps a profile for each server and preserves drafts and saved connections during temporary network failures.
 
 ## Current Status
 

@@ -473,13 +473,18 @@ async def delete_memory_document(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def require_process_access(cmd_id: str, x_v8_agent_os_secret: str | None = Header(default=None), x_v8_agent_os_user_email: str | None = Header(default=None), x_v8_agent_os_user_id: str | None = Header(default=None)):
+def require_process_access(cmd_id: str, x_v8_agent_os_secret: str | None = Header(default=None), x_v8_agent_os_user_email: str | None = Header(default=None), x_v8_agent_os_user_id: str | None = Header(default=None), request: Request = None):
     import hmac
     from core.system_base import get_internal_secret
     from core.tools.native.command import _bg_processes
     from core.database import db
+    from core.auth_context import EngineAuthContext, is_local_client
+    context = request.scope.get("state", {}).get("engine_auth_context") if request else None
+    trusted_context = isinstance(context, EngineAuthContext) and (is_local_client(context) or context.device_kind == "human_phone")
+    if trusted_context:
+        x_v8_agent_os_user_email, x_v8_agent_os_user_id = context.session_id, context.subject
     secret = get_internal_secret()
-    if not secret or not hmac.compare_digest(secret, str(x_v8_agent_os_secret or "")) or not x_v8_agent_os_user_email:
+    if not trusted_context and (not secret or not hmac.compare_digest(secret, str(x_v8_agent_os_secret or "")) or not x_v8_agent_os_user_email):
         raise HTTPException(status_code=401, detail="Unauthorized")
     process = _bg_processes.get(cmd_id)
     if process is None: raise HTTPException(status_code=404, detail="Process not found")
@@ -490,7 +495,10 @@ def require_process_access(cmd_id: str, x_v8_agent_os_secret: str | None = Heade
         try: require_terminal_owner(cmd_id, x_v8_agent_os_user_email)
         except PermissionError as exc: raise HTTPException(status_code=403, detail=str(exc)) from exc
         except RuntimeError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return process
     owner = str((db.get_session(str(process.session_id or "")) or {}).get("user_id") or "")
+    if trusted_context and context.device_kind == "human_phone" and (not owner or owner == "anonymous"):
+        raise HTTPException(status_code=404, detail="Process session not found")
     if owner and owner != "anonymous" and owner not in {str(x_v8_agent_os_user_id or ""), str(x_v8_agent_os_user_email)}:
         raise HTTPException(status_code=403, detail="Process owner mismatch")
     return process

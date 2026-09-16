@@ -115,7 +115,6 @@ const GovernanceApprovalModal = dynamic(
     { ssr: false }
 );
 
-import { readLocalAdminBaseUrl } from "@/lib/local-admin-connection";
 
 interface ProjectDescriptor {
     id: string;
@@ -1073,7 +1072,14 @@ export default function ChatClient() {
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeOwner, setScopeOwner] = useState("");
     const scopeCacheRef = useRef(new Map<string, ScopeBindingView>());
-    const draftKey = draftOwnerKey(instanceId, String(session?.user?.id || ""), scopeOwner === activeConversationId ? String(scopeBinding?.workspaceId || scopeBinding?.workspacePath || "") : "", activeConversationId || "");
+    // Do not mount the composer against an empty/temporary scope during a
+    // reload. That used to accept text into an unpersisted draft, then replace
+    // it when the Engine scope response arrived. Global conversations still
+    // get a stable sentinel so their drafts survive navigation as well.
+    const draftWorkspace = scopeOwner === activeConversationId
+        ? String(scopeBinding?.workspaceId || scopeBinding?.workspacePath || "__global__")
+        : "";
+    const draftKey = draftOwnerKey(instanceId, String(session?.user?.id || ""), draftWorkspace, activeConversationId || "");
     const previousPrincipalRef = useRef("");
     useEffect(() => {
         // Session refresh/initialization is not a confirmed logout.
@@ -1199,6 +1205,7 @@ export default function ChatClient() {
     );
     const terminalWorkspacePath = scopeOwner === activeConversationId ? scopeBinding?.workspacePath || "" : "";
     const terminalCreateRef = useRef<{ owner: string; requestId: string; inFlight: boolean } | null>(null);
+    const terminalListRequestRef = useRef(0);
     const hasActiveWorkbenchSession = Boolean(activeConversationId);
 
     const upsertQueuedMessage = useCallback((incoming: unknown) => {
@@ -1346,6 +1353,9 @@ export default function ChatClient() {
                 setTerminalError(String(payload?.error || payload?.detail || t("web.terminal.startFailed")));
                 return;
             }
+            // A restore started before this create may arrive after it with an
+            // empty snapshot. It must not remove the new terminal/tab.
+            terminalListRequestRef.current += 1;
             upsertManualTerminalSession(payload, true);
             terminalCreateRef.current = null;
             setTerminalProfileId((prev) => prev || payload?.profileId || "");
@@ -1368,6 +1378,7 @@ export default function ChatClient() {
     ]);
 
     const loadManualTerminalSessions = useCallback(async () => {
+        const requestEpoch = ++terminalListRequestRef.current;
         if (!activeConversationId) {
             setManualTerminalSessions([]);
             return;
@@ -1381,7 +1392,7 @@ export default function ChatClient() {
             }
             const payload = await response.json().catch(() => ({}));
             const sessions = Array.isArray(payload?.sessions) ? payload.sessions as ManualTerminalSessionView[] : [];
-            if (activeConversationIdRef.current !== activeConversationId) return;
+            if (activeConversationIdRef.current !== activeConversationId || terminalListRequestRef.current !== requestEpoch) return;
             setManualTerminalSessions(sessions);
             setActiveTerminalTabId((current) => current || terminalTabIdForManualSession(sessions[0]?.sessionId || ""));
         } catch (error) {
@@ -3325,22 +3336,10 @@ export default function ChatClient() {
         let cancelled = false;
         void (async () => {
             try {
-                const localAdminBaseUrl = await readLocalAdminBaseUrl();
-                if (cancelled) return;
-                const connectionResponse = await fetch("/api/connection", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ adminBaseUrl: localAdminBaseUrl, persist: true }),
-                });
-                if (!connectionResponse.ok) {
-                    const payload = await connectionResponse.json().catch(() => null);
-                    throw new Error(payload?.error || payload?.message || t("web.generated.40132fa524"));
-                }
                 if (cancelled) return;
 
                 const result = await signIn("credentials", {
                     localSession: "1",
-                    adminBaseUrl: localAdminBaseUrl,
                     redirect: false,
                 });
                 if (result?.error) {
@@ -4622,7 +4621,7 @@ export default function ChatClient() {
                                     ) : null}
                                 </div>
                             ) : null}
-                            {activeConversationId ? (
+                            {activeConversationId && draftKey ? (
                                 <>
                                     {supervisorRuntimeModeSyncErrors[activeConversationId] ? (
                                         <div role="alert" className="mx-auto mb-1 w-full max-w-4xl rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -4671,6 +4670,10 @@ export default function ChatClient() {
                                     }}
                                     />
                                 </>
+                            ) : activeConversationId ? (
+                                <div className="rounded-2xl border border-border/50 bg-background/55 px-4 py-3 text-center text-sm text-muted-foreground" aria-live="polite">
+                                    {t("web.generated.2aeb46969c")}
+                                </div>
                             ) : (
                                 <div className="rounded-2xl border border-dashed border-border/60 bg-background/70 px-4 py-3 text-center text-sm text-muted-foreground">
                                     {t("web.generated.40e41202b3")}

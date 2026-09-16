@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUser, unauthorizedClientJson } from "@/lib/server/client-request-auth";
@@ -36,7 +37,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
         if (method === "POST") {
             init.body = JSON.stringify(await req.json().catch(() => ({})));
         }
-        const response = await fetch(buildTarget(req, segments), init);
+        const response = await engineFetch(buildTarget(req, segments), init);
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });
     } catch (error) {

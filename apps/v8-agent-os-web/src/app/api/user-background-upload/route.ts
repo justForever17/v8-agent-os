@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import { resolveClientApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 export const runtime = "nodejs";
 
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
         if (!req.body || !contentType) {
             return NextResponse.json({ error: "没有找到上传文件" }, { status: 400 });
         }
-        const upstream = await fetch(`${await resolveAdminApiBaseUrl()}/client/user-background-upload`, {
+        const upstream = await fetch(`${await resolveClientApiBaseUrl()}/user-background-upload`, {
             method: "POST",
             headers: {
                 "x-v8-agent-os-secret": internalSecret,

@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .backend import AdminBffBackend
+from .backend import EngineClientBackend
 from .content import event_data, event_kind, event_run_id, history_updates, prompt_text, runtime_update, text_update
 from .launch import ACP_PROTOCOL_VERSION, build_launch_manifest
 from .protocol import JsonRpcError, JsonRpcMessage, error_response, notification, require_object, result_response
@@ -28,7 +28,7 @@ class AcpBridge:
     """ACP v1 adapter; Engine owns runs, permissions, history and recovery."""
 
     def __init__(self, backend=None):
-        self.backend = backend or AdminBffBackend()
+        self.backend = backend or EngineClientBackend()
         self.sessions: dict[str, AcpSession] = {}
         self.client_capabilities: dict = {}
         self.initialized = False

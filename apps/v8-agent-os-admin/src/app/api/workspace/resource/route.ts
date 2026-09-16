@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const response = await fetch(buildTargetUrl(req), {
+        const response = await engineFetch(buildTargetUrl(req), {
             headers: {
                 "x-v8-agent-os-user-email": userEmail,
                 ...(req.headers.get("range") ? { Range: String(req.headers.get("range")) } : {}),

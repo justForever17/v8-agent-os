@@ -2,7 +2,7 @@ import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
-import { resourceCacheDirectory } from "@/src/lib/resource-cache-directory";
+import { resourceCacheDirectory, resourceCacheIdentity } from "@/src/lib/resource-cache-directory";
 
 type AvatarCacheRecord = {
     source: string;
@@ -47,13 +47,14 @@ export async function cacheProfileAvatar(source: string, authorityKey: string): 
     if (!root || !/^https?:\/\//i.test(normalizedSource)) return normalizedSource;
 
     if (!authorityKey) return normalizedSource;
+    const identity = resourceCacheIdentity(normalizedSource);
     const stored = parseStoredRecord(await readMetadata(`v8.phone.avatar.${authorityKey}`));
-    if (stored?.source === normalizedSource && await localFileExists(stored.localUri)) {
+    if (stored?.source === identity && await localFileExists(stored.localUri)) {
         return stored.localUri;
     }
 
     const directory = await resourceCacheDirectory(root, "avatar", authorityKey);
-    const localUri = `${directory}avatar-${stableHash(normalizedSource)}.webp`;
+    const localUri = `${directory}avatar-${stableHash(identity)}.webp`;
     await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);
     if (!await localFileExists(localUri)) {
         const temporaryUri = `${localUri}.download`;
@@ -70,7 +71,7 @@ export async function cacheProfileAvatar(source: string, authorityKey: string): 
         }
     }
 
-    await writeMetadata(`v8.phone.avatar.${authorityKey}`, JSON.stringify({ source: normalizedSource, localUri } satisfies AvatarCacheRecord));
+    await writeMetadata(`v8.phone.avatar.${authorityKey}`, JSON.stringify({ source: identity, localUri } satisfies AvatarCacheRecord));
     const files = await FileSystem.readDirectoryAsync(directory).catch(() => [] as string[]);
     await Promise.all(files
         .filter((name) => name !== localUri.slice(directory.length))

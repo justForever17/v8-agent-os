@@ -4,7 +4,7 @@ import { normalizeAdminBaseUrl, parseJsonSafe, resolveAdminAssetUrl } from "@/sr
 import { type AdminConnectionProfile, type ProfileCredentials, orderAdminBaseUrlCandidates,
     readActiveAdminConnectionProfileId, readAdminConnectionProfiles, readProfileCredentials,
     upsertAdminConnectionProfile, writeActiveAdminConnectionProfileId,
-    updateAdminConnectionProfiles, commitActiveAdminConnectionProfile } from "@/src/lib/admin-connection-profiles";
+    updateAdminConnectionProfiles, commitActiveAdminConnectionProfile, persistProfileRefreshAttempt } from "@/src/lib/admin-connection-profiles";
 import { getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
 import { clearSessionStorage, getStoredValue, readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
 import { cacheProfileAvatar } from "@/src/lib/profile-avatar-cache";
@@ -98,6 +98,11 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             localEndpoints: orderAdminBaseUrlCandidates({ lanUrls: profile.lanUrls,
                 endpoints: (profile.endpoints || []).filter(item => item.scope === "local" || item.kind === "lan" || item.kind === "lan_ipv6"), preferPrimary: false }),
             credentials, principalId: profile.user.id, native: Platform.OS !== "web",
+            persistRefreshAttempt: async (refreshToken, rotationId) => {
+                if (activeRef.current?.transport !== transport || !profile.credentialRef) throw abortError();
+                await persistProfileRefreshAttempt(profileId, profile.credentialRef, refreshToken, rotationId);
+                if (activeRef.current?.transport !== transport) throw abortError();
+            },
             persistRefresh: async (nextCredentials, user) => {
                 if (activeRef.current?.transport !== transport) throw abortError();
                 const latest = await updateAdminConnectionProfiles((current) => {

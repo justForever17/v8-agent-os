@@ -40,7 +40,7 @@ test("Phone avatar truth refreshes and caches immutable avatar URLs locally", ()
   assert.match(cache, /FileSystem\.downloadAsync/);
   assert.match(cache, /v8\.phone\.avatar\.\$\{authorityKey\}/);
   assert.match(cache, /resourceCacheDirectory\(root, "avatar", authorityKey\)/);
-  assert.match(cache, /avatar-\$\{stableHash\(normalizedSource\)\}\.webp/);
+  assert.match(cache, /avatar-\$\{stableHash\(identity\)\}\.webp/);
 });
 
 test("Phone empty conversations use the time greeting without a robot ornament", () => {

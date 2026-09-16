@@ -12,6 +12,7 @@ from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, HTTPException
 
@@ -1367,6 +1368,10 @@ def _build_system_base_domain(*, refresh_environment: bool = False) -> dict[str,
     warnings = []
     if environment_probe.get("status") == "error":
         warnings.append("system_base_environment_probe_failed")
+    # Identity is the canonical Phone manifest owner.  The mesh projection is
+    # retained separately for discovery diagnostics, not for pairing endpoints.
+    from core.client_identity import get_identity_service
+    phone_manifest = get_identity_service().manifest("")
     return {
         "domain": "system-base",
         "title": "系统基础配置",
@@ -1377,10 +1382,10 @@ def _build_system_base_domain(*, refresh_environment: bool = False) -> dict[str,
             "desktopTools": dict(system_base.get("desktopTools") or {}),
             "desktopLive": dict(system_base.get("desktopLive") or {}),
             "remoteLink": remote_link,
-            "remoteLinkManifest": build_link_manifest(
-                mesh_status=remote_link_mesh_status,
-                diagnostics=remote_link_diagnostics,
-            ),
+            "remoteLinkManifest": {**phone_manifest, "diagnostics": {
+                **remote_link_diagnostics,
+                **dict(phone_manifest.get("diagnostics") or {}),
+            }},
             "remoteLinkMeshStatus": remote_link_mesh_status,
             "s3": dict(system_base.get("s3") or {}),
             "desktopReadiness": dict(environment.get("desktopReadiness") or {}),
@@ -1403,15 +1408,43 @@ def _build_system_base_domain(*, refresh_environment: bool = False) -> dict[str,
 
 def _save_system_base_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
+    remote_link = dict(data.get("remoteLink") or {})
+    for item in remote_link.get("transportProfiles") or []:
+        if not isinstance(item, dict):
+            continue
+        phone_url = str(item.get("phoneBaseUrl") or "").strip()
+        if phone_url:
+            try:
+                parsed = urlsplit(phone_url)
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(status_code=400, detail={"code": "phone_profile_url_invalid", "message": "Phone 地址必须是无凭据、查询参数和片段的 HTTPS 地址。"}) from None
+    gateway = remote_link.pop("phoneGateway", None)
+    prepared = None
+    broker = None
+    if gateway is not None:
+        broker = _get_config_broker_service()
+        ConfigBrokerError = importlib.import_module("core.config_broker_service").ConfigBrokerError
+        try:
+            prepared = broker.prepare_client_gateway(
+                settings=dict(gateway), owner_id=_INTERNAL_CONFIG_BROKER_OWNER, session_id="", run_id="",
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail={"code": "client_gateway_fields_invalid"}) from None
+        except ConfigBrokerError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     next_payload = {
         "bridge": dict(data.get("bridge") or {}),
         "webFetch": dict(data.get("webFetch") or {}),
         "desktopTools": dict(data.get("desktopTools") or {}),
         "desktopLive": dict(data.get("desktopLive") or {}),
-        "remoteLink": dict(data.get("remoteLink") or {}),
+        "remoteLink": remote_link,
         "s3": dict(data.get("s3") or {}),
     }
     storage.save_system_base_config(next_payload)
+    if prepared is not None:
+        _commit_internal_config_transaction(prepared, broker=broker)
     return _build_system_base_domain()
 
 

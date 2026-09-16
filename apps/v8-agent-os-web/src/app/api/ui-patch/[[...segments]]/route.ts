@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 
 function enginePath(segments: string[]) {
@@ -40,14 +40,19 @@ async function proxy(
         return NextResponse.json({ error: "Unsupported UI Patch route" }, { status: 404 });
     }
     try {
+        const secret = await resolveInternalSecret();
+        if (!secret) return NextResponse.json({ error: "Local Engine is not configured" }, { status: 503 });
         const response = await fetch(`${await resolveEngineBaseUrl()}${path}${request.nextUrl.search}`, {
             method,
             headers: {
                 "Content-Type": request.headers.get("Content-Type") || "application/json",
                 "x-v8-agent-os-user-email": session.user.email,
+                "x-v8-agent-os-secret": secret,
             },
             body: method === "POST" ? await request.text() : undefined,
             cache: "no-store",
+            redirect: "error",
+            signal: request.signal,
         });
         const payload = await response.json().catch(() => ({}));
         return NextResponse.json(payload, { status: response.status });

@@ -120,10 +120,32 @@ def test_setup_accepts_lan_mesh_and_stable_tls(origin):
     assert normalize_peer_origin(origin) == origin
 
 
-def test_loopback_broadcast_uses_admin_candidate_without_fake_websocket(monkeypatch):
-    monkeypatch.setattr("runtimes.network_supervisor.transport_setup._candidate_ips", lambda: [{"address": "192.168.3.2"}])
-    endpoint = advertised_endpoint({"advertisedBaseUrl": "http://127.0.0.1:9530", "advertisedWsUrl": "ws://127.0.0.1:9530"}, "http://127.0.0.1:9528")
-    assert endpoint == {"advertisedBaseUrl": "http://192.168.3.2:9528", "advertisedWsUrl": "", "peerBaseUrl": "http://192.168.3.2:9528"}
+def test_loopback_broadcast_does_not_invent_admin_or_lan_ingress():
+    endpoint = advertised_endpoint({"advertisedBaseUrl": "http://127.0.0.1:9530", "advertisedWsUrl": "ws://127.0.0.1:9530"})
+    assert endpoint == {"advertisedBaseUrl": "", "advertisedWsUrl": "", "peerBaseUrl": ""}
+
+
+def test_explicit_peer_gateway_is_not_replaced_by_admin():
+    endpoint = advertised_endpoint({"peerBaseUrl": "https://peer.example.com", "advertisedBaseUrl": "http://127.0.0.1:9530"})
+    assert endpoint == {"advertisedBaseUrl": "https://peer.example.com", "advertisedWsUrl": "", "peerBaseUrl": "https://peer.example.com"}
+
+
+def test_peer_setup_uses_only_explicit_ingress_and_marks_forwarding_required(monkeypatch):
+    from core.storage import storage
+    from runtimes.network_supervisor.transport_setup import connection_setup
+    monkeypatch.setattr(storage, "get_system_base_config", lambda: {
+        "bridge": {"adminBaseUrl": "http://127.0.0.1:9528", "engineBaseUrl": "http://127.0.0.1:9530"},
+        "remoteLink": {"activeProfileId": "tail", "phoneGateway": {"port": 19532}, "transportProfiles": [
+            {"id": "old", "kind": "lan", "adminBaseUrl": "http://192.168.3.2:9528"},
+            {"id": "tail", "kind": "tailscale", "peerBaseUrl": "https://peer.example.com"},
+        ]},
+    })
+    service = SimpleNamespace(get_config_model=lambda: SimpleNamespace(node=SimpleNamespace(
+        peer_base_url="", advertised_base_url="http://127.0.0.1:9530")), _discovery_error="")
+    result = connection_setup(service)
+    assert result["suggestions"] == [{"kind": "tailscale", "profileId": "tail", "origin": "https://peer.example.com"}]
+    assert result["warning"] == "advertised_address_not_shareable"
+    assert result["gatewayPort"] == 19532 and result["requiresExplicitForwarding"] is True
 
 
 def test_detected_addresses_use_real_interfaces_instead_of_fake_ip_hostname(monkeypatch):

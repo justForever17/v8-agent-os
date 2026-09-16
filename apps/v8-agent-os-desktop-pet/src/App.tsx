@@ -969,16 +969,16 @@ If the user uploaded an image representation (which represents what you 'see' th
     if (!client) return false;
     const request = (async () => {
       setV8Error('');
-      setV8Status('连接 V8OS Admin 中...');
+      setV8Status('正在连接本机 V8OS...');
       void window.v8CyberCore?.reportStatus?.({ state: 'waiting_v8os', activeSessionId: v8ActiveConversationId || null });
       try {
         const url = settingsRef.current.v8AdminBaseUrl || '';
         const session = await client.ensureLocalSession({ adminBaseUrl: url });
 
         localStorage.setItem('v8.cybercore.workspacePath', settingsRef.current.v8WorkspacePath || '');
-        if (session?.adminBaseUrl) {
-          localStorage.setItem('v8.cybercore.v8AdminBaseUrl', session.adminBaseUrl);
-          setSettings((current) => ({ ...current, v8AdminBaseUrl: session.adminBaseUrl }));
+        if (session?.engineBaseUrl) {
+          localStorage.setItem('v8.cybercore.v8EngineBaseUrl', session.engineBaseUrl);
+          setSettings((current) => ({ ...current, v8AdminBaseUrl: session.engineBaseUrl }));
         }
         setV8Session(session);
         setPetSessionState('idle_no_conversation');
@@ -1027,7 +1027,7 @@ If the user uploaded an image representation (which represents what you 'see' th
       await connectV8();
     }
     if (!client?.getSession()) {
-      throw new Error('尚未连接 V8OS Admin');
+      throw new Error('尚未连接本机 V8OS');
     }
     const conversationId = v8ActiveConversationId || client.getActiveConversationId();
     if (!conversationId) {
@@ -1654,7 +1654,7 @@ If the user uploaded an image representation (which represents what you 'see' th
   const sendAudioBlobToActiveConversation = async (audioBlob: Blob) => {
     const client = v8ClientRef.current;
     if (!client?.getSession()) {
-      throw new Error('尚未连接 V8OS Admin');
+      throw new Error('尚未连接本机 V8OS');
     }
     const conversationId = await requireActiveConversation();
     const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
@@ -1895,7 +1895,7 @@ If the user uploaded an image representation (which represents what you 'see' th
     return () => clearInterval(id);
   }, [isWebcamActive]);
 
-  // Submit conversation through the V8OS Admin BFF.
+  // Submit conversation through the local Engine client transport.
   const handleChatSubmit = async (
     customMessage?: string,
     customFileUrls?: string[],
@@ -1985,7 +1985,7 @@ If the user uploaded an image representation (which represents what you 'see' th
       const errorMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         sender: 'pet',
-        text: `V8OS 连接故障：${err?.message || '无法连接 Admin BFF'}。请检查本机 V8OS 服务是否已启动。`,
+        text: `V8OS 连接故障：${err?.message || '无法连接本机 Engine'}。请检查本机 V8OS 服务是否已启动。`,
         timestamp: nowLabel(),
         emotion: 'worried'
       };

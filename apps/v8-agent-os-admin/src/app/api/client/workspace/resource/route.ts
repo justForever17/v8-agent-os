@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { fetchClientAdmin } from "@/lib/server/client-proxy";
-import { fetchSignedClientAdminPath, verifySignedClientSurfaceRequest } from "@/lib/server/client-surface-resource";
+import { fetchEngineClientIdentity } from "@/lib/server/engine-identity";
 
 export const runtime = "nodejs";
 
@@ -14,8 +14,8 @@ function buildTargetPath(req: NextRequest) {
 export async function GET(req: NextRequest) {
     try {
         const targetPath = buildTargetPath(req);
-        const response = verifySignedClientSurfaceRequest(req)
-            ? await fetchSignedClientAdminPath(targetPath, {
+        const response = req.nextUrl.searchParams.has("v8sig")
+            ? await fetchEngineClientIdentity(targetPath, {
                 method: "GET",
                 headers: req.headers.get("range") ? { Range: String(req.headers.get("range")) } : undefined,
             })

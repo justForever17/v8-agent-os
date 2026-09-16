@@ -9,7 +9,7 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
-test("Web keeps session detail reads behind the authenticated local proxy", () => {
+test("Web keeps session detail reads behind the authenticated Engine proxy", () => {
   const nextConfig = readText("apps/v8-agent-os-web/next.config.ts");
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   const askUser = readText("apps/v8-agent-os-web/src/components/chat/AskUserModal.tsx");
@@ -20,8 +20,8 @@ test("Web keeps session detail reads behind the authenticated local proxy", () =
   const clientAuth = readText("apps/v8-agent-os-admin/src/lib/server/client-request-auth.ts");
 
   for (const proxy of [detail, turns, turnIndex, processes]) {
-    assert.match(proxy, /requireAdminProxyContext/);
-    assert.match(proxy, /safeAdminProxyFetch/);
+    assert.match(proxy, /requireClientProxyContext/);
+    assert.match(proxy, /safeClientProxyFetch/);
     assert.doesNotMatch(proxy, /export async function POST/);
   }
   assert.match(client, /\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/detail/);
@@ -41,8 +41,8 @@ test("Web keeps session detail reads behind the authenticated local proxy", () =
   // Build-time rewrites froze the development port into production builds.
   const fallback = readText("apps/v8-agent-os-web/src/app/api/[...path]/route.ts");
   assert.doesNotMatch(nextConfig, /async rewrites|beforeFiles:|fallback:/);
-  assert.match(fallback, /requireAdminProxyContext/);
-  assert.match(fallback, /safeAdminProxyFetch/);
+  assert.match(fallback, /requireClientProxyContext/);
+  assert.match(fallback, /safeClientProxyFetch/);
   assert.doesNotMatch(nextConfig, /localApiNamespaces/);
   assert.match(clientAuth, /verifyServiceAuth\(req\)/);
   assert.match(clientAuth, /findUserByIdentifier\(serviceIdentifier\)/);
@@ -129,7 +129,7 @@ test("local HTTP preview cookies follow the configured public protocol instead o
   assert.match(policy, /AUTH_URL \|\| process\.env\.NEXTAUTH_URL/);
   assert.match(policy, /startsWith\("https:\/\/"\)/);
   assert.match(auth, /secure: shouldUseSecureCookies\(\)/);
-  assert.match(connection, /secure: shouldUseSecureCookies\(\)/);
+  assert.doesNotMatch(connection, /ADMIN_CONNECTION_COOKIE/);
   assert.doesNotMatch(`${auth}\n${connection}`, /secure: process\.env\.NODE_ENV === ["']production["']/);
 });
 
@@ -139,18 +139,18 @@ test("stream completion callbacks do not close over a later temporal-dead-zone d
   assert.ok(client.indexOf("const loadRuns = useCallback") < client.indexOf("useLangGraphStream({"));
 });
 
-test("ask_user responses use the authenticated Admin client surface", () => {
+test("ask_user responses use the authenticated Engine client surface", () => {
   const route = readText("apps/v8-agent-os-web/src/app/api/ask-user/[id]/respond/route.ts");
 
   assert.match(route, /\/client\/ask-user\/\$\{encodeURIComponent\(id\)\}\/respond/);
-  assert.match(route, /requireAdminProxyContext/);
+  assert.match(route, /requireClientProxyContext/);
 });
 
-test("Web durable chat submission stays behind the authenticated Admin proxy", () => {
+test("Web durable chat submission stays behind the authenticated Engine proxy", () => {
   const route = readText("apps/v8-agent-os-web/src/app/api/chat-submit/route.ts");
 
-  assert.match(route, /requireAdminProxyContext/);
-  assert.match(route, /safeAdminProxyFetch/);
+  assert.match(route, /requireClientProxyContext/);
+  assert.match(route, /safeClientProxyFetch/);
   assert.match(route, /"\/client\/chat-submit"/);
   assert.match(route, /clientMessageId/);
 });
@@ -158,9 +158,9 @@ test("Web durable chat submission stays behind the authenticated Admin proxy", (
 test("Web workspace media previews use an authenticated binary proxy", () => {
   const route = readText("apps/v8-agent-os-web/src/app/api/workspace/resource/route.ts");
 
-  assert.match(route, /requireAdminProxyContext/);
-  assert.match(route, /safeAdminProxyFetch/);
-  assert.match(route, /`\/workspace\/resource\$\{req\.nextUrl\.search\}`/);
+  assert.match(route, /requireClientProxyContext/);
+  assert.match(route, /safeClientProxyFetch/);
+  assert.match(route, /"\/workspace\/resource"/);
   assert.match(route, /req\.headers\.get\("range"\)/);
   assert.match(route, /"Content-Range"/);
   assert.match(route, /"Accept-Ranges"/);

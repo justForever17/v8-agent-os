@@ -28,6 +28,11 @@ function loadFunction(name) {
 const runManagedV8OSShutdown = loadFunction('runManagedV8OSShutdown');
 const coreIds = ['engine', 'admin', 'web'];
 
+test('optional Admin is included in whole-product shutdown without becoming a startup dependency', () => {
+  assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'web'\]/);
+  assert.match(mainSource, /coreIds: \[\.\.\.CORE_SERVICE_IDS, 'admin'\]/);
+});
+
 function statuses(serviceIds, runningId = null) {
   return serviceIds.map((id) => ({
     id,

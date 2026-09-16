@@ -6,6 +6,7 @@ python-multipart
 requests
 certifi
 cryptography
+bcrypt>=4,<6
 langchain-core==1.4.9
 langgraph==1.2.9
 langgraph-checkpoint==4.1.1

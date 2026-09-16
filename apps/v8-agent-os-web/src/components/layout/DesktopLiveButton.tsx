@@ -54,7 +54,7 @@ async function retryWithDelay<T>(fn: () => Promise<T>, retries: number, delayMs:
 
 export function DesktopLiveButton() {
     const pathname = usePathname();
-    const { status: authStatus, data: session } = useSession();
+    const { status: authStatus } = useSession();
     const [mounted, setMounted] = useState(false);
     const [liveStatus, setLiveStatus] = useState<DesktopLiveStatus | null>(null);
     const [open, setOpen] = useState(false);
@@ -78,8 +78,8 @@ export function DesktopLiveButton() {
     const visible = useMemo(() => {
         if (!pathname.startsWith("/chat")) return false;
         if (authStatus !== "authenticated") return false;
-        return String(session?.user?.role || "").toUpperCase() !== "ADMIN";
-    }, [authStatus, pathname, session?.user?.role]);
+        return true;
+    }, [authStatus, pathname]);
 
     const refreshStatus = useCallback(async () => {
         if (!visible) return null;

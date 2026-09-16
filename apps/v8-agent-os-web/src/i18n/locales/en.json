@@ -45,6 +45,8 @@
   "web.terminal.inputOffline": "The terminal is disconnected. Input was not sent.",
   "web.terminal.inputBusy": "Input is pending. Wait before pasting again.",
   "web.terminal.inputFailed": "Input failed. Check the command result before retrying.",
+  "web.terminal.pasteFailed": "Could not read the clipboard. Use Ctrl+V or allow clipboard access.",
+  "web.terminal.copyFailed": "Could not copy the terminal selection.",
   "web.terminal.identityFailed": "Could not verify the terminal instance.",
   "web.terminal.openElsewhere": "This terminal is already open in another panel.",
   "web.terminal.connectionInterrupted": "Terminal connection interrupted.",

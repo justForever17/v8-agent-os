@@ -59,6 +59,7 @@ export type CanonicalConfig = {
         remoteLink?: {
             enabled?: boolean;
             activeProfileId?: string;
+            phoneGateway?: { enabled?: boolean; port?: number; publicBaseUrl?: string };
             transportProfiles?: Array<{
                 id?: string;
                 kind?: string;
@@ -67,6 +68,7 @@ export type CanonicalConfig = {
                 adminBaseUrl?: string;
                 engineBaseUrl?: string;
                 peerBaseUrl?: string;
+                phoneBaseUrl?: string;
             }>;
             meshProviders?: Array<{
                 id?: string;

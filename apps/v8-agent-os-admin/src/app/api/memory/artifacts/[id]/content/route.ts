@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -44,7 +45,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
         if (req.nextUrl.searchParams.get("download") === "1") {
             query.set("download", "true");
         }
-        const response = await fetch(`${resolveEngineOrigin()}/v1/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`, {
+        const response = await engineFetch(`${resolveEngineOrigin()}/v1/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`, {
             cache: "no-store",
             headers,
         });

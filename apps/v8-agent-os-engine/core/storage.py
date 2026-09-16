@@ -1207,6 +1207,11 @@ class StorageManager:
             "remoteLink": {
                 "enabled": True,
                 "activeProfileId": "manual-local",
+                "phoneGateway": {
+                    "enabled": True,
+                    "port": 9532,
+                    "publicBaseUrl": "",
+                },
                 "transportProfiles": [
                     {
                         "id": "manual-local",
@@ -1216,6 +1221,7 @@ class StorageManager:
                         "adminBaseUrl": admin_base_url.replace("/api", "").rstrip("/"),
                         "engineBaseUrl": engine_base_url.replace("/v1", "").rstrip("/"),
                         "peerBaseUrl": engine_base_url.replace("/v1", "").rstrip("/"),
+                        "phoneBaseUrl": "",
                     },
                     {"id": "lan", "kind": "lan", "label": "LAN", "enabled": True},
                     {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},

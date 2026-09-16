@@ -7,7 +7,6 @@ import {
     readCanonicalBridge,
     type CanonicalConfig,
 } from "@/lib/server/bridge-config";
-import { readOrCreateInstanceIdentity } from "@/lib/server/instance-identity";
 
 type DesktopLiveConfig = {
     enabled?: boolean;
@@ -53,6 +52,7 @@ type RemoteLinkProfile = {
     adminBaseUrl?: string;
     engineBaseUrl?: string;
     peerBaseUrl?: string;
+    phoneBaseUrl?: string;
 };
 
 type ClientConnectionEndpoint = {
@@ -67,6 +67,7 @@ type ClientConnectionEndpoint = {
 type RemoteLinkConfig = {
     enabled?: boolean;
     activeProfileId?: string;
+    phoneGateway?: { enabled?: boolean; port?: number; publicBaseUrl?: string };
     transportProfiles?: RemoteLinkProfile[];
     meshProviders?: Array<{
         id?: string;
@@ -339,104 +340,27 @@ function resolveActiveRemoteLinkAdminBaseUrl(requestOrigin?: string) {
     return "";
 }
 
-export function buildAdminLinkManifest(requestOrigin?: string) {
-    const identity = readOrCreateInstanceIdentity();
-    const context = buildRemoteLinkContext(requestOrigin);
-    const adminBaseUrl = resolveActiveRemoteLinkAdminBaseUrl(requestOrigin) || context.requestAdminBaseUrl;
-    const engineBaseUrl = context.engineBaseUrl;
-    const profiles = context.profiles;
-    const activeProfile = context.activeProfile;
-    const activeProfileId = context.activeProfileId;
-    const transportKind = context.transportKind;
-    const warnings = [
-        adminBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "admin_loopback_not_reachable_from_phone" : "",
-        engineBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "engine_loopback_not_reachable_from_phone" : "",
-        transportKind === "cloudflare_tunnel" && !isStableCloudflareOrigin(activeProfile.adminBaseUrl)
-            ? "cloudflare_stable_https_origin_required"
-            : "",
-    ].filter(Boolean);
-    const endpoints = buildClientConnectionEndpoints(requestOrigin, profiles);
-    return {
-        ok: true,
-        kind: "v8_link_manifest",
-        version: "2",
-        instanceId: identity.instanceId,
-        ownerMode: "single_owner",
-        clientGateway: "admin_bff",
-        transportKind,
-        activeProfileId: activeProfile.id || activeProfileId,
-        admin: {
-            baseUrl: adminBaseUrl,
-            apiBaseUrl: withApiSuffix(adminBaseUrl, "api"),
-            configuredApiBaseUrl: resolveAdminApiBaseUrl(),
-        },
-        engine: {
-            baseUrl: engineBaseUrl,
-            apiBaseUrl: withApiSuffix(engineBaseUrl, "v1"),
-            directExposure: false,
-        },
-        profiles: profiles.map((profile) => ({
-            id: profile.id || "",
-            kind: normalizeTransportKind(profile.kind),
-            label: profile.label || profile.id || "",
-            enabled: profile.enabled !== false,
-            adminBaseUrl: stripApiSuffix(profile.adminBaseUrl || ""),
-            engineBaseUrl: stripApiSuffix(profile.engineBaseUrl || ""),
-            peerBaseUrl: stripApiSuffix(profile.peerBaseUrl || ""),
-        })),
-        endpoints,
-        capabilities: {
-            adminProxy: true,
-            pairing: true,
-            publicRegistration: false,
-            phoneUpload: true,
-            artifactPreview: true,
-            runtimeEvents: true,
-            networkSupervisorPeers: true,
-        },
-        meshProviders: (context.remoteLink.meshProviders || []).map((provider) => ({
-            id: provider.id || provider.kind || "",
-            kind: provider.kind || provider.id || "",
-            enabled: provider.enabled !== false,
-            mode: provider.mode || "detect_only",
-            allowRouteMutation: false,
-        })),
-        diagnostics: {
-            readOnly: true,
-            warnings,
-        },
-        warnings,
-    };
+export type ClientLinkManifest = {
+    ok: boolean; kind: string; version: string; instanceId: string; serverId: string;
+    ownerMode: string; clientGateway: string; transportKind: string; activeProfileId: string;
+    admin: { baseUrl: string; apiBaseUrl: string };
+    phoneGateway?: { enabled: boolean; port: number; publicBaseUrl: string };
+    profiles: Array<{ id: string; kind: string; label: string; enabled: boolean; adminBaseUrl: string; phoneBaseUrl?: string; migrationRequired?: boolean }>;
+    endpoints: ClientConnectionEndpoint[];
+    capabilities: Record<string, boolean>; warnings: string[];
+    diagnostics: { readOnly: boolean; warnings: string[] };
+};
+
+export async function buildAdminLinkManifest(requestOrigin?: string): Promise<ClientLinkManifest> {
+    // The display keeps historical wire field names, while Engine owns identity
+    // and the explicit Phone endpoint catalog.
+    const { engineIdentity } = await import("@/lib/server/engine-identity");
+    const phoneBase = resolvePairingAdminBaseUrlFromRequest(requestOrigin || "");
+    return engineIdentity<ClientLinkManifest>(`/link-manifest?baseUrl=${encodeURIComponent(phoneBase)}`);
 }
 
-export function buildClientLinkManifest(requestOrigin?: string) {
-    const manifest = buildAdminLinkManifest(requestOrigin);
-    return {
-        ok: true,
-        kind: "v8_client_link_manifest",
-        version: manifest.version,
-        serverId: manifest.instanceId,
-        instanceId: manifest.instanceId,
-        ownerMode: manifest.ownerMode,
-        clientGateway: manifest.clientGateway,
-        transportKind: manifest.transportKind,
-        activeProfileId: manifest.activeProfileId,
-        admin: {
-            baseUrl: manifest.admin.baseUrl,
-            apiBaseUrl: manifest.admin.apiBaseUrl,
-        },
-        profiles: manifest.profiles.map((profile) => ({
-            id: profile.id,
-            kind: profile.kind,
-            label: profile.label,
-            enabled: profile.enabled,
-            adminBaseUrl: profile.adminBaseUrl,
-        })),
-        endpoints: manifest.endpoints,
-        capabilities: manifest.capabilities,
-        diagnostics: manifest.diagnostics,
-        warnings: manifest.warnings,
-    };
+export async function buildClientLinkManifest(requestOrigin?: string) {
+    return buildAdminLinkManifest(requestOrigin);
 }
 
 export function isReachableClientSurfaceOrigin(baseUrl: string) {
@@ -637,15 +561,14 @@ export function resolvePairingAdminBaseUrlFromRequest(
         }
         | string,
 ) {
-    const requestOrigin = resolveRequestOrigin(typeof request === "string" ? { url: request } : request);
-    return (
-        resolveActiveRemoteLinkAdminBaseUrl(requestOrigin)
-        ||
-        resolveClientSurfaceOriginFromRequest(request, { allowTrustedHeader: true })
-        || resolveReachableAdminPublicBaseUrl()
-        || resolveLocalNetworkAdminOrigin(requestOrigin)
-        || stripApiSuffix(requestOrigin || resolveAdminPublicBaseUrl())
-    ).replace(/\/$/, "");
+    const context = buildRemoteLinkContext();
+    if (context.remoteLink.enabled === false || context.remoteLink.phoneGateway?.enabled === false) return "";
+    const candidate = context.activeProfile.phoneBaseUrl || context.remoteLink.phoneGateway?.publicBaseUrl || "";
+    try {
+        const parsed = new URL(candidate);
+        if (parsed.protocol !== "https:" || NON_ROUTABLE_CLIENT_HOSTS.has(parsed.hostname) || parsed.username || parsed.password || parsed.search || parsed.hash) return "";
+        return candidate.replace(/\/+$/, "").replace(/\/api$/, "");
+    } catch { return ""; }
 }
 
 export function resolveInternalSecret() {

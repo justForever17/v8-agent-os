@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
 
     try {
         const search = req.nextUrl.searchParams.toString();
-        const response = await fetch(`${resolveEngineBaseUrl()}/runtime-episodes/overview${search ? `?${search}` : ""}`, {
+        const response = await engineFetch(`${resolveEngineBaseUrl()}/runtime-episodes/overview${search ? `?${search}` : ""}`, {
             cache: "no-store",
         });
         const payload = await response.json().catch(() => ({}));

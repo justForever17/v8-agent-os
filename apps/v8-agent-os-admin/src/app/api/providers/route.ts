@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
@@ -11,7 +12,7 @@ export async function GET() {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
-        const res = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
+        const res = await engineFetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Python API returned ${res.status}`);
         const routesData = await res.json();
         const providersDict = routesData.providers || {};
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
         }
         if (storedCredential) providerPatch.api_key = storedCredential;
 
-        const response = await fetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(providerCode)}`, {
+        const response = await engineFetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(providerCode)}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(providerPatch),

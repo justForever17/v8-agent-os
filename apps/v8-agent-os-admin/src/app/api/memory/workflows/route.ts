@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextResponse } from "next/server";
 
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
@@ -14,7 +15,7 @@ export async function GET(req: Request) {
             const value = searchParams.get(key);
             if (value) params.set(key, value);
         }
-        const response = await fetch(`${ENGINE_URL}/v1/memory/workflows?${params.toString()}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/memory/workflows?${params.toString()}`, {
             cache: "no-store",
         });
         const payload = await response.json().catch(() => ({}));

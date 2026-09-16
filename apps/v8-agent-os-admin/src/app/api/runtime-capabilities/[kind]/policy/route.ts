@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -32,7 +33,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ kind: string
             const payload = await req.json().catch(() => ({}));
             init.body = JSON.stringify(payload);
         }
-        const res = await fetch(`${ENGINE_URL}/runtime-capabilities/${encodeURIComponent(kind)}/policy`, init);
+        const res = await engineFetch(`${ENGINE_URL}/runtime-capabilities/${encodeURIComponent(kind)}/policy`, init);
         const data = await res.json().catch(() => ({}));
         return NextResponse.json(data, { status: res.status });
     } catch (error) {

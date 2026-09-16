@@ -1,3 +1,4 @@
+import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeArtifactsForAdminSurface } from "@/lib/server/artifact-surface";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
@@ -23,12 +24,12 @@ export async function GET(req: NextRequest) {
         query.set("sessionId", sessionId);
         if (runId) query.set("run_id", runId);
 
-        const response = await fetch(`${ENGINE_URL}/v1/artifacts?${query.toString()}`, {
+        const response = await engineFetch(`${ENGINE_URL}/v1/artifacts?${query.toString()}`, {
             cache: "no-store",
         });
         const data = await response.json().catch(() => ({}));
         if (Array.isArray(data?.artifacts)) {
-            data.artifacts = normalizeArtifactsForAdminSurface(data.artifacts, req);
+            data.artifacts = await normalizeArtifactsForAdminSurface(data.artifacts, req);
         }
         return NextResponse.json(data, { status: response.status });
     } catch (error) {

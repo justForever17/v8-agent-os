@@ -28,6 +28,20 @@ def test_exact_clusters_do_not_repeat_global_or_merge_relations(graph):
     assert graph.get_full_graph(scopes=["workspace:a"])["meta"]["totalRelations"] == 2
 
 
+def test_global_relation_endpoints_survive_missing_historical_entity_metadata(graph):
+    # Older imports can preserve an evidence-backed relation but omit its
+    # optional entities metadata row. The relation's exact scope is authority;
+    # an INNER JOIN must not make a nonempty Global cluster appear empty.
+    with graph._conn() as conn:
+        conn.execute("DELETE FROM entities WHERE name IN ('same', 'shared')")
+    result = graph.get_graph_cluster(scopes=["global"])
+    assert {node["id"] for node in result["nodes"]} == {"same", "shared"}
+    assert all(node["type"] == "concept" for node in result["nodes"])
+    assert result["meta"]["renderedEntities"] == result["meta"]["totalEntities"] == 2
+    assert len(result["links"]) == 1 and result["links"][0]["scope"] == "global"
+    assert graph.query_graph_cluster_entity(entity="same", scopes=["global"])["total"] == 1
+
+
 def test_scope_oracle_detects_the_old_implicit_global_mutant(graph, monkeypatch):
     original = graph._active_graph_relations_sql
     monkeypatch.setattr(graph, "_active_graph_relations_sql", lambda **kwargs: original(**(kwargs | {"include_global": True})))

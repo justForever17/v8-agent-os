@@ -513,7 +513,8 @@ jobs:
             exit 1
           fi
           chmod -R a-w "$package_root"
-          dbus-run-session -- xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
+          bash scripts/desktop/with-linux-secret-service.sh "$resource_root/apps/v8-agent-os-engine" \
+            xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
             --shell-exe "$shell_exe" \
             --resource-root "$resource_root" \
             --appimage-root "$package_root" \

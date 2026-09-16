@@ -7,8 +7,8 @@ export async function verifySystemOperationsCard(page, baseUrl) {
     const settings = { profiles: { unlock: empty(), run_privileged: empty() }, currentAccount: { username: "fixture-current-account", domain: "." }, platform: { os: "windows", unlock: { registered: false }, privilege: { registered: false }, setup: { state: "idle" } } };
     const submitted = [];
     // The parent page needs its own registry envelope before it mounts this
-    // card. CI intentionally runs no Engine; a developer's live Engine must
-    // not accidentally supply this fixture dependency.
+    // card. The harness serves real Engine identity only; a developer's full
+    // Engine must not accidentally supply this configuration/OS dependency.
     let configurationReads = 0;
     await page.route("**/api/config-registry/system-base*", (route) => {
         configurationReads += 1;

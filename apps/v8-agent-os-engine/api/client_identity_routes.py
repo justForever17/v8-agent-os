@@ -12,7 +12,7 @@ management_router = APIRouter(prefix="/v1/client-identity", tags=["local-identit
 
 
 def failure(exc: IdentityError):
-    return JSONResponse({"ok": False, "error": exc.code}, status_code=exc.status)
+    return JSONResponse({"ok": False, "error": exc.code, "code": exc.code}, status_code=exc.status)
 
 
 async def body(request: Request) -> dict:

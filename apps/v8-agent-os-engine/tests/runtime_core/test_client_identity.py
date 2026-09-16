@@ -159,6 +159,28 @@ def test_http_public_cannot_enter_management_and_actor_headers_ignored(identity)
     assert response.status_code == 401
 
 
+def test_http_bootstrap_conflict_has_actionable_code_and_preserves_owner(identity):
+    from api.client_identity_routes import management_router
+    app = FastAPI()
+    app.include_router(management_router)
+    client = TestClient(app)
+    before = identity.owners.owner().copy()
+    headers = {"x-v8-agent-os-secret": "fixture-internal"}
+
+    # A rendered setup page may become stale after another local window creates
+    # the Owner. Admin uses this code to switch to login without clearing input.
+    conflict = client.post("/v1/client-identity/bootstrap", headers=headers,
+                           json={"login": "replacement", "password": "fixture-password"})
+    assert conflict.status_code == 409
+    assert conflict.json() == {"ok": False, "error": "owner_already_initialized", "code": "owner_already_initialized"}
+    assert identity.owners.owner() == before
+
+    rejected = client.post("/v1/client-identity/verify-credentials", headers=headers,
+                           json={"login": "owner", "password": "wrong"})
+    assert rejected.status_code == 401
+    assert rejected.json()["code"] == rejected.json()["error"] == "invalid_credentials"
+
+
 def test_legacy_import_preserves_device_and_expires_old_access_window(tmp_path):
     from core.client_identity.owner import atomic_json, timestamp
     clock = [1800000000.0]

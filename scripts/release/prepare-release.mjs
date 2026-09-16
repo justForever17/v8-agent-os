@@ -375,8 +375,10 @@ function main() {
 
   console.log("");
   console.log(`Created local release commit and annotated tag: ${tag}`);
-  console.log("Review the result, then push explicitly when ready:");
-  console.log(`git push origin HEAD && git push origin ${tag}`);
+  console.log("Review the result, then push only the release commit:");
+  console.log("git push origin HEAD");
+  console.log("Wait for the CI workflow on this exact commit to succeed before pushing the tag:");
+  console.log(`git push origin ${tag}`);
 }
 
 const isMain =

@@ -1336,6 +1336,7 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(appImageSmoke, /APPIMAGE_EXIT_AFTER_INSTALL=1 "\$appimage"/);
   assert.doesNotMatch(appImageSmoke, /ELECTRON_RUN_AS_NODE=1 "\$appimage"/);
   assert.match(appImageSmoke, /V8OS_APPIMAGE_ENTRY_OK/);
+  assert.match(appImageSmoke, /with-linux-secret-service\.sh "\$resource_root\/apps\/v8-agent-os-engine"/);
   assert.match(appImageSmoke, /AppImage single-file runtime entry did not execute/);
   assert.match(appImageSmoke, /shell_exe="\$package_root\/v8-agent-os-shell"/);
   assert.match(appImageSmoke, /APPDIR="\$package_root"/);

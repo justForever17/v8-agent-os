@@ -210,6 +210,19 @@ export function WorkspaceWorkbenchPanel({
     const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const [fileError, setFileError] = useState("");
+    const [branchSourceSessionId, setBranchSourceSessionId] = useState("");
+    useEffect(() => {
+        const controller = new AbortController();
+        setBranchSourceSessionId("");
+        void fetch(`/api/conversations/${encodeURIComponent(sessionId)}/detail?omitMessages=1`, { cache: "no-store", signal: controller.signal })
+            .then(async (response) => response.ok ? response.json() : null)
+            .then((payload) => {
+                if (controller.signal.aborted) return;
+                const branch = payload?.branch || payload?.projection?.branch || payload?.projection?.snapshot?.branch;
+                setBranchSourceSessionId(String(branch?.parentSessionId || branch?.sourceSessionId || ""));
+            }).catch(() => undefined);
+        return () => controller.abort();
+    }, [sessionId]);
     const [runtimeArtifacts, setRuntimeArtifacts] = useState<Array<Record<string, unknown>>>([]);
     const [sessionSources, setSessionSources] = useState<SessionSourceRef[]>([]);
     const [outputsExpanded, setOutputsExpanded] = useState(false);
@@ -399,6 +412,7 @@ export function WorkspaceWorkbenchPanel({
     return (
         <div className="h-full min-h-0 overflow-auto bg-background">
             <div className="mx-auto w-full max-w-[760px]">
+            {branchSourceSessionId && <a href={`/chat?id=${encodeURIComponent(branchSourceSessionId)}`} className="block border-b border-border/55 px-3 py-2 text-xs text-muted-foreground hover:text-foreground">{t("conversationRecovery.branchOrigin")}</a>}
             {currentRuntime || pendingConfirmation ? (
                 <div className="border-b border-border/55">
                 <button

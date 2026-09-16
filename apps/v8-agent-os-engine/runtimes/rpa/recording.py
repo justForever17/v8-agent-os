@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from copy import deepcopy
 import uuid
+import threading
+from functools import wraps
 from pathlib import Path
+from core.json_safe import atomic_write_json
+from core.interprocess_lock import interprocess_file_lock
 from typing import Any, Dict, List, Optional
 
 from core.multimodal_payload_adapter import utc_now_iso
@@ -21,6 +27,24 @@ from runtimes.computer_use.types import (
 
 
 RECORDING_SCHEMA_VERSION = 1
+_recording_transactions = threading.local()
+
+
+def _serialize_recording(method):
+    @wraps(method)
+    def call(self, recording_id, *args, **kwargs):
+        manager = getattr(self, "recording_manager", self)
+        path = manager._session_path(recording_id).with_suffix(".events.lock")
+        held = getattr(_recording_transactions, "held", set())
+        if str(path) in held:
+            return method(self, recording_id, *args, **kwargs)
+        with interprocess_file_lock(path):
+            _recording_transactions.held = held | {str(path)}
+            try:
+                return method(self, recording_id, *args, **kwargs)
+            finally:
+                _recording_transactions.held = held
+    return call
 
 
 class CaptureVerificationRequired(ValueError):
@@ -146,11 +170,14 @@ class RPARecordingManager:
         return self.base_dir / f"{normalized}.json"
 
     def _write_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        session["updatedAt"] = utc_now_iso()
-        self._session_path(str(session["recordingSessionId"])).write_text(
-            json.dumps(session, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        path = self._session_path(str(session["recordingSessionId"]))
+        with interprocess_file_lock(path.with_suffix(".lock")):
+            existing = self.get(str(session["recordingSessionId"]))
+            if int((existing or {}).get("revision") or 0) != int(session.get("revision") or 0):
+                raise ValueError("Recording changed concurrently; reload before retrying.")
+            session["revision"] = int(session.get("revision") or 0) + 1
+            session["updatedAt"] = utc_now_iso()
+            atomic_write_json(path, session)
         return session
 
     def get(self, recording_id: str) -> Optional[Dict[str, Any]]:
@@ -175,6 +202,11 @@ class RPARecordingManager:
         return sessions
 
     def start(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        source = _safe_string(payload.get("source"), "human")
+        if source not in {"human", "computer_use"}:
+            raise ValueError("Unsupported recording source.")
+        if source == "computer_use" and not _safe_string(payload.get("sessionId")):
+            raise ValueError("Computer Use recording requires sessionId.")
         recording_id = f"rpa_rec_{uuid.uuid4().hex[:12]}"
         trace_run_id = f"rpa_recording_{uuid.uuid4().hex[:12]}"
         session_id = _safe_string(payload.get("sessionId"), f"rpa:recording:{recording_id}")
@@ -185,6 +217,7 @@ class RPARecordingManager:
             "recordingSessionId": recording_id,
             "traceRunId": trace_run_id,
             "sessionId": session_id,
+            "source": source,
             "state": "recording",
             "targetMode": target_mode,
             "name": _safe_string(payload.get("name"), "Recorded RPA flow"),
@@ -200,6 +233,7 @@ class RPARecordingManager:
             "workflowSnapshot": _coerce_dict(payload.get("workflowSnapshot")),
             "captureOptions": _coerce_dict(payload.get("captureOptions")),
             "createdAt": now,
+            "captureWindows": [{"start": now, "end": None, "from": self._runtime_cursor(session_id) if source == "computer_use" else {}, "to": None}],
             "updatedAt": now,
             "startedBy": _safe_string(payload.get("userId"), "admin_ui"),
             "rawEvents": [],
@@ -209,18 +243,26 @@ class RPARecordingManager:
         }
         return self._public_session(self._write_session(session))
 
+    @_serialize_recording
     def pause(self, recording_id: str) -> Dict[str, Any]:
         session = self._require_session(recording_id)
         if session.get("state") == "recording":
             session["state"] = "paused"
+            session["captureWindows"][-1]["end"] = utc_now_iso()
+            if session.get("source") == "computer_use":
+                session["captureWindows"][-1]["to"] = self._runtime_cursor(session["sessionId"])
         return self._public_session(self._write_session(session))
 
+    @_serialize_recording
     def resume(self, recording_id: str) -> Dict[str, Any]:
         session = self._require_session(recording_id)
         if session.get("state") in {"paused", "idle"}:
             session["state"] = "recording"
+            session.setdefault("captureWindows", []).append({"start": utc_now_iso(), "end": None,
+                "from": self._runtime_cursor(session["sessionId"]) if session.get("source") == "computer_use" else {}, "to": None})
         return self._public_session(self._write_session(session))
 
+    @_serialize_recording
     def cancel(self, recording_id: str) -> Dict[str, Any]:
         session = self._require_session(recording_id)
         session["state"] = "cancelled"
@@ -233,8 +275,11 @@ class RPARecordingManager:
         session["captureAssistant"] = _coerce_dict(assistant)
         return self._public_session(self._write_session(session))
 
+    @_serialize_recording
     def add_capture_pool_item(self, recording_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
         session = self._require_session(recording_id)
+        if session.get("state") != "recording":
+            raise ValueError("Recording session is not active.")
         pool = _coerce_list(session.get("capturePool"))
         temp_id = _safe_string(item.get("tempElementId"), f"temp_el_{uuid.uuid4().hex[:10]}")
         normalized = {
@@ -252,6 +297,7 @@ class RPARecordingManager:
         pool = [item for item in _coerce_list(session.get("capturePool")) if isinstance(item, dict)]
         return next((item for item in pool if item.get("tempElementId") == temp_element_id), None)
 
+    @_serialize_recording
     def update_capture_pool_item(self, recording_id: str, temp_element_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
         session = self._require_session(recording_id)
         pool = [item for item in _coerce_list(session.get("capturePool")) if isinstance(item, dict)]
@@ -269,12 +315,16 @@ class RPARecordingManager:
         session["capturePool"] = updated_pool[-50:]
         return self._public_session(self._write_session(session))
 
+    @_serialize_recording
     def upsert_inspector_session(self, recording_id: str, inspector_session: Dict[str, Any]) -> Dict[str, Any]:
         session = self._require_session(recording_id)
         inspector_sessions = [item for item in _coerce_list(session.get("inspectorSessions")) if isinstance(item, dict)]
         session_id = _safe_string(inspector_session.get("sessionId"))
         if not session_id:
             raise ValueError("Inspector session is missing sessionId.")
+        current = next((item for item in inspector_sessions if item.get("sessionId") == session_id), {})
+        if current.get("state") in {"stopped", "closed", "cancelled"} and inspector_session.get("state") not in {"stopped", "closed", "cancelled"}:
+            raise ValueError("Inspector session is no longer active.")
         normalized = {**dict(inspector_session), "sessionId": session_id, "updatedAt": utc_now_iso()}
         inspector_sessions = [item for item in inspector_sessions if item.get("sessionId") != session_id]
         inspector_sessions.append(normalized)
@@ -287,6 +337,7 @@ class RPARecordingManager:
         inspector_sessions = [item for item in _coerce_list(session.get("inspectorSessions")) if isinstance(item, dict)]
         return next((item for item in inspector_sessions if item.get("sessionId") == session_id), None)
 
+    @_serialize_recording
     def save_capture_pool_item(
         self,
         recording_id: str,
@@ -300,8 +351,12 @@ class RPARecordingManager:
         if not match:
             raise ValueError(f"Capture pool item '{temp_element_id}' not found.")
         proof = _coerce_dict(match.get("proof"))
-        if proof.get("status") != "verified":
+        if proof.get("status") != "verified" or proof.get("verifier") != "rpa_replay_verifier_v2":
             raise CaptureVerificationRequired(f"Capture pool item '{temp_element_id}' must be verified before saving.")
+        locator = _coerce_dict(match.get("locatorBundle")).get("primaryLocator") or {}
+        if (proof.get("locatorHash") != hashlib.sha256(json.dumps(locator, sort_keys=True).encode()).hexdigest()
+                or proof.get("targetBinding") != (match.get("targetBinding") or match.get("targetWindow"))):
+            raise CaptureVerificationRequired("Capture locator or target changed; verify it again before saving.")
         library = [item for item in _coerce_list(session.get("objectLibrary")) if isinstance(item, dict)]
         element_id = _safe_string(match.get("elementId"), f"el_{uuid.uuid4().hex[:10]}")
         label = _safe_string(name, _safe_string(match.get("label"), element_id))
@@ -315,13 +370,18 @@ class RPARecordingManager:
         library = [item for item in library if item.get("elementId") != element_id]
         library.append(saved)
         session["objectLibrary"] = library[-200:]
+        match["elementId"] = element_id
+        session["capturePool"] = pool
         return {
             "recording": self._public_session(self._write_session(session)),
             "element": saved,
         }
 
+    @_serialize_recording
     def append_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         session = self._require_session(recording_id)
+        if session.get("source") == "computer_use":
+            raise ValueError("Computer Use recordings accept canonical runtime evidence only.")
         if session.get("state") != "recording":
             raise ValueError("Recording session is not active.")
         raw_event = dict(event or {})
@@ -329,6 +389,8 @@ class RPARecordingManager:
         raw_event["eventId"] = event_id
         raw_event["recordedAt"] = raw_event.get("recordedAt") or utc_now_iso()
         raw_events = _coerce_list(session.get("rawEvents"))
+        if any(item.get("eventId") == event_id for item in raw_events):
+            return {"recording": self._public_session(session), "duplicate": True}
         raw_events.append(raw_event)
         session["rawEvents"] = raw_events[-500:]
 
@@ -364,8 +426,17 @@ class RPARecordingManager:
             },
         }
 
+    @_serialize_recording
     def stop(self, recording_id: str) -> Dict[str, Any]:
         session = self._require_session(recording_id)
+        if session.get("state") == "cancelled":
+            return self._public_session(session)
+        if session.get("source") == "computer_use":
+            if session.get("state") == "recording":
+                session["captureWindows"][-1]["end"] = utc_now_iso()
+                session["captureWindows"][-1]["to"] = self._runtime_cursor(session["sessionId"])
+            self._recover_runtime_trace(session)
+            self._sync_runtime_trace(session)
         if session.get("state") not in {"draft_ready", "failed"}:
             session["state"] = "stopped"
         session["capturePool"] = []
@@ -400,9 +471,104 @@ class RPARecordingManager:
         return self._require_session(recording_id)
 
     def _public_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(session)
+        payload = deepcopy(session)
         payload.pop("rawEvents", None)
+        for inspector in payload.get("inspectorSessions") or []:
+            inspector.pop("oneTimeToken", None)
+            inspector.pop("sidecarLaunchEnv", None)
+            inspector.pop("requestPath", None)
+            if isinstance(inspector.get("lastEvent"), dict):
+                inspector["lastEvent"].pop("token", None)
+                inspector["lastEvent"].pop("oneTimeToken", None)
         return payload
+
+    def _sync_runtime_trace(self, session: Dict[str, Any]) -> None:
+        trace = self.trace_store.get_trace(str(session["traceRunId"])) or {}
+        session["stepIds"] = [item["stepId"] for item in trace.get("steps", [])]
+        session["stepCount"] = len(session["stepIds"])
+
+    def _runtime_cursor(self, session_id: str) -> Dict[str, int]:
+        return {trace["runId"]: int(trace.get("stepCount") or 0)
+                for trace in self.trace_store.list_traces(session_id=session_id, limit=10000)
+                if not (trace.get("metadata") or {}).get("recordingSessionId")}
+
+    @staticmethod
+    def _matches_runtime_target(session: Dict[str, Any], step: Dict[str, Any]) -> bool:
+        window = (step.get("target") or {}).get("window") or {}
+        lock = session.get("targetLock") or {}
+        handle = lock.get("windowHandle") or session.get("windowHandle")
+        if handle and str(handle) != str(window.get("windowHandle") or window.get("handle")):
+            return False
+        app_id = lock.get("appId")
+        if app_id and app_id != "desktop" and app_id != step.get("appId"):
+            return False
+        profile = session.get("browserProfileId")
+        return not profile or profile == (step.get("metadata") or {}).get("browserProfileId")
+
+    def _recover_runtime_trace(self, session: Dict[str, Any]) -> None:
+        if session.get("state") == "cancelled":
+            return
+        windows = session.get("captureWindows") or []
+        candidates = []
+        for summary in self.trace_store.list_traces(session_id=session["sessionId"], limit=10000):
+            if (summary.get("metadata") or {}).get("recordingSessionId"):
+                continue
+            trace = self.trace_store.get_trace(summary["runId"]) or {}
+            for step in trace.get("steps") or []:
+                stamp = step.get("recordedAt")
+                index = int(step.get("index") or 0)
+                if not stamp or not any(index > (period.get("from") or {}).get(summary["runId"], 0)
+                                       and (period.get("to") is None or index <= period["to"].get(summary["runId"], 0)) for period in windows):
+                    continue
+                if self._matches_runtime_target(session, step):
+                    candidates.append((stamp, summary["runId"], step))
+        ordered = []
+        for _, run_id, step in sorted(candidates, key=lambda item: (item[2].get("recordedOrderNs", 0), item[0], item[1], item[2].get("index", 0))):
+            step = deepcopy(step)
+            step.setdefault("metadata", {}).update({"sourceRunId": run_id, "sourceStepId": step["stepId"],
+                                                    "recordingSessionId": session["recordingSessionId"]})
+            self.trace_store.append_step(run_id=session["traceRunId"], session_id=session["sessionId"],
+                goal=session.get("goal"), runtime_kind="computer_use", step=step,
+                metadata={"recordedBy": "computer_use_runtime", "recordingSessionId": session["recordingSessionId"]})
+            ordered.append(step)
+        if ordered:
+            self.trace_store.replace_recording_projection(session["traceRunId"], ordered)
+
+    def record_runtime_step(self, *, run_id: str, session_id: str, step: ComputerUseTraceStep) -> list[Dict[str, Any]]:
+        """Project executed CU evidence into explicit recordings, without a model call.
+
+        The original trace is persisted first. A duplicate delivery repairs a crash
+        between trace append and recording update without appending the action twice.
+        """
+        recorded = []
+        for public in self.list(limit=10000):
+            if public.get("source") != "computer_use" or public.get("sessionId") != session_id:
+                continue
+            updated = self._append_runtime_step(public["recordingSessionId"], run_id=run_id, step=step)
+            if updated:
+                recorded.append(updated)
+        return recorded
+
+    @_serialize_recording
+    def _append_runtime_step(self, recording_id: str, *, run_id: str, step: ComputerUseTraceStep):
+        session = self._require_session(recording_id)
+        if session.get("state") != "recording" or not self._matches_runtime_target(session, step.as_dict()):
+            return None
+        source = self.trace_store.get_trace(run_id) or {}
+        if source.get("sessionId") != session["sessionId"]:
+            return None
+        persisted = next((item for item in source.get("steps", []) if item.get("stepId") == step.step_id), None)
+        interval = (session.get("captureWindows") or [{}])[-1]
+        if not persisted or int(persisted.get("index") or 0) <= (interval.get("from") or {}).get(run_id, 0):
+            return None
+        captured = deepcopy(persisted)
+        captured.setdefault("metadata", {}).update({"sourceRunId": run_id, "sourceStepId": step.step_id,
+                                                    "recordingSessionId": session["recordingSessionId"]})
+        self.trace_store.append_step(run_id=session["traceRunId"], session_id=session["sessionId"],
+            goal=session.get("goal"), runtime_kind="computer_use", step=captured,
+            metadata={"recordedBy": "computer_use_runtime", "recordingSessionId": session["recordingSessionId"]})
+        self._sync_runtime_trace(session)
+        return self._public_session(self._write_session(session))
 
     def _step_from_event(self, session: Dict[str, Any], event: Dict[str, Any], index: int) -> ComputerUseTraceStep:
         action = _safe_string(event.get("action"), _safe_string(event.get("type"), "custom"))

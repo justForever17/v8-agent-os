@@ -183,6 +183,8 @@ function withTranscriptTargetFields(
   return applyOwnerFields({
     ...event,
     message_id: messageId || event.message_id,
+    contextEpoch: payload.contextEpoch != null ? Number(payload.contextEpoch) : event.contextEpoch,
+    transcriptRevision: payload.transcriptRevision != null ? Number(payload.transcriptRevision) : event.transcriptRevision,
     node_id: nodeId || event.node_id,
     transcript_version: Number.isFinite(transcriptVersion || NaN)
       ? transcriptVersion

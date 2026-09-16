@@ -58,6 +58,8 @@ export async function GET(
 
         return NextResponse.json({
             sessionId: id,
+            transcriptRevision: data.transcriptRevision ?? 0,
+            contextEpoch: data.contextEpoch ?? 0,
             syncCursor: typeof data.syncCursor === "string" ? data.syncCursor : null,
             messages,
             pageInfo: asRecord(data.pageInfo),

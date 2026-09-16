@@ -323,6 +323,9 @@ class CheckpointGovernanceService:
 
     @staticmethod
     def _source_thread_id(session_id: str) -> str:
+        transcript = db.get_chat_transcript_state(session_id)
+        if transcript["context_epoch"]:
+            return transcript["active_checkpoint_thread_id"]
         binding = db.get_session_scope_binding(session_id) or {}
         thread_id = str(binding.get("thread_id") or "").strip()
         if thread_id:
@@ -1078,6 +1081,8 @@ class CheckpointGovernanceService:
 
     async def execute_approved(self, operation_id: str) -> dict[str, Any]:
         operation = self._operation_row(operation_id)
+        if self._source_thread_id(str(operation["source_session_id"])) != str(operation["source_thread_id"]):
+            raise CheckpointGovernanceError("Conversation context was revised; checkpoint approval is superseded.")
         approval = db.get_pending_approval(str(operation["approval_id"]))
         if not approval or str(approval.get("status") or "") != "approved":
             raise CheckpointGovernanceError("checkpoint 操作尚未获得人工批准。")

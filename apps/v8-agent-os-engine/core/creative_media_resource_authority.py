@@ -159,7 +159,9 @@ class CreativeMediaResourceAuthorityService:
     def artifact_matches_scope(self, artifact: dict[str, Any], *, scope: CreativeMediaAuthorityScope) -> bool:
         normalized = normalize_artifact_record(artifact)
         if _clean(normalized.get("sessionId")) != scope.session_id:
-            return False
+            from core.database import db
+            if not db.has_chat_branch_artifact_ref(scope.session_id, _clean(normalized.get("id") or normalized.get("artifactId"))):
+                return False
 
         metadata = _record_json(normalized.get("metadata"))
         artifact_workspace_id = _clean(normalized.get("workspaceId"))

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.multimodal_payload_adapter import utc_now_iso
+from core.json_safe import atomic_write_json
+from core.interprocess_lock import interprocess_file_lock
 from core.v8_agent_os_paths import runtime_private_root
 from runtimes.computer_use.types import ComputerUseTraceStep
 
@@ -143,6 +146,12 @@ class ComputerUseTraceStore:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         path = self._trace_path(run_id)
+        with interprocess_file_lock(path.with_suffix(".lock")):
+            return self._append_step_locked(run_id=run_id, session_id=session_id, goal=goal,
+                                            runtime_kind=runtime_kind, step=step, metadata=metadata)
+
+    def _append_step_locked(self, *, run_id, session_id, goal, runtime_kind, step, metadata):
+        path = self._trace_path(run_id)
         incoming_metadata = dict(metadata or {})
         root_goal = str(
             incoming_metadata.get("rootGoal")
@@ -184,15 +193,34 @@ class ComputerUseTraceStore:
             merged_metadata["sourceGoals"] = source_goals[-12:]
         existing["metadata"] = merged_metadata
 
-        step_payload = step.as_dict()
+        step_payload = step.as_dict() if isinstance(step, ComputerUseTraceStep) else dict(step)
         current_steps = list(existing.get("steps") or [])
+        if any(item.get("stepId") == step_payload.get("stepId") for item in current_steps):
+            return existing
         step_payload["index"] = len(current_steps) + 1
+        step_payload.setdefault("recordedAt", utc_now_iso())
+        step_payload.setdefault("recordedOrderNs", time.time_ns())
         current_steps.append(step_payload)
         existing["steps"] = current_steps
         existing["stepCount"] = len(current_steps)
         existing["updatedAt"] = utc_now_iso()
-        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        existing["revision"] = int(existing.get("revision") or 0) + 1
+        atomic_write_json(path, existing)
         return existing
+
+    def replace_recording_projection(self, run_id: str, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reconcile a recording projection in original execution order after restart."""
+        path = self._trace_path(run_id)
+        with interprocess_file_lock(path.with_suffix(".lock")):
+            trace = self.get_trace(run_id)
+            if not trace or not (trace.get("metadata") or {}).get("recordingSessionId"):
+                raise ValueError("Only recording projections may be rebuilt.")
+            trace["steps"] = [{**step, "index": index + 1} for index, step in enumerate(steps)]
+            trace["stepCount"] = len(steps)
+            trace["revision"] = int(trace.get("revision") or 0) + 1
+            trace["updatedAt"] = utc_now_iso()
+            atomic_write_json(path, trace)
+            return trace
 
 
 trace_store = ComputerUseTraceStore()

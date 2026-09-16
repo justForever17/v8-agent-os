@@ -289,7 +289,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         return null;
     }
     const narrativeBlocks = useMemo(
-        () => (node.kind === "narrative" ? parsePhoneContentBlocks(String(node.content || ""), false, 0, false) : []),
+        () => (node.kind === "narrative" ? parsePhoneContentBlocks(String(node.content || ""), false, 0, false, node.editedBy === "user") : []),
         [node],
     );
 
@@ -311,6 +311,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         if (HIDDEN_TOOL_NAMES.has(toolInvocation.toolName)) {
             return null;
         }
+        if (executionNode.branchInherited || executionNode.readOnly) return <ToolCard toolInvocation={toolInvocation} />;
         const hasResult = toolInvocation.state === "result"
             || executionNode.executionType === "tool_result"
             || mergedResultNode?.executionType === "tool_result";

@@ -33,6 +33,11 @@ type ProjectedMessagePart = {
 };
 
 type ProjectedMessageRecord = {
+    version?: number;
+    status?: string;
+    state?: string;
+    editedBy?: string;
+    editedAt?: string;
     id?: unknown;
     role?: unknown;
     runId?: unknown;
@@ -230,8 +235,10 @@ function mergeMessageRecords(existing: Message, incoming: Message): Message {
         );
     const existingContent = String(existing.content || '');
     const incomingContent = String(incoming.content || '');
-    const existingTranscriptVersion = Number((existing.metadata || {}).transcriptVersion || 0);
-    const incomingTranscriptVersion = Number((incoming.metadata || {}).transcriptVersion || 0);
+    const existingTranscriptVersion = Number(existing.version || (existing.metadata || {}).transcriptVersion || 0);
+    const incomingTranscriptVersion = Number(incoming.version || (incoming.metadata || {}).transcriptVersion || 0);
+    if (existingTranscriptVersion > incomingTranscriptVersion && incomingTranscriptVersion > 0) return existing;
+    if (incoming.editedBy === "user" && incomingTranscriptVersion >= existingTranscriptVersion) return incoming;
     const existingCanonical = existingTranscriptVersion > 0 || (existing.nodes?.length || 0) > 0;
     const incomingCanonical = incomingTranscriptVersion > 0 || (incoming.nodes?.length || 0) > 0;
     const content = incomingCanonical
@@ -271,7 +278,9 @@ export function normalizeMessagesForState(messages: Message[]): Message[] {
         const candidate: Message = {
             ...message,
             agentAvatar: resolveAgentAvatar(message.agentAvatar),
-            nodes: Array.isArray(message.nodes) ? normalizeMessageNodes(message.nodes.map((node) => ({ ...node }))) : [],
+            nodes: Array.isArray(message.nodes) ? normalizeMessageNodes(message.nodes.map((node) => ({
+                ...node, ...(node.kind === 'narrative' && (message.editedBy || message.metadata?.editedBy) === 'user' ? { editedBy: 'user' } : {}),
+            }))) : [],
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
             metadata: message.metadata ? { ...message.metadata } : undefined,
@@ -410,6 +419,11 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
 
         return {
             id: typeof msg.id === 'string' ? msg.id : createClientId('message'),
+            version: typeof msg.version === 'number' ? msg.version : undefined,
+            state: typeof msg.state === 'string' ? msg.state : undefined,
+            status: typeof msg.status === 'string' ? msg.status : undefined,
+            editedBy: typeof msg.editedBy === 'string' ? msg.editedBy : undefined,
+            editedAt: typeof msg.editedAt === 'string' ? msg.editedAt : undefined,
             role,
             runId: typeof msg.runId === 'string' ? msg.runId : undefined,
             ordinal: Number.isFinite(Number(msg.ordinal)) ? Number(msg.ordinal) : undefined,

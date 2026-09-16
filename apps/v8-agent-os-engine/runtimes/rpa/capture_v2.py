@@ -7,12 +7,16 @@ import shutil
 import subprocess
 import sys
 import uuid
+import hmac
+import psutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from core.multimodal_payload_adapter import utc_now_iso
+from core.json_safe import atomic_write_json
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME, runtime_private_root
-from runtimes.rpa.recording import CaptureVerificationRequired, _coerce_dict, _coerce_list, _safe_string
+from runtimes.rpa.recording import CaptureVerificationRequired, _coerce_dict, _coerce_list, _safe_string, _serialize_recording
 
 
 class CaptureBroker:
@@ -36,8 +40,11 @@ class CaptureBroker:
         self.engine_base_url = str(engine_base_url or os.environ.get("V8_ENGINE_BASE_URL") or os.environ.get("V8_ENGINE_URL") or "http://127.0.0.1:9530").rstrip("/")
         self.browser_attach_resolver = browser_attach_resolver
 
+    @_serialize_recording
     def start_session(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         recording = self.recording_manager.require_session(recording_id)
+        if recording.get("state") != "recording":
+            raise ValueError("Recording session is not active.")
         target_lock = _coerce_dict(recording.get("targetLock"))
         target_lock.update(_coerce_dict(payload.get("targetLock")))
         platform = self._resolve_platform(recording=recording, payload=payload, target_lock=target_lock)
@@ -68,6 +75,10 @@ class CaptureBroker:
             "targetLock": target_lock,
             "sidecar": self._sidecar_descriptor(platform, payload),
             "oneTimeToken": one_time_token,
+            "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat(),
+            "generation": uuid.uuid4().hex,
+            "lastSeq": 0,
+            "orderedEventsRequired": bool(self.enable_sidecars),
             "candidateCount": 0,
             "browserAttach": self._public_browser_attach(_coerce_dict(payload.get("browserAttach"))),
             "sidecarLaunchEnv": self._sidecar_launch_env(platform, _coerce_dict(payload.get("browserAttach"))),
@@ -92,7 +103,7 @@ class CaptureBroker:
             )
             recording = self.recording_manager.upsert_inspector_session(recording_id, session)
             return {"ok": False, "status": session["status"], "reason": session["reason"], "session": self._public_session(session), "recording": recording}
-        if self.enable_sidecars and not payload.get("sidecarReady") and not _coerce_list(payload.get("mockCandidates")):
+        if self.enable_sidecars:
             self.recording_manager.upsert_inspector_session(recording_id, session)
             launched = self._launch_sidecar(session)
             if not launched.get("ok"):
@@ -128,7 +139,7 @@ class CaptureBroker:
             if isinstance(candidate, dict):
                 self.ingest_event(recording_id, session_id, {"type": "candidate", "candidate": candidate, "oneTimeToken": one_time_token})
         latest = self.recording_manager.get_inspector_session(recording_id, session_id) or session
-        return {"ok": True, "status": latest.get("status") or "waiting_sidecar", "session": self._public_session(latest), "recording": self.recording_manager.get(recording_id)}
+        return {"ok": True, "status": latest.get("status") or "waiting_sidecar", "session": self._public_session(latest), "recording": self.recording_manager._public_session(self.recording_manager.require_session(recording_id))}
 
     def get_session(self, recording_id: str, session_id: str) -> Dict[str, Any]:
         session = self.recording_manager.get_inspector_session(recording_id, session_id)
@@ -136,13 +147,92 @@ class CaptureBroker:
             raise ValueError(f"Inspector session '{session_id}' not found.")
         return {"ok": True, "status": session.get("status") or session.get("state"), "session": self._public_session(session)}
 
+    @_serialize_recording
+    def stop(self, recording_id: str) -> Dict[str, Any]:
+        recording = self.recording_manager.require_session(recording_id)
+        errors = []
+        for session in recording.get("inspectorSessions") or []:
+            if session.get("state") in {"stopped", "closed"}:
+                continue
+            session["state"] = session["status"] = "stopped"
+            # Revoke writes before asking the owned process to exit.
+            self.recording_manager.upsert_inspector_session(recording_id, session)
+            request_path = Path(session["requestPath"]) if session.get("requestPath") else None
+            if request_path and request_path.is_file():
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+                atomic_write_json(request_path, {**request, "stopRequested": True})
+            sidecar = session.get("sidecar") or {}
+            pid = sidecar.get("processId")
+            if not pid:
+                continue
+            try:
+                process = psutil.Process(int(pid))
+                if process.create_time() != sidecar.get("processCreatedAt"):
+                    errors.append("Inspector process identity changed; no unrelated process was stopped.")
+                    continue
+                try:
+                    process.wait(timeout=1.5)
+                except psutil.TimeoutExpired:
+                    children = process.children(recursive=True)
+                    process.terminate()
+                    for child in children:
+                        try:
+                            child.terminate()
+                        except psutil.NoSuchProcess:
+                            pass
+                    _, alive = psutil.wait_procs([process, *children], timeout=2)
+                    for survivor in alive:
+                        survivor.kill()
+                    _, alive = psutil.wait_procs(alive, timeout=2)
+                    if alive:
+                        errors.append("Inspector shutdown is still pending.")
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.Error, OSError) as exc:
+                errors.append(type(exc).__name__)
+            finally:
+                if request_path:
+                    request_path.unlink(missing_ok=True)
+        return {"ok": not errors, "status": "stopped" if not errors else "stop_failed", "errors": errors}
+
+    @_serialize_recording
     def ingest_event(self, recording_id: str, session_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         session = self.recording_manager.get_inspector_session(recording_id, session_id)
         if not session:
             raise ValueError(f"Inspector session '{session_id}' not found.")
         token = _safe_string(event.get("oneTimeToken") or event.get("token"))
-        if token and token != session.get("oneTimeToken"):
+        if not token or not hmac.compare_digest(token, str(session.get("oneTimeToken") or "")):
             raise PermissionError("Inspector event token mismatch.")
+        recording = self.recording_manager.require_session(recording_id)
+        if recording.get("state") != "recording" or session.get("state") in {"stopped", "closed", "cancelled", "unavailable"}:
+            raise ValueError("Inspector session is no longer active.")
+        if session.get("expiresAt") and datetime.fromisoformat(session["expiresAt"]) <= datetime.now(timezone.utc):
+            raise PermissionError("Inspector session expired.")
+        if session.get("orderedEventsRequired") and (
+            not event.get("generation") or not _safe_string(event.get("eventId")) or event.get("seq") is None
+        ):
+            raise ValueError("Inspector events require generation, eventId and sequence.")
+        if event.get("generation") and event["generation"] != session.get("generation"):
+            raise PermissionError("Inspector generation mismatch.")
+        if event.get("seq") is not None:
+            if isinstance(event["seq"], bool) or not isinstance(event["seq"], int) or event["seq"] <= 0:
+                raise ValueError("Inspector event sequence must be a positive integer.")
+            seq = event["seq"]
+            event_id = _safe_string(event.get("eventId"))
+            body_hash = hashlib.sha256(json.dumps({key: value for key, value in event.items()
+                if key not in {"oneTimeToken", "token"}}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            receipt = {"seq": seq, "eventId": event_id, "bodyHash": body_hash}
+            acknowledged = session.get("lastEventReceipt") or {}
+            if seq <= int(session.get("lastSeq") or 0):
+                if receipt == acknowledged:
+                    return {"ok": True, "duplicate": True, "status": session.get("status"), "seq": seq, "eventId": event_id}
+                raise ValueError("Inspector event sequence conflict; acknowledgement belongs to another event.")
+            if seq != int(session.get("lastSeq") or 0) + 1:
+                raise ValueError("Inspector event sequence gap; resend the missing event.")
+            if event_id and event_id == acknowledged.get("eventId"):
+                raise ValueError("Inspector event identity was already acknowledged at another sequence.")
+            session["lastSeq"] = seq
+            session["lastEventReceipt"] = receipt
         event_type = _safe_string(event.get("type") or event.get("event"), "candidate")
         if event_type in {"candidate", "element", "element_captured", "actionAdded"}:
             candidate = _coerce_dict(event.get("candidate") or event.get("element") or event.get("data") or event)
@@ -163,7 +253,7 @@ class CaptureBroker:
             if isinstance(event.get("sidecar"), dict):
                 session["sidecar"] = {**_coerce_dict(session.get("sidecar")), **_coerce_dict(event.get("sidecar"))}
             session["sidecar"] = {**_coerce_dict(session.get("sidecar")), "status": event_type}
-            session["lastEvent"] = {k: v for k, v in dict(event).items() if k != "oneTimeToken"}
+            session["lastEvent"] = {k: v for k, v in dict(event).items() if k not in {"oneTimeToken", "token"}}
             session["updatedAt"] = utc_now_iso()
             recording = self.recording_manager.upsert_inspector_session(recording_id, session)
             return {"ok": event_type != "error", "status": event_type, "session": self._public_session(session), "recording": recording}
@@ -172,9 +262,7 @@ class CaptureBroker:
     def _capture_pool_item_from_candidate(self, *, recording_id: str, session: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
         locator_bundle = normalize_locator_bundle(candidate, platform=_safe_string(session.get("platform"), "windows"))
         anchor_bundle = normalize_anchor_bundle(candidate)
-        proof = _coerce_dict(candidate.get("proof"))
-        if not proof:
-            proof = {"status": "unverified", "source": "inspector_sidecar"}
+        proof = {"status": "unverified", "source": "inspector_sidecar"}
         temp_key = {
             "recordingId": recording_id,
             "sessionId": session.get("sessionId"),
@@ -188,6 +276,7 @@ class CaptureBroker:
             "source": "rpa_inspector_v2",
             "inspectorSessionId": session.get("sessionId"),
             "platform": session.get("platform"),
+            "targetBinding": _coerce_dict(session.get("browserAttach") or session.get("targetLock")),
             "sourceStepId": session.get("stepId"),
             "stepId": session.get("stepId"),
             "targetStepId": session.get("stepId"),
@@ -218,13 +307,14 @@ class CaptureBroker:
             "sidecar": session.get("sidecar"),
             "engineUrl": self.engine_base_url,
             "oneTimeToken": session.get("oneTimeToken"),
+            "generation": session.get("generation"),
             "callback": {
                 "method": "POST",
-                "path": f"/rpa/recordings/{session.get('recordingId')}/inspector/sessions/{session.get('sessionId')}/events",
-                "url": f"{self.engine_base_url}/rpa/recordings/{session.get('recordingId')}/inspector/sessions/{session.get('sessionId')}/events",
+                "path": f"/v1/rpa/recordings/{session.get('recordingId')}/inspector/sessions/{session.get('sessionId')}/events",
+                "url": f"{self.engine_base_url.removesuffix('/v1')}/v1/rpa/recordings/{session.get('recordingId')}/inspector/sessions/{session.get('sessionId')}/events",
             },
         }
-        request_path.write_text(json.dumps(request_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(request_path, request_payload)
         return request_path
 
     @staticmethod
@@ -236,9 +326,7 @@ class CaptureBroker:
             return requested
         if mode == "agent_browser" or app_id in {"browser", "chrome", "edge"}:
             return "browser"
-        if mode in {"desktop_window", "desktop", "windows"}:
-            return "windows"
-        return "windows"
+        return "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
 
     @staticmethod
     def _sidecar_descriptor(platform: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -369,7 +457,7 @@ class CaptureBroker:
             log_handle.close()
         except Exception:
             pass
-        return {"ok": True, "status": "starting_sidecar", "sidecar": {**sidecar, "processId": process.pid, "status": "starting"}}
+        return {"ok": True, "status": "starting_sidecar", "sidecar": {**sidecar, "processId": process.pid, "processCreatedAt": psutil.Process(process.pid).create_time(), "status": "starting"}}
 
     @staticmethod
     def _windows_sidecar_project_dir() -> Path:
@@ -427,6 +515,7 @@ class ReplayVerifier:
         self.recording_manager = recording_manager
         self.resolver = resolver
 
+    @_serialize_recording
     def verify(self, recording_id: str, temp_element_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         item = self.recording_manager.get_capture_pool_item(recording_id, temp_element_id)
         if not item:
@@ -441,9 +530,8 @@ class ReplayVerifier:
         find_payload = self._resolve_find_count(item, payload)
         warnings.extend(find_payload.get("warnings") or [])
         find_count = int(find_payload.get("findCount") or 0)
-        highlight_ok = payload.get("highlightOk")
-        if highlight_ok is False:
-            status = "highlight_failed"
+        if not find_payload.get("complete", False):
+            status = "incomplete"
         elif find_count == 1:
             status = "verified"
         elif find_count == 0:
@@ -451,6 +539,8 @@ class ReplayVerifier:
         else:
             status = "locator_ambiguous"
         proof = self._proof(status, find_count, payload, warnings)
+        proof["locatorHash"] = hashlib.sha256(json.dumps(primary_locator, sort_keys=True).encode()).hexdigest()
+        proof["targetBinding"] = item.get("targetBinding") or item.get("targetWindow")
         locator_bundle["uniqueness"] = {
             "status": "unique" if status == "verified" else status,
             "count": find_count,
@@ -462,16 +552,9 @@ class ReplayVerifier:
         return {"ok": status == "verified", "status": status, "proof": proof, "recording": updated}
 
     def _resolve_find_count(self, item: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
-        if "findCount" in payload:
-            return {"findCount": int(payload.get("findCount") or 0), "source": "request"}
-        sidecar_uniqueness = _coerce_dict(_coerce_dict(item.get("locatorBundle")).get("uniqueness"))
-        if sidecar_uniqueness.get("count") not in (None, ""):
-            return {"findCount": int(sidecar_uniqueness.get("count") or 0), "source": sidecar_uniqueness.get("source") or "sidecar_uniqueness"}
         if self.resolver:
             return self.resolver(item, payload)
-        if payload.get("allowLiveResolve"):
-            return self._live_resolve(item, payload)
-        return {"findCount": 0, "source": "unavailable", "warnings": ["live locator resolve was not enabled and sidecar did not provide uniqueness evidence"]}
+        return self._live_resolve(item, payload)
 
     def _live_resolve(self, item: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -479,13 +562,26 @@ class ReplayVerifier:
 
             anchor = _coerce_dict(item.get("anchorBundle"))
             window = _coerce_dict(anchor.get("window") or item.get("targetWindow"))
-            result = computer_use_runtime.find_elements(
-                window_title=window.get("title") or window.get("windowTitle"),
-                window_handle=window.get("handle") or window.get("windowHandle"),
-                limit=int(payload.get("limit") or 20),
-                depth_limit=int(payload.get("depthLimit") or 8),
-            )
-            return {"findCount": int(result.get("count") or len(result.get("elements") or [])), "source": "computer_use_find_elements"}
+            locator = _coerce_dict(_coerce_dict(item.get("locatorBundle")).get("primaryLocator"))
+            if item.get("platform") == "browser":
+                binding = _coerce_dict(item.get("targetBinding"))
+                provider = computer_use_runtime.browser_automation
+                target_id = binding.get("targetId") or binding.get("proxyTargetId")
+                if not target_id or not any(str(target.get("id")) == str(target_id) for target in provider._list_targets()):
+                    raise ValueError("Browser target_lost; reopen capture on the intended page.")
+                selector = locator.get("css") or locator.get("xpath") or locator.get("selector")
+                kind = locator.get("kind") or ("xpath" if locator.get("xpath") else "css")
+                if not selector or kind not in {"css", "xpath"}:
+                    raise ValueError("Capture a CSS or XPath locator for read-only verification.")
+                expression = ("(() => { const s=" + json.dumps(selector) + "; return {count: " +
+                              ("document.evaluate(s,document,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null).snapshotLength"
+                               if kind == "xpath" else "document.querySelectorAll(s).length") + "}; })()")
+                value = provider._evaluate(target_id=target_id, expression=expression).get("value") or {}
+                return {"findCount": int(value["count"]), "complete": True, "source": "browser_dom"}
+            resolver = getattr(computer_use_runtime.driver, "resolve_locator_count", None)
+            if not callable(resolver):
+                raise ValueError("This platform does not provide complete read-only locator resolution yet.")
+            return resolver(locator=locator, window=window)
         except Exception as exc:
             return {"findCount": 0, "source": "computer_use_find_elements", "warnings": [f"live resolve failed: {exc}"]}
 

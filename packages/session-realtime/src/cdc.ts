@@ -10,6 +10,7 @@ import type {
   SessionTodoItem,
 } from "./contract.js";
 import { coerceAdminProcessRef } from "./resources.js";
+import { conversationEventDisposition, isStaleTranscript, readTranscriptIdentity } from "./conversation-recovery.js";
 import {
   applyRealtimeEventToMessages,
   deriveRealtimeStreamState,
@@ -189,6 +190,8 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
 
   return {
     session: asRecord(root.session),
+    ...readTranscriptIdentity(root),
+    branch: asRecord(root.branch || nestedSnapshot.branch),
     sessionId:
       typeof root.sessionId === "string"
         ? root.sessionId
@@ -407,6 +410,8 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
 
   return [
     String(snapshot.latestSeq || 0),
+    String(snapshot.transcriptRevision || 0),
+    String(snapshot.contextEpoch || 0),
     snapshot.messagesOmitted ? "messages-omitted" : "messages-included",
     messageFingerprint,
     approvalFingerprint,
@@ -426,6 +431,7 @@ export function applySnapshotToSessionRealtimeState(state: SessionRealtimeStore,
   if (!snapshot) {
     return state;
   }
+  if (state.snapshot && state.snapshot.sessionId === snapshot.sessionId && isStaleTranscript(readTranscriptIdentity(state.snapshot), readTranscriptIdentity(snapshot))) return state;
   return {
     ...state,
     snapshot,
@@ -451,11 +457,13 @@ export function applyRuntimeEventToSessionRealtimeState(
   state: SessionRealtimeStore,
   runtimeEvent: NormalizedSessionRuntimeEvent,
 ): SessionRealtimeStore {
+  const disposition = conversationEventDisposition(readTranscriptIdentity(state.snapshot), runtimeEvent);
+  if (disposition === "ignore") return state;
   return {
     ...state,
     latestSeq: Math.max(state.latestSeq, runtimeEvent.seq || 0),
     lastRuntimeEvent: runtimeEvent,
-    unreadProgressHint: runtimeEvent.visibility === "visible" ? true : state.unreadProgressHint,
+    unreadProgressHint: disposition === "refresh" || runtimeEvent.visibility === "visible" ? true : state.unreadProgressHint,
   };
 }
 

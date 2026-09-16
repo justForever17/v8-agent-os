@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.multimodal_payload_adapter import utc_now_iso
+from core.json_safe import atomic_write_json
+from core.interprocess_lock import interprocess_file_lock
 from core.v8_agent_os_paths import runtime_private_root
 from runtimes.rpa.execution_semantics import outcome_family_for_execution_state
 from runtimes.rpa.types import RPAScript
+
+
+class DraftRevisionConflict(ValueError):
+    pass
 
 
 class RPAScriptStore:
@@ -388,13 +394,26 @@ class RPAScriptStore:
                     action_metrics["nativeSemanticSuccesses"] += 1
         return self._save_trust_metrics(payload)
 
-    def save_draft(self, script: RPAScript | Dict[str, Any]) -> Dict[str, Any]:
+    def save_draft(self, script: RPAScript | Dict[str, Any], *, expected_updated_at: str | None = None) -> Dict[str, Any]:
         payload = script.as_dict() if isinstance(script, RPAScript) else dict(script or {})
-        payload["updatedAt"] = utc_now_iso()
+        for variable in payload.get("variables") or []:
+            if (variable.get("sensitive") or variable.get("secretName")) and any(
+                    variable.get(key) not in (None, "") for key in ("defaultValue", "exampleValue", "value")):
+                raise ValueError("敏感变量只能保存凭据引用，不能保存明文默认值或样例。")
         path = self._draft_path(str(payload.get("id") or "rpa_script"))
-        if not payload.get("createdAt"):
-            payload["createdAt"] = payload["updatedAt"]
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        with interprocess_file_lock(path.with_suffix(".lock")):
+            existing = self.get_draft(str(payload.get("id") or "rpa_script"))
+            if expected_updated_at is not None and (existing or {}).get("updatedAt") != expected_updated_at:
+                raise DraftRevisionConflict("草稿已更新，请保留当前编辑并重新加载后合并。")
+            stamp = datetime.now(timezone.utc)
+            previous = (existing or {}).get("updatedAt")
+            if previous:
+                stamp = max(stamp, datetime.fromisoformat(previous.replace("Z", "+00:00")) + timedelta(microseconds=1))
+            payload["updatedAt"] = stamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
+            payload["revision"] = int((existing or {}).get("revision") or 0) + 1
+            if not payload.get("createdAt"):
+                payload["createdAt"] = payload["updatedAt"]
+            atomic_write_json(path, payload)
         return payload
 
     def get_draft(self, script_id: str) -> Optional[Dict[str, Any]]:

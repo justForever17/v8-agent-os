@@ -94,6 +94,7 @@ def test_replay_verifier_requires_unique_locator_before_save(tmp_path: Path) -> 
     with pytest.raises(CaptureVerificationRequired):
         manager.save_capture_pool_item(recording["recordingSessionId"], item["tempElementId"], name="Save")
 
+    broker.verifier.resolver = lambda item, payload: {"findCount": 1, "complete": True, "source": "fixture_live_resolver"}
     verified = broker.verifier.verify(recording["recordingSessionId"], item["tempElementId"], {})
     saved = manager.save_capture_pool_item(recording["recordingSessionId"], item["tempElementId"], name="Save")
 
@@ -104,14 +105,14 @@ def test_replay_verifier_requires_unique_locator_before_save(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
-    ("payload", "expected"),
+    ("resolved", "expected"),
     [
-        ({"findCount": 0}, "locator_unresolved"),
-        ({"findCount": 2}, "locator_ambiguous"),
-        ({"findCount": 1, "highlightOk": False}, "highlight_failed"),
+        ({"findCount": 0, "complete": True}, "locator_unresolved"),
+        ({"findCount": 2, "complete": True}, "locator_ambiguous"),
+        ({"findCount": 1, "complete": False}, "incomplete"),
     ],
 )
-def test_replay_verifier_failure_states(tmp_path: Path, payload: dict, expected: str) -> None:
+def test_replay_verifier_failure_states(tmp_path: Path, resolved: dict, expected: str) -> None:
     manager, _store = _manager(tmp_path)
     recording = manager.start({"name": "rpa v2", "targetMode": "desktop_window", "appId": "notepad"})
     pool_recording = manager.add_capture_pool_item(
@@ -124,7 +125,10 @@ def test_replay_verifier_failure_states(tmp_path: Path, payload: dict, expected:
     )
     assert pool_recording["capturePool"][0]["tempElementId"] == "temp_el_1"
 
-    result = CaptureBroker(manager, request_root=tmp_path / "inspector").verifier.verify(recording["recordingSessionId"], "temp_el_1", payload)
+    verifier = CaptureBroker(manager, request_root=tmp_path / "inspector").verifier
+    verifier.resolver = lambda item, payload: resolved
+    # Request and stale sidecar claims cannot override a current resolver result.
+    result = verifier.verify(recording["recordingSessionId"], "temp_el_1", {"findCount": 1, "highlightOk": True})
 
     assert result["ok"] is False
     assert result["status"] == expected

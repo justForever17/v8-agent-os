@@ -51,7 +51,7 @@ CI 使用四个互斥且并集完整的文件分片；本地可复现其中一�
 | `tests/model_control/` | unit / integration | ModelHub / provider control plane | model ref、connection tester、reasoning payload contract、embedding/rerank limits、media model capability registry。 |
 | `tests/network/` | unit / integration | Network Supervisor / brokers | OpenAI-compatible adapter、memory adapter、prompt context、S3/web brokers。 |
 | `tests/prompt_cache/` | unit | Prompt Cache | prompt cache gateway。 |
-| `tests/rpa/` | unit | RPA Studio | recording capture anchors。 |
+| `tests/rpa/` | unit / contract / fault | RPA Studio / runtime | 录制游标与恢复、捕获 ACK/目标证明、草稿版本、审批恢复、执行结果与取消。 |
 | `tests/runtime_core/` | unit / integration | Runtime Fabric / tool governance | runtime episodes、projection、engineering lane、computer use、delegation、tool routing、native tool dry-run。 |
 | `tests/safety/` | unit / integration | Safety Runtime | command guardian、approval、active defense、workspace commands、skill review ledger。 |
 | `tests/scripts/` | manual harness scripts | Dry-run / live smoke / diagnostics | 开发者手动执行脚本；详见 [tests/scripts/README.md](scripts/README.md)。 |

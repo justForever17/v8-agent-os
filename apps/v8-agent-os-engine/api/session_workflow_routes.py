@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from .models import RuntimeCapabilityPolicyPayload, RuntimeStabilityConfigPayload, ScopeResolvePayload, SessionScopeBindingPayload
 from core.context_governance import (
@@ -79,10 +81,133 @@ router = APIRouter()
 logger = logging.getLogger("v8chat.session_presentation")
 _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
-_WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+_WEB_SESSION_INDEX_PATH = V8_AGENT_OS_HOME / "cache" / "web_session_index.json"
 _WEB_SESSION_INDEX_VERSION = 4
 _STATE_DATABASE_ERROR_CODE = "state_database_unavailable"
 _STATE_DATABASE_ERROR_MESSAGE = "本地运行状态数据库暂时不可用，已有状态未被覆盖。请稍后重试。"
+
+
+class MessageRevisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=1_000_000)
+    expectedMessageVersion: int = Field(ge=1)
+    expectedTranscriptRevision: int = Field(ge=0)
+    tailPolicy: Literal["reject", "reject_if_descendants", "truncate"] = "reject"
+    userId: str | None = None
+
+
+class ConversationBranchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    turnId: str = Field(min_length=1)
+    expectedTranscriptRevision: int = Field(ge=0)
+    expectedMessageVersion: int | None = Field(default=None, ge=1)
+    messageId: str | None = None
+    content: str | None = Field(default=None, min_length=1, max_length=1_000_000)
+    userId: str | None = None
+
+
+class RevisionRestorePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expectedMessageVersion: int = Field(ge=1)
+    expectedTranscriptRevision: int = Field(ge=0)
+    userId: str | None = None
+
+
+def _conversation_versions(session_id: str) -> dict:
+    from core.conversation_recovery import public_state
+    return public_state(db.get_chat_transcript_state(session_id))
+
+
+def _conversation_owner(request: Request, user_id: str | None, session_id: str) -> str:
+    # The Engine's authenticated proxy supplies the principal; a body cannot
+    # override it. Trusted local callers use the same owner contract.
+    principals = {str(request.headers.get(key) or "").strip() for key in
+                  ("x-v8-agent-os-user-email", "x-v8-agent-os-user-id")} - {""}
+    if not principals:
+        principals = {str(user_id or "").strip()} - {""}
+    stored = str((db.get_session(session_id) or {}).get("user_id") or "")
+    return stored if stored and stored.casefold() in {p.casefold() for p in principals} else ""
+
+
+def _notify_conversation_mutation(session_id: str, owner: str, topic: str) -> None:
+    # The mutation and event already committed atomically. A projection/cache
+    # failure must not turn a successful CAS into a retryable write failure.
+    try:
+        snapshot_service.refresh_chat_projection(session_id)
+        _refresh_web_session_index_safely()
+        session_activity_broker.publish(owner_id=owner, session_id=session_id, topic=topic)
+    except Exception:
+        logger.warning("Conversation projection refresh pending for committed mutation", exc_info=True)
+
+
+@router.patch("/sessions/{session_id}/messages/{message_id}")
+async def revise_session_message(session_id: str, message_id: str, payload: MessageRevisionPayload, request: Request):
+    from core.conversation_recovery import ConversationConflict, revise_message
+    from erc.session_lane_scheduler import session_lane_scheduler
+    owner = _conversation_owner(request, payload.userId, session_id)
+    def mutate():
+        with session_lane_scheduler.idle_mutation(session_id):
+            return revise_message(db, session_id=session_id, message_id=message_id, owner=owner,
+                content=payload.content, expected_message_version=payload.expectedMessageVersion,
+                expected_transcript_revision=payload.expectedTranscriptRevision, tail_policy=payload.tailPolicy)
+    try:
+        result = await asyncio.to_thread(mutate)
+    except ConversationConflict as error:
+        raise HTTPException(status_code=error.status, detail=error.detail) from error
+    _notify_conversation_mutation(session_id, owner, "message.revised")
+    result["message"] = format_canonical_chat_rows(session_id, [db.get_chat_canonical_message(message_id)])[0]
+    return result
+
+
+@router.post("/sessions/{session_id}/branches")
+async def branch_session(session_id: str, payload: ConversationBranchPayload, request: Request):
+    from core.conversation_recovery import ConversationConflict, create_branch
+    from erc.session_lane_scheduler import session_lane_scheduler
+    owner = _conversation_owner(request, payload.userId, session_id)
+    def mutate():
+        with session_lane_scheduler.idle_mutation(session_id):
+            return create_branch(db, session_id=session_id, owner=owner, turn_id=payload.turnId,
+                expected_transcript_revision=payload.expectedTranscriptRevision,
+                expected_message_version=payload.expectedMessageVersion, message_id=payload.messageId, content=payload.content)
+    try:
+        result = await asyncio.to_thread(mutate)
+    except ConversationConflict as error:
+        raise HTTPException(status_code=error.status, detail=error.detail) from error
+    _notify_conversation_mutation(result["sessionId"], owner, "session.branch.created")
+    return result
+
+
+@router.get("/sessions/{session_id}/messages/{message_id}/revisions")
+async def get_message_revisions(session_id: str, message_id: str, request: Request):
+    owner = _conversation_owner(request, None, session_id)
+    session = db.get_session(session_id)
+    if not session or session.get("user_id") != owner:
+        raise HTTPException(status_code=403, detail="session_owner_mismatch")
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT * FROM chat_message_revisions WHERE session_id=? AND message_id=? ORDER BY result_message_version",
+                            (session_id, message_id)).fetchall()
+    return {"revisions": [{"revisionId": row["revision_id"], "messageVersion": row["result_message_version"],
+                            "previousText": json.loads(row["previous_snapshot_json"])["content_text"],
+                            "replacementText": row["replacement_text"], "createdAt": row["created_at"],
+                            "mode": row["mode"], "editedBy": "user"} for row in rows]}
+
+
+@router.post("/sessions/{session_id}/messages/{message_id}/revisions/{revision_id}/restore")
+async def restore_message_revision(session_id: str, message_id: str, revision_id: str, payload: RevisionRestorePayload, request: Request):
+    from core.conversation_recovery import ConversationConflict, restore_revision
+    from erc.session_lane_scheduler import session_lane_scheduler
+    owner = _conversation_owner(request, payload.userId, session_id)
+    def mutate():
+        with session_lane_scheduler.idle_mutation(session_id):
+            return restore_revision(db, session_id=session_id, message_id=message_id, revision_id=revision_id, owner=owner,
+                expected_message_version=payload.expectedMessageVersion, expected_transcript_revision=payload.expectedTranscriptRevision)
+    try:
+        result = await asyncio.to_thread(mutate)
+    except ConversationConflict as error:
+        raise HTTPException(status_code=error.status, detail=error.detail) from error
+    _notify_conversation_mutation(session_id, owner, "message.revised")
+    return result
 
 
 def _state_database_http_exception(error: Exception, *, operation: str) -> HTTPException:
@@ -1675,6 +1800,8 @@ async def get_session_history(session_id: str):
         )
         timings["historyDetailBuildMs"] = _elapsed_ms(step_started)
         detail["askUserInteractions"] = ask_user_interactions
+        detail.update({"transcriptRevision": (snapshot or {}).get("transcriptRevision", 0),
+                       "contextEpoch": (snapshot or {}).get("contextEpoch", 0), "branch": (snapshot or {}).get("branch")})
         detail["sessionCoordinationMessages"] = snapshot_payload.get("sessionCoordinationMessages") or []
         if snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported"):
             detail["legacyChatUnsupported"] = True
@@ -1755,6 +1882,7 @@ async def get_session_turns(
         # Capture the cursor before reading the window.  A write that races the
         # read may be returned again on the next sync, but cannot be skipped.
         sync_cursor = datetime.now(timezone.utc).isoformat()
+        versions = _conversation_versions(session_id)
         payload = build_canonical_chat_turn_window(
             session_id,
             before_ordinal=before,
@@ -1766,6 +1894,7 @@ async def get_session_turns(
             {
                 "sessionId": session_id,
                 "syncCursor": sync_cursor,
+                **versions,
                 **payload,
             },
             route="engine.sessions.turns",
@@ -1787,12 +1916,14 @@ async def get_session_turns(
 async def get_session_timeline_sync(session_id: str, since: str):
     try:
         sync_cursor = datetime.now(timezone.utc).isoformat()
+        versions = _conversation_versions(session_id)
         rows = db.get_chat_canonical_messages_since(session_id, since)
         messages = format_canonical_chat_rows(session_id, rows)
         deletions = db.get_chat_message_deletions_since(session_id, since)
         return {
             "messages": messages,
             "deletions": deletions,
+            **versions,
             "syncCursor": sync_cursor,
             "sessionId": session_id,
         }

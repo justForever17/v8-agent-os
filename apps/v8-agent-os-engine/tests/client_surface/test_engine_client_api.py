@@ -117,6 +117,28 @@ def test_owner_filter_precedes_pagination_and_forged_headers_do_not_choose_owner
     assert denied.status_code == 404
 
 
+def test_conversation_mutations_keep_phone_owner_and_cas_contract(fixture):
+    @fixture.internal.patch("/sessions/{session_id}/messages/{message_id}")
+    async def revise(session_id: str, message_id: str, req: Request):
+        body = await req.json()
+        fixture.calls.append((session_id, message_id, body))
+        return {"sessionId": session_id, "messageId": message_id, "transcriptRevision": 7, "contextEpoch": 2}
+    @fixture.internal.post("/sessions/{session_id}/branches")
+    async def branch(session_id: str, req: Request):
+        body = await req.json()
+        fixture.calls.append((session_id, "branch", body))
+        return {"sessionId": "child", "sourceSessionId": session_id}
+    body = {"content": "user correction", "expectedMessageVersion": 3, "expectedTranscriptRevision": 6, "userId": "other"}
+    result = request(fixture, "PATCH", "/api/client/conversations/mine/messages/message-1", json=body)
+    assert result.status_code == 200 and result.json()["contextEpoch"] == 2
+    assert fixture.calls[-1] == ("mine", "message-1", {**body, "userId": "owner"})
+    denied = request(fixture, "PATCH", "/api/client/conversations/foreign/messages/message-1", json=body)
+    assert denied.status_code == 404 and len(fixture.calls) == 1
+    result = request(fixture, "POST", "/api/client/conversations/mine/branches", json={"turnId": "turn-1", "expectedTranscriptRevision": 7, "userId": "other"})
+    assert result.status_code == 200 and result.json()["sessionId"] == "child"
+    assert fixture.calls[-1][2]["userId"] == "owner"
+
+
 def test_expired_or_revoked_auth_is_pre_execution_and_never_dispatches(fixture):
     fixture.service.revoke(fixture.owner["id"], fixture.pair["deviceId"])
     result = request(fixture, "POST", "/api/client/conversations", json={"title": "never"})

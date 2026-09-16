@@ -296,6 +296,18 @@ class SideEffectIdempotencyService:
         )
         return True
 
+    def mark_indeterminate(self, *, run_handle, receipt: SideEffectReceipt, node: str, error: str) -> bool:
+        if not receipt.execute:
+            return True
+        accepted = db.mark_side_effect_indeterminate(
+            idempotency_key=receipt.idempotency_key, owner_id=str(receipt.owner_id or ""), error=error,
+        )
+        run_handle.emit(
+            "side_effect.outcome_unknown" if accepted else "side_effect.receipt_rejected",
+            {**receipt.as_dict(), "state": "indeterminate", "node": node, "error": error},
+        )
+        return accepted
+
     def reconcile(
         self,
         *,

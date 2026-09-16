@@ -17,6 +17,7 @@ from core.runtime_projection import (
     project_pending_approvals,
 )
 from erc.chat_canonical_transcript import build_canonical_chat_messages
+from core.conversation_recovery import public_state
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
 from erc.session_realtime_contract import (
@@ -113,12 +114,14 @@ class SnapshotService:
         canonical_version: int,
         legacy_chat_unsupported: bool = False,
     ) -> Dict:
+        versions = public_state(db.get_chat_transcript_state(session_id))
         messages = build_canonical_chat_messages(session_id) if canonical_version > 0 else []
         sources = self._session_sources(session_id)
         return {
             "session_id": session_id,
             "latest_seq": latest_seq,
             "canonicalVersion": canonical_version,
+            **versions,
             "legacyChatUnsupported": legacy_chat_unsupported,
             "messages": messages,
             "artifacts": self._flatten_artifacts(messages),
@@ -172,10 +175,11 @@ class SnapshotService:
         snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
         latest_runtime_seq = db.get_latest_runtime_seq(session_id)
         latest_canonical_version = db.get_chat_canonical_max_version(session_id)
+        transcript_revision = db.get_chat_transcript_state(session_id)["transcript_revision"]
         if (
             not snapshot_row
             or int(snapshot_row.get("latest_seq") or 0) < latest_runtime_seq
-            or int((snapshot_row.get("snapshot") or {}).get("canonicalVersion") or 0) < latest_canonical_version
+            or (snapshot_row.get("snapshot") or {}).get("transcriptRevision") != transcript_revision
         ):
             refreshed_snapshot = self.refresh_chat_projection(session_id)
             snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
@@ -261,6 +265,9 @@ class SnapshotService:
             return {
                 "session_id": session_id,
                 "snapshot": snapshot,
+                "transcriptRevision": snapshot.get("transcriptRevision", 0),
+                "contextEpoch": snapshot.get("contextEpoch", 0),
+                "branch": snapshot.get("branch"),
                 "latestSeq": latest_seq,
                 "runtimeTimeline": runtime_timeline,
                 "workflow": workflow_view,
@@ -307,6 +314,9 @@ class SnapshotService:
         return {
             "session_id": session_id,
             "snapshot": snapshot,
+            "transcriptRevision": snapshot.get("transcriptRevision", 0),
+            "contextEpoch": snapshot.get("contextEpoch", 0),
+            "branch": snapshot.get("branch"),
             "latestSeq": latest_seq,
             "runtimeTimeline": runtime_timeline,
             "workflow": workflow_view,

@@ -1350,14 +1350,15 @@ class SessionCoordinationService:
         timestamp_ms = int(time.time() * 1000)
         message_ref = self.compact_ref(row, viewer_session_id=session_id)
         metadata = dict(row.get("metadata") or {})
-        candidate_run_id = str(
-            row.get("targetRunId")
-            or row.get("sourceRunId")
-            or row.get("target_run_id")
-            or row.get("source_run_id")
-            or ""
-        ).strip()
-        canonical_run_id = candidate_run_id if candidate_run_id and db.get_run_record(candidate_run_id) else None
+        canonical_run_id = None
+        for key in ("targetRunId", "target_run_id", "sourceRunId", "source_run_id"):
+            candidate_run_id = str(row.get(key) or "").strip()
+            candidate = db.get_run_record(candidate_run_id) if candidate_run_id else None
+            if candidate and candidate.get("session_id") == session_id:
+                canonical_run_id = candidate_run_id
+                break
+        # The remote run is still present in requestInfo. It is evidence, not
+        # execution ownership of the local conversation's canonical row.
         request_info = {
             **message_ref,
             "sourceSessionTitle": metadata.get("sourceSessionTitle"),

@@ -20,6 +20,7 @@ class SessionRuntimeService:
                 "conversation_id": session_id,
                 "ts": utc_now_iso(),
                 "payload": {
+                    "contextEpoch": db.get_chat_transcript_state(session_id)["context_epoch"],
                     "accepted": True,
                     "session_id": session_id,
                     "latest_seq": db.get_latest_runtime_seq(session_id),

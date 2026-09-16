@@ -403,7 +403,9 @@ export function parsePhoneContentBlocks(
     isStreaming = false,
     startId = 0,
     parseInlineThinking = true,
+    userEditedText = false,
 ): PhoneContentBlock[] {
+    if (userEditedText) return [{ id: `text-${startId}`, type: "text", content }];
     const blocks: PhoneContentBlock[] = [];
     const blockIndex = { current: startId };
     let processedContent = String(content || "");

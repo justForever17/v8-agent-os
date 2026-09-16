@@ -25,6 +25,8 @@ _NOISY_SUFFIXES = (
     ".heartbeat",
 )
 _ACTIVITY_PREFIXES = (
+    "message.revised",
+    "session.branch.",
     "run.",
     "runtime.episode.",
     "agent.",

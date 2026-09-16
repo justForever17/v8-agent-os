@@ -283,6 +283,9 @@ export type SessionSourceRef = {
 };
 
 export type AuthoritativeSessionSnapshot = {
+  transcriptRevision?: number;
+  contextEpoch?: number;
+  branch?: Record<string, unknown> | null;
   session?: Record<string, unknown> | null;
   sessionId?: string;
   latestSeq?: number;
@@ -368,6 +371,8 @@ export function normalizeSessionToolResultStatus(value: unknown): SessionToolRes
 }
 
 export type NormalizedSessionRuntimeEvent = {
+  transcriptRevision?: number;
+  contextEpoch?: number;
   type: string;
   name?: SessionRuntimeEventName | string;
   topic?: string;

@@ -2,6 +2,7 @@ fastapi
 uvicorn
 pydantic>=2.9.0
 pyyaml
+regex
 python-multipart
 requests
 certifi

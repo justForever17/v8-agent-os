@@ -260,6 +260,9 @@ export type ChatArtifact = {
 };
 
 export type PhoneUiTimelineNodeBase = {
+    editedBy?: string;
+    branchInherited?: boolean;
+    readOnly?: boolean;
     id: string;
     kind: "narrative" | "execution" | "governance" | "artifact" | "system";
     timestamp: number;
@@ -408,6 +411,11 @@ export type UploadedWorkspaceFile = {
 };
 
 export type ChatMessage = {
+    version?: number;
+    status?: string;
+    state?: string;
+    editedBy?: string;
+    editedAt?: string;
     id: string;
     role: "user" | "assistant" | "system" | "tool";
     content: string;

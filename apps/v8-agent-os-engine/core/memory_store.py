@@ -3770,6 +3770,17 @@ class MemoryStore:
             "consistencyNoteInjected": False,
             "consistencyConflicts": [],
         }
+        if session_id:
+            from core.database import db
+            context_epoch = int(db.get_chat_transcript_state(session_id)["context_epoch"])
+            if context_epoch:
+                # File-based daily/periodic summaries and map teasers do not
+                # carry message versions. After a branch/edit they cannot be
+                # certified against its effective prefix. Keep preferences and
+                # lifecycle-validated knowledge; do not inject opaque old prose.
+                suppress_daily_memory = True
+                suppress_memory_map = True
+                session_context_diagnostics["unversionedSummarySuppressedForEpoch"] = context_epoch
         parts = []
         parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, knowledge graph summaries, procedural workflow hints, navigation refs, and compact recent activity hints. This is a compact snapshot and may be stale or incomplete; when prior facts affect a decision, call memory_broker for fresh recall, exact day logs, or graph relations.")
 

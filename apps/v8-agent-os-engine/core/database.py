@@ -22,7 +22,7 @@ from core.runtime_compatibility import (
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 
-DATABASE_SCHEMA_VERSION = 3
+DATABASE_SCHEMA_VERSION = 4
 
 # Persistence owns the episode settlement contract; runtime projections import
 # this same set so a degraded handoff has the same terminal truth everywhere.
@@ -446,6 +446,8 @@ class DatabaseManager:
                 self._ensure_runtime_safety_tables(conn)
                 self._ensure_creative_media_store_tables(conn)
                 self._ensure_session_command_tables(conn)
+                from core.conversation_schema import ensure_conversation_schema
+                ensure_conversation_schema(conn)
                 conn.commit()
                 return
             if schema_version > DATABASE_SCHEMA_VERSION:
@@ -2362,6 +2364,8 @@ class DatabaseManager:
                 print(f"[Database] Migration note: {e}")
 
             if migration_succeeded:
+                from core.conversation_schema import ensure_conversation_schema
+                ensure_conversation_schema(conn)
                 conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             conn.commit()
 
@@ -3836,6 +3840,9 @@ class DatabaseManager:
             conn.commit()
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        if self.get_chat_transcript_state(session_id)["context_epoch"]:
+            from erc.chat_canonical_transcript import export_legacy_message_payload
+            return [export_legacy_message_payload(row) for row in self.get_chat_canonical_messages(session_id)]
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC', (session_id,))
@@ -4088,6 +4095,9 @@ class DatabaseManager:
             return {"deleted": False, "message_id": normalized_message_id, "session_id": normalized_session_id}
 
     def get_recent_messages(self, session_id: str, limit: int = 20, role: Optional[str] = None) -> List[Dict[str, Any]]:
+        if self.get_chat_transcript_state(session_id)["context_epoch"]:
+            rows = self.get_messages(session_id)
+            return [row for row in rows if not role or row["role"] == role][-limit:]
         query = 'SELECT * FROM messages WHERE session_id = ?'
         params: list[Any] = [session_id]
         if role:
@@ -4136,6 +4146,21 @@ class DatabaseManager:
 
     # --- Canonical Chat Transcript Operations ---
 
+    def get_chat_transcript_state(self, session_id: str) -> Dict[str, Any]:
+        from core.conversation_schema import transcript_state
+        with self.get_connection() as conn:
+            return transcript_state(conn, session_id)
+
+    def assert_chat_run_epoch(self, session_id: str, run_id: str) -> None:
+        from core.conversation_schema import assert_run_epoch
+        with self.get_connection() as conn:
+            assert_run_epoch(conn, session_id, run_id)
+
+    def has_chat_branch_artifact_ref(self, session_id: str, artifact_id: str) -> bool:
+        with self.get_connection() as conn:
+            return conn.execute("SELECT 1 FROM chat_branch_artifact_refs WHERE child_session_id=? AND artifact_id=?",
+                                (session_id, artifact_id)).fetchone() is not None
+
     def get_next_chat_canonical_ordinal(self, session_id: str) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -4169,6 +4194,9 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                from core.conversation_schema import assert_run_epoch
+                conn.execute("BEGIN IMMEDIATE")
+                assert_run_epoch(conn, session_id, run_id)
                 conn.execute(
                     '''
                     INSERT INTO chat_canonical_messages
@@ -4208,10 +4236,13 @@ class DatabaseManager:
         reasoning_text: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
         finalized_at: Optional[str] = None,
+        expected_version: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         existing = self.get_chat_canonical_message(message_id)
         if not existing:
             return None
+        if expected_version is not None and int(existing.get("version") or 1) != expected_version:
+            raise ValueError("canonical_message_version_conflict")
         next_nodes = nodes if nodes is not None else existing.get("nodes") or []
         next_artifacts = artifacts if artifacts is not None else existing.get("artifacts") or []
         next_metadata = metadata if metadata is not None else existing.get("metadata") or {}
@@ -4224,6 +4255,9 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                from core.conversation_schema import assert_run_epoch
+                conn.execute("BEGIN IMMEDIATE")
+                assert_run_epoch(conn, str(existing.get("session_id") or ""), existing.get("run_id"))
                 conn.execute(
                     '''
                     UPDATE chat_canonical_messages
@@ -4236,7 +4270,7 @@ class DatabaseManager:
                         version = ?,
                         updated_at = ?,
                         finalized_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND version = ?
                     ''',
                     (
                         next_state,
@@ -4249,8 +4283,11 @@ class DatabaseManager:
                         now_iso,
                         finalized_value,
                         message_id,
+                        int(existing.get("version") or 1),
                     ),
                 )
+                if conn.execute("SELECT changes()").fetchone()[0] != 1:
+                    raise ValueError("canonical_message_version_conflict")
                 session_id = str(existing.get("session_id") or "").strip()
                 if session_id:
                     conn.execute('UPDATE sessions SET updated_at = ? WHERE id = ?', (now_iso, session_id))
@@ -4405,6 +4442,7 @@ class DatabaseManager:
                 SELECT id,
                        session_id,
                        run_id,
+                       json_extract(metadata_json, '$.sourceRunId') AS source_run_id,
                        ordinal,
                        role,
                        state,
@@ -4576,6 +4614,10 @@ class DatabaseManager:
         started_at = utc_now_iso()
         def _write():
             with self.get_connection() as conn:
+                from core.conversation_schema import assert_run_epoch
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute("SELECT 1 FROM run_records WHERE id=?", (run_id,)).fetchone():
+                    assert_run_epoch(conn, session_id, run_id)
                 conn.execute(
                     '''
                     INSERT OR REPLACE INTO run_records
@@ -6123,6 +6165,16 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 session_id = event.get("session_id")
                 conn.execute("BEGIN IMMEDIATE")
+                from core.conversation_schema import assert_run_epoch, transcript_state
+                assert_run_epoch(conn, str(session_id or ""), event.get("run_id"))
+                current_epoch = transcript_state(conn, str(session_id or ""))["context_epoch"]
+                if "contextEpoch" not in event_payload:
+                    # Direct event producers with a run are bound by its
+                    # persisted epoch. Session control events have no old run.
+                    event_payload["contextEpoch"] = current_epoch
+                if int(event_payload.get("contextEpoch") or 0) != current_epoch:
+                    raise ValueError("conversation_context_superseded")
+                event["payload"] = event_payload
                 seq = self._allocate_runtime_event_seq(conn, str(session_id or ""))
                 conn.execute(
                     '''

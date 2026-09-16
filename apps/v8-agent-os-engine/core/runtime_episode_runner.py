@@ -7256,7 +7256,7 @@ class RuntimeEpisodeRunner:
                         ),
                         progress=f"rpa: running draft {script_id}",
                     )
-                    status = "failed" if str(result.get("status") or "").lower() in {"failed", "fallback_failed", "blocked"} else "ready"
+                    status = "ready" if str(result.get("status") or "").lower() in {"completed", "completed_via_computer_use_primary"} else "failed"
                     prepared = dict(result)
                     summary = f"RPA draft executed: {script_id} ({result.get('status') or 'completed'})."
                 else:
@@ -7302,7 +7302,7 @@ class RuntimeEpisodeRunner:
                         ),
                         progress=f"rpa: running robot {robot_file}",
                     )
-                    status = "failed" if str(result.get("status") or "").lower() in {"failed", "fallback_failed", "blocked"} else "ready"
+                    status = "ready" if str(result.get("status") or "").lower() in {"completed", "completed_via_computer_use_primary"} else "failed"
                     prepared = dict(result)
                     summary = f"RPA robot flow executed: {robot_file} ({result.get('status') or 'completed'})."
                 else:

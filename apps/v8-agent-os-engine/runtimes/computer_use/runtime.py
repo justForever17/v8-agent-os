@@ -198,6 +198,21 @@ _WORKBENCH_BROWSER_CONTROL_ERRORS = {
 }
 
 
+def _redact_action_literal(value: Any, secret: str) -> Any:
+    from dataclasses import fields, is_dataclass, replace
+    if not secret:
+        return value
+    if isinstance(value, str):
+        return value.replace(secret, "[redacted]")
+    if isinstance(value, dict):
+        return {key: _redact_action_literal(item, secret) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_action_literal(item, secret) for item in value]
+    if is_dataclass(value):
+        return replace(value, **{field.name: _redact_action_literal(getattr(value, field.name), secret) for field in fields(value)})
+    return value
+
+
 def _raise_if_workbench_browser_control_error(exc: Exception) -> None:
     if str(getattr(exc, "code", "") or "").strip() in _WORKBENCH_BROWSER_CONTROL_ERRORS:
         raise exc
@@ -5963,6 +5978,8 @@ class ComputerUseRuntime:
         return None
 
     def _is_variableizable_payload_value(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
         if isinstance(value, (str, int, float)) and str(value).strip():
             return True
         if isinstance(value, list) and value:
@@ -6460,6 +6477,49 @@ class ComputerUseRuntime:
                 "shortcutResolution": dict(result.metadata.get("shortcutResolution") or {}) if isinstance(result.metadata, dict) else {},
             },
         )
+        from erc.runtime_context import get_runtime_context
+
+        context = get_runtime_context()
+        step.metadata.update({
+            "runId": run_handle.run_id,
+            "sessionId": run_handle.session_id,
+            "actorId": context.get("agent_id") or context.get("user_id") or dict(invocation_metadata or {}).get("actorId"),
+            "toolCallId": context.get("tool_call_id") or dict(invocation_metadata or {}).get("toolCallId"),
+            "observationId": getattr(result.observation, "snapshot_id", None),
+            "beforeObservationId": result.metadata.get("beforeObservationId"),
+            "browserProfileId": result.metadata.get("browserProfileId") or trace_action_payload.get("browser_profile_id"),
+            "evidence": {
+                "observed": True,
+                "execution": result.metadata.get("executionEvidence") or ("executed" if result.status in {"success", "completed", "update_requested"} else "unknown"),
+                "reusable": bool(primitive_payload.get("supportsRpaPromotion")),
+                "businessVerified": False,
+            },
+        })
+        receipt = dict(result.metadata.get("sideEffectReceipt") or {})
+        if receipt:
+            step.metadata["sideEffectReceipt"] = receipt
+        if verification.get("status") == "side_effect_deduplicated":
+            step.metadata["evidence"].update({"execution": "deduplicated", "reusable": False})
+            step.primitive.supports_rpa_promotion = False
+        elif result.status in {"unknown", "failed", "blocked", "cancelled", "interrupted"}:
+            step.metadata["evidence"]["reusable"] = False
+            step.primitive.supports_rpa_promotion = False
+        # A password field must not become a replayable literal or example value.
+        sensitive = bool(trace_action_payload.get("sensitive_input") or trace_action_payload.get("sensitiveInput")
+                         or (result.target or {}).get("isPassword"))
+        if sensitive:
+            secret = str(trace_action_payload.get("text") or "")
+            reference = trace_action_payload.get("credential_ref") or trace_action_payload.get("credentialRef")
+            step.params.pop("text", None)
+            step.raw_params.pop("text", None)
+            step.variables = [variable for variable in step.variables if variable.original_key != "text"]
+            step.params["credentialRef"] = reference
+            step.primitive.supports_rpa_promotion = False
+            step.metadata["evidence"]["reusable"] = False
+            if secret:
+                step = _redact_action_literal(step, secret)
+                step.target.selector = {key: value for key, value in step.target.selector.items()
+                                        if "[redacted]" not in json.dumps(value, ensure_ascii=False)}
         trace_payload = self.trace_store.append_step(
             run_id=run_handle.run_id,
             session_id=run_handle.session_id,
@@ -6490,6 +6550,17 @@ class ComputerUseRuntime:
                 "binding": binding_decision.as_dict() if binding_decision is not None else self._binding_metadata(None),
             },
         )
+        from runtimes.rpa.runtime import rpa_runtime
+
+        recordings = rpa_runtime.recording_manager.record_runtime_step(
+            run_id=run_handle.run_id, session_id=run_handle.session_id, step=step,
+        )
+        for recording in recordings:
+            run_handle.emit("rpa.recording.updated", {
+                "recordingSessionId": recording["recordingSessionId"],
+                "stepCount": recording.get("stepCount"), "revision": recording.get("revision"),
+                "sourceRunId": run_handle.run_id, "sourceStepId": step.step_id,
+            })
 
     def _verification_target(self, action_payload: Dict[str, Any], result: ComputerUseActionResult) -> Dict[str, Any]:
         target = dict(result.target or {})
@@ -10090,12 +10161,16 @@ class ComputerUseRuntime:
             visual_guard_requested=visual_guard_requested,
         )
         action_id = f"cua_{uuid.uuid4().hex[:10]}"
+        sensitive_literal = str(normalized_payload.get("text") or "") if (
+            normalized_payload.get("sensitive_input") or normalized_payload.get("sensitiveInput")
+            or normalized_payload.get("credential_ref") or normalized_payload.get("credentialRef")
+        ) else ""
         run_handle.emit(
             "computer_use.action.started",
             {
                 "actionId": action_id,
                 "actionType": action_type,
-                "payload": normalized_payload,
+                "payload": _redact_action_literal(normalized_payload, sensitive_literal),
                 "invocation": invocation.as_dict(),
                 "binding": binding_decision.as_dict(),
                 "templateGovernance": governance_feedback,
@@ -10421,7 +10496,7 @@ class ComputerUseRuntime:
                                 "appId": app_id_for_action,
                                 "windowHandle": normalized_payload.get("window_handle"),
                                 "selectorKey": normalized_payload.get("selector_key"),
-                                "targetText": normalized_payload.get("target_text") or normalized_payload.get("text"),
+                                "targetText": normalized_payload.get("credential_ref") or normalized_payload.get("credentialRef") or _redact_action_literal(normalized_payload.get("target_text") or normalized_payload.get("text"), sensitive_literal),
                                 "point": normalized_payload.get("point"),
                             },
                             node="computer_use_runtime",
@@ -10921,6 +10996,7 @@ class ComputerUseRuntime:
                         )
                     if (
                         side_effect_completion_rejected
+                        or action_type not in {"observe", "find_elements", "capture_screenshot", "wait_for_element"}
                         or verification.passed
                         or update_request is not None
                         or attempt_index >= max_attempts
@@ -10973,6 +11049,22 @@ class ComputerUseRuntime:
                     )
                 except DesktopDriverError as exc:
                     last_error = exc
+                    code = str(exc).split(":", 1)[0]
+                    if code in {"execution_unknown", "partial_input", "target_lost"} or action_type not in {"observe", "find_elements", "capture_screenshot", "wait_for_element"}:
+                        unknown = code != "target_lost"
+                        if action_side_effect_receipt is not None and unknown:
+                            side_effect_idempotency_service.mark_indeterminate(run_handle=run_handle,
+                                receipt=action_side_effect_receipt, node="computer_use_runtime", error=code)
+                        result = ComputerUseActionResult(
+                            action_id=f"cu_{uuid.uuid4().hex[:12]}", action_type=action_type,
+                            status="unknown" if unknown else "failed", message=str(exc),
+                            target={"windowHandle": normalized_payload.get("window_handle"), "windowTitle": normalized_payload.get("window_title")},
+                            attempt_count=attempt_index,
+                            verification=ComputerUseVerification(passed=False, status=code if code in {"execution_unknown", "partial_input", "target_lost"} else "execution_unknown",
+                                reason="动作结果需重新观察核实，未自动重放。", level="review_required"),
+                            metadata={"reconciliationRequired": unknown, "executionEvidence": "unknown" if unknown else "not_dispatched"},
+                        )
+                        break
                     if attempt_index >= max_attempts:
                         raise
                     self.driver.invalidate_window_cache(normalized_payload.get("window_handle"))
@@ -11132,6 +11224,7 @@ class ComputerUseRuntime:
             result.metadata["templateGovernanceApplied"] = dict(governance_feedback)
         if learned_interaction is not None:
             result.metadata["learnedInteraction"] = dict(learned_interaction)
+        result = _redact_action_literal(result, sensitive_literal)
         snapshot = self._refresh_snapshot(
             run_handle=run_handle,
             observation=result.observation,
@@ -11145,6 +11238,7 @@ class ComputerUseRuntime:
             runtime_context=self._run_context(run_handle=run_handle),
         )
         try:
+            result.metadata["beforeObservationId"] = (before_observation or {}).get("snapshotId")
             self._record_trace_step(
                 run_handle=run_handle,
                 goal=goal or action_type,
@@ -11157,7 +11251,7 @@ class ComputerUseRuntime:
                 pre_action_guard_requested=pre_action_guard_requested,
                 max_attempts=max_attempts,
                 invocation=invocation,
-                invocation_metadata=invocation_metadata,
+                invocation_metadata={**dict(invocation_metadata or {}), "actorId": user_id},
                 binding_decision=binding_decision,
             )
         except Exception as trace_exc:

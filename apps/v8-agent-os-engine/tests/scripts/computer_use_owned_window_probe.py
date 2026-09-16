@@ -120,7 +120,7 @@ def _read_json_when_ready(path: Path, process: subprocess.Popen, timeout: float 
     raise TimeoutError(f"owned_probe_file_not_ready:{path.name}")
 
 
-def run_owned_window_probe(runtime: Any, *, output_directory: Path, native_actions: bool = False) -> dict[str, Any]:
+def run_owned_window_probe(runtime: Any, *, output_directory: Path, native_actions: bool = False, before_cleanup=None) -> dict[str, Any]:
     """Exercise production UIA/capture against only a child process we own."""
     if platform.system() != "Windows":
         return {"ok": False, "status": "unsupported", "reason": "owned_window_probe_requires_windows"}
@@ -267,6 +267,9 @@ def run_owned_window_probe(runtime: Any, *, output_directory: Path, native_actio
                 raise RuntimeError("native_input_submission_not_observed")
             payload["checks"]["nativeInput"] = {"status": "real_host_passed", "submittedMarker": marker, "pid": process.pid}
             payload["checks"]["postInputCapture"] = capture_owned("submitted", main_handle)
+            if before_cleanup is not None:
+                stage = "owned_recording_replay"
+                payload["checks"]["recordingReplay"] = before_cleanup(marker=marker, process_id=process.pid)
             payload["ok"] = all(check.get("status") == "real_host_passed" for check in payload["checks"].values())
         except Exception as exc:
             payload["failedStage"] = stage

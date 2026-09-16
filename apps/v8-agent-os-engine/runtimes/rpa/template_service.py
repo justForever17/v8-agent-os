@@ -771,8 +771,7 @@ class RPATemplateService:
                 "notes": f"模板满足自动提级阈值：runs={historical_runs}, completedRate={completed_rate}",
             }
         if status == "approved" and (
-            stage == "approved_at_risk"
-            or execution_state in {"failed", "fallback_failed", "compile_blocked"}
+            execution_state in {"failed", "fallback_failed", "compile_blocked", "unknown"}
             or fallback_heavy_rate >= self._AUTO_FREEZE_FALLBACK_HEAVY
             or review_required_rate >= self._AUTO_FREEZE_REVIEW_REQUIRED
             or local_repair_rate >= self._AUTO_FREEZE_LOCAL_REPAIR

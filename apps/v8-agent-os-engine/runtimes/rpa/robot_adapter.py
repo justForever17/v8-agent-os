@@ -6,11 +6,13 @@ import re
 import sys
 import time
 import tempfile
+import uuid
+import hashlib
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.process_launch import run_windowless
+from core.process_launch import run_windowless, run_windowless_bounded
 from core.agent_browser_profile import (
     configured_agent_browser_profile_dir,
     discover_system_agent_browser,
@@ -21,14 +23,19 @@ from runtimes.rpa.keyword_contract import bridge_keyword_issues, is_supported_br
 from runtimes.rpa.store import RPAScriptStore, rpa_script_store
 
 
-_ROBOT_CHILD_LAUNCHER = (
-    "import runpy,sys; "
-    "target,engine_root=sys.argv[1:3]; "
-    "sys.path.insert(0,target); "
-    "sys.path.insert(1,engine_root); "
-    "sys.argv=['robot',*sys.argv[3:]]; "
-    "runpy.run_module('robot',run_name='__main__')"
-)
+_ROBOT_CHILD_LAUNCHER = """
+import json,os,runpy,sys
+target,engine_root=sys.argv[1:3]
+sys.path.insert(0,target)
+sys.path.insert(1,engine_root)
+from core.runtime.startup_profile import get_runtime_registry_state
+get_runtime_registry_state()
+from erc.runtime_context import bind_runtime_context
+context=json.loads(os.environ.pop('V8_RPA_PARENT_CONTEXT','{}'))
+sys.argv=['robot',*sys.argv[3:]]
+with bind_runtime_context(**context):
+    runpy.run_module('robot',run_name='__main__')
+"""
 _RPA_AVAILABILITY_CHILD_LAUNCHER = r"""
 import importlib
 import json
@@ -169,6 +176,14 @@ class RobotFrameworkAdapter:
             environment[normalized] = str(value)
         environment["PYTHONNOUSERSITE"] = "1"
         environment["V8_AGENT_OS_RPA_TARGET"] = str(target)
+        from erc.runtime_context import get_runtime_context
+        context = get_runtime_context()
+        if context.get("runtime_kind") == "rpa" and context.get("run_id"):
+            # Identity handoff only. Credentials and arbitrary context never
+            # enter the child environment; canonical run data stays in ERC.
+            environment["V8_RPA_PARENT_CONTEXT"] = json.dumps({key: context[key] for key in (
+                "run_id", "session_id", "user_id", "project_id", "workspace_id", "workspace_path",
+                "runtime_kind", "trigger_source", "agent_id", "actor_role") if context.get(key) is not None})
         return environment
 
     def is_available(self) -> bool:
@@ -852,7 +867,25 @@ class RobotFrameworkAdapter:
         return self._derived_step_robot_semantic(script, step)
 
     def _custom_keyword_row(self, step: Dict[str, Any], *, indent: int = 1) -> List[str]:
-        params = dict(step.get("params") or {})
+        params = {key: value for key, value in dict(step.get("params") or {}).items()
+                  if not key.startswith("_") and key not in {"requested_app_id", "resolved_app_id"}}
+        target = step.get("target") or {}
+        use = self._step_use(step)
+        for source, mapping in (
+            (target.get("window") or {}, {"title": "window_title", "windowHandle": "window_handle", "className": "class_name"}),
+            ({} if use == "focus_window" else target.get("selector") or {}, {"selectorKey": "selector_key", "automationId": "automation_id",
+                "controlType": "control_type", "name": "name", "className": "class_name", "handle": "handle"}),
+        ):
+            for key, argument in mapping.items():
+                if source.get(key) not in (None, ""):
+                    if key == "name" and source.get("automationId"):
+                        continue
+                    params[argument] = source[key]
+        if self._step_use(step) == "focus_window":
+            # Candidate lists and binding diagnostics belong to the trace;
+            # replay uses the captured window handle/title/class above.
+            for key in ("class_name_candidates", "process_names", "visual_expectation"):
+                params.pop(key, None)
         args = [f"{key}={self._convert_value(value)}" for key, value in params.items() if value not in (None, "")]
         return [""] * indent + [self._keyword_name(self._step_use(step)), *args]
 
@@ -978,7 +1011,10 @@ class RobotFrameworkAdapter:
             lines.append(self._pipe_row([""] * indent + ["Comment", text]))
             return True
         if use == "if":
-            condition = self._convert_value(params.get("condition") or params.get("expression") or "${TRUE}")
+            raw_condition = params.get("condition", params.get("expression"))
+            if raw_condition in (None, ""):
+                raise ValueError("IF requires an explicit condition.")
+            condition = self._convert_value(raw_condition)
             lines.append(self._pipe_row([""] * indent + ["IF", condition]))
             body = self._step_body_indices(steps, step)
             if body:
@@ -989,11 +1025,10 @@ class RobotFrameworkAdapter:
             lines.append(self._pipe_row([""] * indent + ["END"]))
             return True
         if use == "loop":
-            raw_count = params.get("count") or params.get("times") or 1
-            try:
-                count = max(1, int(raw_count))
-            except Exception:
-                count = 1
+            raw_count = params.get("count", params.get("times"))
+            if isinstance(raw_count, bool) or not re.fullmatch(r"\d+", str(raw_count)):
+                raise ValueError("LOOP requires an explicit non-negative integer count.")
+            count = int(raw_count)
             lines.append(self._pipe_row([""] * indent + ["FOR", "${rpa_loop_index}", "IN RANGE", str(count)]))
             body = self._step_body_indices(steps, step)
             if body:
@@ -1013,6 +1048,7 @@ class RobotFrameworkAdapter:
                 lines.append(self._pipe_row([""] * (indent + 1) + ["Comment", "TRY body is empty."]))
             lines.append(self._pipe_row([""] * indent + ["EXCEPT", "AS", "${rpa_error}"]))
             lines.append(self._pipe_row([""] * (indent + 1) + ["Log To Console", "RPA_EXCEPTION:${rpa_error}"]))
+            lines.append(self._pipe_row([""] * (indent + 1) + ["Fail", "${rpa_error}"]))
             lines.append(self._pipe_row([""] * indent + ["END"]))
             return True
         return False
@@ -1075,6 +1111,28 @@ class RobotFrameworkAdapter:
         }
 
     def render_script(self, script: Dict[str, Any]) -> str:
+        steps = [step for step in script.get("steps", []) if isinstance(step, dict)]
+        keys = [self._step_key(step, index) for index, step in enumerate(steps)]
+        if len(keys) != len(set(keys)):
+            raise ValueError("RPA step IDs must be unique.")
+        bodies = {}
+        for index, step in enumerate(steps):
+            if self._step_use(step) not in {"if", "loop", "try_catch"}:
+                continue
+            body = set(self._step_body_indices(steps, step))
+            if not body:
+                raise ValueError("Control blocks require a non-empty body.")
+            for previous in bodies.values():
+                if body & previous and not (body <= previous or previous <= body):
+                    raise ValueError("RPA control blocks cannot overlap across boundaries.")
+            bodies[index] = body
+        def visit(index, ancestors):
+            if index in ancestors:
+                raise ValueError("RPA control blocks cannot recursively contain each other.")
+            for child in bodies.get(index, ()):
+                visit(child, ancestors | {index})
+        for index in bodies:
+            visit(index, set())
         script_id = str(script.get("id") or "rpa.workflow")
         script_name = str(script.get("name") or script_id)
         app_id = str(script.get("appId") or "desktop")
@@ -1129,7 +1187,9 @@ class RobotFrameworkAdapter:
             name = str(variable.get("name") or "").strip()
             if not name:
                 continue
-            example = variable.get("exampleValue")
+            example = variable.get("defaultValue", variable.get("exampleValue"))
+            if variable.get("sensitive") or variable.get("secretName"):
+                example = None
             default_value = "__REQUIRED__" if example in (None, "") else self._convert_value(example)
             lines.append(self._pipe_row([self._robot_var(name), default_value]))
 
@@ -1194,29 +1254,6 @@ class RobotFrameworkAdapter:
         issues.extend(bridge_keyword_issues(step_uses))
         return list(dict.fromkeys(issue for issue in issues if issue))
 
-    def _sync_draft_export_metadata(
-        self,
-        *,
-        script_id: str,
-        robot_path: str | None,
-        exportability: str,
-        dry_run_passed: bool,
-        dry_run_error: str | None = None,
-        compile_issues: Optional[List[str]] = None,
-        dry_run_output_dir: str | None = None,
-    ) -> None:
-        draft = self.script_store.get_draft(script_id)
-        if not draft:
-            return
-        metadata = dict(draft.get("metadata") or {})
-        metadata["exportability"] = exportability
-        metadata["dryRunPassed"] = bool(dry_run_passed)
-        metadata["dryRunError"] = str(dry_run_error or "").strip() or None
-        metadata["compileIssues"] = [str(item) for item in list(compile_issues or []) if str(item).strip()]
-        metadata["robotFilePath"] = robot_path
-        metadata["dryRunOutputDir"] = dry_run_output_dir
-        draft["metadata"] = metadata
-        self.script_store.save_draft(draft)
 
     def validate_robot_file(
         self,
@@ -1225,7 +1262,7 @@ class RobotFrameworkAdapter:
         variables: Optional[Dict[str, Any]] = None,
         output_dir: Path | None = None,
     ) -> Dict[str, Any]:
-        robot_path = Path(robot_file)
+        robot_path = Path(robot_file).resolve()
         dry_run_output_dir = Path(output_dir) if output_dir is not None else robot_path.with_name(f"{robot_path.stem}_dryrun")
         if not self.is_available():
             return {
@@ -1269,48 +1306,26 @@ class RobotFrameworkAdapter:
         script: Dict[str, Any],
         output_dir: Path | None = None,
     ) -> Dict[str, Any]:
-        target_dir = Path(output_dir) if output_dir is not None else self.script_store.script_dir
+        output_root = Path(output_dir) if output_dir is not None else self.script_store.script_dir
+        target_dir = output_root / "prepared" / uuid.uuid4().hex
         target_dir.mkdir(parents=True, exist_ok=True)
         script_id = str(script.get("id") or "rpa.workflow")
         path = target_dir / f"{self._safe_name(script_id)}.robot"
         contract_issues = self._export_contract_issues(script)
         if contract_issues:
-            self._sync_draft_export_metadata(
-                script_id=script_id,
-                robot_path=str(path),
-                exportability="contract_failed",
-                dry_run_passed=False,
-                dry_run_error="; ".join(contract_issues),
-                compile_issues=contract_issues,
-            )
             raise ValueError("RPA 导出失败：存在未覆盖的 bridge keyword。\n" + "\n".join(contract_issues))
         content = self.render_script(script)
         path.write_text(content, encoding="utf-8")
         validation = self.validate_robot_file(robot_file=path, output_dir=target_dir / f"{path.stem}_dryrun")
         if not validation.get("passed"):
-            self._sync_draft_export_metadata(
-                script_id=script_id,
-                robot_path=str(path),
-                exportability="dry_run_failed",
-                dry_run_passed=False,
-                dry_run_error=str(validation.get("error") or "").strip() or "Robot dry-run failed",
-                compile_issues=[],
-                dry_run_output_dir=str(validation.get("outputDir") or ""),
-            )
             raise ValueError(f"RPA 导出失败：{validation.get('error') or 'Robot dry-run failed'}")
-        self._sync_draft_export_metadata(
-            script_id=script_id,
-            robot_path=str(path),
-            exportability="dry_run_passed",
-            dry_run_passed=True,
-            compile_issues=[],
-            dry_run_output_dir=str(validation.get("outputDir") or ""),
-        )
         return {
             "path": str(path),
             "scriptId": script_id,
             "taskName": str(script.get("name") or script_id),
             "content": content,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "draftUpdatedAt": script.get("updatedAt"),
             "dryRunPassed": True,
             "dryRunError": None,
             "dryRunOutputDir": str(validation.get("outputDir") or ""),
@@ -1351,10 +1366,12 @@ class RobotFrameworkAdapter:
         script_id: str,
         variables: Optional[Dict[str, Any]] = None,
         output_dir: Path | None = None,
+        script: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        draft = self.script_store.get_draft(script_id)
+        draft = deepcopy(script) if script is not None else self.script_store.get_draft(script_id)
         if not draft:
             raise ValueError(f"未找到 draft: {script_id}")
+        self.validate_variable_inputs(draft, variables)
         exported = self.export_script(script=draft, output_dir=output_dir)
         command = self.build_command(
             robot_file=exported["path"],
@@ -1367,6 +1384,17 @@ class RobotFrameworkAdapter:
             "export": exported,
             "command": command,
         }
+
+    @staticmethod
+    def validate_variable_inputs(script: Dict[str, Any], variables: Optional[Dict[str, Any]]) -> None:
+        supplied = variables or {}
+        for definition in script.get("variables") or []:
+            name = str(definition.get("name") or "")
+            if definition.get("sensitive") or definition.get("secretName"):
+                raise ValueError("Robot 执行尚未接入受治理凭据引用；请使用 Computer Use 的凭据入口，勿传入明文。")
+            value = supplied.get(name, definition.get("defaultValue", definition.get("exampleValue")))
+            if definition.get("required") and value in (None, ""):
+                raise ValueError(f"RPA 缺少必填变量: {name}")
 
     def prepare_existing_run(
         self,
@@ -1393,6 +1421,7 @@ class RobotFrameworkAdapter:
         return {
             "available": self.availability(),
             "robotFile": str(robot_path),
+            "export": {"path": str(robot_path), "sha256": hashlib.sha256(robot_path.read_bytes()).hexdigest()},
             "command": command,
         }
 
@@ -1406,11 +1435,25 @@ class RobotFrameworkAdapter:
         if not self.is_available():
             raise RuntimeError("当前环境未安装 Robot Framework，无法执行 .robot 流程。")
         target = self._require_rpa_target_dir()
-        completed = run_windowless(
+        from erc.kernel import erc_kernel
+        from erc.runtime_context import get_runtime_context
+        from erc.runtime_control import STOP_COMMANDS
+
+        context = get_runtime_context()
+        run_id = context.get("run_id")
+
+        def cancelled() -> bool:
+            if not run_id:
+                return False
+            signal = erc_kernel.peek_control_signal(run_id) or {}
+            return str(signal.get("command") or "").lower() in STOP_COMMANDS
+
+        completed = run_windowless_bounded(
             command,
             capture_output=True,
             text=True,
-            timeout=max(1, int(timeout_ms / 1000)),
+            timeout=max(0.001, timeout_ms / 1000),
+            cancel_requested=cancelled,
             cwd=cwd or str(self._engine_root()),
             env=self._robot_child_environment(target),
         )

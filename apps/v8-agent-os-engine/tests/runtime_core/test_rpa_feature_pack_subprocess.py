@@ -13,7 +13,7 @@ def test_robot_command_uses_receipt_governed_target_in_isolated_child(monkeypatc
     target = tmp_path / "pack"
     target.mkdir()
     (target / "robot.py").write_text(
-        "import json,sys\nprint('V8OS_FAKE_ROBOT=' + json.dumps(sys.argv))\n",
+        "import json,sys\nif __name__ == '__main__': print('V8OS_FAKE_ROBOT=' + json.dumps(sys.argv))\n",
         encoding="utf-8",
     )
     robot_file = tmp_path / "workflow.robot"

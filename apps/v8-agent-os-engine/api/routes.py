@@ -150,6 +150,7 @@ if service_enabled("knowledge", profile=_STARTUP_PROFILE):
     _include_optional_router("knowledge_routes")
 if service_enabled("network_supervisor", profile=_STARTUP_PROFILE, runtime_kind="network_supervisor"):
     _include_optional_router("network_supervisor_routes")
+    _include_optional_router("config_distribution_routes")
 if service_enabled("computer_use", profile=_STARTUP_PROFILE, runtime_kind="computer_use"):
     _include_optional_router("computer_use_routes")
 if service_enabled("desktop_live", profile=_STARTUP_PROFILE):

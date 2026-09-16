@@ -103,11 +103,15 @@ class NetworkNeighborService:
         self._wake_queue_worker_id = f"network_neighbor_{uuid.uuid4().hex[:10]}"
 
     async def start(self) -> None:
+        from core.config_distribution_service import config_distribution_service
+        await config_distribution_service.start()
         self._wake_queue_enabled = True
         if self._wake_queue_task is None or self._wake_queue_task.done():
             self._wake_queue_task = asyncio.create_task(self._wake_queue_loop())
 
     async def stop(self) -> None:
+        from core.config_distribution_service import config_distribution_service
+        await config_distribution_service.stop()
         self._wake_queue_enabled = False
         task = self._wake_queue_task
         self._wake_queue_task = None
@@ -825,6 +829,9 @@ class NetworkNeighborService:
                 configured_binding=workspace_payload,
             )
         metadata = dict(link.get("metadata") or {})
+        if next_local_role != link.get("localRole"):
+            # Old configuration confirmations cannot revive after a role round-trip.
+            metadata["configAuthorityVersion"] = uuid.uuid4().hex
         if "capabilityTags" in payload or "capability_tags" in payload:
             metadata["capabilityTags"] = _clean_capability_tags(payload.get("capabilityTags", payload.get("capability_tags")))
         if "description" in payload:
@@ -972,6 +979,9 @@ class NetworkNeighborService:
     async def handle_peer_message(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
         if not getattr(network_supervisor_service.get_config_model(), "enabled", False):
             raise HTTPException(status_code=403, detail="Neighbor runtime is disabled")
+        if str(envelope.message_type).startswith("config.distribution."):
+            from core.config_distribution_service import config_distribution_service
+            return await config_distribution_service.handle_envelope(envelope)
         if str(envelope.message_type or "").strip().startswith("neighbor.task."):
             from runtimes.network_supervisor.neighbor_tasks import network_neighbor_task_service
 

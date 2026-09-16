@@ -221,7 +221,26 @@ Admin 的 `/api/plugins/*` 提供插件管理，代理到 Engine `/v1/api/plugin
 
 API 出错时保留稳定错误码和可行动摘要；不要把栈、SQL、provider raw JSON 或内部 `run_*` ID 直接扔给普通用户。内部 ID 可在诊断面保留并配合人类可读标签。
 
-## 9. 验证入口
+## 9. 受信任设备配置分发
+
+本机入口 `/v1/config-distribution` 与 Phone 入口 `/api/client/config-distribution` 均要求已验证 Owner，复用同一持久作业服务。配置分发不向 Phone 开放通用 Config Broker HTTP 写接口。
+
+| 方法与相对路径 | 输入/返回 |
+| --- | --- |
+| `GET /` | `servingInstanceId/templates/peers/jobs`，最近 50 个 Owner 作业 |
+| `GET /targets/{linkId}` | 目标本地 `roles/models`、`missingRequirements`、`protocolVersion:1`、`pathPolicy:target_local_only` |
+| `POST /` | `{commandId,templateId,targets:[{linkId,mapping:{roles,models}}]}`，准备白名单模板 |
+| `GET /{jobId}` | 作业版本、状态及逐台 diff/receipt/readback |
+| `POST /{jobId}/confirm` | `{commandId,revision,planDigest}`，确认当前已准备目标 |
+| `POST /{jobId}/{prepare,retry,cancel,withdraw}` | `{commandId,revision}`，重新准备、续作原计划、取消未提交或精确撤回 |
+
+`model-policy` 仅含白名单预算标量与内置角色温度；`model-roles` 仅含源角色身份和目标本地模型映射。每台目标的 `diff` 为 `{field,before,after}[]`；`receipt` 绑定 Broker 事务、计划摘要、目标授权版本和到期时间，成功后附白名单字段的扁平 `readback`。
+
+批量确认校验 `revision/planDigest`，目标计划有效期 15 分钟。重复 Owner/commandId 返回同一作业；不同请求体复用 ID 返回 `distribution_command_reused`。旧版本、改目标、撤销信任、取消后的迟到确认及较新的目标配置均不能绕过提交约束。部分成功为 `partial`，全部目标提交并读回后才是 `completed`。
+
+传输复用 `/v1/network-supervisor/peer/neighbors/messages` 的现有 peer token 和签名 envelope，消息类型为 `config.distribution.{capabilities,prepare,apply,status,cancel,withdraw}`，载荷版本为 `protocolVersion:1`，响应为同名 `.ack`。接收端只接受已信任 primary 发给 companion 的白名单意图；对端本地 Broker 负责实际事务。旧 Engine 不支持该消息类型时拒绝请求，所有参与设备需升级。
+
+## 10. 验证入口
 
 - Engine OpenAPI：启动后查看 `/docs` 或 `/openapi.json`。
 - 共享契约：`packages/session-realtime` 的构建与测试。

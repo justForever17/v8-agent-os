@@ -449,6 +449,9 @@ async def client_api(request: Request, path: str):
             raise HTTPException(404, "run_not_found")
         require_session(request, principal, session_id)
         return normalize_client_surface(record, request, principal)
+    if path == "config-distribution" or re.fullmatch(rf"config-distribution/{SEGMENT}(?:/{SEGMENT})?", path):
+        from api.config_distribution_routes import distribution_request
+        return await distribution_request(request, principal, path.removeprefix("config-distribution").lstrip("/"))
     if re.fullmatch(rf"supervisor-peers(?:/{SEGMENT}(?:/timeline)?)?", path):
         from api.client_peers import client_peers
         return await client_peers(request, principal, path)

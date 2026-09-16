@@ -304,7 +304,8 @@ def create_branch(database, *, session_id: str, owner: str, turn_id: str, expect
             metadata = {k: _inherited_reference(v, child) if k in {"attachments", "images"} else v
                         for k, v in row["metadata"].items() if k in SAFE_MESSAGE_METADATA}
             metadata.update({"sourceSessionId": session_id, "sourceMessageId": row["id"],
-                             "sourceMessageVersion": row["version"], "sourceRunId": row["run_id"], "branchInherited": True})
+                             "sourceMessageVersion": row["version"],
+                             "sourceRunId": row["run_id"] or row["metadata"].get("sourceRunId"), "branchInherited": True})
             # Materialize source references, never their blobs. Legacy source
             # message FKs point to the legacy mirror, so child ownership lives
             # in metadata while the source is bound to its new session.

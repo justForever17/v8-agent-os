@@ -300,6 +300,19 @@ def test_user_revision_think_markup_remains_visible_text_not_reasoning(database)
     assert not any(node.get("executionType") == "reasoning" for node in formatted["nodes"])
 
 
+def test_old_engineering_evidence_cannot_restore_pre_revision_execution_context(database, monkeypatch):
+    import runtimes.chat.runtime as runtime_module
+    database.create_run_record("old-engineering", "source", status="completed")
+    revision(database)
+    monkeypatch.setattr(runtime_module, "db", database)
+    monkeypatch.setattr(database, "list_runtime_episodes", lambda **kwargs: [{"kind": "engineering", "run_id": "old-engineering", "state": "completed"}])
+    runtime = runtime_module.ChatRuntime()
+    assert not runtime._recent_engineering_continuation_context(session_id="source", workspace_path="")["active"]
+    database.create_run_record("new-engineering", "source", status="completed")
+    monkeypatch.setattr(database, "list_runtime_episodes", lambda **kwargs: [{"kind": "engineering", "run_id": "new-engineering", "state": "completed"}])
+    assert runtime._recent_engineering_continuation_context(session_id="source", workspace_path="")["active"]
+
+
 def test_rotated_sqlite_checkpoint_and_outbound_capture_exclude_old_context(database, monkeypatch, tmp_path):
     import asyncio
     from langchain_core.messages import AIMessage, HumanMessage

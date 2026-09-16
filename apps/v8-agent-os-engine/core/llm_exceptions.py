@@ -91,6 +91,10 @@ def build_llm_error_from_normalized(normalized: Dict[str, Any], *, details: Dict
 
 
 def raise_as_v8_llm_error(exc: Exception, *, provider: str | None = None, model: str | None = None, details: Dict[str, Any] | None = None) -> None:
+    from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+
+    if isinstance(exc, ModelGovernanceInterventionRequired):
+        raise exc
     if isinstance(exc, V8LLMError):
         raise exc
     normalized = normalize_provider_error(exc, provider=provider, model=model)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 import time
 import uuid
@@ -11,10 +13,16 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
 from core.database import db
+from core.model_budget_service import model_budget_service
+from core.provider_circuit import provider_circuit_service
+from core.prompt_budget import estimate_prompt_tokens
+from core.provider_compatibility import normalize_provider_error
 from core.model_usage import cache_token_counts, normalize_usage_mapping
 from core.response_normalizer import extract_text_and_reasoning
 from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -459,10 +467,16 @@ class _InvocationStart:
     chunk_count: int = 0
     chunk_char_count: int = 0
     max_inter_chunk_gap_ms: float = 0.0
+    reservation_id: str | None = None
+    circuit_permit: Dict[str, Any] | None = None
+    governance_config: Dict[str, Any] | None = None
 
 
 class ModelTelemetryCallback(BaseCallbackHandler):
-    raise_error = False
+    # Admission failures (budget/circuit) must reach the model caller. The
+    # terminal persistence path below is best-effort; governance decisions
+    # at the start cannot be silently swallowed by the callback manager.
+    raise_error = True
     run_inline = True
 
     def __init__(
@@ -484,6 +498,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         stream_mode: str = "",
         requested_max_tokens: int = 0,
         stream_usage_requested: bool = False,
+        governance_config_getter=None,
+        estimated_output_tokens: int | None = None,
     ):
         self.model_id = model_id
         self.provider_id = provider_id
@@ -501,6 +517,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         self.stream_mode = stream_mode
         self.requested_max_tokens = max(0, _safe_int(requested_max_tokens))
         self.stream_usage_requested = bool(stream_usage_requested)
+        self.governance_config_getter = governance_config_getter
+        self.estimated_output_tokens = estimated_output_tokens
         self._starts: Dict[str, _InvocationStart] = {}
         self._streaming_diagnostics: Dict[str, Dict[str, Any]] = {}
 
@@ -508,18 +526,72 @@ class ModelTelemetryCallback(BaseCallbackHandler):
     def ignore_chat_model(self) -> bool:
         return False
 
-    def _record_start(self, run_id: Any, message_batches: int) -> None:
+    def _record_start(self, run_id: Any, message_batches: int, estimated_input_tokens: int = 1) -> None:
         key = str(run_id)
         if key in self._starts:
             return
-        context = get_runtime_context()
+        context = dict(get_runtime_context())
         context["context_preparation_ms"] = _context_preparation_timings(context.get("context_preparation_ms"))
+        admission = self._admit(run_id, context, estimated_input_tokens)
         self._starts[key] = _InvocationStart(
             started_at=time.perf_counter(),
             started_at_iso=_utc_now(),
             context=context,
             message_batches=max(int(message_batches or 0), 0),
+            reservation_id=admission.get("reservation_id"),
+            circuit_permit=admission.get("circuit_permit"),
+            governance_config=admission.get("config"),
         )
+
+    def _admit(self, run_id: Any, context: Dict[str, Any], estimated_input_tokens: int) -> Dict[str, Any]:
+        if self.governance_config_getter is None:
+            return {}
+        config = self.governance_config_getter() or {}
+        run_value = context.get("run_id") or str(run_id)
+        project_id = context.get("project_id")
+        output_tokens = max(1, _safe_int((config.get("governance") or {}).get("budgets", {}).get("estimatedOutputTokens")) or 1024)
+        if self.requested_max_tokens > 0:
+            output_tokens = min(output_tokens, self.requested_max_tokens)
+        if self.estimated_output_tokens is not None:
+            output_tokens = max(0, int(self.estimated_output_tokens))
+        estimated_tokens = max(1, int(estimated_input_tokens) + output_tokens)
+        estimated_cost = None
+        def priced(value):
+            try:
+                return value is not None and value != "" and math.isfinite(float(value)) and float(value) >= 0
+            except (TypeError, ValueError):
+                return False
+
+        if priced(self.cost_per_input) and (output_tokens == 0 or priced(self.cost_per_output)):
+            estimated_cost = _estimate_cost(max(1, int(estimated_input_tokens)), self.cost_per_input) + _estimate_cost(output_tokens, self.cost_per_output)
+        reservation_id = model_budget_service.reserve(
+            config=config, run_id=run_value, project_id=project_id,
+            provider_id=self.provider_id, model_id=self.model_id, role=self.role,
+            capability_class=self.capability_class, estimated_tokens=estimated_tokens,
+            estimated_cost=estimated_cost, reservation_id=str(run_id),
+        )
+        permit = None
+        try:
+            governance = dict(config.get("governance") or {})
+            governance["providerCircuitProbeLeaseSeconds"] = max(
+                _safe_float(governance.get("providerCircuitProbeLeaseSeconds")) or 120,
+                _safe_float(governance.get("maxFailoverSeconds")) or 360,
+            )
+            config = {**config, "governance": governance}
+            permit = provider_circuit_service.acquire(
+                self.provider_id, config=config, attempt_id=str(run_id),
+                explicit_probe=self.role in {
+                    "connection_test", "connection_test_stream", "connection_test_tools",
+                    "connection_test_structured", "connection_test_multimodal",
+                },
+            )
+            model_budget_service.mark_dispatched(reservation_id)
+        except BaseException:
+            if permit:
+                provider_circuit_service.release(permit, reason="admission_failed")
+            model_budget_service.release(reservation_id, reason="admission_failed")
+            raise
+        return {"reservation_id": reservation_id, "circuit_permit": permit, "config": config}
 
     def on_chat_model_start(
         self,
@@ -532,7 +604,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         metadata=None,
         **kwargs: Any,
     ) -> None:
-        self._record_start(run_id, sum(len(batch) for batch in messages or []))
+        estimated = sum(estimate_prompt_tokens(getattr(message, "content", "")) for batch in messages or [] for message in batch)
+        self._record_start(run_id, sum(len(batch) for batch in messages or []), estimated)
 
     def on_llm_start(
         self,
@@ -548,7 +621,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         # Some compatible adapters expose the generic LLM callback contract
         # instead of the chat-model contract. Keep the same timing truth for
         # both surfaces without resetting a chat start event for one run.
-        self._record_start(run_id, len(prompts or []))
+        self._record_start(run_id, len(prompts or []), sum(estimate_prompt_tokens(prompt) for prompt in prompts or []))
 
     def on_llm_end(
         self,
@@ -560,6 +633,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         start = self._starts.pop(str(run_id), None)
+        if self.governance_config_getter and start is None:
+            return  # No admission, or a duplicate terminal callback.
         ctx = start.context if start else get_runtime_context()
         usage, usage_source, usage_reported = extract_token_usage_details(response)
         runtime_diagnostics = extract_runtime_diagnostics(response)
@@ -614,6 +689,9 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "streamUsageRequested": self.stream_usage_requested,
                 **self._stream_timing_metadata(start, finished_at),
             },
+            reservation_id=start.reservation_id if start else None,
+            circuit_permit=start.circuit_permit if start else None,
+            governance_config=start.governance_config if start else None,
         )
 
     def on_llm_error(
@@ -626,20 +704,28 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         start = self._starts.pop(str(run_id), None)
+        if self.governance_config_getter and start is None:
+            return
         stream_diagnostics = self._streaming_diagnostics.pop(str(run_id), {})
         ctx = start.context if start else get_runtime_context()
         finished_at = time.perf_counter()
         latency_ms = (finished_at - start.started_at) * 1000 if start else 0.0
+        usage, usage_source, usage_reported = extract_token_usage_details(kwargs.get("response"))
+        cost_input = _estimate_cost(usage["input_tokens"], self.cost_per_input)
+        cost_output = _estimate_cost(usage["output_tokens"], self.cost_per_output)
+        cancelled = isinstance(error, (asyncio.CancelledError, GeneratorExit))
+        error_code = "cancelled" if cancelled else str(getattr(error, "code", "") or
+            normalize_provider_error(error, provider=self.provider_name, model=self.model_id).get("code") or "")
         self._record_invocation(
             ctx=ctx,
             status="failed",
             started_at=(start.started_at_iso if start else _utc_now()),
             latency_ms=latency_ms,
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            cost_input=0.0,
-            cost_output=0.0,
-            cost_total=0.0,
-            error_code=str(getattr(error, "code", "") or ""),
+            usage=usage,
+            cost_input=cost_input,
+            cost_output=cost_output,
+            cost_total=cost_input + cost_output,
+            error_code=error_code,
             error_message=str(error),
             metadata={
                 "exception_type": error.__class__.__name__,
@@ -656,12 +742,15 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "streamMode": self.stream_mode,
                 "finishReason": stream_diagnostics.get("finishReason") or "",
                 "serviceTier": stream_diagnostics.get("serviceTier") or "",
-                "usageReported": False,
-                "usageSource": "",
+                "usageReported": usage_reported,
+                "usageSource": usage_source,
                 "requestedMaxTokens": self.requested_max_tokens,
                 "streamUsageRequested": self.stream_usage_requested,
                 **self._stream_timing_metadata(start, finished_at),
             },
+            reservation_id=start.reservation_id if start else None,
+            circuit_permit=start.circuit_permit if start else None,
+            governance_config=start.governance_config if start else None,
         )
 
     def on_llm_new_token(
@@ -728,7 +817,35 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             "tailAfterLastChunkMs": round((finished_at - last_chunk) * 1000, 2) if last_chunk is not None else None,
         }
 
-    def _record_invocation(
+    def _record_invocation(self, *, circuit_permit=None, governance_config=None, **record) -> None:
+        # A terminal accounting/observability error must never discard the
+        # provider's answer or replace its original error. A failed settlement
+        # retains a conservative hold, and subsequent admission sees it.
+        try:
+            self._write_invocation(**record)
+        except Exception as exc:
+            logger.warning("Model accounting could not be persisted (%s)", type(exc).__name__)
+            try:
+                model_budget_service.release(record.get("reservation_id"), reason="settlement_failed")
+            except Exception as recovery_error:
+                logger.warning("Model reservation recovery pending (%s)", type(recovery_error).__name__)
+        if circuit_permit:
+            try:
+                error_code = record.get("error_code")
+                if error_code == "cancelled":
+                    provider_circuit_service.release(circuit_permit, reason="cancelled")
+                else:
+                    reason = str(record["metadata"].get("finishReason") or "").lower()
+                    policy_refusal = reason in {"refusal", "content_filter", "safety"}
+                    provider_circuit_service.finish(
+                        circuit_permit, success=record["status"] == "completed" and not policy_refusal,
+                        config=governance_config or {},
+                        error_code="content_policy_block" if policy_refusal else error_code,
+                    )
+            except Exception as exc:
+                logger.warning("Provider circuit settlement pending (%s)", type(exc).__name__)
+
+    def _write_invocation(
         self,
         *,
         ctx: Dict[str, Any],
@@ -742,8 +859,9 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         error_code: Optional[str],
         error_message: Optional[str],
         metadata: Dict[str, Any],
+        reservation_id: str | None = None,
     ) -> None:
-        invocation_id = str(uuid.uuid4())
+        invocation_id = f"budget:{reservation_id}" if reservation_id else str(uuid.uuid4())
         finished_at = _utc_now()
         scope_type, scope_id = _resolve_scope(ctx)
         preparation = _context_preparation_timings(ctx.get("context_preparation_ms"))
@@ -774,9 +892,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
             "started_at": started_at,
             "finished_at": finished_at,
         }
-        db.add_model_invocation_log(log_record)
-        db.upsert_usage_ledger(
-            {
+        ledger = {
                 "id": str(uuid.uuid4()),
                 "bucket_date": finished_at[:10],
                 "scope_type": scope_type,
@@ -794,7 +910,19 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "cost_total": cost_total,
                 "latency_ms_total": latency_ms,
             }
-        )
+        if reservation_id:
+            with model_budget_service.settlement(
+                reservation_id,
+                usage_reported=bool(metadata.get("usageReported")),
+                actual_tokens=usage.get("total_tokens", 0),
+                actual_cost=cost_total,
+            ) as (connection, should_write):
+                if should_write and bool(metadata.get("usageReported")):
+                    db.upsert_usage_ledger(ledger, connection=connection)
+                    model_budget_service.mark_ledger_accounted(reservation_id, connection=connection)
+        else:
+            db.upsert_usage_ledger(ledger)
+        db.add_model_invocation_log(log_record)
         db.add_provider_health_log(
             {
                 "id": str(uuid.uuid4()),
@@ -836,6 +964,7 @@ class ModelTelemetryService:
         stream_mode: str = "",
         requested_max_tokens: int = 0,
         stream_usage_requested: bool = False,
+        governance_config_getter=None,
     ) -> ModelTelemetryCallback:
         return ModelTelemetryCallback(
             model_id=model_id,
@@ -854,87 +983,7 @@ class ModelTelemetryService:
             stream_mode=stream_mode,
             requested_max_tokens=requested_max_tokens,
             stream_usage_requested=stream_usage_requested,
-        )
-
-    def record_aux_model_invocation(
-        self,
-        *,
-        model_id: str,
-        provider_id: str,
-        provider_name: str,
-        role: str,
-        capability_class: str,
-        request_kind: str,
-        latency_ms: float,
-        status: str = "completed",
-        error_code: Optional[str] = None,
-        error_message: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        ctx = get_runtime_context()
-        scope_type, scope_id = _resolve_scope(ctx)
-        finished_at = _utc_now()
-        invocation_id = str(uuid.uuid4())
-        record = {
-            "id": invocation_id,
-            "run_id": ctx.get("run_id"),
-            "session_id": ctx.get("session_id"),
-            "provider_id": provider_id,
-            "provider_name": provider_name,
-            "model_id": model_id,
-            "role": role,
-            "capability_class": capability_class,
-            "request_kind": request_kind,
-            "status": status,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "cost_input": 0.0,
-            "cost_output": 0.0,
-            "cost_total": 0.0,
-            "latency_ms": latency_ms,
-            "error_code": error_code,
-            "error_message": error_message,
-            "is_streaming": False,
-            "metadata": metadata or {},
-            "started_at": finished_at,
-            "finished_at": finished_at,
-        }
-        db.add_model_invocation_log(record)
-        db.upsert_usage_ledger(
-            {
-                "id": str(uuid.uuid4()),
-                "bucket_date": finished_at[:10],
-                "scope_type": scope_type,
-                "scope_id": scope_id,
-                "provider_id": provider_id,
-                "model_id": model_id,
-                "role": role or "unassigned",
-                "capability_class": capability_class,
-                "invocations": 1,
-                "success_count": 1 if status == "completed" else 0,
-                "error_count": 0 if status == "completed" else 1,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cost_total": 0.0,
-                "latency_ms_total": latency_ms,
-            }
-        )
-        db.add_provider_health_log(
-            {
-                "id": str(uuid.uuid4()),
-                "provider_id": provider_id or "unknown",
-                "provider_name": provider_name or provider_id or "unknown",
-                "model_id": model_id,
-                "run_id": ctx.get("run_id"),
-                "session_id": ctx.get("session_id"),
-                "status": "healthy" if status == "completed" else "failed",
-                "error_code": error_code,
-                "error_message": error_message,
-                "latency_ms": latency_ms,
-                "detail": metadata or {},
-            }
+            governance_config_getter=governance_config_getter,
         )
 
     def build_dashboard_overview(self, days: int = 7) -> Dict[str, Any]:

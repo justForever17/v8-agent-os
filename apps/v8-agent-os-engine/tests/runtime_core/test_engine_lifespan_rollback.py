@@ -10,6 +10,36 @@ def _app() -> SimpleNamespace:
     return SimpleNamespace(state=SimpleNamespace())
 
 
+def test_lifespan_rejects_second_state_owner_before_services_start(monkeypatch, tmp_path):
+    import main
+    import core.v8_agent_os_paths as paths
+    from core.interprocess_lock import interprocess_file_lock
+
+    started = []
+
+    async def start(app, state):
+        started.append('started')
+
+    async def stop(app, state, **kwargs):
+        started.append('stopped')
+
+    monkeypatch.setattr(paths, 'V8_AGENT_OS_HOME', tmp_path)
+    monkeypatch.setattr(main, '_start_lifespan_services', start)
+    monkeypatch.setattr(main, '_shutdown_lifespan_services', stop)
+
+    async def scenario():
+        with interprocess_file_lock(tmp_path / 'runtime/engine-instance.lock', timeout_seconds=0):
+            with pytest.raises(RuntimeError, match='engine_state_in_use'):
+                async with main.lifespan(_app()):
+                    pass
+        assert started == []
+        async with main.lifespan(_app()):
+            assert started == ['started']
+        assert started == ['started', 'stopped']
+
+    asyncio.run(scenario())
+
+
 def test_creative_media_reconciler_replays_terminal_proof_after_ack_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

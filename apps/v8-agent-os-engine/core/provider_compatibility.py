@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Mapping
 from urllib.parse import quote, quote_plus
 
 from core.reasoning_payload_contract import REASONING_KEYS, SIGNATURE_KEYS
@@ -111,6 +111,67 @@ def _safe_provider_error_diagnostic(exc: Exception) -> Dict[str, Any]:
     return diagnostic
 
 
+_POLICY_SIGNALS = frozenset({
+    "refusal", "content_filter", "content_policy_block", "content_policy_violation",
+    "content_filter_error", "responsibleaipolicyviolation", "safety", "safety_error",
+    "prohibited_content", "blocklist", "spii", "image_safety", "recitation",
+})
+
+
+def provider_rejection_details(value: Any, *, stage: str = "unknown") -> Dict[str, Any]:
+    """Read protocol discriminators, never classify arbitrary response prose.
+
+    Walk only known response containers so a quoted JSON example or tool
+    argument named `refusal` does not become a provider policy decision.
+    """
+    def signal(raw: Any) -> str:
+        value = str(getattr(raw, "name", raw) or "").lower()
+        if value in {"response.refusal.delta", "response.refusal.done"}:
+            return "refusal"
+        return value.rsplit(".", 1)[-1]
+
+    def visit(item: Any, current_stage: str, depth: int = 0):
+        if depth > 6:
+            return None
+        if isinstance(item, (list, tuple)):
+            for child in item:
+                found = visit(child, current_stage, depth + 1)
+                if found:
+                    return found
+            return None
+        if not isinstance(item, Mapping):
+            item = {key: getattr(item, key, None) for key in (
+                "body", "code", "type", "content", "additional_kwargs", "response_metadata",
+            )}
+        for key in ("promptFeedback", "prompt_feedback"):
+            feedback = item.get(key)
+            if isinstance(feedback, Mapping):
+                reason = signal(feedback.get("blockReason") or feedback.get("block_reason"))
+                if reason in _POLICY_SIGNALS:
+                    return "input", reason
+        for key in ("code", "type", "finish_reason", "stop_reason", "finishReason", "reason"):
+            reason = signal(item.get(key))
+            if reason in _POLICY_SIGNALS:
+                return current_stage, reason
+        if isinstance(item.get("refusal"), str) and item["refusal"].strip():
+            return current_stage, "refusal"
+        for key in ("body", "error", "innererror", "additional_kwargs", "response_metadata",
+                    "message", "choices", "candidates", "output", "content", "delta",
+                    "incomplete_details", "stop_details"):
+            child = item.get(key)
+            if isinstance(child, (Mapping, list, tuple)):
+                found = visit(child, current_stage, depth + 1)
+                if found:
+                    return found
+        return None
+
+    found = visit(value, stage)
+    if not found:
+        return {}
+    return {"failureClass": "provider_content_policy", "stage": found[0],
+            "signal": found[1], "recoverable": True, "partialOutputAvailable": False}
+
+
 def normalize_provider_error(
     exc: Exception,
     *,
@@ -127,8 +188,12 @@ def normalize_provider_error(
     code = "unknown_provider_error"
     retryable = False
     user_action = "请检查模型配置或稍后重试。"
+    rejection = provider_rejection_details(exc)
 
-    if (
+    if rejection or any(token in lower for token in ("content policy", "policy violation", "safety policy")):
+        code = "content_policy_block"
+        user_action = "供应商拒绝了本轮内容；请修改后发送新请求，或明确选择其他已配置模型。"
+    elif (
         any(token in lower for token in ("auth_unavailable", "no auth available"))
         and any(token in lower for token in ("503", "service unavailable", "temporarily unavailable"))
     ):
@@ -178,9 +243,6 @@ def normalize_provider_error(
     elif any(token in lower for token in ("400", "invalid request", "malformed", "bad request", "model not found")):
         code = "invalid_request"
         user_action = "请求参数或模型配置有误，请检查后重试。"
-    elif any(token in lower for token in ("content policy", "safety", "policy violation")):
-        code = "content_policy_block"
-        user_action = "请求触发了供应商安全策略，请调整输入。"
 
     safe_messages = {
         "auth_error": "Provider authentication failed.",
@@ -216,5 +278,5 @@ def normalize_provider_error(
         "retryable": retryable,
         "message": message,
         "userAction": user_action,
-        "diagnostic": _safe_provider_error_diagnostic(exc),
+        "diagnostic": {**_safe_provider_error_diagnostic(exc), **rejection},
     }

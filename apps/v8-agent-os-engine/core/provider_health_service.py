@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterable, List
 
 from core.database import db
 from core.local_visual_support import probe_local_multimodal_capability
+from core.provider_circuit import provider_circuit_service
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -50,8 +51,6 @@ class ProviderHealthService:
     def _health_map(self, config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         governance = self._governance(config)
         window_days = max(_safe_int(governance.get("providerHealthWindowDays"), 7), 1)
-        failure_threshold = max(_safe_int(governance.get("providerFailureThreshold"), 3), 1)
-        error_rate_threshold = _safe_float(governance.get("providerErrorRateThreshold"), 0.6)
 
         health_rows = db.get_provider_health_summary(days=window_days)
         mapped: Dict[str, Dict[str, Any]] = {}
@@ -60,11 +59,6 @@ class ProviderHealthService:
             events = _safe_int(row.get("events"))
             errors = _safe_int(row.get("error_count"))
             error_rate = (errors / events) if events else 0.0
-            circuit_state = "closed"
-            if events >= failure_threshold and error_rate >= error_rate_threshold:
-                circuit_state = "open"
-            elif errors > 0:
-                circuit_state = "half_open"
             mapped[provider_id] = {
                 "events": events,
                 "successCount": _safe_int(row.get("success_count")),
@@ -72,8 +66,11 @@ class ProviderHealthService:
                 "errorRate": round(error_rate, 3),
                 "avgLatencyMs": round(_safe_float(row.get("avg_latency_ms")), 2),
                 "lastSeenAt": row.get("last_seen_at"),
-                "circuitState": circuit_state,
             }
+        # Historical health remains observational. Only the durable admission
+        # owner can say whether a new call or a single recovery probe may run.
+        for provider_id in set(mapped) | set((config.get('providers') or {})):
+            mapped.setdefault(provider_id, {}).update(provider_circuit_service.snapshot(provider_id))
         return mapped
 
     def build_provider_statuses(
@@ -135,9 +132,9 @@ class ProviderHealthService:
             elif not has_base_url:
                 status = "attention"
                 reason = "缺少基础地址"
-            elif health.get("circuitState") == "open":
+            elif health.get("circuitAllowsAttempt") is False:
                 status = "attention"
-                reason = "最近错误率过高，熔断已打开"
+                reason = "熔断恢复探针正在运行" if health.get('probeInFlight') else "供应商熔断已打开，等待恢复窗口"
             elif health.get("errorCount", 0) > 0:
                 status = "attention"
                 reason = "最近有失败事件，处于观察期"
@@ -172,6 +169,11 @@ class ProviderHealthService:
                     "avgLatencyMs": float(health.get("avgLatencyMs") or 0.0),
                     "lastSeenAt": health.get("lastSeenAt"),
                     "circuitState": health.get("circuitState") or "closed",
+                    "circuitAllowsAttempt": health.get("circuitAllowsAttempt", True),
+                    "circuitGeneration": health.get("circuitGeneration", 0),
+                    "probeInFlight": health.get("probeInFlight", False),
+                    "retryAfterSeconds": health.get("retryAfterSeconds", 0),
+                    "circuitReason": health.get("circuitReason", "closed"),
                     "localCapabilityProbe": local_capability_probe,
                 }
             )

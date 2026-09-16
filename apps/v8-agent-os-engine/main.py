@@ -728,6 +728,20 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
         )
     startup_metrics["configMigrationMs"] = round((time.perf_counter() - config_migration_started_at) * 1000, 2)
 
+    # The state-root lock is held by ``lifespan`` before entering startup.
+    # Reconcile reservations left by a previous Engine before any model worker
+    # can admit a new request; an uncertain in-flight call remains a durable
+    # hold instead of being silently treated as free budget.
+    budget_recovery_started_at = time.perf_counter()
+    from core.model_budget_service import model_budget_service
+
+    recovered_budget_reservations = await asyncio.to_thread(model_budget_service.recover_orphans)
+    startup_metrics["modelBudgetRecoveryMs"] = round(
+        (time.perf_counter() - budget_recovery_started_at) * 1000,
+        2,
+    )
+    startup_metrics["modelBudgetRecoveredReservations"] = int(recovered_budget_reservations or 0)
+
     _set_lifespan_phase(state, "config_broker_recovery")
     await _reconcile_config_broker_transactions(app, startup_metrics)
 
@@ -1045,38 +1059,42 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    state = _new_lifespan_state(app)
-    try:
-        await _start_lifespan_services(app, state)
-    except BaseException as exc:
-        state["failure_phase"] = state.get("phase")
-        state["failure_type"] = type(exc).__name__
-        startup_metrics = dict(getattr(app.state, "startup_metrics", {}) or {})
-        startup_metrics.update(
-            {
-                "failed": True,
-                "failurePhase": state.get("failure_phase"),
-                "failureType": state.get("failure_type"),
-            }
-        )
-        app.state.startup_metrics = startup_metrics
-        app.state.startup_failure = {
-            "phase": state.get("failure_phase"),
-            "errorType": type(exc).__name__,
-            "message": str(exc),
-        }
-        print(
-            "[Engine] Startup failed; rolling back initialized services:",
-            {"phase": state.get("failure_phase"), "errorType": type(exc).__name__},
-        )
-        await _shutdown_lifespan_services(app, state, reason="startup_failure")
-        raise
+    from core.engine_instance import engine_state_owner
+    from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
-    try:
-        yield
-    finally:
-        print("[Engine] Shutting down V8 Agent OS Engine...")
-        await _shutdown_lifespan_services(app, state, reason="shutdown")
+    with engine_state_owner(V8_AGENT_OS_HOME):
+        state = _new_lifespan_state(app)
+        try:
+            await _start_lifespan_services(app, state)
+        except BaseException as exc:
+            state["failure_phase"] = state.get("phase")
+            state["failure_type"] = type(exc).__name__
+            startup_metrics = dict(getattr(app.state, "startup_metrics", {}) or {})
+            startup_metrics.update(
+                {
+                    "failed": True,
+                    "failurePhase": state.get("failure_phase"),
+                    "failureType": state.get("failure_type"),
+                }
+            )
+            app.state.startup_metrics = startup_metrics
+            app.state.startup_failure = {
+                "phase": state.get("failure_phase"),
+                "errorType": type(exc).__name__,
+                "message": str(exc),
+            }
+            print(
+                "[Engine] Startup failed; rolling back initialized services:",
+                {"phase": state.get("failure_phase"), "errorType": type(exc).__name__},
+            )
+            await _shutdown_lifespan_services(app, state, reason="startup_failure")
+            raise
+
+        try:
+            yield
+        finally:
+            print("[Engine] Shutting down V8 Agent OS Engine...")
+            await _shutdown_lifespan_services(app, state, reason="shutdown")
 
 app = FastAPI(
     title="V8 Agent OS Engine",

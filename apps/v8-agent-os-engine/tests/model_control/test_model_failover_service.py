@@ -11,6 +11,7 @@ from core.model_control_plane import model_control_plane
 from core.model_failover_service import ModelFailoverService
 from core.llm_exceptions import V8LLMError, V8LLMInvalidRequestError
 from core.model_ref import make_model_ref
+from core.provider_circuit import ProviderCircuitOpen
 
 
 class FakeLLM:
@@ -170,6 +171,60 @@ def test_candidate_plan_keeps_same_capability_and_same_api_standard(monkeypatch:
         make_model_ref("p-openai-b", "backup"),
     ]
     assert {candidate.api_standard for candidate in plan} == {"openai"}
+
+
+def test_open_preferred_cannot_call_transport_when_failover_disabled(monkeypatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    monkeypatch.setattr('core.model_failover_service.provider_health_service.build_provider_statuses',
+        lambda _config, models, _roles: [{'providerId': model['providerId'], 'circuitState': 'open',
+                                        'retryAfterSeconds': 30} for model in models])
+    primary = FakeLLM('must not run')
+    try:
+        service.invoke_with_failover(config=_config(allowSameCapabilityFailover=False, maxProviderSwitches=0),
+            base_llm_instance=primary, messages=[], tools=None, role='supervisor',
+            preferred_model_id=make_model_ref('p-openai-a', 'primary'), build_model=lambda _: primary)
+    except V8LLMError as exc:
+        assert exc.code == 'provider_circuit_open'
+        assert exc.details['retryAfterSeconds'] == 30
+    else:
+        pytest.fail('an open preferred provider executed without admission')
+    assert primary.calls == 0
+
+
+@pytest.mark.parametrize('allow_switch', [False, True])
+def test_admission_race_does_not_retry_same_provider_and_preserves_switch_policy(monkeypatch, allow_switch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeLLM(ProviderCircuitOpen('p-openai-a', retry_after_seconds=8, reason='probe_in_flight'))
+    backup = FakeLLM('fallback result')
+    def invoke():
+        return service.invoke_with_failover(
+            config=_config(allowSameCapabilityFailover=allow_switch, maxProviderSwitches=1 if allow_switch else 0),
+            base_llm_instance=primary, messages=[], tools=None, role='supervisor',
+            preferred_model_id=make_model_ref('p-openai-a', 'primary'), build_model=lambda _: backup)
+    if allow_switch:
+        assert invoke() == 'fallback result'
+        assert backup.calls == 1
+    else:
+        with pytest.raises(ProviderCircuitOpen) as error:
+            invoke()
+        assert error.value.details['retryAfterSeconds'] == 8
+        assert error.value.details['reason'] == 'probe_in_flight'
+        assert backup.calls == 0
+    assert primary.calls == 1
+
+
+def test_disabled_model_failover_does_not_switch_to_another_model_on_same_provider(monkeypatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    config = _config(allowSameCapabilityFailover=False)
+    config['providers']['p-openai-a']['models']['another'] = {
+        'type': 'TEXT', 'capabilityClass': 'chat_tool_calling',
+        'capabilities': {'supportsTools': True, 'supportsStreaming': True}}
+    preferred = make_model_ref('p-openai-a', 'primary')
+    plan = service.build_candidate_plan(config=config, preferred_model_id=preferred, role='supervisor')
+    assert [candidate.model_id for candidate in plan] == [preferred]
 
 
 def test_missing_capability_candidate_fails_without_opening_model_review(monkeypatch: pytest.MonkeyPatch):

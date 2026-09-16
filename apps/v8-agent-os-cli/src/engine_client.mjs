@@ -49,3 +49,17 @@ export async function engineJson(pathname, options = {}) {
   }
   return response.data;
 }
+
+// Multipart uploads use the same target/proof boundary as JSON. Never replay a
+// write or follow a redirect carrying the local service credential.
+export async function engineUpload(pathname, form, { signal, timeoutMs = 60000 } = {}) {
+  if (!String(pathname).startsWith("/v1/") || String(pathname).includes("\\")) throw new Error("Invalid Engine path");
+  const { origin, secret } = connection();
+  const response = await fetch(`${origin}${pathname}`, {
+    method: "POST", body: form, redirect: "error",
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+    headers: secret ? { "x-v8-agent-os-secret": secret } : {},
+  });
+  if (!response.ok) { const error = new Error(`上传被 Engine 拒绝（HTTP ${response.status}）`); error.status = response.status; throw error; }
+  return response.json();
+}

@@ -6,6 +6,7 @@ import { resolvePreparationIdentity, resolvePreparationRequest } from "./prepare
 import { loadReleaseManifest, toSemver } from "./release-manifest.mjs";
 
 const manifest = loadReleaseManifest(path.resolve(import.meta.dirname, "../../release-manifest.json")).manifest;
+const enabledProducts = ["desktop", "phone", "server", "tui"].filter((name) => manifest.products[name]?.enabled);
 const [currentYear, currentMonth, currentDay, currentBuild] = manifest.release.version.split(".").map(Number);
 const nextVersion = currentBuild < 99
   ? `${currentYear}.${String(currentMonth).padStart(2, "0")}.${String(currentDay).padStart(2, "0")}.${currentBuild + 1}`
@@ -24,7 +25,7 @@ test("prepare-release defaults to one unified tag and every enabled product", ()
   });
 
   assert.equal(identity.tag, nextTag);
-  assert.deepEqual(identity.products, ["desktop", "phone"]);
+  assert.deepEqual(identity.products, enabledProducts);
   assert.equal(identity.deprecatedProduct, null);
   assert.equal(toSemver(identity.version), toSemver(nextVersion));
 });
@@ -38,7 +39,7 @@ test("deprecated --product cannot create a product tag or narrow the release", (
   });
 
   assert.equal(identity.tag, nextTag);
-  assert.deepEqual(identity.products, ["desktop", "phone"]);
+  assert.deepEqual(identity.products, enabledProducts);
   assert.equal(identity.deprecatedProduct, "desktop");
   assert.notEqual(identity.tag, `v8-os-desktop-v${nextVersion}`);
 });

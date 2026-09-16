@@ -22,6 +22,10 @@ function projectionFixture() {
     path.join("apps", "v8-agent-os-phone", "package.json"),
     path.join("apps", "v8-agent-os-phone", "package-lock.json"),
     path.join("apps", "v8-agent-os-phone", "app.json"),
+    ...(CURRENT_MANIFEST.products.tui?.enabled ? [
+      path.join("apps", "v8-agent-os-tui", "package.json"),
+      path.join("apps", "v8-agent-os-tui", "package-lock.json"),
+    ] : []),
   ];
   for (const relativePath of files) {
     const target = path.join(root, relativePath);

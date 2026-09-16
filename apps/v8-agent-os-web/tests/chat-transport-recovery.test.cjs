@@ -275,7 +275,8 @@ test('composer renders a transport error without a queue and offers GET recovery
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     }).outputText;
     vm.runInNewContext(jsx, { exports, require, activeConversationId: 'A', activeConversationIdRef: { current: 'A' },
-        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', queuedMessageError: '',
+        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', queuedMessageError: '', scopeLoading: false,
+        loadSessionScope: async id => { recovery.push(['scope', id]); return true; },
         loadConversationHistory: async id => recovery.push(['history', id]), loadRuns: async id => recovery.push(['runs', id]),
         synchronizeQueue: async id => recovery.push(['queue', id]), setChatTransportError: value => errors.push(value),
     });
@@ -291,6 +292,6 @@ test('composer renders a transport error without a queue and offers GET recovery
     }
     walk(exports.tree); assert.ok(button);
     await button.props.onClick();
-    assert.deepEqual(recovery, [['history', 'A'], ['runs', 'A'], ['queue', 'A']]);
+    assert.deepEqual(recovery, [['scope', 'A'], ['history', 'A'], ['runs', 'A'], ['queue', 'A']]);
     assert.deepEqual(errors, ['']);
 });

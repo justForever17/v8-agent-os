@@ -1,4 +1,5 @@
 {
+  "web.chat.scopeLoadFailed": "Unable to load this conversation's workspace. Please sync again.",
   "web.terminal.locationHint": "Workspace: {workspace}; starting directory: {cwd}",
   "web.terminal.unknownDirectory": "Unknown",
   "web.terminal.agentCommand": "Agent command",

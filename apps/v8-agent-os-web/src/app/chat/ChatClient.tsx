@@ -1071,7 +1071,8 @@ export default function ChatClient() {
     const [newProjectPath, setNewProjectPath] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeOwner, setScopeOwner] = useState("");
-    const scopeCacheRef = useRef(new Map<string, ScopeBindingView>());
+    const scopeCacheRef = useRef(new Map<string, ScopeBindingView | null>());
+    const scopeRequestSeqRef = useRef(0);
     // Do not mount the composer against an empty/temporary scope during a
     // reload. That used to accept text into an unpersisted draft, then replace
     // it when the Engine scope response arrived. Global conversations still
@@ -1105,7 +1106,7 @@ export default function ChatClient() {
         }).catch(() => undefined);
         return () => controller.abort();
     }, [status, session?.user?.id]);
-    const [, setScopeLoading] = useState(false);
+    const [scopeLoading, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [supervisorReasoningEffortControl, setSupervisorReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
@@ -2943,31 +2944,37 @@ export default function ChatClient() {
     }, []);
 
     const loadSessionScope = useCallback(async (conversationId: string) => {
-        if (activeConversationIdRef.current !== conversationId) return;
+        if (activeConversationIdRef.current !== conversationId) return false;
+        const requestSeq = ++scopeRequestSeqRef.current;
+        const isCurrent = () => activeConversationIdRef.current === conversationId && scopeRequestSeqRef.current === requestSeq;
         const cached = scopeCacheRef.current.get(conversationId);
-        setScopeOwner(conversationId);
+        // A missing response is not a confirmed global scope. Do not mount an
+        // editable composer until its durable draft namespace is known.
+        setScopeOwner(scopeCacheRef.current.has(conversationId) ? conversationId : "");
         setScopeBinding(cached || null);
         setScopeLoading(true);
         try {
             const res = await fetch(`/api/sessions/${conversationId}/scope`, { cache: "no-store" });
-            if (activeConversationIdRef.current !== conversationId) return;
-            if (!res.ok) {
-                setScopeBinding(null);
-                return;
-            }
+            if (!isCurrent()) return false;
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            if (activeConversationIdRef.current !== conversationId) return;
+            if (!isCurrent()) return false;
             const normalized = normalizeScopeBinding(data?.binding);
-            if (normalized) scopeCacheRef.current.set(conversationId, normalized);
+            if (!data || !("binding" in data) || (data.binding !== null && !normalized)) throw new Error("Invalid scope response");
+            scopeCacheRef.current.set(conversationId, normalized);
             setScopeBinding(normalized);
+            setScopeOwner(conversationId);
+            setChatTransportError((current) => current === t("web.chat.scopeLoadFailed") ? "" : current);
+            return true;
         } catch (error) {
-            if (activeConversationIdRef.current !== conversationId) return;
+            if (!isCurrent()) return false;
             console.warn("[ChatClient] Failed to load scope binding:", error);
-            setScopeBinding(null);
+            setChatTransportError(t("web.chat.scopeLoadFailed"));
+            return false;
         } finally {
-            if (activeConversationIdRef.current === conversationId) setScopeLoading(false);
+            if (isCurrent()) setScopeLoading(false);
         }
-    }, []);
+    }, [t]);
 
     const loadSessionProcesses = useCallback(async (conversationId: string) => {
         try {
@@ -4603,16 +4610,17 @@ export default function ChatClient() {
                                     {chatTransportError || queuedMessageError ? (
                                         <div role="alert" className="pointer-events-auto mx-auto w-full max-w-4xl rounded-xl border border-destructive/25 bg-background px-3 py-2 text-xs text-destructive shadow-sm">
                                             <span className="break-words">{chatTransportError || queuedMessageError}</span>
-                                            <button type="button" className="ml-2 underline" onClick={async () => {
+                                            <button type="button" className="ml-2 underline disabled:opacity-50" disabled={scopeLoading} onClick={async () => {
                                                 const conversationId = activeConversationIdRef.current;
                                                 if (!conversationId) return;
                                                 try {
-                                                    await Promise.all([
+                                                    const [scopeReady] = await Promise.all([
+                                                        loadSessionScope(conversationId),
                                                         loadConversationHistory(conversationId, { mergeWithCurrent: true, preserveCurrentOnEmpty: true }),
                                                         loadRuns(conversationId),
                                                         synchronizeQueue(conversationId),
                                                     ]);
-                                                    if (activeConversationIdRef.current === conversationId) setChatTransportError("");
+                                                    if (scopeReady && activeConversationIdRef.current === conversationId) setChatTransportError("");
                                                 } catch (error) {
                                                     if (activeConversationIdRef.current === conversationId) setChatTransportError(error instanceof Error ? error.message : String(error));
                                                 }

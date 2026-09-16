@@ -114,6 +114,16 @@ function releaseTitle(product, version, channel) {
 }
 
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "2026.09.16.2": Object.freeze({
+    all: Object.freeze([
+      "登录鉴权与 Phone 会话连接统一由 Engine 处理；Admin 控制台按需打开，远程对话不再依赖控制台常驻。",
+      "本机桌面 Web 与 Windows/macOS 桌宠启动后即可使用，无需手机式配对或重复登录；Phone 可粘贴终端生成的配对链接，或扫描控制台二维码连接设备。",
+      "命令行对话会等待任务最终结果，区分进行中、完成、失败与取消；新建和切换工作区时同步登记目标路径，避免任务落入错误目录。",
+      "修复首次设置页面在其他窗口已完成账户创建后无法继续的问题：保留登录输入并切回登录，无需刷新重填。",
+      "修复打开会话后快速输入的草稿被迟到工作区信息覆盖的问题；加载失败可就地重新同步，恢复后输入与刷新均保留草稿。",
+      "修复魔搭 Skills/MCP 商店分页边界和异常条目处理；来源暂时异常时保留上次可用列表并提示状态，避免把加载失败显示为空商店。",
+    ]),
+  }),
   "2026.09.15.1": Object.freeze({
     all: Object.freeze([
       "控制台采用紧凑的配置面板与就近保存操作，精简说明并统一帮助、错误恢复和明暗主题；记忆星系支持同屏浏览全局与工作区，保留节点编辑和作用域隔离。",
@@ -243,12 +253,12 @@ function assetSection(product, version, channel) {
 function knownLimits(product, channel) {
   if (product === "all") {
     return [
-      "- Desktop 与 Android Phone 共用本次统一版本；Phone 仍是需要与 V8OS 桌面/控制台配对的远程入口。",
+      "- Desktop 与 Android Phone 共用本次统一版本；Phone 是远程入口，可粘贴终端生成的配对链接或扫描控制台二维码连接运行 V8OS 的设备。",
       "- iOS 因缺少非交互签名凭据被明确禁用，不会阻断 Desktop 与 Android 发布。",
       channel === "stable"
         ? "- stable 发布必须通过签名与 stable 门禁。"
         : "- 本版本是未签名 preview；SmartScreen、macOS 打开确认、签名和自动更新限制仍然存在。",
-      "- Windows/macOS 的 Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+      "- 桌面 Shell 默认启动 Engine 与 Web，Admin 配置页按需启动；Windows/macOS 的桌宠由 Shell 管理，退出 V8OS 时会清理受管子进程。",
       "- Linux 的 Engine/Admin/Web/Shell 可用；当前桌宠的全屏透明交互窗口在 Electron 43 Linux 上没有经验证的安全输入区域合同，因此标记为 blocked 且不会启动。",
       "- Linux 当前声明与 clean CI 验证范围为 Ubuntu 22.04/24.04 GNU x64/arm64；其他 glibc 发行版仅 best-effort，Alpine/musl 不受支持。",
       "- Linux x64 核心服务会在不具备 SSE4.2 的旧 CPU 合同下做安装包启动验证；这类 CPU 的头像与图片背景转码会明确返回不可用，MP4 背景不受影响。",
@@ -258,7 +268,7 @@ function knownLimits(product, channel) {
   }
   if (product === "phone") {
     return [
-      "- Phone 是远程交互端，需要通过 V8OS 桌面/控制台配对。",
+      "- Phone 是远程交互端；在运行 V8OS 的设备上用终端生成配对链接，或在控制台打开二维码，即可授权连接。",
       "- Android 支持目标为 11 及以上；iOS 支持目标为 16.4 及以上，当前只提供受控手动构建，不随 Phone tag 发布。",
       "- 若你从旧 `phone-v*` release 升级，请优先使用统一的 `v8-os-v*` 版本线；`v8-os-phone-v*` 仅保留两个成功统一发布周期。",
     ].join("\n");
@@ -266,7 +276,7 @@ function knownLimits(product, channel) {
   if (channel === "stable") {
     return [
       "- 本版本属于 desktop-stable 通道，请仅在 stable 门禁完成后发布。",
-      "- Windows/macOS 的 Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+      "- 桌面 Shell 默认启动 Engine 与 Web，Admin 配置页按需启动；Windows/macOS 的桌宠由 Shell 管理，退出 V8OS 时会清理受管子进程。",
       "- Linux 的 Engine/Admin/Web/Shell 可用；当前桌宠的全屏透明交互窗口在 Electron 43 Linux 上没有经验证的安全输入区域合同，因此标记为 blocked 且不会启动。",
       "- Linux 当前声明与 clean CI 验证范围为 Ubuntu 22.04/24.04 GNU x64/arm64；其他 glibc 发行版仅 best-effort，Alpine/musl 不受支持。",
       "- Linux x64 核心服务会在不具备 SSE4.2 的旧 CPU 合同下做安装包启动验证；这类 CPU 的头像与图片背景转码会明确返回不可用，MP4 背景不受影响。",
@@ -276,7 +286,7 @@ function knownLimits(product, channel) {
   }
   return [
     "- 本版本是未签名的多平台桌面预览包，不代表 stable 版本。",
-    "- Windows/macOS 的 Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+    "- 桌面 Shell 默认启动 Engine 与 Web，Admin 配置页按需启动；Windows/macOS 的桌宠由 Shell 管理，退出 V8OS 时会清理受管子进程。",
     "- Linux 的 Engine/Admin/Web/Shell 可用；当前桌宠的全屏透明交互窗口在 Electron 43 Linux 上没有经验证的安全输入区域合同，因此标记为 blocked 且不会启动。",
     "- Linux 当前声明与 clean CI 验证范围为 Ubuntu 22.04/24.04 GNU x64/arm64；其他 glibc 发行版仅 best-effort，Alpine/musl 不受支持。",
     "- Linux x64 核心服务会在不具备 SSE4.2 的旧 CPU 合同下做安装包启动验证；这类 CPU 的头像与图片背景转码会明确返回不可用，MP4 背景不受影响。",
@@ -306,9 +316,9 @@ ${releaseHighlights(release)}
 ## 安装 / 更新
 
 ${release.product === "all"
-  ? "桌面端按目标平台下载安装；Android 下载 APK 后安装并配对到 V8OS 桌面/控制台。"
+  ? "桌面端按目标平台下载安装，本机 Web 无需另行登录；Android 安装 APK 后，可粘贴 V8OS 终端生成的配对链接，或扫描控制台二维码完成连接。"
   : release.product === "phone"
-  ? "下载 APK 后安装到 Android 设备；打开 Phone 后扫码配对到你的 V8OS 桌面/控制台。"
+  ? "下载 APK 后安装到 Android 设备；打开 Phone 后粘贴 V8OS 终端生成的配对链接，或扫描控制台二维码完成连接。"
   : release.channel === "stable"
     ? "下载安装包或免安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"
     : "下载安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"}

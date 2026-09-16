@@ -541,7 +541,7 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         config = self.governance_config_getter() or {}
         run_value = context.get("run_id") or str(run_id)
         project_id = context.get("project_id")
-        output_tokens = max(1, _safe_int((config.get("governance") or {}).get("budgets", {}).get("estimatedOutputTokens"), 1024))
+        output_tokens = max(1, _safe_int((config.get("governance") or {}).get("budgets", {}).get("estimatedOutputTokens")) or 1024)
         estimated_tokens = max(1, int(estimated_input_tokens) + output_tokens)
         estimated_cost = None
         if self.cost_per_input is not None or self.cost_per_output is not None:

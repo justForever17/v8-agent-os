@@ -158,6 +158,13 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "delegate_network_task",
         ],
     },
+    "device.control": {
+        "runtimeKind": "network_supervisor",
+        "label": "Fixed remote executors",
+        "summary": "Supervisor 直接读取或执行已授权 Android/ESP32 固定能力，保留设备回执与未知结果。",
+        "toolNames": ["device_broker"],
+        "guidance": "List exact device grants, observe the resource, then use device_broker execute. Never retry unknown_outcome or infer business success from driver completion. Device credentials and grants are human settings, never tool arguments.",
+    },
     "creative_media.core": {
         "runtimeKind": "creative_media",
         "label": "Creative Media core",
@@ -181,6 +188,7 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
 }
 
 SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
+    "device_broker",
     "system_operations",
     RUNTIME_BROKER_TOOL_NAME,
     "ask_user",

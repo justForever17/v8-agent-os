@@ -123,6 +123,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("network_supervisor", ("network_neighbor_broker",)),
+    ("network_supervisor", ("device_broker",)),
     (
         "workspace_file",
         (

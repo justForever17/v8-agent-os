@@ -1509,6 +1509,9 @@ class RuntimeEpisodeRunner:
                 handoff = await self._await_episode_executor(episode, self._execute_computer_use(episode))
             elif kind == "rpa":
                 handoff = await self._await_episode_executor(episode, self._execute_rpa(episode))
+            elif kind == "device_action":
+                from runtimes.network_supervisor.executors.episode import execute_device_episode
+                handoff = await self._await_episode_executor(episode, execute_device_episode(episode))
             elif kind == "delegation":
                 handoff = await self._await_episode_executor(episode, self._execute_delegation(episode))
             else:

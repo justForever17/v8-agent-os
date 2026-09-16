@@ -1,0 +1,18 @@
+menu "V8 low-voltage bench profile"
+config V8_OUTPUT_GPIO
+    int "LED logic output GPIO (never a mains load)"
+    range 0 10
+    default 4
+config V8_SENSOR_GPIO
+    int "Digital sensor input GPIO"
+    range 0 10
+    default 5
+config V8_STOP_GPIO
+    int "Active-low local Stop/arm button GPIO"
+    range 0 10
+    default 9
+config V8_MAX_HOLD_MS
+    int "Maximum output high duration in milliseconds"
+    range 1 30000
+    default 1000
+endmenu

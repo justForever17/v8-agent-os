@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import socket
 import stat
@@ -10,6 +11,18 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import uvicorn
+
+
+def _local_management_directory(home: Path) -> Path:
+    home = home.resolve()
+    directory = home / "runtime" / "client-control"
+    # Linux sockaddr_un.sun_path has 108 bytes including the terminating NUL.
+    # Keep the normal path; long state roots use a stable, per-user private path.
+    # TMPDIR/XDG_RUNTIME_DIR can themselves be too long, so they are not a fallback.
+    if len(os.fsencode(directory / "engine.sock")) <= 107:
+        return directory
+    identity = hashlib.sha256(os.fsencode(home)).hexdigest()[:32]
+    return Path("/tmp") / f"v8os-{os.geteuid()}-{identity}"
 
 
 class _OwnedServer(uvicorn.Server):
@@ -55,10 +68,10 @@ class ClientListeners:
         return self.status()
 
     async def _start_local(self):
-        directory = self.home / "runtime" / "client-control"
+        directory = _local_management_directory(self.home)
         directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-        details = directory.stat()
-        if directory.is_symlink() or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
+        details = directory.lstat()
+        if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
             raise RuntimeError("local_management_directory_permissions_invalid")
         target = directory / "engine.sock"
         if target.exists() or target.is_symlink():

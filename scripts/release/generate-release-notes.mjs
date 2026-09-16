@@ -114,6 +114,15 @@ function releaseTitle(product, version, channel) {
 }
 
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "2026.09.16.3": Object.freeze({
+    all: Object.freeze([
+      "修复 Linux 在较长状态目录或多字节目录名下无法启动的问题；本机管理通道保持私有权限，不改变 Phone 配对和设备信任。",
+      "登录鉴权与 Phone 会话连接统一由 Engine 处理；Admin 按需打开，本机桌面与 Windows/macOS 桌宠无需手机式配对。",
+      "命令行对话等待任务最终结果，新建和切换工作区时同步登记目标路径；失败、取消和超时会明确显示。",
+      "修复首次账户设置冲突及快速输入被迟到工作区信息覆盖的问题；加载失败可重新同步并保留草稿。",
+      "修复魔搭 Skills/MCP 商店分页和异常条目处理，来源暂时异常时保留上次可用列表。",
+    ]),
+  }),
   "2026.09.16.2": Object.freeze({
     all: Object.freeze([
       "登录鉴权与 Phone 会话连接统一由 Engine 处理；Admin 控制台按需打开，远程对话不再依赖控制台常驻。",

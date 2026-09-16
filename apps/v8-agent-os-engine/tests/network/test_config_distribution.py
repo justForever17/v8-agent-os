@@ -153,7 +153,9 @@ def test_model_mapping_requires_target_local_model(system):
 
 def test_old_generation_late_confirmation_and_command_reuse(system):
     first = plan(system)
-    plan(system, generation=2, tokens=222)
+    # Identical proposed values produce the same Broker plan digest. Only the
+    # distribution generation can reject the old confirmation in this case.
+    plan(system, generation=2)
     with pytest.raises(HTTPException): apply(system, "apply", first)
     with pytest.raises(HTTPException): plan(system, generation=2, tokens=333)
     assert system.plane.get_config()["governance"]["budgets"]["runMaxTokens"] == 100

@@ -39,6 +39,7 @@ import { createVideoPlayer, type SourceLoadEventPayload, type VideoPlayer } from
 import { getThumbnailAsync } from "expo-video-thumbnails";
 
 import { ChatWindow } from "@/src/components/chat/ChatWindow";
+import { conversationEventDisposition, isStaleTranscript, readTranscriptIdentity, type TranscriptIdentity } from "@v8/session-realtime";
 import { Composer } from "@/src/components/chat/Composer";
 import { ComposerPickerOverlay } from "@/src/components/chat/ComposerPickerOverlay";
 import { GovernanceApprovalModal } from "@/src/components/chat/GovernanceApprovalModal";
@@ -2039,6 +2040,8 @@ export default function ChatScreen() {
     const localDatabase = useMemo(() => createLocalDatabase(authorityKey, servingInstanceId), [authorityKey, servingInstanceId]);
     const draftKey = authorityKey ? phoneSessionKey(authorityKey, servingInstanceId, activeConversationId || newDraftId) : "unpaired-draft";
     const draftStatus = usePhoneDraftStatus(draftKey);
+    const transcriptIdentitiesRef = useRef(new Map<string, TranscriptIdentity>());
+    const [transcriptIdentity, setTranscriptIdentity] = useState<TranscriptIdentity>({ transcriptRevision: 0, contextEpoch: 0 });
 
     const realtimeAbortRef = useRef<AbortController | null>(null);
     const realtimeConversationIdRef = useRef<string | null>(null);
@@ -2048,7 +2051,7 @@ export default function ChatScreen() {
     const loadSupportDataRef = useRef<() => Promise<void>>(async () => undefined);
     const conversationIndexRefreshRef = useRef<Promise<void> | null>(null);
     const conversationIndexRefreshPendingRef = useRef(false);
-    const loadConversationRef = useRef<(conversationId: string, options?: { force?: boolean; token?: number }) => Promise<boolean>>(async () => false);
+    const loadConversationRef = useRef<(conversationId: string, options?: { force?: boolean; token?: number; replaceTranscript?: boolean }) => Promise<boolean>>(async () => false);
     const startRealtimeRef = useRef<(conversationId: string, transitionToken?: number) => Promise<void>>(async () => undefined);
     const stopRealtimeRef = useRef<(options?: { preserveMessageState?: boolean }) => void>(() => undefined);
     const handleSendRef = useRef<(options?: SendComposerOptions) => Promise<void>>(async () => undefined);
@@ -3775,6 +3778,18 @@ export default function ChatScreen() {
     }, [applySessionProcessSurface, patchAssistantTaskShell]);
 
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
+        const sessionId = String(activeConversationIdRef.current || "");
+        const incomingIdentity = readTranscriptIdentity(payload);
+        const previousIdentity = transcriptIdentitiesRef.current.get(sessionId);
+        if (previousIdentity && isStaleTranscript(previousIdentity, incomingIdentity)) return;
+        const epochChanged = incomingIdentity.contextEpoch > (previousIdentity?.contextEpoch || 0);
+        transcriptIdentitiesRef.current.set(sessionId, incomingIdentity);
+        setTranscriptIdentity(incomingIdentity);
+        if (epochChanged) {
+            realtimeMessageStateRef.current.pendingRuntimeEvents = [];
+            void loadConversationRef.current(sessionId, { force: true, replaceTranscript: true });
+            return;
+        }
         const profileStartedAt = getPerfNowMs();
         const payloadBytes = measureJsonBytes(payload);
         const messagesOmitted = authoritativeSnapshotOmitsMessages(payload);
@@ -3998,6 +4013,8 @@ export default function ChatScreen() {
         if (!normalized) {
             return;
         }
+        const recoveryDisposition = conversationEventDisposition(transcriptIdentitiesRef.current.get(String(activeConversationIdRef.current || "")) || { transcriptRevision: 0, contextEpoch: 0 }, normalized);
+        if (recoveryDisposition === "ignore") return;
         const eventApplyStartedAt = getPerfNowMs();
 
         const acceptance = evaluateSessionRuntimeEvent(normalized, {
@@ -4010,6 +4027,10 @@ export default function ChatScreen() {
         seenRealtimeEventKeysRef.current.remember(acceptance.identity, normalized.seq);
         if (normalized.seq) {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
+        }
+        if (recoveryDisposition === "refresh") {
+            void loadConversationRef.current(String(activeConversationIdRef.current || ""), { force: true, replaceTranscript: true });
+            return;
         }
         const terminalRunStatus = terminalRunStatusFromTopic(
             normalized.topic || normalized.data?.topic || normalized.name,
@@ -4913,7 +4934,7 @@ export default function ChatScreen() {
         }
     }, [authorizedRealtimeStream, handleRealtimeEvent, scheduleRealtimeSnapshotRefresh, stopRealtime]);
 
-    const loadConversation = useCallback(async (conversationId: string, options?: { force?: boolean; token?: number }) => {
+    const loadConversation = useCallback(async (conversationId: string, options?: { force?: boolean; token?: number; replaceTranscript?: boolean }) => {
         const transitionToken = options?.token ?? conversationTransitionTokenRef.current;
         if (!options?.force) {
             if (loadingConversationIdRef.current === conversationId) {
@@ -4950,7 +4971,7 @@ export default function ChatScreen() {
                 ? getConversationTimelineSync(authorizedFetch, conversationId, syncCursor)
                 : Promise.resolve({ messages: [], deletions: [], syncCursor: "", sessionId: conversationId });
 const [detail, turnPage, syncData] = await Promise.all([
-                getConversationDetail(authorizedFetch, conversationId, true),
+                getConversationDetail(authorizedFetch, conversationId, !options?.replaceTranscript),
                 getConversationTurnPage(authorizedFetch, conversationId, { limit: 1 }),
                 syncPromise,
             ]);
@@ -4975,7 +4996,20 @@ const [detail, turnPage, syncData] = await Promise.all([
                 await localDatabase.upsertMessages(conversationId, turnPage.messages);
             }
             if (activeConversationIdRef.current !== conversationId || conversationTransitionTokenRef.current !== transitionToken) return false;
-            const timelineMessages = Array.isArray(turnPage.messages) && turnPage.messages.length > 0
+            const incomingIdentity = readTranscriptIdentity(detail);
+            const previousIdentity = transcriptIdentitiesRef.current.get(conversationId);
+            if (previousIdentity && isStaleTranscript(previousIdentity, incomingIdentity)) return false;
+            const replaceTranscript = options?.replaceTranscript || incomingIdentity.contextEpoch > (previousIdentity?.contextEpoch || 0);
+            let fullDetail = detail;
+            if (replaceTranscript && !options?.replaceTranscript) fullDetail = await getConversationDetail(authorizedFetch, conversationId);
+            if (activeConversationIdRef.current !== conversationId || conversationTransitionTokenRef.current !== transitionToken) return false;
+            transcriptIdentitiesRef.current.set(conversationId, readTranscriptIdentity(fullDetail));
+            setTranscriptIdentity(readTranscriptIdentity(fullDetail));
+            if (replaceTranscript) {
+                await localDatabase.deleteSessionData(conversationId);
+                await localDatabase.upsertMessages(conversationId, fullDetail.messages || []);
+            }
+            const timelineMessages = replaceTranscript ? (fullDetail.messages || []) : Array.isArray(turnPage.messages) && turnPage.messages.length > 0
                 ? turnPage.messages
                 : cachedLatestTurn;
             turnBeforeCursorRef.current = turnPage.pageInfo?.beforeCursor || null;
@@ -4985,7 +5019,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detail));
             const snapshotMessages = normalizeMessagesForState(timelineMessages);
             const preserveOptimisticLocalState = Boolean(
-                messageConversationIdRef.current === conversationId
+                !replaceTranscript && messageConversationIdRef.current === conversationId
                 && (
                     hydratedConversationIdRef.current === conversationId
                     || optimisticSeedConversationIdRef.current === conversationId
@@ -7496,6 +7530,18 @@ const [detail, turnPage, syncData] = await Promise.all([
                                     cacheKey={draftKey}
                                     adminBaseUrl={adminBaseUrl}
                                     sessionId={activeConversationId || undefined}
+                                    recovery={activeConversationId ? {
+                                        sessionId: activeConversationId, draftKey, transcriptRevision: transcriptIdentity.transcriptRevision,
+                                        busy: isSessionRunning || sending || conversationBusy || projection.pendingApprovalCount > 0 || visibleQueuedMessages.length > 0,
+                                        onCommitted: async (result) => {
+                                            if (result.sessionId === activeConversationIdRef.current) {
+                                                transcriptIdentitiesRef.current.set(result.sessionId, readTranscriptIdentity(result));
+                                                realtimeMessageStateRef.current.pendingRuntimeEvents = [];
+                                                await loadConversationRef.current(result.sessionId, { force: true, replaceTranscript: true });
+                                            }
+                                            await loadSupportDataRef.current();
+                                        },
+                                    } : undefined}
                                     workspaceId={scopeBinding?.workspaceId || undefined}
                                     messages={projection.projectedMessages}
                                     scrollLocked={pickerOverlayVisible}

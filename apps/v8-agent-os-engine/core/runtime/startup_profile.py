@@ -17,11 +17,12 @@ from core.runtime.feature_packs import (
 )
 
 
-INSTALL_PROFILES = ("minimal", "desktop")
+INSTALL_PROFILES = ("minimal", "desktop", "server")
 LEGACY_STARTUP_PROFILE_ALIASES = {
     "minimal": "minimal",
     "standard": "minimal",
     "desktop": "desktop",
+    "server": "server",
 }
 KNOWN_RUNTIME_FAMILIES = (
     "chat",
@@ -38,6 +39,7 @@ KNOWN_RUNTIME_FAMILIES = (
     "desktop_live",
 )
 DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
+    "server": ("chat", "memory", "extensions", "automation", "network_supervisor", "engineering", "research", "plugin_manager"),
     "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor", "engineering", "creative_media", "research", "plugin_manager"),
     "desktop": (
         "chat",
@@ -185,6 +187,17 @@ def ensure_runtime_registry_installation_state() -> None:
             return
 
         current_state = storage.get_runtime_registry_config()
+        # A server installation must never discover desktop capabilities from
+        # ambient packages or migrate an old registry back to minimal.
+        requested_profile = os.getenv("ENGINE_INSTALL_PROFILE") or (raw_payload or {}).get("installProfile")
+        if normalize_install_profile(requested_profile) == "server":
+            storage.save_runtime_registry_config({
+                **current_state,
+                "installProfile": "server",
+                "installedRuntimeFamilies": _default_runtime_families_for_profile("server"),
+            })
+            _RUNTIME_REGISTRY_MIGRATION_CHECKED = True
+            return
         install_platform = normalize_install_platform(
             (raw_payload or {}).get("installPlatform") or current_state.get("installPlatform")
         )
@@ -281,26 +294,30 @@ def get_runtime_registry_state() -> dict[str, Any]:
     # Packed families are capability claims, not historical intent.  Even old
     # registries without featurePacks must pass the same pack/probe truth check;
     # otherwise a stale `rpa`/`computer_use` entry exposes tools that are absent.
-    installed_runtime_families = _default_runtime_families_for_profile("minimal")
+    installed_runtime_families = _default_runtime_families_for_profile(install_profile if install_profile == "server" else "minimal")
     has_feature_pack_truth = isinstance(payload.get("featurePacks"), dict) and bool(payload.get("featurePacks"))
     for family in configured_families:
+        if install_profile == "server":
+            continue
         if family in PACKED_RUNTIME_FAMILIES:
             continue
         if family not in installed_runtime_families:
             installed_runtime_families.append(family)
     for family in installed_runtime_families_from_feature_packs(feature_pack_statuses):
+        if install_profile == "server" and family != "creative_media":
+            continue
         if family not in installed_runtime_families:
             installed_runtime_families.append(family)
     # Old registries predate feature-pack receipts.  Retain a packed family only
     # when the narrower platform probe proves that exact runtime can execute;
     # the full desktop feature-pack probe additionally covers Desktop Live and
     # must not make a working basic computer-use driver disappear.
-    if configured_families and not has_feature_pack_truth:
+    if install_profile != "server" and configured_families and not has_feature_pack_truth:
         detected_families = set(_detect_installed_runtime_families(install_platform))
         for family in configured_families:
             if family in PACKED_RUNTIME_FAMILIES and family in detected_families and family not in installed_runtime_families:
                 installed_runtime_families.append(family)
-    if not configured_families:
+    if install_profile != "server" and not configured_families:
         legacy_startup_profile = str(payload.get("startupProfile") or "").strip().lower()
         for family in _resolve_legacy_runtime_families(
             startup_profile=legacy_startup_profile,
@@ -320,7 +337,7 @@ def get_runtime_registry_state() -> dict[str, Any]:
         "installedRuntimeFamilies": installed_runtime_families,
         "bootstrapManaged": bool(payload.get("bootstrapManaged", False)),
         "lastUpgradeAt": str(payload.get("lastUpgradeAt") or "").strip() or None,
-        "startupProfile": normalize_install_profile(payload.get("startupProfile") or install_profile),
+        "startupProfile": install_profile,
         "policies": dict(payload.get("policies") or {}),
         "featurePacks": feature_pack_statuses,
         "featurePackSummary": feature_pack_summary(feature_pack_statuses),
@@ -382,12 +399,32 @@ def service_enabled(
 ) -> bool:
     if not config_enabled:
         return False
+    if feature == "audio" and not optional_capability_enabled("cloud_voice", _state=_state, profile=profile):
+        return False
     family = _FEATURE_RUNTIME_FAMILY.get(str(feature or "").strip())
     if family and not runtime_family_installed(family, profile=profile, _state=_state):
         return False
     if runtime_kind is not None and not runtime_policy_enabled(runtime_kind):
         return False
     return True
+
+
+def optional_capability_enabled(pack_id: str, *, _state: dict[str, Any] | None = None, profile: str | None = None) -> bool:
+    """Desktop/minimal retain their installed base; server requires a receipt."""
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
+    if normalize_install_profile(profile or state["installProfile"]) != "server":
+        return True
+    return any(pack.get("id") == pack_id and pack.get("status") == "installed"
+               and not pack.get("restartRequired") for pack in state.get("featurePacks", []))
+
+
+def optional_capability_selected(pack_id: str) -> bool:
+    """Distinguish intentionally absent capability from a broken installation."""
+    registry = storage.get_runtime_registry_config()
+    if normalize_install_profile(os.getenv("ENGINE_INSTALL_PROFILE") or registry.get("installProfile")) != "server":
+        return True
+    pack = registry.get("featurePacks", {}).get(pack_id, {})
+    return pack.get("status", "not_installed") != "not_installed"
 
 
 def runtime_policy_enabled(kind: str | None) -> bool:
@@ -416,7 +453,9 @@ def service_state(
     family = _FEATURE_RUNTIME_FAMILY.get(str(feature or "").strip())
     policy_enabled = True if runtime_kind is None else runtime_policy_enabled(runtime_kind)
 
-    if family and not runtime_family_installed(family, profile=normalized_profile, _state=state):
+    if feature == "audio" and not optional_capability_enabled("cloud_voice", _state=state, profile=normalized_profile):
+        reason = "not_installed"
+    elif family and not runtime_family_installed(family, profile=normalized_profile, _state=state):
         reason = "not_installed"
     elif not config_enabled:
         reason = "disabled_by_config"

@@ -406,7 +406,7 @@ def _open_browser_target(context: PlaybookExecutionContext, target_url: str, *, 
         raise RuntimeError(decision.reason or "browser_lane_unavailable")
     opened = context.runtime.browser_automation.open_tab(url=target_url, decision=decision)
     try:
-        from runtimes.computer_use.browser_session_service import browser_session_service
+        from core.agent_browser_sessions import browser_session_service
 
         workbench_browser = browser_session_service.register_existing_target(
             session_id=context.session_id,

@@ -3,7 +3,6 @@ from typing import List, Dict, Any
 import logging
 import uuid
 from pathlib import Path
-import chromadb
 
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
@@ -28,6 +27,10 @@ class BaseReranker(abc.ABC):
 
 class VectorStore:
     def __init__(self, *, db_dir: Path | None = None):
+        from core.runtime.startup_profile import optional_capability_enabled
+        if not optional_capability_enabled("vector_memory"):
+            raise RuntimeError("vector_memory capability is unavailable; install the pack and restart Engine")
+        import chromadb
         from core.memory_router import MemoryRouter
         self.router = MemoryRouter()
         

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 
 import hashlib
 import re
@@ -1136,8 +1137,16 @@ class RPATraceCompiler:
                     reasons.append("原生 .robot 语义历史成功率不足")
 
         normalized = self._normalize_score(score)
+        execution_evidence = (step.get("metadata") or {}).get("evidence") or {}
+        execution_not_reusable = bool(execution_evidence) and (
+            execution_evidence.get("reusable") is False
+            or execution_evidence.get("execution") in {"unknown", "not_dispatched", "deduplicated"}
+        )
+        if execution_not_reusable:
+            reasons.insert(0, "该记录没有可重放的实际执行证据；保留在原始记录中供核对")
         excluded = (
-            status in {"blocked", "failed", "error"}
+            status in {"blocked", "failed", "error", "unknown", "cancelled", "interrupted"}
+            or execution_not_reusable
             or verification_status in {"high_risk_pre_action_confirmation_required"}
             or normalized < effective_thresholds["exclude"]
         )
@@ -1865,6 +1874,9 @@ class RPATraceCompiler:
                     placeholder=str(normalized_item.get("placeholder") or f"{{{{{name}}}}}"),
                     source=str(normalized_item.get("source") or "computer_use_trace"),
                     example_value=normalized_item.get("exampleValue"),
+                    default_value=normalized_item.get("defaultValue"),
+                    sensitive=bool(normalized_item.get("sensitive") or normalized_item.get("secretName")),
+                    secret_name=str(normalized_item.get("secretName") or ""),
                 )
         return list(variables.values())
 
@@ -1888,6 +1900,9 @@ class RPATraceCompiler:
                     placeholder=str(normalized_item.get("placeholder") or f"{{{{{name}}}}}"),
                     source=str(normalized_item.get("source") or "computer_use_trace"),
                     example_value=normalized_item.get("exampleValue"),
+                    default_value=normalized_item.get("defaultValue"),
+                    sensitive=bool(normalized_item.get("sensitive") or normalized_item.get("secretName")),
+                    secret_name=str(normalized_item.get("secretName") or ""),
                 )
                 if current is None:
                     merged[name] = candidate
@@ -1897,6 +1912,10 @@ class RPATraceCompiler:
                 if current.source == "computer_use_trace" and candidate.source != "computer_use_trace":
                     current.source = candidate.source
                 current.required = bool(current.required or candidate.required)
+                current.sensitive = current.sensitive or candidate.sensitive
+                current.secret_name = current.secret_name or candidate.secret_name
+                if current.default_value is None:
+                    current.default_value = candidate.default_value
         return list(merged.values())
 
     def _rpa_step_assessment_from_dict(self, payload: Dict[str, Any] | None) -> Optional[RPAStepAssessment]:
@@ -1959,8 +1978,8 @@ class RPATraceCompiler:
             metadata.setdefault("budget", dict(payload.get("budget") or {}))
         return RPAScriptStep(
             step_id=str(payload.get("stepId") or payload.get("step_id") or "step"),
-            use=str(payload.get("use") or ""),
-            intent=str(payload.get("intent") or payload.get("use") or ""),
+            use=str(payload.get("use") or payload.get("action") or ""),
+            intent=str(payload.get("intent") or payload.get("use") or payload.get("action") or ""),
             params=dict(payload.get("params") or {}),
             target=dict(payload.get("target") or {}),
             verification=dict(payload.get("verification") or {}),
@@ -2361,9 +2380,44 @@ class RPATraceCompiler:
     def compile_trace(self, trace: Dict[str, Any]) -> RPAScript:
         if not isinstance(trace, dict):
             raise ValueError("trace payload 无效。")
-        steps = list(trace.get("steps") or [])
+        steps = deepcopy(list(trace.get("steps") or []))
         if not steps:
             raise ValueError("trace 不包含任何步骤。")
+        # Generated names such as input_text are local to an action. Distinct
+        # recorded values must not collapse into one workflow variable.
+        values: Dict[str, Any] = {}
+        def rename(value, before, after):
+            if isinstance(value, dict):
+                return {key: rename(item, before, after) for key, item in value.items()}
+            if isinstance(value, list):
+                return [rename(item, before, after) for item in value]
+            return after if value == before else value
+        for step in steps:
+            variables = [self._normalize_trace_variable_item(item) for item in step.get("variables") or []]
+            step["variables"] = [item for item in variables if item is not None]
+            original_params = deepcopy(step.get("params") or {})
+            names = [str(item.get("name") or "") for item in step["variables"]]
+            for variable in step["variables"]:
+                name = str(variable.get("name") or "")
+                if not name:
+                    continue
+                candidate, index = name, 1
+                example = variable.get("exampleValue")
+                while candidate in values and values[candidate] != example:
+                    index += 1
+                    candidate = f"{name}_{index}"
+                values[candidate] = example
+                if candidate != name:
+                    before = variable.get("placeholder") or "{{" + name + "}}"
+                    after = "{{" + candidate + "}}"
+                    original_key = variable.get("originalKey")
+                    if original_key in original_params:
+                        step["params"][original_key] = rename(original_params[original_key], before, after)
+                    elif names.count(name) > 1:
+                        raise ValueError("Ambiguous trace variables share a name without originalKey; repair the recorded parameters before compiling.")
+                    else:
+                        step["params"] = rename(step.get("params") or {}, before, after)
+                    variable.update(name=candidate, placeholder=after)
         trace_metadata = dict(trace.get("metadata") or {})
         trace_schema_version = int(trace_metadata.get("traceSchemaVersion") or 1)
         trace_summaries = self._aggregate_trace_summaries(
@@ -2850,7 +2904,7 @@ class RPATraceCompiler:
 
         template_payload = RPATemplateCandidate(
             template_id=template_id,
-            name=self._template_name(app_id=app_id, goal=goal),
+            name=str(script_payload.get("name") or self._template_name(app_id=app_id, goal=goal)),
             app_id=app_id,
             goal=goal,
             variables=self._merge_script_variables(list(script_payload.get("variables") or []), []),

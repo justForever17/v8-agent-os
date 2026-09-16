@@ -205,7 +205,7 @@ def _materialize_pack_probe_modules(target: Path, pack_id: str) -> None:
 
 
 def test_feature_pack_contract_order_and_runtime_mapping():
-    definitions = list(FEATURE_PACK_DEFINITIONS)
+    definitions = sorted(FEATURE_PACK_DEFINITIONS, key=lambda item: item.recommended_order)
 
     assert [definition.id for definition in definitions] == [
         "document_ingestion",
@@ -214,6 +214,9 @@ def test_feature_pack_contract_order_and_runtime_mapping():
         "local_asr_ocr",
         "creative_media_image_analysis",
         "creative_media_motion_capture",
+        "vector_memory",
+        "creative_media",
+        "cloud_voice",
     ]
     assert definitions[0].requirements_file == "document-ingestion.txt"
     assert definitions[0].probe_modules == ("openpyxl", "xlrd", "docx", "pptx", "pymupdf", "tabulate")

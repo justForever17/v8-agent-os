@@ -345,6 +345,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                 const matchedProcess = toolInvocation.toolCallId
                     ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)
                     : undefined;
+                if (node.branchInherited || node.readOnly) return <ToolCard toolInvocation={toolInvocation} />;
 
                 if (matchedProcess || isCommandSessionTool(toolName)) {
                     return <CommandSessionToolRenderer toolInvocation={toolInvocation} isFinished={isFinished} process={matchedProcess} />;
@@ -393,7 +394,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             
             // Parse the text part into its sub-blocks (markdown, ppt, html, artifacts, code, mermaid)
             // using the Unified Content Detector
-            const blocks = parseContentToBlocks(node.content, isStreaming, 0, false);
+            const blocks = parseContentToBlocks(node.content, isStreaming, 0, false, node.editedBy === "user");
 
             return (
                 <div className="mb-1.5 mt-0.5 flex flex-col gap-2.5">

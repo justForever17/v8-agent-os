@@ -46,6 +46,8 @@ def harness(tmp_path, monkeypatch):
     database.create_run_record("run-root-001", ROOT, user_id=USER, run_type="chat", status="running")
     monkeypatch.setattr(coordination_module, "db", database)
     monkeypatch.setattr(command_module, "db", database)
+    import core.runtime_episode_control as episode_control
+    monkeypatch.setattr(episode_control, "db", database)
     service = SessionCoordinationService()
     from core.tools.native import session_coordination as tool_module
     monkeypatch.setattr(tool_module, "session_coordination_service", service)

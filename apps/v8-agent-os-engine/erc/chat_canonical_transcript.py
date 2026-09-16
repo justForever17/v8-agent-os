@@ -267,13 +267,23 @@ def format_canonical_message(
     stored_metadata = _as_dict(row.get("metadata"))
     metadata = dict(stored_metadata) if include_private else strip_private_provider_continuation(stored_metadata)
     stored_nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
-    base_nodes = normalize_canonical_nodes(stored_nodes, role=str(row.get("role") or ""))
+    base_nodes = stored_nodes if metadata.get("editedBy") == "user" else normalize_canonical_nodes(stored_nodes, role=str(row.get("role") or ""))
     stored_artifacts = [dict(item) for item in _as_list(row.get("artifacts")) if isinstance(item, dict)]
     effective_artifacts = [
         artifact
         for artifact in merge_artifacts(stored_artifacts, [dict(item) for item in _as_list(runtime_artifacts) if isinstance(item, dict)])
         if _is_human_surface_artifact(artifact)
     ]
+    if metadata.get("branchInherited"):
+        from urllib.parse import urlencode
+        for artifact in effective_artifacts:
+            artifact_id = artifact.get("id") or artifact.get("artifactId")
+            artifact.update({"branchInherited": True, "readOnly": True})
+            if artifact_id:
+                for key in ("previewUrl", "downloadUrl", "contentUrl"):
+                    value = str(artifact.get(key) or "")
+                    if value.startswith("/v1/artifacts/"):
+                        artifact[key] = value.split("?", 1)[0] + "?" + urlencode({"sessionId": row.get("session_id")})
     nodes = base_nodes + _artifact_nodes_for_message(str(row.get("id") or ""), effective_artifacts, metadata)
     derived_content_text, derived_reasoning_text = derive_text_fields(base_nodes)
     has_canonical_text_nodes = any(
@@ -293,6 +303,11 @@ def format_canonical_message(
         "ordinal": _row_ordinal(row),
         "state": row.get("state"),
         "version": int(row.get("version") or 1),
+        "status": row.get("state"),
+        "edited": bool(metadata.get("edited")),
+        "editedBy": metadata.get("editedBy"),
+        "editedAt": metadata.get("editedAt"),
+        "revisionVersion": metadata.get("revisionVersion"),
         "content": content_text,
         "reasoningContent": reasoning_text or None,
         "timestamp": int(metadata.get("timestamp") or 0) or 0,
@@ -313,10 +328,18 @@ def build_canonical_chat_messages(session_id: str) -> list[dict[str, Any]]:
     rows = db.get_chat_canonical_messages(session_id)
     if not rows:
         return []
-    return format_canonical_chat_rows(session_id, rows)
+    return format_canonical_chat_rows(session_id, rows, all_rows=rows)
 
 
-def format_canonical_chat_rows(session_id: str, rows: list[CanonicalMessage]) -> list[dict[str, Any]]:
+def format_canonical_chat_rows(session_id: str, rows: list[CanonicalMessage], *, all_rows: list[CanonicalMessage] | None = None, include_turn_positions: bool = True) -> list[dict[str, Any]]:
+    # Sync windows can start in the middle of a turn. Use the canonical full
+    # index for their identity, never invent a new turn from the first delta.
+    turn_identity = {}
+    for position, group in enumerate(group_canonical_turn_rows(all_rows if all_rows is not None else db.get_chat_canonical_turn_index_rows(session_id)), 1):
+        turn_id = _stable_turn_id(session_id, group)
+        for row in group:
+            turn_identity[row["id"]] = {"turnId": turn_id, "isTurnEnd": row["id"] == group[-1]["id"],
+                                        **({"turnPosition": position} if include_turn_positions else {})}
     artifacts = db.list_runtime_artifacts(session_id=session_id, limit=1000)
     artifacts_by_message: dict[str, list[dict[str, Any]]] = {}
     artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
@@ -335,7 +358,7 @@ def format_canonical_chat_rows(session_id: str, rows: list[CanonicalMessage]) ->
         runtime_artifacts = artifacts_by_message.get(message_id, [])
         if not runtime_artifacts and run_id:
             runtime_artifacts = artifacts_by_run.get(run_id, [])
-        formatted.append(format_canonical_message(row, runtime_artifacts))
+        formatted.append({**format_canonical_message(row, runtime_artifacts), **turn_identity.get(message_id, {})})
     return formatted
 
 
@@ -469,7 +492,8 @@ def group_canonical_turn_rows(rows_asc: list[CanonicalMessage]) -> list[list[Can
         # Assistant-only/system-generated historical runs have no user anchor.
         # Preserve their run boundary so unrelated background turns are not
         # collapsed into one navigation marker.
-        orphan_key = f"run:{run_id}" if run_id else ""
+        source_run_id = str(row.get("source_run_id") or (row.get("metadata") or {}).get("sourceRunId") or "")
+        orphan_key = f"run:{run_id or source_run_id}" if run_id or source_run_id else ""
         if current and current_orphan_key and orphan_key and current_orphan_key != orphan_key:
             groups.append(current)
             current = []
@@ -567,7 +591,7 @@ def build_canonical_chat_turn_window(
             turn_ids.append(turn_id)
             for row in group:
                 turn_by_ordinal[_row_ordinal(row)] = turn_id
-        formatted_messages = format_canonical_chat_rows(session_id, selected_rows)
+        formatted_messages = format_canonical_chat_rows(session_id, selected_rows, all_rows=selected_rows, include_turn_positions=False)
         for message in formatted_messages:
             turn_id = turn_by_ordinal.get(int(message.get("ordinal") or 0))
             if turn_id:
@@ -640,7 +664,7 @@ def build_canonical_chat_turn_window(
     for entry in selected_entries:
         for ordinal in range(int(entry["firstOrdinal"]), int(entry["lastOrdinal"]) + 1):
             turn_by_ordinal[ordinal] = entry
-    formatted_messages = format_canonical_chat_rows(session_id, selected_rows)
+    formatted_messages = format_canonical_chat_rows(session_id, selected_rows, all_rows=index_rows)
     for message in formatted_messages:
         entry = turn_by_ordinal.get(int(message.get("ordinal") or 0))
         if not entry:
@@ -675,6 +699,9 @@ def export_legacy_message_payload(row: CanonicalMessage, *, include_private: boo
     return {
         "id": formatted["id"],
         "session_id": row.get("session_id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "version": int(row.get("version") or 1),
         "role": formatted["role"],
         "content": formatted["content"],
         "reasoning_content": formatted["reasoningContent"],
@@ -803,6 +830,7 @@ class CanonicalTranscriptBuilder:
         content_text, reasoning_text = derive_text_fields(next_nodes)
         updated = db.update_chat_canonical_message(
             message_id,
+            expected_version=int(existing.get("version") or 1),
             state=state or existing.get("state") or "pending",
             nodes=next_nodes,
             artifacts=existing.get("artifacts") or [],

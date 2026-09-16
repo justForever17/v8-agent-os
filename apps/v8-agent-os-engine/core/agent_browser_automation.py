@@ -26,7 +26,7 @@ from core.agent_browser_profile import (
     system_agent_browser_candidates,
 )
 from core.process_launch import popen_windowless, run_windowless
-from runtimes.computer_use.input_policy import looks_like_url
+from core.agent_browser_profile import looks_like_url
 
 
 _CHROMIUM_PROCESS_NAMES = {
@@ -641,7 +641,21 @@ class BrowserAutomationProvider:
         return lowered.startswith("--user-data-dir=") or lowered.startswith("--profile-directory=")
 
     def _platform_browser_candidates(self, family: str) -> List[List[str]]:
-        return [[candidate] for candidate in system_agent_browser_candidates(family)]
+        candidates = [[candidate] for candidate in system_agent_browser_candidates(family)]
+        # The server ships a Playwright-managed Chromium, not a system GUI
+        # browser. Resolve its executable through the installed driver's API.
+        if family == "chromium" and str(os.environ.get("ENGINE_INSTALL_PROFILE") or "").strip().lower() == "server":
+            package = self._resolve_playwright_driver_package()
+            node = shutil.which("node")
+            if package and node:
+                result = run_windowless(
+                    [node, "-e", "process.stdout.write(require(process.argv[1]).chromium.executablePath())", str(package)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                executable = str(result.stdout or "").strip()
+                if result.returncode == 0 and executable and Path(executable).is_file():
+                    candidates.insert(0, [executable])
+        return candidates
 
     def _preferred_browser_kinds(self, *, app_id: str | None = None, app_name: str | None = None) -> List[str]:
         requested = {
@@ -1457,7 +1471,7 @@ class BrowserAutomationProvider:
         self._invalidate_availability_health_cache()
 
     def _helper_script_path(self) -> Path:
-        return Path(__file__).resolve().parents[2] / "scripts" / "browser_cdp_proxy.mjs"
+        return Path(__file__).resolve().parents[1] / "scripts" / "browser_cdp_proxy.mjs"
 
     def _proxy_base_url(self) -> str:
         return f"http://127.0.0.1:{self._proxy_port}"
@@ -1601,7 +1615,7 @@ class BrowserAutomationProvider:
             "/close",
             "/dispatch",
         }:
-            from runtimes.computer_use.browser_session_service import browser_session_service
+            from core.agent_browser_sessions import browser_session_service
 
             browser_session_service.assert_agent_control_available_for_target(target_id)
         url = f"{self._proxy_base_url()}{path}"
@@ -1623,7 +1637,7 @@ class BrowserAutomationProvider:
         response.raise_for_status()
         result = response.json() if response.text else {}
         if normalized_actor == "agent" and target_id and normalized_path in {"/info", "/agent/observe"}:
-            from runtimes.computer_use.browser_session_service import browser_session_service
+            from core.agent_browser_sessions import browser_session_service
 
             browser_session_service.note_agent_observation(target_id)
         return result
@@ -1640,7 +1654,7 @@ class BrowserAutomationProvider:
             return self._request_json(method, path, params=params, body=body, control_actor="agent",
                                       **({"timeout_seconds": 20.0} if path == "/agent/media" else {}))
         except requests.HTTPError as exc:
-            from runtimes.computer_use.browser_session_service import BrowserSessionError
+            from core.agent_browser_sessions import BrowserSessionError
 
             try:
                 message = str(exc.response.json().get("error") or "browser_proxy_error")[:600]

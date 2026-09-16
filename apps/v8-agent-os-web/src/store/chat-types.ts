@@ -3,6 +3,9 @@ import type { SessionToolResultStatus } from '@v8/session-realtime';
 
 // --- Base Node ---
 export interface UiTimelineNodeBase {
+    editedBy?: string;
+    branchInherited?: boolean;
+    readOnly?: boolean;
     id: string;
     kind: 'narrative' | 'execution' | 'governance' | 'artifact' | 'system';
     timestamp: number;
@@ -118,6 +121,11 @@ export type UiTimelineNode = UiNarrativeNode | UiExecutionNode | UiGovernanceNod
 
 // --- Main Chat Session/Run Model ---
 export interface Message {
+    version?: number;
+    status?: string;
+    state?: string;
+    editedBy?: string;
+    editedAt?: string;
     id: string;
     renderKey?: string;
     role: 'user' | 'assistant' | 'system' | 'tool';

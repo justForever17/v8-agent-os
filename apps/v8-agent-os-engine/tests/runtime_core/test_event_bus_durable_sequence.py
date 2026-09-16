@@ -216,5 +216,7 @@ def test_emitter_does_not_misclassify_lineage_integrity_errors_as_sequence_races
     monkeypatch.setattr(event_bus_module, "db", database)
     emitter = _emitter(RuntimeEventBus(), session_id="missing-session", run_id="missing-run")
 
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+    # The epoch/lineage check now rejects this before the FK insert. It must
+    # still fail immediately instead of retrying it as a sequence collision.
+    with pytest.raises(ValueError, match="conversation_run_missing"):
         emitter.emit("run.started", {})

@@ -41,9 +41,10 @@ internal static class Program
                 return 2;
             }
             using var automation = new UIA3Automation();
+            using var poster = new EnginePoster(request);
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-            var window = new InspectorWindow(request, automation);
-            _ = EnginePoster.PostEvent(request, "ready", new Dictionary<string, object?>
+            var window = new InspectorWindow(request, automation, poster);
+            _ = poster.PostEventAsync("ready", new Dictionary<string, object?>
             {
                 ["sidecar"] = new Dictionary<string, object?>
                 {
@@ -52,19 +53,12 @@ internal static class Program
                 }
             });
             app.Run(window);
-            _ = EnginePoster.PostEvent(request, "closed", new Dictionary<string, object?>
-            {
-                ["sidecar"] = new Dictionary<string, object?>
-                {
-                    ["kind"] = "flaui_inspector_panel",
-                    ["status"] = "closed"
-                }
-            });
+            poster.Stop();
             return 0;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(ex);
+            Console.Error.WriteLine($"Inspector stopped: {ex.GetType().Name}.");
             return 1;
         }
     }
@@ -74,6 +68,8 @@ internal sealed class InspectorWindow : Window
 {
     private readonly InspectorRequest _request;
     private readonly UIA3Automation _automation;
+    private readonly EnginePoster _poster;
+    private readonly System.Windows.Threading.DispatcherTimer _stopTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
     private readonly WpfListBox _windowList = new();
     private readonly TreeView _elementTree = new();
     private readonly WpfTextBox _properties = new();
@@ -81,11 +77,14 @@ internal sealed class InspectorWindow : Window
     private readonly HighlightOverlay _overlay = new();
     private WindowSnapshot? _selectedWindow;
     private ElementSnapshot? _selectedElement;
+    private Dictionary<string, object?>? _pendingCandidate;
+    private bool _sending;
 
-    public InspectorWindow(InspectorRequest request, UIA3Automation automation)
+    public InspectorWindow(InspectorRequest request, UIA3Automation automation, EnginePoster poster)
     {
         _request = request;
         _automation = automation;
+        _poster = poster;
         Title = "V8 RPA FlaUI Inspector";
         Width = 1180;
         Height = 760;
@@ -95,7 +94,14 @@ internal sealed class InspectorWindow : Window
         Background = Brushes.White;
         Content = BuildLayout();
         Loaded += (_, _) => RefreshWindows();
-        Closed += (_, _) => _overlay.Close();
+        _stopTimer.Tick += (_, _) =>
+        {
+            if (!_poster.IsStopped && !_request.ShouldStop()) return;
+            _poster.Stop();
+            Close();
+        };
+        _stopTimer.Start();
+        Closed += (_, _) => { _stopTimer.Stop(); _poster.Stop(); _overlay.Close(); };
     }
 
     private UIElement BuildLayout()
@@ -110,7 +116,7 @@ internal sealed class InspectorWindow : Window
         toolbar.Children.Add(MakeButton("2 Refresh elements", (_, _) => LoadSelectedWindowElements()));
         toolbar.Children.Add(MakeButton("3 Highlight", (_, _) => HighlightSelected()));
         toolbar.Children.Add(MakeButton("4 Test locator", (_, _) => TestSelectedLocator()));
-        toolbar.Children.Add(MakeButton("5 Send verified target", (_, _) => SendSelected()));
+        toolbar.Children.Add(MakeButton("5 Send / retry candidate", async (_, _) => await SendSelected()));
         _status.Margin = new Thickness(12, 0, 12, 10);
         _status.Foreground = Brushes.DimGray;
         DockPanel.SetDock(toolbar, Dock.Top);
@@ -312,34 +318,42 @@ internal sealed class InspectorWindow : Window
         _status.Text = count == 1 ? "Locator is unique." : $"Locator matched {count} elements.";
     }
 
-    private void SendSelected()
+    private async Task SendSelected()
     {
-        if (_selectedWindow is null || _selectedElement is null)
+        if (_sending || _poster.IsStopped) return;
+        if (_pendingCandidate is null && (_selectedWindow is null || _selectedElement is null))
         {
             _status.Text = "Select a window and element first.";
             return;
         }
         try
         {
-            var count = CountMatches(_selectedWindow, _selectedElement);
-            var screenshot = ScreenshotProof.Capture(_selectedElement.Bounds);
-            var candidate = _selectedElement.ToCandidate(_selectedWindow, count, screenshot);
-            var payload = new Dictionary<string, object?>
+            _sending = true;
+            if (_pendingCandidate is null)
             {
-                ["candidate"] = candidate,
-                ["sidecar"] = new Dictionary<string, object?>
+                var count = CountMatches(_selectedWindow!, _selectedElement!);
+                var screenshot = ScreenshotProof.Capture(_selectedElement!.Bounds);
+                var candidate = _selectedElement.ToCandidate(_selectedWindow!, count, screenshot);
+                _pendingCandidate = new Dictionary<string, object?>
                 {
-                    ["kind"] = "flaui_inspector_panel",
-                    ["status"] = "candidate_sent"
-                }
-            };
-            var result = EnginePoster.PostEvent(_request, "candidate", payload);
-            _status.Text = result.Ok ? "Candidate sent to V8 capture pool." : $"Send failed: {result.Error}";
+                    ["candidate"] = candidate,
+                    ["sidecar"] = new Dictionary<string, object?>
+                    {
+                        ["kind"] = "flaui_inspector_panel",
+                        ["status"] = "candidate_sent"
+                    }
+                };
+            }
+            _status.Text = "Sending captured candidate; waiting for V8 acknowledgement…";
+            var result = await _poster.PostEventAsync("candidate", _pendingCandidate);
+            if (result.Ok) _pendingCandidate = null;
+            _status.Text = result.Ok ? "Candidate recorded. Check its locator in V8 before saving." : $"Candidate retained; use Send / retry to resend the same event. {result.Error}";
         }
         catch (Exception ex)
         {
-            _status.Text = $"Send failed: {ex.Message}";
+            _status.Text = $"Candidate retained. Send failed ({ex.GetType().Name}).";
         }
+        finally { _sending = false; }
     }
 
     private int CountMatches(WindowSnapshot window, ElementSnapshot selected)
@@ -739,6 +753,10 @@ internal sealed class InspectorRequest
     public string RecordingId { get; init; } = "";
     [JsonPropertyName("oneTimeToken")]
     public string OneTimeToken { get; init; } = "";
+    [JsonPropertyName("generation")]
+    public string Generation { get; init; } = "";
+    [JsonIgnore]
+    public string RequestFilePath { get; private set; } = "";
     [JsonPropertyName("engineUrl")]
     public string EngineUrl { get; init; } = "http://127.0.0.1:9530";
     [JsonPropertyName("callback")]
@@ -762,7 +780,24 @@ internal sealed class InspectorRequest
             throw new InvalidOperationException("--request-file is required.");
         }
         var json = File.ReadAllText(requestFile, Encoding.UTF8);
-        return JsonSerializer.Deserialize<InspectorRequest>(json, Json.Options) ?? throw new InvalidOperationException("Invalid inspector request.");
+        var request = JsonSerializer.Deserialize<InspectorRequest>(json, Json.Options) ?? throw new InvalidOperationException("Invalid inspector request.");
+        if (string.IsNullOrWhiteSpace(request.OneTimeToken) || string.IsNullOrWhiteSpace(request.Generation))
+            throw new InvalidOperationException("Inspector request requires a token and generation.");
+        request.RequestFilePath = Path.GetFullPath(requestFile);
+        return request;
+    }
+
+    public bool ShouldStop()
+    {
+        if (string.IsNullOrEmpty(RequestFilePath)) return false;
+        if (!File.Exists(RequestFilePath)) return true;
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(RequestFilePath, Encoding.UTF8));
+            return document.RootElement.TryGetProperty("stopRequested", out var stop) && stop.ValueKind == JsonValueKind.True;
+        }
+        catch (IOException) { return false; }
+        catch (JsonException) { return false; }
     }
 }
 
@@ -774,27 +809,109 @@ internal sealed class CallbackInfo
     public string? Path { get; init; }
 }
 
-internal static class EnginePoster
+internal sealed class EnginePoster : IDisposable
 {
-    public static (bool Ok, string? Error) PostEvent(InspectorRequest request, string type, Dictionary<string, object?> payload)
+    private sealed record PendingEvent(string Type, Dictionary<string, object?> Payload, string EventId)
     {
+        public string? Body { get; set; }
+    }
+
+    private readonly InspectorRequest _request;
+    private readonly HttpClient _client;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Queue<PendingEvent> _pending = new();
+    private long _acknowledgedSequence;
+    private volatile bool _stopped;
+
+    public bool IsStopped => _stopped;
+
+    public EnginePoster(InspectorRequest request, HttpMessageHandler? handler = null)
+    {
+        _request = request;
+        _client = handler is null ? new HttpClient() : new HttpClient(handler);
+        _client.Timeout = TimeSpan.FromSeconds(5);
+    }
+
+    public async Task<(bool Ok, string? Error)> PostEventAsync(string type, Dictionary<string, object?> payload)
+    {
+        if (IsStopped || _request.ShouldStop()) { Stop(); return (false, "Inspector stopped."); }
+        var entered = false;
         try
         {
-            var url = CallbackUrl(request);
-            var body = new Dictionary<string, object?>(payload)
+            await _sendLock.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+            entered = true;
+            if (IsStopped || _request.ShouldStop()) { Stop(); return (false, "Inspector stopped."); }
+            var requested = _pending.FirstOrDefault(item => ReferenceEquals(item.Payload, payload));
+            if (requested is null)
             {
-                ["type"] = type,
-                ["oneTimeToken"] = request.OneTimeToken
-            };
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var json = JsonSerializer.Serialize(body, Json.Options);
-            using var response = client.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-            return response.IsSuccessStatusCode ? (true, null) : (false, $"{(int)response.StatusCode} {response.ReasonPhrase}");
+                requested = new PendingEvent(type, payload, Guid.NewGuid().ToString("N"));
+                _pending.Enqueue(requested);
+            }
+            while (_pending.Count > 0)
+            {
+                var item = _pending.Peek();
+                item.Body ??= JsonSerializer.Serialize(new Dictionary<string, object?>(item.Payload)
+                {
+                    ["type"] = item.Type,
+                    ["oneTimeToken"] = _request.OneTimeToken,
+                    ["generation"] = _request.Generation,
+                    ["seq"] = _acknowledgedSequence + 1,
+                    ["eventId"] = item.EventId,
+                }, Json.Options);
+                var sent = await SendPendingAsync(item.Body).ConfigureAwait(false);
+                if (!sent.Ok) return sent;
+                _pending.Dequeue();
+                _acknowledgedSequence++;
+                if (ReferenceEquals(item, requested)) return (true, null);
+            }
+            return (true, null);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) { return (false, "Inspector stopped."); }
+        finally { if (entered) _sendLock.Release(); }
+    }
+
+    private async Task<(bool Ok, string? Error)> SendPendingAsync(string body)
+    {
+        var error = "V8 did not acknowledge this event.";
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            return (false, ex.Message);
+            if (IsStopped || _request.ShouldStop()) { Stop(); return (false, "Inspector stopped."); }
+            try
+            {
+                using var response = await _client.PostAsync(CallbackUrl(_request), new StringContent(body, Encoding.UTF8, "application/json"), _lifetime.Token).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_lifetime.Token).ConfigureAwait(false));
+                    if (document.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True)
+                        return (true, null);
+                    error = "V8 returned an unconfirmed event receipt.";
+                }
+                else
+                {
+                    error = $"V8 rejected the event (HTTP {(int)response.StatusCode}).";
+                    if ((int)response.StatusCode is 401 or 403 or 404 or 410) { Stop(); return (false, error); }
+                }
+            }
+            catch (OperationCanceledException) when (!_lifetime.IsCancellationRequested) { error = "V8 acknowledgement timed out."; }
+            catch (OperationCanceledException) { return (false, "Inspector stopped."); }
+            catch (HttpRequestException) { error = "V8 is unavailable."; }
+            catch (JsonException) { error = "V8 returned an unreadable acknowledgement."; }
+            if (attempt < 2) await Task.Delay(200 * (attempt + 1), _lifetime.Token).ConfigureAwait(false);
         }
+        return (false, error);
+    }
+
+    public void Stop()
+    {
+        _stopped = true;
+        _lifetime.Cancel();
+    }
+
+    public void Dispose()
+    {
+        Stop();
+        _client.Dispose();
     }
 
     private static string CallbackUrl(InspectorRequest request)

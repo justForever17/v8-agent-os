@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/.recovery-ui/
+/.recovery-phone-ui/
 
 # next.js
 /.next/

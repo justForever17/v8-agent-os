@@ -276,7 +276,7 @@ def _run_browser_chat_cases(*, provider_filter: str = "all", lane_filter: str = 
     from core.database import db
     from core.tools import web_fetcher, research_broker as research
     from erc.runtime_context import bind_runtime_context
-    from runtimes.computer_use.browser_automation import agent_browser_automation as browser
+    from core.agent_browser_automation import agent_browser_automation as browser
     from runtimes.research.evidence import EvidenceStore
 
     config = deepcopy(storage.get_computer_use_config())

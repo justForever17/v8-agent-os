@@ -140,7 +140,7 @@ function extractSupervisorMicroStageSpeech(nodes: PhoneUiTimelineNode[], anchorI
         if (node.kind !== "narrative" || node.role !== "assistant") {
             continue;
         }
-        const text = parsePhoneContentBlocks(String(node.content || ""), false, 0, false)
+        const text = parsePhoneContentBlocks(String(node.content || ""), false, 0, false, node.editedBy === "user")
             .filter((block) => block.type !== "voice")
             .map((block) => block.content.trim())
             .filter(Boolean)
@@ -704,6 +704,7 @@ function extractContextSessionRefs(message: ChatMessage): string[] {
 }
 
 function extractComposerPresentation(message: ChatMessage): ComposerPresentation | null {
+    if ((message.editedBy || message.metadata?.editedBy) === "user") return null;
     const raw = message.metadata?.composerPresentation;
     if (!raw || typeof raw !== "object") return null;
     const text = typeof raw.text === "string" ? raw.text : "";
@@ -945,7 +946,7 @@ const FullMessageBubble = memo(function FullMessageBubble({
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
     const composerPresentation = useMemo(() => extractComposerPresentation(message), [message]);
     const canvasHumanSurface = useMemo(
-        () => isUser ? projectCreativeCanvasHumanSurfaceMessage(message, canvasUserMessageText) : null,
+        () => isUser && message.editedBy !== "user" ? projectCreativeCanvasHumanSurfaceMessage(message, canvasUserMessageText) : null,
         [canvasUserMessageText, isUser, message],
     );
     const isCanvasUserMessage = Boolean(canvasHumanSurface);
@@ -981,8 +982,8 @@ const FullMessageBubble = memo(function FullMessageBubble({
     );
     const composerSpecMode = isComposerSpecMode(message);
     const userContentText = useMemo(
-        () => stripCommandPresetPrefix(String(message.content || "").trim(), commandPresetName),
-        [commandPresetName, message.content],
+        () => message.editedBy === "user" ? String(message.content || "") : stripCommandPresetPrefix(String(message.content || "").trim(), commandPresetName),
+        [commandPresetName, message.content, message.editedBy],
     );
     const renderMessageKey = String(message.renderKey || message.id || "").trim();
     const messageIdentity = useMemo(
@@ -1123,8 +1124,8 @@ const FullMessageBubble = memo(function FullMessageBubble({
     );
     const hasStructuredNodes = renderableNodes.length > 0 || microStageVisible;
     const fallbackBlocks = useMemo(
-        () => (hasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
-        [hasStructuredNodes, message.content],
+        () => (hasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""), false, 0, true, message.editedBy === "user")),
+        [hasStructuredNodes, message.content, message.editedBy],
     );
     const timelineSegments = useMemo(() => {
         const segments: PhoneTimelineRenderSegment[] = [];
@@ -1181,7 +1182,7 @@ const FullMessageBubble = memo(function FullMessageBubble({
                 if (node.kind !== "narrative") {
                     return;
                 }
-                parsePhoneContentBlocks(String(node.content || ""), false, 0, false).forEach((block, blockIndex) => {
+                parsePhoneContentBlocks(String(node.content || ""), false, 0, false, node.editedBy === "user").forEach((block, blockIndex) => {
                     if (block.type !== "voice" || !block.content.trim()) {
                         return;
                     }
@@ -1208,7 +1209,7 @@ const FullMessageBubble = memo(function FullMessageBubble({
         if (hasStructuredNodes) {
             return renderableNodes.some((node) => {
                 if (node.kind === "narrative") {
-                    return parsePhoneContentBlocks(String(node.content || ""), false, 0, false).some((block) => block.type !== "voice" && block.content.trim());
+                    return parsePhoneContentBlocks(String(node.content || ""), false, 0, false, node.editedBy === "user").some((block) => block.type !== "voice" && block.content.trim());
                 }
                 return true;
             });
@@ -1276,6 +1277,7 @@ const FullMessageBubble = memo(function FullMessageBubble({
         ? { maxWidth: assistantBubbleWidth, minWidth: assistantMinWidth }
         : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
+        if (message.editedBy === "user") return String(message.content || "");
         const directContent = isUser
             ? (canvasHumanSurface?.copyText || composerPresentation?.text || userContentText)
             : String(message.content || "").trim();
@@ -1315,7 +1317,7 @@ const FullMessageBubble = memo(function FullMessageBubble({
             return metadataLines.join("\n");
         }
         return "";
-    }, [canvasHumanSurface?.copyText, commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText]);
+    }, [canvasHumanSurface?.copyText, commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText, message.content, message.editedBy]);
 
     useEffect(() => {
         if (!copied) {

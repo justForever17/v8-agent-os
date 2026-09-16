@@ -81,6 +81,20 @@ def test_selected_broken_vector_remains_degraded(server, monkeypatch):
     assert health["warnings"]
 
 
+@pytest.mark.parametrize("embedding_ready", [False, True])
+def test_vector_collection_without_embedding_cannot_report_ready(server, monkeypatch, embedding_ready):
+    from types import SimpleNamespace
+    from core import memory_backend_health, vector_store
+    monkeypatch.setattr(profile, "build_feature_pack_statuses", lambda *args, **kwargs: [{"id": "vector_memory", "status": "installed", "restartRequired": False}])
+    monkeypatch.setattr(memory_backend_health.importlib, "import_module", lambda name: SimpleNamespace(__version__="fixture"))
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SimpleNamespace(collection=object(), embedding_model=object() if embedding_ready else None, reranker_model=None))
+    health = memory_backend_health.inspect_memory_backend()
+    assert health["vectorBackend"]["ready"] is embedding_ready
+    assert health["fts5OnlyDegraded"] is (not embedding_ready)
+    if not embedding_ready:
+        assert any("embedding" in warning for warning in health["warnings"])
+
+
 def test_image_dependency_failure_is_explicit(server, monkeypatch):
     from core.local_visual_support import build_inline_image_data_from_bytes
     original_import = builtins.__import__

@@ -50,7 +50,7 @@ def inspect_memory_backend() -> dict[str, Any]:
         collection_ready = getattr(vector_store, "collection", None) is not None
         embedding_ready = getattr(vector_store, "embedding_model", None) is not None
         reranker_ready = getattr(vector_store, "reranker_model", None) is not None
-        vector_ready = bool(chroma_available and collection_ready)
+        vector_ready = bool(chroma_available and collection_ready and embedding_ready)
     except Exception as exc:  # pragma: no cover - degraded path
         vector_error = str(exc).strip() or exc.__class__.__name__
 
@@ -64,6 +64,8 @@ def inspect_memory_backend() -> dict[str, Any]:
             warnings.append(f"向量后端未就绪：{vector_error}")
         elif not collection_ready:
             warnings.append("向量后端未就绪：collection 尚未初始化，当前可能退化到 SQLite FTS5。")
+        elif not embedding_ready:
+            warnings.append("向量后端未就绪：请配置 embedding 模型并重启 Engine；当前使用 SQLite FTS5。")
 
     try:
         from core.memory_maintenance_status import get_memory_maintenance_status

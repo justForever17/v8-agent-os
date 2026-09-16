@@ -12,6 +12,8 @@ import tempfile
 import time
 import urllib.request
 
+PACK_REQUIREMENTS = {"cloud_voice": "cloud-voice.txt", "creative_media": "creative-media.txt", "document_ingestion": "document-ingestion.txt", "vector_memory": "vector-memory.txt"}
+
 
 def free_port():
     with socket.socket() as stream:
@@ -38,7 +40,9 @@ def audit(bundle: Path, pack_id: str = "cloud_voice") -> dict:
         log = open(Path(temp) / "engine.log", "w+")
         child = None
         def start():
+            nonlocal child
             process = subprocess.Popen([str(engine / ".venv/bin/python3"), "main.py"], cwd=engine, stdout=log, stderr=log)
+            child = process
             deadline = time.monotonic() + 100
             while time.monotonic() < deadline:
                 if process.poll() is not None:
@@ -47,16 +51,20 @@ def audit(bundle: Path, pack_id: str = "cloud_voice") -> dict:
                     with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
                         health = json.load(response)
                     if health.get("ready") is True or health.get("status") == "ok":
-                        return process, health
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/readyz", timeout=2) as response:
+                            if json.load(response).get("ready"):
+                                return process, health
                 except (OSError, ValueError):
                     time.sleep(0.2)
             process.terminate()
             process.wait(timeout=45)
             raise TimeoutError("Engine readiness timed out")
         def cli(*args, check=True):
-            result = subprocess.run([str(bundle / "v8os"), *args], capture_output=True, text=True, timeout=240)
+            result = subprocess.run([str(bundle / "v8os"), *args], capture_output=True, text=True, timeout=900)
             if check and result.returncode:
-                raise RuntimeError(f"CLI {' '.join(args[:3])} failed: {result.stderr[-1200:]}")
+                logs = sorted((state / "logs/feature-packs").glob(f"{pack_id}-*.log"))
+                diagnostic = logs[-1].read_text(errors="replace")[-7000:] if logs else ""
+                raise RuntimeError(f"CLI {' '.join(args[:3])} failed: {result.stderr[-1200:]}\n{diagnostic}")
             return result
         try:
             child, _ = start()
@@ -78,7 +86,18 @@ def audit(bundle: Path, pack_id: str = "cloud_voice") -> dict:
             assert voice["installed"] and not voice["restartRequired"], voice["status"]
             assert health["startupBundle"]["audio"] is (pack_id == "cloud_voice")
             assert ("creative_media" in health["installedRuntimeFamilies"]) is (pack_id == "creative_media")
-            requirements = engine / "requirements/feature-packs" / ("cloud-voice.txt" if pack_id == "cloud_voice" else "creative-media.txt")
+            if pack_id == "vector_memory":
+                assert health["memory"]["fts5OnlyDegraded"] is True, "No embedding role is configured, so vector retrieval cannot be ready"
+            if pack_id in {"document_ingestion", "vector_memory"}:
+                probe = Path(__file__).with_name("probe-memory-pack.py")
+                checked = subprocess.run([str(engine / ".venv/bin/python3"), str(probe), "--engine", str(engine), "--pack", pack_id],
+                                         capture_output=True, text=True, timeout=180)
+                if checked.returncode:
+                    raise RuntimeError(f"{pack_id} operation verification failed: {checked.stderr[-1800:]}")
+                operations = json.loads(checked.stdout.strip().splitlines()[-1])
+            else:
+                operations = None
+            requirements = engine / "requirements/feature-packs" / PACK_REQUIREMENTS[pack_id]
             original = requirements.read_bytes()
             try:
                 requirements.write_bytes(b"invalid requirement @@@\n")
@@ -86,7 +105,7 @@ def audit(bundle: Path, pack_id: str = "cloud_voice") -> dict:
                 assert failed_upgrade.returncode != 0, "Failed upgrade must not report the previous installed pack as success"
             finally:
                 requirements.write_bytes(original)
-            return {"layer": "real_engine_local_install_no_provider", "pack": pack_id, "install": True, "restartActivation": True, "failedUpgradeNonzero": True, "desktopRejected": True, "profile": health["installProfile"], "portsIsolated": True}
+            return {"layer": "real_engine_local_install_no_provider", "pack": pack_id, "install": True, "restartActivation": True, "failedUpgradeNonzero": True, "desktopRejected": True, "profile": health["installProfile"], "portsIsolated": True, "operations": operations}
         finally:
             if child and child.poll() is None:
                 child.terminate()
@@ -98,7 +117,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--bundle", type=Path, required=True)
-    parser.add_argument("--pack", choices=("cloud_voice", "creative_media"), default="cloud_voice")
+    parser.add_argument("--pack", choices=tuple(PACK_REQUIREMENTS), default="cloud_voice")
     args = parser.parse_args()
     if not args.live:
         parser.error("--live is required: starts an isolated Engine and downloads optional dependencies")

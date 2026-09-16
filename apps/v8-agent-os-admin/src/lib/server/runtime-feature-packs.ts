@@ -1071,6 +1071,10 @@ function buildPipInstallArgs(
     ];
     if (hashedLock) {
         args.splice(5, 0, "--only-binary=:all:", "--require-hashes", "--no-deps");
+    } else {
+        // Packs share the Engine interpreter. Resolve against its declared
+        // contract before the existing staged compatibility/import checks.
+        args.push("--constraint", path.join(resolveEngineRoot(), "requirements", "base.txt"));
     }
     if (source.indexUrl) {
         args.push("--index-url", source.indexUrl);

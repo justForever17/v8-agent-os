@@ -22,7 +22,7 @@ from core.runtime_compatibility import (
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 
-DATABASE_SCHEMA_VERSION = 3
+DATABASE_SCHEMA_VERSION = 4
 
 # Persistence owns the episode settlement contract; runtime projections import
 # this same set so a degraded handoff has the same terminal truth everywhere.
@@ -421,6 +421,8 @@ class DatabaseManager:
                 self._ensure_runtime_safety_tables(conn)
                 self._ensure_creative_media_store_tables(conn)
                 self._ensure_session_command_tables(conn)
+                from core.conversation_schema import ensure_conversation_schema
+                ensure_conversation_schema(conn)
                 conn.commit()
                 return
             if schema_version > DATABASE_SCHEMA_VERSION:
@@ -2337,6 +2339,8 @@ class DatabaseManager:
                 print(f"[Database] Migration note: {e}")
 
             if migration_succeeded:
+                from core.conversation_schema import ensure_conversation_schema
+                ensure_conversation_schema(conn)
                 conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             conn.commit()
 
@@ -4110,6 +4114,21 @@ class DatabaseManager:
             conn.commit()
 
     # --- Canonical Chat Transcript Operations ---
+
+    def get_chat_transcript_state(self, session_id: str) -> Dict[str, Any]:
+        from core.conversation_schema import transcript_state
+        with self.get_connection() as conn:
+            return transcript_state(conn, session_id)
+
+    def assert_chat_run_epoch(self, session_id: str, run_id: str) -> None:
+        from core.conversation_schema import assert_run_epoch
+        with self.get_connection() as conn:
+            assert_run_epoch(conn, session_id, run_id)
+
+    def has_chat_branch_artifact_ref(self, session_id: str, artifact_id: str) -> bool:
+        with self.get_connection() as conn:
+            return conn.execute("SELECT 1 FROM chat_branch_artifact_refs WHERE child_session_id=? AND artifact_id=?",
+                                (session_id, artifact_id)).fetchone() is not None
 
     def get_next_chat_canonical_ordinal(self, session_id: str) -> int:
         with self.get_connection() as conn:

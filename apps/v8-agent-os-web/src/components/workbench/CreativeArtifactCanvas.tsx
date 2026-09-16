@@ -1,5 +1,7 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import {
     useCallback,
     useEffect,
@@ -94,6 +96,9 @@ import {
     type CanvasReviewVersion,
 } from "./creative-canvas/inspector-review";
 import { CanvasTimeRangeEditor } from "./creative-canvas/time-range-editor";
+import { createProxyScene, saveProxyScene, sceneReferences, SCENE_ACTION, type ProxyScene } from "./creative-canvas/proxy-scene";
+
+const ProxySceneEditor = dynamic(() => import("./creative-canvas/proxy-scene-editor"), { ssr: false });
 import {
 } from "./creative-canvas/timeline";
 import {
@@ -424,6 +429,7 @@ export function CreativeArtifactCanvas({
     const [mediaKitStatus, setMediaKitStatus] = useState<"loading" | "ready" | "unavailable">("loading");
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [composer, setComposer] = useState<ComposerState | null>(null);
+    const [sceneEditorNodeId, setSceneEditorNodeId] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [connectionSourceId, setConnectionSourceId] = useState<string | null>(null);
     const [pendingConnectionDrop, setPendingConnectionDrop] = useState<PendingConnectionDrop | null>(null);
@@ -594,6 +600,7 @@ export function CreativeArtifactCanvas({
             setContextMenu(null);
             setComposer(null);
             setInspectNodeId(null);
+            setSceneEditorNodeId(null);
             setInspectResourceOverride(null);
             setInspectVersionId(null);
             setInspectMode("details");
@@ -713,7 +720,7 @@ export function CreativeArtifactCanvas({
                             mediaTypes: (Array.isArray(output.mediaTypes) ? output.mediaTypes : ["unknown"]).map(String) as CreativeCanvasMediaType[],
                         },
                         requiresPrompt: Boolean(action.requiresPrompt),
-                        parameterEditor: ["frame_pick", "time_range", "psd_composition", "psd_layers"].includes(String(action.parameterEditor))
+                        parameterEditor: ["frame_pick", "time_range", "psd_composition", "psd_layers", "proxy_scene"].includes(String(action.parameterEditor))
                             ? action.parameterEditor as CanvasActionDefinition["parameterEditor"]
                             : undefined,
                         networkRequired: Boolean(action.networkRequired),
@@ -2041,13 +2048,13 @@ export function CreativeArtifactCanvas({
                 origin: "placeholder",
                 x: actionX,
                 y: actionY,
-                width: usesInlineTimeline ? 480 : definition.requiresPrompt ? 350 : 214,
-                height: usesInlineTimeline ? 560 : definition.requiresPrompt ? 300 : 214,
+                width: usesInlineTimeline ? 480 : definition.requiresPrompt || definition.parameterEditor === "proxy_scene" ? 350 : 214,
+                height: usesInlineTimeline ? 560 : definition.requiresPrompt || definition.parameterEditor === "proxy_scene" ? 300 : 214,
                 title,
                 mediaType: outputMediaType,
                 actionDefinitionId: definition.actionId,
                 prompt: "",
-                parameters: {},
+                parameters: definition.parameterEditor === "proxy_scene" ? { scene: createProxyScene([1, 2].map((index) => `${t("web.workbench.canvas.scene.entity")} ${index}`)) } : {},
                 configurationRevision: 1,
             };
             const resultNode: CanvasNode = {
@@ -2111,6 +2118,7 @@ export function CreativeArtifactCanvas({
                 : withCards;
         });
         setSelectedIds([actionNodeId]);
+        if (definition.parameterEditor === "proxy_scene") setSceneEditorNodeId(actionNodeId);
         if (definition.parameterEditor === "psd_composition" || definition.parameterEditor === "psd_layers") {
             setComposer({
                 x: menu.x,
@@ -3416,7 +3424,8 @@ export function CreativeArtifactCanvas({
                             onPointerDown={(event) => handleNodePointerDown(event, node)}
                             onDoubleClick={(event) => {
                                 event.stopPropagation();
-                                if (node.kind === "action" && ["psd_composition", "psd_layers"].includes(String(actionDefinition?.parameterEditor))) openPsdActionEditor(node);
+                                if (node.kind === "action" && actionDefinition?.parameterEditor === "proxy_scene") setSceneEditorNodeId(node.nodeId);
+                                else if (node.kind === "action" && ["psd_composition", "psd_layers"].includes(String(actionDefinition?.parameterEditor))) openPsdActionEditor(node);
                                 else {
                                     setInspectResourceOverride(null);
                                     setInspectVersionId(node.kind === "result" ? (graphRuntime.outputs[node.nodeId]?.[0]?.outputVersionId || null) : null);
@@ -3490,6 +3499,11 @@ export function CreativeArtifactCanvas({
                                                 {["running", "cancelling"].includes(actionState) ? <Loader2 className={cn("h-4 w-4 animate-spin", actionState === "cancelling" ? "text-amber-500" : "text-violet-500")} /> : null}
                                             </div>
                                             <div data-canvas-wheel-isolation className="custom-scrollbar mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+                                                {actionDefinition?.parameterEditor === "proxy_scene" ? <div className="space-y-3">
+                                                    <div className="flex flex-wrap gap-2">{((node.parameters?.scene as ProxyScene)?.entities || []).map((entity, index) => <span key={entity.entityId} className="flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-1 text-[10px]"><span className="h-2 w-2 rounded-full" style={{ background: entity.proxyColor }} />{entity.name || `${t("web.workbench.canvas.scene.entity")} ${index + 1}`}</span>)}</div>
+                                                    <p className="text-[10px] leading-5 text-muted-foreground">{t("web.workbench.canvas.scene.cardHelp")}</p>
+                                                    <button type="button" disabled={sessionRunning} className="w-full rounded-xl border border-violet-300 bg-background px-3 py-2 text-xs font-medium text-violet-600" onClick={() => setSceneEditorNodeId(node.nodeId)}>{t("web.workbench.canvas.scene.edit")}</button>
+                                                </div> : null}
                                                 {actionDefinition?.requiresPrompt ? (
                                                     <label className="block space-y-1.5">
                                                         <span className="text-[9px] font-medium text-muted-foreground">{t("web.workbench.canvas.graph.actionPrompt")}</span>
@@ -3541,7 +3555,7 @@ export function CreativeArtifactCanvas({
                                                 ) : null}
                                             </div>
                                             <div className="mt-2 flex shrink-0 flex-wrap items-center gap-1.5 border-t border-violet-200/50 pt-2 dark:border-violet-500/15">
-                                                {(actionDefinition?.inputs || []).map((port) => (
+                                                {(actionDefinition?.inputs || []).filter(() => actionDefinition?.parameterEditor !== "proxy_scene").map((port) => (
                                                     <span key={port.portId} className="rounded-md bg-background/75 px-1.5 py-1 text-[8px] text-muted-foreground">{port.portId} {snapshot.edges.filter((edge) => edge.role === "data" && edge.to === node.nodeId && edge.toPortId === port.portId).length}/{port.max}</span>
                                                 ))}
                                                 <span className="rounded-md bg-emerald-500/10 px-1.5 py-1 text-[8px] font-medium text-emerald-700 dark:text-emerald-300">{t("web.workbench.canvas.graph.governed")}</span>
@@ -3865,6 +3879,24 @@ export function CreativeArtifactCanvas({
                     searchLabel={t("web.workbench.canvas.graph.searchActions")}
                     emptyLabel={t("web.workbench.canvas.graph.noActions")}
                     onSelect={(action) => handleAction(action, contextMenu)}
+                />
+            ) : null}
+
+            {sceneEditorNodeId && snapshot.nodes.some((node) => node.nodeId === sceneEditorNodeId && node.actionDefinitionId === SCENE_ACTION) ? (
+                <ProxySceneEditor
+                    key={`${sessionId}:${sceneEditorNodeId}`}
+                    sessionId={sessionId}
+                    initialScene={(snapshot.nodes.find((node) => node.nodeId === sceneEditorNodeId)?.parameters?.scene as ProxyScene) || createProxyScene()}
+                    initialReferences={sceneReferences(snapshot, sceneEditorNodeId, (nodeId) => { const node = snapshot.nodes.find((candidate) => candidate.nodeId === nodeId); return node ? displayResourceForNode(node) : null; })}
+                    resources={resources}
+                    disabled={sessionRunning}
+                    onUpload={async (files) => { await uploadFiles(files); }}
+                    onClose={() => setSceneEditorNodeId(null)}
+                    onSave={(scene, references) => {
+                        if (sessionRunningRef.current) return;
+                        commitSnapshot((current) => saveProxyScene(current, sceneEditorNodeId, scene, references, () => createId("canvas-scene")));
+                        setSceneEditorNodeId(null);
+                    }}
                 />
             ) : null}
 

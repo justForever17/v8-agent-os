@@ -19,6 +19,7 @@ export type CreativeCanvasMediaResource = {
 };
 
 const READY_RESOURCE_LIMIT = 128;
+const ControlPackPreview = dynamic(() => import("./creative-canvas/control-pack-preview"), { ssr: false });
 const readyResourceUrls = new Map<string, true>();
 const documentVisibilitySubscribers = new Set<() => void>();
 let documentVisibilityListening = false;
@@ -323,6 +324,7 @@ export function CreativeCanvasMedia({
         else media.pause();
     };
     if (kind === "motion") return <div ref={rootRef} className="h-full w-full"><MotionSkeleton resource={resource} compact={compact} visible={effectiveVisible} /></div>;
+    if (/\.v8scene\.json$/i.test(resource.name)) return <div ref={rootRef} className="h-full w-full"><ControlPackPreview key={cacheKey} resource={resource} compact={compact} visible={effectiveVisible} active={active} /></div>;
     if (!url) return <FileFallback resource={resource} compact={compact} />;
     if (kind === "image" || kind === "psd") {
         return (

@@ -162,7 +162,7 @@ class RuntimeEventBus:
             run_id=run_id,
             default_source=source,
             _seq=db.get_next_runtime_seq(session_id),
-            context_epoch=int(((db.get_run_record(run_id) or {}).get("metadata") or {}).get("contextEpoch") or 0)
+            context_epoch=int((db.get_run_record(run_id) or {}).get("context_epoch") or 0)
             if run_id else int(db.get_chat_transcript_state(session_id)["context_epoch"]),
         )
 

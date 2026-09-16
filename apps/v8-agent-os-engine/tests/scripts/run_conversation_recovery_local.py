@@ -44,7 +44,8 @@ def main() -> None:
     from core import client_identity
     from core.client_identity.service import ClientIdentityService
     from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
-    identities = ClientIdentityService(root / "fixture-identities", CredentialRefStore(MemoryCredentialBackend()), config_reader=lambda: {})
+    identity_root = Path(tempfile.mkdtemp(prefix="fixture-identities-", dir=root))
+    identities = ClientIdentityService(identity_root, CredentialRefStore(MemoryCredentialBackend()), config_reader=lambda: {})
     identities.owners.bootstrap(login=owner, now=identities.clock())
     identities.initialize()
     phone = identities.create_session(name="Synthetic Phone")

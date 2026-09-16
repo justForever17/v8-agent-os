@@ -45,12 +45,14 @@ def _inherited_reference(value: Any, child: str) -> Any:
             parts = urlsplit(value)
         except ValueError:
             return value
-        if (not parts.scheme or parts.hostname in {"localhost", "127.0.0.1", "::1"}) and parts.path.startswith(
+        query_items = dict(parse_qsl(parts.query))
+        if (not parts.scheme or parts.hostname in {"localhost", "127.0.0.1", "::1"}
+                or any(key in query_items for key in ("sessionId", "v8sig", "v8exp"))) and parts.path.startswith(
             ("/api/client/workspace/", "/api/workspace/", "/workspace/resource", "/v1/artifacts/", "/api/client/artifacts/", "/api/artifacts/")
         ):
-            query = {k: v for k, v in parse_qsl(parts.query) if k not in {"v8sig", "v8exp"}}
+            query = {k: v for k, v in query_items.items() if k not in {"v8sig", "v8exp"}}
             query["sessionId"] = child
-            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+            return urlunsplit(("", "", parts.path, urlencode(query), parts.fragment))
     return value
 
 

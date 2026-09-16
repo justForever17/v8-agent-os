@@ -80,7 +80,7 @@ def _transcript_event_identity(session_id: str | None, run_id: str | None) -> di
         return {}
     if run_id:
         run = db.get_run_record(run_id) or {}
-        return {"contextEpoch": int((run.get("metadata") or {}).get("contextEpoch") or 0)}
+        return {"contextEpoch": int(run.get("context_epoch") or 0)}
     from core.conversation_recovery import public_state
     return public_state(db.get_chat_transcript_state(session_id))
 

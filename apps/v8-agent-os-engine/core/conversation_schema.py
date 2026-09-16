@@ -5,6 +5,10 @@ import sqlite3
 
 
 def ensure_conversation_schema(conn: sqlite3.Connection) -> None:
+    run_columns = {row[1] for row in conn.execute("PRAGMA table_info(run_records)")}
+    if "context_epoch" not in run_columns:
+        conn.execute("ALTER TABLE run_records ADD COLUMN context_epoch INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE run_records SET context_epoch=COALESCE(json_extract(metadata,'$.contextEpoch'),0)")
     conn.execute("""CREATE TABLE IF NOT EXISTS chat_session_transcript_state (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         transcript_revision INTEGER NOT NULL DEFAULT 0,
@@ -74,8 +78,10 @@ def ensure_conversation_schema(conn: sqlite3.Connection) -> None:
     END""")
     # Capture authority at run creation, in the same writer transaction. Missing
     # epoch on historical runs means epoch zero, never the current epoch.
-    conn.execute("""CREATE TRIGGER IF NOT EXISTS chat_run_context_epoch AFTER INSERT ON run_records BEGIN
-        UPDATE run_records SET metadata=json_set(COALESCE(metadata,'{}'),'$.contextEpoch',
+    conn.execute("DROP TRIGGER IF EXISTS chat_run_context_epoch")
+    conn.execute("""CREATE TRIGGER chat_run_context_epoch AFTER INSERT ON run_records BEGIN
+        UPDATE run_records SET context_epoch=COALESCE((SELECT context_epoch FROM chat_session_transcript_state WHERE session_id=NEW.session_id),0),
+            metadata=json_set(COALESCE(metadata,'{}'),'$.contextEpoch',
             COALESCE((SELECT context_epoch FROM chat_session_transcript_state WHERE session_id=NEW.session_id),0))
         WHERE id=NEW.id;
     END""")
@@ -96,10 +102,9 @@ def transcript_state(conn: sqlite3.Connection, session_id: str) -> dict:
 def assert_run_epoch(conn: sqlite3.Connection, session_id: str, run_id: str | None) -> None:
     if not run_id:
         return
-    row = conn.execute("SELECT session_id, metadata FROM run_records WHERE id=?", (run_id,)).fetchone()
+    row = conn.execute("SELECT session_id, context_epoch FROM run_records WHERE id=?", (run_id,)).fetchone()
     if row is None:
         raise ValueError("conversation_run_missing")
-    import json
-    epoch = int(json.loads(row["metadata"] or "{}").get("contextEpoch") or 0)
+    epoch = int(row["context_epoch"])
     if row["session_id"] != session_id or epoch != transcript_state(conn, session_id)["context_epoch"]:
         raise ValueError("conversation_context_superseded")

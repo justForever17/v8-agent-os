@@ -313,6 +313,26 @@ def test_old_engineering_evidence_cannot_restore_pre_revision_execution_context(
     assert runtime._recent_engineering_continuation_context(session_id="source", workspace_path="")["active"]
 
 
+def test_run_epoch_survives_metadata_updates_and_cannot_be_forged(database):
+    database.create_run_record("old", "source", status="completed")
+    revision(database)
+    database.create_run_record("new", "source", status="running")
+    database.update_run_record("new", status="running", metadata={"stage": "tool"})
+    database.assert_chat_run_epoch("source", "new")
+    assert database.get_run_record("new")["context_epoch"] == 1
+    database.update_run_record("old", status="completed", metadata={"contextEpoch": 1})
+    with pytest.raises(ValueError, match="conversation_context_superseded"):
+        database.assert_chat_run_epoch("source", "old")
+
+
+def test_branch_rebinds_remote_source_link_without_inheriting_signed_ticket(database):
+    database.update_chat_canonical_message("m1", metadata={"attachments": [{"url": "https://fixture-engine.invalid/api/client/workspace/resource?workspace_id=ws&sessionId=source&v8sig=synthetic-ticket&v8exp=9999999999", "mimeType": "image/png"}]})
+    child = branch(database)["sessionId"]
+    url = database.get_chat_canonical_messages(child)[0]["metadata"]["attachments"][0]["url"]
+    assert url.startswith("/api/client/workspace/resource?")
+    assert "sessionId=" + child in url and "v8sig" not in url and "v8exp" not in url
+
+
 def test_rotated_sqlite_checkpoint_and_outbound_capture_exclude_old_context(database, monkeypatch, tmp_path):
     import asyncio
     from langchain_core.messages import AIMessage, HumanMessage
@@ -355,7 +375,7 @@ def test_rotated_sqlite_checkpoint_and_outbound_capture_exclude_old_context(data
             assert restarted.build_graph_config("source") == bundle.graph_config
             database.create_run_record("old-epoch-run", "source", status="cancelled")
             with database.get_connection() as conn:
-                conn.execute("UPDATE run_records SET metadata='{}' WHERE id='old-epoch-run'")
+                conn.execute("UPDATE run_records SET context_epoch=0 WHERE id='old-epoch-run'")
                 conn.commit()
             with pytest.raises(ValueError, match="conversation_context_superseded"):
                 await runner.create_resume_bundle(config=EngineConfig(), session_id="source", run_id="old-epoch-run", resume_value={})

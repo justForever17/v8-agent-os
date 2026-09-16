@@ -1861,7 +1861,7 @@ class ChatRuntime:
             def current_context(item: dict[str, Any]) -> bool:
                 run_id = str(item.get("run_id") or item.get("runId") or "")
                 run = db.get_run_record(run_id) if run_id else None
-                return bool(run and int((run.get("metadata") or {}).get("contextEpoch") or 0) == context_epoch)
+                return bool(run and int(run.get("context_epoch") or 0) == context_epoch)
             episodes = [item for item in episodes if current_context(item)]
             artifacts = [item for item in artifacts if current_context(item)]
             proof_entries = [item for item in proof_entries if current_context(item)]

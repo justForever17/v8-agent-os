@@ -6,6 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { PhoneTopbar } from "@/src/components/layout/PhoneTopbar";
 import { PeerConversation } from "@/src/components/connections/PeerConversation";
+import { ConfigDistributionPanel } from "@/src/components/connections/ConfigDistributionPanel";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { type AdminConnectionProfile, readAdminConnectionProfiles, updateAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
@@ -33,6 +34,7 @@ export default function ConnectScreen() {
     const [selected, setSelected] = useState<DeviceRow | null>(null);
     const [nickname, setNickname] = useState("");
     const [conversation, setConversation] = useState<SupervisorPeer | null>(null);
+    const [distributionOpen, setDistributionOpen] = useState(false);
 
     const loadProfiles = useCallback(async () => setProfiles(await readAdminConnectionProfiles()), []);
     useEffect(() => {
@@ -113,6 +115,9 @@ export default function ConnectScreen() {
         <View style={styles.header}>
             <Text style={[styles.title, { color: colors.text }]}>{t("phone.devices.title")}</Text>
             <Text style={{ color: colors.textMuted }} numberOfLines={1}>{profiles.find((item) => item.id === activeProfileId)?.label || adminBaseUrl}</Text>
+            {status === "authenticated" ? <Pressable accessibilityRole="button" onPress={() => setDistributionOpen(true)} style={[styles.add, { borderColor: colors.border }]}>
+                <MaterialCommunityIcons name="share-variant-outline" size={18} color={colors.primary} /><Text style={{ color: colors.primary }}>{t("phone.configDistribution.title")}</Text>
+            </Pressable> : null}
             <Pressable accessibilityRole="button" onPress={() => router.navigate("/login?add=1" as Href)} style={[styles.add, { borderColor: colors.border }]}>
                 <MaterialCommunityIcons name="plus" size={18} color={colors.primary} /><Text style={{ color: colors.primary }}>{t("phone.devices.add")}</Text>
             </Pressable>
@@ -171,6 +176,7 @@ export default function ConnectScreen() {
             </View>
         </Modal>
         {conversation ? <PeerConversation peer={conversation} onClose={() => setConversation(null)} /> : null}
+        {distributionOpen ? <ConfigDistributionPanel onClose={() => setDistributionOpen(false)} /> : null}
     </SafeAreaView>;
 }
 

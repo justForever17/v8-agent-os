@@ -91,7 +91,7 @@ def pack_fixture(tmp_path):
             path.write_bytes(channel.encode())
         files.append({"file": path.name, "channel": channel, "artifactId": channel, "sha256": sha256_file(path), "mediaType": media_type})
         paths[channel] = path
-    manifest = {"schema": PACK_SCHEMA, "scene": scene, "sceneDigest": json_digest(scene), "files": files, "references": references, "missingEntityReferences": [], "lineage": {"sessionId": "session-a", "workspaceId": "workspace-a", "workspaceKey": "workspace-key"}}
+    manifest = {"schema": PACK_SCHEMA, "scene": scene, "sceneDigest": json_digest(scene), "files": files, "references": references, "missingEntityReferences": [], "lineage": {"sessionId": "session-a", "workspaceId": "workspace-a", "workspaceKey": "workspace-key", "contextEpoch": 0, "transcriptRevision": 0}}
     request = {**manifest["lineage"], "prompt": "Keep both entities independent."}
     return manifest, request, lambda item: paths[item["id"]], paths
 
@@ -124,11 +124,12 @@ def test_pack_generation_fails_closed_before_transport(pack_fixture, change):
         prepare_pack_references(manifest, request=request, resolve=resolve)
 
 
-def test_actual_provider_payload_oracle_kills_reference_loss_and_truncation(pack_fixture):
+def test_actual_provider_payload_oracle_kills_reference_loss_and_truncation(pack_fixture, monkeypatch):
     manifest, request, resolve, _ = pack_fixture
     request.update(prepare_pack_references(manifest, request=request, resolve=resolve))
     payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=request["prompt"], image_references=["https://fixture/a.png", "https://fixture/b.png", "https://fixture/board.png"], video_references=["https://fixture/proxy.mp4"], duration_seconds=4)
     runtime = CreativeMediaRuntime()
+    monkeypatch.setattr(runtime, "_revalidate_scene_control", lambda *_: None)
     job = {}
     runtime._verify_scene_provider_payload(job, request, payload)
     assert job["sceneControl"]["submittedCounts"] == {"image": 3, "video": 1, "audio": 0}
@@ -209,6 +210,7 @@ def test_minimax_http_boundary_receives_every_exact_reference_byte(pack_fixture,
     request.update(prepare_pack_references(manifest, request=request, resolve=resolve))
     request.update({"model": "MiniMax-H3", "adapter": "minimax_video", "operationKind": "video.reference_to_video"})
     runtime = CreativeMediaRuntime()
+    monkeypatch.setattr(runtime, "_revalidate_scene_control", lambda *_: None)
     captured = {}
     monkeypatch.setattr(runtime, "_configured_endpoint_binding", lambda *_args, **_kwargs: {"providerId": "fixture-minimax", "providerModelId": "MiniMax-H3", "providerMeta": {"api_key": "fixture-only", "base_url": "https://fixture.invalid"}})
     monkeypatch.setattr(runtime, "_artifact_provider_transport_url", lambda *_args: "")
@@ -282,10 +284,12 @@ def test_retry_revalidates_original_pack_without_growing_prompt(pack_fixture, mo
     assert second["sceneControl"]["status"] == "submitted"
 
 
-def test_reference_revoked_during_bake_cannot_publish_even_when_old_file_exists(pack_fixture, monkeypatch, tmp_path):
+@pytest.mark.parametrize("fault", ["revoked_reference", "changed_epoch"])
+def test_bake_rechecks_reference_authority_and_context_after_worker(pack_fixture, monkeypatch, tmp_path, fault):
     manifest, request, resolve, paths = pack_fixture
     runtime = CreativeMediaRuntime()
     revoked = False
+    state = {"context_epoch": 0, "transcript_revision": 4}
     registered = []
     inputs = [{**ref["source"], **{key: ref[key] for key in ("entityId", "bindingKey", "semanticRole", "purpose", "resourceDigest")}, "portId": "references", "mediaType": "image"} for ref in manifest["references"]]
 
@@ -299,7 +303,12 @@ def test_reference_revoked_during_bake_cannot_publish_even_when_old_file_exists(
         directory.mkdir()
         for item in manifest["files"]:
             (directory / item["file"]).write_bytes(paths[item["artifactId"]].read_bytes())
-        revoked = True  # The old path and every byte remain readable.
+        assert _kwargs["lineage"]["contextEpoch"] == 0
+        assert _kwargs["lineage"]["transcriptRevision"] == 4
+        if fault == "revoked_reference":
+            revoked = True  # The old path and every byte remain readable.
+        else:
+            state["context_epoch"] = 1
         return copy.deepcopy(manifest)
 
     def record(**kwargs):
@@ -307,6 +316,7 @@ def test_reference_revoked_during_bake_cannot_publish_even_when_old_file_exists(
         return {"artifactId": f"artifact-{len(registered)}"}
 
     monkeypatch.setattr(runtime, "_store_is_active", lambda: False)
+    monkeypatch.setattr("runtimes.creative_media.runtime.db.get_chat_transcript_state", lambda *_: dict(state))
     monkeypatch.setattr(runtime, "_save_job", lambda job: job)
     monkeypatch.setattr(runtime, "get_job", lambda *_args, **_kwargs: {"status": "running"})
     monkeypatch.setattr(runtime, "_canvas_input_path", current_resource)
@@ -315,6 +325,63 @@ def test_reference_revoked_during_bake_cannot_publish_even_when_old_file_exists(
     monkeypatch.setattr("runtimes.creative_media.runtime.render_control_pack", render)
     job = asyncio.run(runtime._create_proxy_scene_job({**request, "operationKind": "video.render_proxy_scene_control_pack", "scene": manifest["scene"], "canvasInputs": inputs}))
     assert job["status"] == "failed"
-    assert "revoked_current_reference" in job["error"]
+    assert ("revoked_current_reference" if fault == "revoked_reference" else "context was superseded") in job["error"]
     assert registered == []
     assert paths["source-0"].exists()
+
+
+@pytest.mark.parametrize("boundary", ["final_payload", "late_result"])
+@pytest.mark.parametrize("change", ["epoch", "source_revoke", "ordinary_append"])
+def test_provider_boundaries_recheck_current_context_and_sources(pack_fixture, monkeypatch, tmp_path, boundary, change):
+    from core.workspace_identity import workspace_path_key
+    manifest, request, resolve, _ = pack_fixture
+    request["workspacePath"] = str(tmp_path)
+    manifest["lineage"]["workspaceKey"] = workspace_path_key(str(tmp_path))
+    path = tmp_path / "manifest.v8scene.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    original_input = {"origin": "artifact", "id": "pack", "portId": "controlPack", "mediaType": "document"}
+    request["canvasInputs"] = [original_input]
+    state = {"context_epoch": 0, "transcript_revision": 0}
+    revoked = False
+    records = []
+    runtime = CreativeMediaRuntime()
+
+    def current_path(*, session_id, item):
+        if revoked and item["id"] == "source-0":
+            raise PermissionError("source_revoked_during_provider_job")
+        return path if item["id"] == "pack" else resolve(item)
+
+    def record(**kwargs):
+        records.append(kwargs)
+        return {"artifactId": "published-scene-video"}
+
+    monkeypatch.setattr(runtime, "_canvas_input_path", current_path)
+    monkeypatch.setattr(runtime, "_assert_active_authority_fence", lambda *_: None)
+    monkeypatch.setattr(runtime, "get_job", lambda *_args, **_kwargs: {"status": "running"})
+    monkeypatch.setattr("runtimes.creative_media.runtime.db.get_chat_transcript_state", lambda *_: dict(state))
+    monkeypatch.setattr("runtimes.creative_media.runtime.db.get_runtime_artifact", lambda *_: {"metadata": {"controlPackSchema": PACK_SCHEMA, "contentSha256": sha256_file(path)}})
+    monkeypatch.setattr("runtimes.creative_media.runtime.artifact_store.record_artifact", record)
+    monkeypatch.setattr("runtimes.creative_media.runtime.workspace_media_library.register_artifact", lambda **_: None)
+    compiled = runtime._prepare_scene_video_request(request)
+    report = compiled["sceneControl"]
+    if change == "epoch":
+        state["context_epoch"] += 1
+    elif change == "source_revoke":
+        revoked = True
+    else:
+        state["transcript_revision"] += 3
+    payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=compiled["prompt"], image_references=["https://fixture/a.png", "https://fixture/b.png", "https://fixture/board.png"], video_references=["https://fixture/proxy.mp4"], duration_seconds=4)
+
+    def cross_boundary():
+        if boundary == "final_payload":
+            return runtime._verify_scene_provider_payload({}, compiled, payload)
+        return runtime._record_local_artifact(file_path=tmp_path / "result.mp4", job={"jobId": "scene-result", "modality": "video", "sessionId": request["sessionId"], "workspacePath": str(tmp_path), "request": request, "sceneControl": report}, kind="video", mime_type="video/mp4", metadata={})
+
+    if change == "ordinary_append":
+        cross_boundary()
+        if boundary == "late_result":
+            assert records[0]["metadata"]["sceneControl"]["packLineage"]["transcriptRevision"] == 0
+    else:
+        with pytest.raises((SceneControlError, PermissionError), match="superseded|source_revoked"):
+            cross_boundary()
+        assert records == []

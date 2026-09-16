@@ -7811,6 +7811,28 @@ class CreativeMediaRuntime:
                     pass
         return self._save_job(job)
 
+    @staticmethod
+    def _scene_context_lineage(session_id: str) -> dict[str, Any]:
+        state = db.get_chat_transcript_state(session_id)
+        return {"contextEpoch": int(state["context_epoch"]), "transcriptRevision": int(state["transcript_revision"]),
+                **({"branch": dict(state["branch"])} if state.get("branch") else {})}
+
+    def _assert_scene_context_epoch(self, lineage: dict[str, Any], session_id: str) -> None:
+        current = self._scene_context_lineage(session_id)
+        if type(lineage.get("contextEpoch")) is not int or lineage["contextEpoch"] != current["contextEpoch"]:
+            raise SceneControlError("Scene context was superseded; bake the control pack in the current conversation context")
+
+    def _revalidate_scene_control(self, request: dict[str, Any], report: dict[str, Any]) -> None:
+        """Re-read the canonical pack and every current resource before a boundary."""
+        self._assert_scene_context_epoch(dict(report.get("packLineage") or {}), str(request.get("sessionId") or ""))
+        pack = dict(report.get("controlPack") or {})
+        if not pack.get("id"):
+            raise SceneControlError("Scene consumption receipt has lost its governed control pack binding")
+        checked = self._prepare_scene_video_request({**request, "prompt": "", "canvasInputs": [{**pack, "portId": "controlPack", "mediaType": "document"}]})
+        current = dict(checked.get("sceneControl") or {})
+        if current.get("controlPack") != pack or current.get("sceneDigest") != report.get("sceneDigest"):
+            raise SceneControlError("Scene control pack changed before submission or result publication")
+
     async def _create_proxy_scene_job(self, request: dict[str, Any]) -> dict[str, Any]:
         job = self._new_job(modality="video", adapter="governed_proxy_scene", request=request)
         job["status"] = "running"
@@ -7829,12 +7851,15 @@ class CreativeMediaRuntime:
             lineage = {key: request.get(key) or "" for key in ("sessionId", "workspaceId", "projectId", "canvasGraphId", "canvasGraphRunId", "canvasGraphNodeId", "canvasConfigurationRevision", "canvasOperationId")}
             lineage["workspaceKey"] = workspace_path_key(str(job.get("workspacePath") or ""))
             lineage["jobId"] = job["jobId"]
+            lineage.update(self._scene_context_lineage(session_id))
+            job["proxySceneLineage"] = lineage
             worker = asyncio.create_task(asyncio.to_thread(render_control_pack, request.get("scene"), directory=directory, references=resolved, lineage=lineage, cancelled=cancelled))
             manifest = await asyncio.shield(worker)
             stored = self.get_job(job["jobId"], refresh=False) or {}
             if stored.get("status") == "cancelled":
                 raise asyncio.CancelledError()
             self._assert_active_authority_fence(job)
+            self._assert_scene_context_epoch(lineage, session_id)
             if self._store_is_active():
                 self._canonical_owner_scope(job, require_write=True)
                 self._assert_session_accepting_creative_media_jobs(session_id)
@@ -7904,8 +7929,9 @@ class CreativeMediaRuntime:
         if metadata.get("controlPackSchema") != PACK_SCHEMA or metadata.get("contentSha256") != pack_digest:
             raise SceneControlError("Control pack does not match its recorded artifact revision; bake it again")
         manifest = json.loads(content)
+        self._assert_scene_context_epoch(dict(manifest.get("lineage") or {}), session_id)
         resolve = lambda item: self._canvas_input_path(session_id=session_id, item=item)
-        prepared = prepare_pack_references(manifest, request={**request, "workspaceKey": workspace_path_key(str(request.get("workspacePath") or ""))}, resolve=resolve)
+        prepared = prepare_pack_references(manifest, request={**request, **self._scene_context_lineage(session_id), "workspaceKey": workspace_path_key(str(request.get("workspacePath") or ""))}, resolve=resolve)
         prepared["sceneControl"]["controlPack"] = {"origin": pack_inputs[0]["origin"], "id": pack_inputs[0]["id"], "sha256": pack_digest}
         if request.get("adapter") == "minimax_video":
             scene = manifest["scene"]
@@ -7922,6 +7948,7 @@ class CreativeMediaRuntime:
         report = dict(request.get("sceneControl") or {})
         if not report:
             return
+        self._revalidate_scene_control(request, report)
         if payload.get("content"):
             content = payload["content"]
             prompts = [item.get("text") for item in content if item.get("type") == "text"]
@@ -10834,6 +10861,10 @@ class CreativeMediaRuntime:
         scene_control = dict(job.get("sceneControl") or {})
         if scene_control and (self.get_job(str(job.get("jobId") or ""), refresh=False) or {}).get("status") == "cancelled":
             raise SceneControlError("Cancelled scene video cannot publish a late provider result")
+        if job.get("proxySceneLineage"):
+            self._assert_scene_context_epoch(job["proxySceneLineage"], str(job.get("sessionId") or ""))
+        if scene_control:
+            self._revalidate_scene_control(dict(job.get("request") or {}), scene_control)
         workspace_root = Path(str(job.get("workspacePath") or "")).expanduser()
         try:
             workspace_relative_path = file_path.resolve().relative_to(workspace_root.resolve()).as_posix() if str(job.get("workspacePath") or "").strip() else ""
@@ -10850,6 +10881,7 @@ class CreativeMediaRuntime:
             metadata={
                 **metadata,
                 **({"sceneControl": scene_control} if scene_control else {}),
+                **({"proxySceneLineage": job["proxySceneLineage"]} if job.get("proxySceneLineage") else {}),
                 "creativeMediaJobId": job["jobId"],
                 "canvasOperationId": job.get("canvasOperationId") or "",
                 "canvasGraphId": job.get("canvasGraphId") or "",

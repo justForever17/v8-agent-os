@@ -1,4 +1,6 @@
 {
+  "web.workbench.canvas.scene.invalidTimeline": "Keyframes must start at zero and stay within the duration. Adjust the duration or keys.",
+  "web.workbench.canvas.scene.duplicateColors": "Choose a different proxy color for each entity.",
   "web.workbench.canvas.scene.title": "Proxy scene",
   "web.workbench.canvas.scene.subtitle": "Assign appearance references, motion and camera timing to each entity.",
   "web.workbench.canvas.scene.close": "Close editor",

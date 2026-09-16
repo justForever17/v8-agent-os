@@ -44,7 +44,7 @@ export const EMPTY_POSE: ScenePose = { leftArm: 0, rightArm: 0, leftLeg: 0, righ
 export function newSceneEntity(entityId: string, index: number): SceneEntity {
     return {
         entityId, name: "", kind: "object", shape: "box",
-        proxyColor: ["#e75b43", "#4285e8", "#e7b643", "#53a978", "#a36fde", "#de69a2"][index % 6],
+        proxyColor: ["#e75b43", "#4285e8", "#e7b643", "#53a978", "#a36fde", "#de69a2", "#795548", "#00838f", "#546e7a", "#9e9d24", "#6a1b9a", "#ad1457"][index % 12],
         size: [0.8, 1, 0.8], position: [index % 2 ? 1.5 : -1.5, 0.5, 0], rotation: [0, 0, 0],
         appearance: "", material: "", motion: [],
     };

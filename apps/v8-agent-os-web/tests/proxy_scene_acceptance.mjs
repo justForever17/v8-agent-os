@@ -44,8 +44,7 @@ try{
  await dialog.getByLabel('位置（米） X',{exact:true}).fill('1.5');
  await dialog.getByLabel('右臂角度',{exact:true}).fill('-70');
  await dialog.getByLabel('左腿角度',{exact:true}).fill('30');
- const entities=(await api()).graph.nodes.find(n=>n.actionDefinitionId==='creative_media.render_proxy_scene_control_pack').parameters.scene.entities;
- await dialog.getByRole('button',{name:entities[1].name||'实体 2',exact:true}).click();
+ await dialog.getByRole('button',{name:'实体 2',exact:true}).click();
  await dialog.getByRole('tab',{name:'实体',exact:true}).click();
  await dialog.getByLabel('实体名称',{exact:true}).fill('青釉金纹球');
  await dialog.getByRole('combobox',{name:'代理形体',exact:true}).selectOption('sphere');

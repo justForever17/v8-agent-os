@@ -380,6 +380,8 @@ def prepare_pack_references(manifest: dict[str, Any], *, request: dict[str, Any]
     for field in ("sessionId", "workspaceId", "workspaceKey"):
         if str(lineage.get(field) or "") != str(request.get(field) or ""):
             raise SceneControlError(f"Control pack {field} does not match the current owner")
+    if type(lineage.get("contextEpoch")) is not int or lineage["contextEpoch"] != request.get("contextEpoch"):
+        raise SceneControlError("Control pack belongs to a superseded conversation context")
     if manifest.get("missingEntityReferences"):
         raise SceneControlError("Control pack is partial: bind a real reference for every entity before video generation")
     files = {item["file"]: item for item in manifest.get("files", [])}

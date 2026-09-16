@@ -1,4 +1,6 @@
 {
+  "web.workbench.canvas.scene.invalidTimeline": "关键帧必须从 0 秒开始，且不能超出总时长。请调整时长或关键帧。",
+  "web.workbench.canvas.scene.duplicateColors": "请为每个实体选择不同的代理色。",
   "web.workbench.canvas.scene.title": "代理场景",
   "web.workbench.canvas.scene.subtitle": "为每个实体指定外观参考、运动和镜头。",
   "web.workbench.canvas.scene.close": "关闭编辑器",

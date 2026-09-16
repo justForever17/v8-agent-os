@@ -575,7 +575,8 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(preview, /linux-x64\.AppImage/);
   assert.match(preview, /linux-arm64\.deb/);
   assert.doesNotMatch(preview, /win-x64\.zip/);
-  assert.match(preview, /Windows\/macOS 的 Shell 会托管 Engine\/Admin\/Web\/桌宠/);
+  assert.match(preview, /Shell 默认启动 Engine 与 Web，Admin 配置页按需启动/);
+  assert.doesNotMatch(preview, /Shell 会托管 Engine\/Admin\/Web\/桌宠/);
   assert.match(preview, /Linux 的 Engine\/Admin\/Web\/Shell 可用；当前桌宠.*blocked/);
   assert.match(preview, /Ubuntu 24\.04.*优先使用 DEB/);
   assert.match(preview, /Ubuntu 22\.04\/24\.04 GNU x64\/arm64/);
@@ -588,7 +589,8 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(preview, /user namespace.*明确失败/);
   assert.match(stable, /win-x64-setup\.exe/);
   assert.match(stable, /win-x64\.zip/);
-  assert.match(stable, /Windows\/macOS 的 Shell 会托管 Engine\/Admin\/Web\/桌宠/);
+  assert.match(stable, /Shell 默认启动 Engine 与 Web，Admin 配置页按需启动/);
+  assert.doesNotMatch(stable, /Shell 会托管 Engine\/Admin\/Web\/桌宠/);
   assert.match(stable, /Linux 的 Engine\/Admin\/Web\/Shell 可用；当前桌宠.*blocked/);
   assert.match(stable, /Ubuntu 22\.04\/24\.04 GNU x64\/arm64/);
   assert.match(stable, /不具备 SSE4\.2 的旧 CPU 合同/);

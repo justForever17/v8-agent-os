@@ -275,7 +275,7 @@ test("trusted chat sends minimal even without runtime mode; absent authorization
 
 test("Engine fetch boundary injects only canonical secret and preserves external stream headers", async () => {
     const calls = [];
-    const module = load("src/lib/server/engine-fetch.ts", {
+    const loadedModule = load("src/lib/server/engine-fetch.ts", {
         overrides: { "@/lib/server/runtime-config": {
             resolveEngineOrigin: () => "http://engine.fixture",
             resolveInternalSecret: () => "synthetic-service-secret",
@@ -285,10 +285,10 @@ test("Engine fetch boundary injects only canonical secret and preserves external
             return new Response("ok");
         } },
     });
-    await module.engineFetch("http://engine.fixture/v1/health", { headers: { "x-v8-agent-os-user-email": "owner" } });
+    await loadedModule.engineFetch("http://engine.fixture/v1/health", { headers: { "x-v8-agent-os-user-email": "owner" } });
     assert.equal(calls[0].headers.get("x-v8-agent-os-secret"), "synthetic-service-secret");
     const external = new Request("https://provider.fixture/upload", { headers: { "x-v8-agent-os-secret": "copied-secret", "Authorization": "Bearer provider" } });
-    await module.engineFetch(external);
+    await loadedModule.engineFetch(external);
     assert.equal(calls[1].headers.get("x-v8-agent-os-secret"), null);
     assert.equal(calls[1].headers.get("authorization"), "Bearer provider");
 });

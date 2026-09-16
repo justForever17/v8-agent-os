@@ -159,7 +159,9 @@ fi
 
 (
   cd "$engine_root"
-  env \
+  # Keep $! equal to the service PID. Otherwise cleanup terminates only the
+  # intermediate Bash and leaves QEMU holding the Engine/Phone listener ports.
+  exec env \
     V8_AGENT_OS_HOME="$engine_home" \
     HOME="$engine_home" \
     USERPROFILE="$engine_home" \
@@ -215,7 +217,7 @@ echo "V8OS_LINUX_LEGACY_X64_ENGINE_SMOKE_OK"
 
 (
   cd "$server_dir"
-  env \
+  exec env \
     V8_AGENT_OS_HOME="$admin_home" \
     HOME="$admin_home" \
     USERPROFILE="$admin_home" \

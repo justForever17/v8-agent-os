@@ -201,6 +201,11 @@ jobs:
       - name: Compile Engine sources
         run: python -m compileall -q apps/v8-agent-os-engine
 
+      - name: Check public documentation boundary and links
+        run: |
+          python scripts/audit_public_docs.py
+          python -m unittest discover -s scripts -p test_audit_public_docs.py
+
   engine-pytest:
     name: Engine pytest (${{ matrix.part }})
     runs-on: ubuntu-22.04

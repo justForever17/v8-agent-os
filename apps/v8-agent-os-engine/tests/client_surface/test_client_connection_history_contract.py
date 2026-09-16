@@ -93,7 +93,7 @@ def _run_phone_behavior(pattern: str, filename: str = "phone-transport-boundary.
 
 
 def test_local_trusted_client_boundary_is_documented() -> None:
-    doc = _read_repo_file("docs/V8OS/V8OS_BINARY_CLI_WORKSPACE_AND_CLIENT_CONNECT_ZH.md")
+    doc = _read_repo_file("docs/V8_AGENT_OS_API_REFERENCE_ZH.md")
 
     assert "Shell 通过本机可信会话和受控通道编排这些入口" in doc
     assert "不得直连 Engine 数据库" in doc

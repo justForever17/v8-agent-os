@@ -1692,16 +1692,13 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(releaseManifest, /export const UNIFIED_TAG_RE = \/\^v8-os-v/);
   assert.match(releaseManifest, /export const LEGACY_PRODUCT_TAG_RE = \/\^v8-os-\(phone\|desktop\)-v/);
 
-  const baseline = fs.readFileSync(path.join(repoRoot, 'docs', 'V8OS', 'V8OS_RELEASE_VERSIONING_BASELINE_ZH.md'), 'utf8');
-  assert.match(baseline, /v8-os-vYYYY\.MM\.DD\.N/);
-  assert.match(baseline, /v8-os-desktop-vYYYY\.MM\.DD\.N/);
-  assert.match(baseline, /Windows x64\/ARM64/);
-  assert.match(baseline, /Actions artifact/);
-  assert.match(baseline, /Windows ARM64 兼容性技术债登记/);
-  assert.match(baseline, /关闭后重开读取/);
-  assert.match(baseline, /Linux DEB 非 root 启动门禁/);
-  assert.match(baseline, /Secret Service/);
-  assert.match(baseline, /90 秒/);
+  // Public download instructions must survive a clean clone without local audit records.
+  // Platform build/launch gates are asserted above against their executable sources.
+  const quickStart = fs.readFileSync(path.join(repoRoot, 'docs', 'V8_AGENT_OS_QUICK_START_ZH.md'), 'utf8');
+  assert.match(quickStart, /v8-os-vYYYY\.MM\.DD\.N/);
+  assert.match(quickStart, /Windows x64\s*\/\s*ARM64/);
+  assert.match(quickStart, /SHA256SUMS\.txt/);
+  assert.match(quickStart, /Secret Service/);
 });
 
 test('memory knowledge graph stays visible without advanced mode', () => {

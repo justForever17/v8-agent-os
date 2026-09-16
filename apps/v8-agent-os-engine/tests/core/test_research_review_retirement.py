@@ -1,4 +1,4 @@
-"""Current Agent behavior after private Research retirement; see research_private_retirements.md."""
+"""Regression coverage for Agent-owned Research and output budget handling."""
 
 import json
 

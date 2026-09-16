@@ -10,7 +10,7 @@
     "server": {
       "enabled": false,
       "required": false,
-      "reason": "Candidate server package awaits clean Linux acceptance and a new unified release; 2026.09.16.3 is unchanged.",
+      "reason": "Server is not part of 2026.09.16.4; enable only with a newer unified release after server acceptance.",
       "targets": {
         "linux-x64": { "enabled": true, "required": true },
         "linux-arm64": { "enabled": false, "required": false, "reason": "ARM production dependency closure and physical acceptance are pending." }

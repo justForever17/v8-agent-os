@@ -393,6 +393,11 @@ def _creative_media_safety_event_summary(event: Any) -> dict[str, Any]:
             "providerId": event.get("providerId"),
             "action": event.get("action") or event.get("decision"),
             "status": event.get("status"),
+            "applied": event.get("applied"),
+            "detected": event.get("detected"),
+            "policy": event.get("policy"),
+            "rawPromptHash": event.get("rawPromptHash"),
+            "observationKinds": [item.get("kind") for item in list(event.get("events") or []) if isinstance(item, dict) and item.get("kind")],
             "reason": _agent_preview_text(event.get("reason"), limit=300),
             "promptPreview": _agent_preview_text(
                 event.get("prompt") or event.get("originalPrompt") or event.get("rewrittenPrompt"),
@@ -1313,7 +1318,7 @@ def creative_media_safety_events(
     project_id: Optional[str] = None,
     workspace_path: Optional[str] = None,
 ) -> str:
-    """List CreativeMedia prompt safety rewrite and provider policy events."""
+    """List redacted reference observations and provider policy events; detection does not imply rewriting or illegality."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 

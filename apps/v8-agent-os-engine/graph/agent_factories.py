@@ -1779,6 +1779,7 @@ def _build_agent_system_content(
     delegated_plan_context: str = "",
     collaboration_identity_context: str = "",
     route_prompt_addition: str = "",
+    available_tool_names: list[str] | None = None,
 ) -> str:
     return str(
         _build_agent_system_bundle(
@@ -1789,6 +1790,7 @@ def _build_agent_system_content(
             delegated_plan_context=delegated_plan_context,
             collaboration_identity_context=collaboration_identity_context,
             route_prompt_addition=route_prompt_addition,
+            available_tool_names=available_tool_names,
         )["content"]
     )
 

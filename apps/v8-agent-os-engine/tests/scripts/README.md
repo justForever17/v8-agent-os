@@ -21,6 +21,8 @@
 
 | 脚本 | 用途 | 副作用 |
 | --- | --- | --- |
+| `export_default_agent_prompt_contract.py --output-dir <新目录>` | 从新种子加载 14 个角色，捕获 OpenAI/Anthropic 适配器原生调用边界的完整合成 system prompt、段顺序与实际工具 schema。 | 只写指定报告目录及其隔离状态根，不联网、不读取真实配置、不调用模型；不证明模型行为或真实媒体质量。 |
+| `replay_default_agent_prompt_regressions.py --output-dir <新目录>` | 对比旧种子迁移覆盖用户编辑的反例，以及移除内置 charter 的消融。 | 只写隔离 fixture 与结果；旧代码取自指定 Git baseline，不修改当前工作树或真实用户文件。 |
 | `export_context_management_assessment.py` | 导出超长上下文管理评估报告。 | 写本地报告。 |
 | `export_child_delegation_contract_dry_run.py` | 导出 Subagent → 孙 agent 任务契约与 handoff 回流空运行矩阵，检查孙 agent 拿到的是可执行任务而不是孤立 ID。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `export_memory_capability_assessment.py` | 导出 V8OS memory capability 评估报告。 | 写本地报告。 |

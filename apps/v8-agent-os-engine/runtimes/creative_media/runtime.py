@@ -468,6 +468,18 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
 
 
+def _integer_video_duration(value: Any, *, default: int = 5) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Video duration must be a positive integer number of seconds for this provider") from exc
+    if isinstance(value, bool) or not duration.is_integer() or duration <= 0:
+        raise ValueError("Video duration must be a positive integer number of seconds for this provider")
+    return int(duration)
+
+
 def _build_openai_image_payload(
     *,
     model: str,
@@ -541,6 +553,7 @@ def _build_dashscope_video_payload(
     reference_video_url: str = "",
     reference_image_urls: Optional[list[str]] = None,
     reference_video_urls: Optional[list[str]] = None,
+    reference_media: Optional[list[dict[str, Any]]] = None,
     audio_url: str = "",
     resolution: str = "720P",
     ratio: str = "16:9",
@@ -551,9 +564,19 @@ def _build_dashscope_video_payload(
 ) -> dict[str, Any]:
     if operation_kind not in DASHSCOPE_VIDEO_OPERATION_KINDS:
         raise ValueError(f"DashScope Wan 2.7 adapter does not support operationKind={operation_kind}")
+    if reference_media and operation_kind != "video.reference_to_video":
+        raise ValueError("referenceMedia requires video.reference_to_video")
     normalized_prompt = str(prompt or "").strip()
     if not normalized_prompt:
         raise ValueError(f"DashScope {operation_kind} requires prompt")
+    # Wan 2.7 R2V documents automatic provider-side truncation. Reject before
+    # submission so the author can adapt the complete request explicitly.
+    # https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference
+    if operation_kind == "video.reference_to_video" and str(model).startswith("wan2.7-r2v"):
+        if len(normalized_prompt) > 5000:
+            raise ValueError("DashScope Wan 2.7 R2V prompt must not exceed 5000 characters; revise or split the request without losing constraints")
+        if len(str(negative_prompt)) > 500:
+            raise ValueError("DashScope Wan 2.7 R2V negative_prompt must not exceed 500 characters; revise the exclusions explicitly")
     references = [str(item or "").strip() for item in list(image_urls or []) if str(item or "").strip()]
     input_payload: dict[str, Any] = {"prompt": normalized_prompt}
     media: list[dict[str, Any]] = []
@@ -581,29 +604,49 @@ def _build_dashscope_video_payload(
         if audio_url:
             media.append({"type": "driving_audio", "url": str(audio_url)})
     elif operation_kind == "video.reference_to_video":
-        ref_images = list(
-            dict.fromkeys(
-                str(item or "").strip()
-                for item in [reference_image_url, *list(reference_image_urls or [])]
-                if str(item or "").strip()
-            )
-        )
-        ref_videos = list(
-            dict.fromkeys(
-                str(item or "").strip()
-                for item in [reference_video_url, *list(reference_video_urls or [])]
-                if str(item or "").strip()
-            )
-        )
+        ref_images = [
+            str(item or "").strip()
+            for item in [reference_image_url, *list(reference_image_urls or [])]
+            if str(item or "").strip()
+        ]
+        ref_videos = [
+            str(item or "").strip()
+            for item in [reference_video_url, *list(reference_video_urls or [])]
+            if str(item or "").strip()
+        ]
         references_total = len(ref_images) + len(ref_videos)
+        if reference_media:
+            if references_total or audio_url or references:
+                raise ValueError("Use referenceMedia alone for explicit voice/subject binding; do not mix it with other reference fields")
+            for raw in reference_media:
+                if not isinstance(raw, dict) or set(raw) - {"type", "url", "reference_voice"}:
+                    raise ValueError("referenceMedia items require type, url, and optional reference_voice")
+                kind = raw.get("type")
+                if kind not in {"reference_image", "reference_video", "first_frame"}:
+                    raise ValueError("referenceMedia type must be reference_image, reference_video, or first_frame")
+                url = str(raw.get("url") or "").strip()
+                prefixes = ("https://", "http://", "oss://", "data:image/") if kind != "reference_video" else ("https://", "http://", "oss://")
+                if not url.startswith(prefixes):
+                    raise ValueError("referenceMedia url is not provider-accessible")
+                item = {"type": kind, "url": url}
+                if raw.get("reference_voice"):
+                    voice = str(raw["reference_voice"]).strip()
+                    if kind == "first_frame" or not voice.startswith(("https://", "http://", "oss://")):
+                        raise ValueError("reference_voice requires an image/video subject reference and an HTTP/HTTPS or OSS audio URL")
+                    item["reference_voice"] = voice
+                media.append(item)
+            ref_videos = [item["url"] for item in media if item["type"] == "reference_video"]
+            references_total = sum(item["type"] != "first_frame" for item in media)
+            if sum(item["type"] == "first_frame" for item in media) > 1:
+                raise ValueError("referenceMedia supports at most one first_frame")
         if references_total < 1 or references_total > 5:
             raise ValueError("DashScope video.reference_to_video requires one to five reference images or videos")
-        for reference_url in ref_images:
+        for reference_url in ref_images if not reference_media else []:
             item: dict[str, Any] = {"type": "reference_image", "url": reference_url}
             if audio_url:
                 item["reference_voice"] = str(audio_url)
             media.append(item)
-        for reference_url in ref_videos:
+        for reference_url in ref_videos if not reference_media else []:
             item = {"type": "reference_video", "url": reference_url}
             if audio_url:
                 item["reference_voice"] = str(audio_url)
@@ -612,9 +655,13 @@ def _build_dashscope_video_payload(
         input_payload["media"] = media
     if negative_prompt:
         input_payload["negative_prompt"] = str(negative_prompt)
+    duration_value = _integer_video_duration(duration)
+    maximum_duration = 10 if operation_kind == "video.reference_to_video" and ref_videos else 15
+    if not 2 <= duration_value <= maximum_duration:
+        raise ValueError(f"DashScope video duration must be between 2 and {maximum_duration} seconds for these inputs")
     parameters: dict[str, Any] = {
         "resolution": str(resolution or "720P").upper(),
-        "duration": max(2, min(int(duration), 10 if operation_kind == "video.reference_to_video" and ref_videos else 15)),
+        "duration": duration_value,
         "prompt_extend": _truthy(prompt_extend),
         "watermark": _truthy(watermark),
     }
@@ -767,7 +814,7 @@ def _build_volcengine_video_payload(
         "content": content,
         "ratio": ratio,
         "resolution": resolution,
-        "duration": duration,
+        "duration": _integer_video_duration(duration),
         "seed": seed,
         "watermark": watermark,
         "generate_audio": generate_audio,
@@ -840,7 +887,7 @@ def _build_minimax_video_payload(
                 {"type": "audio_url", "audio_url": {"url": item}, "role": "reference_audio"}
                 for item in reference_audio
             )
-        duration = int(duration_seconds) if duration_seconds not in (None, "") else 5
+        duration = _integer_video_duration(duration_seconds)
         if duration < 4 or duration > 15:
             raise ValueError("MiniMax-H3 duration must be between 4 and 15 seconds")
         normalized_resolution = str(resolution or "768P").strip().upper()
@@ -894,7 +941,7 @@ def _build_minimax_video_payload(
     elif references:
         raise ValueError("MiniMax video.text_to_video does not accept image references")
 
-    duration = int(duration_seconds) if duration_seconds not in (None, "") else 6
+    duration = _integer_video_duration(duration_seconds, default=6)
     if normalized_model in MINIMAX_HAILUO_VIDEO_MODELS:
         if duration not in {6, 10}:
             raise ValueError("MiniMax Hailuo duration must be 6 or 10 seconds")
@@ -4964,11 +5011,28 @@ class CreativeMediaRuntime:
         return list(mapping.get(str(operation_kind or ""), []))
 
     def _prepare_prompt_for_provider(self, request: dict[str, Any], *, modality: str) -> tuple[str, dict[str, Any]]:
+        if request.get("referenceMedia") and not (
+            request.get("adapter") == "dashscope"
+            and self._operation_kind_for_request(modality, request) == "video.reference_to_video"
+        ):
+            raise ValueError("referenceMedia is supported by DashScope video.reference_to_video; adapt references to the selected provider explicitly")
         prompt = str(request.get("prompt") or request.get("text") or request.get("brief") or "").strip()
-        if not prompt:
+        negative = str(request.get("negativePrompt") or request.get("negative_prompt") or "").strip()
+        if not prompt and not negative:
             return "", {}
         policy = prepare_provider_prompt_policy(prompt, modality=modality)
-        return str(policy.get("translatedPrompt") or prompt).strip(), policy
+        provider_prompt = str(policy.get("translatedPrompt") or prompt).strip()
+        if negative:
+            adapter = str(request.get("adapter") or "").strip().lower()
+            operation = self._operation_kind_for_request(modality, request)
+            native_negative = adapter == "agnes_video" or (
+                adapter == "dashscope" and (modality == "image" or operation in DASHSCOPE_VIDEO_OPERATION_KINDS)
+            )
+            policy["negativePromptMode"] = "native_field" if native_negative else "inline_constraints"
+            if not native_negative:
+                provider_prompt += "\nExclusions (do not include): " + negative
+            policy["translatedPrompt"] = provider_prompt
+        return provider_prompt, policy
 
     def _provider_request_hash(self, payload: dict[str, Any]) -> str:
         return hashlib.sha256(json.dumps(_jsonable_request(payload), ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
@@ -4991,8 +5055,11 @@ class CreativeMediaRuntime:
             "modality": (job or recipe or {}).get("modality"),
             "operationKind": (job or {}).get("operationKind"),
             "policy": transform.get("policy"),
+            "applied": bool(transform.get("applied", False)),
+            "detected": bool(transform.get("detected", events)),
+            "action": "prompt_transform" if transform.get("applied") else "reference_observation",
+            "status": "transformed" if transform.get("applied") else "observed",
             "rawPromptHash": hashlib.sha256(str(transform.get("rawPrompt") or "").encode("utf-8")).hexdigest(),
-            "sanitizedPrompt": transform.get("sanitizedPrompt"),
             "events": events,
             "createdAt": now,
         }
@@ -5033,15 +5100,6 @@ class CreativeMediaRuntime:
     def _looks_like_policy_reject(self, error: Any) -> bool:
         text = str(error or "").lower()
         return any(marker.lower() in text for marker in POLICY_REJECT_MARKERS)
-
-    def _downgrade_policy_prompt(self, prompt: str) -> str:
-        policy = prepare_provider_prompt_policy(prompt, modality="image")
-        base = str(policy.get("translatedPrompt") or prompt)
-        return (
-            base
-            + "\nMake the result clearly original and non-infringing. Remove any remaining franchise, brand, celebrity, or protected identity references. "
-            "Lower similarity to any known character and use generic descriptive traits only."
-        )
 
     @staticmethod
     def _reserve_job_id() -> str:
@@ -8303,9 +8361,14 @@ class CreativeMediaRuntime:
         payload["retryOfJobId"] = job_id
         payload["operationKind"] = original.get("operationKind") or payload.get("operationKind")
         payload["modality"] = original.get("modality") or payload.get("modality")
+        # Reapply provider formatting to the author's original input, not a
+        # previous wire prompt with inline exclusions already appended.
+        if "prompt" not in retry_request:
+            original_prompt = dict(payload.get("promptPolicy") or {}).get("rawUserRequest")
+            if isinstance(original_prompt, str):
+                payload["prompt"] = original_prompt
         if original.get("policyRejectReason") or self._looks_like_policy_reject(original.get("error")):
-            payload["prompt"] = self._downgrade_policy_prompt(str(payload.get("prompt") or ""))
-            payload["retryReason"] = "policy_reject_prompt_downgrade"
+            payload["retryReason"] = "policy_reject_retry"
         else:
             payload["retryReason"] = str(payload.get("retryReason") or "quality_or_provider_retry")
         return await self.create_job(payload)
@@ -9144,26 +9207,42 @@ class CreativeMediaRuntime:
             return raw
         raise ValueError(f"{field_name} must be a public HTTP/HTTPS URL for live provider calls; register or upload the local artifact to an accessible URL first")
 
-    def _image_urls_from_request(self, request: dict[str, Any]) -> list[str]:
-        urls = request.get("imageUrls") or request.get("image_urls") or []
-        if isinstance(urls, str):
-            urls = [urls]
-        result = [
-            self._public_url_or_error(url, field_name="imageUrls")
-            for url in list(urls or [])
-            if str(url or "").strip()
-        ]
+    @staticmethod
+    def _validate_frame_reference_fields(request: dict[str, Any]) -> None:
+        explicit_frames = any(request.get(key) for key in ("firstFrame", "first_frame", "lastFrame", "last_frame"))
+        generic_images = any(request.get(key) for key in (
+            "imageUrl", "image_url", "imageUrls", "image_urls", "sourceImageUrl", "source_image_url",
+            "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
+            "referenceAssetIds", "reference_asset_ids",
+        )) or any(isinstance(item, dict) and item.get("mediaType") == "image" for item in request.get("canvasInputs") or [])
+        if explicit_frames and generic_images:
+            raise ValueError("Do not mix explicit firstFrame/lastFrame with generic image references; preserve frame roles using one input form")
+        operation = request.get("operationKind") or request.get("operation_kind")
+        if operation == "video.image_to_video" and (request.get("lastFrame") or request.get("last_frame")):
+            raise ValueError("video.image_to_video requires a first frame; an explicit lastFrame cannot be reinterpreted as its first frame")
+
+    def _image_urls_from_request(self, request: dict[str, Any], *, include_artifact_refs: bool = True) -> list[str]:
+        self._validate_frame_reference_fields(request)
+        result = self._request_url_list(request, "imageUrls", "image_urls", allowed_prefixes=("http://", "https://"))
         for key in ("imageUrl", "image_url", "sourceImageUrl", "source_image_url", "firstFrame", "first_frame", "lastFrame", "last_frame", "referenceImageUrl", "reference_image_url"):
             url = self._public_url_or_error(request.get(key), field_name=key)
             if url:
                 result.append(url)
-        seen: set[str] = set()
-        unique: list[str] = []
-        for url in result:
-            if url not in seen:
-                seen.add(url)
-                unique.append(url)
-        return unique
+        result.extend(self._request_url_list(request, "referenceImageUrls", "reference_image_urls", allowed_prefixes=("http://", "https://")))
+        if include_artifact_refs:
+            artifact_ids = request.get("referenceAssetIds") or request.get("reference_asset_ids") or []
+            if isinstance(artifact_ids, str):
+                artifact_ids = [artifact_ids]
+            for artifact_id in artifact_ids:
+                resource = self._authorized_artifact_resource(str(artifact_id), context=request)
+                if str((resource.record or {}).get("kind") or "") != "image":
+                    raise ValueError("Image input requires an image artifact; use a multimodal reference operation for other media")
+                url = self._artifact_provider_transport_url(str(artifact_id))
+                if not url:
+                    raise ValueError("Image reference artifact has no provider-accessible URL; supply a supported image URL or use a provider with local image input")
+                result.append(url)
+        # Duplicate URLs may occupy distinct first/last or subject slots.
+        return result
 
     def _artifact_provider_transport_url(self, artifact_id: str) -> str:
         normalized = str(artifact_id or "").strip()
@@ -9223,7 +9302,7 @@ class CreativeMediaRuntime:
         *,
         operation_kind: str,
     ) -> list[str]:
-        references = self._image_urls_from_request(request)
+        references = self._image_urls_from_request(request, include_artifact_refs=False)
         artifact_ids = request.get("referenceAssetIds") or request.get("reference_asset_ids") or []
         if isinstance(artifact_ids, str):
             artifact_ids = [artifact_ids]
@@ -9242,7 +9321,7 @@ class CreativeMediaRuntime:
                     "or provide a public imageUrls value"
                 )
             references.append(self._local_image_data_url(normalized_id))
-        return list(dict.fromkeys(references))
+        return references
 
     @staticmethod
     def _request_url_list(
@@ -9253,14 +9332,33 @@ class CreativeMediaRuntime:
         values: list[str] = []
         for key in keys:
             raw = request.get(key)
-            items = [raw] if isinstance(raw, str) else list(raw or [])
+            if raw is None or raw == "":
+                continue
+            if not isinstance(raw, (str, list, tuple)):
+                raise ValueError(f"{key} must be a URL or an ordered list of URLs")
+            items = [raw] if isinstance(raw, str) else list(raw)
             for item in items:
-                normalized = str(item or "").strip()
-                if normalized and normalized not in values:
-                    if not normalized.startswith(allowed_prefixes):
-                        raise ValueError(f"{key} contains a provider-inaccessible media reference")
-                    values.append(normalized)
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError(f"{key} contains an empty or invalid media reference slot")
+                normalized = item.strip()
+                if not normalized.startswith(allowed_prefixes):
+                    raise ValueError(f"{key} contains a provider-inaccessible media reference")
+                values.append(normalized)
         return values
+
+    def _multimodal_reference_inputs(self, request: dict[str, Any]) -> list[dict[str, Any]]:
+        """Reuse authorized artifact resolution and the existing media transports."""
+        inputs = [dict(item) for item in list(request.get("canvasInputs") or []) if isinstance(item, dict)]
+        artifact_ids = request.get("referenceAssetIds") or request.get("reference_asset_ids") or []
+        if isinstance(artifact_ids, str):
+            artifact_ids = [artifact_ids]
+        for artifact_id in artifact_ids:
+            resource = self._authorized_artifact_resource(str(artifact_id), context=request)
+            media_type = str((resource.record or {}).get("kind") or "").strip().lower()
+            if media_type not in {"image", "video", "audio"}:
+                raise ValueError("Reference artifact must have a verified image, video, or audio kind")
+            inputs.append({"origin": "artifact", "id": str(artifact_id), "mediaType": media_type})
+        return inputs
 
     @staticmethod
     def _local_h3_media_data_url(path: Path, *, media_type: str) -> str:
@@ -9297,6 +9395,7 @@ class CreativeMediaRuntime:
         return f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
     def _minimax_h3_references_from_request(self, request: dict[str, Any]) -> dict[str, list[str]]:
+        self._validate_frame_reference_fields(request)
         references = {
             "image": self._request_url_list(
                 request,
@@ -9319,10 +9418,10 @@ class CreativeMediaRuntime:
             ),
         }
         session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
-        for item in [dict(value) for value in list(request.get("canvasInputs") or []) if isinstance(value, dict)]:
+        for item in self._multimodal_reference_inputs(request):
             media_type = str(item.get("mediaType") or "").strip().lower()
             if media_type not in references:
-                continue
+                raise ValueError("MiniMax-H3 reference has an unsupported media type")
             origin = str(item.get("origin") or "").strip()
             resource_id = str(item.get("id") or "").strip()
             provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" and not request.get("sceneControl") else ""
@@ -9336,8 +9435,7 @@ class CreativeMediaRuntime:
                 content_digest = hashlib.sha256(base64.b64decode(value.split(",", 1)[1], validate=True)).hexdigest()
                 if content_digest != item.get("resourceDigest"):
                     raise SceneControlError("Scene reference changed while materializing provider input")
-            if value not in references[media_type]:
-                references[media_type].append(value)
+            references[media_type].append(value)
         encoded_size = sum(
             len(value.encode("utf-8"))
             for values in references.values()
@@ -9349,10 +9447,12 @@ class CreativeMediaRuntime:
         return references
 
     def _seedance_references_from_request(self, request: dict[str, Any]) -> dict[str, list[str]]:
+        self._validate_frame_reference_fields(request)
         references = {
             "image": self._request_url_list(
                 request,
                 "imageUrl", "image_url", "imageUrls", "image_urls",
+                "firstFrame", "first_frame", "lastFrame", "last_frame",
                 "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
                 allowed_prefixes=("http://", "https://", "asset://"),
             ),
@@ -9369,10 +9469,10 @@ class CreativeMediaRuntime:
                 allowed_prefixes=("http://", "https://"),
             ),
         }
-        for item in [dict(value) for value in list(request.get("canvasInputs") or []) if isinstance(value, dict)]:
+        for item in self._multimodal_reference_inputs(request):
             media_type = str(item.get("mediaType") or "").strip().lower()
             if media_type not in references:
-                continue
+                raise ValueError("Seedance reference has an unsupported media type")
             origin = str(item.get("origin") or "").strip()
             resource_id = str(item.get("id") or "").strip()
             provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" else ""
@@ -9381,8 +9481,7 @@ class CreativeMediaRuntime:
                     "Seedance cannot receive a local-only Canvas reference; provide a public URL or asset:// reference, "
                     "or connect a provider-generated artifact that still has its transport URL"
                 )
-            if provider_url not in references[media_type]:
-                references[media_type].append(provider_url)
+            references[media_type].append(provider_url)
         return references
 
     def _dashscope_references_from_request(self, request: dict[str, Any]) -> dict[str, list[str]]:
@@ -9407,7 +9506,7 @@ class CreativeMediaRuntime:
             ),
         }
         session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
-        canvas_inputs = [dict(value) for value in list(request.get("canvasInputs") or []) if isinstance(value, dict)]
+        canvas_inputs = self._multimodal_reference_inputs(request)
         for index, item in enumerate(canvas_inputs):
             media_type = str(item.get("mediaType") or "").strip().lower()
             if media_type not in references:
@@ -9417,15 +9516,13 @@ class CreativeMediaRuntime:
             origin = str(item.get("origin") or "").strip()
             provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" else ""
             if provider_url:
-                if provider_url not in references[media_type]:
-                    references[media_type].append(provider_url)
+                references[media_type].append(provider_url)
                 continue
             if media_type == "image":
                 local_url = self._local_dashscope_image_data_url(
                     self._canvas_input_path(session_id=session_id, item=item)
                 )
-                if local_url not in references[media_type]:
-                    references[media_type].append(local_url)
+                references[media_type].append(local_url)
                 continue
             if origin not in {"source", "artifact", "workspace_asset"}:
                 raise ValueError(f"DashScope Canvas {media_type} input {input_label} has an ungoverned origin")
@@ -9434,7 +9531,7 @@ class CreativeMediaRuntime:
                 "reference video and audio require an HTTP/HTTPS or OSS URL"
             )
         if len(references["audio"]) > 1:
-            raise ValueError("DashScope video.reference_to_video supports at most one reference audio input")
+            raise ValueError("DashScope supports at most one global reference audio input; use referenceMedia with per-subject reference_voice for multiple voices")
         return references
 
     @staticmethod
@@ -9628,6 +9725,8 @@ class CreativeMediaRuntime:
         return f"{base}{suffix}"
 
     async def _run_openai_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        if self._image_urls_from_request(request):
+            raise ValueError("OpenAI image.generate cannot consume reference images; use image.edit with a supported source input")
         binding = self._configured_endpoint_binding(request, default_model="gpt-image-2")
         provider_id = str(binding.get("providerId") or "")
         provider_meta = dict(binding.get("providerMeta") or {})
@@ -9721,6 +9820,8 @@ class CreativeMediaRuntime:
         return self._save_job(job)
 
     async def _run_openai_image_edit_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        if self._image_urls_from_request(request):
+            raise ValueError("OpenAI image.edit currently requires a local source input; URL/extra reference images cannot be silently omitted")
         binding = self._configured_endpoint_binding(request, default_model="gpt-image-2")
         provider_id = str(binding.get("providerId") or "")
         provider_meta = dict(binding.get("providerMeta") or {})
@@ -10288,7 +10389,7 @@ class CreativeMediaRuntime:
         )
         if not prompt and not has_media_input:
             raise ValueError("video job requires a prompt or a media reference")
-        duration = max(1, min(int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5), 30))
+        duration = _integer_video_duration(next((request[key] for key in ("duration", "durationSeconds", "duration_seconds") if request.get(key) not in (None, "")), None))
         model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or requested_model))
         operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
         capability_profile = capability_profile_for_model(
@@ -10298,7 +10399,9 @@ class CreativeMediaRuntime:
         )
         supports_native_audio = bool(capability_profile.get("nativeAudio"))
         generate_audio = bool(request.get("generateAudio", request.get("generate_audio", supports_native_audio))) and supports_native_audio
-        seedance_references = self._seedance_references_from_request(request) if operation_kind == "video.reference_to_video" else {}
+        seedance_references = self._seedance_references_from_request(request)
+        if operation_kind == "video.reference_to_video" and any(request.get(key) for key in ("firstFrame", "first_frame", "lastFrame", "last_frame")):
+            raise ValueError("Seedance reference_to_video cannot reinterpret explicit first/last frames as character references; choose a supported operation")
         payload = _build_volcengine_video_payload(
             model=model,
             prompt=prompt,
@@ -10307,7 +10410,7 @@ class CreativeMediaRuntime:
             resolution=resolve_video_resolution(preset=request.get("resolutionPreset"), explicit_resolution=request.get("resolution") or "720p"),
             duration=duration,
             seed=int(request.get("seed", -1)),
-            image_urls=list(seedance_references.get("image") or []) if seedance_references else request.get("imageUrls") or request.get("image_urls"),
+            image_urls=list(seedance_references.get("image") or []),
             video_urls=list(seedance_references.get("video") or []),
             audio_urls=list(seedance_references.get("audio") or []),
             generate_audio=generate_audio,
@@ -10421,7 +10524,7 @@ class CreativeMediaRuntime:
         if not base_url:
             raise ValueError(f"Provider {provider_id} has no base_url")
         prompt = str(request.get("prompt") or "").strip()
-        duration = int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5)
+        duration = _integer_video_duration(next((request[key] for key in ("duration", "durationSeconds", "duration_seconds") if request.get(key) not in (None, "")), None))
         input_payload: dict[str, Any] = {}
         if prompt:
             input_payload["prompt"] = prompt
@@ -10452,6 +10555,7 @@ class CreativeMediaRuntime:
                 reference_video_url=ref_video,
                 reference_image_urls=ref_images,
                 reference_video_urls=ref_videos,
+                reference_media=request.get("referenceMedia"),
                 audio_url=audio_url,
                 resolution=str(request.get("resolution") or "720P"),
                 ratio=str(request.get("ratio") or request.get("aspectRatio") or "16:9"),

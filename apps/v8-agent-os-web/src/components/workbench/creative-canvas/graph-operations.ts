@@ -296,6 +296,10 @@ export function pasteCanvasSubgraph(
 
 export function isCanvasActionConfigured(node: CanvasNode, definition: CanvasActionDefinition) {
     const parameters = node.parameters || {};
+    if (definition.parameterEditor === "proxy_scene") {
+        const scene = parameters.scene as { schema?: string; entities?: { name?: string }[] } | undefined;
+        return scene?.schema === "v8.proxy_scene.v1" && Boolean(scene.entities?.length && scene.entities.every((entity) => entity.name?.trim()));
+    }
     if (["frame_pick", "time_range"].includes(String(definition.parameterEditor))) {
         return Number.isInteger(parameters.frameIndex)
             || Number.isInteger(parameters.startFrameIndex)

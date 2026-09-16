@@ -24,7 +24,7 @@ export type CreativeCanvasExecutionClass =
     | "chat_task"
     | "agent_projection"
     | "governance_projection";
-export type CreativeCanvasParameterEditor = "frame_pick" | "time_range" | "psd_composition" | "psd_layers";
+export type CreativeCanvasParameterEditor = "frame_pick" | "time_range" | "psd_composition" | "psd_layers" | "proxy_scene";
 export type CreativeCanvasOutputKind =
     | "none"
     | "canvas_state"
@@ -379,6 +379,23 @@ const OPTIONAL_REFERENCES = selection(
 );
 
 export const CREATIVE_MEDIA_NATIVE_ACTIONS: readonly CreativeCanvasAction[] = [
+    creativeMediaAction({
+        actionId: "creative_media.render_proxy_scene_control_pack",
+        capability: "video.render_proxy_scene_control_pack",
+        selection: selection(["canvas", "node", "selection"], 0, 32, ["image"], { ordered: true }),
+        requiresPrompt: false,
+        parameterEditor: "proxy_scene",
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifacts", "control_pack", ["document"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.generate_video_from_scene",
+        capability: "video.reference_to_video",
+        selection: selection(["node", "selection"], 1, 1, ["document"]),
+        requiresPrompt: false,
+        output: output("artifact", "video", ["video"]),
+    }),
     creativeMediaAction({
         actionId: "creative_media.generate_image",
         capability: "image.generate",

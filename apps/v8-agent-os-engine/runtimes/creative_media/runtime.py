@@ -73,6 +73,7 @@ from .governed_media import trim_exact as trim_governed_media_exact
 from .motion_capture import MOTION_MIME_TYPE, extract_holistic_motion, render_motion_guidance_video
 from .gltf_rig import inspect_rigged_model
 from .godot_retarget import retarget_motion_with_godot
+from .scene_control import PACK_SCHEMA, SceneControlError, normalize_scene, prepare_pack_references, render_control_pack, sha256_file
 from .comfyui_workflow import bind_comfyui_inputs, select_comfyui_output, validate_comfyui_workflow
 from .model_routing import (
     configured_adapter,
@@ -265,10 +266,12 @@ EXECUTABLE_OPERATION_KINDS = {
     "image.edit_psd_layers",
     "video.extract_holistic_motion",
     "video.render_motion_guidance",
+    "video.render_proxy_scene_control_pack",
     "model3d.inspect_rigged",
     "model3d.retarget_motion_godot",
 }
 GOVERNED_LOCAL_OPERATION_KINDS = {
+    "video.render_proxy_scene_control_pack",
     "video.extract_frame_exact",
     "video.trim_exact",
     "audio.trim_exact",
@@ -2866,6 +2869,13 @@ class CreativeMediaRuntime:
         if not self._store_is_active():
             return []
         authority_payload = dict(payload)
+        if payload.get("operationKind") == "video.render_proxy_scene_control_pack":
+            # A validated scene contains geometry and appearance text only.
+            # Resource authority stays on the explicit canvasInputs; walking
+            # pose keyframes as generic resource manifests exceeds that
+            # manifest's depth contract and mistakes geometry for locators.
+            normalize_scene(payload.get("scene"))
+            authority_payload.pop("scene", None)
         path_aliases = [
             str(payload.get(key) or "").strip()
             for key in ("imagePath", "image_path", "maskPath", "mask_path")
@@ -7741,6 +7751,8 @@ class CreativeMediaRuntime:
                 operation_kind=operation_kind,
                 request=request,
             )
+        if operation_kind == "video.render_proxy_scene_control_pack":
+            return await self._create_proxy_scene_job(request)
         if operation_kind == "model3d.inspect_rigged":
             return await self._create_rig_inspection_job(
                 modality=modality,
@@ -7856,6 +7868,161 @@ class CreativeMediaRuntime:
                 except OSError:
                     pass
         return self._save_job(job)
+
+    @staticmethod
+    def _scene_context_lineage(session_id: str) -> dict[str, Any]:
+        state = db.get_chat_transcript_state(session_id)
+        return {"contextEpoch": int(state["context_epoch"]), "transcriptRevision": int(state["transcript_revision"]),
+                **({"branch": dict(state["branch"])} if state.get("branch") else {})}
+
+    def _assert_scene_context_epoch(self, lineage: dict[str, Any], session_id: str) -> None:
+        current = self._scene_context_lineage(session_id)
+        if type(lineage.get("contextEpoch")) is not int or lineage["contextEpoch"] != current["contextEpoch"]:
+            raise SceneControlError("Scene context was superseded; bake the control pack in the current conversation context")
+
+    def _revalidate_scene_control(self, request: dict[str, Any], report: dict[str, Any]) -> None:
+        """Re-read the canonical pack and every current resource before a boundary."""
+        self._assert_scene_context_epoch(dict(report.get("packLineage") or {}), str(request.get("sessionId") or ""))
+        pack = dict(report.get("controlPack") or {})
+        if not pack.get("id"):
+            raise SceneControlError("Scene consumption receipt has lost its governed control pack binding")
+        checked = self._prepare_scene_video_request({**request, "prompt": "", "canvasInputs": [{**pack, "portId": "controlPack", "mediaType": "document"}]})
+        current = dict(checked.get("sceneControl") or {})
+        if current.get("controlPack") != pack or current.get("sceneDigest") != report.get("sceneDigest"):
+            raise SceneControlError("Scene control pack changed before submission or result publication")
+
+    async def _create_proxy_scene_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        job = self._new_job(modality="video", adapter="governed_proxy_scene", request=request)
+        job["status"] = "running"
+        self._save_job(job)
+        manifest_path = self._output_path(job, "proxy-scene", ".v8scene.json")
+        directory = manifest_path.parent / f"control-{uuid.uuid4().hex[:12]}"
+        cancelled = threading.Event()
+        worker = None
+        children: list[dict[str, Any]] = []
+        try:
+            session_id = str(request.get("sessionId") or "")
+            refs = [dict(item) for item in request.get("canvasInputs", []) if isinstance(item, dict)]
+            if any(item.get("portId") != "references" or item.get("mediaType") != "image" for item in refs):
+                raise SceneControlError("Proxy scene accepts only typed image reference bindings")
+            resolved = [(item, self._canvas_input_path(session_id=session_id, item=item)) for item in refs]
+            lineage = {key: request.get(key) or "" for key in ("sessionId", "workspaceId", "projectId", "canvasGraphId", "canvasGraphRunId", "canvasGraphNodeId", "canvasConfigurationRevision", "canvasOperationId")}
+            lineage["workspaceKey"] = workspace_path_key(str(job.get("workspacePath") or ""))
+            lineage["jobId"] = job["jobId"]
+            lineage.update(self._scene_context_lineage(session_id))
+            job["proxySceneLineage"] = lineage
+            worker = asyncio.create_task(asyncio.to_thread(render_control_pack, request.get("scene"), directory=directory, references=resolved, lineage=lineage, cancelled=cancelled))
+            manifest = await asyncio.shield(worker)
+            stored = self.get_job(job["jobId"], refresh=False) or {}
+            if stored.get("status") == "cancelled":
+                raise asyncio.CancelledError()
+            self._assert_active_authority_fence(job)
+            self._assert_scene_context_epoch(lineage, session_id)
+            if self._store_is_active():
+                self._canonical_owner_scope(job, require_write=True)
+                self._assert_session_accepting_creative_media_jobs(session_id)
+            # Frozen copies preserve what was read. Recheck the current source
+            # revision before publishing a bake after an asynchronous worker.
+            from .scene_control import validate_reference
+            for item, _path in resolved:
+                current_path = self._canvas_input_path(session_id=session_id, item=item)
+                validate_reference(item, manifest["scene"], current_path)
+            for item in manifest["files"]:
+                artifact = self._record_local_artifact(file_path=directory / item["file"], job=job, kind=item["mediaType"], mime_type=item["mimeType"], metadata={"origin": "proxy_scene_control", "sceneDigest": manifest["sceneDigest"], "controlChannel": item["channel"], "contentSha256": item["sha256"], "providerInvoked": False})
+                item["artifactId"] = artifact.get("artifactId") or artifact.get("id")
+                children.append(artifact)
+            manifest["preview"] = {"videoArtifactId": next(item["artifactId"] for item in manifest["files"] if item["channel"] == "visual_proxy"), "imageArtifactId": next(item["artifactId"] for item in manifest["files"] if item["channel"] == "identity_board")}
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            artifact = self._record_local_artifact(file_path=manifest_path, job=job, kind="document", mime_type="application/json", metadata={"origin": "proxy_scene_control_pack", "controlPackSchema": PACK_SCHEMA, "sceneDigest": manifest["sceneDigest"], "contentSha256": sha256_file(manifest_path), "preview": manifest["preview"], "missingEntityReferences": manifest["missingEntityReferences"], "providerInvoked": False})
+            job["artifacts"] = [artifact, *children]
+            job["providerResponse"] = {"adapter": "governed_proxy_scene", "providerInvoked": False, "sceneDigest": manifest["sceneDigest"], "preview": manifest["preview"], "missingEntityReferences": manifest["missingEntityReferences"]}
+            job["status"] = "succeeded"
+            job["completedAt"] = utc_now_iso()
+        except BaseException as exc:
+            cancelled.set()
+            if worker is not None:
+                try:
+                    await asyncio.shield(worker)
+                except BaseException:
+                    pass
+            job["status"] = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+            job["error"] = "Proxy scene render cancelled" if isinstance(exc, asyncio.CancelledError) else _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            # Only this invocation's private render directory is eligible for cleanup.
+            if children:
+                # Artifact registration itself may have partially succeeded.
+                # Keep those governed files addressable and mark the partial
+                # job; never leave recorded IDs pointing at deleted bytes.
+                job["artifacts"] = children
+                job["providerResponse"] = {"providerInvoked": False, "partial": True, "reason": "control_pack_registration_incomplete"}
+            elif directory.is_dir() and directory.parent.resolve() == manifest_path.parent.resolve():
+                for child in directory.iterdir():
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                directory.rmdir()
+            manifest_path.unlink(missing_ok=True)
+            self._save_job(job)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+        return self._save_job(job)
+
+    def _prepare_scene_video_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        pack_inputs = [item for item in request.get("canvasInputs", []) if isinstance(item, dict) and item.get("portId") == "controlPack"]
+        if not pack_inputs:
+            return request
+        if len(pack_inputs) != 1 or len(request.get("canvasInputs", [])) != 1:
+            raise SceneControlError("Scene video requires exactly one control pack input")
+        if pack_inputs[0].get("origin") != "artifact":
+            raise SceneControlError("Bake the scene to a governed control pack artifact before generation")
+        session_id = str(request.get("sessionId") or "")
+        pack_path = self._canvas_input_path(session_id=session_id, item=pack_inputs[0])
+        if pack_path.stat().st_size > 8 * 1024 * 1024:
+            raise SceneControlError("Control pack manifest exceeds its 8 MB document limit")
+        artifact = db.get_runtime_artifact(str(pack_inputs[0].get("id") or "")) or {}
+        metadata = artifact.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = json.loads(metadata)
+        content = pack_path.read_bytes()
+        pack_digest = hashlib.sha256(content).hexdigest()
+        if metadata.get("controlPackSchema") != PACK_SCHEMA or metadata.get("contentSha256") != pack_digest:
+            raise SceneControlError("Control pack does not match its recorded artifact revision; bake it again")
+        manifest = json.loads(content)
+        self._assert_scene_context_epoch(dict(manifest.get("lineage") or {}), session_id)
+        resolve = lambda item: self._canvas_input_path(session_id=session_id, item=item)
+        prepared = prepare_pack_references(manifest, request={**request, **self._scene_context_lineage(session_id), "workspaceKey": workspace_path_key(str(request.get("workspacePath") or ""))}, resolve=resolve)
+        prepared["sceneControl"]["controlPack"] = {"origin": pack_inputs[0]["origin"], "id": pack_inputs[0]["id"], "sha256": pack_digest}
+        if request.get("adapter") == "minimax_video":
+            scene = manifest["scene"]
+            if not 23.976 <= scene["fps"] <= 60 or not 2 <= scene["durationSeconds"] <= 15 or not 0.4 <= scene["width"] / scene["height"] <= 2.5:
+                raise SceneControlError("MiniMax-H3 proxy reference requires 23.976–60 FPS, 2–15 seconds and aspect ratio 0.4–2.5")
+            if scene["durationSeconds"] != int(scene["durationSeconds"]):
+                raise SceneControlError("MiniMax-H3 output duration requires integer seconds; adjust the scene explicitly")
+        # The compiled manifest determines media and duration. Reject ambiguous additional raw URL inputs.
+        if any(value for key, value in request.items() if key.lower().endswith(("url", "urls"))):
+            raise SceneControlError("Scene video references must come from its frozen control pack")
+        return {**request, **prepared}
+
+    def _verify_scene_provider_payload(self, job: dict[str, Any], request: dict[str, Any], payload: dict[str, Any]) -> None:
+        report = dict(request.get("sceneControl") or {})
+        if not report:
+            return
+        self._revalidate_scene_control(request, report)
+        if payload.get("content"):
+            content = payload["content"]
+            prompts = [item.get("text") for item in content if item.get("type") == "text"]
+            media = [item for item in content if item.get("type") != "text"]
+            observed = {kind: sum(item.get("role") == f"reference_{kind}" for item in media) for kind in ("image", "video", "audio")}
+        else:
+            input_payload = payload.get("input") or {}
+            prompts = [input_payload.get("prompt")]
+            media = input_payload.get("media") or []
+            observed = {kind: sum(item.get("type") == f"reference_{kind}" for item in media) for kind in ("image", "video", "audio")}
+        expected = {kind: sum(item.get("mediaType") == kind for item in request.get("canvasInputs", [])) for kind in observed}
+        if prompts != [request.get("prompt")] or observed != expected or len(media) != sum(expected.values()):
+            raise SceneControlError("Provider payload lost or transformed a scene prompt/reference; submission blocked")
+        report.update({"status": "payload_verified", "providerRequestHash": self._provider_request_hash(payload), "submittedCounts": observed,
+                       "consumed": [{**item, "status": "payload_verified"} for item in report.get("consumed", [])]})
+        job["sceneControl"] = report
 
     async def _create_motion_guidance_job(
         self,
@@ -8374,6 +8541,7 @@ class CreativeMediaRuntime:
         adapter = str(request.get("adapter") or "").strip().lower()
         provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="video")
         prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
+        prepared_request.pop("sceneControl", None)  # Consumption receipts are service-owned.
         if endpoint_binding:
             prepared_request["endpointBinding"] = {
                 key: value
@@ -8389,6 +8557,15 @@ class CreativeMediaRuntime:
         try:
             if binding_error:
                 raise ValueError(binding_error)
+            prepared_request = self._prepare_scene_video_request(prepared_request)
+            if prepared_request.get("sceneControl"):
+                if adapter not in {"minimax_video", "volcengine_ark", "dashscope"}:
+                    raise SceneControlError("Configured adapter has no verified scene reference payload contract; control pack remains available")
+                # Persist the original pack binding and uncompiled user prompt.
+                # A retry must resolve/revalidate that same immutable pack, not
+                # append the scene to an already compiled prompt a second time.
+                job["request"] = _jsonable_request({**prepared_request, "canvasInputs": request.get("canvasInputs", []), "prompt": provider_prompt})
+                job["sceneControl"] = prepared_request["sceneControl"]
             if adapter == "volcengine_ark":
                 if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"}:
                     raise ValueError(f"Volcengine adapter does not support operationKind={operation_kind}")
@@ -8403,6 +8580,10 @@ class CreativeMediaRuntime:
                 job = await self._submit_minimax_video_job(job, prepared_request)
             else:
                 raise ValueError(f"Unsupported video adapter: {adapter}")
+            if job.get("sceneControl") and job.get("providerTaskId"):
+                job["sceneControl"] = {**job["sceneControl"], "status": "submitted", "providerTaskId": job["providerTaskId"],
+                                       "consumed": [{**item, "status": "submitted"} for item in job["sceneControl"].get("consumed", [])]}
+                self._save_job(job)
             if bool(request.get("wait", False)):
                 timeout_seconds = max(15, min(int(request.get("timeoutSeconds") or request.get("timeout_seconds") or 240), 60))
                 poll_interval = max(2, min(int(request.get("pollIntervalSeconds") or request.get("poll_interval_seconds") or 8), 30))
@@ -9243,11 +9424,17 @@ class CreativeMediaRuntime:
                 raise ValueError("MiniMax-H3 reference has an unsupported media type")
             origin = str(item.get("origin") or "").strip()
             resource_id = str(item.get("id") or "").strip()
-            provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" else ""
+            provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" and not request.get("sceneControl") else ""
             value = provider_url or self._local_h3_media_data_url(
                 self._canvas_input_path(session_id=session_id, item=item),
                 media_type=media_type,
             )
+            if request.get("sceneControl"):
+                # Frozen scene bytes, rather than a mutable original CDN URL,
+                # are the authority for this submission and its digest receipt.
+                content_digest = hashlib.sha256(base64.b64decode(value.split(",", 1)[1], validate=True)).hexdigest()
+                if content_digest != item.get("resourceDigest"):
+                    raise SceneControlError("Scene reference changed while materializing provider input")
             references[media_type].append(value)
         encoded_size = sum(
             len(value.encode("utf-8"))
@@ -9994,6 +10181,7 @@ class CreativeMediaRuntime:
             fast_pretreatment=request.get("fastPretreatment", request.get("fast_pretreatment")),
             aigc_watermark=_truthy(request.get("aigcWatermark", request.get("aigc_watermark", False))),
         )
+        self._verify_scene_provider_payload(job, request, payload)
         job["providerRequestHash"] = self._provider_request_hash(payload)
         api_version = "v2" if model == MINIMAX_H3_VIDEO_MODEL else "v1"
         endpoint_path = str(
@@ -10228,6 +10416,7 @@ class CreativeMediaRuntime:
             generate_audio=generate_audio,
             watermark=bool(request.get("watermark", False)),
         )
+        self._verify_scene_provider_payload(job, request, payload)
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
@@ -10432,6 +10621,7 @@ class CreativeMediaRuntime:
             if operation_kind == "video.action_transfer":
                 parameters = {"mode": str(request.get("mode") or "wan-std")}
             payload = {"model": model, "input": input_payload, "parameters": parameters}
+        self._verify_scene_provider_payload(job, request, payload)
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
@@ -10772,6 +10962,13 @@ class CreativeMediaRuntime:
         external_url: str | None = None,
     ) -> dict[str, Any]:
         self._assert_active_authority_fence(job)
+        scene_control = dict(job.get("sceneControl") or {})
+        if scene_control and (self.get_job(str(job.get("jobId") or ""), refresh=False) or {}).get("status") == "cancelled":
+            raise SceneControlError("Cancelled scene video cannot publish a late provider result")
+        if job.get("proxySceneLineage"):
+            self._assert_scene_context_epoch(job["proxySceneLineage"], str(job.get("sessionId") or ""))
+        if scene_control:
+            self._revalidate_scene_control(dict(job.get("request") or {}), scene_control)
         workspace_root = Path(str(job.get("workspacePath") or "")).expanduser()
         try:
             workspace_relative_path = file_path.resolve().relative_to(workspace_root.resolve()).as_posix() if str(job.get("workspacePath") or "").strip() else ""
@@ -10787,6 +10984,8 @@ class CreativeMediaRuntime:
             external_url=external_url,
             metadata={
                 **metadata,
+                **({"sceneControl": scene_control} if scene_control else {}),
+                **({"proxySceneLineage": job["proxySceneLineage"]} if job.get("proxySceneLineage") else {}),
                 "creativeMediaJobId": job["jobId"],
                 "canvasOperationId": job.get("canvasOperationId") or "",
                 "canvasGraphId": job.get("canvasGraphId") or "",

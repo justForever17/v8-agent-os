@@ -22,6 +22,7 @@ extraResources:
       - "!node_modules/**"
       - "!dist/**"
       - "!coverage/**"
+      - "!tests/TUI_SERVER_916_AUDIT.md"
   - from: ../../apps/v8-agent-os-engine
     to: v8os/apps/v8-agent-os-engine
     filter:
@@ -32,6 +33,9 @@ extraResources:
       - "!workspace/**"
       - "!tmp/**"
       - "!reports/**"
+      - "!tests/*_VALIDATION_*.md"
+      - "!tests/PROMPT_CONTEXT_CACHE_TEST_MATRIX.md"
+      - "!tests/core/research_private_retirements.md"
       - "!native/**/target/**"
       - "!native/**/build/**/*.obj"
       - "!native/**/build/**/*.lib"
@@ -58,6 +62,9 @@ extraResources:
       - "!cache/**"
       - "!node_modules/.cache/**"
       - "!node_modules/**/.cache/**"
+      - "!**/public/user/**"
+      - "!**/public/Avatar/**/*"
+      - "**/public/Avatar/default-supervisor.svg"
       - "!*.log"
   - from: ../../apps/v8-agent-os-web
     to: v8os/apps/v8-agent-os-web
@@ -71,6 +78,9 @@ extraResources:
       - "!node_modules/.cache/**"
       - "!node_modules/**/.cache/**"
       - "!*.log"
+      - "!tests/MOTION_TEST_MATRIX.md"
+      - "!tests/UI_PATCH_PROJECT_TEST_MATRIX.md"
+      - "!tests/CREATIVE_CANVAS_TEST_MATRIX.md"
   - from: ../../apps/v8-agent-os-desktop-pet
     to: v8os/apps/v8-agent-os-desktop-pet
     filter:
@@ -101,6 +111,9 @@ extraResources:
     filter:
       - "**/*"
       - "!*.log"
+      - "!experience/**/reports/**"
+      - "!experience/**/*-REVIEW.md"
+      - "!experience/**/BASELINE.md"
 win:
   icon: assets/icon.ico
   target:

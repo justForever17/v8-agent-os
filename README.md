@@ -65,7 +65,7 @@ Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signe
 
 Go to [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases):
 
-- Desktop Preview: Windows x64/ARM64 installers, macOS 12+ Intel/Apple Silicon DMGs, and Linux x64/arm64 AppImage or DEB packages.
+- Desktop Preview: Windows x64/ARM64 installers, macOS 12.3+ Intel/Apple Silicon DMGs, and Linux x64/arm64 AppImage or DEB packages. Check each published release for available downloads and checksums.
 - Android Phone Preview: APK package.
 
 The desktop build is currently an unsigned preview. After startup, the client checks the unified Preview Release automatically, and the tray also provides a manual check. Downloads and installation always require user confirmation; no update is installed silently. Windows may show a security confirmation and macOS may require an explicit system confirmation before first launch. Code signing and signed automatic installation remain future work. Linux stores secrets through the desktop Secret Service; the DEB declares GNOME Keyring while AppImage users must provide a compatible Secret Service on the host. Linux Wayland input restrictions and macOS accessibility permissions are surfaced explicitly rather than silently bypassed.
@@ -90,8 +90,9 @@ Generate a pairing code in the desktop control center or with `v8os config phone
 | --- | --- | --- |
 | Desktop | Preview | Windows x64/ARM64, macOS Intel/Apple Silicon, and Linux x64/arm64 unsigned preview builds are available. Automatic update detection and a manual tray check are included; signing, automatic installation, and stable releases are still future work. |
 | Phone | Preview | Android APK is the required release target. iOS targets 16.4 and later but remains disabled until non-interactive signing is configured. |
-| TUI | Not implemented | Planned for terminal and server-first usage without the Admin UI. |
-| Lite Binary | Long-term plan | A trimmed profile for low-power or edge devices. |
+| TUI / server distribution | Not released | The local CLI and Engine APIs are available; a standalone terminal/server package is not yet provided. |
+| Lightweight remote executor | Planned | No standalone executor release is available for constrained or edge devices. |
+| Cross-device configuration distribution | Planned | Saved Phone server profiles are available; one-click configuration distribution between devices is not. |
 
 ## Safety and Boundaries
 
@@ -104,11 +105,8 @@ User-facing surfaces should stay clean: status, results, risks, next steps, and 
 - [Quick Start](./docs/V8_AGENT_OS_QUICK_START_ZH.md)
 - [Configuration Guide](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
 - [Developer Guide](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md)
-- [Creative Media Runtime](./docs/creative-runtime/V8OS_CREATIVE_MEDIA_RUNTIME_PUBLIC_OVERVIEW_ZH.md)
-- [Extensions Runtime](./docs/extensions/V8OS_EXTENSIONS_RUNTIME_PUBLIC_OVERVIEW_ZH.md)
+- [CLI Reference (Chinese)](./docs/V8_AGENT_OS_CLI_REFERENCE_ZH.md)
 - [API Reference](./docs/V8_AGENT_OS_API_REFERENCE_ZH.md)
-- [Productization Masterplan](./docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md)
-- [Release Versioning Baseline](./docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md)
 
 ## Feedback
 

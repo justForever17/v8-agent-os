@@ -4,14 +4,14 @@ V8OS Desktop Pet 是 V8OS 的本地桌宠入口。它只负责语音输入、事
 
 ## 能力边界
 
-- 通过本机 Admin BFF 获取 V8OS 会话能力。
+- 通过本机 Engine 客户端 API 获取 V8OS 会话能力。
 - 读取项目和最近会话，支持桌宠主体菜单切换当前任务；Shell 同步桌面 Web 的当前会话。
 - 发送语音消息、上传文件，并消费 V8OS realtime 事件。
 - 将主理人回复、工具调用、运行状态、子代理协作、产物和审批事件映射为桌宠动作。
 - 播放 V8OS 生成的语音内容。
 - 提供透明置顶、点击穿透、静音、打开 V8OS、打开桌宠设置、关闭桌宠等主体菜单。
 
-桌宠不直接调用 AI 模型，不写记忆，不执行工具，不创建运行时任务。完整执行真相仍在 V8OS Engine/Admin。
+桌宠不直接调用 AI 模型，不写记忆，不执行工具，不创建运行时任务。完整执行真相由 V8OS Engine 管理。
 
 完整桌面产品中，Electron Shell 是桌宠的本机生命周期主控：Shell 维护受鉴权控制通道、当前任务、V8OS 连接状态和唯一系统托盘。桌宠以 managed mode 启动时不创建自己的托盘；进程探测只作异常对账，不能替代控制通道状态。
 
@@ -22,7 +22,7 @@ Admin 保存桌宠外观、动作或播报配置后，桌宠会通过 canonical 
 安装依赖：
 
 ```powershell
-npm install
+npm ci
 ```
 
 如果 Electron 二进制下载被网络中断，可以先跳过二进制下载完成前端验证：
@@ -52,7 +52,7 @@ npm run desktop:dev
 连接目标默认是本机 V8OS：
 
 ```powershell
-V8_ADMIN_BASE_URL=http://127.0.0.1:9528
+$env:V8_ENGINE_BASE_URL = 'http://127.0.0.1:9530/v1'
 ```
 
 ## 配置入口
@@ -69,5 +69,5 @@ V8_ADMIN_BASE_URL=http://127.0.0.1:9528
 
 - Electron 二进制需要网络可用或配置镜像后下载；前端和服务端构建不依赖 Electron binary。
 - 桌宠只做轻量会话状态、动作和音频摘要，不展开 Phone/Web 的完整卡片栈。
-- 语音输入和播报能力依赖 V8OS Admin BFF 已配置的音频链路。
+- 语音输入和播报能力依赖 Engine 的音频配置与客户端 API，Admin 仅提供配置页面。
 - managed mode、优雅退出、Shell-exit watchdog、配置热更新和当前任务同步必须通过完整 `v8os preview --rebuild` 验收；单独运行 renderer 或开发代理不算通过。

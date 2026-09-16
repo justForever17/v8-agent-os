@@ -1,6 +1,6 @@
 # Engine Tests Map
 
-`apps/v8-agent-os-engine/tests/` 是 Engine 的公开可提交测试与开发验收地图。这里的 pytest、fixtures、eval harness 和内部诊断脚本可以进入 Git；但不得提交真实 API key、Bearer token、cookie、私有聊天全文、本机隐私路径、大型生成物或 provider 私有日志。
+`apps/v8-agent-os-engine/tests/` 是 Engine 的测试与开发验收地图。可复用的 pytest、合成 fixtures、eval harness 和诊断脚本可以进入 Git；真实 API key、Bearer token、cookie、私有聊天全文、本机隐私路径、内部验收报告、大型生成物与原始日志须保留在公开仓库外。
 
 本 README 是选测试入口的第一站；手动脚本的详细清单见 [tests/scripts/README.md](scripts/README.md)。
 
@@ -9,23 +9,23 @@
 从仓库根目录运行完整 Engine tests：
 
 ```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests -q
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests -q
 ```
 
 常用领域抽跑：
 
 ```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\runtime_core -q
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\chat_runtime -q
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\memory -q
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\model_control -q
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\agent_quality -q
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\runtime_core -q
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\chat_runtime -q
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\memory -q
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\model_control -q
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\agent_quality -q
 ```
 
 CI 使用四个互斥且并集完整的文件分片；本地可复现其中一个分片：
 
 ```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_pytest_shard.py --shard-index 0 --shard-count 4
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_pytest_shard.py --shard-index 0 --shard-count 4
 ```
 
 分片器每次自动发现全部 `tests/**/test_*.py`，按统一换行后的文件大小确定性均衡，Windows 与 Linux 的 Git 换行转换不会改变分片；它不改变普通 pytest 的离线边界，也不替代发布前按需执行的 live/Preview/物理机验收。
@@ -67,7 +67,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改 Memory 抽取、注入、scope、视觉增强 | `tests/memory/` + `tests/evals/` 中相关 memory eval |
 | 改全局身份、偏好审计或显式知识修订 | `tests/memory/test_memory_runtime_durable_policy.py` + `test_knowledge_lineage_p0.py` + `test_memory_lifecycle_p1.py` + `tests/supervisor/test_supervisor_identity_contract.py` |
 | 改 ModelHub、provider、reasoning、embedding/rerank | `tests/model_control/` |
-| 改 Agent 指导、提示前缀、关键上下文与缓存用量 | [PROMPT_CONTEXT_CACHE_TEST_MATRIX.md](PROMPT_CONTEXT_CACHE_TEST_MATRIX.md) |
+| 改 Agent 指导、提示前缀、关键上下文与缓存用量 | `tests/prompt_cache/`、`tests/model_control/test_model_token_policy.py`，真实 provider 使用显式 live harness |
 | 改 Skill / MCP / Plugin Manager | `tests/extensions/` + `tests/plugin_manager/` |
 | 改 Research / Web source / evidence pack | `tests/core/test_research_broker.py`、`tests/core/test_research_ledger_experience_pack_lifecycle.py`、`tests/scripts/run_research_runtime_deep_live_audit.py` |
 | 改 Research Agent 检索/实读/审核 | `test_research_agent.py`、`test_research_model_call.py`、`test_research_review_retirement.py`；固定证据与实际 reviewer 对照先行，再做真实联网链 |
@@ -78,9 +78,9 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改 Phone/Web realtime 投影 contract | `tests/contracts/` + `tests/chat_runtime/test_session_realtime_runtime_lane_contract.py` |
 | 做真实长任务或端到端验收 | 先读 [tests/scripts/README.md](scripts/README.md)，再选择对应 `run_*_live_*` |
 
-## 观察报告整改矩阵
+## 跨域回归入口
 
-`docs/V8OS/观察报告.md` 类整改不新增平行内核，按已有主链落到以下测试入口：
+跨域问题可按下表选择已有测试入口：
 
 | 整改面 | 事实源 / 验收入口 |
 | --- | --- |

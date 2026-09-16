@@ -67,21 +67,6 @@ From `apps/v8-agent-os-engine`:
   --max-load-ms 2000 --max-duration-ms 5000
 ```
 
-## Local Baseline
-
-The full no-network catalog plan measured about 67.6 seconds before static media
-projection caching. The final guarded rerun measured 1,608.9 ms total on the
-current Windows acceptance host, with 352.9 ms spent loading the effective
-catalog. This is a local dry-run result, not a provider benchmark; rerun the
-harness rather than treating these machine-specific values as universal budgets.
-
-The current matrix contains 111 providers and 255 model presets. Of those,
-153 produce an executable V8OS connection plan and 102 are intentionally
-blocked because the preset is catalog metadata only or has no configured
-HTTP(S) endpoint. Unexpected planning failures remain a test failure. These
-counts describe the checked-in catalog at the time of the run; the harness is
-the authority when presets change.
-
 ## Live Acceptance
 
 Real provider discovery and chat connection verification require an explicit
@@ -89,23 +74,3 @@ live run with an already configured credential. Media generation, image edits,
 audio/video creation, and paid retrieval calls remain separate explicit live
 acceptance. Mock, dry-run, and HTTP 200 results must not be reported as provider
 success.
-
-## Technical Debt
-
-`supersededCredentialRefs` is the durable handoff for delayed credential
-garbage collection. The current iteration intentionally does not delete an old
-credential immediately after Provider replacement or removal because the same
-transaction remains an exact rollback point. A later control-plane iteration
-must add an explicit transaction finalize/retention policy that deletes only
-superseded refs which are no longer referenced by any current Provider and are
-outside the rollback window. Until then, these refs are recoverable but may
-remain in the OS credential store longer than necessary.
-
-The deprecated whole-model configuration writes at `/models`,
-`/models/control-plane`, and Config Registry's `models` domain now fail closed
-with `410 model_bulk_write_deprecated`. No current V8OS Admin page writes through
-them; active Provider, binding, default, reasoning, policy, and runtime-role
-writes use Config Broker transactions. This closes the accidental whole-domain
-replacement path that bypassed Config Broker revision checks. Runtime observed
-embedding/rerank limits remain telemetry updates rather than operator
-configuration transactions.

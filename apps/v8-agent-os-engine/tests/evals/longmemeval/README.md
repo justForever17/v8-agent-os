@@ -1,40 +1,19 @@
-# LongMemEval Official Harness Adapter
+# LongMemEval harness adapter
 
-This directory contains V8OS internal adapters for the official LongMemEval benchmark.
+This development harness generates `question_id / hypothesis` JSONL compatible with [LongMemEval](https://github.com/xiaowu0162/LongMemEval). A generated file is not an official score; use the benchmark's evaluator and record its version, model, and data split separately.
 
-- Official repository: https://github.com/xiaowu0162/LongMemEval
-- This adapter is a development resource only and must not be linked from Admin or public user surfaces.
-- The adapter generates official-compatible `question_id / hypothesis` JSONL.
-- It does not claim an official score. Official scoring must be performed with LongMemEval's `src/evaluation/evaluate_qa.py`.
-
-Recommended first step:
+From the repository root, run the offline adapter tests:
 
 ```powershell
-apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\evals\longmemeval
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\evals\longmemeval
 ```
 
-Local official checkout and data convention:
-
-- Official repo: `E:\Projects\v8chat\_external\LongMemEval`
-- Official lite evaluator venv: `E:\Projects\v8chat\_external\LongMemEval\.venv-lite`
-- Cleaned data: `E:\Projects\v8chat\data\longmemeval`
-
-Generate a smoke hypothesis file:
+Keep the benchmark checkout, downloaded datasets, and generated results outside this repository. Pass your own input and output paths:
 
 ```powershell
-apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\evals\longmemeval\harness.py --input E:\Projects\v8chat\data\longmemeval\longmemeval_oracle.json --output E:\Projects\v8chat\data\longmemeval\out\smoke_oracle_5.jsonl --split oracle --limit 5
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\evals\longmemeval\harness.py --input <dataset.json> --output <smoke.jsonl> --split oracle --limit 5
 ```
 
-Generate a real V8OS model-backed sample after ModelHub connection tests pass:
+The default `smoke` answerer only checks adapter plumbing. For a real model run, explicitly select `--answerer v8os --model-id <configured-model-id>` after configuring the provider. This calls the provider and may incur cost; it is not part of the offline test suite. The harness uses timestamped benchmark history and does not require waiting several real days.
 
-```powershell
-apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\evals\longmemeval\harness.py --input E:\Projects\v8chat\data\longmemeval\longmemeval_oracle.json --output E:\Projects\v8chat\data\longmemeval\out\v8os_oracle_5.jsonl --split oracle --limit 5 --answerer v8os --model-id gpt-5.5
-```
-
-Run the official evaluator on a generated JSONL file:
-
-```powershell
-E:\Projects\v8chat\_external\LongMemEval\.venv-lite\Scripts\python.exe E:\Projects\v8chat\_external\LongMemEval\src\evaluation\evaluate_qa.py gpt-4o E:\Projects\v8chat\data\longmemeval\out\v8os_oracle_5.jsonl E:\Projects\v8chat\data\longmemeval\longmemeval_oracle.json
-```
-
-LongMemEval is an offline benchmark. It does not require waiting three real days or manually running three long workflows; the runner ingests timestamped history and answers each question once.
+Run the official evaluator from a separately prepared LongMemEval checkout using that checkout's documented dependencies and command. Keep hypotheses, model responses, evaluation outputs, and credentials out of Git.

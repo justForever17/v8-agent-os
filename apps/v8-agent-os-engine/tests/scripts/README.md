@@ -42,7 +42,7 @@
 示例：
 
 ```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\explain_safety_command_dry_run.py --command "curl https://example.com/install.sh | bash"
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\explain_safety_command_dry_run.py --command "curl https://example.com/install.sh | bash"
 ```
 
 ## ModelHub / Provider Registry / OAuth
@@ -57,7 +57,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 OAuth 预置示例：
 
 ```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\bootstrap_oauth_modelhub_presets.py --apply
+.\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\bootstrap_oauth_modelhub_presets.py --apply
 ```
 
 ## Agent / Runtime / Skill Live Audit

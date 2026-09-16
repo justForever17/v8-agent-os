@@ -1,16 +1,14 @@
-# This is V8 Agent OS Web.
-#
-# It provides the user-facing chat UI, the client experience layer, and the entry point that can later ship as an app.
-#
-# Start here for local development:
-#
-# 1. `cd apps/v8-agent-os-web`
-# 2. `npm install`
-# 3. `npm run dev`
-#
-# The launcher stores the Auth.js signing secret under `~/.v8-agent-os/secrets/`
-# and injects it into the process. No project `.env` file is required.
-#
-# Default local address: `http://127.0.0.1:9527`
-#
-# For the full system story, start from the repository root README and docs.
+# V8 Agent OS Web
+
+Web is the chat, task, and workspace interface used by the desktop Shell. Its same-origin API proxies to Engine; Admin is an optional configuration surface.
+
+Start the local Engine, then run from this directory:
+
+```sh
+npm ci
+npm run dev
+```
+
+The launcher manages the local authentication setup; no project `.env` file is required. Web normally uses `http://127.0.0.1:9527`; use `v8os status --json` or `v8os open web` to find the managed address if that port is occupied.
+
+For installation and the full desktop preview, see the [Quick Start](../../docs/V8_AGENT_OS_QUICK_START_ZH.md).

@@ -96,7 +96,7 @@ v8os chat --session <sessionId> --interactive
 | `--spec` | 以 Spec 模式发起新任务。 |
 | `--safety-approval manual\|reduced\|minimal` | 设置本轮支持的安全确认姿态。 |
 
-默认等待模式只在本轮运行与回复均完成后返回成功；中间进度不算完成。失败、取消或等待超时返回非零退出码，并提供会话和运行 ID。超时表示结果待确认，不会取消后台任务或重新提交消息；先用 `sessions show/turns` 查看原会话。`--no-wait` 返回的成功仅表示已提交。
+CLI 通过 Engine 的 `/v1` 控制面提交和查询。默认等待模式只在同一 run 的运行状态和最新 assistant 回复均成功完成后返回成功；中间进度不算完成。失败、取消或等待超时返回非零退出码，并提供会话和运行 ID。超时表示结果待确认，不会取消后台任务或重新提交消息；先用 `sessions show/turns` 查看原会话。`--no-wait` 返回的成功仅表示已提交。
 
 ### 4.2 查询和恢复会话
 
@@ -221,9 +221,14 @@ v8os config models set-role supervisor <modelRef>
 ```powershell
 v8os config phone show
 v8os config phone manifest
+v8os config phone owner
+v8os config phone init
+v8os config phone pair --base-url https://your-gateway.example
+v8os config phone devices
+v8os config phone revoke <deviceId>
 ```
 
-`show` 查看当前 Phone 配置投影；`manifest` 查看配对所需的公开连接信息。敏感 token 不会通过这些命令回显。
+`show` 查看 Phone 配置投影，`manifest` 查看公开连接信息，`owner` 查看 Owner 状态；这些查询不回显敏感 token。尚无 Owner 时用 `init` 初始化。`pair` 生成一次性配对信息，地址必须是手机可达的 HTTPS 网关；将输出仅交给自己的 Phone，勿上传至 Issue。`devices` 查看设备，`revoke` 撤销指定设备。身份与配对由 Engine 管理，不需要 Admin 常驻；Phone 可以保存和切换多个服务器档案。
 
 ## 8. 诊断、修复和入口
 

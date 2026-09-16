@@ -1,6 +1,6 @@
 # V8 Agent OS 配置指南
 
-本文描述当前配置真相、Registry 域和敏感信息边界。优先通过 Admin 或 Config Registry 修改配置，不要把页面默认值、旧 JSON 或缓存当作运行真相。
+本文描述当前配置入口、Registry 域和敏感信息边界。优先通过按需打开的 Admin、CLI 或 Engine Config Registry 修改配置，不要把页面默认值、旧 JSON 或缓存当作运行真相。
 
 ## 1. 配置根与真相层级
 
@@ -32,6 +32,8 @@ Engine 提供：
 - `GET /v1/config-registry`
 - `GET /v1/config-registry/{domain}`
 - `POST /v1/config-registry/{domain}`
+
+`models` 域提供只读投影；整域写入返回 `410 model_bulk_write_deprecated`。模型修改使用 Model Hub 或 Config Broker 的细粒度事务，不覆盖整份模型配置。
 
 当前 Registry 域：
 
@@ -105,9 +107,9 @@ Registry API 使用 kebab-case domain 名，`config.json` 内部存储键可能�
 | 路径 | 角色 |
 | --- | --- |
 | `~/.v8-agent-os/mcp.json` | MCP server 配置真相 |
-| `~/.v8-agent-os/users.json` | 用户与本机身份输入 |
+| `~/.v8-agent-os/users.json` | Owner 记录，由 Engine Owner 服务唯一写入 |
 | `~/.v8-agent-os/V8_AGENT_OS.md` | 可编辑 Supervisor 系统说明 |
-| `~/.v8-agent-os/state.db` | 会话、run、事件、授权、事务等主要状态 |
+| `~/.v8-agent-os/state.db` | 会话、run、事件、授权、设备凭据事务等主要状态 |
 | `~/.v8-agent-os/checkpoints.db` | 加密 checkpoint 状态 |
 | `~/.v8-agent-os/computer_use.json` | Computer Use 独立配置面 |
 | `~/.v8-agent-os/network_supervisor_secrets.json` | Network Supervisor 敏感配置 |
@@ -116,6 +118,14 @@ Registry API 使用 kebab-case domain 名，`config.json` 内部存储键可能�
 Plugin secret、OAuth token 和其他受保护凭据应进入操作系统安全凭据存储。普通配置、数据库业务字段、日志、API 和 Agent Surface 只保存 opaque `secretRef` 或 configured/missing 状态。
 
 Checkpoint 只使用 strict msgpack 和加密存储；不要恢复 pickle、任意类反序列化或把密钥写回配置文件。
+
+### 内部服务密钥与设备身份
+
+`systemBase.bridge.internalSecret` 用于同一 V8OS 实例的内部服务认证，以及部分 WebSocket 票据签名。Engine 控制面仍校验 `x-v8-agent-os-secret`；Admin 按需启动并不意味着此字段可以删除。通常应保留系统自动生成的值，不手动复制到命令行、截图或问题反馈。
+
+它不是 Phone 配对密码，也不是多设备组网的统一密码。Phone identity 的签名和 refresh 凭据由 Engine Client Identity 管理；Network Supervisor 的 peer token 与 Ed25519 身份有独立管理入口，不能用此字段替代。
+
+错误或不一致的修改可能导致内部请求返回 `401`，更换签名值也可能使旧 WebSocket 票据失效。当前 UI 允许编辑不代表已有无缝轮换流程。若修改后出现认证失败，先检查同实例各组件是否使用一致配置，通过配置入口恢复有效值并重启受影响组件、重新建立连接；不要以关闭认证或删除设备档案代替排障。
 
 ## 5. 核心配置关系
 

@@ -6,23 +6,24 @@
 
 | 层 | 默认地址 | 面向对象 | 角色 |
 | --- | --- | --- | --- |
-| Engine | `http://127.0.0.1:9530/v1` | Admin、CLI、受控内部服务 | 会话与 runtime 权威真相 |
-| Admin | `http://127.0.0.1:9528/api` | Web、Phone、Shell 内页面 | 认证、代理、资源 URL 与人类可见规范化 |
-| Web | 默认 `http://127.0.0.1:9527/api`，冲突时使用运行时 profile 的 `19527-19546` | Web 页面自身 | 同源代理到 Admin，不创造第二套真相 |
+| Engine | `http://127.0.0.1:9530` | 本机客户端、CLI、Admin；远程 Phone 经网关 | `/v1` 控制面、`/api/client` 客户端 API、Owner/配对/设备凭据与执行状态 |
+| Admin（按需） | `http://127.0.0.1:9528/api` | 控制台页面 | 配置、治理和诊断，代理相应 Engine 管理 API |
+| Web | 默认 `http://127.0.0.1:9527/api`，冲突时使用运行时 profile 的 `19527-19546` | Web 页面自身 | 同源代理到 Engine，不创造第二套真相 |
 
 固定规则：
 
 1. Engine 是会话、run、runtime event、审批、产物和恢复状态的权威生产者。
-2. Web 和 Phone 通过 Admin 的 client-facing API 消费这些真相，不直连数据库，也不依赖 Engine 的本机私有地址。
+2. Web 通过本机同源代理访问 Engine；Phone 通过 Engine 的受鉴权客户端网关访问产品能力；Admin 不参与会话传输。客户端不得直连 Engine 数据库。
 3. Web、Admin、Phone 的实时与历史投影共用 `packages/session-realtime`。
-4. 本地 Web/Shell/桌宠是 trusted clients；Phone 是远程 paired client，认证流程不同。
+4. 本地 Web/Shell/桌宠是 trusted clients；Phone 是远程 paired client，认证流程不同。Shell 通过本机可信会话和受控通道编排这些入口。
 5. 本地绝对路径、secret、raw provider payload、ledger 和 trace 不能直接投影到普通客户端。
 
 ```mermaid
 flowchart LR
-  Web["Web same-origin API"] --> Admin["Admin broker"]
-  Phone["Paired Phone"] --> Admin
-  Admin --> Engine["Engine /v1"]
+  Web["Web same-origin API"] --> Engine["Engine client API / control plane"]
+  Phone["Paired Phone"] --> Gateway["Engine HTTPS gateway"]
+  Gateway --> Engine
+  Admin["Optional Admin"] --> Engine
   Engine --> Contract["session-realtime"]
   Contract --> Web
   Contract --> Phone
@@ -51,7 +52,7 @@ flowchart LR
 
 `turn-index` 是导航真相；客户端缓存可以加速首屏，但不能自行重排 canonical turn。reasoning、tool、approval、ask_user、session coordination 等节点有各自结构化类型，不能伪装成用户消息。
 
-### 2.2 Admin 客户端路由
+### 2.2 Engine 客户端路由
 
 客户端常用入口：
 
@@ -61,12 +62,16 @@ flowchart LR
 - `GET /api/client/conversations/{id}`
 - `GET /api/client/conversations/{id}/turn-index`
 - `GET /api/client/conversations/{id}/turns`
-- `GET /api/realtime/sessions/{id}/snapshot`
-- `GET /api/realtime/sessions/{id}/stream`
+- `GET /api/client/realtime/sessions/{id}/snapshot`
+- `GET /api/client/realtime/sessions/{id}/stream`
 
-Web 的 `/api/*` 再代理到这些 Admin 路由。不要在 Web 页面里拼 Engine URL，也不要为 Phone 复制一套不同字段名。
+Web 通过同源代理消费这些 Engine 路由；Phone 使用已配对网关的相同客户端接口。不要在页面里拼接 Engine 本机地址或为 Phone 复制不同字段名。网关按路由、设备身份和权限开放接口，不向远程端开放整个 `/v1` 控制面。
 
-### 2.3 排序与运行态
+### 2.3 Owner、配对与设备
+
+本机 CLI 和配置页使用 Engine 的 `/v1/client-identity/*` 管理 Owner、一次性配对票据、连接 manifest 和设备撤销。Phone 的配对、refresh 与设备凭据由 Engine 管理；Admin 无须保持运行。常用命令见 [CLI Phone 配置](./V8_AGENT_OS_CLI_REFERENCE_ZH.md#74-phone)。
+
+### 2.4 排序与运行态
 
 - `historySortAt`：历史列表排序真相。
 - `lastActivityAt`：综合活动时间，不用于随意重排历史。
@@ -99,7 +104,7 @@ Spec 阶段同意、ask_user 回答和安全副作用审批是不同语义，客
 - `GET|PUT /v1/sessions/{sessionId}/scope`
 - `POST /v1/sessions/{sessionId}/scope/re-resolve`
 
-客户端应消费 Admin 规范化后的资源引用，而不是裸 `C:\...`、`file://` 或 Engine 私网 URL。工作区显示名不改变底层路径和信任边界。
+`GET /v1/workspace/resource` 需要 `workspace_relative_path` 和 `path_plane` 查询参数，可选 `workspace_id`、`project_id`。客户端使用 Engine 客户端 API 返回的受限资源引用；本机 Web 可通过同源代理读取，Phone 经网关读取，不使用裸 `C:\...`、`file://` 或 Engine 私网 URL。工作区显示名不改变底层路径和信任边界。
 
 ### 4.2 source 与 artifact
 
@@ -153,7 +158,7 @@ Spec 阶段同意、ask_user 回答和安全副作用审批是不同语义，客
 - `GET /v1/config-registry/{domain}`
 - `POST /v1/config-registry/{domain}`
 
-Registry domain 使用 kebab-case API 名。页面不应直接修改 `~/.v8-agent-os/config.json`。
+Registry domain 使用 kebab-case API 名。页面不应直接修改 `~/.v8-agent-os/config.json`。`models` 域提供只读投影；整域写入返回 `410 model_bulk_write_deprecated`，模型变更通过 Model Hub 或 Config Broker 的细粒度事务完成。
 
 ### 6.2 模型
 
@@ -172,7 +177,7 @@ Registry domain 使用 kebab-case API 名。页面不应直接修改 `~/.v8-agen
 
 ### 6.3 Plugin Manager
 
-客户端使用 Admin 的 `/api/plugins/*`。Engine 内部对应路由当前位于 `/v1/api/plugins/*`，包括 catalog、installed、readiness、configuration requirements、OAuth、install jobs、Doctor、uninstall 和 grants。
+Admin 的 `/api/plugins/*` 提供插件管理，代理到 Engine `/v1/api/plugins/*`，包括 catalog、installed、readiness、configuration requirements、OAuth、install jobs、Doctor、uninstall 和 grants。Web/Phone 的 Engine 客户端接口提供 `GET /api/client/plugins/catalog` 与 `GET /api/client/plugins/mentions`，不等于开放全部管理接口。
 
 关键授权规则：
 
@@ -195,7 +200,7 @@ Registry domain 使用 kebab-case API 名。页面不应直接修改 `~/.v8-agen
 - `GET /v1/checkpoint-governance/operations/{operationId}`
 - `POST /v1/checkpoint-governance/operations/{operationId}/execute`
 
-plan/fork/replay 需要治理审批。跨用户、跨权限 patch、源状态漂移和插件 grant 继承会被拒绝或失效。checkpoint 使用 strict msgpack 与加密存储，不接受 pickle 或宽泛反序列化兼容。
+`plan` 创建 replay/fork 操作和审批请求；`execute` 只执行已批准操作。跨用户、跨权限 patch、源状态漂移和插件 grant 继承会被拒绝或失效。checkpoint 使用 strict msgpack 与加密存储，不接受 pickle 或宽泛反序列化兼容。
 
 ### 7.2 Storage Retention
 
@@ -223,4 +228,4 @@ API 出错时保留稳定错误码和可行动摘要；不要把栈、SQL、prov
 - Engine 测试地图：[apps/v8-agent-os-engine/tests/README.md](../apps/v8-agent-os-engine/tests/README.md)。
 - 桌面真实烟测：`.\v8os.cmd preview --rebuild`。
 
-修改 API 时至少同步检查 Engine 源头、Admin 代理、共享契约、Web 与 Phone 消费方；只让其中一个页面“能跑”不算契约闭环。
+修改 API 时同步检查 Engine 源头、受影响的客户端/管理代理、共享契约、Web 与 Phone 消费方，并验证实时、历史和重新加载的结果一致。

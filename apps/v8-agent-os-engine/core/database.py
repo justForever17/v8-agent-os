@@ -412,6 +412,31 @@ class DatabaseManager:
         """Initializes the database schema if it doesn't exist."""
         with self.get_connection() as conn:
             self._repair_known_schema_objects(conn)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS model_budget_reservations (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    run_id TEXT,
+                    project_id TEXT,
+                    provider_id TEXT,
+                    model_id TEXT,
+                    bucket_date TEXT NOT NULL,
+                    estimated_tokens INTEGER NOT NULL,
+                    estimated_cost REAL NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('reserved','in_flight','settled','released','unknown')),
+                    actual_tokens INTEGER,
+                    actual_cost REAL,
+                    ledger_accounted INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_model_budget_reservations_scope ON model_budget_reservations (state, bucket_date, run_id, project_id)')
+            reservation_columns = {row[1] for row in conn.execute('PRAGMA table_info(model_budget_reservations)').fetchall()}
+            if 'ledger_accounted' not in reservation_columns:
+                conn.execute('ALTER TABLE model_budget_reservations ADD COLUMN ledger_accounted INTEGER NOT NULL DEFAULT 0')
+            conn.commit()
             schema_version_row = conn.execute("PRAGMA user_version").fetchone()
             schema_version = int(schema_version_row[0] if schema_version_row else 0)
             if schema_version == DATABASE_SCHEMA_VERSION:
@@ -12840,8 +12865,8 @@ class DatabaseManager:
     def add_model_invocation_log(self, record: Dict[str, Any]):
         self.observability_db.add_model_invocation_log(record)
 
-    def upsert_usage_ledger(self, record: Dict[str, Any]):
-        with self.get_connection() as conn:
+    def upsert_usage_ledger(self, record: Dict[str, Any], *, connection=None):
+        with (nullcontext(connection) if connection is not None else self.get_connection()) as conn:
             conn.execute(
                 '''
                 INSERT INTO usage_ledger (
@@ -12881,7 +12906,8 @@ class DatabaseManager:
                     float(record.get("latency_ms_total") or 0.0),
                 ),
             )
-            conn.commit()
+            if connection is None:
+                conn.commit()
 
     def add_provider_health_log(self, record: Dict[str, Any]):
         self.observability_db.add_provider_health_log(record)
@@ -13128,8 +13154,8 @@ class DatabaseManager:
                 "latency_ms_total": 0.0,
             }
 
-    def get_run_invocation_totals(self, run_id: str) -> Dict[str, Any]:
-        return self.observability_db.get_run_invocation_totals(run_id)
+    def get_run_invocation_totals(self, run_id: str, *, unreserved_only: bool = False) -> Dict[str, Any]:
+        return self.observability_db.get_run_invocation_totals(run_id, unreserved_only=unreserved_only)
 
     # --- Scope Binding / Project Registry Cache Operations ---
 

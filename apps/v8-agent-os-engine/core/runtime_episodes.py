@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from erc.runtime_context import get_runtime_context
-from core.time_truth import utc_now_iso
+from core.time_truth import normalize_utc_iso, utc_now_iso
 from core.database import (
     RUNTIME_HANDOFF_SCHEMA_VERSION,
     TERMINAL_EPISODE_STATES,
@@ -42,6 +43,44 @@ TYPED_HANDOFF_KINDS = {
 
 class RuntimeEpisodeDurabilityError(RuntimeError):
     """Canonical episode state could not be durably persisted or fenced."""
+
+
+def runtime_episode_deadline_at(episode: Mapping[str, Any]) -> str | None:
+    """Resolve explicit total deadlines, never invent a duration for a task.
+
+    A single-brief episode owns that brief's budget. A multi-brief episode has
+    its own deadline; each direct-worker episode retains its separate budget.
+    """
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    candidates = [episode.get("deadlineAt"), episode.get("deadline_at"), inputs.get("deadlineAt")]
+    budget = inputs.get("budget") or {}
+    if isinstance(budget, Mapping):
+        candidates.append(budget.get("deadlineAt"))
+    briefs = inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or []
+    if isinstance(briefs, list) and len(briefs) == 1 and isinstance(briefs[0], Mapping):
+        budget = briefs[0].get("budget") or {}
+        if isinstance(budget, Mapping):
+            candidates.append(budget.get("deadlineAt"))
+    values = []
+    for raw in candidates:
+        if raw is None or raw == "":
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00")) if isinstance(raw, str) else None
+        except ValueError:
+            parsed = None
+        value = normalize_utc_iso(parsed) if parsed is not None and parsed.tzinfo is not None else None
+        if value is None:
+            raise ValueError("episode_deadline_invalid: deadlineAt must be an ISO-8601 timestamp with timezone or null")
+        values.append(value)
+    return min(values) if values else None
+
+
+def runtime_episode_deadline_remaining(episode: Mapping[str, Any]) -> float | None:
+    deadline = runtime_episode_deadline_at(episode)
+    if deadline is None:
+        return None
+    return (datetime.fromisoformat(deadline.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
 
 
 def runtime_episode_parent_id(episode: Mapping[str, Any]) -> str:
@@ -794,6 +833,16 @@ def build_runtime_episode(
         episode["idempotencyKey"] = f"episode:{episode_id}"
     if extra:
         episode.update({k: v for k, v in dict(extra).items() if v is not None})
+    deadline = runtime_episode_deadline_at(episode)
+    parent_id = runtime_episode_parent_id(episode)
+    if parent_id:
+        parent = db.get_runtime_episode(parent_id)
+        if parent:
+            parent_deadline = runtime_episode_deadline_at(parent)
+            if parent_deadline:
+                deadline = min(deadline, parent_deadline) if deadline else parent_deadline
+    if deadline:
+        episode["deadlineAt"] = deadline
     return episode
 
 

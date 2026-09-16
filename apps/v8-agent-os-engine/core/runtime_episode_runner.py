@@ -15,7 +15,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from core.database import db
-from core.runtime_episode_control import EpisodeControlCancelled, acknowledge_stopped, cancellation_requested
+from core.runtime_episode_control import (
+    EpisodeControlCancelled, EpisodeDeadlineExceeded, acknowledge_stopped,
+    assert_episode_deadline_current, cancellation_requested,
+)
 from core.runtime_episode_control import publish_attention
 from core.runtime_episode_control import reconcile_episode_attention
 from core.json_safe import to_jsonable
@@ -30,6 +33,8 @@ from core.runtime_episodes import (
     build_handoff_ref,
     build_runtime_episode,
     resolve_runtime_episode_current_handoff,
+    runtime_episode_deadline_at,
+    runtime_episode_deadline_remaining,
 )
 from core.time_truth import utc_now_iso
 from core.user_language import infer_preferred_language, normalize_preferred_language
@@ -1239,6 +1244,18 @@ class RuntimeEpisodeRunner:
     async def _settle_parked_episode_cancellations(self) -> None:
         """Cancel queued/waiting descendants without dispatching their executor."""
         with db.get_connection() as conn:
+            expired_candidates = conn.execute(
+                "SELECT id FROM runtime_episodes WHERE deadline_at IS NOT NULL "
+                "AND COALESCE(worker_id,'')='' AND state IN "
+                "('detected','routed','queued','retry','waiting','waiting_dependency','waiting_child',"
+                "'waiting_external','waiting_approval','waiting_input')"
+            ).fetchall()
+        for row in expired_candidates:
+            episode = db.get_runtime_episode(row['id']) or {}
+            remaining = runtime_episode_deadline_remaining(episode)
+            if remaining is not None and remaining <= 0:
+                self._request_deadline_stop(row['id'])
+        with db.get_connection() as conn:
             rows = conn.execute(
                 "WITH RECURSIVE family(id) AS (SELECT episode_id FROM runtime_episode_events "
                 "WHERE topic='runtime.episode.message' AND state='pending' AND json_extract(payload_json, '$.kind')='cancel' "
@@ -1258,12 +1275,20 @@ class RuntimeEpisodeRunner:
             stopped_processes = await asyncio.to_thread(terminate_episode_background_commands, row["id"])
             if not stopped_processes["confirmed"]:
                 continue
-            stopped = db.complete_runtime_episode(row["id"], state="cancelled", expected_state=episode.get("state"),
-                                                   error_code="episode_cancelled", error_message="Cancelled while parked; no executor dispatched.")
+            remaining = runtime_episode_deadline_remaining(episode)
+            expired = remaining is not None and remaining <= 0
+            stopped = db.complete_runtime_episode(row["id"], state="failed" if expired else "cancelled", expected_state=episode.get("state"),
+                error_code="episode_deadline_exceeded" if expired else "episode_cancelled",
+                error_message="Deadline expired while parked; no executor dispatched." if expired else "Cancelled while parked; no executor dispatched.",
+                metadata={"recoverable": False, "executorSettled": True, "writesTerminated": True} if expired else None)
             if stopped:
                 acknowledge_stopped(row["id"], run_id=str(episode.get("run_id") or ""))
-                self._emit("runtime.episode.cancelled", episode=stopped, session_id=episode.get("session_id"), run_id=episode.get("run_id"),
+                self._emit("runtime.episode.failed" if expired else "runtime.episode.cancelled", episode=stopped, session_id=episode.get("session_id"), run_id=episode.get("run_id"),
                            cancellation={"executorSettled": True, "writesTerminated": True})
+                if expired:
+                    self._resume_cross_episode_dependents(stopped)
+                    self._maybe_schedule_chat_handoff_resume(stopped)
+                    self._maybe_resume_parent_episode(stopped, session_id=episode.get("session_id"), run_id=episode.get("run_id"))
 
     def _recover_parent_wakes(self, *, restart: bool = False) -> None:
         """Retry lost notifications from durable facts, without a model heartbeat.
@@ -1417,8 +1442,9 @@ class RuntimeEpisodeRunner:
             else None
         )
         claim_context_token = _RUNTIME_EPISODE_CLAIM_CONTEXT.set(claim_context)
-        self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
         try:
+            assert_episode_deadline_current(episode, run_id or "")
+            self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
             self._heartbeat(episode_id, "executor starting")
             if bool(episode.get("contractCorrupted")):
                 self._complete_corrupted_episode_contract(
@@ -1609,6 +1635,7 @@ class RuntimeEpisodeRunner:
             else:
                 final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
             recovery = self._build_recovery_bundle(episode, handoff, final_state=final_state)
+            self._raise_if_episode_cancelled(episode_id, run_id=run_id)
             delivery = self._require_claim_write(
                 episode_id,
                 db.commit_runtime_episode_delivery(
@@ -1651,10 +1678,13 @@ class RuntimeEpisodeRunner:
             self._resume_cross_episode_dependents(completed)
             self._maybe_schedule_chat_handoff_resume(completed)
             self._maybe_resume_parent_episode(completed, session_id=session_id, run_id=run_id)
-        except (RuntimeEpisodeCancelled, RuntimeEpisodeLeaseLost, EpisodeControlCancelled) as exc:
+        except (RuntimeEpisodeCancelled, RuntimeEpisodeLeaseLost, EpisodeControlCancelled, RuntimeEpisodeDeadlineExceeded) as exc:
             if isinstance(exc, RuntimeEpisodeLeaseLost):
                 logger.warning("Discarded stale runtime episode result for %s: %s", episode_id or "<unknown>", exc)
             else:
+                expired = isinstance(exc, (RuntimeEpisodeDeadlineExceeded, EpisodeDeadlineExceeded))
+                if expired and not self._request_deadline_stop(episode_id):
+                    return  # A superseded worker cannot cancel the current owner.
                 from core.tools.native.command import terminate_episode_background_commands
                 while True:
                     process_stop = await asyncio.to_thread(terminate_episode_background_commands, episode_id)
@@ -1665,44 +1695,24 @@ class RuntimeEpisodeRunner:
                         return
                     await asyncio.sleep(0.2)
                 stopped = db.complete_runtime_episode(
-                    episode_id, state="cancelled", error_code="episode_cancelled",
-                    error_message="Executor settled after cancellation.",
+                    episode_id, state="failed" if expired else "cancelled",
+                    error_code="episode_deadline_exceeded" if expired else "episode_cancelled",
+                    error_message=str(exc) if expired else "Executor settled after cancellation.",
+                    metadata={"recoverable": False, "deadlineAt": runtime_episode_deadline_at(episode),
+                              "deadlineSeconds": getattr(exc, 'deadline_seconds', None),
+                              "executorSettled": True, "writesTerminated": True} if expired else None,
                     **self._claim_fence_kwargs(episode_id),
                 )
                 if stopped:
                     acknowledge_stopped(episode_id, run_id=run_id or "")
-                    self._emit("runtime.episode.cancelled", episode=stopped, session_id=session_id, run_id=run_id,
+                    self._emit("runtime.episode.failed" if expired else "runtime.episode.cancelled", episode=stopped, session_id=session_id, run_id=run_id,
+                               **({"error": {"code": "episode_deadline_exceeded", "message": str(exc), "recoverable": False}} if expired else {}),
                                cancellation={"executorSettled": True, "writesTerminated": True})
                     self._maybe_schedule_chat_handoff_resume(stopped)
+                    if expired:
+                        self._resume_cross_episode_dependents(stopped)
+                        self._maybe_resume_parent_episode(stopped, session_id=session_id, run_id=run_id)
             return
-        except RuntimeEpisodeDeadlineExceeded as exc:
-            failed = self._require_claim_write(
-                episode_id,
-                db.complete_runtime_episode(
-                    episode_id,
-                    state="failed",
-                    error_code="episode_deadline_exceeded",
-                    error_message=str(exc),
-                    metadata={"recoverable": False, "deadlineSeconds": exc.deadline_seconds},
-                    **self._claim_fence_kwargs(episode_id),
-                ),
-                action="persisting an episode deadline failure",
-            )
-            self._emit(
-                "runtime.episode.failed",
-                episode=failed,
-                error={
-                    "code": "episode_deadline_exceeded",
-                    "message": str(exc),
-                    "recoverable": False,
-                    "deadlineSeconds": exc.deadline_seconds,
-                },
-                session_id=session_id,
-                run_id=run_id,
-            )
-            self._resume_cross_episode_dependents(failed)
-            self._maybe_schedule_chat_handoff_resume(failed)
-            self._maybe_resume_parent_episode(failed, session_id=session_id, run_id=run_id)
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             if self._can_retry(episode):
@@ -1775,8 +1785,33 @@ class RuntimeEpisodeRunner:
         return str(run.get("status") or "").strip().lower() in {"cancelled", "canceled"}
 
     def _raise_if_episode_cancelled(self, episode_id: str, *, run_id: str | None = None) -> None:
+        episode = db.get_runtime_episode(episode_id) or {}
+        assert_episode_deadline_current(episode, str(run_id or episode.get('run_id') or ''))
         if self._episode_cancellation_requested(episode_id, run_id=run_id):
             raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
+
+    def _request_deadline_stop(self, episode_id: str) -> bool:
+        fence = self._claim_fence_kwargs(episode_id)
+        # The existing durable cancel ledger immediately fences this episode's
+        # descendants and tool entry points while the executor is settling. The
+        # claim check and event must be atomic with respect to a new owner.
+        def commit():
+            with db.get_connection() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                episode = conn.execute('SELECT * FROM runtime_episodes WHERE id=?', (episode_id,)).fetchone()
+                if not episode or episode['state'] in {'completed', 'degraded', 'failed', 'cancelled', 'merged'}:
+                    return False
+                if fence and (episode['worker_id'] != fence['worker_id']
+                              or episode['lease_generation'] != fence['lease_generation']):
+                    return False
+                db.append_runtime_episode_message(
+                    episode_id=episode_id, session_id=str(episode['session_id'] or ''),
+                    run_id=str(episode['run_id'] or ''), recipient=episode_id,
+                    kind='cancel', request_id=f'deadline:{episode_id}',
+                    content={'followup': 'Episode total deadline exceeded.'}, _connection=conn)
+                conn.commit()
+                return True
+        return db._run_write_with_retry(commit)
 
     def _claim_fence_kwargs(self, episode_id: str) -> dict[str, Any]:
         claim = _RUNTIME_EPISODE_CLAIM_CONTEXT.get()
@@ -1799,6 +1834,8 @@ class RuntimeEpisodeRunner:
         settle_seconds: float = _EPISODE_CANCEL_SETTLE_SECONDS,
     ) -> None:
         if task.done():
+            if not task.cancelled():
+                task.exception()  # Retrieve a rejected late result before discarding it.
             return
         if not task.cancelling():
             task.cancel()
@@ -1848,21 +1885,22 @@ class RuntimeEpisodeRunner:
         loop = asyncio.get_running_loop()
         next_heartbeat_at = loop.time()
         deadline_at = (
-            loop.time() + max(0.01, float(deadline_seconds))
+            loop.time() + max(0.0, float(deadline_seconds))
             if deadline_seconds is not None
             else None
         )
         try:
             while True:
-                if self._episode_cancellation_requested(episode_id, run_id=run_id):
-                    await self._stop_awaitable_task(task, episode_id=episode_id)
-                    raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
-                if task.done():
-                    return await task
                 now = loop.time()
                 if deadline_at is not None and now >= deadline_at:
+                    owns_deadline = self._request_deadline_stop(episode_id)
                     await self._stop_awaitable_task(task, episode_id=episode_id)
+                    if not owns_deadline:
+                        raise RuntimeEpisodeLeaseLost(f"Episode {episode_id} no longer owns deadline cancellation.")
                     raise RuntimeEpisodeDeadlineExceeded(episode_id, float(deadline_seconds or 0.0))
+                self._raise_if_episode_cancelled(episode_id, run_id=run_id)
+                if task.done():
+                    return await task
                 if progress and now >= next_heartbeat_at:
                     self._heartbeat(episode_id, progress)
                     next_heartbeat_at = now + max(0.1, heartbeat_interval_seconds)
@@ -1875,7 +1913,7 @@ class RuntimeEpisodeRunner:
                     await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
                 except asyncio.TimeoutError:
                     continue
-        except RuntimeEpisodeLeaseLost:
+        except (RuntimeEpisodeLeaseLost, EpisodeDeadlineExceeded):
             # A stale owner must stop its in-flight executor, not merely stop
             # waiting for it. Keep the lease failure visible to the caller.
             await self._stop_awaitable_task(task, episode_id=episode_id)
@@ -1902,12 +1940,17 @@ class RuntimeEpisodeRunner:
 
     @staticmethod
     def _episode_executor_deadline_seconds(episode: dict[str, Any]) -> float | None:
+        remaining = runtime_episode_deadline_remaining(episode)
+        if remaining is not None:
+            return max(0.0, remaining)
         kind = str(episode.get("kind") or "").strip().lower()
         if kind == "creative_media":
             return _CREATIVE_MEDIA_EPISODE_DEADLINE_SECONDS
         return None
 
     def _heartbeat(self, episode_id: str, progress: str) -> None:
+        episode = db.get_runtime_episode(episode_id) or {}
+        assert_episode_deadline_current(episode, str(episode.get('run_id') or ''))
         if self._episode_cancellation_requested(episode_id):
             if self._claim_fence_kwargs(episode_id):
                 raise RuntimeEpisodeCancelled(
@@ -1975,11 +2018,14 @@ class RuntimeEpisodeRunner:
         )
 
     async def _await_with_heartbeat(self, episode_id: str, awaitable: Any, *, progress: str, interval_seconds: float = 20.0) -> Any:
+        episode = db.get_runtime_episode(episode_id) or {}
         return await self._await_cancellable_task(
             episode_id,
             awaitable,
             progress=progress,
             heartbeat_interval_seconds=interval_seconds,
+            run_id=episode.get('run_id'),
+            deadline_seconds=self._episode_executor_deadline_seconds(episode),
         )
 
     @staticmethod
@@ -2249,6 +2295,7 @@ class RuntimeEpisodeRunner:
         parent_id = str(episode.get("episodeId") or episode.get("id") or "")
         child_ids: list[str] = []
         for index, child_need in enumerate(self._child_needs_from_episode(episode), start=1):
+            self._raise_if_episode_cancelled(parent_id, run_id=run_id)
             child_kind = str(child_need.get("kind") or child_need.get("runtimeKind") or "delegation")
             child_need.setdefault("source", f"{episode.get('kind') or 'runtime'}_episode")
             child_need.setdefault("reason", child_need.get("reason") or f"Child capability requested by {parent_id}.")
@@ -8719,7 +8766,7 @@ class RuntimeEpisodeRunner:
                 branch = dict(arg.get("parallel_branch") or branch)
                 try:
                     _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
-                        str(episode.get("episodeId") or ""),
+                        str((direct_episode or episode).get("episodeId") or ""),
                         _run_parallel_agent_branch(arg, agent_data, progress_callback=_progress),
                         progress=f"delegation: running subagent {agent_id or 'worker'}",
                         interval_seconds=8.0,
@@ -8746,7 +8793,7 @@ class RuntimeEpisodeRunner:
                     if retry_arg is None:
                         raise
                     _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
-                        str(episode.get("episodeId") or ""),
+                        str((direct_episode or episode).get("episodeId") or ""),
                         _run_parallel_agent_branch(retry_arg, agent_data, progress_callback=_progress),
                         progress=f"delegation: retry safe verification for {agent_id or 'worker'}",
                         interval_seconds=8.0,
@@ -8824,6 +8871,7 @@ class RuntimeEpisodeRunner:
                 if branch_child_ids:
                     summary["childEpisodeIds"] = branch_child_ids
                     summary["status"] = "waiting_child_delegation"
+                self._raise_if_episode_cancelled(str((direct_episode or episode).get('episodeId') or ''), run_id=run_id)
                 summary = _finalize_managed_branch_workspace(branch, summary)
                 summary = self._attach_workspace_dependency_lineage(
                     summary,
@@ -8875,6 +8923,23 @@ class RuntimeEpisodeRunner:
                 if task_id:
                     completed_by_task_id[task_id] = summary
                 child_episode_ids.extend(branch_child_ids)
+            except (RuntimeEpisodeDeadlineExceeded, EpisodeDeadlineExceeded) as exc:
+                if not direct_episode or not manage_direct_episode:
+                    raise
+                direct_id = str(direct_episode.get('episodeId') or direct_episode.get('id') or '')
+                self._request_deadline_stop(direct_id)
+                from core.tools.native.command import terminate_episode_background_commands
+                while not (await asyncio.to_thread(terminate_episode_background_commands, direct_id))['confirmed']:
+                    await asyncio.sleep(.2)
+                summary = {'taskBriefId': task_id, 'delegationId': direct_id, 'status': 'failed',
+                           'errorCode': 'episode_deadline_exceeded', 'error': str(exc),
+                           'summary': 'The delegated task exceeded its explicit total deadline after executor settlement.',
+                           'recoverable': False}
+                _finalize_direct_delegation_episode(branch, summary)
+                acknowledge_stopped(direct_id, run_id=run_id or '')
+                results.append(summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
             except asyncio.CancelledError:
                 if direct_episode and manage_direct_episode:
                     from core.tools.native.command import terminate_episode_background_commands

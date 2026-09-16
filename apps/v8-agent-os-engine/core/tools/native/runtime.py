@@ -29,6 +29,7 @@ from core.runtime_episodes import (
     enqueue_runtime_episode,
     normalize_capability_kind,
     resolve_runtime_episode_current_handoff,
+    runtime_episode_deadline_at,
     upsert_runtime_episode,
 )
 from core.runtime_tool_access import (
@@ -209,6 +210,14 @@ class RuntimeRouteTaskBrief(BaseModel):
         validation_alias=AliasChoices("budget", "executionBudget", "execution_budget"),
         description="Task-local execution budget contract projected to the worker; runtime budget services remain authoritative.",
     )
+
+    @field_validator("budget")
+    @classmethod
+    def _validate_budget_deadline(cls, value):
+        if "deadlineAt" in value:
+            value = {**value, "deadlineAt": runtime_episode_deadline_at({"deadlineAt": value["deadlineAt"]})}
+        return value
+
     failurePolicy: dict[str, Any] = Field(
         default_factory=dict,
         validation_alias=AliasChoices("failurePolicy", "failure_policy"),
@@ -554,6 +563,16 @@ class RuntimeBrokerArgs(BaseModel):
         default=None,
         description="For mode=route: one short sentence explaining why this runtime is the correct path.",
     )
+    deadlineAt: str | None = Field(
+        default=None,
+        description="Optional user/task total deadline as an ISO-8601 timestamp with timezone, including queue and execution time. Omit/null for no total deadline; never invent a limit. A child cannot extend its parent's deadline.",
+    )
+
+    @field_validator("deadlineAt")
+    @classmethod
+    def _validate_deadline(cls, value):
+        return runtime_episode_deadline_at({"deadlineAt": value})
+
     workspacePath: str | None = Field(
         default=None,
         description="For mode=route: current bound workspace root; omit when session binding already supplies it.",
@@ -714,6 +733,7 @@ def _route_need_from_public_transport(
     task_briefs: Any = None,
     proof_expectations: Any = None,
     parent_acceptance: Any = None,
+    deadline_at: Any = None,
 ) -> Any:
     """Restore the provider-safe root transport to the canonical route need."""
 
@@ -730,6 +750,7 @@ def _route_need_from_public_transport(
         task_briefs,
         proof_expectations,
         parent_acceptance,
+        deadline_at,
     ]
     has_root_transport = any(item not in (None, "", [], {}) for item in root_values)
     if isinstance(legacy, dict):
@@ -786,6 +807,8 @@ def _route_need_from_public_transport(
         "reason": route_reason,
         "inputs": inputs,
     }
+    if deadline_at is not None:
+        payload["deadlineAt"] = runtime_episode_deadline_at({"deadlineAt": deadline_at})
     if transport_errors:
         payload["transportErrors"] = transport_errors
     return payload
@@ -4406,6 +4429,7 @@ def runtime_broker(
         "For mode=route: research, engineering, creative_media, computer_use, rpa, or delegation.",
     ] = None,
     routeReason: Annotated[Optional[str], "For mode=route: one short routing reason."] = None,
+    deadlineAt: Annotated[Optional[str], "Explicit total ISO-8601 deadline including queue time; omit/null for no deadline."] = None,
     workspacePath: Annotated[Optional[str], "Current bound workspace root; normally omit it."] = None,
     forceRefresh: Annotated[
         Optional[bool],
@@ -4555,6 +4579,7 @@ def runtime_broker(
         task_briefs=taskBriefs,
         proof_expectations=proofExpectations,
         parent_acceptance=parentAcceptance,
+        deadline_at=deadlineAt,
     )
     route_context = dict((state or {}).get("current_route_context") or {})
     if normalized_mode == "resume":

@@ -143,6 +143,7 @@ apps/v8-agent-os-engine/scripts/SCRIPT_MIGRATION_MAP.md
 
 # Local live-test outputs stay out of public engine tests.
 /.artifacts/conversation-recovery/
+/.artifacts/device-connect-ui/
 apps/v8-agent-os-engine/reports/
 apps/v8-agent-os-engine/tests/artifacts/computer_use_live/*.json
 apps/v8-agent-os-engine/tests/artifacts/computer_use_real_host_matrix/*.json

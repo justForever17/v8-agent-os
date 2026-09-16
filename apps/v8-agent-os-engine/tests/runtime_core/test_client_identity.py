@@ -357,6 +357,56 @@ def test_manifest_retains_transport_profiles_without_promoting_old_admin(identit
     assert "phone_profile_endpoint_migration_required:old" in manifest["warnings"]
 
 
+def test_pairing_display_and_ticket_use_engine_selected_phone_endpoint(identity):
+    from urllib.parse import parse_qs, urlsplit
+    identity.config_reader = lambda: {"remoteLink": {"activeProfileId": "vpn", "phoneGateway": {
+        "publicBaseUrl": "https://gateway.example.invalid"}, "transportProfiles": [
+            {"id": "vpn", "kind": "tailscale", "phoneBaseUrl": "https://phone-vpn.example.invalid",
+             "adminBaseUrl": "https://admin.example.invalid"}]}}
+    manifest = identity.manifest("http://127.0.0.1:9530")
+    assert manifest["pairing"] == {"available": True, "baseUrl": "https://phone-vpn.example.invalid",
+                                    "reason": "", "reachability": "not_verified"}
+    ticket = identity.create_ticket()
+    assert ticket["adminBaseUrl"] == manifest["pairing"]["baseUrl"]
+    assert parse_qs(urlsplit(ticket["pairingUri"]).query)["admin"] == [ticket["adminBaseUrl"]]
+    assert "127.0.0.1" not in ticket["pairingUri"]
+    receipt = identity.consume_ticket(code=ticket["pairingCode"], instance_id=ticket["instanceId"])
+    assert receipt["adminBaseUrl"] == ticket["adminBaseUrl"]
+    assert identity.verify_access(receipt["accessToken"]).surface == "phone"
+
+
+@pytest.mark.parametrize("remote,reason", [
+    ({}, "pairing_reachable_https_required"),
+    ({"enabled": False, "phoneGateway": {"publicBaseUrl": "https://phone.example.invalid"}}, "remote_link_disabled"),
+    ({"phoneGateway": {"enabled": False, "publicBaseUrl": "https://phone.example.invalid"}}, "phone_gateway_disabled"),
+    ({"activeProfileId": "old", "transportProfiles": [{"id": "old", "adminBaseUrl": "https://admin.example.invalid"}]}, "pairing_reachable_https_required"),
+    ({"activeProfileId": "off", "transportProfiles": [{"id": "off", "enabled": False, "phoneBaseUrl": "https://off.example.invalid"}]}, "pairing_reachable_https_required"),
+])
+def test_unconfigured_or_disabled_phone_does_not_offer_local_origin_or_issue_ticket(identity, remote, reason):
+    identity.config_reader = lambda: {"remoteLink": remote}
+    pairing = identity.manifest("http://127.0.0.1:9530")["pairing"]
+    assert not pairing["available"] and pairing["baseUrl"] == "" and pairing["reason"] == reason
+    with pytest.raises(IdentityError, match=reason):
+        identity.create_ticket()
+    if reason in ("remote_link_disabled", "phone_gateway_disabled"):
+        with pytest.raises(IdentityError, match=reason):
+            identity.create_ticket(base_url="https://override.example.invalid")
+    with identity.database() as db:
+        assert db.execute("SELECT COUNT(*) FROM client_pairing_tickets").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("address", ["https://127.8.9.10", "https://localhost.", "https://test.localhost",
+    "https://[::ffff:127.0.0.1]", "https://127.1", "https://2130706433", "https://0x7f000001", "https://0177.0.0.1",
+    "https://0.0.0.0", "https://[::]", "https://phone.invalid:99999", "http://192.168.1.10:9532"])
+def test_phone_pairing_rejects_non_remote_origins_before_ticket_write(identity, address):
+    identity.config_reader = lambda: {"remoteLink": {"phoneGateway": {"publicBaseUrl": address}}}
+    assert not identity.manifest("")["pairing"]["available"]
+    with pytest.raises(IdentityError, match="pairing_reachable_https_required"):
+        identity.create_ticket(base_url=address)
+    with identity.database() as db:
+        assert db.execute("SELECT COUNT(*) FROM client_pairing_tickets").fetchone()[0] == 0
+
+
 def test_restored_instance_does_not_overwrite_existing_os_keys(identity, tmp_path):
     import shutil
     pair = paired(identity)

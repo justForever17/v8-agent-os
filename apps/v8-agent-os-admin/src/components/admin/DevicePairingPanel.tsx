@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Clipboard, Loader2, QrCode, Trash2 } from "lucide-react";
+import { Check, Clipboard, Loader2, QrCode, RefreshCw, Settings2, Trash2 } from "lucide-react";
 import Image from "next/image";
-import QRCode from "qrcode";
+import Link from "next/link";
 
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Button } from "@/components/ui/button";
@@ -29,8 +29,9 @@ type DeviceSession = {
 
 type DeviceSessionsPayload = { devices?: DeviceSession[] };
 const DEVICE_SESSIONS_URL = "/api/client/devices";
+type PairingManifest = { instanceId?: string; pairing?: { available: boolean; baseUrl: string; reason: string } };
 
-export function DevicePairingPanel() {
+export function DevicePairingPanel({ onConfigure }: { onConfigure?: () => void } = {}) {
     const t = useT();
     const cachedDevices = peekAdminJsonCache<DeviceSessionsPayload>(DEVICE_SESSIONS_URL);
     const [ticket, setTicket] = useState<PairingTicket | null>(null);
@@ -41,6 +42,24 @@ export function DevicePairingPanel() {
     const [devicesBusy, setDevicesBusy] = useState(() => !cachedDevices);
     const [revokingId, setRevokingId] = useState("");
     const [qrDataUrl, setQrDataUrl] = useState("");
+    const [manifest, setManifest] = useState<PairingManifest | null>(null);
+    const [addressBusy, setAddressBusy] = useState(true);
+    const [addressFailed, setAddressFailed] = useState(false);
+    const loadAddress = useCallback(async (signal?: AbortSignal) => {
+        setAddressBusy(true);
+        setAddressFailed(false);
+        try {
+            const response = await fetch("/api/client/link/manifest", { cache: "no-store", signal });
+            if (!response.ok) throw new Error("manifest_unavailable");
+            const next = await response.json() as PairingManifest;
+            if (!next.pairing) throw new Error("pairing_manifest_unavailable");
+            if (!signal?.aborted) setManifest(next);
+        } catch {
+            if (!signal?.aborted) { setManifest(null); setAddressFailed(true); }
+        } finally {
+            if (!signal?.aborted) setAddressBusy(false);
+        }
+    }, []);
 
     const loadDevices = useCallback(async (force = false) => {
         if (!peekAdminJsonCache<DeviceSessionsPayload>(DEVICE_SESSIONS_URL)) setDevicesBusy(true);
@@ -59,27 +78,34 @@ export function DevicePairingPanel() {
     }, [loadDevices]);
 
     useEffect(() => {
+        const controller = new AbortController();
+        void loadAddress(controller.signal);
+        return () => controller.abort();
+    }, [loadAddress]);
+
+    useEffect(() => {
         if (!ticket?.pairingUri) {
             setQrDataUrl("");
             return;
         }
         let cancelled = false;
-        QRCode.toDataURL(ticket.pairingUri, {
+        import("qrcode").then(({ default: QRCode }) => QRCode.toDataURL(ticket.pairingUri, {
             width: 240,
             margin: 1,
             errorCorrectionLevel: "M",
             color: { dark: "#0f172a", light: "#ffffff" },
-        }).then((value) => {
+        })).then((value) => {
             if (!cancelled) setQrDataUrl(value);
         }).catch(() => {
-            if (!cancelled) setQrDataUrl("");
+            if (!cancelled) { setQrDataUrl(""); setError(t("components.admin.DevicePairingPanel.createFailed")); }
         });
         return () => {
             cancelled = true;
         };
-    }, [ticket]);
+    }, [ticket, t]);
 
     async function createTicket() {
+        if (addressBusy || !manifest?.pairing?.available) return;
         setBusy(true);
         setError("");
         setCopied(false);
@@ -94,7 +120,12 @@ export function DevicePairingPanel() {
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || !payload?.pairingCode || !payload?.pairingUri) {
-                throw new Error(String(payload?.error || t("components.admin.DevicePairingPanel.createFailed")));
+                const reason = String(payload?.error || "");
+                if (["pairing_reachable_https_required", "phone_gateway_disabled", "remote_link_disabled"].includes(reason)) {
+                    void loadAddress();
+                    throw new Error(t("components.admin.DevicePairingPanel.addressRequired"));
+                }
+                throw new Error(t("components.admin.DevicePairingPanel.createFailed"));
             }
             setTicket(payload as PairingTicket);
         } catch (nextError) {
@@ -107,9 +138,10 @@ export function DevicePairingPanel() {
 
     async function copyPairingUri() {
         if (!ticket?.pairingUri) return;
-        await navigator.clipboard.writeText(ticket.pairingUri);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1600);
+        try {
+            await navigator.clipboard.writeText(ticket.pairingUri);
+            setCopied(true);
+        } catch { setError(t("components.admin.DevicePairingPanel.copyFailed")); }
     }
 
     async function revokeDevice(deviceSessionId: string) {
@@ -135,6 +167,25 @@ export function DevicePairingPanel() {
 
     return (
         <div className="rounded-lg border border-border bg-muted/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+            <div className="mb-4 grid gap-2">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-muted-foreground">{t("components.admin.DevicePairingPanel.phoneAddress")}</span>
+                    <Button type="button" variant="ghost" size="icon" className="h-9 w-9" disabled={addressBusy || busy} onClick={() => { setTicket(null); void loadAddress(); }} aria-label={t("components.admin.DevicePairingPanel.refreshAddress")}>
+                        {addressBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    </Button>
+                </div>
+                {ticket?.adminBaseUrl || manifest?.pairing?.baseUrl ? (
+                    <>
+                        <div className="break-all font-mono text-sm" data-testid="phone-pairing-address">{ticket?.adminBaseUrl || manifest?.pairing?.baseUrl}</div>
+                        <p className="text-xs text-muted-foreground">{t("components.admin.DevicePairingPanel.addressHint")}</p>
+                    </>
+                ) : !addressBusy ? (
+                    <p role="status" className="text-sm text-muted-foreground">{t(addressFailed ? "components.admin.DevicePairingPanel.addressLoadFailed" : "components.admin.DevicePairingPanel.addressRequired")}</p>
+                ) : null}
+                <Link href="/admin/system-base?section=phone" onClick={onConfigure} className="inline-flex min-h-9 w-fit items-center gap-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2">
+                    <Settings2 className="h-4 w-4" aria-hidden="true" />{t("components.admin.DevicePairingPanel.configureAddress")}
+                </Link>
+            </div>
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
                 <div className="min-w-0 flex-1">
                     <div className="inline-flex max-w-full text-sm font-semibold text-foreground dark:text-slate-100">
@@ -144,7 +195,7 @@ export function DevicePairingPanel() {
                     </div>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
-                    <Button type="button" onClick={() => void createTicket()} disabled={busy}>
+                    <Button type="button" onClick={() => void createTicket()} disabled={busy || addressBusy || !manifest?.pairing?.available}>
                         {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <QrCode className="mr-2 h-4 w-4" />}
                         {t("components.admin.DevicePairingPanel.create")}
                     </Button>
@@ -152,7 +203,7 @@ export function DevicePairingPanel() {
             </div>
 
             {error ? (
-                <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
+                <div role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
                     {error}
                 </div>
             ) : null}

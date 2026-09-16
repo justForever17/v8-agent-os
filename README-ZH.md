@@ -65,7 +65,7 @@ Phone 是唯一远程交互入口。它用于查看正在运行的会话、接�
 
 请前往 [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases) 下载：
 
-- Desktop Preview：Windows x64/ARM64 安装包、macOS Intel/Apple Silicon DMG，以及 Linux x64/arm64 AppImage 或 DEB。
+- Desktop Preview：Windows x64/ARM64 安装包、macOS 12.3 及以上 Intel/Apple Silicon DMG，以及 Linux x64/arm64 AppImage 或 DEB。可下载文件与校验值以各次已发布 Release 为准。
 - Android Phone Preview：手机端 APK。
 
 桌面版当前仍是 unsigned preview。客户端会在启动完成后自动检查统一 Preview Release，也可从托盘手动检查；下载和安装仍由用户确认，不会静默执行。Windows 可能提示安全确认，正式签名与受签名保护的自动安装会在后续版本完善。Linux 使用桌面 Secret Service 保存密钥：DEB 会声明 GNOME Keyring 依赖，AppImage 则要求宿主提供兼容的 Secret Service。
@@ -90,8 +90,9 @@ Phone 是唯一远程交互入口。它用于查看正在运行的会话、接�
 | --- | --- | --- |
 | 桌面版 | Preview | 已提供 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 unsigned preview；支持自动检测更新与托盘手动检查，签名、自动下载安装和稳定版仍在后续阶段。 |
 | Phone | Preview | Android APK 是必需发布目标；iOS 目标为 16.4 及以上，但在非交互签名配置完成前保持禁用。 |
-| TUI 版 | 未实现 | 面向终端用户和服务器环境，计划剥离控制台页面依赖。 |
-| 轻量版 | 长期规划 | 面向低配设备和边缘运行场景，会裁剪重型依赖。 |
+| TUI / server 独立发行 | 尚未发布 | 已有本机 CLI 和 Engine API，尚未提供独立终端或服务器安装包。 |
+| 轻量远程执行器 | 规划中 | 尚未提供面向低配或边缘设备的独立执行器发行。 |
+| 跨设备配置分发 | 规划中 | Phone 已能保存多个服务器档案，一键跨设备分发配置尚未上线。 |
 
 ## 安全与边界
 
@@ -104,11 +105,8 @@ V8OS 默认本地优先运行。桌面 Web、控制台和桌宠属于本机可�
 - [快速开始](./docs/V8_AGENT_OS_QUICK_START_ZH.md)
 - [配置指南](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
 - [开发者指南](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md)
-- [Creative Media Runtime](./docs/creative-runtime/V8OS_CREATIVE_MEDIA_RUNTIME_PUBLIC_OVERVIEW_ZH.md)
-- [Extensions Runtime](./docs/extensions/V8OS_EXTENSIONS_RUNTIME_PUBLIC_OVERVIEW_ZH.md)
+- [CLI 命令参考](./docs/V8_AGENT_OS_CLI_REFERENCE_ZH.md)
 - [API 参考](./docs/V8_AGENT_OS_API_REFERENCE_ZH.md)
-- [产品化总纲](./docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md)
-- [发布版本基线](./docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md)
 
 ## 参与和反馈
 

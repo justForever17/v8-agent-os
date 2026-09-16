@@ -26,7 +26,7 @@ V8OS 当前主线是：
 `v8-agent-os` 包含：
 
 - `apps/v8-agent-os-engine`：权威运行核心；
-- `apps/v8-agent-os-admin`：控制台与客户端 broker；
+- `apps/v8-agent-os-admin`：按需配置、治理与诊断控制台；
 - `apps/v8-agent-os-web`：桌面主聊天/工作区；
 - `apps/v8-agent-os-phone`：配对后的远程交互面；
 - `apps/v8-agent-os-shell`：Electron 桌面壳、托盘和本机控制；
@@ -43,7 +43,7 @@ V8OS 当前主线是：
 | Surface | 角色 | 不能做什么 |
 | --- | --- | --- |
 | Web | 桌面主聊天、任务、产物与工作台 | 直读 Engine DB、发明第二套 runtime state |
-| Admin | 配置、治理、诊断、API broker | 变成第二个聊天面、把 raw ID/JSON 当普通 UI |
+| Admin | 按需配置、治理、诊断和管理 API 代理 | 变成会话必需中转或第二个聊天面 |
 | Phone | 唯一远程 paired client | 冒充本机 trusted client |
 | Shell | 本机窗口、托盘、主题和桌宠控制 | 承载 runtime 业务真相 |
 | Desktop Pet | 会话状态伴随器 | 自建第二套托盘、会话或认证真相 |
@@ -54,10 +54,11 @@ V8OS 当前主线是：
 ```mermaid
 flowchart LR
   Shell["Electron Shell"] --> Web["Web"]
-  Shell --> Admin["Admin"]
-  Phone["Paired Phone"] --> Admin
-  Web --> Admin
-  Admin --> Engine["Engine"]
+  Shell --> Admin["Optional Admin"]
+  Phone["Paired Phone"] --> Gateway["Engine HTTPS gateway"]
+  Gateway --> Engine["Engine"]
+  Web --> Engine
+  Admin --> Engine
   Engine --> Contract["session-realtime"]
   Contract --> Web
   Contract --> Phone
@@ -66,12 +67,14 @@ flowchart LR
 排查用户可见状态时按以下链路反查：
 
 1. Engine 是否产出正确 authoritative state/event；
-2. Admin 是否正确认证、代理并规范化资源引用；
+2. Engine 客户端身份与网关是否正确认证，Web 同源代理是否保留资源与事件语义；
 3. `session-realtime` 是否统一 snapshot/history/realtime；
 4. Web/Phone selector 是否只派生展示状态；
 5. 组件是否保留事件顺序和语义。
 
 页面局部 reducer 不能成为会话运行真相。Web/Phone 也不能根据 focus、点击或本机时间重新判定远端 run 状态。
+
+Engine 拥有 Owner、配对、设备凭据和 Phone 客户端 API。Admin 关闭后，本机聊天与已配对 Phone 仍可访问 Engine。CLI 使用 `/v1` 控制面，等待提交所得同一 run 与最新 assistant 回复均成功才返回完成；`--no-wait` 只确认提交。
 
 ## 4. Runtime 与支撑平面
 
@@ -200,7 +203,7 @@ Human Surface 只显示状态、结果、阻塞、风险、下一步和人类可
 - Agent 写入、下载、Spec 与 Creative Media 输出进入 artifact ledger，绑定 session/run/tool lineage。
 - 工作区已有文件或手工复制文件不会被扫描后自动升级为 artifact；显式采用走治理 API。
 - 当前会话产物看板不得混入同工作区其他会话、整个目录或用户上传的重复卡片。
-- 资源预览走 scoped resolver 与 Admin broker，不向远程端发送裸绝对路径或 `file://`。
+- 资源预览走 Engine scoped resolver 和客户端 API，本机 Web 使用同源代理、Phone 使用网关，不向远程端发送裸绝对路径或 `file://`。
 - Creative workspace library 归工作区，可在同一工作区跨会话发现；当前会话必须显式采用后才能使用。跨工作区引用拒绝，mask 等内部编辑资源不进入普通素材库。
 
 UI Patch Workbench 是 Web 专属全尺寸工作台。一次修改必须完成 DOM 选择到源码映射、白名单属性 patch、diff、保存验证和精确 undo；不支持任意互联网页面、无法映射的生产压缩页面或“只改 inline style”的假保存。
@@ -270,7 +273,7 @@ Storage Retention：
 
 本机命令：
 
-- `v8os start`：Engine + Admin + Web 服务，不打开 Shell；
+- `v8os start`：默认 Engine + Web 服务，不打开 Shell；Admin 通过指定组件或桌面配置入口按需启动；
 - `v8os preview`：构建缺失产物并启动完整桌面预览；
 - `v8os preview --rebuild`：停止当前源码树拥有的 Shell/Admin/Web/Engine 后重建并重启；
 - 裸 bootstrap：依赖准备与服务启动，不是桌面安装包。
@@ -293,7 +296,7 @@ Storage Retention：
 
 ### 14.2 页面状态不一致
 
-依次检查 Engine snapshot/event、Admin proxy、`session-realtime`、客户端 selector、组件。对比 live 与 history，而不是只修其中一条路径。
+依次检查 Engine snapshot/event、客户端网关或同源代理、`session-realtime`、客户端 selector、组件。对比 live、history 和 reload。
 
 ### 14.3 插件问题
 
@@ -314,7 +317,7 @@ Storage Retention：
 - 改插件 CLI：联查 catalog/digest、安装 journal/receipt、上机发现、Doctor/登录状态、全量 schema 同步、typed parameters 和逐次 grant 校验；“已安装”不能替代“已配置、健康且当前调用获授权”。
 - 改写入/安装/清理/恢复：必须有 dry-run、故障注入、重启恢复和 rollback 证据。
 - 真实 provider、联网调研、媒体生成和高成本 eval 只在显式 `--live` harness 中运行。
-- 重大改动比较基线；性能退化超过 10% 或错误率增加超过 0.1% 不交付。
+- 性能比较使用同环境、同任务且样本充分的基线；单次延迟只能作为复测线索，不能宣称跨平台性能结论。
 
 提交前至少执行：相关定向测试、`git diff --check`、工作树范围检查和可逆回滚检查。脏工作树只提交本轮文件，不吞并其他线路改动。
 

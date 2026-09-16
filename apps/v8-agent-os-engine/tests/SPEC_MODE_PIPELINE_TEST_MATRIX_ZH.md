@@ -1,8 +1,6 @@
 # Spec Mode Pipeline Test Matrix
 
-这份文件是可提交的测试地图附件；完整本地说明同步保存在
-`docs/V8OS/SPEC_MODE_PIPELINE_TEST_MATRIX_ZH.md`。仓库当前 `.gitignore`
-默认忽略 `docs/**`，因此这里保留一份精简但可追踪的门禁矩阵。
+这份测试地图列出 Spec 流程的测试入口与行为判据。执行结果以对应提交的测试输出为准。
 
 ## 核心约束
 

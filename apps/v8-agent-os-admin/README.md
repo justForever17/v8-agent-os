@@ -1,16 +1,14 @@
-# This is V8 Agent OS Admin.
-#
-# It provides the control console for configuration, observability, runtime governance, and system setup.
-#
-# Start here for local development:
-#
-# 1. `cd apps/v8-agent-os-admin`
-# 2. `npm install`
-# 3. `npm run dev`
-#
-# The launcher stores the Auth.js signing secret under `~/.v8-agent-os/secrets/`
-# and injects it into the process. No project `.env` file is required.
-#
-# Default local address: `http://127.0.0.1:9528`
-#
-# For the full system story, start from the repository root README and docs.
+# V8 Agent OS Admin
+
+Admin provides optional configuration, observability, runtime governance, and system setup. Engine owns Owner identity, pairing, device credentials, and session execution; local chat and Phone do not need Admin to remain open.
+
+Start the local Engine, then run from this directory:
+
+```sh
+npm ci
+npm run dev
+```
+
+The launcher manages the Auth.js signing secret; no project `.env` file is required. The default address is `http://127.0.0.1:9528`.
+
+For installation and the full desktop preview, see the [Quick Start](../../docs/V8_AGENT_OS_QUICK_START_ZH.md).

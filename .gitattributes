@@ -1,3 +1,25 @@
 # Signed brand assets must keep the bytes used by the catalog on Windows too.
 apps/v8-agent-os-engine/runtimes/plugin_manager/resources/logos/*.svg text eol=lf
 apps/v8-agent-os-admin/public/model-assets/providers/*.svg text eol=lf
+
+# Keep local documentation and generated acceptance records out of source archives.
+/docs/V8OS export-ignore
+/docs/architecture export-ignore
+/docs/creative-runtime export-ignore
+/docs/extensions export-ignore
+/docs/tool-authority-output-contract.md export-ignore
+/scripts/experience/*/reports export-ignore
+/scripts/experience/*/*-REVIEW.md export-ignore
+/scripts/experience/*/BASELINE.md export-ignore
+/apps/v8-agent-os-cli/tests/TUI_SERVER_916_AUDIT.md export-ignore
+/apps/v8-agent-os-engine/tests/*_VALIDATION_*.md export-ignore
+/apps/v8-agent-os-engine/tests/PROMPT_CONTEXT_CACHE_TEST_MATRIX.md export-ignore
+/apps/v8-agent-os-engine/tests/core/research_private_retirements.md export-ignore
+/apps/v8-agent-os-web/tests/MOTION_TEST_MATRIX.md export-ignore
+/apps/v8-agent-os-web/tests/UI_PATCH_PROJECT_TEST_MATRIX.md export-ignore
+/apps/v8-agent-os-web/tests/CREATIVE_CANVAS_TEST_MATRIX.md export-ignore
+/apps/v8-agent-os-phone/tests/PHONE_CANVAS_TEST_MATRIX.md export-ignore
+/apps/v8-agent-os-admin/public/user export-ignore
+/apps/v8-agent-os-admin/public/Avatar/* export-ignore
+/apps/v8-agent-os-admin/public/Avatar/default-supervisor.svg -export-ignore
+/apps/v8-agent-os-admin/public/Avatar/.gitkeep -export-ignore

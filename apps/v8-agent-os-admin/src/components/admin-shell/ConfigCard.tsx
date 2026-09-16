@@ -7,6 +7,7 @@ import { AdminSurfaceCard } from "@/components/admin-shell/AdminSurfaceCard";
 import { useResolveText } from "@/components/providers/LocaleProvider";
 
 export function ConfigCard({
+    id,
     title,
     description,
     children,
@@ -20,6 +21,7 @@ export function ConfigCard({
     collapsible = false,
     defaultOpen = false,
 }: {
+    id?: string;
     title: string;
     description?: string;
     children: React.ReactNode;
@@ -58,7 +60,7 @@ export function ConfigCard({
         {footer}
     </CardContent>;
 
-    if (collapsible) return <AdminSurfaceCard className={cn("min-h-0", className)}>
+    if (collapsible) return <AdminSurfaceCard id={id} className={cn("min-h-0", className)}>
         <details open={defaultOpen || undefined}>
             <summary className="cursor-pointer px-4 py-3 text-[14px] font-medium text-foreground marker:text-muted-foreground">{resolveText(title)}</summary>
             {description ? <div className="px-4 pb-2"><AdminHoverTitle title={resolveText(title)} description={resolveText(description)} /></div> : null}
@@ -67,7 +69,7 @@ export function ConfigCard({
     </AdminSurfaceCard>;
 
     return (
-        <AdminSurfaceCard className={cn("min-h-0", allowOverflow ? "overflow-visible" : "", className)}>
+        <AdminSurfaceCard id={id} className={cn("min-h-0", allowOverflow ? "overflow-visible" : "", className)}>
             <CardHeader className="space-y-1 px-4 py-3">
                 <CardTitle className="text-[14px] leading-[22px] text-foreground">
                     <AdminHoverTitle title={resolveText(title)} description={description ? resolveText(description) : undefined} />

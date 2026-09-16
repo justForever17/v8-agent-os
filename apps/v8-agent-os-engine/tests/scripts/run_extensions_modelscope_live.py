@@ -29,6 +29,19 @@ with tempfile.TemporaryDirectory(prefix="v8-modelscope-live-") as temp:
         started = time.perf_counter()
         listing = source.list_items("skills", query="modelscope-studio", limit=3, page=1, refresh=False)
         timings.append(round((time.perf_counter() - started) * 1000, 2))
+    # The UI asks for 30 rows. Previously its fourth MCP page exceeded the
+    # upstream 100-entry query window and always failed with HTTP 403.
+    mcp_pages = []
+    page = 1
+    while True:
+        catalog = source.list_items("mcp", query="", limit=30, page=page, refresh=False)
+        mcp_pages.append({"page": page, "pageSize": catalog["pageSize"], "count": len(catalog["items"]),
+                          "hasMore": catalog["hasMore"], "warnings": catalog["warnings"]})
+        assert page * catalog["pageSize"] <= catalog["catalogLimit"]
+        if not catalog["hasMore"]:
+            break
+        page = int(catalog["nextCursor"])
+    assert catalog["nextCursor"] is None
     detail = source.skill_detail("modelscope/modelscope-studio", refresh=True)
     result = source.install_skill({"skillId": "modelscope/modelscope-studio", "revision": detail["revision"]})
     installed = Path(result["installed"][0]["path"])
@@ -42,6 +55,7 @@ with tempfile.TemporaryDirectory(prefix="v8-modelscope-live-") as temp:
     report = {"scope": "anonymous public API, complete ZIP, real installer and isolated SkillLoader; no scripts executed",
         "item": "modelscope/modelscope-studio", "revision": detail["revision"], "archiveSha256": receipt["archiveSha256"],
         "files": files, "registryCount": len(registry), "repeat": "already_installed", "listSamplesMs": timings,
+        "mcpPages": mcp_pages,
         "limitations": ["Single machine network", "No hosted deployment, user login, or business API call"]}
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -6,9 +6,81 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from runtimes.extensions.runtime import ExtensionsRuntimeService
+from runtimes.extensions.skills.loader import SkillLoader
 
 
 class ExtensionsRuntimeStartupAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cold_placeholder_stays_cold_while_refresh_is_blocked(self) -> None:
+        service = ExtensionsRuntimeService()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_snapshot():
+            entered.set()
+            await release.wait()
+            return ({"summary": {"skillCount": 1}, "skills": {}, "mcp": {"servers": []}},
+                    {"summary": {}, "skills": {}, "mcp": {}})
+
+        with (
+            patch.object(service, "_load_cache", return_value=False),
+            patch.object(service, "_build_live_snapshot_async", side_effect=blocked_snapshot),
+            patch.object(service, "_persist_cache_payload"),
+            patch.object(service, "prime_mcp_family_profiles"),
+            patch.object(service, "_ensure_skill_inventory_watcher"),
+            patch.object(service, "_ensure_mcp_inventory_watcher"),
+            patch.object(SkillLoader, "_snapshot_freshness", "live"),
+        ):
+            await asyncio.wait_for(service.start(), timeout=1)
+            task = service._background_refresh_task
+            assert task is not None
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                self.assertFalse(task.done())
+                self.assertIsNotNone(service._cached_catalog)
+                self.assertIsNone(service._last_refresh_at)
+                self.assertEqual(service.get_startup_status()["snapshotFreshness"], "cold")
+                self.assertEqual(service.build_catalog()["catalogSummary"]["skillCount"], 0)
+                self.assertEqual(SkillLoader._snapshot_freshness, "live")
+            finally:
+                release.set()
+                await task
+            self.assertEqual(service.get_startup_status()["snapshotFreshness"], "live")
+
+    async def test_completed_memory_snapshot_stays_cached_during_next_refresh(self) -> None:
+        service = ExtensionsRuntimeService()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        catalog = {"summary": {"skillCount": 7}, "skills": {}, "mcp": {"servers": []}}
+        health = {"summary": {}, "skills": {}, "mcp": {}}
+
+        async def blocked_snapshot():
+            entered.set()
+            await release.wait()
+            return {**catalog, "summary": {"skillCount": 8}}, health
+
+        with (
+            patch.object(service, "_build_live_snapshot_async", new=AsyncMock(return_value=(catalog, health))),
+            patch.object(service, "_persist_cache_payload"),
+            patch.object(service, "prime_mcp_family_profiles"),
+        ):
+            await service._refresh_runtime_snapshot()
+            completed_at = service._last_refresh_at
+            self.assertIsNotNone(completed_at)
+            self.assertEqual(service.get_startup_status()["snapshotFreshness"], "live")
+            with patch.object(service, "_build_live_snapshot_async", side_effect=blocked_snapshot):
+                task = asyncio.create_task(service._refresh_runtime_snapshot())
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=1)
+                    self.assertFalse(task.done())
+                    self.assertEqual(service.get_startup_status()["snapshotFreshness"], "cached")
+                    self.assertEqual(service.build_catalog()["catalogSummary"]["skillCount"], 7)
+                    self.assertEqual(service._last_refresh_at, completed_at)
+                finally:
+                    release.set()
+                    await task
+            self.assertEqual(service.get_startup_status()["snapshotFreshness"], "live")
+            self.assertEqual(service.build_catalog()["catalogSummary"]["skillCount"], 8)
+
     async def test_cold_start_publishes_refreshing_snapshot_without_waiting_for_catalog(self) -> None:
         service = ExtensionsRuntimeService()
 

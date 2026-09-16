@@ -2943,7 +2943,11 @@ class ExtensionsRuntimeService:
     ) -> dict[str, Any]:
         async with self._refresh_lock:
             self._startup_state = "refreshing"
-            self._snapshot_freshness = "cached" if self._cached_catalog else "cold"
+            # Cold startup also publishes a nonempty placeholder catalog. Only
+            # a completed snapshot has a refresh timestamp; preserve it while
+            # replacing that snapshot instead of presenting placeholder data
+            # as cached inventory.
+            self._snapshot_freshness = "cached" if self._cached_catalog is not None and self._last_refresh_at else "cold"
             self._last_refresh_error = None
             if force_skill_reload:
                 await asyncio.to_thread(SkillLoader.reload_skills)

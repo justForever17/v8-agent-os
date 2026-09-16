@@ -80,26 +80,58 @@ def stable_server_name(identity: str) -> str:
 
 
 def list_items(kind: str, *, query: str, limit: int, page: int, refresh: bool) -> dict[str, Any]:
-    from core.extensions_store_service import _cache_key, _load_cached_value
-    params = {"search": query.strip(), "page_number": page, "page_size": limit}
+    from core.extensions_store_service import ExtensionStoreError, _cache_key, _load_cached_value, _normalize_limit
+    window = 3000 if kind == "skills" else 100
+    # ModelScope caps page_number * page_size, not only the returned row count.
+    # A stable divisor keeps every page within that window without skipping its
+    # final entries or changing offsets when the user requests the next page.
+    page_size = next(size for size in range(_normalize_limit(limit), 0, -1) if window % size == 0)
+    if page < 1 or page * page_size > window:
+        raise ExtensionStoreError("catalog_window_exceeded", "已到魔搭查询窗口末页，请缩小搜索范围。", status_code=400)
+    params = {"search": query.strip(), "page_number": page, "page_size": page_size}
     key = _cache_key(f"modelscope-{kind}-v1", json.dumps(params, sort_keys=True))
-    data, freshness, error = _load_cached_value(key, refresh=refresh, accepts=lambda v: isinstance(v, dict),
-        loader=lambda: read_public("/openapi/v1/skills" if kind == "skills" else "/openapi/v1/mcp/servers",
-                                  method="GET" if kind == "skills" else "PUT", params=params))
-    raw = data.get("skills" if kind == "skills" else "mcp_server_list") or []
-    items = [_summary(row, kind) for row in raw if isinstance(row, dict)]
+    rows_key = "skills" if kind == "skills" else "mcp_server_list"
+    total_key = "total" if kind == "skills" else "total_count"
+    def valid(data: Any) -> bool:
+        return (isinstance(data, dict) and isinstance(data.get(rows_key), list)
+                and all(isinstance(row, dict) for row in data[rows_key])
+                and (data.get(total_key) is None or isinstance(data[total_key], int) and data[total_key] >= 0))
+    def load() -> dict[str, Any]:
+        data = read_public("/openapi/v1/skills" if kind == "skills" else "/openapi/v1/mcp/servers",
+                           method="GET" if kind == "skills" else "PUT", params=params)
+        if not valid(data):
+            raise ExtensionStoreError("source_response", "魔搭目录响应不完整，请稍后重试。", status_code=502)
+        return data
+    data, freshness, error = _load_cached_value(key, refresh=refresh, accepts=valid, loader=load)
+    raw = data[rows_key]
+    items = []
+    invalid_rows = 0
+    for row in raw:
+        try:
+            items.append(_summary(row, kind))
+        except ExtensionStoreError as exc:
+            if exc.code != "invalid_modelscope_id":
+                raise
+            invalid_rows += 1
     from core.storage import storage
     servers = (storage.get_mcp_config() or {}).get("mcpServers", {}) if kind == "mcp" else {}
     for row in items:
         receipt = get_skill_receipt("modelscope", row["id"]) if kind == "skills" else None
         row["installed"] = bool(receipt) if kind == "skills" else row["serverName"] in servers
         row["installedRevision"] = (receipt or {}).get("revision")
-    total = data.get("total" if kind == "skills" else "total_count")
-    has_more = bool(len(raw) == limit and (total is None or page * limit < int(total)))
+    total = data.get(total_key)
+    at_window = page * page_size == window
+    has_more = bool(not at_window and len(raw) == page_size and (total is None or page * page_size < total))
+    warnings = ["来源暂不可达，显示该来源上次缓存。"] if error else []
+    if invalid_rows:
+        warnings.append(f"{invalid_rows} 个来源条目的身份信息不完整，已跳过。")
+    if at_window and (total is None or total > window):
+        warnings.append(f"魔搭每次查询最多浏览 {window} 项；请缩小搜索范围以查找更多。")
     return {"provider": "modelscope", "items": items, "query": query, "page": page,
-            "returnedCount": len(items), "total": total, "hasMore": has_more,
+            "pageSize": page_size, "catalogLimit": window,
+            "returnedCount": len(items), "total": total, "hasMore": has_more, "partial": bool(invalid_rows),
             "nextCursor": str(page + 1) if has_more else None, "freshness": "stale" if error else freshness,
-            "sourceCoverage": "catalog", "warnings": ["来源暂不可达，显示该来源上次缓存。"] if error else []}
+            "sourceCoverage": "catalog", "warnings": warnings}
 
 
 def _detail(kind: str, identity: str, refresh: bool) -> dict[str, Any]:

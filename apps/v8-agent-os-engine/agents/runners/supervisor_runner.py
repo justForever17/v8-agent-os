@@ -8,6 +8,8 @@ from typing import AsyncIterator, Any
 
 from api.models import EngineConfig
 from core.runtime.extensions_runtime import extensions_runtime_service
+from core.agents import build_subagent_registry_snapshot
+from core.storage import storage
 from graph.supervisor import AgentState, create_supervisor_graph
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -45,6 +47,7 @@ class SupervisorAgentRunner:
         payload = config.model_dump(mode="json", by_alias=True)
         mcp_status = dict(extensions_runtime_service.get_mcp_startup_status() or {})
         payload["_runtimeInventory"] = {
+            "subagentsHash": build_subagent_registry_snapshot(storage.get_all_agents())["hash"],
             "mcpRevision": str(
                 mcp_status.get("inventoryRevision")
                 or mcp_status.get("revision")

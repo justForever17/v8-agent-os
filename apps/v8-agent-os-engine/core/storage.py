@@ -1047,11 +1047,10 @@ class StorageManager:
         try:
             agents_dir.mkdir(parents=True, exist_ok=True)
             from core.agents import (
-                DEFAULT_SUBAGENT_TEMPLATE_VERSION,
                 DEPRECATED_DEFAULT_SUBAGENT_IDS,
                 default_subagent_configs,
                 dump_agent_md,
-                parse_agent_md,
+                is_unmodified_default_agent_md,
             )
 
             backup_dir: Path | None = None
@@ -1069,20 +1068,9 @@ class StorageManager:
             def is_managed_default(path: Path) -> bool:
                 try:
                     content = path.read_text(encoding="utf-8")
-                    parsed = parse_agent_md(content, path.name)
                 except Exception:
                     return False
-                if parsed.defaultTemplateVersion:
-                    return True
-                source = str((parsed.capabilitySnapshot or {}).get("source") or "").strip()
-                if source == "system_default":
-                    return True
-                legacy_markers = (
-                    "a focused V8 Agent OS subagent",
-                    "Shared engineering discipline:",
-                    "When delegated a task, respond with a compact result",
-                )
-                return any(marker in content for marker in legacy_markers)
+                return is_unmodified_default_agent_md(content, path.stem)
 
             for deprecated_id in sorted(DEPRECATED_DEFAULT_SUBAGENT_IDS):
                 deprecated_path = agents_dir / f"{deprecated_id}.md"
@@ -1092,24 +1080,40 @@ class StorageManager:
 
             for agent_config in default_subagent_configs():
                 agent_path = agents_dir / f"{agent_config.id}.md"
+                if agent_path.is_symlink():
+                    continue
                 should_write = not agent_path.exists()
+                original: bytes | None = None
                 if agent_path.exists():
                     try:
-                        existing = parse_agent_md(agent_path.read_text(encoding="utf-8"), agent_path.name)
-                    except Exception:
-                        existing = None
-                    existing_version = getattr(existing, "defaultTemplateVersion", "") if existing else ""
-                    desired_version = str(agent_config.defaultTemplateVersion or DEFAULT_SUBAGENT_TEMPLATE_VERSION)
-                    if existing_version != desired_version and is_managed_default(agent_path):
+                        original = agent_path.read_bytes()
+                        content = original.decode("utf-8").replace("\r\n", "\n")
+                    except (OSError, UnicodeError):
+                        continue
+                    if content != dump_agent_md(agent_config) and is_unmodified_default_agent_md(content, agent_config.id):
                         backup_once(agent_path)
                         should_write = True
                 if should_write:
-                    with open(agent_path, "w", encoding="utf-8", newline="\n") as handle:
-                        handle.write(dump_agent_md(agent_config))
+                    if original is None:
+                        # A concurrently created file belongs to its creator.
+                        try:
+                            with open(agent_path, "x", encoding="utf-8", newline="\n") as handle:
+                                handle.write(dump_agent_md(agent_config))
+                        except FileExistsError:
+                            continue
+                    else:
+                        temp_path = agent_path.with_name(f".{agent_path.name}.{uuid4().hex}.tmp")
+                        try:
+                            temp_path.write_text(dump_agent_md(agent_config), encoding="utf-8", newline="\n")
+                            # Optimistic external-edit check, not an OS-wide CAS.
+                            if agent_path.is_symlink() or agent_path.read_bytes() != original:
+                                continue
+                            self._replace_json_file(temp_path, agent_path)
+                        finally:
+                            temp_path.unlink(missing_ok=True)
 
-            # If an old default had been renamed manually but still declares a
-            # system-default source, leave it intact. Only canonical default
-            # ids and known deprecated ids are managed here.
+            # Unknown versions, renamed agents and all edited files remain
+            # intact, even when they retain system/default version markers.
         except (OSError, PermissionError) as exc:
             print(f"[Storage] Default subagent initialization skipped: {exc}")
 

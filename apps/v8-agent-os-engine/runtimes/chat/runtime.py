@@ -3202,6 +3202,8 @@ class ChatRuntime:
         request.session_id = session_id
         request.conversation_id = conversation_id
         request.user_id = user_id
+        from erc.conversation_derivations import ensure_conversation_derivations_current
+        ensure_conversation_derivations_current(db, session_id)
         # Resolve the selected role/model before rehydrating assistant history;
         # private provider continuation is protocol-bound and must never be
         # replayed into a different provider or wire channel.
@@ -3210,6 +3212,9 @@ class ChatRuntime:
         attachments = self._normalize_request_attachments(request)
         self._ensure_latest_user_content_for_attachments(request, attachments)
         lc_messages = self._to_langchain_messages(request, target_model_metadata=target_model_metadata)
+        if db.get_chat_transcript_state(session_id)["context_epoch"]:
+            from erc.conversation_context import rebuild_effective_messages
+            lc_messages = rebuild_effective_messages(db, session_id, lc_messages)
         self._inject_uploaded_file_notices(request, lc_messages)
         (
             command_preset,
@@ -5148,6 +5153,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             session_id=chat_run.session_id,
             resume_value=chat_run.request.resume_value or {},
+            run_id=chat_run.active_run_id,
         )
         from runtimes.network_supervisor.compat_run_control import resume_data
         retained = resume_data(db.get_run_record(chat_run.active_run_id) or {})

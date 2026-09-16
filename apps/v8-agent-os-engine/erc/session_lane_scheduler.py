@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass
+from contextlib import contextmanager
 from typing import Optional
 
 from erc.command_service import command_service
@@ -109,6 +110,15 @@ class SessionLaneScheduler:
     def get_active_run(self, session_id: str) -> Optional[str]:
         with self._condition:
             return self._active_runs.get(session_id)
+
+    @contextmanager
+    def idle_mutation(self, session_id: str):
+        """Serialize transcript replacement with admission, without starting a run."""
+        from core.conversation_recovery import ConversationConflict
+        with self._condition:
+            if self._active_runs.get(session_id):
+                raise ConversationConflict("conversation_busy")
+            yield
 
 
 session_lane_scheduler = SessionLaneScheduler()

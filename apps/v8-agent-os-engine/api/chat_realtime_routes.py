@@ -75,13 +75,23 @@ async def _send_json_safe(websocket: WebSocket, payload: dict) -> None:
     await websocket.send_text(json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")))
 
 
+def _transcript_event_identity(session_id: str | None, run_id: str | None) -> dict:
+    if not session_id:
+        return {}
+    if run_id:
+        run = db.get_run_record(run_id) or {}
+        return {"contextEpoch": int((run.get("metadata") or {}).get("contextEpoch") or 0)}
+    from core.conversation_recovery import public_state
+    return public_state(db.get_chat_transcript_state(session_id))
+
+
 def _runtime_error_event(topic: str, message: str, *, session_id: str | None = None, run_id: str | None = None):
     return build_runtime_event(
         kind="error",
         topic=topic,
         session_id=session_id,
         run_id=run_id,
-        payload={"message": message},
+        payload={"message": message, **_transcript_event_identity(session_id, run_id)},
         source={
             "plane": "engine",
             "component": "chat_ws",
@@ -230,7 +240,7 @@ def _runtime_ack_event(topic: str, payload: dict, *, session_id: str | None = No
         topic=topic,
         session_id=session_id,
         run_id=run_id,
-        payload=payload,
+        payload={**payload, **_transcript_event_identity(session_id, run_id)},
         source={
             "plane": "engine",
             "component": "chat_ws",

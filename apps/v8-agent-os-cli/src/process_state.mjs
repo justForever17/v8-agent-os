@@ -92,7 +92,7 @@ async function removeInactiveLeaseEntries(entries, staleAfterMs) {
   }));
 }
 
-async function withFileLease(filePath, callback, options = {}) {
+export async function withFileLease(filePath, callback, options = {}) {
   ensureDir(path.dirname(filePath));
   const queuePath = leaseQueuePath(filePath);
   const leaseId = crypto.randomUUID();

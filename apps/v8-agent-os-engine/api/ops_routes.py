@@ -305,6 +305,12 @@ async def upload_memory_docs(
     chunk_overlap: int = Form(200),
     trusted_upload: bool = Form(False),
 ):
+    from core.runtime.startup_profile import optional_capability_enabled
+    if not optional_capability_enabled("document_ingestion"):
+        raise HTTPException(status_code=503, detail={
+            "code": "feature_pack_required", "featurePack": "document_ingestion",
+            "message": "批量文档入库需要文档读取能力包；安装后重启 Engine。基础文本记忆仍可用。",
+        })
     try:
         from core.document_parser import DocumentIngestionDependencyError, document_parser
         from core.document_chunker import document_chunker

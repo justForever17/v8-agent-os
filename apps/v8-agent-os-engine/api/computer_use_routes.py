@@ -44,13 +44,13 @@ def _computer_use_runtime():
 
 
 def _browser_session_service():
-    from runtimes.computer_use.browser_session_service import browser_session_service
+    from core.agent_browser_sessions import browser_session_service
 
     return browser_session_service
 
 
 def _browser_session_http_error(exc: Exception) -> HTTPException:
-    from runtimes.computer_use.browser_session_service import BrowserSessionError
+    from core.agent_browser_sessions import BrowserSessionError
 
     if isinstance(exc, BrowserSessionError):
         return HTTPException(

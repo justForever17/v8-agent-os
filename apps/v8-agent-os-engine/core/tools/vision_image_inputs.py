@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from requests import RequestException
 
@@ -57,6 +56,10 @@ def prepare_ordered_images(
     runtime_context: dict[str, Any],
     remote_guard: Callable[[str], None],
 ) -> list[dict[str, Any]]:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise VisionImageInputError("image_dependency_missing: install creative_media feature pack and restart Engine") from exc
     if not isinstance(images, list) or not 1 <= len(images) <= MAX_VISION_IMAGES:
         raise VisionImageInputError("image_count_out_of_range")
     normalized: list[tuple[VisionImageInput, str, dict[str, Any]]] = []

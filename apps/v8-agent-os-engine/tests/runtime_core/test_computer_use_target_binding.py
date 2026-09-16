@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from runtimes.computer_use.app_binding_policy import AppBindingDecision
-from runtimes.computer_use.browser_automation import BrowserAutomationProvider, BrowserLaneDecision
+from core.agent_browser_automation import BrowserAutomationProvider, BrowserLaneDecision
 from runtimes.computer_use.drivers.windows_uia import WindowsUIADriver, WindowsUIADriverError
 from runtimes.computer_use.runtime import ComputerUseRuntime
 from runtimes.computer_use.playbook_executors import create_default_playbook_executor_registry

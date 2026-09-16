@@ -13,3 +13,4 @@ Pillow==12.1.1
 XlsxWriter==3.2.9
 typing-extensions==4.16.0
 tabulate==0.10.0
+langchain-text-splitters==1.1.2

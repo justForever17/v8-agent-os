@@ -11,7 +11,7 @@ from core.tools import web_fetcher
 
 def test_discovery_never_promotes_cookie_presence_to_verified_login(monkeypatch):
     raw = {"available": True, "sites": [{"host": "metaso.cn", "sessionPresent": True, "access": "authenticated", "cookie": "PRIVATE"}]}
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
     monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
     monkeypatch.setattr(agent_browser_automation, "profile_access_summary", lambda **_: raw)
     monkeypatch.setattr(access, "_snapshot", {})
@@ -68,7 +68,7 @@ def test_read_outcomes_do_not_upgrade_whole_domain_access(monkeypatch):
 
 def test_profile_read_refuses_a_healthy_proxy_pointing_at_a_different_browser(monkeypatch):
     import pytest
-    from runtimes.computer_use.browser_automation import BrowserAutomationProvider
+    from core.agent_browser_automation import BrowserAutomationProvider
 
     browser = BrowserAutomationProvider()
     browser._target_port = 9222
@@ -96,7 +96,7 @@ def test_challenge_body_is_not_recorded_as_successful_authenticated_read(monkeyp
 def test_profile_proxy_preserves_authority_failure_without_private_response_data(monkeypatch):
     import requests
     import pytest
-    from runtimes.computer_use.browser_automation import BrowserAutomationProvider
+    from core.agent_browser_automation import BrowserAutomationProvider
 
     browser = BrowserAutomationProvider()
     monkeypatch.setattr(browser, "_ensure_proxy", lambda **_: None)
@@ -153,7 +153,7 @@ def test_www_and_root_read_outcomes_replace_each_other_without_merging_siblings(
     ("agent_browser_profile_context_not_reused", "agent_browser_profile_mismatch"),
 ])
 def test_automatic_profile_rejection_stops_before_public_fallback(monkeypatch, code, expected):
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
 
     monkeypatch.setattr(web_fetcher, "get_web_fetch_config", lambda: {"useAgentBrowserProfile": True, "agentBrowserProfileAllowlist": ["example.test"]})
     monkeypatch.setattr(web_fetcher, "_active_agent_browser_cdp_context", lambda: {"profileDir": "fixture", "browserKind": "edge", "cdpUrl": "ws://fixture"})

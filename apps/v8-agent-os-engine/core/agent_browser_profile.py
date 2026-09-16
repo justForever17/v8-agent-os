@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import platform
 import shutil
@@ -13,6 +12,11 @@ from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 AGENT_BROWSER_PROFILE_MODE = "dedicated_debug_profile"
 AGENT_BROWSER_PROFILE_ROOT = V8_AGENT_OS_HOME / "browser-profiles" / "computer_use"
 SUPPORTED_AGENT_BROWSER_KINDS = {"auto", "chrome", "edge", "chromium"}
+
+
+def looks_like_url(text: str | None) -> bool:
+    value = str(text or "").strip()
+    return value.lower().startswith(("http://", "https://", "file://", "www.")) or ("." in value and " " not in value and "/" in value)
 
 
 def normalize_agent_browser_kind(value: Any = None) -> str:

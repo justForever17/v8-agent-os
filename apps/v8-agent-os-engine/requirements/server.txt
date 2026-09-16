@@ -1,0 +1,7 @@
+# Linux server production root. No desktop, media, voice, vector or Office/PDF.
+-r base.txt
+beautifulsoup4
+scrapling[fetchers]==0.4.1
+playwright
+patchright
+jieba

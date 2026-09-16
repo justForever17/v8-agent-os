@@ -12,7 +12,7 @@ BROWSER_ATTENTION_FAILURES = frozenset({
 
 def search_chat_page(*, provider: str, query: str, limit: int, timeout_seconds: float, reuse_profile: bool) -> dict:
     from core.storage import storage
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
 
     agent_browser_automation.configure(dict(storage.get_computer_use_config() or {}))
     try:

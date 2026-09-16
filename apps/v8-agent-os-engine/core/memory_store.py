@@ -191,6 +191,9 @@ class MemoryStore:
         )
 
     def _sync_vector_store_document(self, fact_id: str, fact: str, metadata: dict[str, Any], *, operation: str) -> None:
+        from core.runtime.startup_profile import optional_capability_enabled
+        if not optional_capability_enabled("vector_memory"):
+            return
         try:
             from core.vector_store import get_vector_store
 
@@ -1561,7 +1564,8 @@ class MemoryStore:
             "rerank_skipped_reason": "",
         }
 
-        if use_vector:
+        from core.runtime.startup_profile import optional_capability_enabled
+        if use_vector and optional_capability_enabled("vector_memory"):
             try:
                 from core.vector_store import get_vector_store
 

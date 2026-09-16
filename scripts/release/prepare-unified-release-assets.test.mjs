@@ -96,6 +96,26 @@ test("a missing required target blocks fan-in publication", () => {
   }
 });
 
+test("enabled server is required in fan-in; disabled server does not change a published plan", () => {
+  const { root, inputDir, outputDir } = fixture();
+  try {
+    const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+    manifest.products.server = {
+      enabled: true, required: true,
+      targets: { "linux-x64": { enabled: true, required: true }, "linux-arm64": { enabled: false, required: false, reason: "pending" } },
+    };
+    const manifestPath = path.join(root, "manifest.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(() => prepareUnifiedReleaseAssets({ manifestPath, inputDir, outputDir }), /Required Server/);
+    fs.mkdirSync(path.join(inputDir, "server"));
+    const file = `V8OS-Server-${VERSION}-linux-x64.tar.gz`;
+    fs.writeFileSync(path.join(inputDir, "server", file), "server archive");
+    const result = prepareUnifiedReleaseAssets({ manifestPath, inputDir, outputDir });
+    assert.ok(result.assets.includes(file));
+    assert.match(fs.readFileSync(path.join(outputDir, "SHA256SUMS.txt"), "utf8"), /V8OS-Server-/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("fan-in refuses to replace its input tree or a non-empty output directory", () => {
   const { root, inputDir, outputDir } = fixture();
   try {

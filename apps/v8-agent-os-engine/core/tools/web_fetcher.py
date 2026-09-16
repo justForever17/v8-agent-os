@@ -2433,7 +2433,7 @@ def _auto_agent_browser_profile_allowed(url: str, mode: str) -> tuple[bool, str 
 
 
 def _ensure_agent_browser_background_session() -> dict[str, Any]:
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
 
     agent_browser_automation.configure(dict(storage.get_computer_use_config() or {}))
     return dict(agent_browser_automation.ensure_agent_browser_background() or {})
@@ -2958,7 +2958,7 @@ def _fetch_with_scrapling_internal(
     )
     def _fetch_profile() -> WebPagePayload:
         from types import SimpleNamespace
-        from runtimes.computer_use.browser_automation import agent_browser_automation
+        from core.agent_browser_automation import agent_browser_automation
 
         nonlocal agent_browser_profile_dir, agent_browser_kind
         context = _active_agent_browser_cdp_context()

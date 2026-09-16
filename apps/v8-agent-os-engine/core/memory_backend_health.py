@@ -12,6 +12,20 @@ def inspect_memory_backend() -> dict[str, Any]:
     expected_path = str(engine_runtime.get("expectedInterpreterPath") or "") or None
     interpreter_drift = bool(engine_runtime.get("interpreterDrift"))
 
+    from core.runtime.startup_profile import optional_capability_selected, optional_capability_enabled
+    vector_selected = optional_capability_selected("vector_memory")
+    if not optional_capability_enabled("vector_memory"):
+        from core.memory_maintenance_status import get_memory_maintenance_status
+        return {
+            "design": "sqlite_fts5", "mode": "fts5_only_degraded" if vector_selected else "sqlite_fts5", "fts5OnlyDegraded": vector_selected,
+            "interpreterPath": interpreter_path, "expectedInterpreterPath": expected_path,
+            "interpreterDrift": interpreter_drift,
+            "chromadb": {"available": False, "version": None, "error": None},
+            "vectorBackend": {"ready": False, "selected": vector_selected, "reason": "unavailable" if vector_selected else "not_installed", "featurePack": "vector_memory"},
+            "maintenance": get_memory_maintenance_status(),
+            "warnings": (["向量能力包未就绪；检查安装回执并重启 Engine。"] if vector_selected else []) + ([f"解释器漂移：当前 {interpreter_path}，期望 {expected_path}"] if interpreter_drift else []),
+        }
+
     chroma_available = False
     chroma_version: str | None = None
     chroma_error: str | None = None

@@ -56,7 +56,7 @@ function desktopVersion(version, channel) {
 function selectedProducts(tagIdentity) {
   return tagIdentity.tagKind === "legacy-product"
     ? new Set([tagIdentity.product])
-    : new Set(["desktop", "phone"]);
+    : new Set(["desktop", "phone", "server"]);
 }
 
 function prepareOutputDirectory(inputDir, outputDir) {
@@ -91,6 +91,16 @@ export function prepareUnifiedReleaseAssets({ manifestPath, tag, inputDir, outpu
   const releaseFiles = [];
 
   prepareOutputDirectory(resolvedInput, resolvedOutput);
+
+  if (products.has("server") && manifest.products.server?.enabled) {
+    for (const [targetName, target] of Object.entries(manifest.products.server.targets)) {
+      if (!target.enabled) continue;
+      const fileName = `V8OS-Server-${manifest.release.version}-${targetName}.tar.gz`;
+      const copied = copyAsset(path.join(resolvedInput, "server", fileName), resolvedOutput, fileName,
+        { required: target.required, label: `Server ${targetName} asset` });
+      if (copied) releaseFiles.push(copied);
+    }
+  }
 
   if (products.has("desktop") && manifest.products.desktop.enabled) {
     const version = desktopVersion(manifest.release.version, manifest.release.channel);

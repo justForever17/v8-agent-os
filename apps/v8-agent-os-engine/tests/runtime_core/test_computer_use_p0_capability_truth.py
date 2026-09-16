@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from runtimes.computer_use.browser_automation import BrowserAutomationProvider
+from core.agent_browser_automation import BrowserAutomationProvider
 from runtimes.computer_use.app_catalog import ComputerUseAppCatalog
 from runtimes.computer_use.capability_truth import build_capability_truth
 from runtimes.computer_use.coordinate_anchor import resolve_absolute_click_point, spatial_anchor_compatibility

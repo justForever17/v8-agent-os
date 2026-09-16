@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtimes.computer_use.browser_automation import BrowserLaneDecision
-from runtimes.computer_use.browser_automation import BrowserAutomationProvider
+from core.agent_browser_automation import BrowserLaneDecision
+from core.agent_browser_automation import BrowserAutomationProvider
 from runtimes.computer_use.task_loop import (
     github_star_dom_probe_script,
     normalize_intent,

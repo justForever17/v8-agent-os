@@ -55,7 +55,7 @@ from erc.run_service import run_service
 from langchain_core.messages import HumanMessage, SystemMessage
 from runtimes.computer_use.app_catalog import ComputerUseAppCatalog
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
-from runtimes.computer_use.browser_automation import (
+from core.agent_browser_automation import (
     BrowserAutomationProvider,
     BrowserLaneDecision,
     agent_browser_automation,
@@ -13063,7 +13063,7 @@ class ComputerUseRuntime:
         opened = self.browser_automation.open_tab(url=target_url, decision=decision)
         target_id = str(opened.get("targetId") or "").strip()
         try:
-            from runtimes.computer_use.browser_session_service import browser_session_service
+            from core.agent_browser_sessions import browser_session_service
 
             workbench_browser = browser_session_service.register_existing_target(
                 session_id=run_handle.session_id,

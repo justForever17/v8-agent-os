@@ -76,7 +76,7 @@ def test_compact_web_result_keeps_ai_body_and_complete_detail():
 
 @pytest.mark.parametrize("failure", ["provider_challenge", "provider_busy", "composer_unavailable", "answer_pending", "observation_changed"])
 def test_browser_attention_state_survives_source_and_agent_projection(monkeypatch, failure):
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
     from core.storage import storage
     monkeypatch.setattr(storage, "get_computer_use_config", lambda: {})
     monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)
@@ -94,7 +94,7 @@ def test_browser_attention_state_survives_source_and_agent_projection(monkeypatc
 
 @pytest.mark.parametrize("submitted", [True, None])
 def test_observation_change_survives_explicit_search_without_retry_or_lost_target(monkeypatch, submitted):
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
     from core.storage import storage
     monkeypatch.setattr(storage, "get_computer_use_config", lambda: {})
     monkeypatch.setattr(agent_browser_automation, "configure", lambda _: None)

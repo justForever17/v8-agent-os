@@ -7,6 +7,15 @@
     "updatedAt": "2026-09-16T10:55:11.388Z"
   },
   "products": {
+    "server": {
+      "enabled": false,
+      "required": false,
+      "reason": "Candidate server package awaits clean Linux acceptance and a new unified release; 2026.09.16.3 is unchanged.",
+      "targets": {
+        "linux-x64": { "enabled": true, "required": true },
+        "linux-arm64": { "enabled": false, "required": false, "reason": "ARM production dependency closure and physical acceptance are pending." }
+      }
+    },
     "desktop": {
       "enabled": true,
       "required": true,

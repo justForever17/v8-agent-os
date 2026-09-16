@@ -12,8 +12,8 @@ import psutil
 from api import agent_browser_routes, computer_use_routes
 from api.models import ComputerUseAgentBrowserOpenPayload
 from core.agent_browser_profile import debug_port_owned_by_profile, discover_system_agent_browser
-from runtimes.computer_use import browser_automation as browser_automation_module
-from runtimes.computer_use.browser_automation import BrowserAutomationProvider, BrowserLaneDecision
+from core import agent_browser_automation as browser_automation_module
+from core.agent_browser_automation import BrowserAutomationProvider, BrowserLaneDecision
 from runtimes.rpa.compiler import RPATraceCompiler
 from runtimes.rpa.robot_adapter import RobotFrameworkAdapter
 
@@ -189,7 +189,7 @@ def test_manual_agent_browser_profile_setup_is_not_gated_by_computer_use_lane(mo
 
 def test_windows_auto_selection_prefers_edge_then_chrome_then_chromium(monkeypatch):
     provider = BrowserAutomationProvider()
-    monkeypatch.setattr("runtimes.computer_use.browser_automation.platform.system", lambda: "Windows")
+    monkeypatch.setattr("core.agent_browser_automation.platform.system", lambda: "Windows")
     monkeypatch.setattr(
         provider,
         "_platform_browser_candidates",
@@ -281,7 +281,7 @@ def test_agent_browser_proxy_waits_until_playwright_is_connected(monkeypatch):
         return next(health_results)
 
     monkeypatch.setattr(provider, "_health", _health)
-    monkeypatch.setattr("runtimes.computer_use.browser_automation.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("core.agent_browser_automation.time.sleep", lambda _seconds: None)
 
     provider._ensure_proxy(target_port=9222, startup_timeout_seconds=1.0)
 
@@ -307,7 +307,7 @@ def test_browser_discovery_does_not_scan_arbitrary_debug_ports(monkeypatch):
     monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: True)
     monkeypatch.setattr(provider, "_devtools_active_port_files", lambda _kind: [])
     monkeypatch.setattr(
-        "runtimes.computer_use.browser_automation.debug_port_owned_by_profile",
+        "core.agent_browser_automation.debug_port_owned_by_profile",
         lambda **_kwargs: False,
     )
 

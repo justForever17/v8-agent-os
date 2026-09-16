@@ -1,0 +1,46 @@
+name: Linux Server package
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'scripts/server/**'
+      - 'apps/v8-agent-os-engine/**'
+      - 'apps/v8-agent-os-cli/**'
+      - '.github/workflows/server-build.yml'
+permissions:
+  contents: read
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - run: npm ci --prefix scripts/server --ignore-scripts
+      - name: Build independent archive
+        run: python scripts/server/build-server-bundle.py --output out/server
+      - name: Install into a fresh production environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/server-package"
+          tar xf out/server/V8OS-Server-*-linux-x64.tar.gz -C "$RUNNER_TEMP/server-package"
+          bundle=$(find "$RUNNER_TEMP/server-package" -mindepth 1 -maxdepth 1 -type d)
+          python -m venv "$RUNNER_TEMP/browser-deps"
+          "$RUNNER_TEMP/browser-deps/bin/pip" install playwright==1.56.0
+          sudo "$RUNNER_TEMP/browser-deps/bin/python" -m playwright install-deps chromium
+          export V8_SERVER_PYTHON=$(command -v python)
+          unset DISPLAY WAYLAND_DISPLAY
+          "$bundle/install.sh"
+          "$bundle/v8os" --help
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: v8os-server-linux-x64
+          path: out/server/*.tar.gz
+          if-no-files-found: error

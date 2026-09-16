@@ -149,6 +149,21 @@ type FeaturePackConfigRecord = {
 
 const FEATURE_PACK_DEFINITIONS: FeaturePackDefinition[] = [
     {
+        id: "vector_memory", productName: "向量记忆能力包", shortName: "向量记忆",
+        description: "在 SQLite/FTS5 基础记忆上启用向量检索。", hover: "安装并重启后重建向量索引，需要 embedding 模型配置。",
+        recommendedOrder: 7, runtimeFamilies: [], requirementsFile: "vector-memory.txt", smokeModules: ["chromadb", "langchain_text_splitters"],
+    },
+    {
+        id: "creative_media", productName: "媒体创作基础包", shortName: "媒体创作",
+        description: "启用媒体创作 runtime 与图像处理、媒体下载依赖。", hover: "视频处理仍需 FFmpeg 和相应 provider。",
+        recommendedOrder: 8, runtimeFamilies: ["creative_media"], requirementsFile: "creative-media.txt", smokeModules: ["PIL", "numpy", "yt_dlp"],
+    },
+    {
+        id: "cloud_voice", productName: "云语音能力包", shortName: "云语音",
+        description: "启用云端语音，不安装本地 ASR 或声卡采集。", hover: "安装并重启后启用语音 API。",
+        recommendedOrder: 9, runtimeFamilies: [], requirementsFile: "cloud-voice.txt", smokeModules: ["edge_tts"],
+    },
+    {
         id: "document_ingestion",
         productName: "文档读取能力包",
         shortName: "文档读取",
@@ -426,6 +441,8 @@ function requirementsEntries(requirementsFile: string) {
 
 function definitionInstallable(definition: FeaturePackDefinition) {
     if (definition.enabled === false) return false;
+    const profile = String(process.env.ENGINE_INSTALL_PROFILE || readCanonicalAdminRuntimeConfig().runtimeRegistry?.installProfile || "").trim().toLowerCase();
+    if (profile === "server" && ["computer_use_desktop", "rpa_automation"].includes(definition.id)) return false;
     const requirementsFile = requirementsPathFor(definition);
     const manifestPath = assetManifestPathFor(definition);
     const lockFile = lockPathFor(definition);
@@ -2360,7 +2377,7 @@ async function runFeaturePackInstallSequence(input: {
     });
 }
 
-export async function triggerFeaturePackInstall(packId: string, dryRun = false, locale = "en") {
+export async function triggerFeaturePackInstall(packId: string, dryRun = false, locale = "en", waitForCompletion = false) {
     const definition = FEATURE_PACK_BY_ID.get(String(packId || ""));
     if (!definition) {
         throw new Error(`Unknown feature pack: ${packId}`);
@@ -2515,7 +2532,7 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false, 
         if (FEATURE_PACK_INSTALL_RESERVATION === definition.id) FEATURE_PACK_INSTALL_RESERVATION = null;
     }
 
-    void runFeaturePackInstallSequence({
+    const completion = runFeaturePackInstallSequence({
         definition,
         journal,
         pythonExe,
@@ -2551,6 +2568,17 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false, 
             ACTIVE_FEATURE_PACK_INSTALLS.delete(definition.id);
         }
     });
+
+    if (waitForCompletion) {
+        await completion;
+        const finalState = currentFeaturePackConfig(definition.id);
+        const completedJournal = readFeaturePackInstallJournal(featurePackRoot(), journal.paths.journalRef);
+        if (finalState?.status !== "installed" || completedJournal?.phase !== "committed"
+            || finalState.receiptRef !== journal.paths.receiptRef) {
+            throw new Error(`feature_pack_install_${completedJournal?.phase || finalState?.status || "unknown"}: see ${logRef}`);
+        }
+        return { status: "installed", packId: definition.id, restartRequired: true, logRef };
+    }
 
     return {
         status: "started",

@@ -40,6 +40,7 @@ import { runRepair } from "./repair.mjs";
 import { LOG_DIR, REPO_ROOT } from "./paths.mjs";
 import { startComponents, statusComponents, stopComponents } from "./process_manager.mjs";
 import { commandSessions } from "./session_commands.mjs";
+import { commandServerService } from "./server_service.mjs";
 import { commandWorkspace } from "./workspace_commands.mjs";
 import { readRuntimePorts } from "./runtime_ports.mjs";
 import {
@@ -91,6 +92,8 @@ Usage:
   v8os stop [--only engine,admin]
   v8os restart [--only engine,admin]
   v8os status [--json]
+  v8os service install|upgrade --bundle <server-package-root> [--key-file <absolute-path>] [--port 9530] [--json]
+  v8os service start|stop|restart|status|rollback|uninstall [--json]
   v8os chat "message" [--session id] [--workspace path] [--safety-approval manual|reduced|minimal] [--interactive]
   v8os acp
   v8os sessions list|show|turns|open|resume [--json]
@@ -379,6 +382,7 @@ export async function main(argv) {
     return commandStart(args);
   }
   if (command === "status") return commandStatus(args);
+  if (command === "service") return commandServerService(args);
   if (command === "chat") return commandChat(args);
   if (command === "acp") return commandAcp(args);
   if (command === "sessions") return commandSessions(args);

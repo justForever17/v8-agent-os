@@ -24,6 +24,7 @@ from core.llm_exceptions import (
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.response_normalizer import extract_text_and_reasoning
 from core.model_budget_service import model_budget_service
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.provider_compatibility import normalize_provider_error
 from core.provider_health_service import provider_health_service
 from core.provider_circuit import ProviderCircuitOpen
@@ -645,6 +646,8 @@ class ModelFailoverService:
                                                     "toolArgumentCorrection": {"used": True, "attemptCount": total_attempts}}
                     return result
                 except Exception as exc:
+                    if isinstance(exc, ModelGovernanceInterventionRequired):
+                        raise
                     if isinstance(exc, V8LLMError):
                         normalized = {
                             "code": exc.code,

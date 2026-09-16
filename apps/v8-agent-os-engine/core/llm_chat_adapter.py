@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import re
+import uuid
 from collections import Counter
+from contextlib import AsyncExitStack, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Sequence
 
@@ -16,12 +20,15 @@ from pydantic import BaseModel as PydanticModel, ConfigDict, PrivateAttr
 
 from core.model_capability_matrix import build_effective_capability_matrix
 from core.model_token_policy import OUTPUT_TOKEN_KEYS, prepare_output_token_kwargs
-from core.llm_exceptions import V8LLMContentPolicyError, V8LLMStructuredOutputError, raise_as_v8_llm_error
+from core.llm_exceptions import V8LLMContentPolicyError, V8LLMError, V8LLMStructuredOutputError, raise_as_v8_llm_error
 from core.prompt_cache_gateway import PreparedPromptCacheRequest, prompt_cache_gateway
 from core.provider_hosted_tools import provider_hosted_tool_schemas
 from core.provider_compatibility import normalize_provider_error, provider_rejection_details
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls, sanitize_model_tool_calls
 from core.model_text_protocol import NativeToolTextGuard, has_native_tool_text
+
+_ASYNC_STREAM_CLEANUP: ContextVar[AsyncExitStack | None] = ContextVar("v8_model_stream_cleanup", default=None)
+_ASYNC_BATCH_GENERATION: ContextVar[bool] = ContextVar("v8_model_batch_generation", default=False)
 
 
 _V8_CHUNK_IDENTITY_METADATA_KEYS = (
@@ -325,6 +332,95 @@ class V8StructuredOutputRunnable(RunnableSerializable):
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "structured_output"})  # type: ignore[arg-type]
 
 
+class _RuntimeInvocationCancelled(V8LLMError):
+    """Carry a transport cancellation through LangChain's batch aggregation.
+
+    The installed agenerate handles BaseException failures but filters its
+    success callbacks with Exception. Restore the original cancellation at
+    the adapter boundary, rather than letting it access .generations on it.
+    """
+
+    def __init__(self, cancellation):
+        super().__init__(code="cancelled", message="Provider invocation cancelled", retryable=False)
+        self.cancellation = cancellation
+
+
+class _RuntimeCallbackModel:
+    """Give non-LangChain OAuth transports the same invocation accounting.
+
+    Gemini CLI and Codex Responses expose invoke/stream but do not consume
+    RunnableConfig callbacks. Their provider attempts still have one owner.
+    """
+
+    def __init__(self, model, callbacks):
+        self.model, self.callbacks = model, callbacks
+
+    def __getattr__(self, name):
+        attribute = getattr(self.model, name)
+        if name == "bind_tools":
+            return lambda tools, **kwargs: _RuntimeCallbackModel(attribute(tools, **kwargs), self.callbacks)
+        return attribute
+
+    @contextmanager
+    def _attempt(self, messages):
+        run_id = uuid.uuid4()
+        result = {"response": None, "run_id": run_id}
+        for callback in self.callbacks:
+            callback.on_chat_model_start({}, [list(messages)], run_id=run_id)
+        try:
+            yield result
+        except BaseException as error:
+            for callback in self.callbacks:
+                callback.on_llm_error(error, run_id=run_id, response=result["response"])
+            raise
+        else:
+            for callback in self.callbacks:
+                callback.on_llm_end(result["response"], run_id=run_id)
+
+    def invoke(self, messages, **kwargs):
+        with self._attempt(messages) as attempt:
+            attempt["response"] = self.model.invoke(messages, **kwargs)
+            return attempt["response"]
+
+    async def ainvoke(self, messages, **kwargs):
+        try:
+            with self._attempt(messages) as attempt:
+                attempt["response"] = await self.model.ainvoke(messages, **kwargs)
+                return attempt["response"]
+        except asyncio.CancelledError as error:
+            if _ASYNC_BATCH_GENERATION.get():
+                raise _RuntimeInvocationCancelled(error) from error
+            raise
+
+    def _record_chunk(self, attempt, chunk):
+        attempt["response"] = chunk if attempt["response"] is None else attempt["response"] + chunk
+        text, _ = extract_text_and_reasoning(chunk)
+        for callback in self.callbacks:
+            callback.on_llm_new_token(text, chunk=chunk, run_id=attempt["run_id"])
+
+    def stream(self, messages, **kwargs):
+        with self._attempt(messages) as attempt:
+            iterator = self.model.stream(messages, **kwargs)
+            try:
+                for chunk in iterator:
+                    self._record_chunk(attempt, chunk)
+                    yield chunk
+            finally:
+                if hasattr(iterator, "close"):
+                    iterator.close()
+
+    async def astream(self, messages, **kwargs):
+        with self._attempt(messages) as attempt:
+            iterator = self.model.astream(messages, **kwargs)
+            try:
+                async for chunk in iterator:
+                    self._record_chunk(attempt, chunk)
+                    yield chunk
+            finally:
+                if hasattr(iterator, "aclose"):
+                    await iterator.aclose()
+
+
 class V8ChatModelAdapter(BaseChatModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -340,6 +436,35 @@ class V8ChatModelAdapter(BaseChatModel):
     _bound_tool_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
     _base_model: Any = PrivateAttr(default=None)
     _bound_model: Any = PrivateAttr(default=None)
+    _provider_callbacks: list[Any] = PrivateAttr(default_factory=list)
+
+    async def agenerate(self, *args, **kwargs):
+        token = _ASYNC_BATCH_GENERATION.set(True)
+        try:
+            return await super().agenerate(*args, **kwargs)
+        except _RuntimeInvocationCancelled as error:
+            raise error.cancellation from None
+        finally:
+            _ASYNC_BATCH_GENERATION.reset(token)
+
+    async def astream(self, *args, **kwargs):
+        # LangChain's public async stream does not close its _astream iterator
+        # when the consumer calls aclose. Keep this invocation's close chain
+        # explicit; no per-model/global list shared by concurrent streams.
+        async with AsyncExitStack() as cleanup:
+            iterator = super().astream(*args, **kwargs)
+            cleanup.push_async_callback(iterator.aclose)
+            while True:
+                # Do not hold a ContextVar token across yield: a caller may
+                # read under wait_for and close from its parent task.
+                token = _ASYNC_STREAM_CLEANUP.set(cleanup)
+                try:
+                    chunk = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                finally:
+                    _ASYNC_STREAM_CLEANUP.reset(token)
+                yield chunk
 
     def __init__(
         self,
@@ -352,6 +477,12 @@ class V8ChatModelAdapter(BaseChatModel):
         builder: Callable[[], Any],
     ) -> None:
         adapter_callbacks = list((model_kwargs or {}).get("callbacks") or [])
+        from core.model_telemetry import ModelTelemetryCallback
+
+        provider_callbacks = [callback for callback in adapter_callbacks
+                              if isinstance(callback, ModelTelemetryCallback)
+                              and callback.governance_config_getter is not None]
+        adapter_callbacks = [callback for callback in adapter_callbacks if callback not in provider_callbacks]
         if isinstance(model_kwargs, dict):
             model_kwargs.pop("callbacks", None)
         super().__init__(
@@ -364,6 +495,7 @@ class V8ChatModelAdapter(BaseChatModel):
         self._model_kwargs = dict(model_kwargs or {})
         self._builder = builder
         self._provider_surface = create_provider_surface(provider_standard, meta)
+        self._provider_callbacks = provider_callbacks
 
     @property
     def _llm_type(self) -> str:
@@ -626,6 +758,13 @@ class V8ChatModelAdapter(BaseChatModel):
     def _get_base_model(self) -> Any:
         if self._base_model is None:
             self._base_model = self._builder()
+            if self._provider_callbacks and isinstance(self._base_model, BaseChatModel):
+                # Cache lookup belongs to this adapter, before transport
+                # admission. A nested global LangChain cache would count a
+                # local replay as a provider attempt and a recovery probe.
+                self._base_model.cache = False
+            elif self._provider_callbacks:
+                self._base_model = _RuntimeCallbackModel(self._base_model, self._provider_callbacks)
         return self._base_model
 
     def _provider_hosted_tools(self) -> list[dict[str, Any]]:
@@ -1106,14 +1245,14 @@ class V8ChatModelAdapter(BaseChatModel):
             llm_output=dict(getattr(message, "response_metadata", {}) or {}),
         )
 
-    @staticmethod
-    def _provider_internal_config() -> dict[str, Any]:
+    def _provider_internal_config(self) -> dict[str, Any]:
         # The adapter is the sole canonical model-event boundary. Provider
         # clients still emit telemetry callbacks, but their nested LangChain
         # model events must never be projected as a second assistant stream.
         return {
             "metadata": {"v8_model_scope": "runtime_internal"},
             "tags": ["v8:provider-internal"],
+            **({"callbacks": self._provider_callbacks} if self._provider_callbacks else {}),
         }
 
     def _prepare_prompt_cache_request(
@@ -1274,6 +1413,8 @@ class V8ChatModelAdapter(BaseChatModel):
                     self._finalize_prompt_cache_response(fallback_message, fallback_prepared)
                 )
             return self._build_chat_result(self._finalize_prompt_cache_response(native_message, prepared))
+        except _RuntimeInvocationCancelled:
+            raise
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
@@ -1432,7 +1573,14 @@ class V8ChatModelAdapter(BaseChatModel):
                     )
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "stream"})
 
-    async def _astream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
+    def _astream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
+        iterator = self._astream_impl(messages, stop=stop, run_manager=run_manager, **kwargs)
+        cleanup = _ASYNC_STREAM_CLEANUP.get()
+        if cleanup is not None:
+            cleanup.push_async_callback(iterator.aclose)
+        return iterator
+
+    async def _astream_impl(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
         normalized_messages = self._normalize_messages_for_provider(messages)
         prompt_emulated_tools = bool(self._bound_tools and not self._provider_surface.supports_native_tools())
         if prompt_emulated_tools:
@@ -1469,16 +1617,18 @@ class V8ChatModelAdapter(BaseChatModel):
                     model=self.model_id,
                     details={"mode": "astream", "toolMode": "prompt_emulated"},
                 )
+        provider_iterator = None
         try:
             include_stream_identity = True
             aggregate_chunk: AIMessageChunk | None = None
             text_guard = NativeToolTextGuard(enabled=bool(self._bound_tools))
-            async for chunk in self._get_runtime_model().astream(
+            provider_iterator = self._get_runtime_model().astream(
                 prepared.messages,
                 config=self._provider_internal_config(),
                 stop=stop,
                 **prepared.kwargs,
-            ):
+            )
+            async for chunk in provider_iterator:
                 rejection = self._provider_rejection(
                     chunk, stage="stream", partial_output=bool(aggregate_chunk and _message_text(aggregate_chunk)),
                 )
@@ -1563,6 +1713,9 @@ class V8ChatModelAdapter(BaseChatModel):
                         details={"mode": "astream", "fallback": "prompt_emulated_tools"},
                     )
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "astream"})
+        finally:
+            if provider_iterator is not None and hasattr(provider_iterator, "aclose"):
+                await provider_iterator.aclose()
 
     def bind_tools(self, tools: Sequence[Any], *, tool_choice: str | None = None, **kwargs: Any):  # type: ignore[override]
         # Do not deep-copy provider runtime clients here. LangChain/OpenAI

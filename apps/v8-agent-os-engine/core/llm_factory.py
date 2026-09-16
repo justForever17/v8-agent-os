@@ -1,11 +1,11 @@
-from typing import Dict, Any, Optional, Type, List
+from typing import Dict, Any, Optional, Type, List, Callable
 import logging
 import sys
-import time
 import re
 import math
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from langchain_anthropic import ChatAnthropic
 try:
@@ -24,7 +24,7 @@ from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
 from core.gemini_cli_runtime import GeminiCliRuntimeModel
 from core.openai_codex_runtime import OpenAICodexResponsesRuntimeModel
 from core.model_capability_matrix import build_effective_capability_matrix, normalize_capability_metadata
-from core.llm_exceptions import V8LLMCapabilityMismatchError, V8LLMInvalidRequestError, raise_as_v8_llm_error
+from core.llm_exceptions import V8LLMCapabilityMismatchError, V8LLMInvalidRequestError, build_llm_error_from_normalized, raise_as_v8_llm_error
 from core.provider_runtime_profiles import (
     is_anthropic_compat_provider,
     is_codex_oauth_provider,
@@ -32,12 +32,11 @@ from core.provider_runtime_profiles import (
     resolve_provider_adapter,
     runtime_readiness_for_provider,
 )
-from core.model_budget_service import model_budget_service
 from core.model_token_policy import output_token_mode, prepare_output_token_kwargs, resolve_output_token_budget
 from core.model_control_plane import model_control_plane, normalize_config_temperature
 from core.model_endpoint_binding import build_model_endpoint_binding
 from core.provider_hosted_tools import normalize_provider_hosted_tools
-from core.model_telemetry import model_telemetry_service
+from core.model_telemetry import ModelTelemetryCallback, model_telemetry_service
 from core.model_thinking_control import (
     ensure_anthropic_thinking_budget_headroom,
     merge_model_request_patch,
@@ -53,9 +52,7 @@ from core.provider_compatibility import (
     install_provider_compatibility_patches,
     normalize_provider_error,
 )
-from core.provider_circuit import provider_circuit_service
 from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
-from erc.runtime_context import get_runtime_context
 from langchain_core.embeddings import Embeddings
 
 _EMBEDDING_OBSERVED_LIMITS: Dict[str, int] = {}
@@ -243,13 +240,8 @@ def parse_rerank_response_payload(payload: Dict[str, Any], documents: List[str])
         if not document_text and index is not None and 0 <= index < len(documents):
             document_text = documents[index]
 
-        raw_score = (
-            row.get("relevance_score")
-            or row.get("relevanceScore")
-            or row.get("score")
-            or row.get("similarity")
-            or 0.0
-        )
+        raw_score = next((row[key] for key in ("relevance_score", "relevanceScore", "score", "similarity")
+                          if key in row), 0.0)
         try:
             score = float(raw_score)
         except (TypeError, ValueError):
@@ -263,6 +255,119 @@ def parse_rerank_response_payload(payload: Dict[str, Any], documents: List[str])
             }
         )
     return parsed
+
+
+def _embedding_vectors(payload: Any, expected_count: int) -> list[list[float]]:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    invalid = build_llm_error_from_normalized({"code": "invalid_response",
+        "message": f"embedding_provider_invalid_response: expected {expected_count} finite vector rows"})
+    if not isinstance(data, list) or len(data) != expected_count:
+        raise invalid
+    vectors = {}
+    dimensions = None
+    for position, row in enumerate(data):
+        if not isinstance(row, dict):
+            raise invalid
+        index, vector = row.get("index", position), row.get("embedding")
+        if (type(index) is not int or not 0 <= index < expected_count or index in vectors
+                or not isinstance(vector, list) or not vector
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in vector)):
+            raise invalid
+        if dimensions is not None and len(vector) != dimensions:
+            raise invalid
+        dimensions = len(vector)
+        vectors[index] = vector
+    return [vectors[index] for index in range(expected_count)]
+
+
+def _validate_rerank_response(payload: Any, documents: list[str], top_k: int) -> None:
+    rows = payload.get("results", payload.get("data")) if isinstance(payload, dict) else None
+    invalid = build_llm_error_from_normalized({"code": "invalid_response",
+        "message": "reranker_provider_invalid_response: expected scored document rows"})
+    if not isinstance(rows, list) or (not rows and top_k > 0) or len(rows) > len(documents):
+        raise invalid
+    indices = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise invalid
+        index = row.get("index")
+        if index is not None:
+            if type(index) is not int or not 0 <= index < len(documents) or index in indices:
+                raise invalid
+            indices.add(index)
+        elif parse_rerank_response_payload({"results": [row]}, documents)[0]["document"] not in documents:
+            raise invalid
+        score = next((row[key] for key in ("relevance_score", "relevanceScore", "score", "similarity")
+                      if key in row), None)
+        try:
+            if isinstance(score, bool) or not math.isfinite(float(score)):
+                raise invalid
+        except (TypeError, ValueError):
+            raise invalid from None
+
+
+def _post_aux_model(client: Any, endpoint: str, request_kwargs: Dict[str, Any], *,
+                    request_kind: str, prompts: list[str], validate: Callable[[Any], Any]):
+    """One HTTP attempt owns one admission and one terminal callback, including retries."""
+    import requests
+
+    config = model_control_plane.get_config()
+    governance = dict(config.get("governance") or {})
+    # requests uses this timeout for connect and read separately. A short
+    # configured probe lease must not expire during those two bounded waits.
+    governance["providerCircuitProbeLeaseSeconds"] = max(
+        float(governance.get("providerCircuitProbeLeaseSeconds") or 120), 60,
+    )
+    config = {**config, "governance": governance}
+    provider = (config.get("providers") or {}).get(client.provider_id) or {}
+    meta = (provider.get("models") or {}).get(client.model_name) or {}
+    callback = ModelTelemetryCallback(
+        model_id=client.model_name, provider_id=client.provider_id, provider_name=client.provider_name,
+        role=client.role, capability_class=client.capability_class, request_kind=request_kind,
+        cost_per_input=meta.get("costPerInput"), cost_per_output=meta.get("costPerOutput"),
+        governance_config_getter=lambda: config, estimated_output_tokens=0,
+    )
+    run_id = uuid.uuid4()
+    # Admission failures are not provider attempts and must not emit a terminal log.
+    callback.on_llm_start({}, prompts=prompts, run_id=run_id)
+    result = SimpleNamespace(llm_output={}, generations=[])
+    try:
+        response = requests.post(endpoint, **{**request_kwargs, "timeout": 30})
+        if response.status_code != 200:
+            try:
+                result.llm_output = response.json()
+            except ValueError:
+                pass
+            error = requests.HTTPError(f"{response.status_code}: {response.text}", response=response)
+            normalized = normalize_provider_error(error, provider=client.provider_id,
+                model=client.model_name, sensitive_values=[client.api_key])
+            if normalized["code"] == "unknown_provider_error":
+                classify = _classify_embedding_provider_error if request_kind == "embedding" else _classify_rerank_provider_error
+                kind = classify(response.status_code, response.text)
+                normalized["code"] = {
+                    "input_limit_exceeded": "invalid_request", "rate_limited": "rate_limit",
+                    "auth_failed": "auth_error", "quota_exceeded": "quota_exceeded",
+                    "network_error": "provider_unavailable",
+                }.get(kind, "invalid_request" if 400 <= response.status_code < 500 else "provider_unavailable")
+            callback.on_llm_error(build_llm_error_from_normalized(normalized), run_id=run_id, response=result)
+            return response
+        try:
+            result.llm_output = response.json()
+        except ValueError as error:
+            raise build_llm_error_from_normalized({"code": "invalid_response",
+                "message": f"{request_kind}_provider_invalid_response: expected JSON"}) from error
+        validate(result.llm_output)
+    except BaseException as error:
+        # requests errors may include a URL with query credentials. Keep the
+        # original exception for callers, but persist only the normalized form.
+        recorded_error = error
+        if isinstance(error, requests.RequestException):
+            recorded_error = build_llm_error_from_normalized(normalize_provider_error(
+                error, provider=client.provider_id, model=client.model_name, sensitive_values=[client.api_key]))
+        callback.on_llm_error(recorded_error, run_id=run_id, response=result)
+        raise
+    callback.on_llm_end(result, run_id=run_id)
+    return response
 
 
 class OpenAICompatibleEmbedding(BaseEmbedding):
@@ -355,19 +460,8 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         return text
         
     def _call_api(self, texts: list[str]) -> list[list[float]]:
-        import requests
-        started = time.perf_counter()
         if not texts:
             return []
-        ctx = get_runtime_context()
-        model_budget_service.enforce_or_raise(
-            config=model_control_plane.get_config(),
-            run_id=ctx.get("run_id"),
-            project_id=ctx.get("project_id"),
-            role=self.role,
-            capability_class=self.capability_class,
-            model_id=self.model_name,
-        )
         if not self._effective_max_tokens():
             raise ValueError(
                 f"missing_context_window: embedding model '{self.model_name}' must define contextWindow before retrieval can run"
@@ -396,116 +490,25 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
                 retry_texts = [self._truncate_text(t, token_limit=int(observed_limit)) for t in original_texts]
                 retry_payload = dict(payload)
                 retry_payload["input"] = retry_texts
-                retry_started = time.perf_counter()
                 retry_kwargs: Dict[str, Any] = {"json": retry_payload, "headers": headers}
                 if self.auth_query:
                     retry_kwargs["params"] = self.auth_query
-                retry_res = self._post_embedding(retry_kwargs)
-                if retry_res.status_code == 200:
-                    res = retry_res
-                    texts = retry_texts
-                else:
-                    res = retry_res
-                    started = retry_started
-            if res.status_code == 200:
-                pass
-            else:
+                res = self._post_embedding(retry_kwargs)
+                texts = retry_texts
+            if res.status_code != 200:
                 logger.warning("[Embedding Error] %s: %s", res.status_code, _safe_log_text(res.text))
-                error_kind = _classify_embedding_provider_error(int(res.status_code or 0), res.text)
-                model_telemetry_service.record_aux_model_invocation(
-                    model_id=self.model_name,
-                    provider_id=self.provider_id,
-                    provider_name=self.provider_name,
-                    role=self.role,
-                    capability_class=self.capability_class,
-                    request_kind="embedding",
-                    latency_ms=(time.perf_counter() - started) * 1000,
-                    status="failed",
-                    error_code=str(res.status_code),
-                    error_message=res.text,
-                    metadata={
-                        "documents": len(texts),
-                        "observedInputTokenLimit": observed_limit,
-                        "errorKind": error_kind,
-                    },
-                )
         if res.status_code != 200:
             res.raise_for_status()
-        
-        response_payload = res.json()
-        data = response_payload.get("data") if isinstance(response_payload, dict) else None
-        valid_data = (
-            isinstance(data, list)
-            and len(data) == len(texts)
-            and all(isinstance(item, dict) and isinstance(item.get("embedding"), list) for item in data)
-        )
-        if not valid_data:
-            model_telemetry_service.record_aux_model_invocation(
-                model_id=self.model_name,
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                role=self.role,
-                capability_class=self.capability_class,
-                request_kind="embedding",
-                latency_ms=(time.perf_counter() - started) * 1000,
-                status="failed",
-                error_code="invalid_response",
-                error_message="Embedding provider returned an invalid data array",
-                metadata={
-                    "documents": len(texts),
-                    "resultCount": len(data) if isinstance(data, list) else None,
-                    "errorKind": "invalid_response",
-                },
-            )
-            raise RuntimeError(
-                f"embedding_provider_invalid_response: expected {len(texts)} vector rows"
-            )
-        data = sorted(data, key=lambda x: x.get("index", 0))
-        model_telemetry_service.record_aux_model_invocation(
-            model_id=self.model_name,
-            provider_id=self.provider_id,
-            provider_name=self.provider_name,
-            role=self.role,
-            capability_class=self.capability_class,
-            request_kind="embedding",
-            latency_ms=(time.perf_counter() - started) * 1000,
-            status="completed",
-            metadata={
-                "documents": len(texts),
-                "dimensions": len(data[0]["embedding"]) if data else 0,
-                "observedInputTokenLimit": _EMBEDDING_OBSERVED_LIMITS.get(self._observed_limit_key()),
-            },
-        )
-        return [item["embedding"] for item in data]
+        vectors = _embedding_vectors(res.json(), len(texts))
+        logger.info("[Embedding] Returned %s vectors with %s dimensions", len(vectors), len(vectors[0]))
+        return vectors
 
     def _post_embedding(self, request_kwargs: Dict[str, Any]):
-        """Admit exactly one circuit attempt for this one HTTP request."""
-        config = model_control_plane.get_config()
-        permit = provider_circuit_service.acquire(
-            str(self.provider_id or self.provider_name or ""), config=config,
-            attempt_id=f"aux:embedding:{uuid.uuid4()}",
+        texts = request_kwargs["json"]["input"]
+        return _post_aux_model(
+            self, self.endpoint, request_kwargs, request_kind="embedding", prompts=texts,
+            validate=lambda payload: _embedding_vectors(payload, len(texts)),
         )
-        try:
-            import requests
-            response = requests.post(self.endpoint, **request_kwargs)
-        except BaseException:
-            provider_circuit_service.finish(
-                permit, success=False, config=config, error_code="provider_unavailable",
-            )
-            raise
-        error_kind = _classify_embedding_provider_error(int(response.status_code or 0), response.text)
-        circuit_error = {
-            "input_limit_exceeded": "invalid_request",
-            "rate_limited": "rate_limit",
-            "auth_failed": "auth_error",
-            "quota_exceeded": "quota_exceeded",
-            "network_error": "provider_unavailable",
-            "provider_error": "provider_unavailable",
-        }.get(error_kind)
-        provider_circuit_service.finish(
-            permit, success=response.status_code == 200, config=config, error_code=circuit_error,
-        )
-        return response
         
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._call_api(texts)
@@ -678,50 +681,19 @@ class RestReranker(BaseReranker):
         }
 
     def _post_rerank(self, endpoint: str, payload: dict[str, Any], headers: dict[str, str]):
-        import requests
-        request_kwargs: Dict[str, Any] = {"json": payload, "headers": headers, "timeout": 30}
+        request_kwargs: Dict[str, Any] = {"json": payload, "headers": headers}
         if self.auth_query:
             request_kwargs["params"] = self.auth_query
-        config = model_control_plane.get_config()
-        permit = provider_circuit_service.acquire(
-            str(self.provider_id or self.provider_name or ""), config=config,
-            attempt_id=f"aux:reranker:{uuid.uuid4()}",
+        return _post_aux_model(
+            self, endpoint, request_kwargs, request_kind="reranker",
+            prompts=[payload["query"], *payload["documents"]],
+            validate=lambda result: _validate_rerank_response(result, payload["documents"], payload["top_n"]),
         )
-        try:
-            response = requests.post(endpoint, **request_kwargs)
-        except BaseException:
-            provider_circuit_service.finish(
-                permit, success=False, config=config, error_code="provider_unavailable",
-            )
-            raise
-        error_kind = _classify_rerank_provider_error(int(response.status_code or 0), response.text)
-        circuit_error = {
-            "input_limit_exceeded": "invalid_request",
-            "rate_limited": "rate_limit",
-            "auth_failed": "auth_error",
-            "quota_exceeded": "quota_exceeded",
-            "network_error": "provider_unavailable",
-            "provider_error": "provider_unavailable",
-        }.get(error_kind)
-        provider_circuit_service.finish(
-            permit, success=response.status_code == 200, config=config, error_code=circuit_error,
-        )
-        return response
 
     def rerank(self, query: str, documents: list[str], top_k: int = 3) -> list[Dict[str, Any]]:
         import requests
-        started = time.perf_counter()
         if not documents:
             return []
-        ctx = get_runtime_context()
-        model_budget_service.enforce_or_raise(
-            config=model_control_plane.get_config(),
-            run_id=ctx.get("run_id"),
-            project_id=ctx.get("project_id"),
-            role=self.role,
-            capability_class=self.capability_class,
-            model_id=self.model_name,
-        )
             
         headers = {**self.auth_headers, "Content-Type": "application/json"}
         trimmed_query, trimmed_documents, limit_meta = self._prepare_payload_documents(query, documents)
@@ -759,11 +731,9 @@ class RestReranker(BaseReranker):
                         "[Reranker] Retrying with smaller query token limit %s.",
                         retry_query_limit,
                     )
-                    retry_res = self._post_rerank(endpoint, retry_payload, headers)
-                    if retry_res.status_code == 200:
-                        res = retry_res
-                        payload = retry_payload
-                        limit_meta = retry_limit_meta
+                    res = self._post_rerank(endpoint, retry_payload, headers)
+                    payload = retry_payload
+                    limit_meta = retry_limit_meta
             if res.status_code == 200:
                 out = parse_rerank_response_payload(res.json(), documents)
                 break
@@ -775,47 +745,8 @@ class RestReranker(BaseReranker):
                 status_code,
                 _safe_log_text(error_text),
             )
-            error_kind = _classify_rerank_provider_error(int(status_code or 0), error_text)
-            model_telemetry_service.record_aux_model_invocation(
-                model_id=self.model_name,
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                role=self.role,
-                capability_class=self.capability_class,
-                request_kind="reranker",
-                latency_ms=(time.perf_counter() - started) * 1000,
-                status="failed",
-                error_code=str(status_code),
-                error_message=error_text,
-                metadata={
-                    "documents": len(documents),
-                    "top_k": top_k,
-                    "endpoint": failed_endpoint,
-                    "apiFlavor": self.api_flavor,
-                    "errorKind": error_kind,
-                    **limit_meta,
-                },
-            )
             raise requests.HTTPError(f"Rerank request failed ({status_code}) on {failed_endpoint}: {error_text}")
-        model_telemetry_service.record_aux_model_invocation(
-            model_id=self.model_name,
-            provider_id=self.provider_id,
-            provider_name=self.provider_name,
-            role=self.role,
-            capability_class=self.capability_class,
-            request_kind="reranker",
-            latency_ms=(time.perf_counter() - started) * 1000,
-            status="completed",
-            metadata={
-                "documents": len(documents),
-                "top_k": top_k,
-                "results": len(out),
-                "endpoint": resolved_endpoint,
-                "apiFlavor": self.api_flavor,
-                "observedRerankQueryTokenLimit": _RERANK_OBSERVED_QUERY_LIMITS.get(self._observed_query_limit_key()),
-                **limit_meta,
-            },
-        )
+        logger.info("[Reranker] Ranked %s documents into %s results", len(documents), len(out))
         return out
 
 

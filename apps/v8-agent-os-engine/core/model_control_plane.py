@@ -943,18 +943,18 @@ class ModelControlPlane:
                     0.0,
                 ),
                 "providerCircuitCooldownSeconds": max(
-                    _safe_float(
+                    _safe_int(
                         governance_in.get("providerCircuitCooldownSeconds"),
                         DEFAULT_GOVERNANCE["providerCircuitCooldownSeconds"],
-                    ),
-                    1.0,
+                    ) or 1,
+                    1,
                 ),
                 "providerCircuitProbeLeaseSeconds": max(
-                    _safe_float(
+                    _safe_int(
                         governance_in.get("providerCircuitProbeLeaseSeconds"),
                         DEFAULT_GOVERNANCE["providerCircuitProbeLeaseSeconds"],
-                    ),
-                    1.0,
+                    ) or 1,
+                    1,
                 ),
                 "maxLocalRetries": DEFAULT_GOVERNANCE["maxLocalRetries"]
                 if _safe_int(governance_in.get("maxLocalRetries")) is None

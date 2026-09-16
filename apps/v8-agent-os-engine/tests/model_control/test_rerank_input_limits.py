@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
+from core import llm_factory, model_telemetry
+from core.database import DatabaseManager
 from core.llm_factory import EmbeddingSimilarityReranker, LLMFactory, RestReranker, _safe_log_text
+from core.model_budget_service import ModelBudgetService
+from core.provider_circuit import ProviderCircuitService
 
 
 class _Response:
@@ -15,7 +17,13 @@ class _Response:
         return self._payload
 
 
-def test_reranker_retries_query_too_long_with_observed_query_limit() -> None:
+def test_reranker_retries_query_too_long_with_observed_query_limit(tmp_path, monkeypatch) -> None:
+    database = DatabaseManager(tmp_path / 'rerank-limits.db')
+    monkeypatch.setattr(model_telemetry, 'db', database)
+    monkeypatch.setattr(model_telemetry, 'model_budget_service', ModelBudgetService(database))
+    monkeypatch.setattr(model_telemetry, 'provider_circuit_service', ProviderCircuitService(database))
+    monkeypatch.setattr(llm_factory.model_control_plane, 'get_config', lambda: {'governance': {}})
+    monkeypatch.setattr(llm_factory, '_RERANK_OBSERVED_QUERY_LIMITS', {})
     reranker = RestReranker(
         model_name="rerank-fixture",
         api_key="key",
@@ -25,8 +33,8 @@ def test_reranker_retries_query_too_long_with_observed_query_limit() -> None:
     )
     calls: list[dict] = []
 
-    def fake_post(endpoint, payload, headers):  # noqa: ANN001
-        calls.append(dict(payload))
+    def fake_post(endpoint, **kwargs):  # noqa: ANN001
+        calls.append(dict(kwargs['json']))
         if len(calls) == 1:
             return _Response(400, '{"message":"Query is too long. Please provide a shorter query."}')
         return _Response(
@@ -41,18 +49,13 @@ def test_reranker_retries_query_too_long_with_observed_query_limit() -> None:
             },
         )
 
-    with patch.object(reranker, "_post_rerank", side_effect=fake_post), patch(
-        "core.llm_factory.model_budget_service.enforce_or_raise",
-        return_value=None,
-    ), patch(
-        "core.llm_factory.model_telemetry_service.record_aux_model_invocation",
-        return_value=None,
-    ):
-        result = reranker.rerank("这是一段很长的查询" * 2000, ["doc one", "doc two"], top_k=1)
+    monkeypatch.setattr('requests.post', fake_post)
+    result = reranker.rerank("这是一段很长的查询" * 2000, ["doc one", "doc two"], top_k=1)
 
     assert result[0]["index"] == 0
     assert len(calls) == 2
     assert len(calls[1]["query"]) < len(calls[0]["query"])
+    assert len(database.list_model_invocations()) == 2
 
 
 def test_reranker_log_text_is_safe_for_gbk_stderr(monkeypatch) -> None:

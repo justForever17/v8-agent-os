@@ -13102,8 +13102,8 @@ class DatabaseManager:
                 "latency_ms_total": 0.0,
             }
 
-    def get_run_invocation_totals(self, run_id: str) -> Dict[str, Any]:
-        return self.observability_db.get_run_invocation_totals(run_id)
+    def get_run_invocation_totals(self, run_id: str, *, unreserved_only: bool = False) -> Dict[str, Any]:
+        return self.observability_db.get_run_invocation_totals(run_id, unreserved_only=unreserved_only)
 
     # --- Scope Binding / Project Registry Cache Operations ---
 

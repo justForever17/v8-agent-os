@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import math
 import os
 import uuid
@@ -44,7 +44,10 @@ class ModelBudgetService:
         return self._database if self._database is not None else db
 
     def _holds(self, conn, *, bucket_date=None, run_id=None, project_id=None):
-        query = "SELECT COALESCE(SUM(CASE WHEN state='settled' THEN COALESCE(actual_tokens,estimated_tokens) ELSE estimated_tokens END),0) tokens, COALESCE(SUM(CASE WHEN state='settled' THEN COALESCE(actual_cost,estimated_cost) ELSE estimated_cost END),0) cost, COUNT(*) invocations, COALESCE(SUM(state='unknown'),0) unknown FROM model_budget_reservations WHERE state IN ('reserved','in_flight','unknown') OR (state='settled' AND ledger_accounted=0)"
+        # Run totals for reserved invocations live here, independently of the
+        # best-effort observability log. Daily/project totals use usage_ledger.
+        settled = "state='settled'" if run_id else "(state='settled' AND ledger_accounted=0)"
+        query = f"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN COALESCE(actual_tokens,estimated_tokens) ELSE estimated_tokens END),0) tokens, COALESCE(SUM(CASE WHEN state='settled' THEN COALESCE(actual_cost,estimated_cost) ELSE estimated_cost END),0) cost, COUNT(*) invocations, COALESCE(SUM(state='unknown'),0) unknown FROM model_budget_reservations WHERE (state IN ('reserved','in_flight','unknown') OR {settled})"
         values = []
         if bucket_date:
             # Running requests may finish after UTC midnight. Unknown old-day
@@ -86,6 +89,8 @@ class ModelBudgetService:
         budgets = self._budget_config(config)
         today = _today_bucket()
         global_usage = self.database.get_usage_ledger_totals(bucket_date=today)
+        with self.database.get_connection() as conn:
+            global_holds = self._holds(conn, bucket_date=today)
         project_budgets: List[Dict[str, Any]] = []
         for override in list(budgets.get("projectBudgets") or []):
             project_id = str(override.get("projectId") or "")
@@ -108,13 +113,20 @@ class ModelBudgetService:
                     },
                 }
             )
+            with self.database.get_connection() as conn:
+                project_budgets[-1]["reserved"] = self._public_holds(self._holds(
+                    conn, bucket_date=today, project_id=project_id,
+                ))
 
         return {
             "enabled": bool(budgets.get("enabled", True)),
+            "reservationMode": "estimated",
+            "estimatedOutputTokens": max(1, _safe_int(budgets.get("estimatedOutputTokens"), 1024)),
             "today": today,
             "global": {
                 "dailyCostLimit": _safe_float(budgets.get("globalDailyCostLimit")),
                 "dailyTokenLimit": _safe_int(budgets.get("globalDailyTokenLimit")),
+                "reserved": self._public_holds(global_holds),
                 "usage": {
                     "costTotal": float(global_usage.get("cost_total") or 0.0),
                     "totalTokens": int(global_usage.get("total_tokens") or 0),
@@ -132,11 +144,18 @@ class ModelBudgetService:
             "projectBudgets": project_budgets,
         }
 
+    @staticmethod
+    def _public_holds(holds):
+        return {"totalTokens": int(holds.get("tokens") or 0),
+                "costTotal": float(holds.get("cost") or 0),
+                "invocations": int(holds.get("invocations") or 0),
+                "unknownUsageInvocations": int(holds.get("unknown") or 0)}
+
     def _checks(self, config, run_id, project_id):
         budgets = self._budget_config(config)
         today = _today_bucket()
         global_usage = self.database.get_usage_ledger_totals(bucket_date=today)
-        run_usage = self.database.get_run_invocation_totals(run_id) if run_id else {}
+        run_usage = self.database.get_run_invocation_totals(run_id, unreserved_only=True) if run_id else {}
         project_budget = self._project_budget(config, project_id)
         project_usage = self.database.get_usage_ledger_totals(
             bucket_date=today, scope_type="project", scope_id=str(project_id),
@@ -243,11 +262,11 @@ class ModelBudgetService:
             try:
                 # The caller writes the canonical usage ledger using this same
                 # transaction, so no gap exists between charging and releasing.
-                yield conn, True
                 conn.execute("""UPDATE model_budget_reservations SET state=?,actual_tokens=?,actual_cost=?,reason=?,updated_at=? WHERE id=?""",
                     ("settled" if usage_reported else "unknown", int(actual_tokens) if usage_reported else None,
                      float(actual_cost) if usage_reported else None, "usage_reported" if usage_reported else "usage_not_reported",
                      datetime.now(timezone.utc).isoformat(), reservation_id))
+                yield conn, True
                 conn.commit()
             except BaseException:
                 conn.rollback()

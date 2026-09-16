@@ -1268,7 +1268,7 @@ class ObservabilityDatabaseManager:
                 (f"-{max(days, 1)} day",),
             ).fetchall()]
 
-    def get_run_invocation_totals(self, run_id: str) -> Dict[str, Any]:
+    def get_run_invocation_totals(self, run_id: str, *, unreserved_only: bool = False) -> Dict[str, Any]:
         with self.get_connection() as conn:
             row = conn.execute(
                 """
@@ -1279,9 +1279,9 @@ class ObservabilityDatabaseManager:
                        COALESCE(SUM(latency_ms), 0) AS latency_ms_total,
                        MAX(finished_at) AS last_finished_at
                 FROM model_invocation_logs
-                WHERE run_id = ?
+                WHERE run_id = ? AND (? = 0 OR id NOT LIKE 'budget:%')
                 """,
-                (run_id,),
+                (run_id, int(unreserved_only)),
             ).fetchone()
             return dict(row) if row else {
                 "invocations": 0,

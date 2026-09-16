@@ -18,14 +18,6 @@ const workspacePath = path.join(workspaceRoot, "main");
 const reportDir = path.join(stateRoot, "reports", "cli_daily");
 const reportPath = path.join(reportDir, "v8os_cli_daily_entry_smoke.json");
 
-function base64UrlJson(value) {
-  return Buffer.from(JSON.stringify(value)).toString("base64url");
-}
-
-function fakeAccessToken() {
-  return `${base64UrlJson({ alg: "none", typ: "JWT" })}.${base64UrlJson({ exp: Math.floor(Date.now() / 1000) + 3600 })}.signature`;
-}
-
 function sendJson(res, status, data) {
   const text = JSON.stringify(data);
   res.writeHead(status, {
@@ -54,7 +46,7 @@ function readBody(req) {
   });
 }
 
-function createMockAdmin() {
+function createMockEngine() {
   const requests = [];
   const session = {
     id: "session-daily",
@@ -81,22 +73,12 @@ function createMockAdmin() {
     const body = await readBody(req);
     requests.push({ method: req.method, pathname: url.pathname, search: url.search, body });
 
-    if (req.method === "POST" && url.pathname === "/api/client/auth/local-session") {
-      sendJson(res, 200, {
-        accessToken: fakeAccessToken(),
-        accessTokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        refreshToken: "refresh-token",
-        refreshTokenExpiresAt: new Date(Date.now() + 7200_000).toISOString(),
-      });
+    if (req.method === "GET" && url.pathname === "/v1/sessions") {
+      sendJson(res, 200, { sessions: [session] });
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/client/conversations") {
-      sendJson(res, 200, [session]);
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/client/conversations") {
+    if (req.method === "POST" && url.pathname === "/v1/sessions") {
       sendJson(res, 200, {
         id: "session-cli-chat",
         title: body?.title || "CLI Chat",
@@ -108,12 +90,12 @@ function createMockAdmin() {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === `/api/client/conversations/${session.id}`) {
+    if (req.method === "GET" && url.pathname === `/v1/sessions/${session.id}/snapshot`) {
       sendJson(res, 200, session);
       return;
     }
 
-    if (req.method === "GET" && url.pathname === `/api/client/conversations/${session.id}/turns`) {
+    if (req.method === "GET" && url.pathname === `/v1/sessions/${session.id}/turns`) {
       sendJson(res, 200, {
         messages: [
           { role: "user", content: "hello" },
@@ -123,32 +105,32 @@ function createMockAdmin() {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/client/conversations/session-cli-chat/turns") {
+    if (req.method === "GET" && url.pathname === "/v1/sessions/session-cli-chat/turns") {
       sendJson(res, 200, { messages: [] });
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/client/approvals") {
+    if (req.method === "GET" && url.pathname === "/v1/approvals") {
       sendJson(res, 200, { approvals });
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/client/approvals/appr-1/approve") {
+    if (req.method === "POST" && url.pathname === "/v1/approvals/appr-1/approve") {
       sendJson(res, 200, { ok: true, id: "appr-1", status: "approved", note: body?.note || "" });
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/client/approvals/appr-2/reject") {
+    if (req.method === "POST" && url.pathname === "/v1/approvals/appr-2/reject") {
       sendJson(res, 200, { ok: true, id: "appr-2", status: "rejected", reason: body?.reason || "" });
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/client/ask-user/ask-1/respond") {
+    if (req.method === "POST" && url.pathname === "/v1/ask-user/ask-1/respond") {
       sendJson(res, 200, { ok: true, id: "ask-1", answer: body?.answer || "" });
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/client/projects") {
+    if (req.method === "POST" && url.pathname === "/v1/projects") {
       sendJson(res, 200, {
         id: body?.id || "daily",
         name: body?.name || "daily",
@@ -160,7 +142,7 @@ function createMockAdmin() {
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/client/chat-submit") {
+    if (req.method === "POST" && url.pathname === "/v1/chat/submit") {
       sendJson(res, 200, { runId: "run-cli-chat" });
       return;
     }
@@ -232,7 +214,7 @@ function runCli(args, env, steps) {
 
 async function main() {
   fs.mkdirSync(reportDir, { recursive: true });
-  const { server, requests } = createMockAdmin();
+  const { server, requests } = createMockEngine();
   const steps = [];
   const report = {
     createdAt: new Date().toISOString(),
@@ -245,6 +227,7 @@ async function main() {
 
   try {
     const port = await listen(server);
+    fs.writeFileSync(path.join(stateRoot, "config.json"), JSON.stringify({ systemBase: { bridge: { engineBaseUrl: `http://127.0.0.1:${port}` } } }));
     const env = {
       ...process.env,
       V8_AGENT_OS_HOME: stateRoot,
@@ -287,12 +270,12 @@ async function main() {
 
     await runCli(["chat", "hello from cli", "--workspace", workspacePath, "--safety-approval", "minimal", "--no-wait"], env, steps);
 
-    assert.ok(requests.some((item) => item.pathname === "/api/client/auth/local-session"));
-    assert.ok(requests.some((item) => item.pathname === "/api/client/conversations"));
-    assert.ok(requests.some((item) => item.pathname === "/api/client/approvals"));
-    assert.ok(requests.some((item) => item.pathname === "/api/client/ask-user/ask-1/respond"));
-    assert.ok(requests.some((item) => item.pathname === "/api/client/projects" && item.body?.workspaceTrustState === "trusted"));
-    const chatSubmit = requests.find((item) => item.pathname === "/api/client/chat-submit");
+    assert.ok(requests.every((item) => item.pathname.startsWith("/v1/")));
+    assert.ok(requests.some((item) => item.pathname === "/v1/sessions"));
+    assert.ok(requests.some((item) => item.pathname === "/v1/approvals"));
+    assert.ok(requests.some((item) => item.pathname === "/v1/ask-user/ask-1/respond"));
+    assert.ok(requests.some((item) => item.pathname === "/v1/projects" && item.body?.workspaceTrustState === "trusted"));
+    const chatSubmit = requests.find((item) => item.pathname === "/v1/chat/submit");
     assert.equal(chatSubmit?.body?.data?.workspacePath, workspacePath);
     assert.equal(chatSubmit?.body?.data?.projectId, "daily");
     assert.equal(chatSubmit?.body?.data?.workspaceId, "daily");

@@ -158,40 +158,54 @@ export function assistantTerminalFailure(message) {
   };
 }
 
-async function latestMessageIds(sessionId) {
-  let data;
-  try { data = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 }); } catch { return new Set(); }
-  const messages = Array.isArray(data?.messages) ? data.messages : [];
-  return new Set(messages.map((message, index) => String(message.id || message.messageId || `${index}:${extractMessageText(message).slice(0, 48)}`)));
+const SUCCESS_STATES = new Set(["complete", "completed", "succeeded", "success", "done"]);
+const FAILURE_STATES = new Set(["failed", "error", "cancelled", "canceled", "interrupted", "aborted", "recoverable_failed", "degraded", "timed_out", "stopped", "terminated"]);
+
+function chatOutcomeError(sessionId, runId, status, detail) {
+  const error = new Error(`${detail} session: ${sessionId}; run: ${runId || "unknown"}; status: ${status}`);
+  error.chatStatus = status;
+  error.sessionId = sessionId;
+  error.runId = runId;
+  return error;
 }
 
-async function waitForAssistant(sessionId, beforeIds, { timeoutMs = 120_000 } = {}) {
+async function waitForAssistant(sessionId, runId, { timeoutMs = 120_000 } = {}) {
+  if (!runId) throw chatOutcomeError(sessionId, runId, "unknown", "提交未返回运行标识，结果待确认；请检查会话，勿重复提交。");
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const data = await engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 });
-      const messages = Array.isArray(data?.messages) ? data.messages : [];
-      const candidate = [...messages].reverse().find((message, index) => {
-        if (!isAssistantMessage(message)) return false;
-        const id = String(message.id || message.messageId || `${messages.length - index - 1}:${extractMessageText(message).slice(0, 48)}`);
-        return !beforeIds.has(id) && extractMessageText(message);
-      });
-      if (candidate) return candidate;
-      const terminalFailure = [...messages].reverse().find((message, index) => {
-        if (!assistantTerminalFailure(message)) return false;
-        const id = String(message.id || message.messageId || `${messages.length - index - 1}:${extractMessageText(message).slice(0, 48)}`);
-        return !beforeIds.has(id);
-      });
-      if (terminalFailure) {
-        throw new Error(assistantTerminalFailure(terminalFailure).message);
+      const remainingMs = Math.max(1, timeoutMs - (Date.now() - startedAt));
+      const [data, runData] = await Promise.all([
+        engineJson(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=10`, { timeoutMs: Math.min(10_000, remainingMs) }),
+        engineJson(`/v1/runs?session_id=${encodeURIComponent(sessionId)}&limit=100`, { timeoutMs: Math.min(10_000, remainingMs) }),
+      ]);
+      const run = (Array.isArray(runData?.runs) ? runData.runs : []).find((item) => String(item.run_id || item.runId || item.id || "") === runId);
+      const runState = String(run?.status || run?.state || "").trim().toLowerCase();
+      if (FAILURE_STATES.has(runState)) {
+        throw chatOutcomeError(sessionId, runId, runState, "主理人运行未成功，请检查会话中的失败或终止信息。");
       }
+      const messages = Array.isArray(data?.messages) ? data.messages : [];
+      const currentMessages = messages.filter((message) => isAssistantMessage(message)
+        && String(message.runId || message.run_id || message.metadata?.runId || message.metadata?.run_id || "") === runId);
+      const candidate = currentMessages.at(-1);
+      const messageState = String(candidate?.state || candidate?.status || "").trim().toLowerCase();
+      if (FAILURE_STATES.has(messageState)) {
+        throw chatOutcomeError(sessionId, runId, messageState, assistantTerminalFailure(candidate)?.message || "主理人回复未完成。");
+      }
+      // A completed message may be a progress delivery while the run still owns
+      // execution. Require both canonical run and transcript terminal evidence.
+      if (SUCCESS_STATES.has(runState) && candidate && SUCCESS_STATES.has(messageState)) return candidate;
     } catch (error) {
-      if (String(error?.message || "").startsWith("主理人运行已")) throw error;
+      if (error?.chatStatus) throw error;
+      if (error?.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) {
+        throw chatOutcomeError(sessionId, runId, "unknown", `读取运行结果被 Engine 拒绝（HTTP ${error.status}），结果待确认；请检查会话，勿重复提交。`);
+      }
       // Retry transient Engine reads until the bounded timeout.
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(1500, remainingMs)));
   }
-  return null;
+  throw chatOutcomeError(sessionId, runId, "unknown", "等待超时，结果待确认；任务可能仍在运行，本次未取消或重复提交。请检查会话状态。");
 }
 
 export async function sendChatMessage(args, { print = true } = {}) {
@@ -199,6 +213,8 @@ export async function sendChatMessage(args, { print = true } = {}) {
   if (!message) {
     throw new Error("chat 需要消息内容，例如：v8os chat \"你好\"");
   }
+  const timeoutMs = Number(optionValue(args, "--timeout", "120")) * 1000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("--timeout 必须是大于 0 的秒数。");
   const requestedSessionId = optionValue(args, "--session", "");
   const storedBinding = currentWorkspaceBinding();
   const workspaceSelection = resolveChatWorkspaceSelection({
@@ -230,7 +246,6 @@ export async function sendChatMessage(args, { print = true } = {}) {
     projectId,
   });
   if (!sessionId) throw new Error("无法创建或定位会话");
-  const beforeIds = await latestMessageIds(sessionId);
   const payload = buildChatSubmitPayload({
     sessionId,
     message,
@@ -245,11 +260,12 @@ export async function sendChatMessage(args, { print = true } = {}) {
     body: payload,
     timeoutMs: 15_000,
   });
-  const timeoutMs = Number(optionValue(args, "--timeout", "120")) * 1000;
-  const assistant = hasFlag(args, "--no-wait") ? null : await waitForAssistant(sessionId, beforeIds, { timeoutMs });
+  const runId = String(submit.runId || submit.run_id || submit.id || "");
+  const assistant = hasFlag(args, "--no-wait") ? null : await waitForAssistant(sessionId, runId, { timeoutMs });
   const result = {
     sessionId,
-    runId: submit.runId || submit.run_id || submit.id || "",
+    runId,
+    status: assistant ? "completed" : "submitted",
     response: assistant ? extractMessageText(assistant) : "",
   };
   if (print) {
@@ -258,8 +274,8 @@ export async function sendChatMessage(args, { print = true } = {}) {
     if (result.response) {
       console.log("");
       console.log(result.response);
-    } else if (!hasFlag(args, "--no-wait")) {
-      console.log("未在等待时间内收到主理人回复，可用 v8os sessions open 查看。");
+    } else {
+      console.log(assistant ? "任务已完成，可在会话中查看产物。" : "任务已提交；未等待最终结果。");
     }
   }
   return result;

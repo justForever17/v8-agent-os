@@ -17,6 +17,8 @@ Engine 是实例 Owner、Phone 配对票据、设备、刷新凭据与撤销的�
 
 桌面端和桌宠免用户登录：启动器与本机 BFF 自动完成服务身份交换，界面不要求 Admin 密码或 Phone 二次扫码。此体验不等于匿名 HTTP；服务密钥不得发送到页面脚本、Phone 或日志。关闭 Admin 不应退出 Web、桌宠或取消 Engine 中的任务。
 
+CLI 直接使用本机 Engine `/v1/*` 控制入口，工作区登记使用 `/v1/projects`。地址与服务凭据来自同一次配置读取；不再签发、刷新或缓存 CLI 的客户端 JWT，不自动重放被拒绝的写请求。不同实例的环境地址覆盖和 HTTP 重定向不能带走当前实例的凭据。
+
 新 Phone access 为 15 分钟，校验算法、实例 issuer、专用 audience、用户与设备绑定。刷新保留 device ID、轮换 refresh token；设备撤销同时影响新请求和已有流。一次刷新以 `rotationId` 标识，60 秒内相同请求可取回同一加密结果；不同请求重放已消费凭据撤销该设备。Phone 在派发前把 rotationId 与原凭据保存在 SecureStore，存储新凭据失败不能显示刷新成功。
 
 `systemBase.remoteLink.phoneGateway` 的 `enabled`、`port` 管理同进程 listener；`publicBaseUrl` 和各 transport profile 的 `phoneBaseUrl` 明确指定 Phone 可达地址。旧字段名 `adminBaseUrl` 只保留 wire 兼容语义，不能据它推导仍需 Admin 服务或自动把旧 Admin URL 当成新 gateway。

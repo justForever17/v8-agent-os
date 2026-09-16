@@ -22,7 +22,7 @@ v8os --help
 
 - 带空格的消息和路径需要加引号。
 - 支持 `--json` 的命令会输出适合脚本处理的结构化结果；未指定时优先输出人类可读摘要。
-- `chat`、`sessions`、`inbox` 和部分 `config` 命令需要本机 Admin 与 Engine 已启动。
+- `chat`、`sessions`、`inbox`、工作区登记和部分 `config` 命令需要本机 Engine 已启动；Admin 为可选配置页。
 - CLI 是本机可信入口，不使用 Phone 配对票据，也不会创建远程设备记录。
 - 会话 ID、审批 ID 和配置域名称用于精确操作。普通诊断优先使用人类可读输出，需要自动化时再使用 `--json`。
 - 不要把 API Key、访问令牌或 Cookie 写进命令行。需要凭据时，请使用 Web/Phone 中的安全凭据卡或 Admin 配置页。
@@ -37,7 +37,7 @@ v8os --help
 
 | 命令 | 用途 |
 | --- | --- |
-| `v8os` / `v8os start` | 启动 Engine、Admin 和 Web；默认使用开发模式。 |
+| `v8os` / `v8os start` | 启动 Engine 和 Web；默认使用开发模式。 |
 | `v8os start --mode start` | 使用已有生产构建启动默认服务。 |
 | `v8os start --only engine,admin` | 只启动指定组件。 |
 | `v8os start --with shell` | 在默认服务之外启动指定可选组件。 |
@@ -95,6 +95,8 @@ v8os chat --session <sessionId> --interactive
 | `--no-wait` | 提交后不等待本轮完成。 |
 | `--spec` | 以 Spec 模式发起新任务。 |
 | `--safety-approval manual\|reduced\|minimal` | 设置本轮支持的安全确认姿态。 |
+
+默认等待模式只在本轮运行与回复均完成后返回成功；中间进度不算完成。失败、取消或等待超时返回非零退出码，并提供会话和运行 ID。超时表示结果待确认，不会取消后台任务或重新提交消息；先用 `sessions show/turns` 查看原会话。`--no-wait` 返回的成功仅表示已提交。
 
 ### 4.2 查询和恢复会话
 
@@ -159,6 +161,8 @@ v8os workspace open "E:\Projects\my-project"
 | `open [path]` | 在系统资源管理器中打开工作区。 |
 
 工作区显示名称不改变底层路径。路径被物理删除后，V8OS 不会把它伪装成仍然存在，也不会自动重建用户项目。
+
+`create` 和 `select` 会向本机 Engine 登记并确认工作区信任。登记失败时保留原工作区选择；`create` 已创建的目录保留，恢复 Engine 后可重新选择。CLI 从同一份本机配置读取 Engine 地址和服务身份，不复用 Phone token；环境地址与配置实例不一致时会拒绝发送凭据。
 
 ## 7. 配置
 

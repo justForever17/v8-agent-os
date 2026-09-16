@@ -70,7 +70,7 @@ function workspaceProjectName(workspacePath) {
 export async function registerTrustedWorkspaceProject(workspacePath, { projectId = "", workspaceId = "", required = false } = {}) {
   const target = resolveWorkspacePath(workspacePath);
   try {
-    const project = requireOk(await engineJson("/api/client/projects", {
+    const project = requireOk(await engineJson("/v1/projects", {
       method: "POST",
       body: {
         ...(projectId ? { id: projectId } : {}),
@@ -94,7 +94,7 @@ export async function registerTrustedWorkspaceProject(workspacePath, { projectId
     if (required) {
       throw new Error(
         `无法确认工作区信任：${error instanceof Error ? error.message : String(error)}。` +
-        "请确认 v8os preview/start 已启动，或先在 Admin/Web 中选择并信任项目工作区。",
+        "请确认本机 Engine 已启动并检查工作区登记状态；未确认前不会切换本机工作区。",
       );
     }
     return {
@@ -179,7 +179,7 @@ export async function commandWorkspace(args) {
     const target = args[1];
     if (!target) throw new Error("workspace create requires <path>");
     const result = createWorkspace(target, { select: false });
-    const trust = await registerTrustedWorkspaceProject(result.path, { required: false });
+    const trust = await registerTrustedWorkspaceProject(result.path, { required: true });
     if (hasFlag(args, "--select")) {
       selectWorkspace(result.path, trust.registered ? trust : {});
       result.selected = true;
@@ -192,7 +192,8 @@ export async function commandWorkspace(args) {
     const target = args[1];
     if (!target) throw new Error("workspace select requires <path>");
     const resolved = resolveWorkspacePath(target);
-    const trust = await registerTrustedWorkspaceProject(resolved, { required: false });
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) throw new Error(`工作区不存在或不是目录：${resolved}`);
+    const trust = await registerTrustedWorkspaceProject(resolved, { required: true });
     const result = selectWorkspace(resolved, trust.registered ? trust : {});
     result.trust = trust;
     json ? console.log(JSON.stringify(result, null, 2)) : console.log(`已选择工作区：${result.path}`);

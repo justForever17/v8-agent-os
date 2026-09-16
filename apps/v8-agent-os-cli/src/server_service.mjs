@@ -139,6 +139,54 @@ async function defaultRun(command, args) {
   }
 }
 
+// Importing core.database would itself migrate state before admission.
+const SCHEMA_PROBE = String.raw`
+import ast, json, pathlib, sqlite3, sys
+source, database = map(pathlib.Path, sys.argv[1:])
+if source.is_symlink() or not source.is_file():
+    raise ValueError("schema source is not a regular file")
+assignments = [node.value for node in ast.parse(source.read_text(encoding="utf-8")).body
+    if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "DATABASE_SCHEMA_VERSION" for target in node.targets)]
+if len(assignments) != 1:
+    raise ValueError("schema constant is missing or ambiguous")
+supported = ast.literal_eval(assignments[0])
+if type(supported) is not int or supported < 1:
+    raise ValueError("invalid schema constant")
+if database.is_symlink():
+    raise ValueError("state database is a symlink")
+schema = 0
+if database.exists():
+    if not database.is_file():
+        raise ValueError("state database is not a regular file")
+    # user_version may still be in WAL; do not read only the main-file header.
+    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+        schema = connection.execute("PRAGMA user_version").fetchone()[0]
+elif pathlib.Path(str(database) + "-wal").exists():
+    raise ValueError("state database is missing but WAL remains")
+print(json.dumps({"schema": schema, "supported": supported}))
+`;
+
+async function assertCompatibleSchema(record, run) {
+  const engine = path.join(record.bundleRoot, ENGINE_PATH);
+  const result = await run(path.join(engine, ".venv", "bin", "python3"), [
+    "-I", "-c", SCHEMA_PROBE, path.join(engine, "core", "database.py"), path.join(record.stateRoot, "state.db"),
+  ]);
+  let version;
+  try { version = JSON.parse(result.stdout); } catch { /* Fail closed below. */ }
+  if (result.code !== 0 || !Number.isSafeInteger(version?.schema) || version.schema < 0
+      || !Number.isSafeInteger(version?.supported) || version.supported < 1) {
+    const error = new Error("Cannot verify Engine database schema compatibility without modifying state. Keep the current data and package; repair the bundle interpreter/schema source or database before retrying.");
+    error.code = "server_schema_unverified";
+    throw error;
+  }
+  if (version.schema > version.supported) {
+    const error = new Error(`Database schema ${version.schema} cannot run on Server ${record.version}, which supports ${version.supported}. Downgrade blocked; migrated data is preserved. Use service start to retry the current version, or service upgrade --bundle <compatible-new-version> to recover forward.`);
+    error.code = "server_schema_incompatible";
+    throw error;
+  }
+  return version;
+}
+
 function commandError(command, result) {
   const details = String(result.stderr || result.stdout || `exit ${result.code}`).trim().replace(/[\x00-\x1f\x7f]/gu, " ").slice(0, 1000);
   return new Error(`${command} failed: ${details}. Diagnostics: journalctl --user -u ${SERVER_SERVICE_NAME} --no-pager -n 50`);
@@ -213,7 +261,7 @@ export function createServerServiceManager(options = {}) {
     const allowedHashes = [receipt.current, receipt.phase === "pending" ? receipt.previous : null].filter(Boolean).map((record) => record.unitSha256);
     if (unit !== null && !allowedHashes.includes(digest(unit))) throw new Error(`Service unit was modified outside v8os: ${unitPath}. Reconcile it before continuing.`);
     if (unit === null && receipt.phase !== "pending") throw new Error(`Service unit is missing: ${unitPath}; restore it from the installation receipt before continuing`);
-    if (receipt.phase === "pending" && !allowPending) throw new Error("An interrupted service installation is pending. Run v8os service rollback to restore the previous installation.");
+    if (receipt.phase === "pending" && !allowPending) throw new Error("An interrupted service installation is pending. Use v8os service start or upgrade to recover forward; rollback requires a previous Engine compatible with the current database schema.");
     return receipt;
   }
 
@@ -264,6 +312,8 @@ export function createServerServiceManager(options = {}) {
       if (Number(loaded.MainPID) > 0 || !["inactive", "failed"].includes(loaded.ActiveState)) await stop();
     }
     if (receipt.previous) {
+      // Recheck after stopping the candidate: migration can precede readiness.
+      await assertCompatibleSchema(receipt.previous, run);
       atomicWrite(unitPath, receipt.previous.unit);
       await ctl("daemon-reload");
       await ctl(receipt.previous.enabled ? "enable" : "disable", SERVER_SERVICE_NAME);
@@ -284,6 +334,16 @@ export function createServerServiceManager(options = {}) {
     return "installation_removed";
   }
 
+  async function rollbackAvailability(receipt) {
+    if (!receipt.previous) return { rollbackAvailable: false };
+    try {
+      await assertCompatibleSchema(receipt.previous, run);
+      return { rollbackAvailable: true };
+    } catch (error) {
+      return { rollbackAvailable: false, rollbackBlockedReason: error.message, rollbackBlockedCode: error.code || "server_schema_unverified" };
+    }
+  }
+
   async function perform(action, input = {}) {
     if (!["install", "upgrade", "start", "stop", "restart", "status", "uninstall", "rollback"].includes(action)) throw new Error(`Unknown service action: ${action}`);
     await requireManager({ linger: ["install", "upgrade", "start", "restart"].includes(action) });
@@ -296,12 +356,14 @@ export function createServerServiceManager(options = {}) {
       return { status: receipt.phase === "pending" ? "recovery_required" : state.ActiveState,
         version: receipt.current.version, bundleRoot: receipt.current.bundleRoot, stateRoot,
         unit: SERVER_SERVICE_NAME, mainPid: Number(state.MainPID) || null, enabled: state.UnitFileState === "enabled",
-        persistentAfterLogout: linger.code === 0 && String(linger.stdout).trim() === "yes", journal };
+        persistentAfterLogout: linger.code === 0 && String(linger.stdout).trim() === "yes", journal,
+        ...await rollbackAvailability(receipt) };
     }
     return withFileLease(lockPath, async () => {
-      const receipt = ownedReceipt({ allowPending: action === "rollback" });
+      const receipt = ownedReceipt({ allowPending: ["rollback", "start", "stop", "upgrade"].includes(action) });
       if (["install", "upgrade"].includes(action)) {
         const bundle = inspectServerBundle(input.bundleRoot, { arch: options.arch || process.arch });
+        await assertCompatibleSchema({ ...bundle, stateRoot }, run);
         if (action === "install" && receipt) {
           if (receipt.current.bundleRoot !== bundle.bundleRoot) throw new Error("Server service is already installed; use v8os service upgrade --bundle <new-version-directory>");
           if (receipt.current.version !== bundle.version) throw new Error("Installed bundle was replaced in place; restore it and install new releases in separate directories");
@@ -310,7 +372,7 @@ export function createServerServiceManager(options = {}) {
           return { status: "already_installed", version: receipt.current.version, stateRoot };
         }
         if (action === "upgrade" && !receipt) throw new Error("Server service is not installed; run v8os service install first");
-        if (receipt?.current.bundleRoot === bundle.bundleRoot) {
+        if (receipt?.phase !== "pending" && receipt?.current.bundleRoot === bundle.bundleRoot) {
           if (receipt.current.version !== bundle.version) throw new Error("In-place bundle replacement cannot be rolled back. Extract and install the new release in a separate directory.");
           if ((input.keyFile && path.resolve(input.keyFile) !== receipt.current.keyFile)
               || (input.port !== undefined && input.port !== receipt.current.port)) throw new Error("Service upgrade requires a separate bundle directory to change installation options");
@@ -326,16 +388,17 @@ export function createServerServiceManager(options = {}) {
         let previous = null;
         const state = await inspectUnit();
         if (receipt) {
-          verifyLoadedUnit(state);
+          if (receipt.phase !== "pending" || state.LoadState !== "not-found") verifyLoadedUnit(state);
           if (!["active", "inactive", "failed"].includes(state.ActiveState)) throw new Error(`Service is busy (${state.ActiveState}); retry when its current systemd job completes`);
-          previous = { ...receipt.current, active: state.ActiveState === "active", enabled: state.UnitFileState === "enabled" };
+          previous = receipt.phase === "pending" ? receipt.previous
+            : { ...receipt.current, active: state.ActiveState === "active", enabled: state.UnitFileState === "enabled" };
         } else if (state.LoadState !== "not-found") {
           throw new Error(`An unmanaged ${SERVER_SERVICE_NAME} is already loaded; refusing to replace it`);
         }
         const pending = { schema: 1, phase: "pending", current, previous };
         save(pending);
         try {
-          if (previous) await stop();
+          if (receipt && state.LoadState !== "not-found") await stop();
           atomicWrite(unitPath, current.unit);
           await ctl("daemon-reload");
           verifyLoadedUnit(await inspectUnit());
@@ -346,13 +409,15 @@ export function createServerServiceManager(options = {}) {
           save({ ...pending, phase: "ready" });
           return { status: action === "install" ? "installed" : "upgraded", version: current.version,
             bundleRoot: current.bundleRoot, stateRoot, mainPid: Number(running.MainPID), persistentAfterLogout: true,
-            rollbackAvailable: Boolean(previous), journal };
+            ...await rollbackAvailability(pending), journal };
         } catch (error) {
           let recovery;
           try {
             recovery = await restore(pending);
           } catch (recoveryError) {
-            throw new Error(`${action} failed: ${error.message}. Rollback failed: ${recoveryError.message}. Receipt retained; run v8os service rollback after resolving the fault.`);
+            const failure = new Error(`${action} failed: ${error.message}. Rollback failed: ${recoveryError.message}. Receipt retained; use service start or upgrade to recover forward, or retry a compatible rollback after resolving the fault.`);
+            failure.code = recoveryError.code;
+            throw failure;
           }
           throw new Error(`${action} failed: ${error.message}. Recovery: ${recovery}; configuration, credentials and bundle directories preserved.`);
         }
@@ -363,11 +428,13 @@ export function createServerServiceManager(options = {}) {
       }
       if (action === "rollback") {
         if (receipt.phase === "ready" && !receipt.previous) throw new Error("No previous service version is available for rollback");
+        // Do not stop a healthy newer service to discover an unsafe downgrade.
+        if (receipt.previous) await assertCompatibleSchema(receipt.previous, run);
         save({ ...receipt, phase: "pending" });
         return { status: await restore(receipt), stateRoot, dataPreserved: true };
       }
       const existingState = await inspectUnit();
-      verifyLoadedUnit(existingState);
+      if (!(receipt.phase === "pending" && action === "start" && existingState.LoadState === "not-found")) verifyLoadedUnit(existingState);
       if (action === "stop" || action === "uninstall") {
         if (action === "uninstall") save({ ...receipt, phase: "pending", previous: {
           ...receipt.current, active: existingState.ActiveState === "active", enabled: existingState.UnitFileState === "enabled",
@@ -383,9 +450,20 @@ export function createServerServiceManager(options = {}) {
       }
       verifyKeyFile(receipt.current.keyFile, uid);
       inspectServerBundle(receipt.current.bundleRoot, { arch: options.arch || process.arch });
+      await assertCompatibleSchema(receipt.current, run);
+      if (receipt.phase === "pending" && action === "start") {
+        if (digest(readOwnedFile(unitPath) || "") !== receipt.current.unitSha256) {
+          if (Number(existingState.MainPID) > 0) await stop();
+          atomicWrite(unitPath, receipt.current.unit);
+          await ctl("daemon-reload");
+          verifyLoadedUnit(await inspectUnit());
+        }
+        await ctl("enable", SERVER_SERVICE_NAME);
+      }
       await ctl("reset-failed", SERVER_SERVICE_NAME);
       await ctl(action, SERVER_SERVICE_NAME);
       const state = await ready(receipt.current);
+      if (receipt.phase === "pending") save({ ...receipt, phase: "ready" });
       return { status: action === "start" ? "started" : "restarted", stateRoot, mainPid: Number(state.MainPID), journal };
     });
   }
@@ -411,6 +489,7 @@ export async function commandServerService(args) {
     else {
       console.log(`${SERVER_SERVICE_NAME}: ${result.status}${result.version ? ` (${result.version})` : ""}`);
       console.log(`Engine state: ${result.stateRoot}`);
+      if (result.rollbackBlockedReason) console.log(`Executable rollback unavailable: ${result.rollbackBlockedReason}`);
       if (result.dataPreserved) console.log("Configuration, credentials, data and extracted bundles were preserved.");
       if (result.persistentAfterLogout === false) console.log("Linger is disabled; this user service is not guaranteed to survive logout.");
       if (result.journal) console.log(`Logs: ${result.journal}`);
@@ -419,7 +498,7 @@ export async function commandServerService(args) {
     return result;
   } catch (error) {
     if (!json) throw error;
-    console.log(JSON.stringify({ status: "failed", action, error: error.message }, null, 2));
+    console.log(JSON.stringify({ status: "failed", action, error: error.message, ...(error.code ? { code: error.code } : {}) }, null, 2));
     process.exitCode = 1;
     return { status: "failed" };
   }

@@ -133,6 +133,10 @@ def _rotate(conn, session_id: str, now: str) -> dict:
     conn.execute("UPDATE pending_approvals SET status='cancelled',updated_at=? WHERE session_id=? AND status='approved'", (now, session_id))
     state = transcript_state(conn, session_id)
     conn.execute("DELETE FROM memory_extraction_state WHERE session_id=?", (session_id,))
+    conn.execute("UPDATE memory_workflow_episodes SET status='stale',updated_at=? WHERE session_id=?", (now, session_id))
+    conn.execute("""UPDATE memory_workflow_candidates SET status='quarantine',last_verification_status='conversation_revised',updated_at=?
+        WHERE EXISTS (SELECT 1 FROM json_each(COALESCE(source_episode_ids_json,'[]')) ids
+                      JOIN memory_workflow_episodes e ON e.id=ids.value WHERE e.session_id=?)""", (now, session_id))
     conn.execute("UPDATE session_scope_bindings SET thread_id=?, updated_at=? WHERE session_id=?",
                  (state["active_checkpoint_thread_id"], now, session_id))
     conn.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, session_id))

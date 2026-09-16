@@ -333,6 +333,35 @@ def test_branch_rebinds_remote_source_link_without_inheriting_signed_ticket(data
     assert "sessionId=" + child in url and "v8sig" not in url and "v8exp" not in url
 
 
+def test_revision_quarantines_workflow_derivatives_and_suppresses_unversioned_summaries(database, monkeypatch):
+    import core.database as database_module
+    from core.memory_store import MemoryStore
+    from core.storage import storage
+    with database.get_connection() as conn:
+        conn.execute("INSERT INTO memory_workflow_episodes (id,session_id,task_family_signature,status) VALUES ('ep','source','fixture','success')")
+        conn.execute("INSERT INTO memory_workflow_candidates (id,task_family_signature,source_episode_ids_json,status) VALUES ('candidate','fixture','[\"ep\"]','active_hint')")
+        conn.commit()
+    monkeypatch.setattr(database_module, "db", database)
+    store = MemoryStore()
+    monkeypatch.setattr(storage, "get_memory_config", lambda: {"max_context_tokens": 4000, "passive_context_profile": "balanced",
+        "passive_summary_enabled": True, "passive_memory_map_enabled": True, "passive_recent_activity_teaser_enabled": True,
+        "passive_knowledge_graph_summary_enabled": False})
+    monkeypatch.setattr(store, "load_preferences", lambda *args, **kwargs: {})
+    monkeypatch.setattr(store, "_build_memory_summary_for_injection", lambda **kwargs: "old summary premise")
+    monkeypatch.setattr(store, "_format_memory_map_for_injection", lambda **kwargs: "old memory map premise")
+    monkeypatch.setattr(store, "_build_recent_activity_teaser", lambda **kwargs: "old teaser premise")
+    monkeypatch.setattr(store, "_build_memory_consistency_note_for_injection", lambda **kwargs: ("", {}))
+    with patch("runtimes.memory.workflow_service.workflow_memory_service.build_hints_block", return_value=""):
+        baseline = store.build_session_context(user_query="continue", session_id="source")
+        assert "old summary premise" in baseline and "old teaser premise" in baseline
+        revision(database)
+        rebased = store.build_session_context(user_query="continue", session_id="source")
+    assert all(text not in rebased for text in ("old summary premise", "old teaser premise", "old memory map premise"))
+    with database.get_connection() as conn:
+        assert conn.execute("SELECT status FROM memory_workflow_episodes WHERE id='ep'").fetchone()[0] == "stale"
+        assert conn.execute("SELECT status FROM memory_workflow_candidates WHERE id='candidate'").fetchone()[0] == "quarantine"
+
+
 def test_rotated_sqlite_checkpoint_and_outbound_capture_exclude_old_context(database, monkeypatch, tmp_path):
     import asyncio
     from langchain_core.messages import AIMessage, HumanMessage

@@ -103,6 +103,22 @@ def test_bulk_document_ingestion_reports_missing_pack_before_reading_files(serve
     assert error.value.detail["featurePack"] == "document_ingestion"
 
 
+def test_media_runtime_can_import_tts_manager_without_installing_voice(server, monkeypatch):
+    original_import = builtins.__import__
+    def missing_voice(name, *args, **kwargs):
+        if name == "edge_tts":
+            raise ImportError("voice intentionally absent")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", missing_voice)
+    from core.audio.tts_provider import EdgeTTSProvider, TTSManager, TTSProviderError
+    assert TTSManager
+    async def attempt():
+        with pytest.raises(TTSProviderError, match="cloud_voice") as error:
+            await anext(EdgeTTSProvider().synthesize_stream("fixture"))
+        assert error.value.status_code == 503
+    asyncio.run(attempt())
+
+
 def test_unselected_vector_projects_fts_and_json_without_retry_backlog(server, monkeypatch, tmp_path):
     from core.knowledge_db import KnowledgeDB
     from core.knowledge_projection import KnowledgeProjectionService

@@ -19,7 +19,7 @@ def free_port():
         return stream.getsockname()[1]
 
 
-def audit(bundle: Path) -> dict:
+def audit(bundle: Path, pack_id: str = "cloud_voice") -> dict:
     engine = bundle / "apps/v8-agent-os-engine"
     sys.path.insert(0, str(engine))
     with tempfile.TemporaryDirectory(prefix="v8-server-packs-") as temp:
@@ -62,30 +62,31 @@ def audit(bundle: Path) -> dict:
             child, _ = start()
             listing = json.loads(cli("packs", "list").stdout)
             assert listing["engineAvailable"]
-            assert next(p for p in listing["packs"] if p["id"] == "cloud_voice")["status"] == "not_installed"
+            assert next(p for p in listing["packs"] if p["id"] == pack_id)["status"] == "not_installed"
             refused = cli("packs", "install", "computer_use_desktop", "--dry-run", check=False)
             assert refused.returncode != 0
-            installed = json.loads(cli("packs", "install", "cloud_voice").stdout)
+            installed = json.loads(cli("packs", "install", pack_id).stdout)
             assert installed["status"] == "installed"
             listing = json.loads(cli("packs", "list").stdout)
-            voice = next(p for p in listing["packs"] if p["id"] == "cloud_voice")
+            voice = next(p for p in listing["packs"] if p["id"] == pack_id)
             assert voice["installed"] and voice["restartRequired"]
             child.terminate()
             child.wait(timeout=45)
             child, health = start()
             listing = json.loads(cli("packs", "list").stdout)
-            voice = next(p for p in listing["packs"] if p["id"] == "cloud_voice")
+            voice = next(p for p in listing["packs"] if p["id"] == pack_id)
             assert voice["installed"] and not voice["restartRequired"], voice["status"]
-            assert health["startupBundle"]["audio"] is True
-            requirements = engine / "requirements/feature-packs/cloud-voice.txt"
+            assert health["startupBundle"]["audio"] is (pack_id == "cloud_voice")
+            assert ("creative_media" in health["installedRuntimeFamilies"]) is (pack_id == "creative_media")
+            requirements = engine / "requirements/feature-packs" / ("cloud-voice.txt" if pack_id == "cloud_voice" else "creative-media.txt")
             original = requirements.read_bytes()
             try:
                 requirements.write_bytes(b"invalid requirement @@@\n")
-                failed_upgrade = cli("packs", "install", "cloud_voice", check=False)
+                failed_upgrade = cli("packs", "install", pack_id, check=False)
                 assert failed_upgrade.returncode != 0, "Failed upgrade must not report the previous installed pack as success"
             finally:
                 requirements.write_bytes(original)
-            return {"layer": "real_engine_local_install_no_provider", "install": True, "restartActivation": True, "failedUpgradeNonzero": True, "desktopRejected": True, "profile": health["installProfile"], "portsIsolated": True}
+            return {"layer": "real_engine_local_install_no_provider", "pack": pack_id, "install": True, "restartActivation": True, "failedUpgradeNonzero": True, "desktopRejected": True, "profile": health["installProfile"], "portsIsolated": True}
         finally:
             if child and child.poll() is None:
                 child.terminate()
@@ -97,7 +98,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--pack", choices=("cloud_voice", "creative_media"), default="cloud_voice")
     args = parser.parse_args()
     if not args.live:
-        parser.error("--live is required: starts an isolated Engine and downloads cloud_voice dependencies")
-    print(json.dumps(audit(args.bundle.resolve()), indent=2))
+        parser.error("--live is required: starts an isolated Engine and downloads optional dependencies")
+    print(json.dumps(audit(args.bundle.resolve(), args.pack), indent=2))

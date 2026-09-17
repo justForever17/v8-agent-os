@@ -53,6 +53,34 @@ function tarFixture(root, filename, entries) {
 
 const tuiEntries = (pkg = tuiPackage()) => ({ "package/package.json": JSON.stringify(pkg), "package/bin/v8os-tui.mjs": "#!/usr/bin/env node\nconsole.log('installed fixture')", "package/dist/main.js": "export const fixture=true", "package/LICENSE": "fixture license" });
 
+function packableFixture(t, extraBuild = () => "") {
+  const f = fixture(t), source = path.join(f.root, "apps/v8-agent-os-tui");
+  const files = {
+    "bin/v8os-tui.mjs": "#!/usr/bin/env node\nimport { ui } from '../dist/main.js'; console.log(ui);",
+    "src/main.js": "export const ui = 'current inline command menu';",
+    "scripts/build.mjs": `import fs from 'node:fs';\nfs.mkdirSync('dist', { recursive: true });\nfs.copyFileSync('src/main.js', 'dist/main.js');\nfs.copyFileSync('../../LICENSE', 'LICENSE');\n${extraBuild(f.root)}`,
+    "README.md": "fixture", "NOTICE.md": "fixture",
+  };
+  for (const [name, content] of Object.entries(files)) {
+    const filename = path.join(source, name);
+    fs.mkdirSync(path.dirname(filename), { recursive: true }); fs.writeFileSync(filename, content);
+  }
+  fs.writeFileSync(path.join(f.root, "LICENSE"), "fixture license");
+  json(path.join(f.root, "apps/v8-agent-os-cli/package.json"), { name: "cli-fixture" });
+  json(path.join(f.root, "packages/session-realtime/package.json"), { name: "projection-fixture" });
+  fs.writeFileSync(path.join(f.root, ".gitignore"), "**/dist/\n**/node_modules/\napps/v8-agent-os-tui/LICENSE\n**/ignored-local.mjs\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: f.root });
+  execFileSync("git", ["add", "."], { cwd: f.root });
+  execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], { cwd: f.root });
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: f.root, encoding: "utf8" }).trim();
+  fs.mkdirSync(path.join(source, "dist")); fs.mkdirSync(path.join(source, "node_modules"));
+  fs.writeFileSync(path.join(source, "dist/main.js"), "export const ui = 'stale fullscreen menu';");
+  fs.writeFileSync(path.join(source, "dist/orphan.js"), "stale compiled file");
+  fs.writeFileSync(path.join(source, "node_modules/keep.txt"), "installed toolchain remains intact");
+  fs.copyFileSync(path.join(f.root, "LICENSE"), path.join(source, "LICENSE"));
+  return { ...f, source, sourceCommit };
+}
+
 test("schema2 historical absence and disabled optional products remain compatible", () => {
   const historical = structuredClone(BASE);
   delete historical.products.tui;
@@ -222,19 +250,8 @@ test("server archive checks architecture, source identity, dirty state and paylo
   assert.throws(verify, /missing member/);
 });
 
-test("real npm pack creates an installable self-contained TUI with the source identity", (t) => {
-  const f = fixture(t);
-  const source = path.join(f.root, "apps/v8-agent-os-tui");
-  for (const [name, text] of Object.entries(tuiEntries())) {
-    if (name === "package/package.json") continue;
-    const dest = path.join(source, name.slice(8));
-    fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, text);
-  }
-  for (const name of ["README.md", "NOTICE.md"]) fs.writeFileSync(path.join(source, name), "fixture");
-  execFileSync("git", ["init", "--quiet"], { cwd: f.root });
-  execFileSync("git", ["add", "."], { cwd: f.root });
-  execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], { cwd: f.root });
-  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: f.root, encoding: "utf8" }).trim();
+test("real npm pack rebuilds committed source instead of stale dist and installs the matching UI", (t) => {
+  const f = packableFixture(t), { source, sourceCommit } = f;
   const file = packTuiRelease({ repoRoot: f.root, outputDir: path.join(f.root, "packed"), sourceCommit });
   const pkg = verifyArchiveIdentity(file, { product: "tui", version: VERSION, sourceCommit });
   assert.equal(pkg.scripts, undefined);
@@ -242,10 +259,39 @@ test("real npm pack creates an installable self-contained TUI with the source id
   const npmCli = [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"), path.resolve(path.dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js")].find(fs.existsSync);
   const prefix = path.join(f.root, "installed");
   execFileSync(process.execPath, [npmCli, "install", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", file], { encoding: "utf8" });
-  assert.match(execFileSync(process.execPath, [path.join(prefix, "node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs")], { encoding: "utf8" }), /installed fixture/);
+  assert.equal(execFileSync(process.execPath, [path.join(prefix, "node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs")], { encoding: "utf8" }).trim(), "current inline command menu");
+  assert.doesNotMatch(execFileSync("tar", ["-tzf", file], { encoding: "utf8" }), /orphan\.js|node_modules/);
+  assert.match(fs.readFileSync(path.join(source, "dist/main.js"), "utf8"), /stale fullscreen menu/, "pack must not rewrite the caller's build output");
+  assert.match(fs.readFileSync(path.join(source, "node_modules/keep.txt"), "utf8"), /installed toolchain/);
   assert.throws(() => packTuiRelease({ repoRoot: f.root, outputDir: path.join(f.root, "packed"), sourceCommit }), /overwrite/);
+  assert.throws(() => packTuiRelease({ repoRoot: f.root, outputDir: path.join(f.root, "wrong-head"), sourceCommit: COMMIT }), /differs from the checkout/);
   fs.writeFileSync(path.join(source, "untracked-source.ts"), "untracked fixture");
   assert.throws(() => packTuiRelease({ repoRoot: f.root, outputDir: path.join(f.root, "candidate"), sourceCommit }), /inputs are modified/);
+});
+
+test("failed build and ignored source import never produce a final TUI archive", (t) => {
+  for (const [name, extraBuild] of [
+    ["failed-build", () => "throw new Error('fixture compile failure');"],
+    ["ignored-import", () => "await import('../src/ignored-local.mjs');"],
+  ]) {
+    const f = packableFixture(t, extraBuild);
+    fs.writeFileSync(path.join(f.source, "src/ignored-local.mjs"), "export const uncommitted = true;");
+    const outputDir = path.join(f.root, name);
+    assert.throws(() => packTuiRelease({ repoRoot: f.root, outputDir, sourceCommit: f.sourceCommit }), /fixture compile failure|ERR_MODULE_NOT_FOUND/);
+    assert.equal(fs.existsSync(path.join(outputDir, `V8OS-TUI-${VERSION}.tgz`)), false);
+    assert.match(fs.readFileSync(path.join(f.source, "node_modules/keep.txt"), "utf8"), /installed toolchain/);
+  }
+});
+
+test("source or HEAD changing during build is rejected before the final archive is published", (t) => {
+  for (const kind of ["source", "head"]) {
+    const f = packableFixture(t, root => kind === "source"
+      ? `fs.appendFileSync(${JSON.stringify(path.join(root, "apps/v8-agent-os-tui/src/main.js"))}, '\\n// changed during build');`
+      : `import { execFileSync } from 'node:child_process'; execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'head changed during build'], { cwd: ${JSON.stringify(root)} });`);
+    const outputDir = path.join(f.root, "candidate");
+    assert.throws(() => packTuiRelease({ repoRoot: f.root, outputDir, sourceCommit: f.sourceCommit }), /inputs are modified|differs from the checkout/);
+    assert.equal(fs.existsSync(path.join(outputDir, `V8OS-TUI-${VERSION}.tgz`)), false);
+  }
 });
 
 test("notes list only enabled Server/TUI products and reject a mismatched manifest", (t) => {

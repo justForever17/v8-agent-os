@@ -346,7 +346,7 @@ export class Surface {
       '退出终端不停止 Engine / Phone / Peer；停止任务须选菜单“停止当前任务”。',
       '粘贴不会执行命令；大段粘贴使用 F9 或菜单明确发送。',
       'NO_COLOR / --no-color 无色；--screen-reader 线性阅读与编号菜单。',
-      'Node.js 22+。npm install -g ./v8-agent-os-tui-0.1.0.tgz',
+      'Node.js 22+。安装：npm install -g，后接下载的 .tgz 文件路径。',
       '没有 Engine：从官方 Release 下载 server 包并解压，执行 ./install.sh；不需要 Admin。',
       '已有 Engine：v8os service start。进入 F3 设置连接模型并选择工作区。',
       '无法响应时可重新连接 SSH 后运行 reset；SIGKILL/掉电无法执行终端恢复。',

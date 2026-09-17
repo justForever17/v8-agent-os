@@ -7,9 +7,13 @@
 需要 Node.js 22+。下载 Release 中的 npm 包，在任意目录安装：
 
 ```sh
-npm install -g ./v8-agent-os-tui-0.1.0.tgz
+npm install -g ./V8OS-TUI-2026.09.17.1.tgz
 v8os-tui
 ```
+
+上面使用统一 Release 的资产名。开发者直接运行 `npm pack` 得到的是
+`v8-agent-os-tui-<package-version>.tgz`（当前源码包例如 `v8-agent-os-tui-0.1.0.tgz`）；
+本地安装使用 npm 实际打印的文件名，发布脚本会生成统一 Release 名称。
 
 公开 npm 包名登记后再启用 registry 安装；当前先分发 tarball。本包不会在
 postinstall 下载、启动 Engine 或执行特权操作。普通 `v8os` CLI 仍支持 Node 20；

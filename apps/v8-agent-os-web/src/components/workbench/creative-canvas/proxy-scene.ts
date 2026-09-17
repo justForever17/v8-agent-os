@@ -133,12 +133,30 @@ export function sceneReferences(snapshot: CanvasSnapshot, nodeId: string, resolv
 }
 
 export async function sceneReferenceDigest(resource: CanvasResource, signal: AbortSignal): Promise<string> {
-    if (resource.availability === "unavailable" || !resource.url) throw new Error("reference_unavailable");
-    const response = await fetch(resource.url, { signal, cache: "no-store" });
+    const projection = resource.projectionRecord || {};
+    const rawUrl = String(projection.contentUrl || projection.content_url || projection.downloadUrl || projection.download_url || resource.url || "");
+    const url = rawUrl.replace(/^\/api\/client\/workspace\/resource/, "/api/workspace/resource");
+    if (resource.availability === "unavailable" || !url) throw new Error("reference_unavailable");
+    // Preview endpoints may resize/transcode; bind the original governed bytes.
+    const response = await fetch(url, { signal, cache: "no-store" });
     if (!response.ok) throw new Error("reference_unavailable");
     const bytes = await response.arrayBuffer();
     if (!bytes.byteLength) throw new Error("reference_unavailable");
     const digest = await crypto.subtle.digest("SHA-256", bytes);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+/** A library projection and its original source are the same selectable image. */
+export function sceneImageChoices(resources: CanvasResource[], sessionId: string): CanvasResource[] {
+    const candidates = resources.filter((resource) => resource.sessionId === sessionId && resource.mediaType === "image" && resource.availability !== "unavailable" && resource.adoptedByCurrentSession !== false);
+    candidates.sort((a, b) => Number(a.origin === "workspace_asset") - Number(b.origin === "workspace_asset"));
+    const choices = new Map<string, CanvasResource>();
+    for (const resource of candidates) {
+        const projection = resource.projectionRecord;
+        const key = resource.origin === "workspace_asset" && projection?.originId && projection?.originKind
+            ? `${projection.originKind}:${projection.originId}` : `${resource.origin}:${resource.id}`;
+        if (!choices.has(key)) choices.set(key, resource);
+    }
+    return [...choices.values()];
 }

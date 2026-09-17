@@ -288,6 +288,12 @@ def _reject_secret_fields(value: Any, *, path: str = "config") -> None:
             raw_key = str(key or "").strip()
             if path == "modelConfig" and raw_key == "outputTokenMode" and child in ("auto", "fixed"):
                 continue
+            # These schema-owned numeric limits count model tokens; they are not
+            # authentication tokens. Their range/type is validated by the policy.
+            if (path == "governance.budgets" and raw_key in {"globalDailyTokenLimit", "defaultProjectDailyTokenLimit"}
+                    or re.fullmatch(r"governance\.budgets\.projectBudgets\[\d+\]", path) and raw_key == "dailyTokenLimit"):
+                if type(child) in (int, float) and math.isfinite(child):
+                    continue
             normalized = raw_key.lower().replace("-", "_")
             separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", raw_key)
             tokens = {

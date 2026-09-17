@@ -46,7 +46,7 @@ interface UseLangGraphStreamOptions {
     acceptsRuntimeEvent?: (event: unknown) => boolean;
 }
 
-function appendAssistantPlaceholderIfNeeded(messages: Message[]) {
+function appendAssistantPlaceholderIfNeeded(messages: Message[], clientMessageId?: string) {
     const lastMessage = messages[messages.length - 1] as (Message & {
         uiEphemeral?: boolean;
         uiStreamPhase?: string | null;
@@ -54,12 +54,13 @@ function appendAssistantPlaceholderIfNeeded(messages: Message[]) {
     if (
         lastMessage?.role === 'assistant'
         && (lastMessage.uiEphemeral || isActiveAssistantStreamPhase(lastMessage.uiStreamPhase))
+        && (!clientMessageId || lastMessage.metadata?.clientMessageId === clientMessageId)
     ) {
         return normalizeMessagesForState(messages);
     }
     return normalizeMessagesForState([
         ...messages,
-        buildAssistantMessage({}),
+        { ...buildAssistantMessage({}), ...(clientMessageId ? { metadata: { clientMessageId } } : {}) },
     ]);
 }
 
@@ -443,7 +444,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId
         };
 
         const submissionMessages = normalizeMessagesForState([...currentMessages, tempUserMsg]);
-        const newHistory = appendAssistantPlaceholderIfNeeded(submissionMessages);
+        const newHistory = appendAssistantPlaceholderIfNeeded(submissionMessages, tempUserMsg.id);
         messagesRef.current = newHistory;
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             newHistory,
@@ -487,6 +488,20 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, conversationId
                 submittedRunIdRef.current = queued ? null : runId;
                 setSubmittedRunId(queued ? null : runId);
                 durableSubmitPendingRef.current = false;
+                if (!queued) {
+                    setMessages((current) => {
+                        const bound = normalizeMessagesForState(current.map((message) => (
+                            message.role === 'assistant'
+                            && message.uiEphemeral
+                            && message.metadata?.clientMessageId === tempUserMsg.id
+                            && (!message.runId || message.runId === runId)
+                                ? { ...message, runId }
+                                : message
+                        )));
+                        messagesRef.current = bound;
+                        return bound;
+                    });
+                }
                 if (conversationId && handlersRef.current.onConnect) {
                     handlersRef.current.onConnect(conversationId, 'submit');
                 }

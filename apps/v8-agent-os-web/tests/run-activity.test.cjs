@@ -514,14 +514,22 @@ test("Web realtime identity retention stays bounded without guessing legacy snap
 });
 
 test("Web scopes realtime sequence state to the active conversation", () => {
-  const start=chatClientSource.indexOf('const previousConversationId = renderedConversationIdRef.current');
+  const start=chatClientSource.indexOf('const ownerChanged = renderedSessionOwnerRef.current');
   const end=chatClientSource.indexOf('historyLoadControllerRef.current?.abort()',start);
+  assert.ok(start >= 0 && end > start, 'execute the actual identity-reset branch, never an empty source slice');
   const source=chatClientSource.slice(start,end);
-  function run(next) {
+  function run(next, changedOwner = false) {
     const latestRealtimeSeqRef={current:20},snapshotCoveredRealtimeSeqRef={current:19};let cleared=0;
-    new Function('activeConversationId','renderedConversationIdRef','activeConversationIdRef','queueCacheRef','queuedMessagesRef','setQueuedMessages','latestRealtimeSeqRef','snapshotCoveredRealtimeSeqRef','seenRealtimeEventIdentitiesRef',source)(next,{current:'a'},{current:'a'},{current:new Map()},{current:[]},()=>{},latestRealtimeSeqRef,snapshotCoveredRealtimeSeqRef,{current:{clear(){cleared++}}});
+    const bindings = {activeConversationId: next, renderedConversationIdRef: {current:'a'}, activeConversationIdRef:{current:'a'},
+      sessionOwnerKey: changedOwner ? 'instance-b/principal-b' : 'instance-a/principal-a', renderedSessionOwnerRef:{current:'instance-a/principal-a'},
+      messageCacheRef:{current:new Map()}, scopeCacheRef:{current:new Map()}, transcriptIdentitiesRef:{current:new Map()},
+      setTranscriptIdentity(){},setScopeOwner(){},setScopeBinding(){},stop(){},streamingConversationIdRef:{current:null},streamingTransportRef:{current:null},
+      queueCacheRef:{current:new Map()}, queuedMessagesRef:{current:[]}, setQueuedMessages(){}, latestRealtimeSeqRef,snapshotCoveredRealtimeSeqRef,
+      seenRealtimeEventIdentitiesRef:{current:{clear(){cleared++}}}};
+    new Function(...Object.keys(bindings),source)(...Object.values(bindings));
     return [latestRealtimeSeqRef.current,snapshotCoveredRealtimeSeqRef.current,cleared];
   }
   assert.deepEqual(run('a'),[20,19,0]);
   assert.deepEqual(run('b'),[0,0,1]);
+  assert.deepEqual(run('a',true),[0,0,1]);
 });

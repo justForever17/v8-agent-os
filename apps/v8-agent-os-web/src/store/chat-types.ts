@@ -1,5 +1,5 @@
 import type { RuntimeArtifact } from '@/lib/artifacts';
-import type { SessionToolResultStatus } from '@v8/session-realtime';
+import type { SessionToolResultStatus, SessionStreamPhase } from '@v8/session-realtime';
 
 // --- Base Node ---
 export interface UiTimelineNodeBase {
@@ -121,6 +121,8 @@ export type UiTimelineNode = UiNarrativeNode | UiExecutionNode | UiGovernanceNod
 
 // --- Main Chat Session/Run Model ---
 export interface Message {
+    uiEphemeral?: boolean;
+    uiStreamPhase?: SessionStreamPhase;
     version?: number;
     status?: string;
     state?: string;

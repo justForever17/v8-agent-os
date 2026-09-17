@@ -69,6 +69,15 @@ export type EmptyHistoryReconciliationInput = {
     incomingMessageCount?: unknown;
 };
 
+export function readRunFailureMessage(run: unknown, fallback: string): string {
+    if (!run || typeof run !== 'object') return '';
+    const record = run as Record<string, unknown>;
+    if (!['failed', 'interrupted'].includes(normalizeRunStatus(record.status))) return '';
+    const error = record.error && typeof record.error === 'object' ? record.error as Record<string, unknown> : {};
+    return [record.error_message, record.errorMessage, record.error, error.message, record.reason]
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim() || fallback;
+}
+
 export function deriveInterruptibleRunId(input: InterruptibleRunInput): string | null {
     const runId = String(input.controlRunId || input.currentRunId || "").trim();
     if (!runId) return null;

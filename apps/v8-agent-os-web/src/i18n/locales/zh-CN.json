@@ -1,4 +1,6 @@
 {
+  "web.chat.runFailed": "本次回复未完成，请检查错误后重新编辑并发送。",
+  "web.chat.editFailedMessage": "重新编辑",
   "web.workbench.canvas.scene.invalidTimeline": "关键帧必须从 0 秒开始，且不能超出总时长。请调整时长或关键帧。",
   "web.workbench.canvas.scene.duplicateColors": "请为每个实体选择不同的代理色。",
   "web.workbench.canvas.scene.title": "代理场景",

@@ -162,6 +162,7 @@ PHONE_GATEWAY_ROUTES: tuple[PhoneGatewayRoute, ...] = (
     _route("supervisor.timeline", rf"/api/client/supervisor-peers/{_SEGMENT}/timeline", ("GET",)),
     _route("config.distribution", r"/api/client/config-distribution", ("GET", "POST"), max_body_bytes=65536),
     _route("config.distribution.target", rf"/api/client/config-distribution/targets/{_SEGMENT}", ("GET",)),
+    _route("config.distribution.local-workspace", rf"/api/client/config-distribution/local-workspaces/{_SEGMENT}", ("POST",), max_body_bytes=4096),
     _route("config.distribution.job", rf"/api/client/config-distribution/{_SEGMENT}", ("GET",)),
     _route("config.distribution.action", rf"/api/client/config-distribution/{_SEGMENT}/(?:prepare|confirm|retry|cancel|withdraw)", ("POST",), max_body_bytes=4096),
     _route("conversations", r"/api/client/conversations", ("GET", "POST")),

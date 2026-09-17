@@ -18,7 +18,7 @@ def reset():
     for name in ("A", "B"):
         states[name] = {"jobs": [], "requests": [], "reads": 0, "online": False, "lost_confirm": False,
                         "hold_create": False, "started": threading.Event(), "release": threading.Event(),
-                        "localRole": "primary", "commands": {}}
+                        "localRole": "primary", "commands": {}, "credentialReady": False, "paged": False, "inventoryReads": 0}
 
 
 def peer(key, online=True, local_role="primary"):
@@ -62,14 +62,21 @@ class Handler(SimpleHTTPRequestHandler):
             return super().do_GET()
         state, authority, tail = self.route()
         if not tail:
+            state["inventoryReads"] += 1
             peers = [peer("Alpha", local_role=state["localRole"]), peer("Beta", state["online"])] if authority == "A" else [peer("B-only")]
-            return self.send_json({"servingInstanceId": authority, "templates": templates(), "peers": peers, "jobs": copy.deepcopy(state["jobs"])})
+            jobs = state["jobs"]
+            if state["paged"]:
+                jobs = [{**row, "summary": True, "targetCount": len(row["targets"]), "targetNames": [item["displayName"] for item in row["targets"][:3]], "targets": []} for row in jobs[:20]]
+            return self.send_json({"servingInstanceId": authority, "templates": templates(), "peers": peers, "jobs": copy.deepcopy(jobs), "jobsNextCursor": "20" if state["paged"] else None})
+        if tail.startswith("jobs?cursor="):
+            offset = int(tail.split("=")[1]); rows = state["jobs"][offset:offset+20]
+            return self.send_json({"items": [{**row, "summary": True, "targets": [], "targetCount": len(row["targets"])} for row in rows], "nextCursor": str(offset+20) if offset+20 < len(state["jobs"]) else None})
         if tail.startswith("targets/"):
             link = tail.split("/")[1]
             return self.send_json({"peerId": "peer-" + link, "protocolVersion": 1, "pathPolicy": "target_local_only",
                 "roles": [{"id": "supervisor", "label": "Supervisor"}], "models": [
                     {"modelRef": "target/ready", "label": "Ready model", "ready": True, "missingRequirements": []},
-                    {"modelRef": "target/missing", "label": "Missing credential model", "ready": False, "missingRequirements": ["credential"]}]})
+                    {"modelRef": "target/missing", "label": "Missing credential model", "ready": state["credentialReady"], "missingRequirements": [] if state["credentialReady"] else ["credential"]}]})
         state["reads"] += 1
         job = next(item for item in state["jobs"] if item["jobId"] == tail)
         return self.send_json(copy.deepcopy(job))
@@ -181,7 +188,9 @@ try:
         button(page, "撤回已应用配置").click()
         assert all(row["state"] == "committed" for row in states["A"]["jobs"][0]["targets"])
         button(page, "确认撤回").click()
-        expect(page.get_by_text("每次运行 token 上限: 1000", exact=True)).to_have_count(2)
+        expect(page.get_by_text("每次运行 token 上限: 1000", exact=True)).to_have_count(1)
+        button(page, "查看 Beta 的差异与回执").click()
+        expect(page.get_by_text("每次运行 token 上限: 1000", exact=True)).to_have_count(1)
         results.append("explicit_confirmation_partial_success_prepare_reconfirm_withdraw_readback")
         context.close()
 
@@ -190,12 +199,17 @@ try:
         page.get_by_role("checkbox", name="Alpha", exact=True).click()
         missing = page.get_by_role("radio", name="Alpha: Supervisor → Missing credential model", exact=True)
         expect(missing).to_have_attribute("aria-disabled", "true")
-        expect(button(page, "预览 1 台设备的差异")).to_have_attribute("aria-disabled", "true")
+        # Preview is allowed for an incomplete batch; applying still requires
+        # an explicitly mapped, target-validated model.
+        expect(button(page, "预览 1 台设备的差异")).not_to_have_attribute("aria-disabled", "true")
+        states["A"]["credentialReady"] = True
+        button(page, "重新读取目标能力").click()
+        expect(missing).not_to_have_attribute("aria-disabled", "true")
         page.get_by_role("radio", name="Alpha: Supervisor → Ready model", exact=True).click()
         button(page, "预览 1 台设备的差异").click()
         expect(button(page, "确认应用到 1 台设备")).to_be_visible()
         assert states["A"]["requests"][0]["body"]["targets"][0]["mapping"]["models"] == {"supervisor": "target/ready"}
-        results.append("target_local_model_required_missing_credential_cannot_submit")
+        results.append("target_local_missing_credential_disabled_refresh_then_ready_without_reopening")
         context.close()
 
         context, page = new_page(browser)
@@ -278,6 +292,34 @@ try:
         expect(page.get_by_text("已取消", exact=True)).to_have_count(2)
         assert [row["state"] for row in current["targets"]] == ["committed", "cancelled"]
         results.append("cancel_and_withdraw_remain_available_during_applying")
+        context.close()
+
+        context, page = new_page(browser)
+        rows = [{"jobId": f"large-{index}", "revision": 1, "planDigest": "scale", "intent": "prepare", "state": "awaiting_confirmation" if index == 0 else "completed",
+                 "templateId": "model-policy", "createdAt": "2026-09-17T00:00:00Z", "updatedAt": "2026-09-17T00:00:00Z", "targets": [target(f"Target-{i}", "prepared") for i in range(100)]} for index in range(61)]
+        states["A"].update(jobs=rows, paged=True, reads=0, inventoryReads=0)
+        page.reload()
+        pending = page.get_by_role("button", name="模型预算与参数 · 等待确认", exact=False)
+        expect(pending).to_have_count(1)
+        assert states["A"]["reads"] == 0 and states["A"]["inventoryReads"] == 1
+        expect(page.get_by_role("button", name="模型预算与参数 · 全部完成", exact=False)).to_have_count(19)
+        button(page, "加载更多作业").click()
+        expect(page.get_by_role("button", name="模型预算与参数 · 全部完成", exact=False)).to_have_count(39)
+        pending.click()
+        expect(page.get_by_role("heading", name="Target-99", exact=True)).to_be_visible()
+        assert states["A"]["reads"] == 1
+        expect(page.get_by_text("当前: 1000", exact=True)).to_have_count(1)
+        button(page, "查看 Target-99 的差异与回执").click()
+        expect(page.get_by_text("当前: 1000", exact=True)).to_have_count(1)
+        assert states["A"]["reads"] == 1
+        button(page, "新建分发").click(); pending.click()
+        assert states["A"]["reads"] == 2
+        before = states["A"]["inventoryReads"]
+        page.evaluate("window.setForeground(false)"); page.evaluate("window.setForeground(true)")
+        expect(page.get_by_role("heading", name="Target-99", exact=True)).to_be_visible()
+        page.wait_for_timeout(300)
+        assert states["A"]["inventoryReads"] == before + 1 and states["A"]["reads"] <= 3
+        results.append("61_job_summaries_paginate_100_targets_expand_one_detail_bounded_requests")
         context.close()
         browser.close()
 finally:

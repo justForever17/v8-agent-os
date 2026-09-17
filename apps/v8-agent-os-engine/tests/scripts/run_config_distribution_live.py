@@ -55,10 +55,12 @@ def node(root, name, port):
     if not (home / "fixture-initialized").exists():
         config = storage.get_system_base_config()
         config["bridge"]["engineBaseUrl"] = f"http://127.0.0.1:{port}/v1"
-        config.setdefault("remoteLink", {})["phoneGateway"] = {"enabled": False, "port": own["gatewayPort"]}
+        config.setdefault("remoteLink", {})["phoneGateway"] = {"enabled": True, "port": own["gatewayPort"], "publicBaseUrl": "https://phone-fixture.invalid"}
         storage.save_system_base_config(config)
         storage.save_models_config({"governance": {"budgets": {"runMaxTokens": 777 if name == "source" else 100}},
-                                    "roleParameters": {"supervisor": {"temperature": 0.7}}})
+            "roleParameters": {"supervisor": {"temperature": 0.7}}, "roles": {"summary": "local::chat"} if name == "source" else {},
+            "providers": {"local": {"provider": {"name": "Local fixture", "base_url": "http://127.0.0.1:19999/v1", "api_standard": "openai", "authContract": {"type": "none"}},
+                "models": {"chat": {"name": "Target local model", "type": "TEXT", "contextWindow": 32768, "maxTokens": 2048, "capabilityClass": "chat_general", "capabilities": {"streaming": True}}}}}})
         config = network.get_config_model()
         config.enabled = True
         config.node.peer_id = name
@@ -75,6 +77,9 @@ def node(root, name, port):
             db.upsert_network_neighbor_link(link_id="link_" + peer, peer_id=peer, local_nickname=name, remote_nickname=peer,
                 local_role="primary" if name == "source" else "companion", remote_role="companion" if name == "source" else "primary")
         get_identity_service().create_session(name="Fixture local", surface="cli", hidden=True)
+        from runtimes.memory.project_registry import project_registry_service
+        project_registry_service.save_project({"id": "fixture-project", "name": "Target local project", "workspaceId": "fixture-workspace",
+            "workspacePath": str(home / "local-project"), "workspaceTrustState": "trusted", "workspaceTrustSource": "user_confirmed"})
         (home / "fixture-initialized").touch()
     # Production app, routes, client auth boundary, lifespan recovery and worker.
     import main
@@ -88,7 +93,7 @@ def free_port():
         return listener.getsockname()[1]
 
 
-def audit(output):
+def audit(output, ui_directory=None, ui_only=False):
     import httpx
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     report = {"live": True, "layer": "three_isolated_production_engine_processes_signed_loopback_http", "cases": []}
@@ -152,6 +157,15 @@ def audit(output):
             return data["models"]["governance"]["budgets"]["runMaxTokens"]
         try:
             for name in seed: start(name)
+            if ui_only:
+                if not ui_directory: raise ValueError("--ui-only requires --ui-dir")
+                from config_distribution_phone_live import phone_ui_audit
+                report["phoneGatewayUi"] = phone_ui_audit(root=root, seed=seed, ui_directory=Path(ui_directory),
+                    request=request, start=start, stop=stop, tokens=tokens, wait_job=wait_job)
+                report["passed"] = True
+                if output: Path(output).write_text(json.dumps(report, indent=2), encoding="utf-8")
+                print(json.dumps(report, indent=2))
+                return
             inventory = request("source", "GET", "config-distribution")
             assert len(inventory["peers"]) == 2
             body = {"commandId": "create-main", "templateId": "model-policy", "targets": [{"linkId": "link_target1"}, {"linkId": "link_target2"}]}
@@ -181,6 +195,12 @@ def audit(output):
             assert withdrawn["state"] == "withdrawn", withdrawn
             assert tokens("target1") == tokens("target2") == 100
             report["cases"].append("exact_withdraw_and_both_disk_readbacks")
+            if ui_directory:
+                from config_distribution_phone_live import phone_ui_audit
+                report["phoneGatewayUi"] = phone_ui_audit(root=root, seed=seed, ui_directory=Path(ui_directory),
+                    request=request, start=start, stop=stop, tokens=tokens, wait_job=wait_job)
+                restored_plan = request("target1", "POST", "config-broker/model-policy/prepare", {"governance": {"budgets": {"runMaxTokens": 100}}})
+                request("target1", "POST", f'config-broker/transactions/{restored_plan["transactionId"]}/commit', {"planDigest": restored_plan["planDigest"]})
             second = request("source", "POST", "config-distribution", {**body, "commandId": "create-revoke"})
             prepared2 = wait_job(second["jobId"], {"awaiting_confirmation"})
             request("target1", "DELETE", "network-supervisor/neighbors/link_source")
@@ -205,8 +225,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--output")
+    parser.add_argument("--ui-dir")
+    parser.add_argument("--ui-only", action="store_true")
     parser.add_argument("--node", nargs=3)
     args = parser.parse_args()
     if args.node: node(args.node[0], args.node[1], int(args.node[2]))
-    elif args.live: audit(args.output)
+    elif args.live: audit(args.output, args.ui_dir, args.ui_only)
     else: parser.error("real network audit requires --live")

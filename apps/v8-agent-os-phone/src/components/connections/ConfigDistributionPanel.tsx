@@ -5,19 +5,20 @@ import { useIsFocused } from "@react-navigation/native";
 import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
+import { DistributionLocalWorkspaces } from "./DistributionLocalWorkspaces";
 import {
     actOnDistribution, createDistribution, distributionCommandId, distributionMappingReady, distributionPlanKey,
-    distributionValue, loadDistribution, loadDistributionJob, loadDistributionTarget, setDistributionRole,
+    distributionValue, loadDistribution, loadDistributionJob, loadDistributionTarget, setDistributionRole, remapDistribution, loadDistributionHistory,
     type DistributionAction, type DistributionCapabilities, type DistributionCatalog, type DistributionFetch,
     type DistributionJob, type DistributionMapping, type DistributionPeer,
 } from "@/src/lib/config-distribution";
 
-export function ConfigDistributionPanel({ onClose }: { onClose: () => void }) {
+export function ConfigDistributionPanel({ onClose, onChooseDevice }: { onClose: () => void; onChooseDevice?: () => void }) {
     const { authorityKey, servingInstanceId, authorizedFetch } = useAppSession();
-    return <DistributionContent key={authorityKey} instanceId={servingInstanceId} fetcher={authorizedFetch} onClose={onClose} />;
+    return <DistributionContent key={authorityKey} instanceId={servingInstanceId} fetcher={authorizedFetch} onClose={onClose} onChooseDevice={onChooseDevice} />;
 }
 
-function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: string; fetcher: DistributionFetch; onClose: () => void }) {
+function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: { instanceId: string; fetcher: DistributionFetch; onClose: () => void; onChooseDevice?: () => void }) {
     const { colors, t } = useUiPrefs();
     const focused = useIsFocused();
     const visible = useAppVisibility();
@@ -27,6 +28,9 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
     const [capabilities, setCapabilities] = useState<Record<string, DistributionCapabilities>>({});
     const [targetErrors, setTargetErrors] = useState<Record<string, string>>({});
     const [job, setJob] = useState<DistributionJob | null>(null);
+    const [editingJob, setEditingJob] = useState<DistributionJob | null>(null);
+    const [localSettings, setLocalSettings] = useState(false);
+    const [expandedTarget, setExpandedTarget] = useState<string | null>(null);
     const [reviewed, setReviewed] = useState("");
     const [pendingDecision, setPendingDecision] = useState<{ action: "cancel" | "withdraw"; planKey: string } | null>(null);
     const [busy, setBusy] = useState(false);
@@ -41,11 +45,16 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
     const template = catalog?.templates.find((item) => item.id === templateId);
     const primaryPeers = catalog?.peers.filter((peer) => peer.localRole === "primary") || [];
     const checkedPeers = primaryPeers.filter((peer) => Boolean(selected[peer.linkId]));
-    const canCreate = Boolean(template && checkedPeers.length && checkedPeers.every((peer) => distributionMappingReady(template, selected[peer.linkId], capabilities[peer.linkId])));
+    const canCreate = Boolean(template && checkedPeers.length && checkedPeers.length <= (catalog?.maxTargets || 100) && (template.id !== "model-roles" || template.roles?.length));
+    const readyCount = template ? checkedPeers.filter((peer) => distributionMappingReady(template, selected[peer.linkId], capabilities[peer.linkId])).length : 0;
     const planKey = job ? distributionPlanKey(job) : "";
-    const prepared = job?.targets.filter((target) => target.state === "prepared") || [];
+    const prepared = job?.targets.filter((target) => target.state === "prepared" && !target.approved) || [];
     const operationInProgress = Boolean(job && ["preparing", "applying", "cancelling", "withdrawing"].includes(job.state));
     const locked = busy || operationInProgress;
+    const allowed = (action: DistributionAction) => job?.allowedActions ? job.allowedActions.includes(action) :
+        action === "retry" ? Boolean(job?.targets.some((target) => ["offline", "recovery_required"].includes(target.state))) :
+        action === "withdraw" ? Boolean(job?.targets.some((target) => ["committed", "recovery_required"].includes(target.state))) :
+        !["cancelled", "withdrawn", "completed", "withdrawal_conflict"].includes(job?.state || "");
 
     const abortRequests = useCallback(() => {
         requests.current.forEach((controller) => controller.abort());
@@ -63,13 +72,16 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
         } finally { requests.current.delete(controller); }
     }, []);
     const acceptJob = useCallback((next: DistributionJob) => {
+        if (next.summary) return;
         const current = jobRef.current;
         if (current?.jobId === next.jobId && (current.revision > next.revision ||
             (current.revision === next.revision && current.updatedAt > next.updatedAt))) return;
         if (!current || distributionPlanKey(current) !== distributionPlanKey(next)) { setReviewed(""); setPendingDecision(null); }
         jobRef.current = next;
+        if (current?.jobId !== next.jobId) setExpandedTarget(next.targets[0]?.linkId || null);
         setJob(next);
-        setCatalog((previous) => previous ? { ...previous, jobs: [next, ...previous.jobs.filter((item) => item.jobId !== next.jobId)] } : previous);
+        const summary = { ...next, summary: true, targets: [], targetCount: next.targets.length, targetNames: next.targets.slice(0, 3).map((target) => target.displayName) };
+        setCatalog((previous) => previous ? { ...previous, jobs: [summary, ...previous.jobs.filter((item) => item.jobId !== next.jobId)] } : previous);
     }, []);
     const refresh = useCallback(async () => {
         const result = await request((signal) => loadDistribution(fetcher, instanceId, signal));
@@ -79,7 +91,7 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
         const current = jobRef.current;
         if (current) {
             const updated = result.jobs.find((item) => item.jobId === current.jobId);
-            if (updated) acceptJob(updated);
+            if (updated && !updated.summary) acceptJob(updated);
         }
         setError("");
     }, [acceptJob, fetcher, instanceId, request]);
@@ -103,7 +115,10 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
     async function run(operation: () => Promise<void>) {
         if (mutation.current || !active.current) return;
         mutation.current = true;
-        abortRequests();
+        // Let bounded capability reads finish. Aborting shared endpoint
+        // verification here can abort the immediately following write too.
+        // Poll responses already carry job/revision guards; profile changes
+        // and unmount still abort every request.
         setBusy(true); setError("");
         try { await operation(); }
         catch (failure) { if (active.current) setError(failure instanceof Error ? failure.message : "distribution_unavailable"); }
@@ -133,8 +148,10 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
         if (!template || !canCreate) return;
         const input = { templateId: template.id, targets: checkedPeers.map((peer) => ({ linkId: peer.linkId, mapping: selected[peer.linkId] })) };
         await run(async () => {
-            const next = await request((signal) => createDistribution(fetcher, { ...input, commandId: command(JSON.stringify(input)) }, signal));
-            if (next) { acceptJob(next); setReviewed(""); }
+            const next = await request((signal) => editingJob
+                ? remapDistribution(fetcher, editingJob, input.targets, command(`${distributionPlanKey(editingJob)}:${JSON.stringify(input)}`), signal)
+                : createDistribution(fetcher, { ...input, commandId: command(JSON.stringify(input)) }, signal));
+            if (next) { acceptJob(next); setReviewed(""); setEditingJob(null); }
         });
     }
     async function act(action: DistributionAction) {
@@ -149,7 +166,15 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
         });
     }
     function newPlan() {
-        abortRequests(); commands.current.clear(); jobRef.current = null; setJob(null); setReviewed(""); setPendingDecision(null); setError("");
+        abortRequests(); commands.current.clear(); jobRef.current = null; setJob(null); setEditingJob(null); setReviewed(""); setPendingDecision(null); setError("");
+    }
+    function editMappings() {
+        if (!job) return;
+        const remaining = job.targets.filter((target) => !target.approved && !["committed", "rolled_back", "cancelled"].includes(target.state));
+        setEditingJob(job); setTemplateId(job.templateId); setCapabilities({});
+        setSelected(Object.fromEntries(remaining.map((target) => [target.linkId, target.mapping || { roles: {}, models: {} }])));
+        jobRef.current = null; setJob(null); setReviewed("");
+        for (const target of remaining) { const peer = catalog?.peers.find((item) => item.linkId === target.linkId); if (peer) void loadTarget(peer); }
     }
     const button = (label: string, onPress: () => void, disabled = false, danger = false) => <Pressable accessibilityRole="button" disabled={disabled}
         accessibilityState={{ disabled }} onPress={onPress} style={[styles.button, { borderColor: colors.border, opacity: disabled ? 0.45 : 1 }]}>
@@ -176,6 +201,12 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
             </View>
             <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
                 <Text style={{ color: colors.textMuted, lineHeight: 21 }}>{text("scope")}</Text>
+                <Text style={{ color: colors.textMuted }}>{text("bilateralGuide")}</Text>
+                <View style={styles.choices}>
+                    {onChooseDevice ? button(text("chooseDevice"), onChooseDevice, busy) : null}
+                    {button(text("localWorkspace"), () => setLocalSettings(!localSettings), busy)}
+                </View>
+                {localSettings ? <DistributionLocalWorkspaces fetcher={fetcher} active={focused && visible} /> : null}
                 {error ? <View accessibilityRole="alert" style={[styles.card, { backgroundColor: colors.surface }]}>
                     <Text style={{ color: colors.danger }}>{showError(error)}</Text>
                     <Text style={{ color: colors.textMuted }}>{text("unknownResult")}</Text>
@@ -186,7 +217,7 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                 {catalog && !job ? <>
                     <Text accessibilityRole="header" style={[styles.section, { color: colors.text }]}>{text("template")}</Text>
                     {catalog.templates.map((item) => <Pressable key={item.id} accessibilityRole="radio" accessibilityLabel={templateLabel(item.id, item.label)} aria-checked={templateId === item.id}
-                        accessibilityState={{ checked: templateId === item.id }} disabled={busy} onPress={() => { setTemplateId(item.id); setSelected({}); }}
+                        accessibilityState={{ checked: templateId === item.id }} disabled={busy || Boolean(editingJob)} onPress={() => { setTemplateId(item.id); setSelected({}); }}
                         style={[styles.card, { backgroundColor: colors.surface, borderColor: templateId === item.id ? colors.primary : colors.border }]}>
                         <Text style={{ color: colors.text, fontWeight: "700" }}>{templateLabel(item.id, item.label)}</Text>
                         <Text style={{ color: colors.textMuted, lineHeight: 21 }}>{templateDescription(item.id, item.description)}</Text>
@@ -195,9 +226,10 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                         {button(text("selectAll"), () => {
                             setSelected(Object.fromEntries(primaryPeers.map((peer) => [peer.linkId, selected[peer.linkId] || { roles: Object.fromEntries((template?.roles || []).map(({ id }) => [id, id])), models: {} }])));
                             for (const peer of primaryPeers) if (!capabilities[peer.linkId]) void loadTarget(peer);
-                        }, busy || !primaryPeers.length)}
+                        }, busy || !primaryPeers.length || Boolean(editingJob))}
                     </View>
                     <Text style={{ color: colors.textMuted }}>{text("primaryHint")}</Text>
+                    {checkedPeers.length > (catalog.maxTargets || 100) ? <Text style={{ color: colors.warning }}>{text("batchLimit", { count: catalog.maxTargets || 100 })}</Text> : null}
                     {template?.id === "model-roles" && !template.roles?.length ? <Text style={{ color: colors.warning }}>{text("noSourceRoles")}</Text> : null}
                     {!catalog.peers.length ? <Text style={{ color: colors.textMuted }}>{text("noTargets")}</Text> : null}
                     {catalog.peers.map((peer) => {
@@ -217,7 +249,8 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                             {mapping ? <>
                                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>{text("localPaths")}</Text>
                                 {targetErrors[peer.linkId] ? <View><Text style={{ color: colors.warning }}>{showError(targetErrors[peer.linkId])}</Text>
-                                    {button(text("reloadTarget"), () => void loadTarget(peer), busy)}</View> : null}
+                                    </View> : null}
+                                {button(text("reloadTarget"), () => void loadTarget(peer), busy)}
                                 {(template?.roles || []).map((role) => <View key={role.id} style={styles.mapping}>
                                     <Text style={{ color: colors.text, fontWeight: "600" }}>{role.label} → {text("targetRole")}</Text>
                                     {options ? <View style={styles.choices}>{options.roles.map((targetRole) => <Pressable key={targetRole.id} accessibilityRole="radio"
@@ -241,13 +274,19 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                         </View>;
                     })}
                     {button(text("preview", { count: checkedPeers.length }), () => void create(), busy || !canCreate)}
+                    {readyCount < checkedPeers.length ? <Text style={{ color: colors.warning }}>{text("partialMapping", { ready: readyCount, pending: checkedPeers.length - readyCount })}</Text> : null}
+                    {editingJob ? button(text("keep"), () => { acceptJob(editingJob); setEditingJob(null); }, busy) : null}
                     <Text style={{ color: colors.textMuted }}>{text("previewHint")}</Text>
                     {catalog.jobs.length ? <Text accessibilityRole="header" style={[styles.section, { color: colors.text }]}>{text("recent")}</Text> : null}
-                    {catalog.jobs.map((item) => <Pressable key={item.jobId} accessibilityRole="button" disabled={busy} onPress={() => { setReviewed(""); acceptJob(item); }}
+                    {catalog.jobs.map((item) => <Pressable key={item.jobId} accessibilityRole="button" disabled={busy} onPress={() => void run(async () => { const next = await request((signal) => loadDistributionJob(fetcher, item.jobId, signal)); if (next) { setReviewed(""); acceptJob(next); } })}
                         style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                         <Text style={{ color: colors.text, fontWeight: "600" }}>{templateLabel(item.templateId, catalog.templates.find((entry) => entry.id === item.templateId)?.label || item.templateId)} · {stateLabel(item.state)}</Text>
-                        <Text style={{ color: colors.textMuted }}>{item.targets.map((target) => target.displayName).join("、")} · {new Date(item.updatedAt).toLocaleString()}</Text>
+                        <Text style={{ color: colors.textMuted }}>{(item.targetNames || item.targets.map((target) => target.displayName)).join("、")} · {item.targetCount ?? item.targets.length} · {new Date(item.updatedAt).toLocaleString()}</Text>
                     </Pressable>)}
+                    {catalog.jobsNextCursor ? button(text("moreJobs"), () => void run(async () => {
+                        const next = await request((signal) => loadDistributionHistory(fetcher, catalog.jobsNextCursor!, signal));
+                        if (next) setCatalog((previous) => previous ? { ...previous, jobs: [...previous.jobs, ...next.items.filter((item) => !previous.jobs.some((old) => old.jobId === item.jobId))], jobsNextCursor: next.nextCursor } : previous);
+                    }), busy) : null}
                 </> : null}
                 {job ? <>
                     <View style={styles.heading}><Text accessibilityRole="header" style={[styles.section, { color: colors.text }]}>{stateLabel(job.state)}</Text>{button(text("newPlan"), newPlan, busy)}</View>
@@ -255,6 +294,10 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                     {job.targets.map((target) => <View key={target.linkId} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                         <Text accessibilityRole="header" style={{ color: colors.text, fontWeight: "700", fontSize: 16 }}>{target.displayName}</Text>
                         <Text style={{ color: target.state === "committed" || target.state === "rolled_back" ? colors.success : colors.textMuted }}>{stateLabel(target.state)}</Text>
+                        {button(text(expandedTarget === target.linkId ? "collapseTarget" : "expandTarget", { name: target.displayName }), () => setExpandedTarget(expandedTarget === target.linkId ? null : target.linkId))}
+                        {expandedTarget === target.linkId ? <>
+                        <Text style={{ color: colors.textMuted }}>{text(target.approved ? "approvedIntent" : "unapprovedIntent")}</Text>
+                        {Object.entries(target.mapping?.roles || {}).map(([source, targetRole]) => <Text key={source} style={{ color: colors.textMuted }}>{source} → {targetRole}{target.mapping?.models[source] ? ` · ${target.mapping.models[source]}` : ""}</Text>)}
                         {target.errorCode ? <Text style={{ color: colors.warning }}>{showError(target.errorCode)}</Text> : null}
                         {target.missingRequirements.length ? <Text style={{ color: colors.warning }}>{text("missingLocal")}: {target.missingRequirements.map(showError).join(" ")}</Text> : null}
                         {target.diff.map((diff, index) => <View key={`${diff.field}:${index}`} style={[styles.diff, { borderColor: colors.border }]}>
@@ -270,8 +313,9 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                                 {Object.entries(target.receipt.readback).map(([field, value]) => <Text key={field} selectable style={{ color: colors.textMuted, fontSize: 12 }}>{fieldLabel(field)}: {distributionValue(value)}</Text>)}
                             </> : null}
                         </View> : null}
+                        </> : null}
                     </View>)}
-                    {prepared.length ? <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.primary }]}>
+                    {prepared.length && allowed("confirm") ? <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.primary }]}>
                         <Text style={{ color: colors.text }}>{text("confirmScope", { ready: prepared.length, other: job.targets.length - prepared.length })}</Text>
                         <Pressable accessibilityRole="checkbox" accessibilityLabel={text("reviewed")} aria-checked={reviewed === planKey} accessibilityState={{ checked: reviewed === planKey, disabled: locked }} disabled={locked}
                             onPress={() => setReviewed(reviewed === planKey ? "" : planKey)} style={styles.targetHeading}>
@@ -279,12 +323,13 @@ function DistributionContent({ instanceId, fetcher, onClose }: { instanceId: str
                         </Pressable>
                         {button(text("confirm", { count: prepared.length }), () => void act("confirm"), locked || reviewed !== planKey)}
                     </View> : null}
-                    <Text style={{ color: colors.textMuted }}>{text("recoveryHint")}</Text>
+                    <Text style={{ color: colors.textMuted }}>{text(job.state === "withdrawal_conflict" ? "withdrawConflict" : job.intent === "cancel" || job.intent === "withdraw" ? "cleanupRecovery" : "recoveryHint")}</Text>
                     <View style={styles.choices}>
-                        {button(text("prepare"), () => void act("prepare"), locked || ["cancelled", "withdrawn", "completed"].includes(job.state))}
-                        {button(text("retry"), () => void act("retry"), locked || !job.targets.some((target) => ["offline", "recovery_required"].includes(target.state)))}
-                        {button(text("cancel"), () => setPendingDecision({ action: "cancel", planKey }), busy || ["cancelled", "withdrawn", "completed"].includes(job.state), true)}
-                        {button(text("withdraw"), () => setPendingDecision({ action: "withdraw", planKey }), busy || !job.targets.some((target) => ["committed", "recovery_required"].includes(target.state)), true)}
+                        {button(text("prepare"), () => void act("prepare"), locked || !allowed("prepare"))}
+                        {button(text("retry"), () => void act("retry"), locked || !allowed("retry"))}
+                        {button(text("cancel"), () => setPendingDecision({ action: "cancel", planKey }), busy || !allowed("cancel"), true)}
+                        {button(text("withdraw"), () => setPendingDecision({ action: "withdraw", planKey }), busy || !allowed("withdraw"), true)}
+                        {allowed("prepare") && job.targets.some((target) => !target.approved && !["committed", "cancelled", "rolled_back"].includes(target.state)) ? button(text("editMappings"), editMappings, locked) : null}
                     </View>
                     {pendingDecision ? <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.warning }]}>
                         <Text style={{ color: colors.text }}>{text(pendingDecision.action === "cancel" ? "cancelHint" : "withdrawHint")}</Text>

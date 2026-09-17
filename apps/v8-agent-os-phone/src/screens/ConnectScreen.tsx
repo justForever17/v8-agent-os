@@ -183,7 +183,7 @@ export default function ConnectScreen() {
             </View>
         </Modal>
         {conversation ? <PeerConversation peer={conversation} onClose={() => setConversation(null)} /> : null}
-        {distributionOpen ? <ConfigDistributionPanel onClose={() => setDistributionOpen(false)} /> : null}
+        {distributionOpen ? <ConfigDistributionPanel onClose={() => setDistributionOpen(false)} onChooseDevice={() => { setDistributionOpen(false); setTab("profile"); setQuery(""); }} /> : null}
     </SafeAreaView>;
 }
 

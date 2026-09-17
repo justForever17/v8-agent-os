@@ -39,6 +39,20 @@ class DistributionStore:
                                 (owner,) if owner is not None else ()).fetchall()
         return sorted([json.loads(row[0]) for row in rows], key=lambda item: item["createdAt"], reverse=True)
 
+    def page(self, owner, offset=0, limit=20):
+        self.initialize()
+        terminal = "('completed','cancelled','withdrawn','withdrawal_conflict')"
+        pending = f"json_extract(payload,'$.state') NOT IN {terminal}"
+        with self.db.get_connection() as conn:
+            count = conn.execute(f"SELECT count(*),sum(CASE WHEN {pending} THEN 1 ELSE 0 END) FROM config_distribution_jobs WHERE owner=?", (owner,)).fetchone()
+            rows = conn.execute(f"SELECT payload FROM config_distribution_jobs WHERE owner=? ORDER BY CASE WHEN {pending} THEN 0 ELSE 1 END, json_extract(payload,'$.createdAt') DESC,id LIMIT ? OFFSET ?", (owner, limit, offset)).fetchall()
+        items = []
+        for row in rows:
+            job = json.loads(row[0])
+            items.append({**{key: job[key] for key in ("jobId", "revision", "planDigest", "intent", "state", "templateId", "createdAt", "updatedAt")},
+                          "summary": True, "targetCount": len(job["targets"]), "targetNames": [target["displayName"] for target in job["targets"][:3]], "targets": []})
+        return {"items": items, "pendingCount": count[1] or 0, "total": count[0], "nextCursor": str(offset + limit) if offset + limit < count[0] else None}
+
     def mutate(self, job_id, change):
         self.initialize()
         with self.db.get_connection() as conn:

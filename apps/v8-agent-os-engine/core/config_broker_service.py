@@ -286,6 +286,13 @@ def _reject_secret_fields(value: Any, *, path: str = "config") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             raw_key = str(key or "").strip()
+            # These are numeric policy limits owned by this broker, not bearer
+            # credentials. Camel-case splitting otherwise mistakes TokenLimit
+            # for an authentication token. Strict range/type validation follows
+            # in prepare_model_policy; unknown keys retain the secret guard.
+            if (path == "governance.budgets" and raw_key in _MODEL_BUDGET_KEYS
+                    and isinstance(child, (int, float)) and not isinstance(child, bool)):
+                continue
             if path == "modelConfig" and raw_key == "outputTokenMode" and child in ("auto", "fixed"):
                 continue
             normalized = raw_key.lower().replace("-", "_")

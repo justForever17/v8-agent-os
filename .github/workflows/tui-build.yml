@@ -51,6 +51,8 @@ jobs:
           installed="$RUNNER_TEMP/tui-prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs"
           node "$installed" --help
           python apps/v8-agent-os-tui/tests/terminal_pty.py --node "$(command -v node)" --bin "$installed" --state "$RUNNER_TEMP/tui-state"
+          python -m pip install pyte==0.8.2 wcwidth==0.8.3
+          python apps/v8-agent-os-tui/tests/command_suggestions_pty.py --node "$(command -v node)" --bin "$installed" --evidence "$RUNNER_TEMP/tui-command-evidence"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '20.0.0'

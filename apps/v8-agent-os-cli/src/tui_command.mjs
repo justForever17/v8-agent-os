@@ -17,7 +17,7 @@ export async function commandTui(args) {
   }
   const child = spawn(entry ? process.execPath : "v8os-tui", entry ? [entry, ...args] : args, { stdio: "inherit", shell: false });
   return new Promise((resolve) => {
-    child.once("error", () => { console.error("请先安装终端界面：npm install -g @v8/agent-os-tui"); process.exitCode = 1; resolve(); });
+    child.once("error", () => { console.error("请从 V8OS Release 下载 TUI 的 .tgz 包，再运行 npm install -g ./V8OS-TUI-<版本>.tgz；当前尚未上架 npm registry。"); process.exitCode = 1; resolve(); });
     child.once("exit", (code) => { process.exitCode = code ?? 1; resolve(); });
   });
 }

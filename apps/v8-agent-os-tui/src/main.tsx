@@ -133,7 +133,9 @@ export async function start(args: string[]) {
     pasteTimer = setTimeout(() => { const events = decoder.finishPaste(); for (const event of events) dispatch(event); if (events.some(e => e.key === 'paste')) { client.notice = '粘贴仍未结束，已保存收到的内容；迟到的按键字节仍按文本处理。'; client.changed(); } }, 2000);
   };
   let suspended = false;
-  const draw = () => render(<App client={client} surface={surface} dispatch={dispatch} />, { exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
+  // The entrypoint already requires a real TTY. An inherited CI flag must not
+  // make Ink hide every frame until unmount in this explicit interactive app.
+  const draw = () => render(<App client={client} surface={surface} dispatch={dispatch} />, { interactive: true, exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
   const resume = () => {
     if (done || !suspended) return; suspended = false;
     if (editingAbort) return;

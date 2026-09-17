@@ -33,8 +33,9 @@ def templates(state):
              "values": {"roles": {"supervisor": ""}}, "roles": [{"id": "supervisor", "label": "Supervisor"}]}]
 
 
-def target(link, status):
+def target(link, status, mapping=None, approved=False):
     return {"linkId": link, "peerId": "peer-" + link, "displayName": link, "state": status,
+            "mapping": copy.deepcopy(mapping if mapping is not None else {"roles": {}, "models": {}}), "approved": approved,
             "diff": [{"field": "governance.budgets.runMaxTokens", "before": 1000, "after": 2000}] if status == "prepared" else [],
             "missingRequirements": [], "errorCode": "peer_unreachable" if status == "offline" else "",
             "receipt": {"transactionId": "tx-" + link, "state": "ready_to_commit"} if status == "prepared" else {}}
@@ -92,31 +93,35 @@ class Handler(SimpleHTTPRequestHandler):
         state, authority, tail = self.route()
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         action = tail.split("/")[-1] if tail else "create"
-        state["requests"].append({"action": action, "body": body})
+        state["requests"].append({"action": action, "jobId": tail.split("/")[0] if tail else None, "body": body})
         if body["commandId"] in state["commands"]:
             return self.send_json(copy.deepcopy(state["commands"][body["commandId"]]))
         if not tail:
             job = {"jobId": authority + "-job-" + str(len(state["jobs"]) + 1), "revision": 2, "planDigest": "digest-2",
                    "state": "awaiting_confirmation", "templateId": body["templateId"], "createdAt": "2026-09-17T00:00:00Z",
-                   "updatedAt": "2026-09-17T00:00:00Z", "targets": [target(item["linkId"], "offline" if item["linkId"] == "Beta" and not state["online"] else "prepared") for item in body["targets"]]}
+                   "updatedAt": "2026-09-17T00:00:00Z", "targets": [target(item["linkId"], "offline" if item["linkId"] == "Beta" and not state["online"] else "prepared", item.get("mapping")) for item in body["targets"]]}
             state["jobs"].insert(0, job)
             if state["hold_create"]:
                 state["started"].set()
                 state["release"].wait(timeout=10)
         else:
             job = next(item for item in state["jobs"] if item["jobId"] == tail.split("/")[0])
-            if body["revision"] != job["revision"] or body["planDigest"] != job["planDigest"]:
+            # Remapping prepares the original job with its exact revision and
+            # new targets; unlike confirmation, the real API needs no digest.
+            if body["revision"] != job["revision"] or (action != "prepare" and body.get("planDigest") != job["planDigest"]):
                 return self.send_json({"detail": "distribution_plan_stale"}, 409)
             if action == "confirm":
                 for row in job["targets"]:
                     if row["state"] == "prepared":
                         row["state"] = "committed"
+                        row["approved"] = True
                         row["receipt"] = {"transactionId": "tx-" + row["linkId"], "state": "committed", "readback": {"governance.budgets.runMaxTokens": 2000}}
                 job["state"] = "completed" if all(row["state"] == "committed" for row in job["targets"]) else "partial"
             elif action == "prepare":
+                patches = {item["linkId"]: item["mapping"] for item in body.get("targets", [])}
                 for index, row in enumerate(job["targets"]):
                     if row["state"] != "committed":
-                        job["targets"][index] = target(row["linkId"], "prepared" if state["online"] or row["linkId"] != "Beta" else "offline")
+                        job["targets"][index] = target(row["linkId"], "prepared" if state["online"] or row["linkId"] != "Beta" else "offline", patches.get(row["linkId"], row["mapping"]))
                 job["state"] = "awaiting_confirmation"
             elif action in ("cancel", "withdraw"):
                 for row in job["targets"]:
@@ -336,25 +341,102 @@ try:
         page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True).click()
         expect(page.get_by_text("其中 1 个角色使用自定义映射。", exact=True)).to_be_visible()
         expect(page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True)).to_have_attribute("aria-checked", "true")
-        page.get_by_role("radio", name="Alpha: Role 00 → Role 00", exact=True).click()
         button(page, "Alpha: Role 01 → Role 01").click()
         expect(page.get_by_role("radio")).to_have_count(20)
         expect(page.get_by_role("radio", name="Alpha: Role 00 → Role 00", exact=True)).to_have_count(0)
+        page.get_by_role("radio", name="Alpha: Role 01 → Role 00", exact=True).click()
+        # A valid non-default bijection must survive actual unmount/remount,
+        # not only a change that was reset to the default before switching.
         button(page, "Beta: 调整角色映射").click()
         expect(page.get_by_role("radio")).to_have_count(2)
         expect(button(page, "Alpha: 调整角色映射")).to_be_visible()
         button(page, "Beta: 收起角色映射").click()
+        button(page, "Alpha: 调整角色映射").click()
+        button(page, "Alpha: Role 00 → Role 01").click()
+        expect(page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True)).to_have_attribute("aria-checked", "true")
+        button(page, "Alpha: 收起角色映射").click()
+        assert states["A"]["requests"] == [], "Display-only changes must not submit a plan"
         page.screenshot(path=str(output / "collapsed-policy-mappings.png"), full_page=True)
         button(page, "预览 2 台设备的差异").click()
         expect(button(page, "确认应用到 1 台设备")).to_be_visible()
         expected_roles = {role["id"]: role["id"] for role in roles}
-        assert all(row["mapping"] == {"roles": expected_roles, "models": {}} for row in states["A"]["requests"][0]["body"]["targets"])
+        custom_roles = {**expected_roles, "role-00": "role-01", "role-01": "role-00"}
+        assert states["A"]["requests"][0]["body"]["targets"] == [
+            {"linkId": "Alpha", "mapping": {"roles": custom_roles, "models": {}}},
+            {"linkId": "Beta", "mapping": {"roles": expected_roles, "models": {}}},
+        ]
         button(page, "新建分发").click()
         page.get_by_role("radio", name="模型角色映射", exact=True).click()
         page.get_by_role("checkbox", name="Alpha", exact=True).click()
         expect(page.get_by_role("radio", name="Alpha: Supervisor → Ready model", exact=True)).to_be_visible()
         expect(button(page, "Alpha: 调整角色映射")).to_have_count(0)
         results.append("optional_policy_roles_mount_only_one_selector_preserve_mapping_and_required_models")
+        context.close()
+
+        # Edit a prepared draft, discard it without writes, then reprepare the
+        # same persisted job. The reviewed state belongs to the exact plan.
+        context, page = new_page(browser)
+        states["A"]["policyRoles"] = roles[:2]
+        page.reload()
+        page.get_by_role("checkbox", name="Alpha", exact=True).click()
+        button(page, "预览 1 台设备的差异").click()
+        expect(button(page, "确认应用到 1 台设备")).to_be_visible()
+        original = copy.deepcopy(states["A"]["jobs"][0])
+        page.get_by_role("checkbox", name=review_label).click()
+        expect(button(page, "确认应用到 1 台设备")).not_to_have_attribute("aria-disabled", "true")
+        button(page, "修改未确认目标映射").click()
+        expect(button(page, "确认应用到 1 台设备")).to_have_count(0)
+        button(page, "Alpha: 调整角色映射").click()
+        button(page, "Alpha: Role 00 → Role 00").click()
+        page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True).click()
+        button(page, "Alpha: Role 01 → Role 01").click()
+        page.get_by_role("radio", name="Alpha: Role 01 → Role 00", exact=True).click()
+        # Returning must restore the local snapshot even when a readback is
+        # unavailable. A fast poll must not silently repair an in-place draft
+        # mutation before these assertions can observe it.
+        readback = f"**/config-distribution/{original['jobId']}"
+        def unavailable_readback(route):
+            if route.request.method == "GET": route.abort("connectionreset")
+            else: route.continue_()
+        page.route(readback, unavailable_readback)
+        button(page, "返回查看").click()
+        expect(page.get_by_text("role-00 → role-00", exact=True)).to_be_visible()
+        expect(page.get_by_text("role-01 → role-01", exact=True)).to_be_visible()
+        expect(page.get_by_text("role-00 → role-01", exact=True)).to_have_count(0)
+        expect(page.get_by_role("checkbox", name=review_label)).to_have_attribute("aria-checked", "false")
+        expect(button(page, "确认应用到 1 台设备")).to_have_attribute("aria-disabled", "true")
+        assert [row["action"] for row in states["A"]["requests"]] == ["create"]
+        assert states["A"]["jobs"] == [original], "Returning from a draft must preserve the original job, mapping and digest"
+        page.unroute(readback, unavailable_readback)
+
+        button(page, "修改未确认目标映射").click()
+        button(page, "Alpha: 调整角色映射").click()
+        button(page, "Alpha: Role 00 → Role 00").click()
+        page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True).click()
+        button(page, "Alpha: Role 01 → Role 01").click()
+        page.get_by_role("radio", name="Alpha: Role 01 → Role 00", exact=True).click()
+        button(page, "预览 1 台设备的差异").click()
+        expect(page.get_by_text("role-00 → role-01", exact=True)).to_be_visible()
+        expect(page.get_by_role("checkbox", name=review_label)).to_have_attribute("aria-checked", "false")
+        expect(button(page, "确认应用到 1 台设备")).to_have_attribute("aria-disabled", "true")
+        assert [row["action"] for row in states["A"]["requests"]] == ["create", "prepare"]
+        prepared = states["A"]["requests"][1]
+        assert prepared["jobId"] == original["jobId"]
+        assert set(prepared["body"]) == {"commandId", "revision", "targets"}
+        assert prepared["body"]["revision"] == original["revision"]
+        remapping = {"roles": {"role-00": "role-01", "role-01": "role-00"}, "models": {}}
+        assert prepared["body"]["targets"] == [{"linkId": "Alpha", "mapping": remapping}]
+        fresh = copy.deepcopy(states["A"]["jobs"][0])
+        assert len(states["A"]["jobs"]) == 1 and fresh["jobId"] == original["jobId"]
+        assert fresh["revision"] > original["revision"] and fresh["planDigest"] != original["planDigest"]
+        assert fresh["targets"][0]["mapping"] == remapping
+        page.get_by_role("checkbox", name=review_label).click()
+        button(page, "确认应用到 1 台设备").click()
+        expect(page.get_by_text("已应用 1 / 1 台", exact=True)).to_be_visible()
+        confirmed = states["A"]["requests"][-1]
+        assert confirmed["action"] == "confirm" and confirmed["jobId"] == original["jobId"]
+        assert confirmed["body"]["revision"] == fresh["revision"] and confirmed["body"]["planDigest"] == fresh["planDigest"]
+        results.append("edit_draft_back_is_readonly_then_reprepare_same_job_requires_new_review")
         context.close()
         browser.close()
 finally:

@@ -76,6 +76,16 @@ runs:
           echo "ANDROID_OUTPUT=app-release.apk" >> "$GITHUB_ENV"
         fi
 
+    - name: Run Android executor native guard tests
+      if: inputs.platform == 'android'
+      shell: bash
+      working-directory: apps/v8-agent-os-phone
+      run: |
+        set -euo pipefail
+        npx expo prebuild --platform android --no-install
+        cd android
+        ./gradlew :v8-device-executor:testReleaseUnitTest --no-daemon --max-workers=2
+
     - name: Build Android package
       if: inputs.platform == 'android'
       shell: bash
@@ -90,6 +100,14 @@ runs:
         --platform android
         --profile "$EAS_BUILD_PROFILE"
         --output "./$ANDROID_OUTPUT"
+
+    - name: Verify compiled Android executor and production package boundary
+      if: inputs.platform == 'android'
+      shell: bash
+      run: |
+        python3 scripts/release/verify-phone-executor-package.py \
+          "apps/v8-agent-os-phone/$ANDROID_OUTPUT" \
+          --junit apps/v8-agent-os-phone/modules/v8-device-executor/android/build/test-results/testReleaseUnitTest/TEST-expo.modules.v8executor.CommandGuardTest.xml
 
     - name: Upload Android package artifact
       if: inputs.platform == 'android'

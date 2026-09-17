@@ -1,0 +1,20 @@
+{
+  "name": "@v8/agent-os-tui",
+  "version": "0.1.0",
+  "description": "Conversation-first terminal client for the V8 Agent OS Engine",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "v8os-tui": "bin/v8os-tui.mjs" },
+  "files": ["bin", "dist", "README.md", "LICENSE", "NOTICE.md"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:pty": "python3 tests/terminal_pty.py",
+    "test:live": "node --import tsx tests/live.mts --live",
+    "prepack": "npm run build"
+  },
+  "dependencies": { "ink": "7.0.3", "react": "19.2.4", "string-width": "8.2.2" },
+  "devDependencies": { "@types/node": "22.19.15", "@types/react": "19.2.14", "esbuild": "0.25.12", "tsx": "4.21.0", "typescript": "5.9.3" }
+}

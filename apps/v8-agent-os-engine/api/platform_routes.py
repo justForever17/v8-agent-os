@@ -1420,6 +1420,22 @@ async def config_broker_prepare_role(request: Request, data: dict = Body(...)):
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
+@router.post("/config-broker/model-policy/prepare", dependencies=[Depends(require_engine_auth)])
+async def config_broker_prepare_model_policy(request: Request, data: dict = Body(...)):
+    """Expose the existing policy transaction to local configuration clients."""
+    try:
+        return config_broker_service.prepare_model_policy(
+            governance=data.get("governance"),
+            routing_policies=data.get("routingPolicies"),
+            role_parameters=data.get("roleParameters"),
+            owner_id=_config_actor(request),
+            session_id=str(data.get("sessionId") or ""),
+            run_id=str(data.get("runId") or ""),
+        )
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
 @router.post("/config-broker/mcp/prepare", dependencies=[Depends(require_engine_auth)])
 async def config_broker_prepare_mcp(request: Request, data: dict = Body(...)):
     try:

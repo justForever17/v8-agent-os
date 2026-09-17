@@ -1,0 +1,7 @@
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false"><trust-anchors><certificates src="system" /></trust-anchors></base-config>
+  <domain-config cleartextTrafficPermitted="false">
+    <domain>localhost</domain>
+    <trust-anchors><certificates src="@raw/v8_executor_test_ca" /></trust-anchors>
+  </domain-config>
+</network-security-config>

@@ -1,0 +1,3 @@
+android/build/
+android/.gradle/
+android/src/androidTest/res/raw/v8_executor_test_ca.pem

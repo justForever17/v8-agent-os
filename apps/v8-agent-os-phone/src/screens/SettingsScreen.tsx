@@ -3,6 +3,7 @@ import {
     ActivityIndicator,
     Alert,
     Image,
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -118,6 +119,9 @@ export default function SettingsScreen() {
                 <PhoneTopbar actions={actions} userImageUri={avatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView contentContainerStyle={styles.content}>
+                    {Platform.OS === "android" ? <Pressable style={styles.secondaryButton} onPress={() => router.push("/device-executor" as Href)}>
+                        <Text style={styles.secondaryButtonText}>{t("executor.title")}</Text>
+                    </Pressable> : null}
                     <GlassCard>
                         <Text style={styles.sectionTitle}>{t("src.screens.settingsscreen.chat_profile")}</Text>
                         <View style={styles.userRow}>

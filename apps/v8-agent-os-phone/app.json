@@ -45,6 +45,7 @@
     },
     "plugins": [
       "expo-router",
+      "./plugins/with-device-executor",
       "expo-secure-store",
       "expo-font",
       "expo-web-browser",

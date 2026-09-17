@@ -13,6 +13,7 @@ import { pairDevice as consumeDevicePairing, parseDevicePairingUri } from "@/src
 import { phoneAuthorityKey } from "@/src/lib/phone-identity";
 import { PhoneTransport, abortError } from "@/src/lib/phone-transport";
 import { phoneDrafts } from "@/src/lib/phone-drafts";
+import { deviceExecutor } from "@/src/lib/device-executor";
 import type { DevicePairingInput, PhoneUser } from "@/src/types/admin";
 
 type SessionStatus = "booting" | "anonymous" | "authenticated";
@@ -221,6 +222,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const performSignOut = React.useCallback(async () => {
         const current = activeRef.current;
         if (current?.authorityKey !== active?.authorityKey) throw abortError();
+        if (current) await deviceExecutor.forgetProfile(current.authorityKey);
         await phoneDrafts.flushAll();
         if (current) {
             // Only this pairing is revoked; other profiles and all drafts survive.

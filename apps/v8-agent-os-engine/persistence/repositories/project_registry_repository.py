@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from core.storage import storage
@@ -7,6 +10,21 @@ from runtimes.memory.models import ProjectDescriptor
 
 
 class ProjectRegistryRepository:
+    @contextmanager
+    def checked_project(self, project_id: str, expected_revision: str):
+        """Keep the canonical config writer lock from revision check through use.
+
+        Existing save/patch/delete paths write through the same StorageService
+        lock. This is an in-process owner guarantee, not filesystem isolation.
+        """
+        with storage._config_io_lock:
+            project = self.get_project(project_id)
+            revision = hashlib.sha256(json.dumps(project.model_dump(by_alias=True, exclude_none=True),
+                ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest() if project else ""
+            if not project or revision != expected_revision:
+                raise ValueError("project_revision_changed")
+            yield project
+
     def list_projects(self) -> List[ProjectDescriptor]:
         registry = storage.get_projects_registry()
         projects = registry.get("projects", [])

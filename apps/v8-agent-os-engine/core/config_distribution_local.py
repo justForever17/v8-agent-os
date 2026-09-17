@@ -39,10 +39,17 @@ def bind_local_workspace(service, link_id, body):
     path = Path(project.workspace_path)
     if not path.is_dir() or path.resolve() != path.absolute():
         raise HTTPException(409, "distribution_local_workspace_changed")
-    if project.workspace_trust_state != "trusted":
-        project = project_registry_service.bind_workspace(project_id=project.project_id, workspace_id=project.workspace_id,
-            workspace_path=str(path), workspace_trust_state="trusted", workspace_trust_source="user_confirmed",
-            source="phone_selected", confidence=1.0)
-    service.neighbors.update_link(link_id, {"workspaceBinding": {"projectId": project.project_id,
-        "workspaceId": project.workspace_id, "workspacePath": str(path)}})
+    try:
+        with project_registry_service.confirmed_workspace_selection(project.project_id, body["projectRevision"]) as selected:
+            service.neighbors.update_link(link_id, {"workspaceBinding": {"projectId": selected.project_id,
+                "workspaceId": selected.workspace_id, "workspacePath": selected.workspace_path}},
+                expected_workspace_binding=link.get("workspaceBinding") or {}, expected_updated_at=link.get("updatedAt"))
+    except ValueError as exc:
+        if str(exc) == "project_revision_changed":
+            raise HTTPException(409, "distribution_local_workspace_changed") from None
+        raise
+    except RuntimeError as exc:
+        if str(exc) == "project_binding_trust_recovery_required":
+            raise HTTPException(409, "distribution_local_trust_recovery_required") from None
+        raise
     return local_workspaces(service)

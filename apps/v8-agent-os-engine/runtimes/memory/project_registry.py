@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +43,35 @@ class ProjectRegistryService:
 
     def get_project(self, project_id: str) -> Optional[ProjectDescriptor]:
         return self.project_repo.get_project(project_id)
+
+    @contextmanager
+    def confirmed_workspace_selection(self, project_id: str, expected_revision: str):
+        """Trust exactly the reviewed project while a local binding is written.
+
+        The existing JSON owner lock excludes a concurrent registry writer.
+        A failed second write restores only this operation's trust change; a
+        restore failure is explicit and never reported as successful binding.
+        """
+        with self.project_repo.checked_project(project_id, expected_revision) as before:
+            changed = before.workspace_trust_state != "trusted"
+            selected = before.model_copy(deep=True)
+            try:
+                if changed:
+                    selected.workspace_trust_state = "trusted"
+                    selected.workspace_trust_source = "user_confirmed"
+                    selected = self.project_repo.save_project(selected)
+                    self._sync_project_cache(selected)
+                    self._sync_workspace_binding(selected)
+                yield selected
+            except Exception as original:
+                if changed:
+                    try:
+                        self.project_repo.save_project(before)
+                        self._sync_project_cache(before)
+                        self._sync_workspace_binding(before)
+                    except Exception:
+                        raise RuntimeError("project_binding_trust_recovery_required") from original
+                raise
 
     def get_default_project(self) -> Optional[ProjectDescriptor]:
         project_id = self.get_effective_default_project_id()

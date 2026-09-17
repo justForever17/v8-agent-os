@@ -9782,11 +9782,20 @@ class DatabaseManager:
         workspace_binding: Optional[dict[str, Any]] = None,
         metadata: Optional[dict[str, Any]] = None,
         last_seen_at: Optional[str] = None,
+        expected_workspace_binding: Optional[dict[str, Any]] = None,
+        expected_updated_at: Optional[str] = None,
     ) -> Dict[str, Any]:
         now_iso = utc_now_iso()
 
         def _write():
             with self.get_connection() as conn:
+                if expected_workspace_binding is not None:
+                    conn.execute("BEGIN IMMEDIATE")
+                    current = conn.execute("SELECT id,workspace_binding_json,updated_at,trust_status FROM network_neighbor_links WHERE peer_id=?", (peer_id,)).fetchone()
+                    if (not current or current["id"] != link_id or current["trust_status"] != "trusted"
+                            or json.loads(current["workspace_binding_json"] or "{}") != expected_workspace_binding
+                            or expected_updated_at is not None and current["updated_at"] != expected_updated_at):
+                        raise ValueError("network_neighbor_link_changed")
                 conn.execute(
                     '''
                     INSERT INTO network_neighbor_links
@@ -9820,10 +9829,11 @@ class DatabaseManager:
                         now_iso,
                     ),
                 )
+                written = conn.execute("SELECT * FROM network_neighbor_links WHERE peer_id=?", (peer_id,)).fetchone()
                 conn.commit()
+                return self._hydrate_network_neighbor_link_row(dict(written))
 
-        self._run_write_with_retry(_write)
-        return self.get_network_neighbor_link_by_peer(peer_id) or {}
+        return self._run_write_with_retry(_write)
 
     def get_network_neighbor_link(self, link_id: str) -> Optional[Dict[str, Any]]:
         normalized_id = str(link_id or "").strip()

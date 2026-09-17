@@ -95,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("command", choices=["serve", "ticket", "status", "stop", "start", "edit"])
+    parser.add_argument("command", choices=["serve", "resume", "ticket", "status", "stop", "start", "edit"])
     parser.add_argument("--node", choices=["source", "target1", "target2"], default="source")
     parser.add_argument("--tokens", type=int, default=999)
     parser.add_argument("--minutes", type=int, default=30)
@@ -103,17 +103,24 @@ def main():
     args = parser.parse_args()
     if not args.live: parser.error("explicit --live required")
     root = args.root.resolve()
-    if args.command == "serve":
-        if root.exists(): parser.error("serve requires a new isolated directory")
-        if not args.hostname: parser.error("serve requires --hostname for verified HTTPS")
-        root.mkdir(parents=True)
-        fingerprint = tls_fixture(root, args.hostname)
-        seed = {}
-        for name in ("source", "target1", "target2"):
-            key = Ed25519PrivateKey.generate()
-            seed[name] = {"port": free_port(), "gatewayPort": free_port(), "tlsPort": free_port(), "hostname": args.hostname, "privateKey": base64.b64encode(key.private_bytes_raw()).decode(),
-                          "publicKey": base64.b64encode(key.public_key().public_bytes_raw()).decode(), "peerToken": secrets.token_urlsafe(24)}
-        (root / "seed.json").write_text(json.dumps(seed), encoding="utf-8")
+    if args.command in {"serve", "resume"}:
+        if args.command == "serve":
+            if root.exists(): parser.error("serve requires a new isolated directory")
+            if not args.hostname: parser.error("serve requires --hostname for verified HTTPS")
+            root.mkdir(parents=True)
+            fingerprint = tls_fixture(root, args.hostname)
+            seed = {}
+            for name in ("source", "target1", "target2"):
+                key = Ed25519PrivateKey.generate()
+                seed[name] = {"port": free_port(), "gatewayPort": free_port(), "tlsPort": free_port(), "hostname": args.hostname, "privateKey": base64.b64encode(key.private_bytes_raw()).decode(),
+                              "publicKey": base64.b64encode(key.public_key().public_bytes_raw()).decode(), "peerToken": secrets.token_urlsafe(24)}
+            (root / "seed.json").write_text(json.dumps(seed), encoding="utf-8")
+        else:
+            seed = json.loads((root / "seed.json").read_text())
+            certificate = x509.load_pem_x509_certificate((root / "fixture-ca-public.pem").read_bytes())
+            if certificate.not_valid_after_utc <= datetime.now(timezone.utc): parser.error("fixture CA expired; create a new isolated fixture")
+            fingerprint = certificate.fingerprint(hashes.SHA256()).hex()
+            args.hostname = seed["source"]["hostname"]
         processes, logs, gateways = {}, {}, []
         def start(name):
             if name in processes and processes[name].poll() is None: return

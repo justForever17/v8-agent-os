@@ -427,7 +427,7 @@ def test_local_workspace_selection_requires_trust_revision_and_never_accepts_pat
     path = tmp_path / "target-project"; path.mkdir()
     project = ProjectDescriptor(id="fixture-project", name="Fixture Project", workspacePath=str(path), workspaceId="fixture-workspace", workspaceTrustState="trusted")
     storage.save_projects_registry({"projects": [project.model_dump(by_alias=True)], "defaultProjectId": "fixture-project"})
-    def update_link(link_id, body):
+    def update_link(link_id, body, **_expected):
         system.source_link["workspaceBinding"] = body["workspaceBinding"]
     monkeypatch.setattr(system.source.neighbors, "update_link", update_link, raising=False)
     catalog = local_workspaces(system.source)
@@ -484,3 +484,90 @@ def test_lost_cleanup_receipt_restart_preserves_actual_write_history(system, mon
         assert result["state"] == "withdrawn" and result["targets"][0]["state"] == "rolled_back" and len(restores) == 1
         assert result["targets"][0]["receipt"]["readback"]["governance.budgets.runMaxTokens"] == 100
         assert system.plane.get_config()["governance"]["budgets"]["runMaxTokens"] == 999
+
+
+@pytest.fixture
+def local_binding(system, tmp_path, monkeypatch):
+    import core.storage as storage_module
+    import runtimes.memory.project_registry as registry_module
+    import persistence.repositories.scope_binding_repository as scope_module
+    import runtimes.network_supervisor.neighbor as neighbor_module
+    from runtimes.memory.models import ProjectDescriptor
+    from core.config_distribution_local import local_workspaces
+    monkeypatch.setattr(registry_module, "db", system.db)
+    monkeypatch.setattr(scope_module, "db", system.db)
+    monkeypatch.setattr(neighbor_module, "db", system.db)
+    monkeypatch.setattr(neighbor_module, "network_supervisor_service", system.sender)
+    monkeypatch.setattr(system.sender, "list_peers", lambda: [])
+    system.source._neighbors = neighbor_module.NetworkNeighborService()
+    selected, newer = tmp_path / "selected", tmp_path / "newer"
+    selected.mkdir(); newer.mkdir()
+    projects = [ProjectDescriptor(id="selected", name="Selected", workspacePath=str(selected), workspaceId="selected-workspace", workspaceTrustState="restricted"),
+                ProjectDescriptor(id="newer", name="Newer", workspacePath=str(newer), workspaceId="newer-workspace", workspaceTrustState="trusted")]
+    storage_module.storage.save_projects_registry({"projects": [project.model_dump(by_alias=True) for project in projects], "defaultProjectId": "selected"})
+    system.db.upsert_network_neighbor_link(link_id="target_link", peer_id="target", local_nickname="Source", remote_nickname="Target", local_role="primary", remote_role="companion")
+    catalog = local_workspaces(system.source)
+    project = next(item for item in catalog["projects"] if item["projectId"] == "selected")
+    return SimpleNamespace(system=system, registry=registry_module.project_registry_service, selected=selected, newer=newer,
+                           payload={"projectId": "selected", "projectRevision": project["revision"], "linkRevision": catalog["links"][0]["revision"], "trustConfirmed": True})
+
+
+@pytest.mark.parametrize("writer", ["link", "project"])
+def test_binding_owner_cas_rejects_newer_worker_write(local_binding, monkeypatch, writer):
+    import threading
+    from pathlib import Path
+    from core.config_distribution_local import bind_local_workspace
+    fixture = local_binding
+    at_gap, done = threading.Event(), threading.Event()
+    errors = []
+    def write():
+        try:
+            assert at_gap.wait(5)
+            if writer == "link":
+                fixture.system.source.neighbors.update_link("target_link", {"workspaceBinding": {"projectId": "newer", "workspaceId": "newer-workspace", "workspacePath": str(fixture.newer)}})
+            else:
+                fixture.registry.patch_project("selected", {"workspacePath": str(fixture.newer), "workspaceTrustState": "restricted", "workspaceTrustSource": "newer_owner_decision"})
+        except BaseException as exc: errors.append(exc)
+        finally: done.set()
+    thread = threading.Thread(target=write); thread.start()
+    original_is_dir = Path.is_dir
+    owner_thread = threading.get_ident()
+    armed = [True]
+    def gap(path):
+        if armed[0] and threading.get_ident() == owner_thread and path == fixture.selected:
+            armed[0] = False; at_gap.set(); assert done.wait(5)
+        return original_is_dir(path)
+    monkeypatch.setattr(Path, "is_dir", gap)
+    with pytest.raises(HTTPException) as error:
+        bind_local_workspace(fixture.system.source, "target_link", fixture.payload)
+    thread.join(5)
+    assert error.value.status_code == 409 and not thread.is_alive() and not errors
+    link = fixture.system.db.get_network_neighbor_link("target_link")
+    project = fixture.registry.get_project("selected")
+    assert link["workspaceBinding"].get("workspacePath") != str(fixture.selected)
+    assert project.workspace_trust_state == "restricted"
+    if writer == "project": assert project.workspace_path == str(fixture.newer)
+
+
+@pytest.mark.parametrize("fail_restore", [False, True])
+def test_link_failure_restores_only_confirmed_trust_or_reports_partial(local_binding, monkeypatch, fail_restore):
+    from core.config_distribution_local import bind_local_workspace
+    fixture = local_binding
+    original_save = fixture.registry.project_repo.save_project
+    def save(project):
+        if fail_restore and project.workspace_trust_state == "restricted": raise OSError("fixture restore failure")
+        return original_save(project)
+    monkeypatch.setattr(fixture.registry.project_repo, "save_project", save)
+    original_update = fixture.system.db.upsert_network_neighbor_link
+    def concurrent_binding(**kwargs):
+        assert fixture.registry.get_project("selected").workspace_trust_state == "trusted"
+        original_update(link_id="target_link", peer_id="target", local_nickname="Source", remote_nickname="Target", local_role="primary", remote_role="companion",
+                        workspace_binding={"workspacePath": str(fixture.newer)})
+        return original_update(**kwargs)
+    monkeypatch.setattr(fixture.system.db, "upsert_network_neighbor_link", concurrent_binding)
+    with pytest.raises(HTTPException) as error:
+        bind_local_workspace(fixture.system.source, "target_link", fixture.payload)
+    assert error.value.status_code == 409
+    assert error.value.detail == ("distribution_local_trust_recovery_required" if fail_restore else "distribution_local_workspace_changed")
+    assert fixture.system.db.get_network_neighbor_link("target_link")["workspaceBinding"]["workspacePath"] == str(fixture.newer)
+    assert fixture.registry.get_project("selected").workspace_trust_state == ("trusted" if fail_restore else "restricted")

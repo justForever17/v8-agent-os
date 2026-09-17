@@ -812,7 +812,7 @@ class NetworkNeighborService:
             )
         return {"ok": True, "items": items}
 
-    def update_link(self, link_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_link(self, link_id: str, payload: dict[str, Any], *, expected_workspace_binding=None, expected_updated_at=None) -> dict[str, Any]:
         link = self._link_or_404(link_id)
         next_local_role, next_remote_role = _role_pair(str(payload.get("localRole") or link.get("localRole") or "primary"))
         workspace_payload = payload.get("workspaceBinding") if isinstance(payload.get("workspaceBinding"), dict) else None
@@ -836,18 +836,25 @@ class NetworkNeighborService:
             metadata["capabilityTags"] = _clean_capability_tags(payload.get("capabilityTags", payload.get("capability_tags")))
         if "description" in payload:
             metadata["description"] = str(payload.get("description") or "").strip()[:240]
-        updated = db.upsert_network_neighbor_link(
-            link_id=str(link.get("linkId") or link_id),
-            peer_id=str(link.get("peerId") or ""),
-            local_nickname=_clean_nickname(payload.get("localNickname"), str(link.get("localNickname") or "本机")),
-            remote_nickname=_clean_nickname(payload.get("remoteNickname"), str(link.get("remoteNickname") or link.get("peerId") or "邻居设备")),
-            local_role=next_local_role,
-            remote_role=next_remote_role,
-            trust_status=str(link.get("trustStatus") or "trusted"),
-            workspace_binding=workspace_binding,
-            metadata=metadata,
-            last_seen_at=str(link.get("lastSeenAt") or "") or None,
-        )
+        try:
+            updated = db.upsert_network_neighbor_link(
+                link_id=str(link.get("linkId") or link_id),
+                peer_id=str(link.get("peerId") or ""),
+                local_nickname=_clean_nickname(payload.get("localNickname"), str(link.get("localNickname") or "本机")),
+                remote_nickname=_clean_nickname(payload.get("remoteNickname"), str(link.get("remoteNickname") or link.get("peerId") or "邻居设备")),
+                local_role=next_local_role,
+                remote_role=next_remote_role,
+                trust_status=str(link.get("trustStatus") or "trusted"),
+                workspace_binding=workspace_binding,
+                metadata=metadata,
+                last_seen_at=str(link.get("lastSeenAt") or "") or None,
+                expected_workspace_binding=expected_workspace_binding,
+                expected_updated_at=expected_updated_at,
+            )
+        except ValueError as exc:
+            if str(exc) == "network_neighbor_link_changed":
+                raise HTTPException(409, "distribution_local_workspace_changed") from None
+            raise
         return {"ok": True, "link": updated}
 
     def revoke_link(self, link_id: str) -> dict[str, Any]:

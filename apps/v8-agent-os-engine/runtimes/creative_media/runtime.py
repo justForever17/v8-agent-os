@@ -7997,9 +7997,23 @@ class CreativeMediaRuntime:
                 raise SceneControlError("MiniMax-H3 proxy reference requires 23.976–60 FPS, 2–15 seconds and aspect ratio 0.4–2.5")
             if scene["durationSeconds"] != int(scene["durationSeconds"]):
                 raise SceneControlError("MiniMax-H3 output duration requires integer seconds; adjust the scene explicitly")
-        # The compiled manifest determines media and duration. Reject ambiguous additional raw URL inputs.
-        if any(value for key, value in request.items() if key.lower().endswith(("url", "urls"))):
+        # All reference roles belong to the frozen pack. Native inputs must not
+        # survive as ignored decoration or be appended by a provider selector.
+        native_reference_fields = {
+            "referenceMedia", "reference_media", "referenceAssetIds", "reference_asset_ids",
+            "firstFrame", "first_frame", "lastFrame", "last_frame", "first_frame_image", "last_frame_image",
+            "imagePath", "image_path", "maskPath", "mask_path", "videoPath", "video_path", "audioPath", "audio_path",
+            "sourceId", "source_id", "sourceIds", "source_ids", "maskSourceId", "mask_source_id",
+            "workspaceAssetId", "workspace_asset_id", "workspaceAssetIds", "workspace_asset_ids",
+        }
+        if any(value for key, value in request.items() if key in native_reference_fields or key.lower().endswith(("url", "urls"))):
             raise SceneControlError("Scene video references must come from its frozen control pack")
+        for key in ("artifactId", "artifact_id"):
+            if request.get(key) and request[key] != pack_inputs[0]["id"]:
+                raise SceneControlError("Scene video artifact input must be its connected control pack")
+        for key in ("artifactIds", "artifact_ids"):
+            if request.get(key) and request[key] != [pack_inputs[0]["id"]]:
+                raise SceneControlError("Scene video cannot mix additional artifact inputs with its control pack")
         return {**request, **prepared}
 
     def _verify_scene_provider_payload(self, job: dict[str, Any], request: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -8020,6 +8034,31 @@ class CreativeMediaRuntime:
         expected = {kind: sum(item.get("mediaType") == kind for item in request.get("canvasInputs", [])) for kind in observed}
         if prompts != [request.get("prompt")] or observed != expected or len(media) != sum(expected.values()):
             raise SceneControlError("Provider payload lost or transformed a scene prompt/reference; submission blocked")
+        for kind in observed:
+            expected_inputs = [item for item in request.get("canvasInputs", []) if item.get("mediaType") == kind]
+            actual_inputs = [item for item in media if (item.get("role") if payload.get("content") else item.get("type")) == f"reference_{kind}"]
+            for index, (source, emitted) in enumerate(zip(expected_inputs, actual_inputs), 1):
+                if payload.get("content"):
+                    if emitted.get("type") != f"{kind}_url":
+                        raise SceneControlError("Scene reference role and encoded media type disagree")
+                    url = str((emitted.get(f"{kind}_url") or {}).get("url") or "")
+                else:
+                    url = str(emitted.get("url") or "")
+                if not url.startswith("data:"):
+                    # Existing remote transport URLs prove a locator, not an
+                    # immutable byte digest for locally baked control media.
+                    # Until that owner supplies a byte-bound upload receipt,
+                    # scene generation must use a supported inline transport.
+                    raise SceneControlError("Scene reference URL has no verified byte binding; use an adapter supporting the frozen inline media")
+                header, separator, encoded = url.partition(",")
+                if not separator or not header.startswith(f"data:{kind}/") or not header.endswith(";base64"):
+                    raise SceneControlError("Scene reference is not a supported inline media encoding")
+                try:
+                    actual_digest = hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest()
+                except ValueError as exc:
+                    raise SceneControlError("Scene reference has invalid inline bytes") from exc
+                if actual_digest != source.get("resourceDigest"):
+                    raise SceneControlError(f"Scene {kind} reference {index} changed content or order in the provider payload")
         report.update({"status": "payload_verified", "providerRequestHash": self._provider_request_hash(payload), "submittedCounts": observed,
                        "consumed": [{**item, "status": "payload_verified"} for item in report.get("consumed", [])]})
         job["sceneControl"] = report

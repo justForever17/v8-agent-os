@@ -1,6 +1,6 @@
 {
   "name": "@v8/agent-os-tui",
-  "version": "2026.9.17-2",
+  "version": "2026.9.17-3",
   "description": "Conversation-first terminal client for the V8 Agent OS Engine",
   "license": "MIT",
   "type": "module",

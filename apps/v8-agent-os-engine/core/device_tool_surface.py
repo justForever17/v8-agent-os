@@ -54,6 +54,8 @@ def render_device_surface(payload: dict, raw_ref: str, *, budget: int) -> str:
                           "Use device_broker with statusQuery. Driver success is not business verification.")
     if receipt:
         result["receipt"] = _pick(receipt, ("status", "receiptSeq", "error", "driverAccepted"))
+        if receipt.get("error") == "coordinate_in_obstructed_region":
+            result["next"] = "The display gesture path is covered by an overlay that window capture excludes. Ask for that overlay to be moved/hidden, then capture again before a new action; do not replay the rejected command."
     observation = receipt.get("observation")
     if isinstance(observation, dict):
         view = _pick(observation, (*ANCHORS, *GEOMETRY, "nodeMapRevision", "observedUnixMs", "captureScope", "availability", "partial", "nodes"))

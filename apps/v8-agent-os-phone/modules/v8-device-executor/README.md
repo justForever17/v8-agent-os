@@ -18,6 +18,19 @@ The system service invalidates snapshots on accessibility events, stops on obser
 
 ## Build and verification
 
+Window screenshots on API 34 exclude accessibility-overlay pixels by Android's
+window capture contract. Native retains the real display obstruction rectangles:
+a tap inside one, or a swipe whose bounding rectangle crosses one, is rejected
+with `coordinate_in_obstructed_region`. A fresh frame is required after window,
+overlay or orientation changes. Display capture keeps its stricter scope checks.
+Interaction bounds combine platform bar/cutout/gesture insets and actual
+accessibility-window blockers; no OEM-specific navigation-bar size is assumed.
+
+Android Skia may attach an ICC APP2 segment even to an explicitly sRGB bitmap.
+Native removes APP1–APP15 and comment metadata after encoding, preserves the
+entropy-coded image bytes, and hashes the actual metadata-free upload. Server
+validation remains strict and needs no image decoder.
+
 From the Phone directory, use its locked Expo 55 dependencies and `npx expo prebuild --platform android --no-install`. The local module is discovered through `expo-module.config.json`; Gradle merges the tracked module manifest/resources. Run `android/gradlew :v8-device-executor:testDebugUnitTest :app:assembleRelease` with the installed JDK/SDK. Test Android API 30 and newer, current Android behavior and an OEM device separately; an APK build alone does not validate accessibility permissions or action effects.
 
 The synthetic target under `tests/android-executor-fixture` has no network/account/data permissions. Build with `android/gradlew -p tests/android-executor-fixture :app:assembleDebug`. It contains an increment button, a no-op button, editable synthetic text and a scene-change control. The no-op deliberately distinguishes driver acceptance from business completion. Its additional canvas-only scene draws tap/swipe counters without a virtual node map; the exact fixture-only `canvas`, `secure_on` and `secure_off` intents prepare future screenshot/secure-window tests without touching another app.

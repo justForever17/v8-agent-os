@@ -50,6 +50,9 @@ def device_broker(
     width/height, rotation and viewport anchors. Coordinates are frame pixels.
     A tree-only observation cannot authorize coordinates; a display screenshot
     permits observation only. Screenshot-only actions need no fabricated nodeMap.
+    Window screenshots exclude overlay pixels. A coordinate_in_obstructed_region
+    receipt means the real display path is covered: have the overlay moved/hidden,
+    capture again and make a new decision; never blindly repeat the old gesture.
     Use vision_media_analyzer with the returned screenshotRef.filePath;
     a reference alone is not visual inspection. Refresh the capture
     if the target or screenshot expires; never guess a frame ID or coordinates.

@@ -41,6 +41,13 @@ class NativeCallbackResource<T>(val value: T, private val release: () -> Unit) {
 }
 
 object CapturePolicy {
+  fun pathUnobstructed(start: Pair<Float, Float>, end: Pair<Float, Float>, blockers: List<Viewport>): Boolean {
+    val left = minOf(start.first, end.first); val right = maxOf(start.first, end.first)
+    val top = minOf(start.second, end.second); val bottom = maxOf(start.second, end.second)
+    // The bounding rectangle is conservative for diagonal swipes: every point
+    // on the straight gesture path is within it; no hidden overlay is crossed.
+    return blockers.none { right >= it.left && left < it.left + it.width && bottom >= it.top && top < it.top + it.height }
+  }
   fun authorize(api: Int, scope: String, localDisplay: Boolean, serverDisplay: Boolean) {
     require(scope == "window" || scope == "display") { "invalid_capture_scope" }
     if (scope == "window") require(api >= 34) { "requires_android_14_window_capture" }

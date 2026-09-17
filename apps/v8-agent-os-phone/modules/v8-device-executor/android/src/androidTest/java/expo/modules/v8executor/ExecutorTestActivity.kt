@@ -28,10 +28,53 @@ class ExecutorTestActivity : Activity() {
     when (intent.getStringExtra("fixtureCommand")) {
       "connect" -> connectFixture()
       "resume" -> resumeFixture()
-      "stop" -> ExecutorController.get(this).stop()
-      "status" -> android.util.Log.i("V8ExecutorFixture", "probe_enabled=" + ExecutorController.get(this).state()["enabled"])
+      "stop" -> { ExecutorController.get(this).stop(); probe() }
+      "status" -> probe()
+      "overlay_on" -> overlay(true, false)
+      "overlay_move" -> overlay(true, true)
+      "overlay_off" -> overlay(false, false)
+      "overlay_clear" -> overlay(false, false, false)
+      "diagnostics" -> {
+        val service = ExecutorAccessibilityService.instance
+        if (service != null) {
+          val wm = service.getSystemService(android.view.WindowManager::class.java)
+          val insets = wm.maximumWindowMetrics.windowInsets
+          for ((name, type) in listOf("bars" to android.view.WindowInsets.Type.systemBars(),
+              "cutout" to android.view.WindowInsets.Type.displayCutout(), "gestures" to android.view.WindowInsets.Type.systemGestures(),
+              "mandatory" to android.view.WindowInsets.Type.mandatorySystemGestures())) {
+            android.util.Log.i("V8ExecutorFixture", "insets_" + name + "=" + insets.getInsetsIgnoringVisibility(type))
+          }
+        }
+      }
     }
   }
+  private fun probe() {
+    val nonce = intent.getStringExtra("fixtureProbeNonce") ?: return
+    require(nonce.matches(Regex("[A-Za-z0-9-]{1,80}")))
+    val state = ExecutorController.get(this).state()
+    android.util.Log.i("V8ExecutorFixture", "probe_nonce=$nonce;probe_enabled=" + state["enabled"])
+    @Suppress("UNCHECKED_CAST")
+    val receipts = state["recentReceipts"] as List<Map<String, Any?>>
+    receipts.forEach { receipt ->
+      android.util.Log.i("V8ExecutorFixture", "probe_nonce=$nonce;probe_receipt=" + org.json.JSONObject(receipt).toString())
+    }
+  }
+  private fun overlay(show: Boolean, move: Boolean, resume: Boolean = true) {
+    val service = ExecutorAccessibilityService.instance ?: return
+    val wm = service.getSystemService(android.view.WindowManager::class.java)
+    overlayView?.let { wm.removeView(it) }; overlayView = null
+    if (show) {
+      val view = TextView(service).apply { text = "Synthetic overlay"; setBackgroundColor(android.graphics.Color.RED) }
+      val params = android.view.WindowManager.LayoutParams(160, 160,
+        android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+        android.graphics.PixelFormat.OPAQUE).apply { gravity = android.view.Gravity.TOP or android.view.Gravity.LEFT; x = if (move) 620 else 400; y = 1000 }
+      wm.addView(view, params); overlayView = view
+      android.util.Log.i("V8ExecutorFixture", "synthetic_overlay_attached=" + view.isAttachedToWindow + ";x=" + params.x + ";y=" + params.y)
+    }
+    if (resume) resumeFixture()
+  }
+  companion object { private var overlayView: android.view.View? = null }
   private fun resumeFixture() {
     val controller = ExecutorController.get(this)
     controller.onState = { state -> android.util.Log.i("V8ExecutorFixture", "state=" + state["status"] + ";reason=" + state["lastError"]) }

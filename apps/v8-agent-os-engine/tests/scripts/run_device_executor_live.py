@@ -11,6 +11,7 @@ import os
 import secrets
 import sys
 import json
+import threading
 from collections import defaultdict, deque
 
 
@@ -77,9 +78,77 @@ def main():
                 result.append(injections[device].popleft())
             return result
     service = BenchService(identity, runtime_database=runtime_database)
+    media_hold, media_arrived, media_release, media_finished = (threading.Event() for _ in range(4))
+    media_barrier_lock = threading.Lock()
+    media_tracked = {}
+    original_finish = service.media.finish
+    def held_finish(principal, media_id):
+        with media_barrier_lock:
+            held = media_hold.is_set()
+            if held:
+                media_hold.clear()
+                with identity.database() as db:
+                    row = db.execute("SELECT command_id FROM executor_media WHERE media_id=?", (media_id,)).fetchone()
+                media_tracked.update(mediaId=media_id, commandId=row["command_id"] if row else None)
+                media_arrived.set()
+        try:
+            if held and not media_release.wait(12):
+                raise ExecutorError("fixture_media_hold_timeout")
+            return original_finish(principal, media_id)
+        except ExecutorError as exc:
+            if exc.code.startswith("jpeg_"):
+                # This bench grants only its no-account fixture. Preserve its
+                # rejected bytes for decoder-contract diagnosis, never publish.
+                rejected = service.media.path(media_id, temporary=True)
+                if rejected.is_file():
+                    (root / "rejected-fixture.jpg").write_bytes(rejected.read_bytes())
+            raise
+        finally:
+            if held:
+                media_finished.set()
+    service.media.finish = held_finish
     device_executor_routes.get_executor_service = lambda: service
+    route_errors = deque(maxlen=32)
+    original_error = device_executor_routes.error
+    def recorded_error(exc):
+        route_errors.append({"code": exc.code, "status": exc.status})
+        return original_error(exc)
+    device_executor_routes.error = recorded_error
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(device_executor_routes.router)
+
+    @app.get("/fixture/errors")
+    def errors():
+        return {"items": list(route_errors)}
+
+    @app.post("/fixture/media-hold")
+    def hold_media():
+        with media_barrier_lock:
+            if media_hold.is_set() or (media_arrived.is_set() and not media_finished.is_set()):
+                return {"ok": False, "code": "fixture_media_barrier_busy"}
+            media_tracked.clear()
+            media_tracked["barrierId"] = secrets.token_hex(12)
+            media_release.clear(); media_arrived.clear(); media_finished.clear(); media_hold.set()
+            return {"ok": True, "barrierId": media_tracked["barrierId"]}
+
+    @app.get("/fixture/media-barrier")
+    def media_barrier():
+        with media_barrier_lock:
+            result = {**media_tracked, "arrived": media_arrived.is_set(), "finished": media_finished.is_set()}
+        if result.get("mediaId"):
+            with identity.database() as db:
+                row = db.execute("SELECT state FROM executor_media WHERE media_id=?", (result["mediaId"],)).fetchone()
+            result.update(mediaState=row["state"] if row else "gone",
+                          bytesRemain=service.media.path(result["mediaId"]).exists()
+                          or service.media.path(result["mediaId"], temporary=True).exists())
+        return result
+
+    @app.post("/fixture/media-release")
+    def release_media():
+        with media_barrier_lock:
+            media_hold.clear()
+            media_release.set()
+        return {"ok": True}
 
     @app.get("/fixture/ticket")
     def ticket():
@@ -118,12 +187,27 @@ def main():
     def cancel(command_id: str):
         return service.cancel(owner, command_id)
 
+    @app.get("/fixture/agent-view/{command_id}")
+    def agent_view(command_id: str):
+        from langchain_core.messages import ToolMessage
+        from core.tool_surface import apply_tool_surface_budget
+        from erc.runtime_context import bind_runtime_context
+        result = service.status(owner, command_id)
+        with bind_runtime_context(session_id="isolated-bench-session", run_id="isolated-bench", runtime_kind="chat", agent_id="supervisor"):
+            visible = apply_tool_surface_budget(ToolMessage(name="device_broker", tool_call_id="fixture-status", content=canonical(result)),
+                                                {"agentVisibleBudget": 6000})
+        return {"content": visible.content}
+
+    @app.get("/fixture/commands/{command_id}")
+    def one_command(command_id: str):
+        return service.status(owner, command_id)
+
     @app.post("/fixture/reconcile/{command_id}")
     def reconcile(command_id: str):
         result = service.status(owner, command_id)
         if result["command"]["resourceId"] != package:
             return {"ok": False, "code": "fixture_target_required"}
-        return service.reconcile(owner, command_id, "Synthetic no-effect button verified unchanged after deadline; preserve unknown result.")
+        return service.reconcile(owner, command_id, "Synthetic fixture acknowledgement after deadline; outcome remains unknown and no absence of side effects is asserted.")
 
     @app.post("/fixture/revoke/{device_id}")
     def revoke(device_id: str):

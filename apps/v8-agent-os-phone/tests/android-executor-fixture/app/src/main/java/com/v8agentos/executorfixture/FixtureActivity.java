@@ -32,21 +32,41 @@ public class FixtureActivity extends Activity {
     Button reset = new Button(this); reset.setText("Reset fixture"); reset.setOnClickListener(v -> { count = 0; value.setText("Count: 0"); title.setText("V8 Executor Synthetic Fixture"); increment.setEnabled(true); input.setText(""); }); layout.addView(reset);
     Button canvas = new Button(this); canvas.setText("Canvas-only scene"); canvas.setOnClickListener(v -> showCanvas()); layout.addView(canvas);
     setContentView(layout);
+    applyFixtureIntent(getIntent());
   }
   @Override protected void onNewIntent(android.content.Intent intent) {
     super.onNewIntent(intent);
+    setIntent(intent);
+    applyFixtureIntent(intent);
+  }
+  private void applyFixtureIntent(android.content.Intent intent) {
     if ("local_click".equals(intent.getStringExtra("fixtureAction"))) increment.performClick();
-    if ("canvas".equals(intent.getStringExtra("fixtureAction"))) showCanvas();
+    if ("canvas".equals(intent.getStringExtra("fixtureAction"))) {
+      String nonce = intent.getStringExtra("fixtureSceneNonce");
+      if (nonce == null || !nonce.matches("[a-zA-Z0-9_-]{1,80}")) throw new IllegalArgumentException("fixture_scene_nonce_required");
+      setContentView(new CanvasFixture(nonce));
+    }
     if ("secure_on".equals(intent.getStringExtra("fixtureAction"))) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
     if ("secure_off".equals(intent.getStringExtra("fixtureAction"))) getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+    if ("landscape".equals(intent.getStringExtra("fixtureAction"))) setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+    if ("portrait".equals(intent.getStringExtra("fixtureAction"))) setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
   }
-  private void showCanvas() { setContentView(new CanvasFixture()); }
+  private void showCanvas() { setContentView(new CanvasFixture(java.util.UUID.randomUUID().toString())); }
   /** Pixels expose the target/result; deliberately has no virtual accessibility node map. */
   private class CanvasFixture extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private int taps = 0, swipes = 0;
+    private final String sceneNonce;
+    private int taps = 0, swipes = 0, eventSeq = 0;
     private float downX, downY;
-    CanvasFixture() { super(FixtureActivity.this); setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO); }
+    CanvasFixture(String nonce) {
+      super(FixtureActivity.this); sceneNonce = nonce;
+      setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+      recordCounters();
+    }
+    private void recordCounters() {
+      android.util.Log.i("V8ExecutorTarget", "canvas_scene=" + sceneNonce + ";canvas_event=" + eventSeq
+          + ";canvas_taps=" + taps + ";canvas_swipes=" + swipes);
+    }
     @Override protected void onDraw(Canvas canvas) {
       canvas.drawColor(Color.WHITE);
       paint.setColor(Color.BLACK); paint.setTextSize(42);
@@ -61,6 +81,8 @@ public class FixtureActivity extends Activity {
       if (event.getActionMasked() == MotionEvent.ACTION_UP) {
         if (downX >= getWidth() * .25f && downX < getWidth() * .75f && downY >= getHeight() * .35f && downY < getHeight() * .65f) {
           if (Math.hypot(event.getX() - downX, event.getY() - downY) > 50) swipes++; else taps++;
+          eventSeq++;
+          recordCounters();
           invalidate();
         }
         return true;

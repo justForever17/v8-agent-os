@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <application android:label="V8 Executor Verification" android:networkSecurityConfig="@xml/v8_executor_test_network_security" android:usesCleartextTraffic="false" tools:replace="android:label">
+    <activity android:name="expo.modules.v8executor.ExecutorTestActivity" android:exported="true" />
+  </application>
+</manifest>

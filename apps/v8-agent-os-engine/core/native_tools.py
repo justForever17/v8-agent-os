@@ -98,6 +98,7 @@ from core.tools.native.automation import *  # automation/process/cron/hook tool 
 from core.tools.native.command import *  # command/session tool family compatibility exports
 from core.tools.native.browser import browser_broker, browser_capabilities
 from core.tools.native.system_operations import system_operations
+from core.tools.native.device import device_broker
 from core.tools.native.creative_media_facade import (
     creative_media_assets,
     creative_media_capabilities,

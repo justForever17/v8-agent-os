@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 
 
@@ -101,6 +101,14 @@ def _route(
 # Only client contracts with native ownership checks and separately authenticated
 # peer/model protocols are exposed. Local-session and configuration stay private.
 PHONE_GATEWAY_ROUTES: tuple[PhoneGatewayRoute, ...] = (
+    _route("executor.enroll", r"/api/executor/enroll", ("POST",), auth="public", max_body_bytes=16384, requests_per_minute=8),
+    _route("executor.self-revoke", r"/api/executor/revoke", ("POST",), auth="public", max_body_bytes=16384, requests_per_minute=30),
+    _route("executor.tickets", r"/api/client/executors/tickets", ("POST",), max_body_bytes=16384, requests_per_minute=8),
+    _route("executor.list", r"/api/client/executors", ("GET",)),
+    _route("executor.grants", rf"/api/client/executors/{_SEGMENT}/grants", ("PUT",), max_body_bytes=16384),
+    _route("executor.revoke", rf"/api/client/executors/{_SEGMENT}", ("DELETE",)),
+    _route("executor.command", rf"/api/client/executors/commands/{_SEGMENT}", ("GET",)),
+    _route("executor.control", rf"/api/client/executors/commands/{_SEGMENT}/(?:cancel|reconcile)", ("POST",), max_body_bytes=16384),
     _route("model.openai.models", r"/v1/network-supervisor/openai/models", ("GET",), auth="model"),
     _route("model.openai.chat", r"/v1/network-supervisor/openai/chat/completions", ("POST",), auth="model", stream=True, max_body_bytes=2 * 1024 * 1024),
     _route("model.anthropic.models", r"/v1/network-supervisor/anthropic/(?:v1/)?models", ("GET",), auth="model"),
@@ -383,6 +391,16 @@ def create_phone_gateway_app(
         openapi_url=None,
     )
     app.state.phone_gateway_config = gateway_config
+
+    @app.websocket("/api/executor/ws")
+    async def executor_channel(websocket: WebSocket):
+        # This exact route calls the same native Engine handler. It cannot
+        # forward arbitrary paths or inject a human/local management principal.
+        if client_app is None:
+            await websocket.close(code=1013, reason="engine_unavailable")
+            return
+        from api.device_executor_routes import executor_socket
+        await executor_socket(websocket)
 
     def emit(event: dict[str, Any]) -> None:
         try:

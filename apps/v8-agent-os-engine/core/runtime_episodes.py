@@ -38,6 +38,7 @@ TYPED_HANDOFF_KINDS = {
     "rpa": "rpa_trace_bundle",
     "delegation": "subagent_result_bundle",
     "verification": "verification_report",
+    "device_action": "device_action_receipt",
 }
 
 

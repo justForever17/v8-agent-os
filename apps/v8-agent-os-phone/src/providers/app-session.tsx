@@ -100,16 +100,19 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 endpoints: (profile.endpoints || []).filter(item => item.scope === "local" || item.kind === "lan" || item.kind === "lan_ipv6"), preferPrimary: false }),
             credentials, principalId: profile.user.id, native: Platform.OS !== "web",
             persistRefreshAttempt: async (refreshToken, rotationId) => {
-                if (activeRef.current?.transport !== transport || !profile.credentialRef) throw abortError();
-                await persistProfileRefreshAttempt(profileId, profile.credentialRef, refreshToken, rotationId);
+                const current = activeRef.current;
+                if (current?.transport !== transport || !current.profile.credentialRef) throw abortError();
+                await persistProfileRefreshAttempt(profileId, current.profile.credentialRef, refreshToken, rotationId);
                 if (activeRef.current?.transport !== transport) throw abortError();
             },
             persistRefresh: async (nextCredentials, user) => {
-                if (activeRef.current?.transport !== transport) throw abortError();
+                const expected = activeRef.current;
+                if (expected?.transport !== transport) throw abortError();
                 const latest = await updateAdminConnectionProfiles((current) => {
                     if (activeRef.current?.transport !== transport) throw abortError();
                     const own = current.find((item) => item.id === profileId);
-                    if (!own) throw abortError();
+                    if (!own || own.credentialRef !== expected.profile.credentialRef
+                        || (own.user?.id || own.principalId) !== user.id) throw abortError();
                     Object.assign(own, nextCredentials, { user, principalId: user.id });
                     return current;
                 });

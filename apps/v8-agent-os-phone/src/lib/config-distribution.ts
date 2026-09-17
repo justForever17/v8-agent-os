@@ -15,15 +15,19 @@ export type DistributionMapping = { roles: Record<string, string>; models: Recor
 export type DistributionTarget = {
     linkId: string; peerId: string; displayName: string; state: string;
     diff: { field: string; before: unknown; after: unknown }[];
-    missingRequirements: string[]; errorCode?: string | null;
+    missingRequirements: string[]; errorCode?: string | null; approved?: boolean; mapping?: DistributionMapping;
     receipt?: { transactionId: string; state: string; readback?: unknown } | null;
 };
 export type DistributionJob = {
     jobId: string; revision: number; planDigest: string; state: string; templateId: string;
+    intent?: "prepare" | "apply" | "cancel" | "withdraw"; allowedActions?: DistributionAction[];
+    summary?: boolean; targetCount?: number; targetNames?: string[];
     targets: DistributionTarget[]; createdAt: string; updatedAt: string;
 };
 export type DistributionCatalog = {
     servingInstanceId: string; templates: DistributionTemplate[]; peers: DistributionPeer[]; jobs: DistributionJob[];
+    maxTargets?: number; pendingCount?: number;
+    jobsNextCursor?: string | null;
 };
 export type DistributionAction = "prepare" | "confirm" | "retry" | "cancel" | "withdraw";
 const ROOT = "/api/client/config-distribution";
@@ -61,6 +65,9 @@ export async function loadDistributionJob(fetcher: DistributionFetch, jobId: str
     if (payload.jobId !== jobId) throw new DistributionError("job_changed", 409);
     return payload;
 }
+export function loadDistributionHistory(fetcher: DistributionFetch, cursor: string, signal?: AbortSignal) {
+    return request<{items: DistributionJob[]; nextCursor: string|null}>(fetcher, `${ROOT}/jobs?cursor=${encodeURIComponent(cursor)}`, signal);
+}
 export async function actOnDistribution(fetcher: DistributionFetch, job: DistributionJob, action: DistributionAction, commandId: string, signal?: AbortSignal) {
     const payload = await request<DistributionJob>(fetcher, `${ROOT}/${encodeURIComponent(job.jobId)}/${action}`, signal,
         { commandId, revision: job.revision, planDigest: job.planDigest });
@@ -69,6 +76,21 @@ export async function actOnDistribution(fetcher: DistributionFetch, job: Distrib
 }
 export function setDistributionRole(fetcher: DistributionFetch, peer: DistributionPeer, localRole: "primary" | "companion", signal?: AbortSignal) {
     return request(fetcher, `/api/client/supervisor-peers/${encodeURIComponent(peer.linkId)}`, signal, { localRole }, "PATCH");
+}
+export function remapDistribution(fetcher: DistributionFetch, job: DistributionJob, targets: {linkId: string; mapping: DistributionMapping}[], commandId: string, signal?: AbortSignal) {
+    return request<DistributionJob>(fetcher, `${ROOT}/${encodeURIComponent(job.jobId)}/prepare`, signal,
+        { commandId, revision: job.revision, targets });
+}
+export type LocalWorkspaceCatalog = {
+    projects: { projectId: string; label: string; localPath: string; trusted: boolean; revision: string }[];
+    links: { linkId: string; displayName: string; localRole: string; revision: string; localPath: string }[];
+};
+export function loadLocalWorkspaces(fetcher: DistributionFetch, signal?: AbortSignal) {
+    return request<LocalWorkspaceCatalog>(fetcher, `${ROOT}/local-workspaces`, signal);
+}
+export function bindLocalWorkspace(fetcher: DistributionFetch, link: LocalWorkspaceCatalog["links"][number], project: LocalWorkspaceCatalog["projects"][number], signal?: AbortSignal) {
+    return request<LocalWorkspaceCatalog>(fetcher, `${ROOT}/local-workspaces/${encodeURIComponent(link.linkId)}`, signal,
+        { projectId: project.projectId, projectRevision: project.revision, linkRevision: link.revision, trustConfirmed: true });
 }
 
 export function distributionCommandId() {

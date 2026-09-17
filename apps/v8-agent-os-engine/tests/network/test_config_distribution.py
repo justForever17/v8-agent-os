@@ -322,3 +322,165 @@ def test_cleanup_retry_uses_new_authority_after_original_phone_revoked(system):
     system.sender._post_peer = system.deliver
     asyncio.run(source.process_once())
     assert source.store.get(job["jobId"])["state"] == "cancelled"
+
+
+def test_reprepare_after_lost_apply_receipt_reconciles_across_restart(system):
+    source = system.source
+    created = source.create("owner", {}, {"commandId": "create", "templateId": "model-policy", "targets": [{"linkId": "target_link"}]})
+    asyncio.run(source.process_once())
+    job = source.store.get(created["jobId"])
+    source.action(job["jobId"], "owner", "confirm", {"commandId": "confirm", "revision": job["revision"], "planDigest": job["planDigest"]})
+    async def lost(peer, path, envelope):
+        await system.deliver(peer, path, envelope)
+        raise HTTPException(503, {"failureClass": "peer_unreachable"})
+    system.sender._post_peer = lost
+    asyncio.run(source.process_once())
+    job = source.store.get(job["jobId"])
+    source.action(job["jobId"], "owner", "prepare", {"commandId": "prepare", "revision": job["revision"]})
+    system.sender._post_peer = system.deliver
+    recovered = ConfigDistributionService(store=DistributionStore(system.db), network=system.sender, neighbors=source.neighbors, authorize=lambda _: None)
+    asyncio.run(recovered.process_once())
+    job = recovered.store.get(job["jobId"])
+    assert job["state"] == "completed" and job["targets"][0]["state"] == "committed"
+    assert job["targets"][0]["generation"] == 1
+    with system.db.get_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM config_broker_transactions").fetchone()[0] == 1
+
+
+def test_cancel_before_new_generation_reaches_target_converges(system):
+    source = system.source
+    created = source.create("owner", {}, {"commandId": "create", "templateId": "model-policy", "targets": [{"linkId": "target_link"}]})
+    asyncio.run(source.process_once())
+    old = source.store.get(created["jobId"])
+    old_plan = {"jobId": old["jobId"], "generation": 1, "receipt": old["targets"][0]["receipt"]}
+    source.action(old["jobId"], "owner", "prepare", {"commandId": "prepare", "revision": old["revision"]})
+    new = source.store.get(old["jobId"])
+    command = {"commandId": "cancel", "revision": new["revision"]}
+    source.action(new["jobId"], "owner", "cancel", command)
+    asyncio.run(source.process_once())
+    assert source.store.get(new["jobId"])["state"] == "cancelled"
+    assert source.action(new["jobId"], "owner", "cancel", command)["state"] == "cancelled"
+    with pytest.raises(HTTPException): apply(system, "apply", old_plan)
+    late = receive(system, "prepare", jobId=new["jobId"], generation=2, templateId=new["templateId"], values=new["values"], mapping=new["targets"][0]["mapping"])
+    assert late["state"] == "cancelled"
+    assert system.plane.get_config()["governance"]["budgets"]["runMaxTokens"] == 100
+
+
+def test_pending_jobs_are_not_evicted_by_terminal_history(system):
+    source = system.source
+    created = source.create("owner", {}, {"commandId": "create", "templateId": "model-policy", "targets": [{"linkId": "target_link"}]})
+    original = source.store.get(created["jobId"])
+    for index in range(55):
+        completed = {**deepcopy(original), "jobId": f"done-{index}", "createdAt": f"9999-{index:02}", "state": "completed"}
+        source.store.command("owner", f"done-{index}", f"digest-{index}", completed["jobId"], create=completed)
+    catalog = source.inventory("owner", "instance")
+    assert catalog["pendingCount"] == 1 and len(catalog["jobs"]) == 20
+    assert catalog["jobs"][0]["jobId"] == created["jobId"]
+    assert catalog["jobs"][0]["summary"] and catalog["jobs"][0]["targets"] == []
+    assert catalog["jobsNextCursor"] == "20"
+    assert len(source.store.page("owner", 20)["items"]) == 20
+    assert source.store.page("owner", 40)["nextCursor"] is None
+
+
+def test_unmapped_target_is_blocked_individually_and_remapping_is_explicit(system):
+    source = system.source
+    system.plane.mutate_config(lambda config: {**config, "roles": {**config["roles"], "summary": "source-only::model"}})
+    job = source.create("owner", {}, {"commandId": "create", "templateId": "model-roles", "targets": [{"linkId": "target_link", "mapping": {"roles": {}, "models": {}}}]})
+    asyncio.run(source.process_once())
+    blocked = source.store.get(job["jobId"])
+    assert blocked["targets"][0]["state"] == "blocked"
+    assert blocked["targets"][0]["missingRequirements"] == ["target_model_mapping_required"]
+    source.action(job["jobId"], "owner", "prepare", {"commandId": "map", "revision": blocked["revision"],
+        "targets": [{"linkId": "target_link", "mapping": {"models": {"summary": "missing::model"}}}]})
+    asyncio.run(source.process_once())
+    assert source.store.get(job["jobId"])["targets"][0]["errorCode"] == "model_not_found"
+    assert not source.store.get(job["jobId"])["targets"][0]["approved"]
+
+
+def test_bounded_hundred_target_prepare_partial_mapping_and_receipts(system):
+    source = system.source
+    source._link = lambda **kwargs: ({"linkId": kwargs["link_id"], "peerId": kwargs["link_id"], "remoteNickname": kwargs["link_id"]}, kwargs["link_id"])
+    counters = {"active": 0, "peak": 0}
+    async def exchange(peer_id, action, body):
+        counters["active"] += 1; counters["peak"] = max(counters["peak"], counters["active"])
+        try:
+            await asyncio.sleep(0.002)
+            index = int(peer_id.removeprefix("peer-"))
+            if index % 5 == 0: raise HTTPException(503, {"failureClass": "peer_unreachable"})
+            return {"state": "prepared", "receipt": {"transactionId": peer_id, "planDigest": peer_id, "expiresAt": 9999999999}, "diff": [], "errorCode": "", "missingRequirements": []}
+        finally: counters["active"] -= 1
+    source._exchange = exchange
+    job = source.create("owner", {}, {"commandId": "scale", "templateId": "model-policy", "targets": [{"linkId": f"peer-{index}"} for index in range(100)]})
+    asyncio.run(source.process_once())
+    state = source.store.get(job["jobId"])
+    assert counters["peak"] == 4
+    assert len([target for target in state["targets"] if target["state"] == "prepared"]) == 80
+    assert len([target for target in state["targets"] if target["state"] == "offline"]) == 20
+    assert state["state"] == "awaiting_confirmation" and not any(target["approved"] for target in state["targets"])
+
+
+def test_local_workspace_selection_requires_trust_revision_and_never_accepts_path(system, tmp_path, monkeypatch):
+    from core.config_distribution_local import local_workspaces, bind_local_workspace
+    from core.storage import storage
+    from runtimes.memory.models import ProjectDescriptor
+    from runtimes.memory.project_registry import project_registry_service
+    path = tmp_path / "target-project"; path.mkdir()
+    project = ProjectDescriptor(id="fixture-project", name="Fixture Project", workspacePath=str(path), workspaceId="fixture-workspace", workspaceTrustState="trusted")
+    storage.save_projects_registry({"projects": [project.model_dump(by_alias=True)], "defaultProjectId": "fixture-project"})
+    def update_link(link_id, body):
+        system.source_link["workspaceBinding"] = body["workspaceBinding"]
+    monkeypatch.setattr(system.source.neighbors, "update_link", update_link, raising=False)
+    catalog = local_workspaces(system.source)
+    selected = catalog["projects"][0]; link = catalog["links"][0]
+    payload = {"projectId": selected["projectId"], "projectRevision": selected["revision"], "linkRevision": link["revision"], "trustConfirmed": True}
+    with pytest.raises(HTTPException): bind_local_workspace(system.source, link["linkId"], {**payload, "workspacePath": "C:/source-private"})
+    with pytest.raises(HTTPException): bind_local_workspace(system.source, link["linkId"], {**payload, "trustConfirmed": False})
+    assert not system.source_link.get("workspaceBinding")
+    result = bind_local_workspace(system.source, link["linkId"], payload)
+    assert result["links"][0]["localPath"] == str(path)
+    assert system.source_link["workspaceBinding"]["workspacePath"] == str(path)
+    assert not any("Path" in key for template in system.source.inventory("owner", "instance")["templates"] for key in template["values"])
+    project_registry_service.patch_project("fixture-project", {"name": "Changed"})
+    with pytest.raises(HTTPException): bind_local_workspace(system.source, link["linkId"], payload)
+
+
+@pytest.mark.parametrize("operation", ["cancel_after_commit", "withdraw_after_local_change"])
+def test_lost_cleanup_receipt_restart_preserves_actual_write_history(system, monkeypatch, operation):
+    source = system.source
+    created = source.create("owner", {}, {"commandId": "create", "templateId": "model-policy", "targets": [{"linkId": "target_link"}]})
+    source.store.mutate(created["jobId"], lambda job: job["values"]["governance"]["budgets"].update(runMaxTokens=777))
+    asyncio.run(source.process_once())
+    def act(action):
+        current = source.store.get(created["jobId"])
+        return source.action(current["jobId"], "owner", action, {"commandId": action, "revision": current["revision"], "planDigest": current["planDigest"]})
+    commits, restores = [], []
+    original_commit, original_restore = system.broker.commit, system.broker._restore_snapshot
+    def commit(*args, **kwargs): commits.append(1); return original_commit(*args, **kwargs)
+    def restore(*args, **kwargs): restores.append(1); return original_restore(*args, **kwargs)
+    monkeypatch.setattr(system.broker, "commit", commit)
+    monkeypatch.setattr(system.broker, "_restore_snapshot", restore)
+    act("confirm")
+    if operation == "withdraw_after_local_change":
+        asyncio.run(source.process_once()); act("withdraw")
+    async def lost(peer, path, envelope):
+        await system.deliver(peer, path, envelope)
+        if operation == "cancel_after_commit": act("cancel")
+        raise HTTPException(503, {"failureClass": "peer_unreachable"})
+    system.sender._post_peer = lost
+    asyncio.run(source.process_once())
+    if operation == "withdraw_after_local_change":
+        system.plane.mutate_config(lambda config: {**config, "governance": {**config["governance"], "budgets": {**config["governance"]["budgets"], "runMaxTokens": 999}}})
+    system.target = ConfigDistributionService(store=DistributionStore(system.db), network=system.receiver, neighbors=system.target.neighbors, authorize=lambda _: None)
+    source = ConfigDistributionService(store=DistributionStore(system.db), network=system.sender, neighbors=source.neighbors, authorize=lambda _: None)
+    system.sender._post_peer = system.deliver
+    if operation == "withdraw_after_local_change": act("retry")
+    asyncio.run(source.process_once())
+    result = source.store.get(created["jobId"])
+    assert len(commits) == 1
+    if operation == "cancel_after_commit":
+        assert result["state"] == "cancelled" and result["targets"][0]["state"] == "committed"
+        assert system.plane.get_config()["governance"]["budgets"]["runMaxTokens"] == 777 and not restores
+    else:
+        assert result["state"] == "withdrawn" and result["targets"][0]["state"] == "rolled_back" and len(restores) == 1
+        assert result["targets"][0]["receipt"]["readback"]["governance.budgets.runMaxTokens"] == 100
+        assert system.plane.get_config()["governance"]["budgets"]["runMaxTokens"] == 999

@@ -227,12 +227,17 @@ API 出错时保留稳定错误码和可行动摘要；不要把栈、SQL、prov
 
 | 方法与相对路径 | 输入/返回 |
 | --- | --- |
-| `GET /` | `servingInstanceId/templates/peers/jobs`，最近 50 个 Owner 作业 |
+| `GET /` | `servingInstanceId/templates/peers/jobs/jobsNextCursor/pendingCount`，未完成优先的前 20 个摘要 |
+| `GET /jobs?cursor=…` | 后续 20 个摘要；列表不包含目标 diff/receipt，详情按需读取 |
+| `GET /local-workspaces` | 当前 Engine 本地项目、目录、信任状态与连接版本，只对 Owner 返回 |
+| `POST /local-workspaces/{linkId}` | `{projectId,projectRevision,linkRevision,trustConfirmed:true}`，复用本地项目信任及 Network link owner；不接受绝对路径输入 |
 | `GET /targets/{linkId}` | 目标本地 `roles/models`、`missingRequirements`、`protocolVersion:1`、`pathPolicy:target_local_only` |
 | `POST /` | `{commandId,templateId,targets:[{linkId,mapping:{roles,models}}]}`，准备白名单模板 |
 | `GET /{jobId}` | 作业版本、状态及逐台 diff/receipt/readback |
 | `POST /{jobId}/confirm` | `{commandId,revision,planDigest}`，确认当前已准备目标 |
 | `POST /{jobId}/{prepare,retry,cancel,withdraw}` | `{commandId,revision}`，重新准备、续作原计划、取消未提交或精确撤回 |
+
+完整作业返回 `intent/allowedActions` 与逐目标 `approved/mapping`，客户端据此显示真实可用恢复动作。`prepare` 可附 `targets:[{linkId,mapping}]` 修改未确认目标；已确认映射不可变。未知提交先对账原事务；较新代次尚未送达时取消也会在接收端保留幂等终止记录。撤回遇目标后续更新会进入 `withdrawal_conflict`，保留目标配置并指导本地处理。
 
 `model-policy` 仅含白名单预算标量与内置角色温度；`model-roles` 仅含源角色身份和目标本地模型映射。每台目标的 `diff` 为 `{field,before,after}[]`；`receipt` 绑定 Broker 事务、计划摘要、目标授权版本和到期时间，成功后附白名单字段的扁平 `readback`。
 

@@ -5,6 +5,7 @@ const phone = path.resolve(__dirname, '..');
 const output = path.resolve(process.argv[2]);
 const admin = path.resolve(process.argv[3] || path.join(phone, '../v8-agent-os-admin'));
 const mutant = process.argv[4] === 'stale-confirmation';
+const live = process.argv[4] === 'live';
 const webpack = require(path.join(admin, 'node_modules/next/dist/compiled/webpack/webpack.js')).webpack;
 fs.mkdirSync(output, { recursive: true });
 fs.writeFileSync(path.join(output, 'prefs.ts'), `
@@ -22,6 +23,34 @@ let session = make('A');
 window.switchAuthority = authority => { session = make(authority); listeners.forEach(fn => fn()); };
 export const useAppSession = () => useSyncExternalStore(fn => { listeners.add(fn); return () => listeners.delete(fn); }, () => session);
 `);
+if (live) fs.writeFileSync(path.join(output, 'session.ts'), `
+import { useSyncExternalStore } from 'react';
+import { PhoneTransport } from ${JSON.stringify(path.join(phone, 'src/lib/phone-transport.ts'))};
+const listeners = new Set();
+let transport;
+let session = {authorityKey:'unpaired',servingInstanceId:'',authorizedFetch:()=>Promise.reject(new Error('unpaired'))};
+function activate(saved) {
+  transport?.dispose();
+  transport = new PhoneTransport({endpoints:[saved.endpoint],instanceId:saved.instanceId,principalId:saved.user.id,
+    credentials:saved,native:false,persistRefresh:async (credentials,user)=>{
+      Object.assign(saved,credentials,{user});sessionStorage.setItem('distribution-live-session',JSON.stringify(saved));
+    },onEndpoint:()=>{},onClock:()=>{}});
+  session={authorityKey:saved.instanceId+':'+saved.deviceId,servingInstanceId:saved.instanceId,authorizedFetch:transport.authorizedFetch};
+  listeners.forEach(fn=>fn());
+}
+window.pairRealDevice = async ({endpoint,code,instanceId}) => {
+  const observed=await fetch(endpoint+'/api/client/instance').then(r=>r.json());
+  if(observed.instanceId!==instanceId) throw new Error('instance mismatch');
+  const response=await fetch(endpoint+'/api/client/pairing/consume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,instanceId,deviceName:'Distribution UI acceptance'})});
+  const paired=await response.json();if(!response.ok)throw new Error(paired.error);
+  const saved={...paired,endpoint};sessionStorage.setItem('distribution-live-session',JSON.stringify(saved));activate(saved);
+  return {instanceId:paired.instanceId,deviceId:paired.deviceId};
+};
+window.liveRead = async path => {const response=await transport.authorizedFetch(path);return {status:response.status,payload:await response.json()};};
+const saved=sessionStorage.getItem('distribution-live-session');if(saved)activate(JSON.parse(saved));
+export const useAppSession=()=>useSyncExternalStore(fn=>{listeners.add(fn);return()=>listeners.delete(fn)},()=>session);
+`);
+fs.writeFileSync(path.join(output, 'expo-fetch.ts'), 'export const fetch = globalThis.fetch;');
 fs.writeFileSync(path.join(output, 'visibility.ts'), `
 import { useSyncExternalStore } from 'react';
 const listeners = new Set();
@@ -50,7 +79,7 @@ module.exports = function(source) {
 fs.writeFileSync(path.join(output, 'index.html'), '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script src="fixture.js"></script>');
 webpack({ mode:'development', devtool:false, context:phone, entry:path.join(output,'entry.tsx'), output:{path:output,filename:'fixture.js'},
     resolve:{extensions:['.tsx','.ts','.js'],modules:[path.join(phone,'node_modules'),'node_modules'],alias:{
-        'react-native$':require.resolve('react-native-web'), '@/src/providers/ui-prefs$':path.join(output,'prefs.ts'),
+        'react-native$':require.resolve('react-native-web'), 'expo/fetch$':path.join(output,'expo-fetch.ts'), '@/src/providers/ui-prefs$':path.join(output,'prefs.ts'),
         '@/src/providers/app-session$':path.join(output,'session.ts'), '@/src/hooks/use-app-visibility$':path.join(output,'visibility.ts'),
         '@react-navigation/native$':path.join(output,'visibility.ts'), 'react-native-safe-area-context$':path.join(output,'safe-area.ts'), '@':phone,
     }}, module:{rules:[{test:/\.tsx?$/,exclude:/node_modules/,use:path.join(output,'ts-loader.cjs')}]},

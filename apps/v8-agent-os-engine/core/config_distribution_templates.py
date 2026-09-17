@@ -44,7 +44,7 @@ def templates():
     ]
 
 
-def validate(template_id, values, mapping):
+def validate(template_id, values, mapping, *, allow_unmapped=False):
     if not isinstance(values, dict) or not isinstance(mapping, dict) or set(mapping) - {"roles", "models"}:
         reject("distribution_template_invalid")
     roles = mapping.get("roles", {})
@@ -81,7 +81,9 @@ def validate(template_id, values, mapping):
         if any(value != "" for value in values["roles"].values()):
             reject("distribution_source_models_forbidden")
         source_roles = set(values["roles"])
-        if set(models) != source_roles or any(not isinstance(value, str) or not value or len(value) > 256 for value in models.values()):
+        if set(models) - source_roles or any(not isinstance(value, str) or not value or len(value) > 256 for value in models.values()):
+            reject("distribution_mapping_invalid")
+        if set(models) != source_roles and not allow_unmapped:
             reject("target_model_mapping_required")
     else:
         reject("distribution_template_unsupported")

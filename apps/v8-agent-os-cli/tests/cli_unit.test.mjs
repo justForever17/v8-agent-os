@@ -683,7 +683,12 @@ test("desktop pet declares its intentional detached launcher handoff", () => {
   assert.equal(COMPONENTS.shell.detachedHandoff, undefined);
 });
 
-test("desktop pet startup waits for a verified runtime handoff instead of recording the launcher", async () => {
+test("desktop pet startup waits for a verified runtime handoff instead of recording the launcher", async (t) => {
+  // This checks receipt ordering, not host timer latency. Real 1ms timers can
+  // exceed the 50ms fixture deadline while other package tests are running.
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  const sleep = async (delayMs) => { now += delayMs; };
   const pid = 43123;
   const child = new EventEmitter();
   child.exitCode = 0;
@@ -695,6 +700,7 @@ test("desktop pet startup waits for a verified runtime handoff instead of record
   const result = await waitForRuntimeComponentHandoff("desktop-pet", child, {
     timeoutMs: 50,
     pollMs: 1,
+    sleep,
     readRuntimeDescriptor: () => (++reads < 2 ? null : { pid, managedByShell: true, descriptorId: "pet-unit" }),
     readProcessDescriptor: async () => ({
       pid,
@@ -715,6 +721,7 @@ test("desktop pet startup waits for a verified runtime handoff instead of record
   }, {
     timeoutMs: 20,
     pollMs: 1,
+    sleep,
     readRuntimeDescriptor: () => null,
   });
   assert.deepEqual(failed, {

@@ -296,8 +296,16 @@ def test_frame_geometry_tampering_cannot_dispatch_gesture(bench, pre):
 def vision_context(b, monkeypatch):
     from core.creative_media_resource_authority import creative_media_resource_authority
     from core.tools import vision_image_inputs
+    from core.runtime import startup_profile
     from runtimes.network_supervisor.executors import service as service_module
     monkeypatch.setenv("ENGINE_INSTALL_PROFILE", "server")
+    # This fixture tests image authority/tool reachability, not installation
+    # migration. Do not persist its server profile in the suite's shared home.
+    monkeypatch.setattr(startup_profile, "ensure_runtime_registry_installation_state", lambda: None)
+    monkeypatch.setattr(startup_profile.storage, "get_runtime_registry_config", lambda: {
+        "installProfile": "server", "installedRuntimeFamilies": list(startup_profile.DEFAULT_RUNTIME_FAMILIES_BY_PROFILE["server"]),
+        "featurePacks": {},
+    })
     monkeypatch.setattr(creative_media_resource_authority, "_database", b.database)
     monkeypatch.setattr(service_module, "get_executor_service", lambda: b.service)
     # Workspace preflight still denies the external cache path; the real ledger
@@ -305,6 +313,20 @@ def vision_context(b, monkeypatch):
     monkeypatch.setattr(vision_image_inputs, "resolve_workspace_tool_path", lambda path, **_: {
         "ok": False, "resolvedPath": str(path), "binding": {"activeWorkspaceRoot": str(b.root)}})
     return {"session_id": "session1", "run_id": "run1", "workspace_path": str(b.root)}
+
+
+def test_server_vision_fixture_does_not_migrate_the_following_tests_profile(bench):
+    from core.runtime import startup_profile
+    from core.storage import storage
+    from copy import deepcopy
+    before = deepcopy(storage.read_json("runtime_registry.json"))
+    checked = startup_profile._RUNTIME_REGISTRY_MIGRATION_CHECKED
+    with pytest.MonkeyPatch.context() as isolated:
+        vision_context(bench, isolated)
+        assert startup_profile.get_configured_install_profile() == "server"
+        assert not startup_profile.runtime_family_installed("creative_media")
+    assert storage.read_json("runtime_registry.json") == before
+    assert startup_profile._RUNTIME_REGISTRY_MIGRATION_CHECKED == checked
 
 
 def test_server_real_vision_tool_preparation_keeps_exact_pixels_and_order_without_pillow(bench, monkeypatch):

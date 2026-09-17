@@ -338,7 +338,7 @@ Storage Retention：
 - README/快速开始写用户能执行的路径，不写内部交付报告。
 - API/开发者指南明确权威层、权限和失败边界，不把 mock 当真实验收。
 - Site 只宣传已提交且有代码/测试事实的能力。
-- Windows unsigned preview、Phone APK、TUI 未实现、轻量版长期规划等状态必须如实区分。
+- Windows unsigned preview、Phone APK、独立Server/TUI归档和实验远程执行器须按精确版本与资产区分；源码、构建通过、真实运行和实体平台验收不能互相替代。
 - 服务 bootstrap 与 Electron Desktop Preview 是两种入口，任何公开页面都不能混写。
 
 继续阅读：

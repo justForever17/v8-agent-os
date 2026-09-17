@@ -12,7 +12,7 @@ v8os-tui
 ```
 
 上面使用统一 Release 的资产名。开发者直接运行 `npm pack` 得到的是
-`v8-agent-os-tui-<package-version>.tgz`（当前源码包例如 `v8-agent-os-tui-0.1.0.tgz`）；
+`v8-agent-os-tui-<package-version>.tgz`（当前版本为 `v8-agent-os-tui-2026.9.17-1.tgz`）；
 本地安装使用 npm 实际打印的文件名，发布脚本会生成统一 Release 名称。
 
 公开 npm 包名登记后再启用 registry 安装；当前先分发 tarball。本包不会在

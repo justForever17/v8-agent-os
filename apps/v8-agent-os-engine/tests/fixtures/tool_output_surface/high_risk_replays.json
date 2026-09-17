@@ -11,6 +11,25 @@
   ],
   "groups": [
     {
+      "name": "device_unknown_outcome",
+      "tools": ["device_broker"],
+      "payload": {
+        "commandId": "command_device_fixture",
+        "deviceId": "executor_fixture",
+        "status": "unknown_outcome",
+        "businessVerification": "unverified",
+        "cancelRequested": true,
+        "reconciled": false,
+        "command": {
+          "capability": "android.action",
+          "resourceId": "com.v8agentos.executorfixture",
+          "arguments": {"action": "click", "nodeId": "fixture-node"}
+        },
+        "receipt": {"status": "unknown_outcome", "error": "connection_lost", "driverAccepted": true},
+        "runtimeOnly": {"marker": "RUNTIME_ONLY_DO_NOT_EXPOSE", "driverTrace": "DRIVER_TRACE_DO_NOT_EXPOSE"}
+      }
+    },
+    {
       "name": "browser_scoped_observation",
       "tools": ["browser_broker", "browser_capabilities"],
       "payload": {

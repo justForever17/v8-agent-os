@@ -30,6 +30,33 @@ def test_native_tools_dry_run_export_covers_registered_tools() -> None:
     assert "dry-run-missing" not in json.dumps(native_tools_dry_run.BASE_SAFE_INVOCATIONS)
 
 
+def test_device_dry_run_replays_uncertain_receipt_without_touching_any_executor(monkeypatch) -> None:
+    from core.tools.native import device
+
+    def forbid_live_device_service():
+        raise AssertionError("Dry-run output export must never open the real executor ledger or device transport")
+
+    monkeypatch.setattr(device, "get_executor_service", forbid_live_device_service)
+    tool_ref = next(tool for tool in native_tools_dry_run._all_export_tools() if tool.name == "device_broker")
+    monkeypatch.setattr(native_tools_dry_run, "_all_export_tools", lambda: [tool_ref])
+    records = native_tools_dry_run.collect_records(invoke=True)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.status == "fixture_replayed"
+    assert record.runtime_capture_kind == "sanitized_contract_replay"
+    payload = json.loads(record.runtime_output)
+    assert payload["status"] == "unknown_outcome"
+    assert payload["businessVerification"] == "unverified"
+    assert payload["cancelRequested"] and not payload["reconciled"]
+    assert record.diagnostics["runtimeOnlyLeakMarkers"] == []
+    assert "unknown_outcome" in record.output
+    # The compact production formatter exposes the outcome and a detailRef;
+    # business verification stays in the preserved runtime record.
+    assert "tool_observation_detail(" in record.output
+    assert "Status: succeeded" not in record.output
+
+
 def test_high_risk_replay_fixtures_cover_unsafe_and_stateful_tools() -> None:
     fixtures = native_tools_dry_run.load_high_risk_replays()
     required = set(native_tools_dry_run.UNSAFE_REASONS) | set(native_tools_dry_run.STATEFUL_UNOBSERVED_REASONS)

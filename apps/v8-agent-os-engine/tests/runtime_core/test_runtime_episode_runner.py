@@ -4285,6 +4285,9 @@ def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):
 
 
 def test_runtime_episode_rpa_prepare_draft_creates_trace_bundle(monkeypatch):
+    # This routing fixture supplies an installed, mocked RPA executor. The
+    # server profile tests separately prove unavailable runtimes cannot run.
+    monkeypatch.setattr("core.runtime_tool_access.runtime_kind_available", lambda kind: kind == "rpa")
     episode = build_runtime_episode(
         need={
             "kind": "rpa",
@@ -4327,6 +4330,7 @@ def test_runtime_episode_rpa_prepare_draft_creates_trace_bundle(monkeypatch):
 
 
 def test_runtime_episode_rpa_execute_draft_uses_non_chat_run(monkeypatch):
+    monkeypatch.setattr("core.runtime_tool_access.runtime_kind_available", lambda kind: kind == "rpa")
     episode = build_runtime_episode(
         need={
             "kind": "rpa",

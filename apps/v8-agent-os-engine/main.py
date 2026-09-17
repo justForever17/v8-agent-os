@@ -1128,6 +1128,8 @@ app.include_router(client_identity_routes.management_router)
 app.include_router(client_identity_routes.router)
 app.include_router(client_asset_routes.router)
 app.include_router(client_routes.router)
+from api import device_executor_routes
+app.include_router(device_executor_routes.router)
 if _service_flags()["audio"]:
     app.state.client_audio_router = _get_audio_routes().router
     app.include_router(app.state.client_audio_router)

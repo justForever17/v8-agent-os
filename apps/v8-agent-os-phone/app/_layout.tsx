@@ -58,6 +58,7 @@ function AppNavigation() {
                     <Stack.Screen name="approvals" />
                     <Stack.Screen name="specs" />
                     <Stack.Screen name="settings" />
+                    <Stack.Screen name="device-executor" />
                 </Stack>
             </AppSessionProvider>
         </ThemeProvider>

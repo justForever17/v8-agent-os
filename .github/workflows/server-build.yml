@@ -14,12 +14,13 @@ permissions:
   contents: read
 jobs:
   linux-x64:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ format('ubuntu-{0}', matrix.ubuntu) }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         node: ['20.0.0', '22']
+        ubuntu: ['22.04', '24.04']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -54,10 +55,14 @@ jobs:
             -v "${bundles[0]}:/package:ro" \
             -v "$GITHUB_WORKSPACE/scripts/server:/probes:ro" \
             -v "$node_home:$node_home:ro" -v "$python_home:$python_home:ro" \
-            -e NODE_HOME="$node_home" -e PYTHON_HOME="$python_home" -e RUN_MEMORY_PACKS="${{ matrix.node }}" \
-            ubuntu:24.04 bash -euo pipefail -c '
+            -e NODE_HOME="$node_home" -e PYTHON_HOME="$python_home" -e RUN_MEMORY_PACKS="${{ matrix.node }}" -e UBUNTU_VERSION="${{ matrix.ubuntu }}" \
+            ubuntu:${{ matrix.ubuntu }} bash -euo pipefail -c '
               apt-get update -qq
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3t64 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8t64 zlib1g libexpat1 util-linux passwd
+              if [[ "$UBUNTU_VERSION" == 22.04 ]]; then
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8 zlib1g libexpat1 util-linux passwd
+              else
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3t64 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8t64 zlib1g libexpat1 util-linux passwd
+              fi
               export PATH="$NODE_HOME/bin:$PYTHON_HOME/bin:$PATH" LD_LIBRARY_PATH="$PYTHON_HOME/lib"
               "$PYTHON_HOME/bin/python" -m venv /tmp/browser-deps
               playwright_version=$(sed -n "s/^playwright==\([^ ]*\).*/\1/p" /package/apps/v8-agent-os-engine/requirements/server-linux-x64.lock)
@@ -81,7 +86,7 @@ jobs:
               fi
             '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: matrix.node == '22'
+        if: matrix.node == '22' && matrix.ubuntu == '24.04'
         with:
           name: v8os-server-linux-x64
           path: |

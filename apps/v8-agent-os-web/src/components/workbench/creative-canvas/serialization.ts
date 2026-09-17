@@ -202,6 +202,11 @@ export function normalizeSnapshot(value: unknown): CanvasSnapshot {
             role,
             order: Math.max(0, Number(edge.order) || 0),
             note: typeof edge.note === "string" ? edge.note.slice(0, 2000) : "",
+            ...(typeof edge.entityId === "string" ? { entityId: edge.entityId } : {}),
+            ...(typeof edge.bindingKey === "string" ? { bindingKey: edge.bindingKey } : {}),
+            ...(typeof edge.semanticRole === "string" ? { semanticRole: edge.semanticRole } : {}),
+            ...(typeof edge.purpose === "string" ? { purpose: edge.purpose } : {}),
+            ...(typeof edge.resourceDigest === "string" ? { resourceDigest: edge.resourceDigest } : {}),
         } satisfies CanvasEdge] : [];
     });
     const viewport = recordOf(record.viewport);

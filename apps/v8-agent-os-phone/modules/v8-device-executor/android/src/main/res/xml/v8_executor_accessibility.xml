@@ -1,0 +1,10 @@
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+  android:accessibilityEventTypes="typeAllMask"
+  android:accessibilityFeedbackType="feedbackGeneric"
+  android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestFilterKeyEvents"
+  android:notificationTimeout="50"
+  android:canRetrieveWindowContent="true"
+  android:canRequestFilterKeyEvents="true"
+  android:canPerformGestures="false"
+  android:isAccessibilityTool="false"
+  android:description="@string/v8_executor_description" />

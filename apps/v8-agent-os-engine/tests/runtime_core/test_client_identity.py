@@ -397,6 +397,8 @@ def test_unconfigured_or_disabled_phone_does_not_offer_local_origin_or_issue_tic
 
 @pytest.mark.parametrize("address", ["https://127.8.9.10", "https://localhost.", "https://test.localhost",
     "https://[::ffff:127.0.0.1]", "https://127.1", "https://2130706433", "https://0x7f000001", "https://0177.0.0.1",
+    "https://%31%32%37.0.0.1", "https://１２７。０。０。１", "https://ＬＯＣＡＬＨＯＳＴ",
+    "https://127.0.0.1\\@remote.example", "https://local\nhost", "https://bad host.invalid",
     "https://0.0.0.0", "https://[::]", "https://phone.invalid:99999", "http://192.168.1.10:9532"])
 def test_phone_pairing_rejects_non_remote_origins_before_ticket_write(identity, address):
     identity.config_reader = lambda: {"remoteLink": {"phoneGateway": {"publicBaseUrl": address}}}
@@ -405,6 +407,13 @@ def test_phone_pairing_rejects_non_remote_origins_before_ticket_write(identity, 
         identity.create_ticket(base_url=address)
     with identity.database() as db:
         assert db.execute("SELECT COUNT(*) FROM client_pairing_tickets").fetchone()[0] == 0
+
+
+def test_pairing_accepts_international_hostname_without_rewriting_configured_path(identity):
+    address = "https://例子.example.invalid/phone"
+    identity.config_reader = lambda: {"remoteLink": {"phoneGateway": {"publicBaseUrl": address}}}
+    assert identity.manifest("")["pairing"]["baseUrl"] == address
+    assert identity.create_ticket()["adminBaseUrl"] == address
 
 
 def test_restored_instance_does_not_overwrite_existing_os_keys(identity, tmp_path):

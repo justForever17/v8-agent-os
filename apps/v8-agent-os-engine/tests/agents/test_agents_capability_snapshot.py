@@ -64,10 +64,10 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertEqual(agent.tool_mode, "contextual_auto")
             self.assertTrue(agent.capabilitySnapshot.get("agentClass"))
             self.assertIn("runtimeBindings", agent.capabilitySnapshot)
-            self.assertIn("delegated task brief", agent.system_prompt)
-            self.assertIn("Keep the solution surgical", agent.system_prompt)
-            self.assertIn("Define evidence before claiming completion", agent.system_prompt)
-            self.assertIn("runtime-owned typed facts as executable evidence", agent.system_prompt)
+            self.assertIn("acceptance criteria", agent.system_prompt)
+            self.assertIn("supporting evidence", agent.system_prompt)
+            self.assertNotIn("V8", agent.system_prompt)
+            self.assertNotIn("runtime-owned", agent.system_prompt)
             self.assertTrue(
                 agent.defaultTemplateVersion.startswith(f"{DEFAULT_SUBAGENT_TEMPLATE_VERSION}:"),
                 agent.defaultTemplateVersion,
@@ -108,26 +108,13 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
                     }
                 ],
             )
-            self.assertIn("docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md", agent.promptSourceRefs)
-            self.assertIn("preserve the user's complete semantic constraints", agent.system_prompt)
-            self.assertIn("meaning-preserving translation rather than a keyword summary", agent.system_prompt)
-            self.assertIn("Seedance 2.0 exact models", agent.system_prompt)
-            self.assertIn("native audiovisual video models", agent.system_prompt)
-            self.assertIn("creative_media_jobs", agent.system_prompt)
-            self.assertIn("CreativeMediaProductionPack", agent.system_prompt)
-            self.assertIn("sample before batch", agent.system_prompt)
-            self.assertIn("action='rank_models'", agent.system_prompt)
-            self.assertIn("Model Hub configuration is the execution authority", agent.system_prompt)
-            self.assertIn("never guess an adapter", agent.system_prompt)
-            self.assertIn("action='sample_approval'", agent.system_prompt)
-            self.assertIn("action='qa_check'", agent.system_prompt)
-            self.assertIn("Reference media is a gate", agent.system_prompt)
-            self.assertIn("Sample approval is a gate", agent.system_prompt)
-            self.assertIn("Complex final delivery must pass QA first", agent.system_prompt)
-            self.assertIn("providerLock", agent.system_prompt)
-            self.assertIn("music.generate", agent.system_prompt)
-            self.assertIn("model3d.generate", agent.system_prompt)
-            self.assertIn("artifact IDs", agent.system_prompt)
+            self.assertIn("apps/v8-agent-os-engine/core/default_agent_personas.py", agent.promptSourceRefs)
+            self.assertIn("actual reference inputs", agent.system_prompt)
+            self.assertIn("not a fixed word count", agent.system_prompt)
+            self.assertIn("Do not impose a default gender", agent.system_prompt)
+            self.assertIn("Keep exact dialogue, subtitles and visible lettering separate", agent.system_prompt)
+            self.assertNotIn("creative_media_jobs", agent.system_prompt)
+            self.assertNotIn("ProductionPack", agent.system_prompt)
             self.assertNotIn("creative_media_create_job", agent.system_prompt)
             self.assertNotIn("creative_media_get_job", agent.system_prompt)
             self.assertNotIn("creative_media_job_artifacts", agent.system_prompt)
@@ -139,18 +126,11 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         self.assertEqual(psd_agent.capabilitySnapshot.get("agentClass"), "psd_layer_compositor")
         self.assertIn("psd_source", psd_agent.capabilitySnapshot.get("artifactCapabilities", []))
         self.assertIn("compose_psd", psd_agent.capabilitySnapshot.get("operationCapabilities", []))
-        self.assertIn("psd-tools helps inspect, compose, and export layered assets", psd_agent.system_prompt)
-        self.assertIn("#00FFCC", psd_agent.system_prompt)
-        self.assertIn("#FF00CC", psd_agent.system_prompt)
-        self.assertIn("#00FF00", psd_agent.system_prompt)
-        self.assertIn("creative_media_quality(action='alpha_inspect')", psd_agent.system_prompt)
-        self.assertIn("creative_media_assets(action='psd_compose_template')", psd_agent.system_prompt)
-        self.assertIn("provider raw JSON", psd_agent.system_prompt)
-
+        self.assertIn("painted checkerboard", psd_agent.system_prompt)
+        self.assertIn("Reopen the output", psd_agent.system_prompt)
         director = next(agent for agent in creative_agents if agent.id == "creative-media-director")
-        self.assertIn("then execute that plan", director.system_prompt)
-        self.assertIn("runtime-owned `creativeMediaExecutionContract`", director.system_prompt)
-        self.assertIn("Do not compile a replacement recipe", director.system_prompt)
+        self.assertIn("continue through generation, assembly and review", director.system_prompt)
+        self.assertNotIn("creativeMediaExecutionContract", director.system_prompt)
 
     def test_web_research_architect_has_research_runtime_binding(self):
         research_agent = next(agent for agent in default_subagent_configs() if agent.id == "web-research-architect")
@@ -166,10 +146,8 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertIn(
-            "Research orchestration, quality policy, stage schemas, and delivery gates are owned and injected by Research Runtime",
-            research_agent.system_prompt,
-        )
+        self.assertIn("evidence-based research", research_agent.system_prompt)
+        self.assertNotIn("Research Runtime", research_agent.system_prompt)
         for runtime_owned_detail in (
             "hard rejection floor",
             "3000",

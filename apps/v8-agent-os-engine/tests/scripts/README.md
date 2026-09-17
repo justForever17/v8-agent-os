@@ -9,6 +9,10 @@
 - 报告默认写到 `~/.v8-agent-os/reports/...`；不要把私有 live 报告提交进 Git。
 - 如果脚本被 Admin、cron、runtime 或部署流程正式调用，应迁移到 `apps/v8-agent-os-engine/scripts/` 并补稳定调用契约。
 
+## 配置分发
+
+`run_config_distribution_live.py --live --output <report.json>` 在三个隔离状态根启动真实 `main.app` Engine 进程，经现有签名 peer HTTP 验证准备不写入、逐目标 diff、一台离线另一台提交、磁盘读回、源与目标进程重启后续作、同命令去重、精确撤回、远端撤销信任与未鉴权拒绝。仅使用临时合成凭据，不调用 provider，不读用户状态。此为本机真实网络/持久化证据，不等同 Android/iOS、LAN/VPN 或安装包验收；补充故障反例见 `tests/network/test_config_distribution.py`。
+
 ## 受控系统操作
 
 `run_system_operations_windows_live.py --help` 给出分阶段入口。`status --live` 只显示组件和凭据是否配置；`privilege` / `unlock` 另需 `--allow-side-effects`，使用用户已在 Admin 配置的凭据，只打印去敏结果。`unlock` 会真实锁定当前会话再核验解锁，须提前告知用户；不自动重试认证。`lifecycle` 会请求 Windows UAC，移除并恢复两个自有组件，同时核对系统原有登录 Provider 未变。`--source-unlock-client` 仅标记源码客户端候选验证，不证明默认安装副本。
@@ -21,6 +25,8 @@
 
 | 脚本 | 用途 | 副作用 |
 | --- | --- | --- |
+| `export_default_agent_prompt_contract.py --output-dir <新目录>` | 从新种子加载 14 个角色，捕获 OpenAI/Anthropic 适配器原生调用边界的完整合成 system prompt、段顺序与实际工具 schema。 | 只写指定报告目录及其隔离状态根，不联网、不读取真实配置、不调用模型；不证明模型行为或真实媒体质量。 |
+| `replay_default_agent_prompt_regressions.py --output-dir <新目录>` | 对比旧种子迁移覆盖用户编辑的反例，以及移除内置 charter 的消融。 | 只写隔离 fixture 与结果；旧代码取自指定 Git baseline，不修改当前工作树或真实用户文件。 |
 | `export_context_management_assessment.py` | 导出超长上下文管理评估报告。 | 写本地报告。 |
 | `export_child_delegation_contract_dry_run.py` | 导出 Subagent → 孙 agent 任务契约与 handoff 回流空运行矩阵，检查孙 agent 拿到的是可执行任务而不是孤立 ID。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `export_memory_capability_assessment.py` | 导出 V8OS memory capability 评估报告。 | 写本地报告。 |

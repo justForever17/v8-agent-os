@@ -6,7 +6,7 @@ const ts = require('typescript');
 
 // Exercise the production component and its handlers. Only React scheduling,
 // presentation components, and network/cache boundaries are substituted.
-function mount(kind = 'admin', mutate = source => source) {
+function mount(kind = 'admin', mutate = source => source, availability = { robotFramework: true }) {
   const slots = [], effects = [], requests = [], notifications = [];
   let cursor = 0, dirty = false, tree;
   const rows = { drafts: [{ id: 'draft-a', name: 'Saved name', updatedAt: 'v1', steps: [{ stepId: 's1', use: 'click', target: { selector: { css: '#before' } } }] }] };
@@ -43,7 +43,7 @@ function mount(kind = 'admin', mutate = source => source) {
     if (name.endsWith('use-runtime-ops')) return { formatRunStatusLabel: status => status, formatWhen: value => value };
     if (name.endsWith('admin-client-cache')) return {
       peekAdminJsonCache: () => undefined,
-      fetchAdminJson: async url => structuredClone(url.includes('/drafts') ? rows : url.includes('/availability') ? { robotFramework: true } : {}),
+      fetchAdminJson: async url => structuredClone(url.includes('/drafts') ? rows : url.includes('/availability') ? availability : {}),
     };
     if (name === './rpa-run-state') {
       const exports = {};
@@ -101,6 +101,21 @@ test('refresh keeps dirty draft text and a remote version change keeps the origi
   assert.equal(JSON.parse(save.options.body).expectedUpdatedAt, 'v1');
   answer(save, { detail: 'version conflict' }, 409); await ui.settle();
   assert.equal(ui.find(n => n.props?.id === 'rpa-flow-name').props.value, 'Local edit');
+});
+
+test('draft authoring works with missing execution dependencies and does not dispatch a run', async () => {
+  const ui = mount('admin', source => source, { robotFramework: false, rpaFramework: false, libraries: {} });
+  await openDraft(ui);
+  ui.find(n => n.props?.id === 'rpa-flow-name').props.onChange({ target: { value: 'Prepare offline' } });
+  ui.render();
+  ui.button('studioSaveChanges').props.onClick();
+  const save = ui.requests.find(r => r.url.endsWith('/patch'));
+  assert.ok(save, 'Editing uses the draft transaction without an installed Robot runtime.');
+  assert.equal(JSON.parse(save.options.body).expectedUpdatedAt, 'v1');
+  assert.ok(ui.requests.every(r => !/\/(run|execute|start)$/.test(r.url)), 'Saving never starts execution.');
+  answer(save, { ...ui.rows.drafts[0], name: 'Prepare offline', updatedAt: 'v2' });
+  await ui.settle();
+  assert.equal(ui.find(n => n.props?.id === 'rpa-flow-name').props.value, 'Prepare offline');
 });
 
 test('a successful save does not erase edits made while the request was pending', async () => {

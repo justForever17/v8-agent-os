@@ -92,6 +92,10 @@ def _creative_agent_prompt() -> str:
             "</environment>\n"
         ),
         delegated_plan_context=delegated_plan_context,
+        available_tool_names=[
+            "creative_media_capabilities", "creative_media_plan", "creative_media_assets",
+            "creative_media_jobs", "creative_media_edit", "creative_media_quality",
+        ],
     )
 
 
@@ -126,24 +130,24 @@ def build_matrix() -> dict[str, Any]:
         ),
         "prompt_has_production_charter": _contains_all(
             prompt,
-            ["CreativeMediaProductionPack", "sample before batch", "provider/model", "Artifact proof"],
+            ["CreativeMediaProductionPack", "reference/sample/batch gates", "provider/model", "artifactProof"],
         ),
         "prompt_has_hard_production_gates": _contains_all(
             prompt,
             [
-                "Reference media is a gate",
-                "Sample approval is a gate",
-                "Complex final delivery must pass QA first",
+                "reference/sample/batch gates",
+                "already recorded decisions",
+                "creative_media_quality(action='qa_check')",
                 "providerLock",
             ],
         ),
         "prompt_explains_sample_approval_and_qa": _contains_all(
             prompt,
-            ["action='sample_approval'", "ask_user", "action='qa_check'"],
+            ["action='sample_approval'", "waiting_for_user", "action='qa_check'"],
         ),
         "prompt_explains_reference_preflight_and_selector": _contains_all(
             prompt,
-            ["action='reference_brief'", "action='rank_models'", "clean Markdown"],
+            ["action='reference_brief'", "action='rank_models'", "configured priority"],
         ),
         "facade_registry_declares_operation_parameters": _contains_all(
             json.dumps(action_contract, ensure_ascii=False),

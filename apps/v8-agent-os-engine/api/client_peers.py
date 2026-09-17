@@ -39,10 +39,15 @@ async def client_peers(request, principal, path):
         if request.method == "PATCH":
             from api.client_routes import _payload
             body = await _payload(request)
-            name = body.get("remoteNickname")
-            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
-                raise HTTPException(400, "supervisor_name_invalid")
-            body = {"remoteNickname": name.strip()}
+            if not body or set(body) - {"remoteNickname", "localRole"}:
+                raise HTTPException(400, "supervisor_settings_invalid")
+            if "remoteNickname" in body:
+                name = body["remoteNickname"]
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+                    raise HTTPException(400, "supervisor_name_invalid")
+                body["remoteNickname"] = name.strip()
+            if "localRole" in body and body["localRole"] not in {"primary", "companion"}:
+                raise HTTPException(400, "supervisor_role_invalid")
         await internal_json(request, principal, target, method=request.method, payload=body)
         return {"ok": True, "linkId": peer["linkId"], "servingInstanceId": principal.issuer}
     if len(parts) == 3 and parts[2] == "timeline" and request.method == "GET":

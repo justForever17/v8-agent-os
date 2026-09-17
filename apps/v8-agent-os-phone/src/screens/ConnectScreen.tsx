@@ -6,11 +6,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { PhoneTopbar } from "@/src/components/layout/PhoneTopbar";
 import { PeerConversation } from "@/src/components/connections/PeerConversation";
+import { ConfigDistributionPanel } from "@/src/components/connections/ConfigDistributionPanel";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { type AdminConnectionProfile, readAdminConnectionProfiles, updateAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
 import { listSupervisorPeers, updateSupervisorPeer, revokeSupervisorPeer, type SupervisorPeer } from "@/src/lib/supervisor-peers";
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
+import { deviceExecutor } from "@/src/lib/device-executor";
+import { phoneAuthorityKey } from "@/src/lib/phone-identity";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
@@ -33,6 +36,7 @@ export default function ConnectScreen() {
     const [selected, setSelected] = useState<DeviceRow | null>(null);
     const [nickname, setNickname] = useState("");
     const [conversation, setConversation] = useState<SupervisorPeer | null>(null);
+    const [distributionOpen, setDistributionOpen] = useState(false);
 
     const loadProfiles = useCallback(async () => setProfiles(await readAdminConnectionProfiles()), []);
     useEffect(() => {
@@ -97,6 +101,11 @@ export default function ConnectScreen() {
                 if (target.kind === "peer") { await revokeSupervisorPeer(authorizedFetch, target.value); await refreshPeers(); }
                 else if (isActive) await signOut();
                 else {
+                    const instanceId = target.value.instanceId || target.value.serverId;
+                    const principalId = target.value.user?.id || target.value.principalId;
+                    if (instanceId && principalId) {
+                        await deviceExecutor.forgetProfile(phoneAuthorityKey({ instanceId, principalId, profileId: target.value.id }));
+                    }
                     await updateAdminConnectionProfiles((current) => current.filter((item) => item.id !== target.value.id));
                     await loadProfiles();
                 }
@@ -113,6 +122,9 @@ export default function ConnectScreen() {
         <View style={styles.header}>
             <Text style={[styles.title, { color: colors.text }]}>{t("phone.devices.title")}</Text>
             <Text style={{ color: colors.textMuted }} numberOfLines={1}>{profiles.find((item) => item.id === activeProfileId)?.label || adminBaseUrl}</Text>
+            {status === "authenticated" ? <Pressable accessibilityRole="button" onPress={() => setDistributionOpen(true)} style={[styles.add, { borderColor: colors.border }]}>
+                <MaterialCommunityIcons name="share-variant-outline" size={18} color={colors.primary} /><Text style={{ color: colors.primary }}>{t("phone.configDistribution.title")}</Text>
+            </Pressable> : null}
             <Pressable accessibilityRole="button" onPress={() => router.navigate("/login?add=1" as Href)} style={[styles.add, { borderColor: colors.border }]}>
                 <MaterialCommunityIcons name="plus" size={18} color={colors.primary} /><Text style={{ color: colors.primary }}>{t("phone.devices.add")}</Text>
             </Pressable>
@@ -171,6 +183,7 @@ export default function ConnectScreen() {
             </View>
         </Modal>
         {conversation ? <PeerConversation peer={conversation} onClose={() => setConversation(null)} /> : null}
+        {distributionOpen ? <ConfigDistributionPanel onClose={() => setDistributionOpen(false)} /> : null}
     </SafeAreaView>;
 }
 

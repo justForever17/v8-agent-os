@@ -145,6 +145,9 @@ export default function LoginScreen() {
                 <Pressable accessibilityRole="button" style={{ padding: 16 }} onPress={() => router.dismissTo("/connect" as Href)}>
                     <Text style={{ color: colors.primary }}>{t("phone.devices.profiles")}</Text>
                 </Pressable>
+                {Platform.OS === "android" ? <Pressable onPress={() => router.push("/device-executor" as Href)} style={{ padding: 12 }}>
+                    <Text style={{ color: colors.primary }}>{t("executor.title")}</Text>
+                </Pressable> : null}
                 <KeyboardAvoidingView
                     style={styles.keyboard}
                     behavior={Platform.OS === "ios" ? "padding" : undefined}

@@ -33,6 +33,7 @@ def test_engineering_continuation_detects_same_session_debug_signal(monkeypatch,
     workspace = tmp_path / "project"
     workspace.mkdir()
     fake_db = SimpleNamespace(
+        get_chat_transcript_state=lambda _: {"context_epoch": 0},
         list_runtime_episodes=lambda **_: [
             {
                 "id": "episode-eng-1",
@@ -57,6 +58,11 @@ def test_engineering_continuation_detects_same_session_debug_signal(monkeypatch,
     assert context["previousEpisodeId"] == "episode-eng-1"
     assert context["previousRunId"] == "run-1"
     assert context["proofRefs"] == ["proof-1"]
+    # A revision invalidates old execution context even in the same workspace.
+    fake_db.get_chat_transcript_state = lambda _: {"context_epoch": 1}
+    fake_db.get_run_record = lambda _: {"context_epoch": 0}
+    stale = ChatRuntime._recent_engineering_continuation_context(session_id="session-1", workspace_path=str(workspace))
+    assert stale == {"active": False, "reason": "no_recent_engineering_context"}
 
 
 def test_engineering_continuation_does_not_capture_explicit_research_retry() -> None:
@@ -76,6 +82,7 @@ def test_engineering_continuation_rejects_other_workspace(monkeypatch, tmp_path)
     workspace.mkdir()
     other_workspace.mkdir()
     fake_db = SimpleNamespace(
+        get_chat_transcript_state=lambda _: {"context_epoch": 0},
         list_runtime_episodes=lambda **_: [
             {
                 "id": "episode-eng-1",

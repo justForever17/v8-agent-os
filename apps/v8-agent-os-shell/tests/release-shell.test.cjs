@@ -799,7 +799,8 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /phone-build-contract:[\s\S]*?Requested Phone target \$target ended with \$result/);
   assert.match(workflow, /PHONE_RESULT: \$\{\{ needs\.phone-build-contract\.result \}\}/);
   assert.match(workflow, /release-gate:[\s\S]*always\(\) && !cancelled\(\)/);
-  assert.match(workflow, /Required product \$product ended with \$result/);
+  assert.match(workflow, /import \{ evaluateReleaseGate, PRODUCT_TARGETS \} from '.\/scripts\/release\/release-manifest\.mjs'/);
+  assert.match(workflow, /const ready = evaluateReleaseGate\(/);
   assert.match(
     workflow,
     /publish:[\s\S]*?if: >-[\s\S]*?!cancelled\(\)[\s\S]*?needs\.plan\.result == 'success'[\s\S]*?needs\.release-gate\.result == 'success'[\s\S]*?needs\.release-gate\.outputs\.publish_ready == 'true'/,

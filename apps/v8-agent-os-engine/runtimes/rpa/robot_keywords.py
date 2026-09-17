@@ -42,9 +42,17 @@ class V8ChatRPAKeywords:
             payload["workspace_id"] = self.workspace_id
         if self.workspace_path:
             payload["workspace_path"] = self.workspace_path
+        from erc.runtime_context import get_runtime_context
+        context = get_runtime_context()
+        if context.get("runtime_kind") == "rpa":
+            payload.update({key: context[key] for key in ("run_id", "session_id", "user_id", "project_id", "workspace_id", "workspace_path")
+                            if context.get(key) is not None})
         return payload
 
     def _ensure_success(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        action = (result or {}).get("result") or result or {}
+        if action.get("status") in {"failed", "blocked", "unknown", "cancelled", "interrupted", "review_required"} or action.get("ok") is False:
+            raise AssertionError(str(action.get("message") or action.get("error") or "RPA action did not complete."))
         verification = (((result or {}).get("result") or {}).get("verification") or {})
         if verification and verification.get("passed") is False:
             raise AssertionError(str(verification.get("reason") or "RPA 步骤验证失败。"))
@@ -81,8 +89,10 @@ class V8ChatRPAKeywords:
         for item in args:
             if isinstance(item, str) and "=" in item:
                 key, value = item.split("=", 1)
-                payload[key.strip()] = self._coerce_robot_value(value)
-        return payload
+                payload[key.strip()] = value
+        text_fields = {"text", "target_text", "name", "window_title", "class_name", "automation_id", "element_id",
+                       "selector_key", "url", "source", "target", "path", "prompt", "goal"}
+        return {key: value if key in text_fields else self._coerce_robot_value(value) for key, value in payload.items()}
 
     def _model_response_text(self, response: Any) -> str:
         return sanitize_background_model_output(response).text
@@ -170,7 +180,7 @@ class V8ChatRPAKeywords:
 
     def observe(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         payload = self._robot_kwargs(args, kwargs)
-        return computer_use_runtime.observe(**self._base_kwargs(), **payload)
+        return self._ensure_success(computer_use_runtime.observe(**self._base_kwargs(), **payload))
 
     def observe_desktop(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         return self.observe(*args, **kwargs)
@@ -184,6 +194,8 @@ class V8ChatRPAKeywords:
             or payload.get("value")
             or ""
         ).strip()
+        if not expected:
+            raise ValueError("Text assertion requires expected text.")
         observation = self.observe(*args, **kwargs)
         if expected:
             haystack = json.dumps(observation, ensure_ascii=False)
@@ -201,13 +213,15 @@ class V8ChatRPAKeywords:
             if not condition:
                 raise AssertionError("RPA 断言条件为 false。")
             return {"asserted": True, "condition": condition}
-        return {"asserted": True, "condition": condition or "not_specified"}
+        raise ValueError("Assertion requires an explicit boolean condition or expected text.")
 
     def set_workflow_variable(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         payload = self._robot_kwargs(args, kwargs)
         name = str(payload.get("name") or payload.get("variable") or "").strip()
         if not name:
             raise ValueError("set_variable 步骤缺少变量名。")
+        from robot.libraries.BuiltIn import BuiltIn
+        BuiltIn().set_suite_variable("${" + name + "}", payload.get("value"))
         return {"variable": name, "value": payload.get("value")}
 
     def copy_file(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:

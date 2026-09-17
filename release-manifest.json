@@ -7,6 +7,21 @@
     "updatedAt": "2026-09-16T13:21:05.557Z"
   },
   "products": {
+    "tui": {
+      "enabled": false,
+      "required": false,
+      "reason": "TUI is not part of 2026.09.16.4; enable with a newer unified release after package acceptance.",
+      "targets": { "npm": { "enabled": true, "required": true } }
+    },
+    "server": {
+      "enabled": false,
+      "required": false,
+      "reason": "Server is not part of 2026.09.16.4; enable only with a newer unified release after server acceptance.",
+      "targets": {
+        "linux-x64": { "enabled": true, "required": true },
+        "linux-arm64": { "enabled": false, "required": false, "reason": "ARM production dependency closure and physical acceptance are pending." }
+      }
+    },
     "desktop": {
       "enabled": true,
       "required": true,

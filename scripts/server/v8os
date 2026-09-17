@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bundle_root="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+export V8_REPO_ROOT="$bundle_root"
+export V8_AGENT_OS_REPO_ROOT="$bundle_root"
+export V8_ENGINE_DIR="$bundle_root/apps/v8-agent-os-engine"
+export V8_ENGINE_PYTHON="$V8_ENGINE_DIR/.venv/bin/python3"
+export ENGINE_INSTALL_PROFILE=server
+export ENGINE_STARTUP_PROFILE=server
+export PLAYWRIGHT_BROWSERS_PATH="$V8_ENGINE_DIR/.playwright-browsers"
+if [[ "${1:-}" == packs ]]; then
+  shift
+  exec node "$bundle_root/scripts/server/feature-packs.mjs" "$@"
+fi
+case "${1:-}" in
+  start|stop|restart|status) exec node "$bundle_root/apps/v8-agent-os-cli/bin/v8os.mjs" service "$@" ;;
+  preview|open|repair) echo 'Use service management for this server package; graphical applications are not installed.' >&2; exit 1 ;;
+  *) exec node "$bundle_root/apps/v8-agent-os-cli/bin/v8os.mjs" "$@" ;;
+esac

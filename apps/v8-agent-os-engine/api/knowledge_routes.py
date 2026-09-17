@@ -42,7 +42,11 @@ from runtimes.memory.prompts import render_memory_admin_chat_prompt
 from runtimes.memory.project_registry import DEFAULT_AGENTS_TEMPLATE, WorkspaceTrustRequiredError, project_registry_service
 from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.workflow_service import WORKFLOW_MEMORY_DEFAULTS
-from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
+def ensure_system_rpa_seed_templates():
+    from core.runtime.startup_profile import runtime_family_installed
+    if runtime_family_installed("rpa"):
+        from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates as seed
+        return seed()
 
 
 router = APIRouter()

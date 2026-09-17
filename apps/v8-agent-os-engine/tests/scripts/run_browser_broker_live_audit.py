@@ -36,6 +36,7 @@ def main(argv=None):
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--isolated-root")
     parser.add_argument("--video", action="store_true", help="Also verify an owned synthetic video; requires ffmpeg.")
+    parser.add_argument("--server-base", action="store_true", help="Verify the base server without the optional image decoding pack.")
     args = parser.parse_args(argv)
     if not args.live:
         print("Refused: --live is required before creating state or starting any browser.")
@@ -45,13 +46,15 @@ def main(argv=None):
         raise SystemExit("isolated root must be new or empty")
     root.mkdir(parents=True, exist_ok=True)
     os.environ["V8_AGENT_OS_HOME"] = str(root / "state")
+    if args.server_base:
+        os.environ["ENGINE_INSTALL_PROFILE"] = "server"
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from core.database import db
     from core.storage import storage
     from core.tools.native.browser import browser_broker
     from erc.runtime_context import bind_runtime_context
-    from runtimes.computer_use.browser_automation import agent_browser_automation
-    from runtimes.computer_use.browser_session_service import browser_session_service
+    from core.agent_browser_automation import agent_browser_automation
+    from core.agent_browser_sessions import browser_session_service
 
     workspace = root / "workspace"
     workspace.mkdir()
@@ -210,6 +213,16 @@ def main(argv=None):
         assert "Action applied" in clicked, clicked
         result = await call("observe", browser_session_id=ids["browser_session_id"], screenshot=True)
         assert "Saved: Native browser verified" in result, result
+        db.create_run_record("browser-cancelled-run", "browser-live", user_id="fixture-owner")
+        db.update_run_record("browser-cancelled-run", status="cancelled")
+        with bind_runtime_context(session_id="browser-live", run_id="browser-cancelled-run", user_id="fixture-owner",
+                                  workspace_path=str(workspace), agent_id="supervisor", actor_role="supervisor", safety_approval_mode="minimal"):
+            cancelled = await call("fill", **ids, role="textbox", name="Title", text="MUST_NOT_BE_WRITTEN")
+            assert "browser_operation_cancelled" in cancelled, cancelled
+        after_cancel = await call("observe", browser_session_id=ids["browser_session_id"])
+        assert "MUST_NOT_BE_WRITTEN" not in after_cancel
+        assert "Native browser verified" in after_cancel
+        report["cancelBeforeDispatch"] = True
         ambiguous = await call("click", **ids, role="button", name="Duplicate")
         assert "locator_ambiguous" in ambiguous, ambiguous
         browser_session_service.take_control(ids["browser_session_id"], "live-user")
@@ -225,7 +238,19 @@ def main(argv=None):
         report["screenshots"] = [{"artifactId": item["artifactId"], "sha256": hashlib.sha256(Path(item["sourcePath"]).read_bytes()).hexdigest()}
                                  for item in screenshots]
         assert len(artifacts) == (6 if args.video else 2)
-        from core.tools.vision_image_inputs import prepare_ordered_images
+        from core.tools.vision_image_inputs import prepare_ordered_images, VisionImageInputError
+        if args.server_base:
+            for item in screenshots:
+                assert Path(item["sourcePath"]).read_bytes().startswith(b"\xff\xd8"), "screenshot is not a JPEG artifact"
+            try:
+                prepare_ordered_images([{"file_path": item["sourcePath"]} for item in screenshots],
+                                       runtime_context={"session_id": "browser-live", "workspace_path": str(workspace)}, remote_guard=lambda _url: None)
+            except VisionImageInputError as exc:
+                assert "image_dependency_missing" in str(exc), str(exc)
+                report["visionRead"] = {"status": "optional_pack_required", "featurePack": "creative_media"}
+            else:
+                raise AssertionError("server-base acceptance requires the image decoding dependency to be absent")
+            return
         prepared = prepare_ordered_images([{"file_path": item["sourcePath"]} for item in screenshots],
                                            runtime_context={"session_id": "browser-live", "workspace_path": str(workspace)},
                                            remote_guard=lambda _url: (_ for _ in ()).throw(AssertionError("local screenshots must not use a remote request")))

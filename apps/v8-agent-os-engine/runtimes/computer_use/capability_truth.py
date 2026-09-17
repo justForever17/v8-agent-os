@@ -371,7 +371,7 @@ def build_capability_truth(
         "evidenceRefs": [
             "runtimes/computer_use/capability_matrix.py",
             "runtimes/computer_use/drivers/contracts.py",
-            "runtimes/computer_use/browser_automation.py",
+            "core/agent_browser_automation.py",
             "runtimes/computer_use/app_profiles.py",
             "runtimes/computer_use/environment_probes.py",
             "runtimes/computer_use/platform_parity.py",

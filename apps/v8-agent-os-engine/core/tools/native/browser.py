@@ -17,8 +17,8 @@ from core.storage import storage
 from core.tools.native.tool_governance import _enforce_safety_decision, _raise_runtime_governance_exception_if_needed
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
-from runtimes.computer_use.browser_automation import agent_browser_automation
-from runtimes.computer_use.browser_session_service import BrowserSessionError, browser_session_service
+from core.agent_browser_automation import agent_browser_automation
+from core.agent_browser_sessions import BrowserSessionError, browser_session_service
 
 
 @tool

@@ -168,6 +168,39 @@ function validateDesktopTgzIntegrity() {
   };
 }
 
+export function validateTuiTgzIntegrity(repoRoot = ROOT) {
+  const appRoot = resolve(repoRoot, "apps/v8-agent-os-tui");
+  const pkg = readJson(resolve(appRoot, "package.json"));
+  const lock = readJson(resolve(appRoot, "package-lock.json"));
+  if (pkg.name !== "@v8/agent-os-tui" || typeof pkg.version !== "string"
+      || typeof lock.version !== "string" || typeof lock.packages?.[""]?.version !== "string") {
+    throw new Error("TUI package.json and package-lock.json require a package identity and both lock version projections before preparation");
+  }
+  const entries = Object.entries(lock.packages || {}).filter(([, entry]) => String(entry.resolved || "").startsWith("file:"));
+  for (const [name, value] of Object.entries({ ...pkg.dependencies, ...pkg.optionalDependencies, ...pkg.devDependencies })) {
+    if (String(value).startsWith("file:") && !entries.some(([key, entry]) => key.endsWith(`node_modules/${name}`) && entry.resolved === value)) {
+      throw new Error(`TUI source dependency ${name} has no matching locked local tarball`);
+    }
+  }
+  for (const [name, entry] of entries) {
+    if (!entry.resolved.endsWith(".tgz") || !entry.integrity) throw new Error(`TUI source dependency ${name} requires a locked tgz integrity`);
+    const tarball = resolve(appRoot, entry.resolved.slice(5));
+    if (!existsSync(tarball) || sha512Integrity(tarball) !== entry.integrity) throw new Error(`TUI local tarball integrity mismatch: ${name}`);
+  }
+  return { ok: true, message: `TUI local tarball integrity OK (${entries.length} source tarball(s)).` };
+}
+
+export function updateTuiVersion(version, repoRoot = ROOT) {
+  return ["package.json", "package-lock.json"].map((name) => {
+    const filename = resolve(repoRoot, "apps/v8-agent-os-tui", name);
+    const value = readJson(filename);
+    value.version = toSemver(version);
+    if (value.packages?.[""]) value.packages[""].version = value.version;
+    writeJson(filename, value);
+    return filename;
+  });
+}
+
 function updatePhoneVersion(version) {
   const semver = toSemver(version);
   const packagePath = resolve(ROOT, "apps/v8-agent-os-phone/package.json");
@@ -211,9 +244,10 @@ function updateDesktopVersion(version) {
   return [packagePath, lockPath];
 }
 
-function updateManifest(version, channel) {
+function updateManifest(version, channel, products) {
   const manifestPath = resolve(ROOT, "release-manifest.json");
   const manifest = loadReleaseManifest(manifestPath).manifest;
+  if (products) manifest.products = products;
   manifest.release = {
     version,
     channel,
@@ -230,6 +264,8 @@ function writeNotes(product, version, channel, tag) {
   mkdirSync(dirname(outPath), { recursive: true });
   run("node", [
     "scripts/release/generate-release-notes.mjs",
+    "--manifest",
+    resolve(ROOT, "release-manifest.json"),
     "--product",
     product,
     "--version",
@@ -290,6 +326,8 @@ export function resolvePreparationIdentity({ manifest, version, channel = "previ
   const products = [
     ...(plan.desktop.enabled ? ["desktop"] : []),
     ...(plan.phone.enabled ? ["phone"] : []),
+    ...(plan.server.enabled ? ["server"] : []),
+    ...(plan.tui.enabled ? ["tui"] : []),
   ];
   return {
     version,
@@ -309,6 +347,7 @@ export function resolvePreparationRequest(args, currentManifest) {
   if (fromManifest && (args.version || args.channel)) {
     throw new Error("--from-manifest reads release.version and release.channel; do not also pass --version or --channel");
   }
+  if (fromManifest && (args["enable-server"] || args["enable-tui"])) throw new Error("--from-manifest cannot enable new products; prepare a newer release version");
   return {
     fromManifest,
     apply,
@@ -318,14 +357,33 @@ export function resolvePreparationRequest(args, currentManifest) {
   };
 }
 
+export function preparationManifest(manifest, args) {
+  const planned = structuredClone(manifest);
+  for (const name of ["server", "tui"]) {
+    if (!args[`enable-${name}`]) continue;
+    if (args[`enable-${name}`] !== true) throw new Error(`--enable-${name} takes no value`);
+    const entry = planned.products[name] || { targets: name === "tui"
+      ? { npm: { enabled: true, required: true } }
+      : { "linux-x64": { enabled: true, required: true }, "linux-arm64": { enabled: false, required: false, reason: "ARM dependency closure and package acceptance are pending." } } };
+    entry.enabled = entry.required = true;
+    delete entry.reason;
+    const target = name === "tui" ? "npm" : "linux-x64";
+    entry.targets[target] = { enabled: true, required: true };
+    planned.products[name] = entry;
+  }
+  validateReleaseManifest(planned);
+  return planned;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const currentManifest = loadReleaseManifest(resolve(ROOT, "release-manifest.json")).manifest;
   const currentProjection = validateReleaseProjections(currentManifest, ROOT);
   const request = resolvePreparationRequest(args, currentManifest);
+  const plannedManifest = preparationManifest(currentManifest, args);
   const { fromManifest, apply, version, channel } = request;
   const identity = resolvePreparationIdentity({
-    manifest: currentManifest,
+    manifest: plannedManifest,
     version,
     channel,
     product: args.product,
@@ -335,9 +393,12 @@ function main() {
   if (request.checkTagAvailability) ensureTagAvailable(tag);
   ensureCleanForApply(apply);
 
-  const integrity = products.map((product) => (
-    product === "phone" ? validatePhoneTgzIntegrity() : validateDesktopTgzIntegrity()
-  ));
+  const integrity = products.flatMap((product) => {
+    if (product === "phone") return [validatePhoneTgzIntegrity()];
+    if (product === "desktop") return [validateDesktopTgzIntegrity()];
+    if (product === "tui") return [validateTuiTgzIntegrity()];
+    return []; // Server derives its identity from the frozen manifest at build time.
+  });
   if (fromManifest) {
     integrity.unshift({
       ok: true,
@@ -364,8 +425,9 @@ function main() {
   const changed = [];
   if (products.includes("phone")) changed.push(...updatePhoneVersion(version));
   if (products.includes("desktop")) changed.push(...updateDesktopVersion(version));
+  if (products.includes("tui")) changed.push(...updateTuiVersion(version));
   changed.push(updateVersionProjection(version));
-  changed.push(updateManifest(version, channel));
+  changed.push(updateManifest(version, channel, plannedManifest.products));
   validateReleaseProjections(loadReleaseManifest(resolve(ROOT, "release-manifest.json")).manifest, ROOT);
   const notesPath = writeNotes("all", version, channel, tag);
 

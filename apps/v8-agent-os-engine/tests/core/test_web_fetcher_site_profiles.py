@@ -729,7 +729,7 @@ def test_agent_browser_profile_gets_the_full_provider_navigation_budget(monkeypa
     from core import agent_browser_access
     read_outcomes: list[tuple[str, str]] = []
     monkeypatch.setattr(agent_browser_access, "record_profile_read", lambda url, status: read_outcomes.append((url, status)))
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
     def fail_profile(**kwargs):
         timeouts.append(int(kwargs["timeout_seconds"] * 1000))
         raise TimeoutError("simulated browser navigation timeout")
@@ -814,7 +814,7 @@ def test_allowlisted_auto_fetch_prioritizes_headless_profile_before_public_stati
         web_fetcher, "_fetch_with_reader_fallback",
         lambda *_args, **_kwargs: pytest.fail("governed profile fixture must not reach the network reader"),
     )
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
     def read_profile(**kwargs):
         response = _DynamicFetcher.fetch(kwargs["url"], timeout_seconds=kwargs["timeout_seconds"])
         return {"contextReused": True, "html": response.html_content, "status": response.status, "url": response.url}
@@ -909,7 +909,7 @@ def test_allowlisted_metaso_profile_uses_browser_before_public_sse(monkeypatch) 
     )
     fetch_calls: list[dict[str, object]] = []
 
-    from runtimes.computer_use.browser_automation import agent_browser_automation
+    from core.agent_browser_automation import agent_browser_automation
     def fake_profile_chat(**kwargs):
         fetch_calls.append(kwargs)
         return {"ok": True, "text": "LangChain current capabilities reference", "contextReused": True,

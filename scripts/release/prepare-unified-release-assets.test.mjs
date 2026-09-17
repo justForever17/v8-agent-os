@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { toSemver } from "./release-manifest.mjs";
 
 import { prepareUnifiedReleaseAssets } from "./prepare-unified-release-assets.mjs";
 
@@ -31,14 +33,20 @@ function fixture() {
   }
   fs.writeFileSync(path.join(inputDir, "desktop", "RUNTIME_PROBE-windows-x64.json"), "{}");
   fs.writeFileSync(path.join(inputDir, "phone", "android", "app-release.apk"), "android");
-  return { root, inputDir, outputDir };
+  // These cases exercise the historical Desktop/Phone release surface explicitly.
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+  delete manifest.products.server;
+  delete manifest.products.tui;
+  const manifestPath = path.join(root, "release-manifest.json");
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  return { root, inputDir, outputDir, manifestPath };
 }
 
 test("unified preview emits required Desktop and Android assets but no diagnostic JSON", () => {
-  const { root, inputDir, outputDir } = fixture();
+  const { root, inputDir, outputDir, manifestPath } = fixture();
   try {
     const result = prepareUnifiedReleaseAssets({
-      manifestPath: MANIFEST,
+      manifestPath,
       tag: `v8-os-v${VERSION}`,
       inputDir,
       outputDir,
@@ -60,10 +68,10 @@ test("unified preview emits required Desktop and Android assets but no diagnosti
 });
 
 test("legacy Phone tag only emits the Phone compatibility surface", () => {
-  const { root, inputDir, outputDir } = fixture();
+  const { root, inputDir, outputDir, manifestPath } = fixture();
   try {
     const result = prepareUnifiedReleaseAssets({
-      manifestPath: MANIFEST,
+      manifestPath,
       tag: `v8-os-phone-v${VERSION}`,
       inputDir,
       outputDir,
@@ -79,12 +87,12 @@ test("legacy Phone tag only emits the Phone compatibility surface", () => {
 });
 
 test("a missing required target blocks fan-in publication", () => {
-  const { root, inputDir, outputDir } = fixture();
+  const { root, inputDir, outputDir, manifestPath } = fixture();
   try {
     fs.rmSync(path.join(inputDir, "desktop", DESKTOP_NAMES[0]));
     assert.throws(
       () => prepareUnifiedReleaseAssets({
-        manifestPath: MANIFEST,
+        manifestPath,
         tag: `v8-os-v${VERSION}`,
         inputDir,
         outputDir,
@@ -96,12 +104,43 @@ test("a missing required target blocks fan-in publication", () => {
   }
 });
 
+test("enabled server is required in fan-in; disabled server does not change a published plan", () => {
+  const { root, inputDir, outputDir, manifestPath } = fixture();
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.products.server = {
+      enabled: true, required: true,
+      targets: { "linux-x64": { enabled: true, required: true }, "linux-arm64": { enabled: false, required: false, reason: "pending" } },
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(() => prepareUnifiedReleaseAssets({ manifestPath, inputDir, outputDir }), /Required Server/);
+    fs.mkdirSync(path.join(inputDir, "server"));
+    const file = `V8OS-Server-${VERSION}-linux-x64.tar.gz`;
+    const stage = path.join(root, "archive");
+    const name = `v8os-server-${VERSION}-linux-x64`;
+    const contents = {
+      "server-manifest.json": JSON.stringify({ schema: 1, profile: "server", version: VERSION, platform: "linux", arch: "x64", sourceDirty: false, sourceCommit: "a".repeat(40) }),
+      "VERSION": toSemver(VERSION), "apps/v8-agent-os-engine/main.py": "# fixture",
+      "apps/v8-agent-os-cli/bin/v8os.mjs": "// fixture", "SHA256SUMS": "fixture checksums",
+    };
+    for (const [relative, content] of Object.entries(contents)) {
+      const dest = path.join(stage, name, relative);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, content);
+    }
+    execFileSync("tar", ["-czf", path.join(inputDir, "server", file), "-C", stage, name]);
+    const result = prepareUnifiedReleaseAssets({ manifestPath, inputDir, outputDir });
+    assert.ok(result.assets.includes(file));
+    assert.match(fs.readFileSync(path.join(outputDir, "SHA256SUMS.txt"), "utf8"), /V8OS-Server-/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("fan-in refuses to replace its input tree or a non-empty output directory", () => {
-  const { root, inputDir, outputDir } = fixture();
+  const { root, inputDir, outputDir, manifestPath } = fixture();
   try {
     assert.throws(
       () => prepareUnifiedReleaseAssets({
-        manifestPath: MANIFEST,
+        manifestPath,
         tag: `v8-os-v${VERSION}`,
         inputDir,
         outputDir: inputDir,
@@ -114,7 +153,7 @@ test("fan-in refuses to replace its input tree or a non-empty output directory",
     fs.writeFileSync(path.join(outputDir, "keep.txt"), "do not overwrite");
     assert.throws(
       () => prepareUnifiedReleaseAssets({
-        manifestPath: MANIFEST,
+        manifestPath,
         tag: `v8-os-v${VERSION}`,
         inputDir,
         outputDir,

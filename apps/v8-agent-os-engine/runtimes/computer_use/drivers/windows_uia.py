@@ -957,6 +957,24 @@ class WindowsUIADriver:
             self._observation_cache[cache_key] = _ObservationCacheEntry(observed_at=observed_at, observation=observation)
         return observation
 
+    def resolve_locator_count(self, *, locator: Dict[str, Any], window: Dict[str, Any]) -> Dict[str, Any]:
+        """Exact, fresh UIA query. A bounded observation tree cannot prove uniqueness."""
+        handle = window.get("handle") or window.get("windowHandle")
+        title = window.get("title") or window.get("windowTitle")
+        if not handle and not title:
+            raise WindowsUIADriverError("定位验证需要明确的目标窗口。")
+        query = {key: value for key, value in {
+            "auto_id": locator.get("automationId") or locator.get("automation_id"),
+            "title": locator.get("name"),
+            "control_type": locator.get("controlType") or locator.get("control_type"),
+            "class_name": locator.get("className") or locator.get("class_name"),
+        }.items() if value not in (None, "")}
+        if not query:
+            raise WindowsUIADriverError("定位验证需要持久语义选择器。")
+        root = self._resolve_root(window_title=title, window_handle=handle, backend_name="uia")
+        matches = root.descendants(**query)
+        return {"findCount": len(matches), "complete": True, "source": "uia_exact_descendants"}
+
     def find_elements(
         self,
         *,

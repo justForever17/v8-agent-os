@@ -1,0 +1,95 @@
+name: Linux Server package
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'scripts/server/**'
+      - 'apps/v8-agent-os-engine/**'
+      - 'apps/v8-agent-os-cli/**'
+      - 'apps/v8-agent-os-admin/src/**'
+      - 'release-manifest.json'
+      - '.github/workflows/server-build.yml'
+permissions:
+  contents: read
+jobs:
+  linux-x64:
+    runs-on: ${{ format('ubuntu-{0}', matrix.ubuntu) }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.0.0', '22']
+        ubuntu: ['22.04', '24.04']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - run: npm ci --prefix scripts/server --ignore-scripts
+      - name: Validate archive and interrupted installation contracts
+        run: python scripts/server/tests/test_distribution.py -q
+      - name: Test the supported CLI runtime floor
+        run: node --test apps/v8-agent-os-cli/tests/server_service.test.mjs apps/v8-agent-os-cli/tests/http_redirect.test.mjs apps/v8-agent-os-cli/tests/chat_completion.test.mjs
+      - name: Build independent archive
+        run: python scripts/server/build-server-bundle.py --output out/server
+      - name: Install inside clean Ubuntu with the selected Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd out/server && sha256sum --check ./*.tar.gz.sha256)
+          mkdir -p "$RUNNER_TEMP/server-package"
+          tar xf out/server/V8OS-Server-*-linux-x64.tar.gz -C "$RUNNER_TEMP/server-package"
+          bundles=("$RUNNER_TEMP"/server-package/v8os-server-*-linux-x64)
+          [[ ${#bundles[@]} == 1 && -d "${bundles[0]}" ]]
+          node_home="$(dirname "$(dirname "$(command -v node)")")"
+          python_home="$(python -c 'import sys; print(sys.base_prefix)')"
+          # Playwright's pinned Docker profile allows Chromium to create its
+          # sandbox user namespace; the browser remains an unprivileged process.
+          curl --fail --location --retry 3 https://raw.githubusercontent.com/microsoft/playwright/v1.56.0/utils/docker/seccomp_profile.json -o "$RUNNER_TEMP/server-seccomp.json"
+          printf '%s  %s\n' cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849 "$RUNNER_TEMP/server-seccomp.json" | sha256sum --check
+          docker run --rm --init --shm-size=1g --security-opt "seccomp=$RUNNER_TEMP/server-seccomp.json" \
+            -v "${bundles[0]}:/package:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/server:/probes:ro" \
+            -v "$node_home:$node_home:ro" -v "$python_home:$python_home:ro" \
+            -e NODE_HOME="$node_home" -e PYTHON_HOME="$python_home" -e RUN_MEMORY_PACKS="${{ matrix.node }}" -e UBUNTU_VERSION="${{ matrix.ubuntu }}" \
+            ubuntu:${{ matrix.ubuntu }} bash -euo pipefail -c '
+              apt-get update -qq
+              if [[ "$UBUNTU_VERSION" == 22.04 ]]; then
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8 zlib1g libexpat1 util-linux passwd
+              else
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3t64 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8t64 zlib1g libexpat1 util-linux passwd
+              fi
+              export PATH="$NODE_HOME/bin:$PYTHON_HOME/bin:$PATH" LD_LIBRARY_PATH="$PYTHON_HOME/lib"
+              "$PYTHON_HOME/bin/python" -m venv /tmp/browser-deps
+              playwright_version=$(sed -n "s/^playwright==\([^ ]*\).*/\1/p" /package/apps/v8-agent-os-engine/requirements/server-linux-x64.lock)
+              [[ -n "$playwright_version" ]]
+              /tmp/browser-deps/bin/python -m pip install "playwright==$playwright_version"
+              /tmp/browser-deps/bin/python -m playwright install-deps chromium
+              useradd --create-home --shell /bin/bash server-test
+              cp -a /package /home/server-test/package
+              chown -R server-test:server-test /home/server-test/package
+              runuser -u server-test -- env V8_SERVER_PYTHON="$PYTHON_HOME/bin/python" PATH="$PATH" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" bash -euo pipefail -c "
+                unset DISPLAY WAYLAND_DISPLAY PYTHONPATH
+                /home/server-test/package/install.sh
+                /home/server-test/package/v8os --help
+              "
+              if [[ "$RUN_MEMORY_PACKS" == 22 ]]; then
+                for pack in document_ingestion vector_memory; do
+                  runuser -u server-test -- env -u DISPLAY -u WAYLAND_DISPLAY -u PYTHONPATH PATH="$PATH" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
+                    /home/server-test/package/apps/v8-agent-os-engine/.venv/bin/python3 \
+                    /probes/smoke-pack-install.py --live --bundle /home/server-test/package --pack "$pack"
+                done
+              fi
+            '
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: matrix.node == '22' && matrix.ubuntu == '24.04'
+        with:
+          name: v8os-server-linux-x64
+          path: |
+            out/server/*.tar.gz
+            out/server/*.tar.gz.sha256
+          if-no-files-found: error

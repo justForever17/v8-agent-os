@@ -1455,7 +1455,17 @@ class RuntimeEpisodeRunner:
                     run_id=run_id,
                 )
                 return
-            episode, dependency_gate = self._prepare_cross_episode_dependencies(episode)
+            from core.runtime_tool_access import runtime_kind_available
+
+            # Restored/queued episodes must recheck the installation at the
+            # execution boundary. Remote targets own their own capabilities.
+            local_runtime_unavailable = (
+                target_kind not in {"network_peer", "external_worker"}
+                and not runtime_kind_available(kind)
+            )
+            dependency_gate = None
+            if not local_runtime_unavailable:
+                episode, dependency_gate = self._prepare_cross_episode_dependencies(episode)
             if dependency_gate and dependency_gate.get("state") == "waiting_dependency":
                 waiting = self._require_claim_write(
                     episode_id,
@@ -1477,7 +1487,20 @@ class RuntimeEpisodeRunner:
                     dependency=dependency_gate,
                 )
                 return
-            if dependency_gate and dependency_gate.get("state") == "failed":
+            if local_runtime_unavailable:
+                handoff = build_handoff_ref(
+                    producer_episode_id=episode_id,
+                    kind=f"{kind}_handoff",
+                    compact_summary=f"This installation cannot execute the local {kind} runtime.",
+                    status="failed",
+                    confidence="high",
+                    consumer_hint=(
+                        "Choose a compatible execution target, or enable a supported feature pack and restart "
+                        "Engine before explicitly retrying the task."
+                    ),
+                    extra={"errorCode": "runtime_unavailable", "recoverable": False},
+                )
+            elif dependency_gate and dependency_gate.get("state") == "failed":
                 handoff = build_handoff_ref(
                     producer_episode_id=episode_id,
                     kind=f"{kind}_handoff",
@@ -7306,7 +7329,7 @@ class RuntimeEpisodeRunner:
                         ),
                         progress=f"rpa: running draft {script_id}",
                     )
-                    status = "failed" if str(result.get("status") or "").lower() in {"failed", "fallback_failed", "blocked"} else "ready"
+                    status = "ready" if str(result.get("status") or "").lower() in {"completed", "completed_via_computer_use_primary"} else "failed"
                     prepared = dict(result)
                     summary = f"RPA draft executed: {script_id} ({result.get('status') or 'completed'})."
                 else:
@@ -7352,7 +7375,7 @@ class RuntimeEpisodeRunner:
                         ),
                         progress=f"rpa: running robot {robot_file}",
                     )
-                    status = "failed" if str(result.get("status") or "").lower() in {"failed", "fallback_failed", "blocked"} else "ready"
+                    status = "ready" if str(result.get("status") or "").lower() in {"completed", "completed_via_computer_use_primary"} else "failed"
                     prepared = dict(result)
                     summary = f"RPA robot flow executed: {robot_file} ({result.get('status') or 'completed'})."
                 else:

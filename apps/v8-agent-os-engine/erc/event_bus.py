@@ -40,6 +40,7 @@ class SessionEventEmitter:
     run_id: Optional[str]
     default_source: RuntimeSource
     _seq: int
+    context_epoch: int = 0
 
     def emit(
         self,
@@ -52,6 +53,7 @@ class SessionEventEmitter:
         event_id: Optional[str] = None,
         event_ts: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        payload = {**payload, "contextEpoch": self.context_epoch}
         def append(candidate: Dict[str, Any]) -> Optional[int]:
             if canvas_outbox_id:
                 return db.project_canvas_graph_run_event_outbox(candidate, outbox_id=canvas_outbox_id)
@@ -160,6 +162,8 @@ class RuntimeEventBus:
             run_id=run_id,
             default_source=source,
             _seq=db.get_next_runtime_seq(session_id),
+            context_epoch=int((db.get_run_record(run_id) or {}).get("context_epoch") or 0)
+            if run_id else int(db.get_chat_transcript_state(session_id)["context_epoch"]),
         )
 
 

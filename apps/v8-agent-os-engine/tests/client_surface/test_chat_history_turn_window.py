@@ -286,6 +286,7 @@ def test_database_turn_index_query_does_not_hydrate_private_payloads(tmp_path) -
         "id",
         "session_id",
         "run_id",
+        "source_run_id",
         "ordinal",
         "role",
         "state",

@@ -145,7 +145,7 @@ def test_interactive_surface_processes_share_windowless_helpers() -> None:
     chat_realtime_routes = importlib.import_module("api.chat_realtime_routes")
     action_executor = importlib.import_module("core.action_executor")
     skills_install_service = importlib.import_module("core.skills_install_service")
-    browser_automation = importlib.import_module("runtimes.computer_use.browser_automation")
+    browser_automation = importlib.import_module("core.agent_browser_automation")
     visual_locator_runtime = importlib.import_module("runtimes.computer_use.visual_locator_runtime")
     robot_adapter = importlib.import_module("runtimes.rpa.robot_adapter")
 

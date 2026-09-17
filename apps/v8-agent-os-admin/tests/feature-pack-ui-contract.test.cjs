@@ -227,7 +227,7 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.doesNotMatch(engineSource, /requests\.(get|post)|urlopen|httpx\.(get|post)/);
 });
 
-test("dependency-gated runtime pages stay unmounted until the installed runtime is ready", () => {
+test("desktop execution stays dependency-gated; RPA authoring remains available before runtime installation", () => {
   const desktopSource = fs.readFileSync(path.join(adminRoot, "src", "app", "admin", "(dashboard)", "desktop-automation", "page.tsx"), "utf8");
   const rpaSource = fs.readFileSync(path.join(adminRoot, "src", "app", "admin", "(dashboard)", "rpa", "page.tsx"), "utf8");
 
@@ -257,15 +257,15 @@ test("dependency-gated runtime pages stay unmounted until the installed runtime 
   assert.match(rpaSource, /capability\?\.availability === "disabled_by_policy"/);
   assert.match(rpaSource, /\/api\/rpa\/availability/);
   assert.match(rpaSource, /availability\?\.robotFramework === true/);
-  assert.match(rpaSource, /availability\?\.rpaFramework === true/);
-  assert.match(rpaSource, /availability\?\.libraries\?\.\["RPA\.Browser\.Selenium"\] === true/);
-  assert.match(rpaSource, /availability\?\.libraries\?\.\["RPA\.Excel\.Files"\] === true/);
+  // Studio can edit a Robot draft before installing execution libraries.
+  // Library-specific execution failures remain owned by Engine preparation.
   assert.match(rpaSource, /featurePackState !== "ready"/);
   assert.match(rpaSource, /featurePackState === "missing"/);
   assert.ok(
-    rpaSource.indexOf('{featurePackState !== "ready" ?') < rpaSource.lastIndexOf("<RPAWorkbench />"),
-    "RPA Workbench must remain unmounted until the Engine route and dependency probes are ready",
+    rpaSource.indexOf("<RPAWorkbench />") < rpaSource.indexOf('{featurePackState !== "ready" ?'),
+    "RPA authoring must stay mounted while installation guidance is shown",
   );
+  assert.match(rpaSource, /if \(enabled && featurePackState !== "ready"\)/);
 });
 
 test("feature packs publish immutable version targets with journal recovery and RPA dry-run smoke", () => {

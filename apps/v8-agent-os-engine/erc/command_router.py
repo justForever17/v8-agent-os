@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from typing import Any, Callable, Dict, Optional
@@ -1415,6 +1416,12 @@ class RuntimeCommandRouter:
 
     def recover_approval_resumes(self, *, restart: bool = False) -> None:
         from erc.session_lane_scheduler import session_lane_scheduler
+        if restart:
+            from erc.snapshot_service import snapshot_service
+            for recovered in db.recover_interrupted_rpa_approval_resumes():
+                workflow_ledger_service.sync_run_status(recovered["runId"], run_status=recovered["status"],
+                    reason=recovered["reason"], approval_id=recovered["approvalId"], metadata={"reconciliationRequired": True})
+                snapshot_service.refresh_chat_projection(recovered["sessionId"], run_id=recovered["runId"])
         if self._schedule_chat_run is None:
             return
         for pending in db.list_undelivered_approval_resumes():
@@ -1445,6 +1452,10 @@ class RuntimeCommandRouter:
         if "runtimeContinuation" in request:
             return {"resume_mode": "runtime_episode", **db.resume_runtime_episode_after_approval(
                 str(approval.get("id") or approval.get("approval_id") or ""))}
+        if run_record.get("run_type") == "rpa" and (run_record.get("metadata") or {}).get("resumeExecution"):
+            from runtimes.rpa.runtime import rpa_runtime
+            asyncio.get_running_loop().run_in_executor(None, rpa_runtime.resume_approved_run, approval)
+            return {"resume_mode": "rpa", "resume_scheduled": True, "resumed_run_id": run_record["id"]}
         if approval_kind == "spec_stage_approval":
             if self._schedule_chat_run is None:
                 self._emit_resume_event(

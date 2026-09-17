@@ -1,3 +1,4 @@
+"""Shared Agent browser session ownership, independent of desktop runtimes."""
 from __future__ import annotations
 
 import asyncio

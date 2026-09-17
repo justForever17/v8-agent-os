@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from runtimes.computer_use.browser_automation import BrowserLaneDecision
+from core.agent_browser_automation import BrowserLaneDecision
 from runtimes.computer_use.fact_resolver import classify_goal, resolve_goal_facts
 from runtimes.computer_use.playbook_executors import (
     PlaybookExecutionContext,

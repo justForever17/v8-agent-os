@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List
 
 
-_URL_PREFIX_RE = re.compile(r"^(https?://|file://|www\.)", re.IGNORECASE)
+from core.agent_browser_profile import looks_like_url
 _WINDOWS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 _ASCII_CODELIKE_RE = re.compile(r"^[\x20-\x7E]+$")
 _WORKSPACE_RELATIVE_RE = re.compile(r"^(downloaded_media/|workspace/|src/|dist/|build/)", re.IGNORECASE)
@@ -17,13 +17,6 @@ def _string_tokens(values: Iterable[Any]) -> List[str]:
         if token:
             normalized.append(token)
     return normalized
-
-
-def looks_like_url(text: str | None) -> bool:
-    value = str(text or "").strip()
-    if not value:
-        return False
-    return bool(_URL_PREFIX_RE.match(value)) or ("." in value and " " not in value and "/" in value)
 
 
 def looks_like_windows_path(text: str | None) -> bool:

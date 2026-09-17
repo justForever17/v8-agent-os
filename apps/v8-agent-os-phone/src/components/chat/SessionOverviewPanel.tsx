@@ -31,6 +31,7 @@ import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { listSessionArtifacts, listSessionSources, readSessionWorkbenchFile } from "@/src/lib/phone-api";
 import { projectLatestPhoneCanvasGraphRunState, type PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
+import { useAppSession } from "@/src/providers/app-session";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ArtifactDetail, ChatMessage, PhoneUiArtifactNode, PhoneUiExecutionNode, PhoneUiTimelineNode, WorkbenchFilePage } from "@/src/types/admin";
 
@@ -442,6 +443,21 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
     const { width } = useWindowDimensions();
     const { colors, t } = useUiPrefs();
     const panelWidth = Math.min(440, Math.max(300, width * 0.9));
+    const { setActiveConversationId } = useAppSession();
+    const [branchSourceSessionId, setBranchSourceSessionId] = useState("");
+    useEffect(() => {
+        if (!visible || !sessionId) return;
+        const controller = new AbortController();
+        setBranchSourceSessionId("");
+        void authorizedFetch(`/api/client/conversations/${encodeURIComponent(sessionId)}?omitMessages=1`, { signal: controller.signal })
+            .then(async (response) => response.ok ? response.json() : null)
+            .then((payload) => {
+                if (controller.signal.aborted) return;
+                const branch = payload?.branch || payload?.projection?.branch || payload?.snapshot?.branch;
+                setBranchSourceSessionId(String(branch?.parentSessionId || branch?.sourceSessionId || ""));
+            }).catch(() => undefined);
+        return () => controller.abort();
+    }, [authorizedFetch, sessionId, visible]);
     const { progress, reduceMotion, rendered } = useDeferredModalMotion(visible, { enterDuration: 220, exitDuration: 180 });
     const overlayMotionStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
     const panelMotionStyle = useAnimatedStyle(() => ({
@@ -592,6 +608,9 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
                         </View>
                     </View>
                     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+                        {branchSourceSessionId ? <Pressable accessibilityRole="link" accessibilityLabel={t("conversationRecovery.branchOrigin")} onPress={() => { onClose(); void setActiveConversationId(branchSourceSessionId); }} style={{ paddingVertical: 8 }}>
+                            <Text style={{ color: colors.textMuted }}>{t("conversationRecovery.branchOrigin")}</Text>
+                        </Pressable> : null}
                         {canvasGraphRunState ? <CanvasGraphStatus projection={canvasGraphRunState} /> : null}
                         <SubagentReturnsSection adminBaseUrl={adminBaseUrl} items={subagentReturns} />
                         <SourcesSection

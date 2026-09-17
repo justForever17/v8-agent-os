@@ -1,4 +1,3 @@
-import edge_tts
 import aiohttp
 import json
 import uuid
@@ -48,6 +47,10 @@ class EdgeTTSProvider(TTSProvider):
         self.volume = volume
 
     async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
+        try:
+            import edge_tts
+        except ImportError as exc:
+            raise TTSProviderError("cloud_voice capability is required for Edge TTS; install the pack and restart Engine", status_code=503) from exc
         communicate = edge_tts.Communicate(text, self.voice, rate=self.rate, volume=self.volume)
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":

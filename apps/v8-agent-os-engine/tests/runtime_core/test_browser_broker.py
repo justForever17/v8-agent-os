@@ -10,7 +10,7 @@ import pytest
 from core.database import DatabaseManager
 from core.tools.native import browser as native
 from erc.runtime_context import bind_runtime_context
-from runtimes.computer_use import browser_session_service as session_module
+from core import agent_browser_sessions as session_module
 
 
 class Provider:

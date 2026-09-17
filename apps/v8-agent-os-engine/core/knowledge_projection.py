@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
 import uuid
@@ -240,8 +241,14 @@ class KnowledgeProjectionService:
                 scope_errors[scope] = exc
 
         vector_errors: Dict[str, Exception] = {}
-        if rows:
-            vector_store = self._get_vector_store()
+        from core.runtime.startup_profile import optional_capability_enabled
+        vector_enabled = optional_capability_enabled("vector_memory")
+        if rows and vector_enabled:
+            try:
+                vector_store = self._get_vector_store()
+            except Exception as exc:
+                vector_errors.update({fact_id: exc for fact_id in fact_ids})
+        if rows and vector_enabled and not vector_errors:
             remove_ids = [fact_id for fact_id in fact_ids if not self._is_vector_active(payload_by_fact.get(fact_id))]
             if remove_ids:
                 try:
@@ -351,7 +358,24 @@ class KnowledgeProjectionService:
                 )
             return len(rows)
 
-    def reconcile_vectors(self) -> Dict[str, int]:
+    async def recover_outbox(self, *, rebuild_vectors: bool = False) -> Dict[str, int]:
+        """Drain due work in cancellable batches; unavailable vectors remain FTS-only."""
+        if rebuild_vectors:
+            await asyncio.to_thread(self.enqueue_reconcile)
+            await asyncio.to_thread(self.reconcile_vectors, enqueue_missing=False)
+        total = {"processed": 0, "completed": 0, "retry": 0, "deadLetter": 0}
+        while True:
+            batch = await asyncio.to_thread(self.process_outbox, limit=500)
+            for key in total:
+                total[key] += int(batch.get(key) or 0)
+            if int(batch.get("processed") or 0) < 500 or batch.get("retry"):
+                return total
+            await asyncio.sleep(0)
+
+    def reconcile_vectors(self, *, enqueue_missing: bool = True) -> Dict[str, int]:
+        from core.runtime.startup_profile import optional_capability_enabled
+        if not optional_capability_enabled("vector_memory"):
+            return {"missing": 0, "orphanedRemoved": 0}
         vector_store = self._get_vector_store()
         collection = vector_store.collection
         if collection is None:
@@ -370,7 +394,7 @@ class KnowledgeProjectionService:
             missing = canonical_ids - vector_ids
             orphaned = vector_ids - canonical_ids
             batch_id = uuid.uuid4().hex[:12]
-            for fact_id in missing:
+            for fact_id in missing if enqueue_missing else ():
                 self.db._enqueue_projection(
                     conn,
                     fact_id=fact_id,
@@ -457,23 +481,26 @@ class KnowledgeProjectionService:
                 if path.resolve(strict=False) not in expected_projection_paths
             )
 
-        vector_state = "ready"
+        from core.runtime.startup_profile import optional_capability_selected
+        vector_selected = optional_capability_selected("vector_memory")
+        vector_state = "ready" if vector_selected else "not_selected"
         vector_missing = 0
         vector_orphaned = 0
         try:
-            vector_store = self._get_vector_store()
-            if vector_store.collection is None:
-                raise RuntimeError("vector collection unavailable")
-            current = vector_store.collection.get(include=[])
-            vector_ids = {str(item) for item in list((current or {}).get("ids") or [])}
-            vector_missing = len(active_ids - vector_ids)
-            vector_orphaned = len(vector_ids - active_ids)
-            if vector_missing or vector_orphaned:
-                vector_state = "drifted"
+            if vector_selected:
+                vector_store = self._get_vector_store()
+                if vector_store.collection is None:
+                    raise RuntimeError("vector collection unavailable")
+                current = vector_store.collection.get(include=[])
+                vector_ids = {str(item) for item in list((current or {}).get("ids") or [])}
+                vector_missing = len(active_ids - vector_ids)
+                vector_orphaned = len(vector_ids - active_ids)
+                if vector_missing or vector_orphaned:
+                    vector_state = "drifted"
         except Exception:
             vector_state = "unavailable"
 
-        if json_drift_scopes or orphan_projection_count or vector_state != "ready" or counts.get("dead_letter", 0):
+        if json_drift_scopes or orphan_projection_count or vector_state not in {"ready", "not_selected"} or counts.get("dead_letter", 0):
             result["state"] = "degraded"
         elif backlog:
             result["state"] = "syncing"

@@ -1,6 +1,7 @@
 import { engineFetch } from "@/lib/server/engine-fetch";
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
+import { readTranscriptIdentity } from "@v8/session-realtime";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
@@ -67,7 +68,8 @@ export async function GET(
             await snapshotResponse.json().catch(() => ({})),
             { publicBaseUrl, compactSurface: omitMessages },
         ) as Record<string, unknown>;
-        const projectionData = omitMessages ? stripMessagesForProjection(snapshotData) : snapshotData;
+        const snapshotIdentity = readTranscriptIdentity(snapshotData);
+        const projectionData = { ...(omitMessages ? stripMessagesForProjection(snapshotData) : snapshotData), ...snapshotIdentity };
         const historyData = historyResponse && historyResponse.ok
             ? await historyResponse.json().catch(() => ({}))
             : null;
@@ -107,6 +109,9 @@ export async function GET(
 
         const responsePayload = applyCanonicalSourceGroup({
             id,
+            transcriptRevision: historyRecord.transcriptRevision ?? snapshotIdentity.transcriptRevision,
+            contextEpoch: historyRecord.contextEpoch ?? snapshotIdentity.contextEpoch,
+            branch: snapshotData.branch ?? historyRecord.branch ?? null,
             messages: detailMessages,
             timeline: historyTimeline.length > 0 ? historyTimeline : historyMessages,
             ledger: Array.isArray(historyRecord.ledger) ? historyRecord.ledger : [],

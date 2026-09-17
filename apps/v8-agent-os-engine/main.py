@@ -23,7 +23,7 @@ def _configure_pycache_behavior() -> None:
 
     configured_prefix = str(
         os.environ.get("V8_AGENT_OS_PYCACHE_PREFIX")
-        or (os.path.join(os.path.expanduser("~"), ".v8-agent-os", "cache", "pycache", "engine"))
+        or os.path.join(os.environ.get("V8_AGENT_OS_HOME") or os.path.join(os.path.expanduser("~"), ".v8-agent-os"), "cache", "pycache", "engine")
     ).strip()
     if not configured_prefix:
         return
@@ -817,24 +817,20 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
     await _reconcile_orphaned_workflows()
     await _reconcile_session_lanes()
     await _reconcile_engineering_workspaces()
-    canvas_reconciliation = await _reconcile_creative_canvas_graph_runs() or {}
-    recovery_candidates = list(canvas_reconciliation.get("remoteReconcileCandidates") or [])
-    canvas_outbox_repair_task = asyncio.create_task(
-        _run_creative_canvas_outbox_repair_loop(),
-        name="creative-canvas-outbox-repair",
-    )
-    _track_lifespan_task(
-        app,
-        state,
-        "creative_canvas_outbox_repair_task",
-        canvas_outbox_repair_task,
-    )
-    _mark_lifespan_service_starting(state, "creative_media_reconciler")
-    creative_media_reconciler_task = await _start_creative_media_remote_reconciler(recovery_candidates)
-    creative_media_reconciler_task.add_done_callback(
-        lambda task: _log_background_task(task, "creative_media_remote_reconciler")
-    )
-    app.state.creative_media_remote_reconciler_task = creative_media_reconciler_task
+    if service_enabled("creative_media"):
+        canvas_reconciliation = await _reconcile_creative_canvas_graph_runs() or {}
+        recovery_candidates = list(canvas_reconciliation.get("remoteReconcileCandidates") or [])
+        canvas_outbox_repair_task = asyncio.create_task(
+            _run_creative_canvas_outbox_repair_loop(),
+            name="creative-canvas-outbox-repair",
+        )
+        _track_lifespan_task(app, state, "creative_canvas_outbox_repair_task", canvas_outbox_repair_task)
+        _mark_lifespan_service_starting(state, "creative_media_reconciler")
+        creative_media_reconciler_task = await _start_creative_media_remote_reconciler(recovery_candidates)
+        creative_media_reconciler_task.add_done_callback(
+            lambda task: _log_background_task(task, "creative_media_remote_reconciler")
+        )
+        app.state.creative_media_remote_reconciler_task = creative_media_reconciler_task
     startup_metrics["reconciliationMs"] = round((time.perf_counter() - reconciliation_started_at) * 1000, 2)
     service_start_started_at = time.perf_counter()
     async def _cleanup_terminal_engineering_workspaces() -> None:
@@ -887,9 +883,9 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
     )
     async def _recover_knowledge_projections() -> None:
         try:
-            projection_recovery = await asyncio.to_thread(
-                knowledge_projection_service.process_outbox,
-                limit=500,
+            from core.runtime.startup_profile import optional_capability_enabled
+            projection_recovery = await knowledge_projection_service.recover_outbox(
+                rebuild_vectors=INSTALL_PROFILE == "server" and optional_capability_enabled("vector_memory"),
             )
             if projection_recovery.get("processed"):
                 print("[Engine] Knowledge projection recovery:", projection_recovery)

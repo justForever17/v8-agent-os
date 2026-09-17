@@ -4,7 +4,7 @@ import { resolveAdminIdentity } from "@/lib/server/engine-proxy";
 import { findUserByIdentifier } from "@/lib/users";
 import { createDevicePairingTicket, revokeDevicePairingTicket } from "@/lib/server/device-pairing";
 import { identityErrorResponse } from "@/lib/server/identity-route";
-import { buildClientLinkManifest, resolvePairingAdminBaseUrlFromRequest } from "@/lib/server/runtime-config";
+import { buildClientLinkManifest } from "@/lib/server/runtime-config";
 
 function collectAdminUrls(linkManifest: Awaited<ReturnType<typeof buildClientLinkManifest>>, fallbackBaseUrl: string) {
     const urls = [
@@ -30,16 +30,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "phone_pairing_only" }, { status: 400 });
     }
 
-    const adminBaseUrl = resolvePairingAdminBaseUrlFromRequest(req);
     try {
         const ticket = await createDevicePairingTicket({
             owner,
             surface: "phone",
-            adminBaseUrl,
+            adminBaseUrl: "",
             deviceName: payload?.deviceName,
             ttlMs: payload?.ttlMs,
         });
-        const linkManifest = await buildClientLinkManifest(adminBaseUrl);
+        const linkManifest = await buildClientLinkManifest();
         const pairingManifest = {
             kind: "v8_device_pairing_manifest",
             version: 2,

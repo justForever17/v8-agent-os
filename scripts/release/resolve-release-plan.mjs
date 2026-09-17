@@ -70,6 +70,12 @@ function githubOutputs(plan) {
     legacy_product: plan.legacy_product,
     desktop_enabled: plan.desktop.enabled,
     desktop_required: plan.desktop.required,
+    server_enabled: plan.server.enabled,
+    server_required: plan.server.required,
+    tui_enabled: plan.tui.enabled,
+    tui_required: plan.tui.required,
+    tui_targets_json: JSON.stringify(plan.tui.enabled ? plan.tui.targets.filter((target) => target.enabled).map((target) => target.name) : []),
+    server_targets_json: JSON.stringify(plan.server.enabled ? plan.server.targets.filter((target) => target.enabled).map((target) => target.name) : []),
     desktop_targets_json: JSON.stringify(desktopTargets),
     phone_enabled: plan.phone.enabled,
     phone_required: plan.phone.required,
@@ -105,6 +111,13 @@ export function loadReleasePlan({ manifestPath = "release-manifest.json", tag, m
   });
   const plan = resolveReleasePlan(loaded.manifest);
   const legacyProduct = identity.deprecated ? identity.product : "";
+  if (legacyProduct) {
+    for (const name of ["server", "tui"]) {
+      plan[name].enabled = false;
+      plan[name].required = false;
+      plan[name].targets = plan[name].targets.map((target) => ({ ...target, enabled: false, required: false }));
+    }
+  }
   if (legacyProduct === "desktop") {
     plan.phone.enabled = false;
     plan.phone.required = false;

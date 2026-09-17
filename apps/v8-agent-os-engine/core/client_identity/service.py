@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import secrets
 import sqlite3
@@ -22,6 +23,35 @@ from .owner import IdentityError, OwnerStore, atomic_json, public_user, timestam
 ACCESS_TTL = 15 * 60
 REFRESH_TTL = 30 * 24 * 60 * 60
 REPLAY_TTL = 60
+
+
+def phone_pairing_origin(value: str) -> str:
+    """Validate an explicit Phone origin; never infer it from an Admin port."""
+    value = str(value or "").strip().rstrip("/").removesuffix("/api")
+    try:
+        parsed = urlsplit(value)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return ""
+        # Accessing port also rejects malformed/out-of-range ports.
+        _ = parsed.port
+        if host == "localhost" or host.endswith(".localhost"):
+            return ""
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+            # URL clients may expand shortened/octal/integer IPv4 host forms.
+            # Only accept canonical IP literals, not ambiguous numeric hosts.
+            if all(part.isdecimal() or part.startswith("0x") for part in host.split(".")):
+                return ""
+        if address is not None:
+            address = getattr(address, "ipv4_mapped", None) or address
+            if address.is_loopback or address.is_unspecified or address.is_link_local or address.is_multicast:
+                return ""
+        return value
+    except ValueError:
+        return ""
 
 
 def encode(data: bytes) -> str:
@@ -338,14 +368,20 @@ class ClientIdentityService:
                 raise IdentityError("session_not_found", 404)
         return sign_resource_url(self, path, _local_context(), session_id=session_id)
 
-    def create_ticket(self, *, base_url: str, device_name: str = "", ttl_ms: int = 300000, surface: str = "phone") -> dict:
+    def create_ticket(self, *, base_url: str = "", device_name: str = "", ttl_ms: int = 300000, surface: str = "phone") -> dict:
         self._ready()
         if surface != "phone":
             raise IdentityError("phone_pairing_only")
-        parsed = urlsplit(base_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+        pairing = self.manifest("")["pairing"]
+        if pairing["reason"] in ("remote_link_disabled", "phone_gateway_disabled"):
+            raise IdentityError(pairing["reason"])
+        if not base_url:
+            if not pairing["available"]:
+                raise IdentityError(pairing["reason"])
+            base_url = pairing["baseUrl"]
+        base_url = phone_pairing_origin(base_url)
+        if not base_url:
             raise IdentityError("pairing_reachable_https_required")
-        base_url = base_url.rstrip("/").removesuffix("/api")
         owner, instance, now = self.owners.owner(), self.instance(), self.clock()
         ticket_id, code = str(uuid4()), secrets.token_urlsafe(24)
         expiry = now + max(60, min(600, ttl_ms / 1000))
@@ -489,7 +525,7 @@ class ClientIdentityService:
             return bool(db.execute("UPDATE client_pairing_tickets SET revoked_at=? WHERE id=? AND consumed_at IS NULL AND revoked_at IS NULL", (self.clock(), ticket_id)).rowcount)
 
     def manifest(self, base_url: str) -> dict:
-        from core.v8_link import normalize_remote_link_config, normalize_transport_kind, strip_api_suffix, is_stable_cloudflare_origin
+        from core.v8_link import normalize_remote_link_config, normalize_transport_kind, is_stable_cloudflare_origin
         if self.config_reader is None:
             from core.system_base import get_system_base_config
             system_base = get_system_base_config()
@@ -507,12 +543,7 @@ class ClientIdentityService:
         if gateway.get("enabled") is False:
             warnings.append("phone_gateway_disabled")
         def approved_url(value):
-            value = strip_api_suffix(value)
-            try:
-                parsed = urlsplit(value)
-                return value if parsed.scheme == "https" and parsed.hostname and parsed.hostname not in ("localhost", "127.0.0.1", "::1") and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment else ""
-            except ValueError:
-                return ""
+            return phone_pairing_origin(value)
         def append(identifier, kind, address, priority):
             if address and address not in seen:
                 endpoints.append({"id": identifier, "kind": kind, "baseUrl": address, "priority": priority, "enabled": True,
@@ -547,10 +578,18 @@ class ClientIdentityService:
             profiles.append(item)
             if remote.get("enabled", True) and item["enabled"]:
                 append(identifier, kind, phone, 20 + index)
+        active = next((item for item in profiles if item["id"] == active_id and item["enabled"]), {})
+        pairing_base = active.get("phoneBaseUrl") or public
+        pairing_reason = "remote_link_disabled" if not remote.get("enabled", True) else (
+            "phone_gateway_disabled" if gateway.get("enabled") is False else (
+                "" if pairing_base else "pairing_reachable_https_required"))
+        pairing = {"available": not bool(pairing_reason), "baseUrl": pairing_base if not pairing_reason else "",
+                   "reason": pairing_reason, "reachability": "not_verified"}
         return {"ok": True, "kind": "v8_client_link_manifest", "version": "2", "serverId": instance_id,
                 "instanceId": instance_id, "ownerMode": "single_owner", "clientGateway": "engine", "transportKind": active_kind, "activeProfileId": active_id,
                 "admin": {"baseUrl": base, "apiBaseUrl": base + "/api"},
                 "phoneGateway": {"enabled": gateway.get("enabled", True), "port": int(gateway.get("port") or 9532), "publicBaseUrl": public},
+                "pairing": pairing,
                 "endpoints": endpoints, "profiles": profiles, "capabilities": {"adminProxy": False, "pairing": True,
                     "publicRegistration": False, "phoneUpload": True, "artifactPreview": True, "runtimeEvents": True, "networkSupervisorPeers": True},
                 "meshProviders": [{"id": row.get("id"), "kind": row.get("kind"), "enabled": row.get("enabled"), "mode": row.get("mode"), "allowRouteMutation": False} for row in remote.get("meshProviders", [])],

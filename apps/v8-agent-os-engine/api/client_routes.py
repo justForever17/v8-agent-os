@@ -421,9 +421,8 @@ async def client_api(request: Request, path: str):
                     raise HTTPException(400, "runIds_invalid")
                 for run_id in run_ids:
                     _record_session(request, principal, "get_run_record", str(run_id))
-            if _is_phone_principal(principal):
-                body = dict(body)
-                body["userId"] = body["user_id"] = principal.subject
+            body = dict(body)
+            body["userId"] = body["user_id"] = principal.subject
         from starlette.routing import Match
         from core.client_transport import internal_scope
         target_path = "/" + path
@@ -449,6 +448,9 @@ async def client_api(request: Request, path: str):
             raise HTTPException(404, "run_not_found")
         require_session(request, principal, session_id)
         return normalize_client_surface(record, request, principal)
+    if path == "config-distribution" or re.fullmatch(rf"config-distribution/{SEGMENT}(?:/{SEGMENT})?", path):
+        from api.config_distribution_routes import distribution_request
+        return await distribution_request(request, principal, path.removeprefix("config-distribution").lstrip("/"))
     if re.fullmatch(rf"supervisor-peers(?:/{SEGMENT}(?:/timeline)?)?", path):
         from api.client_peers import client_peers
         return await client_peers(request, principal, path)
@@ -481,6 +483,18 @@ async def client_api(request: Request, path: str):
                 await internal_json(request, principal, f"/sessions/{item['id']}", method="DELETE")
                 deleted += 1
             return {"success": True, "deleted": deleted}
+    mutation = re.fullmatch(rf"conversations/({SEGMENT})/(branches|messages/({SEGMENT})(?:/revisions(?:/({SEGMENT})/restore)?)?)", path)
+    if mutation:
+        session_id, suffix, message_id, revision_id = mutation.groups()
+        session = require_session(request, principal, session_id)
+        allowed = (method == "POST" and (suffix == "branches" or revision_id)) or (method == "PATCH" and suffix == f"messages/{message_id}") or (method == "GET" and suffix.endswith("/revisions"))
+        if not allowed:
+            raise HTTPException(405, "method_not_allowed")
+        body = await _payload(request) if method != "GET" else None
+        if body is not None:
+            body = {**body, "userId": session.get("user_id") or principal.session_id}
+        result = await internal_json(request, principal, f"/sessions/{session_id}/{suffix}", method=method, payload=body)
+        return normalize_client_surface(result, request, principal)
     match = re.fullmatch(rf"conversations/({SEGMENT})(?:/(turns|turn-index|sync))?", path)
     if match:
         session_id, action = match.groups()

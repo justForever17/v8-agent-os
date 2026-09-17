@@ -345,6 +345,7 @@ export type ClientLinkManifest = {
     ownerMode: string; clientGateway: string; transportKind: string; activeProfileId: string;
     admin: { baseUrl: string; apiBaseUrl: string };
     phoneGateway?: { enabled: boolean; port: number; publicBaseUrl: string };
+    pairing?: { available: boolean; baseUrl: string; reason: string; reachability: "not_verified" };
     profiles: Array<{ id: string; kind: string; label: string; enabled: boolean; adminBaseUrl: string; phoneBaseUrl?: string; migrationRequired?: boolean }>;
     endpoints: ClientConnectionEndpoint[];
     capabilities: Record<string, boolean>; warnings: string[];
@@ -355,8 +356,7 @@ export async function buildAdminLinkManifest(requestOrigin?: string): Promise<Cl
     // The display keeps historical wire field names, while Engine owns identity
     // and the explicit Phone endpoint catalog.
     const { engineIdentity } = await import("@/lib/server/engine-identity");
-    const phoneBase = resolvePairingAdminBaseUrlFromRequest(requestOrigin || "");
-    return engineIdentity<ClientLinkManifest>(`/link-manifest?baseUrl=${encodeURIComponent(phoneBase)}`);
+    return engineIdentity<ClientLinkManifest>("/link-manifest");
 }
 
 export async function buildClientLinkManifest(requestOrigin?: string) {
@@ -551,24 +551,6 @@ function resolveLocalNetworkAdminOrigin(requestOrigin?: string, preferredKind?: 
     }
     const suffix = port && !["80", "443"].includes(port) ? `:${port}` : "";
     return `${protocol}//${formatUrlHost(selected.address)}${suffix}`;
-}
-
-export function resolvePairingAdminBaseUrlFromRequest(
-    request:
-        | {
-            headers?: Headers | HeadersInit | null;
-            url?: string | null;
-        }
-        | string,
-) {
-    const context = buildRemoteLinkContext();
-    if (context.remoteLink.enabled === false || context.remoteLink.phoneGateway?.enabled === false) return "";
-    const candidate = context.activeProfile.phoneBaseUrl || context.remoteLink.phoneGateway?.publicBaseUrl || "";
-    try {
-        const parsed = new URL(candidate);
-        if (parsed.protocol !== "https:" || NON_ROUTABLE_CLIENT_HOSTS.has(parsed.hostname) || parsed.username || parsed.password || parsed.search || parsed.hash) return "";
-        return candidate.replace(/\/+$/, "").replace(/\/api$/, "");
-    } catch { return ""; }
 }
 
 export function resolveInternalSecret() {

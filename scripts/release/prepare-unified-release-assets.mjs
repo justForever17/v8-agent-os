@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadReleaseManifest, resolveReleaseTag } from "./release-manifest.mjs";
+import { loadReleaseManifest, resolveReleaseTag, toSemver } from "./release-manifest.mjs";
 
 const DESKTOP_ASSETS = Object.freeze({
   "windows-x64": ["win-x64-setup.exe"],
@@ -56,7 +57,46 @@ function desktopVersion(version, channel) {
 function selectedProducts(tagIdentity) {
   return tagIdentity.tagKind === "legacy-product"
     ? new Set([tagIdentity.product])
-    : new Set(["desktop", "phone"]);
+    : new Set(["desktop", "phone", "server", "tui"]);
+}
+
+function archiveMember(filename, member) {
+  try {
+    // Read to stdout only: no archive-controlled path is extracted to disk.
+    const value = execFileSync("tar", ["-xzOf", filename, member], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    if (!value) throw new Error("empty member");
+    return value;
+  } catch { throw new Error(`Invalid release archive or missing member ${member}: ${path.basename(filename)}`); }
+}
+
+export function verifyArchiveIdentity(filename, { product, version, target, sourceCommit } = {}) {
+  if (product === "server") {
+    const root = `v8os-server-${version}-${target}`;
+    const identity = JSON.parse(archiveMember(filename, `${root}/server-manifest.json`));
+    const arch = target.replace(/^linux-/, "");
+    if (identity.schema !== 1 || identity.profile !== "server" || identity.version !== version
+        || identity.platform !== "linux" || identity.arch !== arch || identity.sourceDirty !== false
+        || !/^[a-f0-9]{40}$/.test(identity.sourceCommit || "")
+        || (sourceCommit && identity.sourceCommit !== sourceCommit)) throw new Error("Server archive identity does not match release version, target or source commit");
+    if (archiveMember(filename, `${root}/VERSION`).trim() !== toSemver(version)) throw new Error("Server archive VERSION projection mismatch");
+    archiveMember(filename, `${root}/apps/v8-agent-os-engine/main.py`);
+    archiveMember(filename, `${root}/apps/v8-agent-os-cli/bin/v8os.mjs`);
+    archiveMember(filename, `${root}/SHA256SUMS`);
+    return identity;
+  }
+  if (product !== "tui") throw new Error(`Unsupported archive product: ${product}`);
+  const pkg = JSON.parse(archiveMember(filename, "package/package.json"));
+  if (pkg.name !== "@v8/agent-os-tui" || pkg.version !== toSemver(version)
+      || pkg.bin?.["v8os-tui"] !== "bin/v8os-tui.mjs" || pkg.engines?.node !== ">=22"
+      || pkg.v8Release?.version !== version || !/^[a-f0-9]{40}$/.test(pkg.v8Release?.sourceCommit || "")
+      || (sourceCommit && pkg.v8Release.sourceCommit !== sourceCommit)) throw new Error("TUI archive identity does not match the release package, version, bin, runtime or source commit");
+  for (const value of Object.values({ ...pkg.dependencies, ...pkg.optionalDependencies })) {
+    if (/^(?:file:|link:|workspace:)/.test(value)) throw new Error("TUI published package contains a repository-local dependency");
+  }
+  archiveMember(filename, "package/bin/v8os-tui.mjs");
+  archiveMember(filename, "package/dist/main.js");
+  archiveMember(filename, "package/LICENSE");
+  return pkg;
 }
 
 function prepareOutputDirectory(inputDir, outputDir) {
@@ -82,7 +122,7 @@ function prepareOutputDirectory(inputDir, outputDir) {
   }
 }
 
-export function prepareUnifiedReleaseAssets({ manifestPath, tag, inputDir, outputDir }) {
+export function prepareUnifiedReleaseAssets({ manifestPath, tag, inputDir, outputDir, sourceCommit }) {
   const { manifest } = loadReleaseManifest(manifestPath);
   const tagIdentity = resolveReleaseTag({ manifest, tag });
   const products = selectedProducts(tagIdentity);
@@ -91,6 +131,27 @@ export function prepareUnifiedReleaseAssets({ manifestPath, tag, inputDir, outpu
   const releaseFiles = [];
 
   prepareOutputDirectory(resolvedInput, resolvedOutput);
+
+  if (products.has("server") && manifest.products.server?.enabled) {
+    for (const [targetName, target] of Object.entries(manifest.products.server.targets)) {
+      if (!target.enabled) continue;
+      const fileName = `V8OS-Server-${manifest.release.version}-${targetName}.tar.gz`;
+      const source = path.join(resolvedInput, "server", fileName);
+      if (fs.existsSync(source)) verifyArchiveIdentity(source, { product: "server", version: manifest.release.version, target: targetName, sourceCommit });
+      const copied = copyAsset(path.join(resolvedInput, "server", fileName), resolvedOutput, fileName,
+        { required: target.required, label: `Server ${targetName} asset` });
+      if (copied) releaseFiles.push(copied);
+    }
+  }
+
+  if (products.has("tui") && manifest.products.tui?.enabled && manifest.products.tui.targets.npm.enabled) {
+    const fileName = `V8OS-TUI-${manifest.release.version}.tgz`;
+    const source = path.join(resolvedInput, "tui", fileName);
+    if (fs.existsSync(source)) verifyArchiveIdentity(source, { product: "tui", version: manifest.release.version, sourceCommit });
+    const copied = copyAsset(source, resolvedOutput, fileName,
+      { required: manifest.products.tui.targets.npm.required, label: "TUI npm asset" });
+    if (copied) releaseFiles.push(copied);
+  }
 
   if (products.has("desktop") && manifest.products.desktop.enabled) {
     const version = desktopVersion(manifest.release.version, manifest.release.channel);
@@ -164,6 +225,7 @@ function main() {
     tag: args.tag,
     inputDir: args["input-dir"],
     outputDir: args["output-dir"],
+    sourceCommit: args["source-commit"],
   });
   console.log(`Prepared ${result.assets.length} public asset(s) for ${result.tag}.`);
 }

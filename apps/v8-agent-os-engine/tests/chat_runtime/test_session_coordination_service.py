@@ -510,6 +510,9 @@ def test_running_target_promotes_to_control_signal(coordination_harness, monkeyp
     result = service.dispatch_message(row["id"])
     assert result["state"] == "promoted"
     assert result["targetRunId"] == "run-target-running"
+    source_rows = db.get_chat_canonical_messages(SOURCE_SESSION_ID)
+    assert source_rows and all(item["run_id"] is None for item in source_rows)
+    assert all(item["run_id"] == "run-target-running" for item in db.get_chat_canonical_messages(TARGET_SESSION_ID))
     assert issued == [
         (
             "run-target-running",

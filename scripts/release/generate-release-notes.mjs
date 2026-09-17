@@ -7,6 +7,7 @@ import {
   isValidReleaseVersion,
   LEGACY_PRODUCT_TAG_RE as LEGACY_TAG_RE,
   UNIFIED_TAG_RE,
+  loadReleaseManifest,
 } from "./release-manifest.mjs";
 
 function isReleaseTag(tag) {
@@ -64,11 +65,16 @@ function inferRelease(args) {
     throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form, year 2000-2099, and N 1-99 without a leading zero.");
   }
 
+  const manifest = args.manifest ? loadReleaseManifest(args.manifest).manifest : null;
+  if (manifest && (manifest.release.version !== version || manifest.release.channel !== (args.channel || "preview"))) {
+    throw new Error("Release notes manifest identity differs from the requested release");
+  }
   return {
     product,
     version,
     tag: tag || (product === "all" ? `v8-os-v${version}` : `v8-os-${product}-v${version}`),
     channel: args.channel || "preview",
+    products: manifest?.products,
   };
 }
 
@@ -314,20 +320,41 @@ function knownLimits(product, channel) {
   ].join("\n");
 }
 
+function optionalProductNotes(release) {
+  if (release.product !== "all") return { names: [], assets: [], installation: [] };
+  const result = { names: [], assets: [], installation: [] };
+  if (release.products?.server?.enabled) {
+    result.names.push("Server");
+    for (const [target, value] of Object.entries(release.products.server.targets)) {
+      if (value.enabled) result.assets.push(`- \`V8OS-Server-${release.version}-${target}.tar.gz\`：无图形 Linux Server，独立 Engine 与 CLI。`);
+    }
+    result.installation.push("Server：在无图形 Ubuntu 22.04/24.04 glibc x64 上准备 Python 3.11、Node.js 20+ 与 Chromium 系统库，以普通用户解压到独立版本目录并运行 ./install.sh；安装过程联网下载依赖与 Chromium，不是离线包。配置凭据后使用 ./v8os service install，退出终端后 Engine、Phone 与受信组网服务继续运行。",
+      "Server 升级请使用新包 CLI。会话修订使用数据库 schema 4，旧 schema 3 Engine 不能直接回读；不兼容回滚会阻断并保留新数据，故障时可重试当前版本或升级兼容修复包。服务回滚不会覆盖数据库或撤销数据迁移。");
+  }
+  if (release.products?.tui?.enabled && release.products.tui.targets.npm.enabled) {
+    result.names.push("TUI");
+    result.assets.push(`- \`V8OS-TUI-${release.version}.tgz\`：可使用 npm 安装的独立终端客户端。`);
+    result.installation.push(`TUI：使用 Node.js 22+ 执行 \`npm install -g ./V8OS-TUI-${release.version}.tgz\`，然后运行 \`v8os-tui\` 连接本机 Engine；该包不下载或启动 Engine。普通 v8os CLI 仍支持 Node.js 20。`);
+  }
+  return result;
+}
+
 function buildNotes(release) {
   const base = repoUrl();
   const prev = previousTag(release.tag, release.product);
   const changelog = prev ? `${base}/compare/${prev}...${release.tag}` : `${base}/commits/${release.tag}`;
+  const optional = optionalProductNotes(release);
 
   return `# ${releaseTitle(release.product, release.version, release.channel)}
 
 ## 下载
 
 ${assetSection(release.product, release.version, release.channel)}
+${optional.assets.join("\n")}
 
 ## 本次版本
 
-- 发布对象：${release.product === "all" ? "Desktop 与 Phone" : release.product === "phone" ? "Phone 远程端" : "桌面版"}
+- 发布对象：${release.product === "all" ? ["Desktop", "Phone", ...optional.names].join(" 与 ") : release.product === "phone" ? "Phone 远程端" : "桌面版"}
 - 发布通道：${release.channel}
 - 标签：\`${release.tag}\`
 ${releaseHighlights(release)}
@@ -341,6 +368,7 @@ ${release.product === "all"
   : release.channel === "stable"
     ? "下载安装包或免安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"
     : "下载安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"}
+${optional.installation.join("\n\n")}
 
 ## 已知限制
 

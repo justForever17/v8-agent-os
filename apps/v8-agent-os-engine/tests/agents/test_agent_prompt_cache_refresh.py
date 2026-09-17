@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from copy import deepcopy
 from types import SimpleNamespace
 
 from core.agents import build_subagent_registry_snapshot, default_subagent_configs
@@ -70,3 +71,31 @@ def test_episode_node_cache_refreshes_existing_identity_after_prose_edit(monkeyp
     assert updated is not first
     assert updated[records[0]["id"]]["boundPersona"] == records[0]["system_prompt"]
     assert len(builds) == 2
+
+
+def test_cache_fingerprint_covers_full_tools_and_execution_options():
+    agent = default_subagent_configs()[0].model_dump()
+    agent["tools"] = [f"mcp.tool{index}" for index in range(25)]
+    original = build_subagent_registry_snapshot([agent])["hash"]
+    revoked = deepcopy(agent)
+    revoked["tools"].pop()
+    assert build_subagent_registry_snapshot([revoked])["hash"] != original
+    changed_review = {**agent, "reflection_enabled": True, "max_reflections": 1}
+    assert build_subagent_registry_snapshot([changed_review])["hash"] != original
+    bindings = [{"runtimeKind": "engineering", "grantGroups": [f"group{index}"]} for index in range(9)]
+    agent["capabilitySnapshot"]["runtimeBindings"] = bindings
+    original = build_subagent_registry_snapshot([agent])["hash"]
+    changed = deepcopy(agent)
+    changed["capabilitySnapshot"]["runtimeBindings"].pop()
+    assert build_subagent_registry_snapshot([changed])["hash"] != original
+
+
+def test_compact_run_snapshot_keeps_full_definition_digest_when_adding_a_worker():
+    from core.agents import agents_from_subagent_registry_snapshot
+    agent = default_subagent_configs()[0].model_dump()
+    agent["tools"] = [f"mcp.tool{index}" for index in range(25)]
+    snapshot = build_subagent_registry_snapshot([agent])
+    frozen = agents_from_subagent_registry_snapshot(snapshot)
+    assert build_subagent_registry_snapshot(frozen)["hash"] == snapshot["hash"]
+    new_agent = default_subagent_configs()[1].model_dump()
+    assert build_subagent_registry_snapshot([*frozen, new_agent])["hash"] == build_subagent_registry_snapshot([agent, new_agent])["hash"]

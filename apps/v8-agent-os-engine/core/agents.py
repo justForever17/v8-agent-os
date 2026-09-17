@@ -224,12 +224,34 @@ def _compact_registry_member(agent: Dict[str, Any]) -> Dict[str, Any] | None:
             "executionSuitability": snapshot.get("executionSuitability"),
         },
     }
-    tools = _snapshot_list(agent.get("tools"), limit=24)
+    # Cache invalidation must cover the full executable definition, even when
+    # the registry's human/model-facing descriptor lists are compact.
+    tools = [str(item).strip() for item in list(agent.get("tools") or []) if str(item).strip()]
     if tools:
         member["toolsHash"] = hashlib.sha256(_stable_json(tools).encode("utf-8")).hexdigest()[:16]
+    elif "tools" not in agent and agent.get("toolsHash"):
+        member["toolsHash"] = str(agent["toolsHash"])
+    execution_config = {
+        "tools": tools,
+        "toolMode": member["tool_mode"],
+        "reflectionEnabled": agent.get("reflection_enabled", False),
+        "maxReflections": agent.get("max_reflections", 3),
+        "capabilitySnapshot": snapshot,
+    }
+    # A frozen run registry may be merged with one newly registered worker.
+    # Its compact members carry the original digest, not the full definition;
+    # preserve that receipt instead of hashing the lossy projection again.
+    raw_definition_fields = {"tools", "system_prompt", "systemPrompt", "reflection_enabled", "max_reflections"}
+    member["executionConfigHash"] = (
+        str(agent["executionConfigHash"])
+        if agent.get("executionConfigHash") and raw_definition_fields.isdisjoint(agent)
+        else hashlib.sha256(_stable_json(execution_config).encode("utf-8")).hexdigest()[:16]
+    )
     system_prompt = str(agent.get("system_prompt") or agent.get("systemPrompt") or "")
     if system_prompt:
         member["systemPromptHash"] = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()[:16]
+    elif "system_prompt" not in agent and "systemPrompt" not in agent and agent.get("systemPromptHash"):
+        member["systemPromptHash"] = str(agent["systemPromptHash"])
     return member
 
 
@@ -319,9 +341,14 @@ def parse_agent_md(content: str, filename: str) -> AgentConfig:
                 frontmatter_str = content[3:end_idx].strip()
                 markdown_content = content[end_idx+3:].strip()
                 
+                supplied_metadata = yaml.safe_load(frontmatter_str) or {}
+                # Normalize a user's supported legacy alias before adding
+                # built-in defaults; otherwise contextual_auto masks explicit.
+                if not supplied_metadata.get("tool_mode") and "toolMode" in supplied_metadata:
+                    supplied_metadata["tool_mode"] = supplied_metadata["toolMode"]
                 metadata = {
                     **(default.model_dump() if default else {}),
-                    **(yaml.safe_load(frontmatter_str) or {}),
+                    **supplied_metadata,
                 }
                 capability_snapshot = metadata.get("capabilitySnapshot") if isinstance(metadata.get("capabilitySnapshot"), dict) else {}
                 

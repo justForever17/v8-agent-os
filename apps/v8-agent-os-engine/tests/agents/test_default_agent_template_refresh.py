@@ -114,13 +114,21 @@ def test_explicit_custom_metadata_remains_config_not_prompt():
     assert parsed.system_prompt == default.system_prompt
 
 
+def test_legacy_tool_mode_alias_overrides_builtin_default_without_widening_tools():
+    from graph.agent_factories import _resolved_tool_mode
+    parsed = parse_agent_md("---\ntoolMode: explicit\ntools: []\n---\nMy own verification method.\n", "verification-engineer.md")
+    assert parsed.tool_mode == "explicit"
+    assert parsed.tools == []
+    assert _resolved_tool_mode(parsed.model_dump()) == "explicit"
+
+
 def test_failed_migration_publication_keeps_original_and_recoverable_backup(tmp_path, monkeypatch):
     manager = manager_at(tmp_path)
     target = tmp_path / "agents/creative-media-director.md"
     original = LEGACY.read_bytes()
     target.write_bytes(original)
 
-    def fail_publish(*_args):
+    def fail_publish(*_args, **_kwargs):
         raise PermissionError("synthetic blocked replace")
 
     monkeypatch.setattr(manager, "_replace_json_file", fail_publish)
@@ -157,3 +165,28 @@ def test_unreadable_encoding_is_preserved_without_breaking_other_seeds(tmp_path)
     manager._ensure_default_subagents()
     assert target.read_bytes() == original
     assert (tmp_path / "agents/motion-shot-director.md").is_file()
+
+
+def test_edit_during_windows_replace_backoff_is_not_overwritten(tmp_path, monkeypatch):
+    import core.storage as module
+    manager = manager_at(tmp_path)
+    target = tmp_path / "agents/creative-media-director.md"
+    target.write_bytes(LEGACY.read_bytes())
+    actual_replace = module.os.replace
+    calls = []
+    edited = b"My edit saved while another Windows reader released the file.\n"
+
+    def replace_with_intervening_edit(source, destination):
+        calls.append(destination)
+        if len(calls) == 1:
+            target.write_bytes(edited)
+            error = PermissionError("synthetic Windows sharing violation")
+            error.winerror = 32
+            raise error
+        actual_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", replace_with_intervening_edit)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    manager._ensure_default_subagents()
+    assert target.read_bytes() == edited
+    assert calls == [target]

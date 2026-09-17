@@ -11,7 +11,8 @@ test('a completed invocation replaces its running marker without merging another
   ];
   const rows = executionSummaries({ nodes });
   assert.equal(rows.length, 2);
-  assert.match(rows[0], /已完成.*已读取工作区文件/); assert.match(rows[0], /detail:a/);
+  assert.match(rows[0], /已完成.*已读取工作区文件/); assert.doesNotMatch(rows[0], /detail:a/);
+  assert.equal(nodes[1].detailRef, 'detail:a'); // Diagnostics owner keeps the reference intact.
   assert.doesNotMatch(rows[0], /运行中/); assert.match(rows[1], /运行中/);
   assert.deepEqual(executionSummaries({ nodes: [nodes[1], nodes[0], nodes[2]] }), rows);
 });

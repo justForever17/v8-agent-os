@@ -32,8 +32,9 @@ export function executionSummaries(message: any): string[] {
     const label = statusLabel(status) || '结果待确认';
     const summary = result && surface.summary ? redactClientToolText(surface.summary) : '';
     const action = result && surface.actionable ? `\n  下一步：${redactClientToolText(surface.actionable)}` : '';
-    // Full runtime JSON stays behind its governed reference, never in chat.
-    const refs = Array.from(new Set([node.detailRef, ...surface.refIds].filter((ref): ref is string => typeof ref === 'string' && !!ref)));
+    // Runtime detail/control IDs remain in canonical nodes for diagnostics;
+    // only references approved by the shared human projection enter chat.
+    const refs = surface.refIds;
     return `▸ ${node.toolName || '工具'} · ${label}${summary ? ` — ${summary}` : ''}${action}${refs.length ? `\n  证据：${refs.join(' · ')}` : ''}`;
   });
 }

@@ -1108,7 +1108,7 @@ class StorageManager:
                             # Optimistic external-edit check, not an OS-wide CAS.
                             if agent_path.is_symlink() or agent_path.read_bytes() != original:
                                 continue
-                            self._replace_json_file(temp_path, agent_path)
+                            self._replace_json_file(temp_path, agent_path, expected_content=original)
                         finally:
                             temp_path.unlink(missing_ok=True)
 
@@ -1508,7 +1508,7 @@ class StorageManager:
                     pass
 
     @staticmethod
-    def _replace_json_file(source: Path, target: Path) -> None:
+    def _replace_json_file(source: Path, target: Path, *, expected_content: bytes | None = None) -> None:
         """Publish atomically after a short Windows reader releases its handle.
 
         A handle without FILE_SHARE_DELETE can produce WinError 5 on rename,
@@ -1517,6 +1517,10 @@ class StorageManager:
         denial still propagates. Never unlink or truncate the live document.
         """
         for attempt in range(6):
+            # Seed upgrades must recheck on every retry: a user may save while
+            # a Windows reader holds a handle during the backoff interval.
+            if expected_content is not None and (target.is_symlink() or target.read_bytes() != expected_content):
+                return
             try:
                 os.replace(source, target)
                 return

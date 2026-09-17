@@ -60,7 +60,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   }
   const label = `${client.instance.name || 'V8OS'} · ${client.connection}${client.inbox.length ? ` · 待处理 ${client.inbox.length}` : ''} · ${client.workspace || '未选择工作区'}`;
   surface.unread = pausedUpdates.update(client.messages, surface.following);
-  const hint = page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F2 待处理 · Ctrl+D 退出';
+  const hint = page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
     <Text bold>{clip(label, columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>

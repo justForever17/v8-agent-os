@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
@@ -50,19 +51,20 @@ class VisionImageInputError(ValueError):
         super().__init__(f"{code}" + (f" (image {image_index})" if image_index else ""))
 
 
+def server_capture_only() -> bool:
+    from core.runtime.startup_profile import get_configured_install_profile, runtime_family_installed
+    return get_configured_install_profile() == "server" and not runtime_family_installed("creative_media")
+
+
 def prepare_ordered_images(
     images: list[VisionImageInput | dict[str, Any]],
     *,
     runtime_context: dict[str, Any],
     remote_guard: Callable[[str], None],
 ) -> list[dict[str, Any]]:
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise VisionImageInputError("image_dependency_missing: install creative_media feature pack and restart Engine") from exc
     if not isinstance(images, list) or not 1 <= len(images) <= MAX_VISION_IMAGES:
         raise VisionImageInputError("image_count_out_of_range")
-    normalized: list[tuple[VisionImageInput, str, dict[str, Any]]] = []
+    normalized: list[tuple[VisionImageInput, str, dict[str, Any], dict[str, Any]]] = []
     # Resolve every local permission before reading or sending any image.
     for index, raw in enumerate(images, 1):
         try:
@@ -70,29 +72,45 @@ def prepare_ordered_images(
         except ValueError as exc:
             raise VisionImageInputError("invalid_image_input", image_index=index) from exc
         resource_ref: dict[str, Any] = {}
+        executor_metadata: dict[str, Any] = {}
         if image.file_path:
             preflight = resolve_workspace_tool_path(image.file_path, runtime_context=runtime_context)
-            if not preflight.get("ok"):
-                from core.creative_media_resource_authority import (
-                    CreativeMediaResourceAuthorityError, creative_media_resource_authority,
+            # Registered device frames already have bounded native encoding. Use
+            # the existing exact session/artifact authority before a Server-only
+            # pass-through; a filename or caller-supplied metadata grants nothing.
+            from core.creative_media_resource_authority import (
+                CreativeMediaResourceAuthorityError, creative_media_resource_authority,
+            )
+            try:
+                resource = creative_media_resource_authority.resolve_session_file_reference(
+                    session_id=str(runtime_context.get("session_id") or runtime_context.get("sessionId") or ""),
+                    path=Path(str(preflight.get("resolvedPath") or image.file_path)),
+                    workspace_path=str((preflight.get("binding") or {}).get("activeWorkspaceRoot") or ""),
                 )
-                try:
-                    resource = creative_media_resource_authority.resolve_session_file_reference(
-                        session_id=str(runtime_context.get("session_id") or runtime_context.get("sessionId") or ""),
-                        path=Path(str(preflight.get("resolvedPath") or image.file_path)),
-                        workspace_path=str((preflight.get("binding") or {}).get("activeWorkspaceRoot") or ""),
-                    )
-                except CreativeMediaResourceAuthorityError as exc:
-                    raise VisionImageInputError("image_workspace_access_denied", image_index=index) from exc
                 resource_ref = {"resourceKind": resource.resource_kind, "resourceId": resource.resource_id}
+                metadata = (resource.record or {}).get("metadata") or {}
+                if resource.resource_kind == "artifact" and metadata.get("executorCapture") is True:
+                    from runtimes.network_supervisor.executors.service import get_executor_service
+                    from runtimes.network_supervisor.executors.protocol import ExecutorError
+                    try:
+                        executor_metadata = get_executor_service().media.verified_artifact_metadata(
+                            session_id=str(runtime_context.get("session_id") or runtime_context.get("sessionId") or ""),
+                            artifact_id=resource.resource_id, path=resource.path)
+                    except ExecutorError as exc:
+                        raise VisionImageInputError(exc.code, image_index=index) from exc
+            except CreativeMediaResourceAuthorityError as exc:
+                if not preflight.get("ok"):
+                    raise VisionImageInputError("image_workspace_access_denied", image_index=index) from exc
             source = str(preflight["resolvedPath"])
         else:
             source = str(image.source_url)
-        normalized.append((image, source, resource_ref))
+        if server_capture_only() and not executor_metadata:
+            raise VisionImageInputError("server_media_requires_creative_media: only registered executor JPEG is available", image_index=index)
+        normalized.append((image, source, resource_ref, executor_metadata))
 
     prepared: list[dict[str, Any]] = []
     total_bytes = total_pixels = total_input_bytes = 0
-    for index, (image, source, resource_ref) in enumerate(normalized, 1):
+    for index, (image, source, resource_ref, executor_metadata) in enumerate(normalized, 1):
         remaining = MAX_VISION_IMAGE_BYTES - total_bytes
         fetched_urls: list[str] = []
 
@@ -109,21 +127,13 @@ def prepare_ordered_images(
             total_bytes += len(raw_bytes)
             if total_bytes > MAX_VISION_IMAGE_BYTES:
                 raise VisionImageInputError("image_total_bytes_exceeded", image_index=index)
-            with Image.open(BytesIO(raw_bytes)) as decoded:
-                width, height = decoded.size
-                total_pixels += width * height
-                if total_pixels > MAX_VISION_IMAGE_PIXELS:
-                    raise VisionImageInputError("image_total_pixels_exceeded", image_index=index)
-                if getattr(decoded, "n_frames", 1) != 1:
-                    raise VisionImageInputError("animated_image_requires_separate_analysis", image_index=index)
-                decoded.verify()
-            payload = build_inline_image_data_from_bytes(raw_bytes)
-            sent_bytes = base64.b64decode(str(payload["dataUrl"]).split(",", 1)[1], validate=True)
+            payload, width, height, sent_bytes, sent_width, sent_height = _prepare_image_payload(raw_bytes, executor_metadata)
+            total_pixels += width * height
+            if total_pixels > MAX_VISION_IMAGE_PIXELS:
+                raise VisionImageInputError("image_total_pixels_exceeded", image_index=index)
             total_input_bytes += len(sent_bytes)
             if total_input_bytes > MAX_VISION_IMAGE_BYTES:
                 raise VisionImageInputError("image_total_input_bytes_exceeded", image_index=index)
-            with Image.open(BytesIO(sent_bytes)) as sent:
-                sent_width, sent_height = sent.size
             prepared.append({
                 "payload": payload,
                 "source": {
@@ -142,9 +152,45 @@ def prepare_ordered_images(
             if exc.image_index is None:
                 raise VisionImageInputError(exc.code, image_index=index) from exc
             raise
-        except (OSError, ValueError, RequestException, Image.DecompressionBombError) as exc:
+        except (OSError, ValueError, RequestException) as exc:
             raise VisionImageInputError("image_read_or_decode_failed", image_index=index) from exc
     return prepared
+
+
+def _prepare_image_payload(raw_bytes: bytes, executor_metadata: dict[str, Any]):
+    if executor_metadata:
+        from runtimes.network_supervisor.executors.media import jpeg_dimensions
+        expires = executor_metadata.get("expiresUnixMs")
+        if type(expires) is not int or expires <= int(time.time() * 1000):
+            raise VisionImageInputError("executor_frame_expired")
+        width, height = jpeg_dimensions(raw_bytes)
+        if (hashlib.sha256(raw_bytes).hexdigest() != executor_metadata.get("sha256")
+                or width != executor_metadata.get("width") or height != executor_metadata.get("height")):
+            raise VisionImageInputError("executor_frame_changed")
+        # Pixels have already been resized on Android; preserve bytes and frame
+        # coordinates. No optional Pillow/NumPy decode or workspace copy occurs.
+        payload = {"dataUrl": "data:image/jpeg;base64," + base64.b64encode(raw_bytes).decode("ascii"),
+                   "mimeType": "image/jpeg", "byteSize": len(raw_bytes), "transportMode": "inline_base64_image"}
+        return payload, width, height, raw_bytes, width, height
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise VisionImageInputError("image_dependency_missing: install creative_media feature pack and restart Engine") from exc
+    try:
+        with Image.open(BytesIO(raw_bytes)) as decoded:
+            width, height = decoded.size
+            if width * height > MAX_VISION_IMAGE_PIXELS:
+                raise VisionImageInputError("image_total_pixels_exceeded")
+            if getattr(decoded, "n_frames", 1) != 1:
+                raise VisionImageInputError("animated_image_requires_separate_analysis")
+            decoded.verify()
+        payload = build_inline_image_data_from_bytes(raw_bytes)
+        sent_bytes = base64.b64decode(str(payload["dataUrl"]).split(",", 1)[1], validate=True)
+        with Image.open(BytesIO(sent_bytes)) as sent:
+            sent_width, sent_height = sent.size
+    except Image.DecompressionBombError as exc:
+        raise VisionImageInputError("image_read_or_decode_failed") from exc
+    return payload, width, height, sent_bytes, sent_width, sent_height
 
 
 def ordered_image_content(

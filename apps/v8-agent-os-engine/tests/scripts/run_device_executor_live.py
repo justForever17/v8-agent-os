@@ -1,7 +1,7 @@
 """Isolated Android bench server. Never uses the developer's Engine identity.
 
 Run explicitly with --live --allow-side-effects. Only the separately installed
-com.v8agentos.executorfixture package is granted observation/node actions. The
+com.v8agentos.executorfixture package is granted observation/capture/actions. The
 debug APK trusts the generated CA; release trust settings are never weakened.
 """
 import argparse
@@ -54,6 +54,7 @@ def main():
     import uvicorn
     from core.client_identity.service import ClientIdentityService
     from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
+    from core.database import db as runtime_database
     from runtimes.network_supervisor.executors.service import ExecutorService
     from runtimes.network_supervisor.executors.protocol import ExecutorError, canonical, digest
     from api import device_executor_routes
@@ -61,7 +62,9 @@ def main():
     existing_owner = identity.owners.owner(required=False)
     owner = (existing_owner or identity.owners.bootstrap(login="isolated-bench", name="Synthetic owner", now=identity.clock()))["id"]
     package = "com.v8agentos.executorfixture"
-    capabilities = [{"capability": c, "resourceId": package} for c in ("android.observe", "android.action")]
+    capabilities = [{"capability": c, "resourceId": package} for c in ("android.observe", "android.capture", "android.action")]
+    runtime_database.create_or_update_session("isolated-bench-session", "Synthetic executor fixture", user_id=owner)
+    runtime_database.create_run_record(run_id="isolated-bench", session_id="isolated-bench-session", user_id=owner, run_type="chat", status="running")
     injections = defaultdict(deque)
     class BenchService(ExecutorService):
         def enroll(self, payload):
@@ -73,7 +76,7 @@ def main():
             if injections[device]:
                 result.append(injections[device].popleft())
             return result
-    service = BenchService(identity)
+    service = BenchService(identity, runtime_database=runtime_database)
     device_executor_routes.get_executor_service = lambda: service
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(device_executor_routes.router)
@@ -99,7 +102,7 @@ def main():
                 return {"ok": False, "code": "select_exact_online_device"}
             device = devices[0]["deviceId"]
         capability = data.get("capability", "android.observe")
-        if capability not in {"android.observe", "android.action"}:
+        if capability not in {"android.observe", "android.capture", "android.action"}:
             return {"ok": False, "code": "fixture_capability_only"}
         command_id = "bench_" + secrets.token_hex(8)
         try:
@@ -150,7 +153,7 @@ def main():
         if not isinstance(overrides, dict) or set(overrides) - {"precondition", "leaseEpoch", "grantRevision", "bootId", "controlSessionId", "issuedUnixMs", "deadlineUnixMs", "ttlMs", "capabilityRevision"}:
             return {"ok": False, "code": "fixture_override_forbidden"}
         command = {**base["command"], **overrides, "commandId": "fault_" + secrets.token_hex(8)}
-        if command["resourceId"] != package or command["capability"] not in {"android.observe", "android.action"}:
+        if command["resourceId"] != package or command["capability"] not in {"android.observe", "android.capture", "android.action"}:
             return {"ok": False, "code": "fixture_target_required"}
         command["commandDigest"] = digest(command)
         with identity.transaction() as db:

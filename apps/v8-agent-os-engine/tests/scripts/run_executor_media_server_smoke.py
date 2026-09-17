@@ -6,6 +6,7 @@ Run with --live; --require-no-imaging also checks installed distribution absence
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import base64
 import hashlib
@@ -23,6 +24,24 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 JPEG = base64.b64decode("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAYACADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDhqKKK+jPDCiiigAooooAKKKKAP//Z")
+
+
+def include_production_client_routers(app, client_routes, device_executor_routes):
+    """Reuse main.py's actual registration statements without starting its lifespan."""
+    source = Path(__file__).resolve().parents[2] / "main.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+    registrations = []
+    for node in tree.body:
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value
+        if (ast.unparse(call.func) == "app.include_router" and call.args
+                and ast.unparse(call.args[0]) in {"client_routes.router", "device_executor_routes.router"}):
+            registrations.append(node)
+    assert len(registrations) == 2, "Update the harness if production router assembly changes"
+    exec(compile(ast.Module(body=registrations, type_ignores=[]), str(source), "exec"), {
+        "app": app, "client_routes": client_routes, "device_executor_routes": device_executor_routes,
+    })
 
 
 def main():
@@ -90,8 +109,7 @@ def main():
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.client_database = db
     app.state.client_internal_router = session_workflow_routes.router
-    app.include_router(device_executor_routes.router)
-    app.include_router(client_routes.router)
+    include_production_client_routers(app, client_routes, device_executor_routes)
     gateway = create_phone_gateway_app(client_app=app)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "V8 synthetic media loopback")])

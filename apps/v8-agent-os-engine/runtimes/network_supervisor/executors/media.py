@@ -106,7 +106,7 @@ class ExecutorMedia:
         return self.root / (media_id + (".upload" if temporary else ".jpg"))
 
     def cleanup(self):
-        with self.identity.transaction() as db:
+        with self.identity.lock, self.identity.transaction() as db:
             rows = db.execute("SELECT media_id FROM executor_media WHERE expires_at<=? AND state!='deleted'", (self.service.now(),)).fetchall()
             for row in rows:
                 self.path(row["media_id"]).unlink(missing_ok=True)
@@ -187,7 +187,7 @@ class ExecutorMedia:
         data = path.read_bytes()
         width, height = jpeg_dimensions(data)
         sha = hashlib.sha256(data).hexdigest()
-        with self.identity.transaction() as db:
+        with self.identity.lock, self.identity.transaction() as db:
             row = db.execute("SELECT * FROM executor_media WHERE media_id=? AND device_id=?", (media_id, principal["device_id"])).fetchone()
             require(row is not None and row["state"] == "uploading", "media_upload_not_available")
             manifest = json.loads(row["manifest"])
@@ -200,7 +200,7 @@ class ExecutorMedia:
 
     def abort(self, media_id):
         # Exact server-generated paths only. Never remove a published observation.
-        with self.identity.transaction() as db:
+        with self.identity.lock, self.identity.transaction() as db:
             row = db.execute("SELECT state FROM executor_media WHERE media_id=?", (media_id,)).fetchone()
             if row and row["state"] not in {"accepted", "published"}:
                 self.path(media_id).unlink(missing_ok=True)
@@ -216,7 +216,7 @@ class ExecutorMedia:
 
     def delete_owned(self, owner, media_id):
         require(owner == self.identity.owners.owner()["id"], "media_owner_mismatch", 403)
-        with self.identity.transaction() as db:
+        with self.identity.lock, self.identity.transaction() as db:
             row = db.execute("SELECT * FROM executor_media WHERE media_id=? AND owner_id=?", (media_id, owner)).fetchone()
             require(row is not None, "media_not_found", 404)
             self.path(media_id).unlink(missing_ok=True)
@@ -252,6 +252,14 @@ class ExecutorMedia:
         return expected_metadata
 
     def project(self, result):
+        # The identity service is the single in-process media owner. Serialize
+        # artifact registration with file removal, without holding a SQLite
+        # transaction across artifact callbacks. Its RLock permits callbacks to
+        # delete reentrantly; the persisted state/CAS below makes deletion win.
+        with self.identity.lock:
+            return self._project(result)
+
+    def _project(self, result):
         observation = (result.get("receipt") or {}).get("observation") or {}
         frame = observation.get("frame")
         if result["status"] != "succeeded" or not isinstance(frame, dict) or not frame.get("mediaId"):
@@ -277,9 +285,16 @@ class ExecutorMedia:
                         "workspacePath": str(scope.workspace_root), "expiresUnixMs": row["expires_at"]},
                     source_component="device_executor", node="capture")
             with self.identity.transaction() as db:
-                db.execute("UPDATE executor_media SET state='published',published_at=? WHERE media_id=? AND state='accepted'", (self.service.now(), row["media_id"]))
+                changed = db.execute("UPDATE executor_media SET state='published',published_at=? WHERE media_id=? AND state='accepted' AND expires_at>?",
+                                     (self.service.now(), row["media_id"], self.service.now())).rowcount
+            if changed != 1:
+                return {**result, "mediaStatus": "gone"}
         if artifact is None:
             return {**result, "mediaStatus": "gone"}  # Deletion does not recreate an artifact.
+        with self.identity.database() as db:
+            current = db.execute("SELECT state,expires_at FROM executor_media WHERE media_id=?", (row["media_id"],)).fetchone()
+        if not current or current["state"] != "published" or current["expires_at"] <= self.service.now():
+            return {**result, "mediaStatus": "gone"}
         return {**result, "mediaStatus": "available", "artifacts": [artifact],
                 "screenshotRef": {"artifactId": artifact["artifactId"], "filePath": artifact["sourcePath"],
                                   "contentUrl": artifact["contentUrl"], "frameId": frame["frameId"]}}

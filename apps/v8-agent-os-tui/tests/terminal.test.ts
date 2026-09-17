@@ -1,7 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import stringWidth from 'string-width';
-import { editor, edit, graphemes, wrap, safeText, InputDecoder, dimensions } from '../src/terminal.js';
+import { editor, edit, editorLayout, graphemes, wrap, safeText, InputDecoder, dimensions } from '../src/terminal.js';
+
+test('vertical navigation retains display column through short lines and never splits emoji', () => {
+  let state = editor('ab中👨‍👩‍👧‍👦Z\nx\n12👍🏽45'); state.cursor = 4;
+  state = edit(state, 'down'); assert.equal(graphemes(state.text).slice(0, state.cursor).join(''), 'ab中👨‍👩‍👧‍👦Z\nx');
+  state = edit(state, 'down'); assert.equal(state.cursor, graphemes(state.text).length);
+  state = edit(edit(state, 'up'), 'up'); assert.equal(state.cursor, 4); assert.equal(state.preferredColumn, 6);
+  state = edit(state, 'left'); assert.equal(state.preferredColumn, undefined);
+  state = edit(edit(state, 'down'), 'down'); assert.equal(graphemes(state.text).slice(state.cursor).join(''), '45');
+  assert.equal(edit(state, 'down').cursor, state.cursor);
+});
+
+test('vertical movement follows soft wraps and the same caret positions as rendering', () => {
+  let state = editor('AB中C👩‍🚀DE');
+  assert.deepEqual(editorLayout(state, 5).lines, ['AB中C', '👩‍🚀DE']);
+  state = edit(state, 'up', '', 5); assert.equal(state.cursor, 3);
+  assert.deepEqual(editorLayout(state, 5).cursor, { row: 0, column: 4 });
+  state = edit(state, 'down', '', 5); assert.equal(state.cursor, 7);
+  state = { ...state, cursor: 4, preferredColumn: undefined }; assert.deepEqual(editorLayout(state, 5).cursor, { row: 1, column: 0 });
+  state = edit(state, 'up', '', 5); assert.equal(state.cursor, 0);
+  const safe = editorLayout(editor('A\x1b中é'), 3); assert.doesNotMatch(safe.lines.join(''), /\x1b/);
+});
 
 test('editing preserves CJK, combining marks, skin tones, flags and ZWJ graphemes', () => {
   const original = 'A中e\u0301👨‍👩‍👧‍👦👍🏽🇨🇳Z';

@@ -3,7 +3,8 @@ import { render, Box, Text, useCursor } from 'ink';
 import stringWidth from 'string-width';
 import { Client } from './client.js';
 import { Surface } from './surface.js';
-import { clip, dimensions, editor, graphemes, InputDecoder, safeText, wrap, type Input } from './terminal.js';
+import { editExternal, editorArgv } from './external-editor.js';
+import { clip, dimensions, editor, editorLayout, InputDecoder, safeText, wrap, graphemes, type Input } from './terminal.js';
 
 export function messageText(message: any): string {
   const text = typeof message.content === 'string' ? message.content : (message.nodes || []).filter((n: any) => n.kind === 'narrative').map((n: any) => n.content || '').join('\n');
@@ -44,16 +45,15 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const editing = surface.page?.fields ? surface.formEditor : surface.input;
   const field = surface.page?.fields?.[surface.page.fieldIndex || 0];
   const secret = Boolean(field?.secret);
-  const inputText = secret ? '•'.repeat(graphemes(editing.text).length) : safeText(editing.text);
-  const inputLines = wrap(inputText || ' ', Math.max(1, columns - 2));
+  surface.editorWidth = Math.max(1, columns - 2);
+  const inputLayout = editorLayout(editing, surface.editorWidth, secret);
+  const inputLines = inputLayout.lines;
   const inputHeight = size.small ? 1 : Math.max(1, Math.min(8, Math.floor(rows / 3), Math.max(3, inputLines.length)));
   const historyHeight = Math.max(1, rows - inputHeight - 7);
-  const prefix = graphemes(editing.text).slice(0, editing.cursor).join('');
-  const cursorLines = wrap(secret ? '•'.repeat(editing.cursor) : prefix, Math.max(1, columns - 2));
-  const inputOffset = Math.max(0, cursorLines.length - inputHeight);
+  const inputOffset = Math.max(0, inputLayout.cursor.row + 1 - inputHeight);
   useEffect(() => {
     if (surface.page && !surface.page.fields) { setCursorPosition(undefined); return; }
-    setCursorPosition({ x: Math.min(columns - 1, 2 + stringWidth(cursorLines.at(-1) || '')), y: 5 + historyHeight + cursorLines.length - 1 - inputOffset });
+    setCursorPosition({ x: Math.min(columns - 1, 2 + inputLayout.cursor.column), y: 5 + historyHeight + inputLayout.cursor.row - inputOffset });
   });
   let body: string[] = [];
   const page = surface.page;
@@ -80,9 +80,9 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     const row = lines[surface.anchor];
     if (row) client.view.scroll[client.view.sessionId] = { messageId: row.messageId, offset: row.offset, following: surface.following };
     body = lines.slice(surface.anchor, surface.anchor + historyHeight).map(r => r.text);
-    if (!body.length) body = [size.small ? '小窗口模式' : 'V8OS · 开始对话', '', client.view.workspace ? `工作区：${client.view.workspace}` : '先按 F3 连接模型并选择工作区。', '输入消息，或按 / 查看操作。'];
+    if (!body.length) body = [size.small ? '小窗口模式' : 'V8OS · 开始对话', '', client.workspace ? `工作区：${client.workspace}` : '先按 F3 连接模型并选择工作区。', '输入消息，或按 / 查看操作。'];
   }
-  const label = `${client.instance.name || 'V8OS'} · ${client.connection} · 待处理 ${client.inbox.length} · ${client.view.workspace || '未选择工作区'}`;
+  const label = `${client.instance.name || 'V8OS'} · ${client.connection} · 待处理 ${client.inbox.length} · ${client.workspace || '未选择工作区'}`;
   const hint = page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F2 待处理 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
     <Text bold>{clip(label, columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
@@ -107,6 +107,7 @@ export async function start(args: string[]) {
   const reader = args.includes('--screen-reader') || process.env.INK_SCREEN_READER === 'true';
   const decoder = new InputDecoder(); let timer: NodeJS.Timeout | undefined, pasteTimer: NodeJS.Timeout | undefined;
   let app: ReturnType<typeof render> | undefined; let done = false; let resolveExit: () => void = () => {};
+  let editingAbort: AbortController | undefined;
   const exited = new Promise<void>(resolve => { resolveExit = resolve; });
   const echo = () => {
     if (!reader) return;
@@ -119,13 +120,6 @@ export async function start(args: string[]) {
   let number = '';
   const dispatch = (event: Input) => {
     if (done) return;
-    if (surface.busy || client.busy) {
-      if (!surface.page && ['text', 'paste'].includes(event.key)) {
-        client.draft.nextText = (client.draft.nextText || '') + (event.text || ''); client.save();
-        client.notice = '发送期间输入已暂存为下一条草稿，受理后可继续编辑。';
-      } else client.notice = '当前操作仍在处理中；此按键没有执行。';
-      client.changed(); return;
-    }
     if (reader && surface.page && !surface.page.fields) {
       if (event.key === 'text' && /^\d+$/.test(event.text || '')) { number += event.text; process.stdout.write(event.text!); return; }
       if (event.key === 'enter' && number) { surface.page.selected = Math.max(0, Number(number) - 1); number = ''; }
@@ -133,7 +127,7 @@ export async function start(args: string[]) {
     const previous = surface.page;
     // Editing remains synchronous while network operations have one owner.
     const actionKey = ['enter', 'f9', 'f1', 'f2', 'f3', 'f4', 'ctrl-p', 'ctrl-b', 'ctrl-t', 'ctrl-n', 'escape', 'ctrl-c'].includes(event.key);
-    const work = actionKey ? surface.execute(() => surface.handle(event)) : surface.handle(event);
+    const work = surface.dispatch(event);
     void work.finally(() => {
       if (reader) {
         const secret = surface.page?.fields?.[surface.page.fieldIndex || 0]?.secret;
@@ -153,12 +147,14 @@ export async function start(args: string[]) {
   const draw = () => render(<App client={client} surface={surface} dispatch={dispatch} />, { exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
   const resume = () => {
     if (done || !suspended) return; suspended = false;
+    if (editingAbort) return;
     if (!reader) app = draw();
     process.stdin.setRawMode(true); process.stdin.resume(); process.stdout.write('\x1b[?2004h');
     void client.tick().catch(() => { client.connection = '连接中断 · 自动重连'; client.changed(); });
   };
   const suspend = () => {
     if (done || suspended) return; suspended = true;
+    if (editingAbort) { process.kill(process.pid, 'SIGSTOP'); return; }
     app?.unmount(); process.stdin.setRawMode(false); process.stdin.pause(); process.stdout.write('\x1b[?2004l\x1b[?25h');
     process.kill(process.pid, 'SIGSTOP');
   };
@@ -166,22 +162,41 @@ export async function start(args: string[]) {
     if (done) return; done = true;
     clearTimeout(timer); clearTimeout(pasteTimer);
     process.stdin.off('data', onData); process.stdin.off('end', cleanup);
-    process.off('SIGTERM', cleanup); process.off('SIGINT', cleanup); process.off('SIGHUP', cleanup);
+    process.off('SIGTERM', cleanup); process.off('SIGINT', interrupt); process.off('SIGHUP', cleanup);
     if (process.platform !== 'win32') { process.off('SIGTSTP', suspend); process.off('SIGCONT', resume); }
     app?.unmount(); process.stdin.setRawMode(false); process.stdin.pause();
+    editingAbort?.abort();
     process.stdout.write('\x1b[?2004l\x1b[?25h');
     try { client.stop(); } catch { process.exitCode = 1; }
     process.stdout.write('\n终端已退出，后台服务继续运行。\n'); resolveExit();
+  };
+  const interrupt = () => { if (editingAbort) editingAbort.abort(); else cleanup(); };
+  surface.onEditor = async text => {
+    const command = process.env.VISUAL || process.env.EDITOR || '';
+    editorArgv(command); // Refuse bad configuration before relinquishing the terminal.
+    clearTimeout(timer); clearTimeout(pasteTimer);
+    editingAbort = new AbortController();
+    process.stdin.off('data', onData); process.stdin.pause();
+    app?.unmount(); process.stdin.setRawMode(false); process.stdout.write('\x1b[?2004l\x1b[?25h');
+    try { return await editExternal(text, { command, signal: editingAbort.signal }); }
+    finally {
+      editingAbort = undefined;
+      if (!done) {
+        if (!reader) app = draw();
+        process.stdin.setRawMode(true); process.stdin.on('data', onData); process.stdin.resume(); process.stdout.write('\x1b[?2004h');
+      }
+    }
   };
   surface.onExit = cleanup;
   if (!reader) app = draw();
   process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', onData); process.stdin.on('end', cleanup);
   process.stdout.write('\x1b[?2004h');
-  process.on('SIGTERM', cleanup); process.on('SIGINT', cleanup); process.on('SIGHUP', cleanup);
+  process.on('SIGTERM', cleanup); process.on('SIGINT', interrupt); process.on('SIGHUP', cleanup);
   if (process.platform !== 'win32') { process.on('SIGTSTP', suspend); process.on('SIGCONT', resume); }
   let lastMessages = new Map<string, string>();
   let readerSession = '';
   const unsubscribe = reader ? client.subscribe(() => {
+    if (editingAbort) return;
     const key = `${client.instance.instanceId || ''}:${client.view.sessionId}`;
     if (key !== readerSession) { lastMessages.clear(); readerSession = key; }
     for (const m of client.messages) {

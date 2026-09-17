@@ -459,7 +459,7 @@ function MessageActionButtons({
 function AssistantActivityDots({ label }: { label: string }) {
     return (
         <div
-            className="flex min-h-6 min-w-12 items-center justify-center gap-1.5"
+            className="flex h-7 w-fit items-center gap-1.5 px-1"
             role="status"
             aria-label={label}
         >
@@ -999,13 +999,14 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     return (
         <>
         <motion.div 
+            data-assistant-state={assistantEmptyActive ? "waiting" : "content"}
             initial={animateEntrance ? { opacity: 0, y: 10, scale: 0.98 } : false}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
             className="group mx-auto mb-6 flex w-full max-w-4xl flex-col gap-2.5 sm:mb-7 sm:gap-3"
         >
             {/* Header */}
-            <div className="flex select-none items-center gap-3 pl-1">
+            {!assistantEmptyActive && <div className="flex select-none items-center gap-3 pl-1 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
                 <div className="relative h-9 w-9 sm:h-10 sm:w-10">
                     <div className={cn(
                         "flex h-9 w-9 items-center justify-center overflow-hidden rounded-2xl border shadow-md transition-all duration-500 sm:h-10 sm:w-10",
@@ -1042,14 +1043,14 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         )}
                     </div>
                 </div>
-            </div>
+            </div>}
 
             {/* Content Body */}
             <div className={cn(
-                "relative min-w-0 overflow-hidden rounded-[24px] rounded-tl-sm transition-all duration-500 sm:min-w-[300px]",
-                "bg-white/40 dark:bg-zinc-900/40 border border-white/20 dark:border-white/5 backdrop-blur-xl shadow-xl shadow-black/5"
+                "relative min-w-0",
+                !assistantEmptyActive && "overflow-hidden rounded-[24px] rounded-tl-sm sm:min-w-[300px] bg-white/40 dark:bg-zinc-900/40 border border-white/20 dark:border-white/5 backdrop-blur-xl shadow-xl shadow-black/5 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200"
             )}>
-                <div className="min-h-[56px] space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]" aria-live="polite">
+                <div className={cn(!assistantEmptyActive && "min-h-[56px] space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]")} aria-live="polite">
                     {assistantEmptyActive ? <AssistantActivityDots label={t("web.chat.supervisorResponding")} /> : null}
                     {timelineSegments.map((segment, index) => {
                         const isActiveSegment = Boolean(

@@ -1144,8 +1144,8 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const recorded = buildRecordedUserMessage(event, eventData) as TMessage;
     const clientMessageId = String(recorded.metadata?.clientMessageId || "").trim();
     const existingIndex = localMessages.findIndex((message) => (
-      String(message.id || "").trim() === recorded.id
-      || (clientMessageId && String(message.metadata?.clientMessageId || "").trim() === clientMessageId)
+      message.role === "user" && (String(message.id || "").trim() === recorded.id
+      || (clientMessageId && String(message.metadata?.clientMessageId || "").trim() === clientMessageId))
     ));
     if (existingIndex >= 0) {
       const existing = localMessages[existingIndex];
@@ -1161,8 +1161,21 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     } else {
       localMessages.push(recorded);
     }
+    // The receipt belongs to a submitted user message, not to whichever run
+    // happens to be streaming now. Adopt only that submission's placeholder;
+    // replaying an old receipt or enqueueing the next user must not clear it.
+    const pendingAssistant = localMessages.find((message) => (
+      message.role === "assistant"
+      && message.uiEphemeral
+      && String(message.metadata?.clientMessageId || "") === (clientMessageId || recorded.id)
+      && (!message.runId || message.runId === recorded.runId)
+    ));
+    if (pendingAssistant) {
+      pendingAssistant.runId = recorded.runId;
+      nextCurrentAiMsg = pendingAssistant;
+    }
     return {
-      currentAiMsg: undefined,
+      currentAiMsg: nextCurrentAiMsg,
       activeAgentProfile: nextActiveAgentProfile,
     };
   }
@@ -1186,6 +1199,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       ensureAssistantIdentity(nextCurrentAiMsg, nextActiveAgentProfile);
       applyTranscriptVersion(nextCurrentAiMsg, event);
       return nextCurrentAiMsg;
+    }
+    if (event.run_id && nextCurrentAiMsg?.runId !== event.run_id) {
+      const runMessage = localMessages.find((message) => message.role === "assistant" && message.runId === event.run_id);
+      // A placeholder with a submission id can only be bound by its receipt
+      // or acceptance response. A late event from another run cannot claim it.
+      nextCurrentAiMsg = runMessage || (nextCurrentAiMsg?.runId || nextCurrentAiMsg?.metadata?.clientMessageId
+        ? undefined : nextCurrentAiMsg);
     }
     nextCurrentAiMsg = ensureCurrentAiMessage(localMessages, nextCurrentAiMsg, nextActiveAgentProfile, event.run_id, options);
     if (event.message_id) {

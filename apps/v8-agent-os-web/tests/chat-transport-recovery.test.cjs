@@ -19,7 +19,7 @@ function readSource(relativePath) {
 function harness(fetcher, options = {}) {
     const refs = []; let slot = 0;
     const state = { messages: [], isLoading: false };
-    const store = { ...state, setMessages: value => { state.messages = value; }, setIsLoading: value => { state.isLoading = value; } };
+    const store = { ...state, setMessages: value => { state.messages = typeof value === 'function' ? value(state.messages) : value; }, setIsLoading: value => { state.isLoading = value; } };
     const cache = new Map();
     const react = {
         useRef(value) { const index = slot++; return refs[index] ||= { current: value }; },
@@ -151,6 +151,73 @@ test('retry after unknown acceptance keeps request id and a single optimistic us
     assert.equal(requests[1].workspace_id, 'ws-A');
 });
 
+test('durable acceptance binds only its pending assistant and keeps the render identity', async () => {
+    let accept;
+    const h = harness(() => new Promise(resolve => { accept = resolve; }), { submitEndpoint: '/api/chat-submit' });
+    const submission = h.render().sendMessage('Hello', { conversationId: 'A', clientMessageId: 'client-A' });
+    const placeholder = h.state.messages.find(message => message.role === 'assistant');
+    accept(Response.json({ accepted: true, session_id: 'A', run_id: 'run-A' }));
+    assert.equal(await submission, true);
+    const answer = h.state.messages.find(message => message.role === 'assistant');
+    assert.equal(answer.runId, 'run-A');
+    assert.equal(answer.renderKey, placeholder.renderKey);
+    assert.equal(answer.metadata.clientMessageId, 'client-A');
+});
+
+test('server receipt timestamp cannot move the waiting assistant above its user', () => {
+    const h = harness(async () => Response.json({}));
+    const state = h.load('@/lib/chat-stream-state');
+    const assistant = { ...state.buildAssistantMessage({}), runId: 'run-A', timestamp: 100 };
+    const user = { id: 'client-A', role: 'user', content: 'Hello', runId: 'run-A', timestamp: 200, ordinal: 1 };
+    const normalized = state.normalizeMessagesForState([assistant, user]);
+    assert.equal(normalized[0].id, 'client-A');
+    assert.equal(normalized[1].renderKey, assistant.renderKey);
+    const nextUser = { ...user, id: 'client-B', ordinal: 3 };
+    assert.deepEqual(Array.from(state.normalizeMessagesForState([nextUser, { ...assistant, ordinal: 2 }, user]), m => m.ordinal), [1, 2, 3]);
+});
+
+test('authoritative replacement keeps DOM identity but replaces all content after an epoch change', () => {
+    const h = harness(async () => Response.json({}));
+    const state = h.load('@/lib/chat-stream-state');
+    const prior = { ...state.buildAssistantMessage({}), id: 'answer-A', runId: 'run-A', content: 'Old text', nodes: [{id: 'old-node'}] };
+    const canonical = { id: 'answer-A', role: 'assistant', runId: 'run-A', content: 'User revision', nodes: [], version: 2 };
+    const [next] = state.preserveMessageRenderKeys([prior], [canonical]);
+    assert.equal(next.renderKey, prior.renderKey);
+    assert.equal(next.content, 'User revision');
+    assert.equal(next.nodes.length, 0);
+    assert.equal(next.version, 2);
+});
+
+test('typed failed and interrupted runs expose a reason while unknown/active/cancelled stays distinct', () => {
+    const h = harness(async () => Response.json({}));
+    const { readRunFailureMessage } = h.load('@/lib/chat/run-activity');
+    for (const detail of [{error_message: 'Budget denied'}, {errorMessage: 'Circuit open'}, {error: 'Provider 503'}, {error: {message: 'Disconnected'}}]) {
+        assert.notEqual(readRunFailureMessage({status: 'failed', ...detail}, 'fallback'), 'fallback');
+    }
+    assert.equal(readRunFailureMessage({status: 'interrupted'}, 'Recover the run'), 'Recover the run');
+    for (const status of ['running', 'cancelled', 'unknown', 'completed']) assert.equal(readRunFailureMessage({status, error: 'old'}, 'fallback'), '');
+});
+
+test('a compact failed-run snapshot reads its durable error by run id; older run errors stay isolated', () => {
+    const h = harness(async () => Response.json({}));
+    const { readRunFailureMessage } = h.load('@/lib/chat/run-activity');
+    const ast = ts.createSourceFile('ChatClient.tsx', readSource('app/chat/ChatClient.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let expression;
+    function visit(node) {
+        if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'runFailureMessage') expression = node.initializer.getText(ast);
+        ts.forEachChild(node, visit);
+    }
+    visit(ast); assert.ok(expression);
+    const bindings = {readRunFailureMessage, localConversationLoading:false, activeConversationRunning:false,
+        currentRun:{id:'run-B',status:'failed'}, runEntries:[{id:'run-A',status:'failed',error_message:'Old failure'}, {id:'run-B',status:'failed',error_message:'Provider 503'}], t:()=> 'fallback'};
+    const read = () => vm.runInNewContext(expression, bindings);
+    assert.equal(read(), 'Provider 503');
+    bindings.currentRun = {id:'run-C',status:'failed'};
+    assert.equal(read(), 'fallback');
+    bindings.localConversationLoading = true;
+    assert.equal(read(), '');
+});
+
 function actualQueueSubmit(bindings) {
     return actualClientCallback('submitQueuedMessage', bindings);
 }
@@ -171,6 +238,68 @@ function actualClientCallback(name, bindings) {
     vm.runInNewContext(compiled, { exports, ...bindings });
     return exports.submit;
 }
+
+function historyFixture(latestEventSeq, detailSeq, epoch = 0) {
+    const h = harness(async () => Response.json({}));
+    const shared = require('@v8/session-realtime');
+    const state = h.load('@/lib/chat-stream-state');
+    const applied = [];
+    const owner = {current: 'instance-A/principal-A'};
+    const noop = () => {};
+    const load = actualClientCallback('loadConversationHistory', {
+        ...shared, ...state, AbortController, AbortSignal, console,
+        historyLoadControllerRef: {current: null}, activeConversationIdRef: {current: 'A'},
+        sessionOwnerRef: owner,
+        latestRealtimeSeqRef: {current: latestEventSeq}, turnIndexRef: {current: []},
+        setTurnIndex: noop, setTotalTurnCount: noop, setFocusedTurnId: noop,
+        fetch: async () => Response.json({contextEpoch: epoch, transcriptRevision: 1, messages: [], projection: {latestSeq: detailSeq, runtimeStatus: 'running'}}),
+        loadConversationTurnPage: async () => ({messages: [], pageInfo: {}}),
+        setQueuedMessageError: noop, router: {replace: noop},
+        transcriptIdentitiesRef: {current: new Map()}, setTranscriptIdentity: noop,
+        realtimeMessageStateRef: {current: {pendingRuntimeEvents: []}},
+        setLegacyChatUnsupported: noop, isLegacyChatUnsupportedPayload: () => false,
+        applyQueuedMessagesSnapshot: noop, extractQueuedMessages: () => [], synchronizeQueue: noop,
+        setSessionProjection: noop, mergeRuntimeTimelineSnapshot: () => ({}),
+        askUserApprovalId: '', applyAskUserPendingApproval: noop,
+        shouldPreserveCurrentHistoryOnEmpty: () => true,
+        messagesRef: {current: [{id: 'assistant-A', role: 'assistant', content: 'Already visible', runId: 'run-A', nodes: []}]},
+        mergeTurnIndexEntries: noop, turnBeforeCursorRef: {current: null}, isLoadingOlderTurnsRef: {current: false},
+        setIsLoadingOlderTurns: noop, setHasOlderTurns: noop, messageCacheRef: {current: new Map()},
+        applyProjectedSnapshot: (messages, seq) => { applied.push({messages, seq}); return messages; },
+        applySessionProcessSurface: noop, window: {setTimeout: noop},
+    });
+    return {load, applied, owner};
+}
+
+test('parallel detail watermark cannot acknowledge events absent from the turn-window response', async () => {
+    const f = historyFixture(0, 20);
+    await f.load('A', {preserveCurrentOnEmpty: true});
+    assert.equal(f.applied.length, 1);
+    assert.equal(f.applied[0].seq, 0, 'only the message snapshot itself may advance the covered-event cursor');
+    assert.equal(f.applied[0].messages[0].content, 'Already visible');
+});
+
+test('late history started before a text or failure event cannot replace the newer projection', async () => {
+    const f = historyFixture(20, 3);
+    await f.load('A', {preserveCurrentOnEmpty: true});
+    assert.equal(f.applied.length, 0);
+});
+
+test('instance/principal changes invalidate history even when the session id is reused', async () => {
+    const f = historyFixture(0, 3);
+    const pending = f.load('A');
+    f.owner.current = 'instance-B/principal-B';
+    await pending;
+    assert.equal(f.applied.length, 0);
+});
+
+test('new context epoch can replace messages even across an older sequence watermark', async () => {
+    const f = historyFixture(20, 3, 2);
+    await f.load('A', {replaceTranscript: true, preserveCurrentOnEmpty: true});
+    assert.equal(f.applied.length, 1);
+    assert.equal(f.applied[0].seq, 3);
+    assert.equal(f.applied[0].messages.length, 0, 'new epoch is authoritative; old visible content is not retained');
+});
 
 test('canonical recovery advances the existing snapshot cursor; replay is ignored and new tail remains usable', async () => {
     const realtime = require('@v8/session-realtime');
@@ -275,7 +404,7 @@ test('composer renders a transport error without a queue and offers GET recovery
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     }).outputText;
     vm.runInNewContext(jsx, { exports, require, activeConversationId: 'A', activeConversationIdRef: { current: 'A' },
-        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', queuedMessageError: '', scopeLoading: false,
+        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', visibleChatError: 'Unauthorized', runFailureMessage: '', queuedMessageError: '', scopeLoading: false,
         loadSessionScope: async id => { recovery.push(['scope', id]); return true; },
         loadConversationHistory: async id => recovery.push(['history', id]), loadRuns: async id => recovery.push(['runs', id]),
         synchronizeQueue: async id => recovery.push(['queue', id]), setChatTransportError: value => errors.push(value),

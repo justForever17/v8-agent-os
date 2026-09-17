@@ -13,6 +13,7 @@ import {
     cloneMessages,
     normalizeMessagesForState,
     normalizeProjectedMessages,
+    preserveMessageRenderKeys,
     WEB_STREAM_LIFECYCLE_OPTIONS,
 } from "@/lib/chat-stream-state";
 import { normalizeRealtimeEvent } from "@/lib/realtime";
@@ -27,6 +28,7 @@ import {
     runStatusAllowsInterrupt,
     shouldApplyRunScopedStatus,
     shouldPreserveCurrentHistoryOnEmpty,
+    readRunFailureMessage,
     terminalRunStatusFromTopic,
 } from "@/lib/chat/run-activity";
 import {
@@ -748,6 +750,13 @@ function mergeWebMessagePayload(base: Message, incoming: Message): Message {
 
 function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: unknown[]) {
     const normalizedSnapshot = normalizeProjectedMessages(projectedMessages);
+    const receivedRuns = new Map(normalizedSnapshot.filter((message) => message.role === "user" && message.runId)
+        .flatMap((message) => [message.id, String(message.metadata?.clientMessageId || "")].filter(Boolean).map((id) => [id, message.runId!] as const)));
+    current = current.map((message) => {
+        const runId = receivedRuns.get(String(message.metadata?.clientMessageId || ""));
+        return message.role === "assistant" && message.uiEphemeral && runId && (!message.runId || message.runId === runId)
+            ? { ...message, runId } : message;
+    });
     if (current.length === 0) {
         return normalizeMessagesForState(normalizedSnapshot);
     }
@@ -1036,6 +1045,10 @@ export default function ChatClient() {
     }, [loadSupervisorDisplayProfile, status]);
 
     const [instanceId, setInstanceId] = useState("");
+    const sessionOwnerKey = JSON.stringify([instanceId, String(session?.user?.id || "")]);
+    const sessionOwnerRef = useRef(sessionOwnerKey);
+    sessionOwnerRef.current = sessionOwnerKey;
+    const renderedSessionOwnerRef = useRef(sessionOwnerKey);
     useEffect(() => {
         if (status !== "authenticated") { setInstanceId(""); return; }
         const controller = new AbortController();
@@ -1786,6 +1799,19 @@ export default function ChatClient() {
             conversationRunId: activeConversation?.currentRunId,
         });
     }, [activeConversationId, conversations, currentRun?.id, currentRun?.status, localConversationLoading, localSubmittedRunId, projectionRunId, sessionProjection?.controls?.workflowStatus, sessionProjection?.runtimeStatus, sessionProjection?.workflow?.rootRunId, sessionProjection?.workflow?.status]);
+    const runFailureMessage = !localConversationLoading && !activeConversationRunning
+        ? readRunFailureMessage(currentRun,
+            readRunFailureMessage(runEntries.find((run) => run.id === currentRun?.id), "") || t("web.chat.runFailed")) : "";
+    const visibleChatError = chatTransportError || runFailureMessage;
+    useEffect(() => {
+        if (!localConversationLoading || !submittedRunId) return;
+        const terminal = deriveMatchingTerminalProjection({
+            localRunId: submittedRunId,
+            currentRunId: currentRun?.id,
+            currentRunStatus: currentRun?.status,
+        });
+        if (terminal) settleTerminalStream(terminal.runId);
+    }, [currentRun?.id, currentRun?.status, localConversationLoading, settleTerminalStream, submittedRunId]);
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
         [sessionProjection?.askUserInteractions],
@@ -2372,7 +2398,21 @@ export default function ChatClient() {
     }, [governancePendingApprovalId, removeGovernanceApproval, resolveApproval]);
 
     useLayoutEffect(() => {
-        const previousConversationId = renderedConversationIdRef.current;
+        const ownerChanged = renderedSessionOwnerRef.current !== sessionOwnerKey;
+        const previousConversationId = ownerChanged ? null : renderedConversationIdRef.current;
+        renderedSessionOwnerRef.current = sessionOwnerKey;
+        if (ownerChanged) {
+            messageCacheRef.current.clear();
+            queueCacheRef.current.clear();
+            scopeCacheRef.current.clear();
+            transcriptIdentitiesRef.current.clear();
+            setTranscriptIdentity({ transcriptRevision: 0, contextEpoch: 0 });
+            setScopeOwner("");
+            setScopeBinding(null);
+            stop();
+            streamingConversationIdRef.current = null;
+            streamingTransportRef.current = null;
+        }
         activeConversationIdRef.current = activeConversationId;
         if (previousConversationId === activeConversationId) {
             return;
@@ -2409,7 +2449,7 @@ export default function ChatClient() {
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
         setMessages(cached);
-    }, [activeConversationId, setMessages]);
+    }, [activeConversationId, sessionOwnerKey, setMessages, stop]);
 
     useEffect(() => {
         setChatTransportError("");
@@ -2631,8 +2671,9 @@ export default function ChatClient() {
                 seenRealtimeEventIdentitiesRef.current.pruneSnapshotCovered(latestSeq);
             }
         }
-        messagesRef.current = normalizeMessagesForState(normalized);
-        setMessages(normalizeMessagesForState(normalized));
+        normalized = preserveMessageRenderKeys(messagesRef.current, normalizeMessagesForState(normalized));
+        messagesRef.current = normalized;
+        setMessages(normalized);
         return normalized;
     }, [setMessages]);
 
@@ -2661,6 +2702,8 @@ export default function ChatClient() {
         historyLoadControllerRef.current?.abort();
         const controller = new AbortController();
         historyLoadControllerRef.current = controller;
+        const owner = sessionOwnerRef.current;
+        const isCurrent = () => !controller.signal.aborted && activeConversationIdRef.current === conversationId && sessionOwnerRef.current === owner;
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
         turnIndexRef.current = [];
         setTurnIndex([]);
@@ -2680,7 +2723,7 @@ export default function ChatClient() {
             if (controller.signal.aborted) return;
             throw error;
         }
-        if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+        if (!isCurrent()) return;
         if (!detailRes.ok) {
             setQueuedMessageError("队列同步失败，保留上次状态。请重新同步。");
             if (detailRes.status === 404) {
@@ -2691,7 +2734,7 @@ export default function ChatClient() {
         }
 
         const data = await detailRes.json();
-        if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+        if (!isCurrent()) return;
         const detailPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
         const incomingIdentity = readTranscriptIdentity(detailPayload);
         const previousIdentity = transcriptIdentitiesRef.current.get(conversationId);
@@ -2701,7 +2744,7 @@ export default function ChatClient() {
             const full = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}`, { cache: "no-store", signal });
             if (!full.ok) throw new Error("transcript_refresh_failed");
             const authoritative = await full.json();
-            if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+            if (!isCurrent()) return;
             Object.assign(detailPayload, authoritative);
         }
         transcriptIdentitiesRef.current.set(conversationId, readTranscriptIdentity(detailPayload));
@@ -2710,6 +2753,8 @@ export default function ChatClient() {
         const projectionPayload = (detailPayload?.projection && typeof detailPayload.projection === "object")
             ? detailPayload.projection
             : detailPayload;
+        const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
+        if (!epochChanged && !options?.replaceTranscript && latestSeq < latestRealtimeSeqRef.current) return;
         setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detailPayload) || isLegacyChatUnsupportedPayload(projectionPayload));
         applyQueuedMessagesSnapshot(
             extractQueuedMessages(projectionPayload) ?? extractQueuedMessages(detailPayload),
@@ -2736,9 +2781,8 @@ export default function ChatClient() {
             }
         }
 
-        const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
         const normalized = normalizeMessagesForState((epochChanged || options?.replaceTranscript) && Array.isArray(detailPayload.messages) ? normalizeProjectedMessages(detailPayload.messages) : turnPage.messages);
-        const preserveCurrentHistory = shouldPreserveCurrentHistoryOnEmpty({
+        const preserveCurrentHistory = !(epochChanged || options?.replaceTranscript) && shouldPreserveCurrentHistoryOnEmpty({
             preserveCurrentOnEmpty: options?.preserveCurrentOnEmpty,
             currentMessageCount: messagesRef.current.length,
             incomingMessageCount: normalized.length,
@@ -2760,7 +2804,10 @@ export default function ChatClient() {
         setHasOlderTurns(Boolean(turnPage.pageInfo.hasMore));
         const nextMessages = applyProjectedSnapshot(
             preserveCurrentHistory ? messagesRef.current : normalized,
-            latestSeq,
+            // The parallel turn-window request has no event watermark. The
+            // detail status may be newer than its messages; it cannot prove
+            // those events were already rendered by this message window.
+            (epochChanged || options?.replaceTranscript) && Array.isArray(detailPayload.messages) ? latestSeq : 0,
             {
                 mergeWithCurrent: !(epochChanged || options?.replaceTranscript) && (options?.mergeWithCurrent === true || messagesRef.current.length > normalized.length),
             },
@@ -2771,13 +2818,13 @@ export default function ChatClient() {
             applySessionProcessSurface(detailProcesses);
         }
         const hydrateTurnIndex = async () => {
-            if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+            if (!isCurrent()) return;
             try {
                 const indexPage = await loadConversationTurnIndexPage(conversationId, {
                     commit: false,
                     signal: controller.signal,
                 });
-                if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+                if (!isCurrent()) return;
                 mergeTurnIndexEntries(indexPage.entries);
                 const resolvedTotal = Number(indexPage.totalTurnCount || turnPage.pageInfo.totalTurnCount || 0);
                 if (resolvedTotal > 0) {
@@ -3531,19 +3578,22 @@ export default function ChatClient() {
                 }
             }
             if (terminalTargetsCurrentRun) {
-                setSessionProjection((current) => current ? {
-                    ...current,
+                setSessionProjection((current) => ({
+                    ...(current || deriveAuthoritativeSessionView({ sessionId: conversationId }).view!),
                     runtimeStatus: terminalRunStatus,
-                    currentRun: current.currentRun ? {
-                        ...current.currentRun,
+                    currentRun: {
+                        ...(current?.currentRun || {}),
+                        id: terminalRunId,
                         status: terminalRunStatus,
-                    } : current.currentRun,
-                    controls: current.controls ? {
-                        ...current.controls,
+                        error_message: readRunFailureMessage({ ...terminalEventData, status: terminalRunStatus }, ""),
+                    },
+                    controls: {
+                        ...(current?.controls || {}),
+                        runId: terminalRunId,
                         canInterrupt: false,
                         workflowStatus: terminalRunStatus,
-                    } : current.controls,
-                } : current);
+                    },
+                }));
                 patchConversationSummary(conversationId, {
                     status: terminalRunStatus,
                     workflowStatus: terminalRunStatus,
@@ -4167,7 +4217,7 @@ export default function ChatClient() {
             messagesRef.current = [];
             setMessages([]);
         }
-    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages]);
+    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, sessionOwnerKey, status, stop, setMessages]);
 
     useEffect(() => {
         if (status !== "authenticated" || !activeConversationId) {
@@ -4175,6 +4225,7 @@ export default function ChatClient() {
         }
 
         const eventSource = new EventSource(`/api/realtime/sessions/${activeConversationId}/stream`);
+        const isCurrent = () => activeConversationIdRef.current === activeConversationId && sessionOwnerRef.current === sessionOwnerKey;
         let lastAuthoritativeResyncAt = 0;
         let authoritativeResyncInFlight = false;
         const requestAuthoritativeResync = (reason: "snapshot_without_messages" | "sse_error") => {
@@ -4203,7 +4254,7 @@ export default function ChatClient() {
         };
 
         const handleSnapshot = (event: MessageEvent) => {
-            if (activeConversationIdRef.current !== activeConversationId) return;
+            if (!isCurrent()) return;
             try {
                 const data = attachSseEventId(JSON.parse(event.data), event) as Record<string, unknown>;
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
@@ -4230,6 +4281,7 @@ export default function ChatClient() {
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
                 const localStreamActive = isLocalStreamActive(activeConversationId);
                 const snapshotLatestSeq = Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0);
+                if (snapshotLatestSeq < latestRealtimeSeqRef.current) return;
                 applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload), activeConversationId, snapshotLatestSeq, asPlainRecord(snapshotRecord.queuedMessagesWindow).complete === true);
                 if (asPlainRecord(snapshotRecord.queuedMessagesWindow).hasMore) void synchronizeQueue(activeConversationId);
                 const terminalProjection = nextView && localStreamActive
@@ -4307,7 +4359,7 @@ export default function ChatClient() {
         };
 
         const handleRuntime = (event: MessageEvent) => {
-            if (activeConversationIdRef.current !== activeConversationId) return;
+            if (!isCurrent()) return;
             try {
                 const rawEvent = attachSseEventId(JSON.parse(event.data), event);
                 applyRemoteRuntimeEvent(rawEvent);
@@ -4317,7 +4369,7 @@ export default function ChatClient() {
         };
 
         const handleError = () => {
-            if (activeConversationIdRef.current !== activeConversationId) return;
+            if (!isCurrent()) return;
             requestAuthoritativeResync("sse_error");
         };
 
@@ -4331,7 +4383,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, settleTerminalStream, status, synchronizeQueue]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, sessionOwnerKey, settleTerminalStream, status, synchronizeQueue]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -4608,7 +4660,7 @@ export default function ChatClient() {
                 >
                     <div className="flex flex-col gap-2">
                         <div className="relative shrink-0">
-                            {activeConversationId && (hasAskUserSurface || visibleQueuedMessages.length > 0 || chatTransportError || queuedMessageError) ? (
+                            {activeConversationId && (hasAskUserSurface || visibleQueuedMessages.length > 0 || visibleChatError || queuedMessageError) ? (
                                 <div
                                     data-testid="chat-transient-dock"
                                     className="pointer-events-none absolute inset-x-0 bottom-full z-[75] mb-2 flex max-h-[min(62vh,560px)] flex-col justify-end gap-2 overflow-y-auto overscroll-contain"
@@ -4654,9 +4706,14 @@ export default function ChatClient() {
                                             />
                                         </div>
                                     ) : null}
-                                    {chatTransportError || queuedMessageError ? (
+                                    {visibleChatError || queuedMessageError ? (
                                         <div role="alert" className="pointer-events-auto mx-auto w-full max-w-4xl rounded-xl border border-destructive/25 bg-background px-3 py-2 text-xs text-destructive shadow-sm">
-                                            <span className="break-words">{chatTransportError || queuedMessageError}</span>
+                                            <span className="break-words">{visibleChatError || queuedMessageError}</span>
+                                            {runFailureMessage && draftKey ? <button type="button" className="ml-2 underline" onClick={() => {
+                                                const original = [...messagesRef.current].reverse().find((message) => message.role === "user" && message.runId === currentRun?.id)?.content || "";
+                                                setDraftField<string>(draftKey, "text", (value) => value.trim() ? value : original, "");
+                                                document.querySelector<HTMLTextAreaElement>('textarea[data-v8os-chat-composer="true"]')?.focus();
+                                            }}>{t("web.chat.editFailedMessage")}</button> : null}
                                             <button type="button" className="ml-2 underline disabled:opacity-50" disabled={scopeLoading} onClick={async () => {
                                                 const conversationId = activeConversationIdRef.current;
                                                 if (!conversationId) return;

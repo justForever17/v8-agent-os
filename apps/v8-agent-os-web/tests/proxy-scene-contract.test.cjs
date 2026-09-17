@@ -69,3 +69,16 @@ test('base transform edits move a saved trajectory, key edits preserve other key
   assert.equal(sceneApi.sampleEntity(moved, 4).position[1], 2);
   assert.equal(entity.motion[0].position[1], .5);
 });
+
+test('library aliases collapse by source identity, never by filename or other session', () => {
+  const original = { id: 's1', origin: 'source', sessionId: 'a', mediaType: 'image', name: 'same.png' };
+  const alias = { ...original, id: 'asset1', origin: 'workspace_asset', projectionRecord: { originKind: 'source', originId: 's1' } };
+  const different = { ...original, id: 's2' };
+  const otherSession = { ...original, sessionId: 'b', id: 'foreign' };
+  assert.deepEqual(sceneApi.sceneImageChoices([alias, otherSession, original, different], 'a').map(r => r.id), ['s1', 's2']);
+});
+
+test('binding hashes original content rather than a transformed preview', async () => {
+  const digest = await sceneApi.sceneReferenceDigest({ url: 'data:image/png;base64,BAUG', projectionRecord: { contentUrl: 'data:image/png;base64,AQID' } }, new AbortController().signal);
+  assert.equal(digest, require('node:crypto').createHash('sha256').update(Buffer.from([1, 2, 3])).digest('hex'));
+});

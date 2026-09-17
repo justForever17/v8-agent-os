@@ -21,9 +21,12 @@ function connection() {
   return { origin: target.origin, secret: String(bridge.internalSecret || "").trim() };
 }
 
+export function engineTargetOrigin() { return connection().origin; }
+
 export async function engineResponse(pathname, options = {}) {
   if (!String(pathname).startsWith("/v1/") || String(pathname).includes("\\")) throw new Error("CLI Engine 请求必须使用本机 /v1/ 路径。");
   const { origin, secret } = connection();
+  if (options.expectedOrigin && origin !== options.expectedOrigin) throw Object.assign(new Error("engine_target_changed"), { definiteNotSent: true });
   const headers = {};
   for (const [name, value] of Object.entries(options.headers || {})) {
     if (!["authorization", "cookie", "x-v8-agent-os-secret", "host"].includes(name.toLowerCase())) headers[name] = value;
@@ -36,6 +39,7 @@ export async function engineResponse(pathname, options = {}) {
     method: options.method || "GET",
     body: options.body,
     headers,
+    signal: options.signal,
   });
 }
 
@@ -52,9 +56,11 @@ export async function engineJson(pathname, options = {}) {
 
 // Multipart uploads use the same target/proof boundary as JSON. Never replay a
 // write or follow a redirect carrying the local service credential.
-export async function engineUpload(pathname, form, { signal, timeoutMs = 60000 } = {}) {
+/** @param {string} pathname @param {FormData} form @param {{signal?: AbortSignal, timeoutMs?: number, expectedOrigin?: string}} [options] */
+export async function engineUpload(pathname, form, { signal, timeoutMs = 60000, expectedOrigin = "" } = {}) {
   if (!String(pathname).startsWith("/v1/") || String(pathname).includes("\\")) throw new Error("Invalid Engine path");
   const { origin, secret } = connection();
+  if (expectedOrigin && origin !== expectedOrigin) throw Object.assign(new Error("engine_target_changed"), { definiteNotSent: true });
   const response = await fetch(`${origin}${pathname}`, {
     method: "POST", body: form, redirect: "error",
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),

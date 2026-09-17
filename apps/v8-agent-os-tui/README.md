@@ -45,8 +45,13 @@ Phone 配对票据只在添加页面显示，关闭页面撤销未消费票据�
 兼容 `TERM=dumb`。重绘模式需要 stdin/stdout 均为 TTY；非交互场景使用
 `v8os chat`、`v8os sessions list --json` 或 `v8os inbox list --json`。
 
-视图和未发送草稿保存在实例状态目录 `runtime/tui/view.json`，只含界面状态。
+视图和未发送草稿保存在状态目录 `runtime/tui/view-<instance-hash>.json`，按 Engine
+实例隔离。旧的未绑定 `view.json` 保留原处，不会自动导入另一实例。
 模型密钥只通过隐藏表单提交 Engine，不进入草稿文件。Unix 文件权限为 0600。
+
+审批模式默认沿用 Engine / 当前会话的设置；操作菜单可以显式选择逐项审批、减少
+审批或免审。累计预算、上下文窗口和模型单次输出长度在设置中分别编辑；模型输出
+参数会影响使用同一模型的全部角色。
 
 ## 开发与验证
 

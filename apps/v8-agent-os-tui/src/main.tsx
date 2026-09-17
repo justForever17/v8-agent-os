@@ -3,7 +3,7 @@ import { render, Box, Text, useCursor } from 'ink';
 import stringWidth from 'string-width';
 import { Client } from './client.js';
 import { Surface } from './surface.js';
-import { clip, dimensions, graphemes, InputDecoder, safeText, wrap, type Input } from './terminal.js';
+import { clip, dimensions, editor, graphemes, InputDecoder, safeText, wrap, type Input } from './terminal.js';
 
 export function messageText(message: any): string {
   const text = typeof message.content === 'string' ? message.content : (message.nodes || []).filter((n: any) => n.kind === 'narrative').map((n: any) => n.content || '').join('\n');
@@ -11,15 +11,24 @@ export function messageText(message: any): string {
   return `${message.role === 'user' ? '你' : message.agentName || '主理人'} · ${message.state || message.status || ''}\n${text}`
     + tools.map((n: any) => `\n▸ ${n.toolName || n.title || n.executionType || '任务'} · ${n.status || n.state || ''}`).join('') + '\n';
 }
-const lineCache = new Map<string, { text: string; width: number; lines: string[] }>();
-export function transcriptLines(messages: any[], width: number): string[] {
-  const ids = new Set(messages.map(m => m.id));
-  for (const id of lineCache.keys()) if (!ids.has(id)) lineCache.delete(id);
+type TranscriptRow = { text: string; messageId: string; offset: number };
+const lineCache = new Map<string, { text: string; width: number; rows: TranscriptRow[] }>();
+export function transcriptRows(messages: any[], width: number): TranscriptRow[] {
   return messages.flatMap(m => {
     const text = messageText(m), cached = lineCache.get(m.id);
-    if (cached?.text === text && cached.width === width) return cached.lines;
-    const lines = wrap(text, width); lineCache.set(m.id, { text, width, lines }); return lines;
+    if (cached?.text === text && cached.width === width) return cached.rows;
+    let offset = 0;
+    const rows = wrap(text, width).map(line => { const row = { text: line, messageId: m.id, offset }; offset += graphemes(line).length; return row; });
+    lineCache.delete(m.id); lineCache.set(m.id, { text, width, rows });
+    while (lineCache.size > 500) lineCache.delete(lineCache.keys().next().value!);
+    return rows;
   });
+}
+export function transcriptLines(messages: any[], width: number) { return transcriptRows(messages, width).map(r => r.text); }
+export function viewportRows(messages: any[], width: number, messageId = '', following = true) {
+  const position = following ? messages.length - 1 : Math.max(0, messages.findIndex(m => m.id === messageId));
+  const start = Math.max(0, position - 12), end = Math.min(messages.length, position + 28);
+  return { rows: transcriptRows(messages.slice(start, end), width), hasLater: end < messages.length };
 }
 const Pad = ({ lines, height, width }: { lines: string[]; height: number; width: number }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => <Text key={i} wrap="truncate-end">{clip(lines[i] || ' ', width)}</Text>)}</Box>;
 
@@ -28,6 +37,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const [, redraw] = useReducer(n => n + 1, 0);
   const { setCursorPosition } = useCursor();
   surface.onChange = redraw;
+  if (!client.busy && surface.input.text !== client.draft.text) surface.input = editor(client.draft.text);
   useEffect(() => { const resize = () => redraw(); process.stdout.on('resize', resize); return () => { process.stdout.off('resize', resize); }; }, []);
   const columns = process.stdout.columns || 80, rows = process.stdout.rows || 24;
   const size = dimensions(columns, rows, client.view.sidebar, client.view.detail);
@@ -56,11 +66,20 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     const fields = page.fields?.map((f, i) => `${page.fieldIndex === i ? '›' : ' '} ${f.label}：${f.secret ? (f.value ? '已输入' : '未输入') : clip(f.value, Math.max(10, columns - stringWidth(f.label) - 5))}`) || [];
     body = [...content.slice(page.offset, page.offset + Math.max(1, historyHeight - actions.length - fields.length)), ...fields, ...actions];
   } else {
-    const lines = transcriptLines(client.messages, size.chat);
+    const saved = client.view.scroll[client.view.sessionId];
+    const viewport = viewportRows(client.messages, size.chat, saved?.messageId, surface.following);
+    const lines = viewport.rows;
     const end = Math.max(0, lines.length - historyHeight);
+    if (!surface.following && saved) {
+      const candidates = lines.map((line, index) => ({ ...line, index })).filter(line => line.messageId === saved.messageId && line.offset <= saved.offset);
+      if (candidates.length) surface.anchor = candidates.at(-1)!.index;
+    }
     if (surface.following) surface.anchor = end;
-    if (surface.anchor >= end) { surface.anchor = end; surface.following = true; surface.unread = 0; }
-    body = lines.slice(surface.anchor, surface.anchor + historyHeight);
+    surface.anchor = Math.max(0, Math.min(end, surface.anchor + surface.scrollDelta)); surface.scrollDelta = 0;
+    if (surface.anchor >= end && !viewport.hasLater) { surface.anchor = end; surface.following = true; surface.unread = 0; }
+    const row = lines[surface.anchor];
+    if (row) client.view.scroll[client.view.sessionId] = { messageId: row.messageId, offset: row.offset, following: surface.following };
+    body = lines.slice(surface.anchor, surface.anchor + historyHeight).map(r => r.text);
     if (!body.length) body = [size.small ? '小窗口模式' : 'V8OS · 开始对话', '', client.view.workspace ? `工作区：${client.view.workspace}` : '先按 F3 连接模型并选择工作区。', '输入消息，或按 / 查看操作。'];
   }
   const label = `${client.instance.name || 'V8OS'} · ${client.connection} · 待处理 ${client.inbox.length} · ${client.view.workspace || '未选择工作区'}`;
@@ -83,7 +102,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
 
 export async function start(args: string[]) {
   const client = new Client();
-  const requested = args.indexOf('--session'); if (requested >= 0) client.view.sessionId = args[requested + 1] || '';
+  const requested = args.indexOf('--session'); const requestedSession = requested >= 0 ? args[requested + 1] || '' : '';
   const surface = new Surface(client);
   const reader = args.includes('--screen-reader') || process.env.INK_SCREEN_READER === 'true';
   const decoder = new InputDecoder(); let timer: NodeJS.Timeout | undefined, pasteTimer: NodeJS.Timeout | undefined;
@@ -100,7 +119,13 @@ export async function start(args: string[]) {
   let number = '';
   const dispatch = (event: Input) => {
     if (done) return;
-    if (surface.busy || client.busy) return;
+    if (surface.busy || client.busy) {
+      if (!surface.page && ['text', 'paste'].includes(event.key)) {
+        client.draft.nextText = (client.draft.nextText || '') + (event.text || ''); client.save();
+        client.notice = '发送期间输入已暂存为下一条草稿，受理后可继续编辑。';
+      } else client.notice = '当前操作仍在处理中；此按键没有执行。';
+      client.changed(); return;
+    }
     if (reader && surface.page && !surface.page.fields) {
       if (event.key === 'text' && /^\d+$/.test(event.text || '')) { number += event.text; process.stdout.write(event.text!); return; }
       if (event.key === 'enter' && number) { surface.page.selected = Math.max(0, Number(number) - 1); number = ''; }
@@ -122,32 +147,53 @@ export async function start(args: string[]) {
     clearTimeout(timer); clearTimeout(pasteTimer);
     for (const event of decoder.push(chunk)) dispatch(event);
     timer = setTimeout(() => { for (const event of decoder.flush()) dispatch(event); }, 120);
-    pasteTimer = setTimeout(() => { for (const event of decoder.finishPaste()) dispatch(event); }, 2000);
+    pasteTimer = setTimeout(() => { const events = decoder.finishPaste(); for (const event of events) dispatch(event); if (events.some(e => e.key === 'paste')) { client.notice = '粘贴仍未结束，已保存收到的内容；迟到的按键字节仍按文本处理。'; client.changed(); } }, 2000);
+  };
+  let suspended = false;
+  const draw = () => render(<App client={client} surface={surface} dispatch={dispatch} />, { exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
+  const resume = () => {
+    if (done || !suspended) return; suspended = false;
+    if (!reader) app = draw();
+    process.stdin.setRawMode(true); process.stdin.resume(); process.stdout.write('\x1b[?2004h');
+    void client.tick().catch(() => { client.connection = '连接中断 · 自动重连'; client.changed(); });
+  };
+  const suspend = () => {
+    if (done || suspended) return; suspended = true;
+    app?.unmount(); process.stdin.setRawMode(false); process.stdin.pause(); process.stdout.write('\x1b[?2004l\x1b[?25h');
+    process.kill(process.pid, 'SIGSTOP');
   };
   const cleanup = () => {
     if (done) return; done = true;
     clearTimeout(timer); clearTimeout(pasteTimer);
     process.stdin.off('data', onData); process.stdin.off('end', cleanup);
     process.off('SIGTERM', cleanup); process.off('SIGINT', cleanup); process.off('SIGHUP', cleanup);
+    if (process.platform !== 'win32') { process.off('SIGTSTP', suspend); process.off('SIGCONT', resume); }
     app?.unmount(); process.stdin.setRawMode(false); process.stdin.pause();
     process.stdout.write('\x1b[?2004l\x1b[?25h');
     try { client.stop(); } catch { process.exitCode = 1; }
     process.stdout.write('\n终端已退出，后台服务继续运行。\n'); resolveExit();
   };
   surface.onExit = cleanup;
-  if (!reader) app = render(<App client={client} surface={surface} dispatch={dispatch} />, { exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
+  if (!reader) app = draw();
   process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', onData); process.stdin.on('end', cleanup);
   process.stdout.write('\x1b[?2004h');
   process.on('SIGTERM', cleanup); process.on('SIGINT', cleanup); process.on('SIGHUP', cleanup);
+  if (process.platform !== 'win32') { process.on('SIGTSTP', suspend); process.on('SIGCONT', resume); }
   let lastMessages = new Map<string, string>();
+  let readerSession = '';
   const unsubscribe = reader ? client.subscribe(() => {
+    const key = `${client.instance.instanceId || ''}:${client.view.sessionId}`;
+    if (key !== readerSession) { lastMessages.clear(); readerSession = key; }
     for (const m of client.messages) {
       const next = safeText(messageText(m)), previous = lastMessages.get(m.id);
       if (next !== previous) { process.stdout.write(`\n${previous && next.startsWith(previous) ? next.slice(previous.length) : next}\n`); lastMessages.set(m.id, next); }
     }
   }) : () => {};
   try {
-    await client.initialize(); echo();
+    await client.initialize();
+    if (requestedSession && client.instance.instanceId) await client.attach(requestedSession);
+    if (client.instance.initialized === false) await surface.execute(() => surface.phones());
+    echo();
     void client.runLoop();
     await exited;
   } finally { unsubscribe(); cleanup(); }

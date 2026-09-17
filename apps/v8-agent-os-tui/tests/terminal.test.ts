@@ -31,6 +31,8 @@ test('unfinished paste recovery and ordinary escape cannot execute pasted contro
   assert.deepEqual(parser.push('\x1b[200~/stop\n\x03'), []);
   assert.deepEqual(parser.flush(), []);
   assert.deepEqual(parser.finishPaste(), [{ key: 'paste', text: '/stop\n\x03' }]);
+  assert.deepEqual(parser.push('\x1b[20~'), []);
+  assert.deepEqual(parser.push('\x1b[201~'), [{ key: 'paste', text: '\x1b[20~' }]);
   assert.deepEqual(parser.push('你好\n/stop\n'), [{ key: 'paste', text: '你好\n/stop\n' }]);
   assert.deepEqual(parser.push('\x1b'), []); assert.deepEqual(parser.flush(), [{ key: 'escape' }]);
 });

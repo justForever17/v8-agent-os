@@ -5,12 +5,17 @@ export type Action = { label: string; run: () => void | Promise<void>; disabled?
 export type Field = { key: string; label: string; value: string; secret?: boolean };
 export type Page = { title: string; lines: string[]; actions: Action[]; selected: number; offset: number; fields?: Field[]; fieldIndex?: number; onSave?: (fields: Record<string, string>) => Promise<void>; sensitive?: boolean };
 const listOf = (data: any): any[] => Array.isArray(data) ? data : data.items || data.devices || data.peers || data.links || data.packs || data.models || [];
+export const secretField = (key: string) => /(?:apikey|accesstoken|refreshtoken|idtoken|bearertoken|authtoken|sessiontoken|apitoken|csrftoken|pairingcode|privatekey|signingkey|secret|password)$|^(?:token|authorization|cookie|credentials?)$/i.test(key.replace(/[-_]/g, ''));
+export function containsSecretField(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, item]) => secretField(key) || containsSecretField(item));
+}
 // Human summaries never dump the raw response or credential-bearing fields.
 export function describe(value: any, prefix = ''): string[] {
   if (value == null) return [];
   if (typeof value !== 'object') return [`${prefix}${safeText(value)}`];
   return Object.entries(value).flatMap(([key, val]) => {
-    if (/secret|password|token|credential|api.?key|authorization|cookie|raw|trace|internal/i.test(key)) return [];
+    if (secretField(key) || /^(raw|trace|internal)$/i.test(key)) return [];
     if (Array.isArray(val)) return [`${prefix}${key}：${val.length} 项`, ...val.flatMap((x, i) => describe(x, `${prefix}  ${i + 1}. `))];
     if (val && typeof val === 'object') return [`${prefix}${key}`, ...describe(val, prefix + '  ')];
     return [`${prefix}${key}：${safeText(val)}`];
@@ -26,11 +31,35 @@ export function approvalTransparent(item: any) {
   const request = item.request || item.payload || {};
   return Object.keys(request).length > 0 && Boolean(request.target || request.path || request.command || request.action || request.tool_name || request.toolName || request.operation || request.actionRequest);
 }
+function schemaFields(root: any, schema = root, prefix = ''): { key: string; definition: any }[] {
+  const resolved = schema.$ref ? root.$defs?.[schema.$ref.split('/').at(-1)] || schema : schema;
+  if (resolved.properties) return Object.entries(resolved.properties).flatMap(([key, value]) => schemaFields(root, value, prefix ? `${prefix}.${key}` : key));
+  if (resolved.readOnly || prefix.split('.').some(secretField) || /(?:^|\.)peerId$/.test(prefix)) return [];
+  return [{ key: prefix, definition: resolved }];
+}
+function fieldPatch(key: string, value: unknown) {
+  const settings: any = {}, parts = key.split('.');
+  if (parts.some(x => !x || ['__proto__', 'constructor', 'prototype'].includes(x))) throw new Error('无效字段');
+  let item = settings; for (const part of parts.slice(0, -1)) item = item[part] = {}; item[parts.at(-1)!] = value; return settings;
+}
 export class Surface {
   page: Page | null = null; input: Editor; multiline = false; undo = ''; anchor = 0; following = true; unread = 0;
+  scrollDelta = 0;
   busy = false; paletteQuery = ''; formEditor = editor(); private pageSerial = 0; private ticketId = '';
   onExit: () => void = () => {}; onChange: () => void = () => {};
-  constructor(readonly client: Client) { this.input = editor(client.draft.text); }
+  constructor(readonly client: Client) {
+    this.input = editor(client.draft.text);
+    let instanceId = client.instance.instanceId;
+    client.subscribe(() => {
+      if (instanceId === client.instance.instanceId) return;
+      instanceId = client.instance.instanceId;
+      for (const field of this.page?.fields || []) if (field.secret) field.value = '';
+      this.page = null; this.formEditor = editor(); this.input = editor(client.draft.text);
+      this.following = client.view.scroll[client.view.sessionId]?.following ?? true;
+      if (this.ticketId) { this.ticketId = ''; client.notice = '实例已切换，旧实例配对票据将在原有效期结束时失效。'; }
+      this.changed();
+    });
+  }
   changed() { this.onChange(); }
   async execute(action: () => void | Promise<void>) {
     if (this.busy) return;
@@ -100,9 +129,13 @@ export class Surface {
   }
   async inbox() {
     await this.client.refreshSnapshot();
-    this.open('待处理', [this.client.inbox.length ? '选择事项查看来源和完整范围。' : '当前会话暂无待处理事项。'], [
+    const items = await this.client.listInbox();
+    this.open('待处理', [items.length ? '当前会话优先；选择事项查看来源和完整范围。' : '已加载会话暂无待处理事项。', ...(this.client.sessionCursor ? ['更多会话可在会话列表继续加载后查看提问。'] : [])], [
       { label: '返回对话', run: () => this.close(true) },
-      ...this.client.inbox.map(item => ({ label: `${item.kind === 'question' ? '提问' : '审批'} · ${item.title || item.question || item.request?.question || item.summary || idOf(item)}`, run: () => this.inboxItem(item) })),
+      ...items.map((item: any) => ({ label: `${item.kind === 'question' ? '提问' : '审批'} · ${item.title || item.question || item.request?.question || item.summary || idOf(item)}`, run: async () => {
+        if (item.sessionId && item.sessionId !== this.client.view.sessionId) { await this.client.attach(item.sessionId); this.input = editor(this.client.draft.text); }
+        this.inboxItem(item);
+      } })),
       { label: '其他会话', run: () => this.sessions() },
     ]);
   }
@@ -145,24 +178,90 @@ export class Surface {
       }) },
       { label: '为角色选择模型', run: () => this.form('角色模型', [{ key: 'role', label: '角色 ID（上方角色列表）', value: 'supervisor' }, { key: 'modelRef', label: '模型引用', value: '' }], async v => this.prepare('/v1/config-broker/roles/prepare', v, '/v1/config-broker/roles')) },
       { label: '浏览已安装模型', run: () => this.readPage('模型目录', '/v1/config-broker/models?limit=50') },
-      { label: '主理人参数与预算', run: () => this.registry('supervisor') },
-      { label: '上下文配置', run: () => this.registry('context') },
+      { label: '累计 Token / 费用预算', run: () => this.budgets() },
+      { label: '模型单次输出长度', run: () => this.outputParameters() },
+      { label: '上下文配置', run: () => this.contextSettings() },
     ]);
+  }
+  async budgets() {
+    const payload = await this.client.api('/v1/models/control-plane');
+    const budgets = (payload.config || payload).governance?.budgets || {};
+    const fields: Field[] = [
+      ['globalDailyTokenLimit', '每日累计 Token 上限'], ['globalDailyCostLimit', '每日费用上限'],
+      ['runMaxTokens', '单任务累计 Token 上限'], ['runMaxCost', '单任务费用上限'],
+    ].map(([key, label]) => ({ key, label: `${label}（0 为不限）`, value: String(budgets[key] ?? 0) }));
+    this.form('累计预算', fields, async values => {
+      const next = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, Number(value)]));
+      if (Object.values(next).some(value => !Number.isFinite(value) || value < 0)) throw new Error('预算必须是有限非负数');
+      await this.prepare('/v1/config-broker/model-policy/prepare', { governance: { budgets: next } }, '/v1/models/control-plane');
+    }, ['累计用量上限与单次输出长度、上下文窗口分别生效。', `预算启用：${budgets.enabled ?? true}`]);
+  }
+  async outputParameters() {
+    const data = await this.client.api('/v1/models/control-plane');
+    const models = (data.models || []).filter((model: any) => ['TEXT', 'MULTIMODAL', 'VISION', 'CHAT'].includes(String(model.type || 'TEXT').toUpperCase()));
+    this.open('模型单次输出长度', ['设置保存在所选模型；使用同一模型的角色共享此值。auto 由协议与 Provider 决定。'], [{ label: '返回模型设置', run: () => this.models() },
+      ...models.map((model: any) => ({ label: `${model.modelId} · ${model.providerName || model.providerId}`, run: () => this.form('输出长度', [
+        { key: 'mode', label: '输出模式（auto / fixed）', value: model.outputTokenMode || (model.maxTokens ? 'fixed' : 'auto') },
+        { key: 'maxTokens', label: 'fixed 模式的单次输出 Token 上限', value: String(model.maxTokens || '') },
+      ], async values => {
+        const mode = values.mode.trim(); if (!['auto', 'fixed'].includes(mode)) throw new Error('请选择 auto 或 fixed');
+        const maxTokens = Number(values.maxTokens); if (mode === 'fixed' && (!Number.isInteger(maxTokens) || maxTokens <= 0)) throw new Error('fixed 模式需要正整数 Token 上限');
+        const patch = { outputTokenMode: mode, ...(mode === 'fixed' ? { maxTokens } : {}) };
+        this.confirm('模型输出长度预览', [`模型：${model.modelRef}`, ...describe(patch)], '保存并回读', async () => {
+          const result = await this.client.api('/v1/models/bindings', { method: 'PUT', body: { providerId: model.providerId, modelId: model.modelId, model: patch } });
+          this.open('模型参数已回读', describe(result.model), [{ label: '返回模型设置', run: () => this.models() }]);
+        });
+      }) })),
+      { label: '高级角色配置', run: () => this.registry('supervisor') },
+    ]);
+  }
+  async contextSettings() {
+    const current = await this.client.api('/v1/config-registry/context');
+    const policy = current.data?.policy || {}, compression = policy.compression || {};
+    this.form('上下文窗口', [
+      { key: 'window', label: '上下文窗口 Token 上限', value: String(compression.default_context_window_tokens || 32000) },
+      { key: 'ratio', label: '压缩触发比例（0–1）', value: String(compression.trigger_ratio ?? 0.94) },
+      { key: 'turns', label: '保留最近轮数', value: String(compression.keep_recent_turns ?? 4) },
+    ], async values => {
+      const window = Number(values.window), ratio = Number(values.ratio), turns = Number(values.turns);
+      if (!Number.isInteger(window) || window <= 0 || !(ratio > 0 && ratio <= 1) || !Number.isInteger(turns) || turns < 1) throw new Error('请输入正整数窗口/轮数及 0–1 的触发比例');
+      const patch = { policy: { ...policy, compression: { ...compression, default_context_window_tokens: window, trigger_ratio: ratio, keep_recent_turns: turns } } };
+      this.confirm('上下文配置预览', describe(patch), '保存并回读', async () => { await this.client.api('/v1/config-registry/context', { method: 'POST', body: patch }); await this.registry('context'); });
+    }, ['此处调整输入上下文容量；不会改动模型的单次输出上限。']);
   }
   async prepare(route: string, payload: any, readback: string) {
     const plan = await this.client.api(route, { method: 'POST', body: payload });
     if (!plan.transactionId || !plan.planDigest) throw new Error('配置事务缺少 ID 或摘要。');
-    this.confirm('配置变更预览', describe(plan), '提交配置', async () => {
-      await this.client.api(`/v1/config-broker/transactions/${encodeURIComponent(plan.transactionId)}/commit`, { method: 'POST', body: { planDigest: plan.planDigest } });
+    if (plan.state !== 'ready_to_commit') throw new Error(`配置尚不能提交：${plan.state || '状态待确认'}`);
+    this.confirm('配置变更预览', [...describe(payload), ...describe(plan)], '提交配置', async () => {
+      const committed = await this.client.api(`/v1/config-broker/transactions/${encodeURIComponent(plan.transactionId)}/commit`, { method: 'POST', body: { planDigest: plan.planDigest } });
+      if (committed.state !== 'committed') throw new Error(`配置未提交：${committed.state || '结果待确认'}`);
       const saved = await this.client.api(readback);
       this.open('配置已回读', describe(saved), [{ label: '返回设置', run: () => this.settings() },
-        { label: '回滚此次配置', run: () => this.confirm('回滚配置', [plan.transactionId], '执行回滚并回读', async () => { await this.client.api(`/v1/config-broker/transactions/${encodeURIComponent(plan.transactionId)}/rollback`, { method: 'POST' }); await this.readPage('回滚后配置', readback); }) }]);
+        { label: '回滚此次配置', run: () => this.confirm('回滚配置', [plan.transactionId], '执行回滚并回读', async () => { const restored = await this.client.api(`/v1/config-broker/transactions/${encodeURIComponent(plan.transactionId)}/rollback`, { method: 'POST' }); if (restored.state !== 'rolled_back') throw new Error(`回滚未完成：${restored.state || '待确认'}`); await this.readPage('回滚后配置', readback); }) }]);
     });
   }
   async brokerSettings(domain: string) {
     const [data, schema] = await Promise.all([this.client.api(`/v1/config-broker/${domain}`), this.client.api(`/v1/config-broker/${domain}/schema`)]);
+    const labels: Record<string, string> = { enabled: '启用', port: '监听端口', publicBaseUrl: '手机外部地址（HTTPS）', 'node.displayName': '节点名称', 'node.advertisedBaseUrl': 'Peer 公告地址', 'relay.enabled': '启用 Relay', 'discovery.lanEnabled': '局域网发现', 'delegation.maxConcurrent': '最大并行任务数' };
+    const fields = schemaFields(schema.schema || {});
+    const actions: Action[] = fields.map(({ key, definition }) => {
+      const current = key.split('.').reduce((v: any, part) => v?.[part], data.settings) ?? definition.default ?? '';
+      const label = labels[key] || key;
+      return { label: `${label}：${typeof current === 'object' ? '详细配置' : current}`, run: () => {
+        if (definition.type === 'boolean' || definition.enum) {
+          this.open(label, [definition.description || '', `当前：${current}`], [{ label: '返回', run: () => this.brokerSettings(domain) },
+            ...(definition.enum || [true, false]).map((value: any) => ({ label: `${typeof value === 'boolean' ? value ? '启用' : '关闭' : value}`, run: () => this.prepare(`/v1/config-broker/${domain}/prepare`, { settings: fieldPatch(key, value) }, `/v1/config-broker/${domain}`) }))]);
+        } else this.form(label, [{ key: 'value', label, value: typeof current === 'object' ? JSON.stringify(current) : String(current) }], async v => {
+          const type = definition.type;
+          const value = type === 'integer' || type === 'number' ? Number(v.value) : type === 'array' || type === 'object' ? JSON.parse(v.value) : v.value.trim();
+          await this.prepare(`/v1/config-broker/${domain}/prepare`, { settings: fieldPatch(key, value) }, `/v1/config-broker/${domain}`);
+        }, [definition.description || '', ...(domain === 'client-gateway' ? ['地址影响手机连接；端口/启用状态改动需要重启 Engine 才生效。'] : [])]);
+      } };
+    });
     this.open(domain === 'network' ? '组网配置' : '手机网关配置', describe(data), [
       { label: '返回设置', run: () => this.settings() },
+      ...actions,
       { label: '查看可修改字段', run: () => this.open('配置字段', describe(schema), [{ label: '返回', run: () => this.brokerSettings(domain) }]) },
       { label: '修改配置字段', run: () => this.form('配置字段', [{ key: 'key', label: '字段名（见 Engine 字段说明）', value: '' }, { key: 'value', label: '值（true / false / 数字 / 文本）', value: '' }], async v => {
         let value: any = v.value; try { value = JSON.parse(v.value); } catch { /* plain string */ }
@@ -176,7 +275,7 @@ export class Surface {
     const result = await this.client.api(`/v1/config-registry/${domain}`);
     this.open(result.title || domain, describe(result.data), [{ label: '返回设置', run: () => this.settings() },
       { label: '编辑普通配置', run: () => this.form(result.title || domain, [{ key: 'patch', label: '配置 JSON（只包含需要修改的字段）', value: '{}' }], async v => {
-        const patch = JSON.parse(v.patch); if (!patch || Array.isArray(patch) || typeof patch !== 'object' || /secret|password|api.?key|token|credential/i.test(v.patch)) throw new Error('此表单只支持非凭据配置对象');
+        const patch = JSON.parse(v.patch); if (!patch || Array.isArray(patch) || typeof patch !== 'object' || containsSecretField(patch)) throw new Error('此表单只支持非凭据配置对象');
         this.confirm('确认配置修改', describe(patch), '保存并回读', async () => { await this.client.api(`/v1/config-registry/${domain}`, { method: 'POST', body: patch }); await this.registry(domain); });
       }, ['此页调用现有配置 registry；Engine 负责验证、保存和运行时更新。']) },
     ]);
@@ -200,10 +299,19 @@ export class Surface {
     ]);
   }
   async phones() {
-    const devices = await this.client.api('/v1/client-identity/devices');
-    this.open('手机连接', describe(devices), [{ label: '返回连接', run: () => this.connections() },
+    const owner = await this.client.api('/v1/client-identity/owner');
+    if (!owner.initialized) {
+      this.open('首次配置', ['创建本机所有者后，可在设置中连接模型、选择工作区，再添加手机。'], [
+        { label: '返回', run: () => this.close(true) },
+        { label: '初始化本机 owner', run: async () => { await this.client.api('/v1/client-identity/bootstrap', { method: 'POST', body: { login: 'owner', name: 'Owner' } }); await this.client.initialize(); await this.settings(); } },
+      ]); return;
+    }
+    const [devices, manifest] = await Promise.all([this.client.api('/v1/client-identity/devices'), this.client.api('/v1/client-identity/link-manifest')]);
+    const pairing = manifest.pairing || {};
+    this.open('手机连接', [...describe(devices), `配对地址：${pairing.baseUrl || '尚未配置'}`, pairing.available ? '地址来自实例配置；网络可达性尚未验证。' : `暂不可配对：${pairing.reason || '请先配置手机网关'}`], [{ label: '返回连接', run: () => this.connections() },
       { label: '初始化本机 owner', run: () => this.confirm('初始化本机 owner', ['首次配置时创建本机所有者。已有 owner 不会替换。'], '初始化', async () => { const owner = await this.client.api('/v1/client-identity/owner'); if (!owner.initialized) await this.client.api('/v1/client-identity/bootstrap', { method: 'POST', body: { login: 'owner', name: 'Owner' } }); await this.phones(); }) },
-      { label: '添加手机', run: () => this.form('添加手机', [{ key: 'baseUrl', label: '手机可达 HTTPS 地址', value: '' }, { key: 'deviceName', label: '设备名称', value: '' }], async v => {
+      { label: '手机网关设置', run: () => this.brokerSettings('client-gateway') },
+      { label: '添加手机', disabled: !pairing.available, run: () => this.form('添加手机', [{ key: 'deviceName', label: '设备名称', value: '' }], async v => {
         const ticket = await this.client.api('/v1/client-identity/pairing-ticket', { method: 'POST', body: { ...v, ttlMs: 300000 } });
         this.ticketId = ticket.pairingId || ticket.ticketId || '';
         if (!this.ticketId || !ticket.pairingUri || !ticket.pairingCode) throw new Error('配对票据响应不完整');
@@ -250,6 +358,10 @@ export class Surface {
     { label: '任务详情', run: () => this.details() }, { label: '待处理', run: () => this.inbox() },
     { label: '附件 / 产物', run: () => this.attachments() }, { label: '设置', run: () => this.settings() },
     { label: '连接', run: () => this.connections() }, { label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
+    { label: '本次会话审批模式', run: () => this.open('审批模式', ['默认沿用 Engine / 会话现有设置。显式选择仅作用于后续发送。', `当前选择：${this.client.approvalMode || '沿用 Engine'}`], [
+      { label: '返回', run: () => this.close(true) },
+      ...([['', '沿用 Engine'], ['manual', '逐项审批'], ['reduced', '减少审批'], ['minimal', '免审（保留系统内核与凭据边界）']] as const).map(([mode, label]) => ({ label, run: () => { this.client.approvalMode = mode; this.client.notice = `后续消息审批模式：${label}`; this.page = null; } })),
+    ]) },
     { label: '核对发送结果', run: async () => { await this.client.tick(); this.input = editor(this.client.draft.text); this.client.notice = this.client.draft.unknown ? 'Engine 尚未证明受理；仍禁止自动重发，可查看会话或保留草稿等待恢复。' : '已回读会话状态。'; await this.close(true); } },
     { label: '加载更早历史', run: async () => { await this.client.older(); this.following = false; this.anchor = 0; await this.close(true); } },
     { label: '回到底部', run: () => { this.following = true; this.unread = 0; this.page = null; } },
@@ -300,8 +412,8 @@ export class Surface {
     else if (key === 'ctrl-c') { if (this.input.text) { this.undo = this.input.text; this.input = editor(); this.client.setDraft(''); this.client.notice = '输入已清空；Ctrl+Z 撤销。'; } else this.client.notice = 'Ctrl+D 退出终端；停止任务请选择菜单中的停止动作。'; }
     else if (key === 'ctrl-z') { if (this.undo) { this.input = editor(this.undo); this.undo = ''; this.client.setDraft(this.input.text); } }
     else if (key === 'ctrl-d' && !this.input.text) this.onExit();
-    else if (key === 'pageup') { this.following = false; this.anchor = Math.max(0, this.anchor - 6); }
-    else if (key === 'pagedown') { this.anchor += 6; }
+    else if (key === 'pageup') { this.following = false; this.scrollDelta -= 6; }
+    else if (key === 'pagedown') { this.following = false; this.scrollDelta += 6; }
     else if (key === 'enter') {
       if (this.multiline) { this.input = edit(this.input, 'insert', '\n'); this.client.setDraft(this.input.text); }
       else if (this.input.pasted) this.client.notice = '粘贴内容已保留，请按 F9 或菜单“发送”确认发送。';

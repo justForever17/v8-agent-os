@@ -19,6 +19,7 @@ if (args.includes('--help') || args.includes('-h')) {
     console.error('V8OS TUI 需要 Node.js 22+；普通 v8os CLI 仍支持 Node.js 20。');
     process.exitCode = 2;
   } else {
+  process.env.NODE_ENV ||= 'production';
   if (args.includes('--no-color') || process.env.NO_COLOR !== undefined) process.env.FORCE_COLOR = '0';
   try { await (await import('../dist/main.js')).start(args); }
   catch { console.error('终端无法启动。请核对 Node.js 22+、安装包完整性及 Engine 状态。'); process.exitCode = 1; }

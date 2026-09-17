@@ -101,8 +101,13 @@ export class InputDecoder {
   }
   finishPaste(): Input[] {
     if (this.paste === null) return this.flush();
-    const text = this.paste + this.pending; this.paste = null; this.pending = '';
-    return [{ key: 'paste', text }];
+    // Idle is not a protocol boundary. Save partial text but stay in paste
+    // mode: a slow later chunk containing F9 must not submit the partial draft.
+    let keep = 0;
+    for (let i = 1; i < 6; i++) if (this.pending.endsWith('\x1b[201~'.slice(0, i))) keep = i;
+    const text = this.paste + this.pending.slice(0, keep ? -keep : undefined);
+    this.pending = keep ? this.pending.slice(-keep) : ''; this.paste = '';
+    return text ? [{ key: 'paste', text }] : [];
   }
 }
 export function dimensions(columns: number, rows: number, left: boolean, right: boolean) {

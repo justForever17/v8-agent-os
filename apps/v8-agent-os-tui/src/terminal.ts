@@ -27,10 +27,44 @@ export function clip(text: string, width: number): string {
   for (const g of graphemes(clean)) { if (stringWidth(result + g) > width - 1) break; result += g; }
   return result + '…';
 }
-export type Editor = { text: string; cursor: number; pasted: boolean };
+export type Editor = { text: string; cursor: number; pasted: boolean; preferredColumn?: number };
 export const editor = (text = ''): Editor => ({ text, cursor: graphemes(text).length, pasted: false });
-export function edit(state: Editor, action: string, value = ''): Editor {
+/** Renderer and vertical navigation share grapheme boundaries in display cells. */
+export function editorLayout(state: Editor, width: number, secret = false) {
+  width = Math.max(1, width);
+  const lines = [''], positions: { row: number; column: number }[] = [];
+  let row = 0, column = 0;
+  for (const part of graphemes(state.text)) {
+    const cells = graphemes(secret ? '•' : safeText(part));
+    if (cells[0] !== '\n' && column && column + stringWidth(cells[0] || '') > width) { lines.push(''); row++; column = 0; }
+    positions.push({ row, column });
+    for (const cell of cells) {
+      if (cell === '\n') { lines.push(''); row++; column = 0; continue; }
+      const size = stringWidth(cell);
+      if (column && column + size > width) { lines.push(''); row++; column = 0; }
+      lines[row] += size > width ? '�' : cell; column += Math.min(size, width);
+    }
+  }
+  positions.push({ row, column });
+  return { lines, positions, cursor: positions[Math.min(state.cursor, positions.length - 1)] };
+}
+export function edit(state: Editor, action: string, value = '', width = Number.MAX_SAFE_INTEGER, secret = false): Editor {
   const parts = graphemes(state.text); let cursor = state.cursor;
+  if (action === 'up' || action === 'down') {
+    const layout = editorLayout(state, width, secret), current = layout.cursor;
+    const preferredColumn = state.preferredColumn ?? current.column;
+    const direction = action === 'up' ? -1 : 1;
+    let row = current.row + direction;
+    while (row >= 0 && row < layout.lines.length) {
+      const candidates = layout.positions.map((position, index) => ({ ...position, index })).filter(position => position.row === row);
+      if (candidates.length) {
+        cursor = (candidates.filter(position => position.column <= preferredColumn).at(-1) || candidates[0]).index;
+        break;
+      }
+      row += direction;
+    }
+    return { ...state, cursor, preferredColumn };
+  }
   if (action === 'left') cursor--;
   else if (action === 'right') cursor++;
   else if (action === 'home') { while (cursor > 0 && parts[cursor - 1] !== '\n') cursor--; }
@@ -44,7 +78,7 @@ export function edit(state: Editor, action: string, value = ''): Editor {
     // Re-segment after insertion: combining marks/ZWJ can join an existing cell.
     return { text: next, cursor: graphemes(before + inserted).length, pasted: state.pasted || action === 'paste' };
   }
-  return { ...state, text: parts.join(''), cursor: Math.max(0, Math.min(parts.length, cursor)) };
+  return { text: parts.join(''), pasted: state.pasted, cursor: Math.max(0, Math.min(parts.length, cursor)) };
 }
 export type Input = { key: string; text?: string };
 const keys: Record<string, string> = {

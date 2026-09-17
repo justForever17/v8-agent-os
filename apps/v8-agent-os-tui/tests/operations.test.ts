@@ -126,6 +126,17 @@ test('editor argv is literal; a real child edits Unicode and failure preserves i
     const file = String(error).split('草稿副本保留在 ')[1]; assert.equal(readFileSync(file, 'utf8'), 'retain me');
     rmSync(path.dirname(file), { recursive: true, force: true }); return true;
   });
+  const started = path.join(directory, 'child.json');
+  writeFileSync(script, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(started)}, JSON.stringify({ pid: process.pid, file: process.argv.at(-1) })); setInterval(() => {}, 1000);`);
+  const controller = new AbortController();
+  const pending = editExternal('cancelled draft', { command, signal: controller.signal });
+  const failed = assert.rejects(pending, /草稿副本保留在/);
+  const deadline = Date.now() + 5000;
+  while (!existsSync(started) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(existsSync(started)); const child = JSON.parse(readFileSync(started, 'utf8'));
+  controller.abort(); await failed;
+  assert.throws(() => process.kill(child.pid, 0), /ESRCH/);
+  assert.equal(readFileSync(child.file, 'utf8'), 'cancelled draft'); rmSync(path.dirname(child.file), { recursive: true, force: true });
 });
 
 test('pack commands preserve exact state root and safely quote spaces/metacharacters', () => {

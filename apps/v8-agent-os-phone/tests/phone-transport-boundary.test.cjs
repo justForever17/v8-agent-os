@@ -179,6 +179,7 @@ test('offline cached identity: actual Provider restores user and draft before fa
   const load = loadProduction({ react,
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     'react-native': { AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) }, Platform: { OS: 'web' }, View: 'View', Text: 'Text', Pressable: 'Pressable' },
+    'expo-modules-core': { requireOptionalNativeModule: () => assert.fail('Web identity recovery must not load an Android executor') },
     '@/src/lib/admin-connection-profiles': { readAdminConnectionProfiles: async () => [profile], readActiveAdminConnectionProfileId: async () => profile.id,
       readProfileCredentials: async () => ({ accessToken: 'synthetic', refreshToken: 'synthetic' }), orderAdminBaseUrlCandidates: value => value.primary ? [value.primary] : [],
       commitActiveAdminConnectionProfile: async (_id, _ref, publish) => publish(), updateAdminConnectionProfiles: async fn => fn([profile]) },

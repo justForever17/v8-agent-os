@@ -127,9 +127,11 @@ def test_pack_generation_fails_closed_before_transport(pack_fixture, change):
 def test_actual_provider_payload_oracle_kills_reference_loss_and_truncation(pack_fixture, monkeypatch):
     manifest, request, resolve, _ = pack_fixture
     request.update(prepare_pack_references(manifest, request=request, resolve=resolve))
-    payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=request["prompt"], image_references=["https://fixture/a.png", "https://fixture/b.png", "https://fixture/board.png"], video_references=["https://fixture/proxy.mp4"], duration_seconds=4)
     runtime = CreativeMediaRuntime()
     monkeypatch.setattr(runtime, "_revalidate_scene_control", lambda *_: None)
+    monkeypatch.setattr(runtime, "_canvas_input_path", lambda *, session_id, item: resolve(item))
+    refs = runtime._minimax_h3_references_from_request(request)
+    payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=request["prompt"], image_references=refs["image"], video_references=refs["video"], duration_seconds=4)
     job = {}
     runtime._verify_scene_provider_payload(job, request, payload)
     assert job["sceneControl"]["submittedCounts"] == {"image": 3, "video": 1, "audio": 0}
@@ -252,10 +254,12 @@ def test_manifest_tamper_cannot_retarget_recorded_pack(pack_fixture, monkeypatch
         runtime._prepare_scene_video_request(request)
 
 
-def test_retry_revalidates_original_pack_without_growing_prompt(pack_fixture, monkeypatch, tmp_path):
+@pytest.mark.parametrize("negative", ["", "no identity swaps, no captions"])
+def test_retry_revalidates_original_pack_without_growing_prompt(pack_fixture, monkeypatch, tmp_path, negative):
     from core.workspace_identity import workspace_path_key
     manifest, request, resolve, _ = pack_fixture
     request.update({"workspacePath": str(tmp_path), "operationKind": "video.reference_to_video", "model": "MiniMax-H3", "adapter": "minimax_video", "sceneControl": {"spoofed": True}})
+    request["negativePrompt"] = negative
     manifest["lineage"]["workspaceKey"] = workspace_path_key(str(tmp_path))
     path = tmp_path / "manifest.v8scene.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -278,10 +282,52 @@ def test_retry_revalidates_original_pack_without_growing_prompt(pack_fixture, mo
     assert first["status"] == "queued", first.get("error")
     assert first["request"]["canvasInputs"] == [raw_input]
     assert "spoofed" not in first["sceneControl"]
-    second = asyncio.run(runtime._create_video_job(first["request"]))
+    monkeypatch.setattr(runtime, "get_job", lambda *_args, **_kwargs: copy.deepcopy(first))
+    monkeypatch.setattr(runtime, "create_job", runtime._create_video_job)
+    second = asyncio.run(runtime.retry_job(first["jobId"]))
     assert second["status"] == "queued", second.get("error")
     assert payloads[0] == payloads[1]
     assert second["sceneControl"]["status"] == "submitted"
+
+
+@pytest.mark.parametrize("mutation", ["swap", "duplicate", "changed_bytes", "unproven_url"])
+def test_scene_payload_verifier_rejects_identity_swap_with_unchanged_counts(pack_fixture, monkeypatch, mutation):
+    manifest, request, resolve, _ = pack_fixture
+    request.update(prepare_pack_references(manifest, request=request, resolve=resolve))
+    runtime = CreativeMediaRuntime()
+    monkeypatch.setattr(runtime, "_revalidate_scene_control", lambda *_: None)
+    monkeypatch.setattr(runtime, "_artifact_provider_transport_url", lambda *_: "")
+    monkeypatch.setattr(runtime, "_canvas_input_path", lambda *, session_id, item: resolve(item))
+    refs = runtime._minimax_h3_references_from_request(request)
+    payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=request["prompt"], image_references=refs["image"], video_references=refs["video"], duration_seconds=4)
+    runtime._verify_scene_provider_payload({}, request, payload)
+    swapped = copy.deepcopy(payload)
+    if mutation == "swap":
+        swapped["content"][1], swapped["content"][2] = swapped["content"][2], swapped["content"][1]
+    elif mutation == "duplicate":
+        swapped["content"][2] = copy.deepcopy(swapped["content"][1])
+    elif mutation == "changed_bytes":
+        swapped["content"][1]["image_url"]["url"] = "data:image/png;base64," + base64.b64encode(b"changed reference bytes").decode()
+    else:
+        swapped["content"][1]["image_url"]["url"] = "https://fixture.invalid/changed.png"
+    with pytest.raises(SceneControlError):
+        runtime._verify_scene_provider_payload({}, request, swapped)
+
+
+@pytest.mark.parametrize("field", ["imagePath", "image_path", "referenceMedia", "reference_media", "referenceAssetIds", "reference_asset_ids", "firstFrame", "first_frame", "lastFrame", "last_frame", "referenceImageUrls"])
+def test_control_pack_rejects_unbound_native_image_path(pack_fixture, monkeypatch, tmp_path, field):
+    from core.workspace_identity import workspace_path_key
+    manifest, request, resolve, paths = pack_fixture
+    request.update({"workspacePath": str(tmp_path), field: str(paths["source-0"])})
+    manifest["lineage"]["workspaceKey"] = workspace_path_key(str(tmp_path))
+    path = tmp_path / "manifest.v8scene.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    request["canvasInputs"] = [{"origin": "artifact", "id": "pack", "portId": "controlPack", "mediaType": "document"}]
+    runtime = CreativeMediaRuntime()
+    monkeypatch.setattr(runtime, "_canvas_input_path", lambda *, session_id, item: path if item["id"] == "pack" else resolve(item))
+    monkeypatch.setattr("runtimes.creative_media.runtime.db.get_runtime_artifact", lambda *_: {"metadata": {"controlPackSchema": PACK_SCHEMA, "contentSha256": sha256_file(path)}})
+    with pytest.raises(SceneControlError):
+        runtime._prepare_scene_video_request(request)
 
 
 @pytest.mark.parametrize("fault", ["revoked_reference", "changed_epoch"])
@@ -370,7 +416,8 @@ def test_provider_boundaries_recheck_current_context_and_sources(pack_fixture, m
         revoked = True
     else:
         state["transcript_revision"] += 3
-    payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=compiled["prompt"], image_references=["https://fixture/a.png", "https://fixture/b.png", "https://fixture/board.png"], video_references=["https://fixture/proxy.mp4"], duration_seconds=4)
+    refs = runtime._minimax_h3_references_from_request(compiled)
+    payload = _build_minimax_video_payload(model="MiniMax-H3", operation_kind="video.reference_to_video", prompt=compiled["prompt"], image_references=refs["image"], video_references=refs["video"], duration_seconds=4)
 
     def cross_boundary():
         if boundary == "final_payload":

@@ -134,7 +134,7 @@ def test_empty_control_poll_does_not_wait_for_an_unrelated_writer(tmp_path):
             writer.rollback()
         result = future.result(timeout=5)
     assert result["signal"] is None
-    assert database.get_run_record("run")["metadata"] == {"humanRevision": "keep"}
+    assert database.get_run_record("run")["metadata"] == {"humanRevision": "keep", "contextEpoch": 0}
 
 
 def test_stream_guidance_is_consumed_once_and_new_cancel_is_not_masked(tmp_path, monkeypatch):

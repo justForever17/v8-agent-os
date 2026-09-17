@@ -109,7 +109,9 @@ def test_web_history_load_uses_server_turn_paging_not_local_message_cache() -> N
     conversations_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/conversations/route.ts")
     engine_routes = _read_repo_file("apps/v8-agent-os-engine/api/session_workflow_routes.py")
 
-    assert "?omitMessages=1" in chat_client
+    # Normal entry still pages turns; explicit transcript replacement after a
+    # revision must reload canonical messages rather than retain stale text.
+    assert '?omitMessages=${options?.replaceTranscript ? "0" : "1"}' in chat_client
     assert "/turns?" in chat_client
     assert "loadConversationTurnPage" in chat_client
     assert "loadOlderConversationTurn" in chat_client

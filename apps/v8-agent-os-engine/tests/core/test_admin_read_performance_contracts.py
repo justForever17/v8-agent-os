@@ -229,7 +229,7 @@ def test_supervisor_tool_policy_binds_one_runtime_installation_snapshot(monkeypa
     result = supervisor_tool_policy.build_supervisor_tool_policy_snapshot(None)
 
     assert installation_calls == 1
-    assert observed_availability == {"computer_use": True, "desktop_live": False, "rpa": False}
+    assert observed_availability == {"computer_use": True, "desktop_live": False, "rpa": False, "creative_media": False}
     assert result == {"allowedTools": None, "lockedNativeTools": [], "runtimeManagedTools": []}
 
 

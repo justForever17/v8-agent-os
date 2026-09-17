@@ -73,7 +73,9 @@ def start_tls_gateway(root, gateway_port, tls_port):
                     ready, _, _ = select.select([upstream, self.connection], [], [], 0 if self.connection.pending() else 30)
                     if self.connection.pending() and self.connection not in ready:
                         ready.append(self.connection)
-                    if not ready: return
+                    # An idle upgraded connection is still valid. The outer
+                    # serve/resume deadline owns this fixture's lifetime.
+                    if not ready: continue
                     for source in ready:
                         chunk = source.recv(65536)
                         if not chunk: return

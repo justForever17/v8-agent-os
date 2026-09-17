@@ -25,6 +25,8 @@ Phone 真实网关联测：先在 Phone 目录执行 `node tests/build-config-di
 
 同一 fixture 到期后用 `resume` 保留 CA、端口及隔离状态续开（仍最多 120 分钟）。HTTPS 入口对 WebSocket Upgrade 做透明字节转发，握手、鉴权、子协议、帧和关闭码仍由真实 gateway 处理，可用于实际 Phone 原生执行器的 WSS hello 验收；隧道或匿名拒绝检查通过本身不代表原生应用闭环通过。
 
+隧道传输回归：`check_config_distribution_wss_tunnel_live.py --live --fixture-root <existing-isolated-folder> --hostname <leaf-certificate-SAN> --check-idle-mutant --output <report.json>`。脚本仅读取既有 fixture 的 TLS 文件，在 loopback echo origin 和新随机 TLS 端口检查 TLS/主机名验证、合成 bearer、路径、子协议、Unicode、无压缩 1 MiB binary、ping/pong、关闭码与原因；双方关闭自动 ping，合法连接空闲 31.5 秒后仍能回传文本并以 1000 正常关闭。可选子进程将空闲 `continue` 编译为旧 `return`，同场景必须观察到 1006。默认约 32 秒，含 mutant 约 64 秒；不联系既有 Engine/Phone、不重启节点、不读取或输出真实凭据。空闲不终止连接，fixture 总期限仍由 `serve/resume` 管理。这只证明隧道传输，不替代真实 Phone JS/native/WSS hello 验收。
+
 物理验收只在独立验证包对所选 LAN IP 信任生成的公开 CA，正式包不带测试 CA。私钥不离开 fixture；证书/主机名验证保持开启，并分别验证缺少该 CA 和错误主机名拒绝。`public.json` 只包含端口、origin 与公开 CA 路径/指纹；配对票据不要放进聊天、日志或仓库。由设备协调者独占安装/UI操作，保留原正式应用。
 
 ## 受控系统操作

@@ -6,6 +6,7 @@ import {
     Modal,
     Platform,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -23,13 +24,14 @@ import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
-import { colors, radii, spacing } from "@/src/theme/tokens";
+import { radii, spacing, type ThemeColors } from "@/src/theme/tokens";
 
 const PRODUCT_MARK = require("../assets/images/product-mark.png");
 
 export default function LoginScreen() {
     const { status, pairDevice } = useAppSession();
-    const { t } = useUiPrefs();
+    const { t, colors, themeMode } = useUiPrefs();
+    const styles = useMemo(() => makeStyles(colors), [colors]);
     const incomingUrl = Linking.useURL();
     const [cameraPermission, requestCameraPermission] = useCameraPermissions();
     const { pairingUri: pairingUriParam, add } = useLocalSearchParams<{ pairingUri?: string; add?: string }>();
@@ -136,28 +138,24 @@ export default function LoginScreen() {
 
     return (
         <LinearGradient
-            colors={["#EEF2FF", "#FFF7ED"]}
+            colors={themeMode === "dark" ? [colors.background, colors.backgroundDeep] : [colors.background, "#FFF7ED"]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea}>
-                <Pressable accessibilityRole="button" style={{ padding: 16 }} onPress={() => router.dismissTo("/connect" as Href)}>
-                    <Text style={{ color: colors.primary }}>{t("phone.devices.profiles")}</Text>
-                </Pressable>
-                {Platform.OS === "android" ? <Pressable onPress={() => router.push("/device-executor" as Href)} style={{ padding: 12 }}>
-                    <Text style={{ color: colors.primary }}>{t("executor.title")}</Text>
-                </Pressable> : null}
                 <KeyboardAvoidingView
                     style={styles.keyboard}
                     behavior={Platform.OS === "ios" ? "padding" : undefined}
                 >
+                    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
+                    <View style={styles.contentColumn}>
                     <View style={styles.header}>
                         <View style={styles.headerTopRow}>
                             <View style={styles.brandRow}>
                                 <Image source={PRODUCT_MARK} style={styles.brandMark} />
                                 <View style={styles.brandTextWrap}>
-                                    <PhoneWordmark dark={false} />
+                                    <PhoneWordmark dark={themeMode === "dark"} />
                                 </View>
                             </View>
                             <LocaleMenu variant="default" />
@@ -166,7 +164,7 @@ export default function LoginScreen() {
                         {Platform.OS === "web" ? <Text style={styles.subtitle}>{pageSubtitle}</Text> : null}
                     </View>
 
-                    <GlassCard>
+                    <GlassCard style={styles.formCard}>
                         <View style={styles.form}>
                             {Platform.OS === "web" ? null : (
                                 <Pressable disabled={busy} style={[styles.scanPrimary, busy && styles.disabled]} onPress={() => void openScanner()}>
@@ -206,14 +204,14 @@ export default function LoginScreen() {
                             {error ? (
                                 <View style={styles.errorRow}>
                                     <MaterialCommunityIcons name="alert-circle-outline" size={16} color={colors.danger} />
-                                    <Text style={styles.error}>{error}</Text>
+                                    <Text selectable style={styles.error}>{error}</Text>
                                 </View>
                             ) : null}
 
                             {manualOpen ? (
                                 <Pressable disabled={busy} onPress={() => void submit()} style={[styles.submit, busy && styles.disabled]}>
                                     <LinearGradient
-                                        colors={[colors.primary, colors.primaryDeep]}
+                                        colors={[colors.userBubbleTop, colors.userBubbleBottom]}
                                         start={{ x: 0, y: 0 }}
                                         end={{ x: 1, y: 1 }}
                                         style={styles.submitGradient}
@@ -228,6 +226,33 @@ export default function LoginScreen() {
                             ) : null}
                         </View>
                     </GlassCard>
+                    <View style={styles.navigationCard}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={t("phone.devices.profiles")}
+                            onPress={() => router.dismissTo("/connect" as Href)}
+                            style={({ pressed }) => [styles.navigationRow, pressed && styles.navigationPressed]}>
+                            <View style={styles.navigationIcon}><MaterialCommunityIcons name="server-network" size={22} color={colors.primaryDeep} /></View>
+                            <View style={styles.navigationText}>
+                                <Text style={styles.navigationTitle}>{t("phone.devices.profiles")}</Text>
+                                <Text style={styles.navigationHint}>{t("phone.devices.profilesHint")}</Text>
+                            </View>
+                            <MaterialCommunityIcons name="chevron-right" size={20} color={colors.textSoft} />
+                        </Pressable>
+                        {Platform.OS === "android" ? <>
+                            <View style={styles.navigationDivider} />
+                            <Pressable accessibilityRole="button" accessibilityLabel={t("executor.title")}
+                                onPress={() => router.push("/device-executor" as Href)}
+                                style={({ pressed }) => [styles.navigationRow, pressed && styles.navigationPressed]}>
+                                <View style={[styles.navigationIcon, styles.executorIcon]}><MaterialCommunityIcons name="cellphone-cog" size={22} color={colors.textMuted} /></View>
+                                <View style={styles.navigationText}>
+                                    <Text style={styles.navigationTitle}>{t("executor.title")}</Text>
+                                    <Text style={styles.navigationHint}>{t("executor.entry_hint")}</Text>
+                                </View>
+                                <MaterialCommunityIcons name="chevron-right" size={20} color={colors.textSoft} />
+                            </Pressable>
+                        </> : null}
+                    </View>
+                    </View>
+                    </ScrollView>
                 </KeyboardAvoidingView>
             </SafeAreaView>
             <Modal visible={scannerOpen} animationType="slide" transparent onRequestClose={() => setScannerOpen(false)}>
@@ -253,7 +278,7 @@ export default function LoginScreen() {
     );
 }
 
-const styles = StyleSheet.create({
+function makeStyles(colors: ThemeColors) { return StyleSheet.create({
     gradient: {
         flex: 1,
     },
@@ -262,10 +287,29 @@ const styles = StyleSheet.create({
     },
     keyboard: {
         flex: 1,
+    },
+    content: {
+        flexGrow: 1,
         justifyContent: "center",
         paddingHorizontal: spacing.xl,
+        paddingVertical: spacing.xl,
+    },
+    contentColumn: {
+        width: "100%",
+        maxWidth: 480,
+        alignSelf: "center",
         gap: spacing.xl,
     },
+    formCard: { backgroundColor: colors.surface, borderColor: colors.border },
+    navigationCard: { backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, overflow: "hidden" },
+    navigationRow: { minHeight: 84, padding: 16, flexDirection: "row", alignItems: "center", gap: 12 },
+    navigationPressed: { backgroundColor: colors.primarySoft },
+    navigationIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+    executorIcon: { backgroundColor: colors.backgroundDeep },
+    navigationText: { flex: 1, minWidth: 0, gap: 4 },
+    navigationTitle: { color: colors.text, fontSize: 15, lineHeight: 22, fontWeight: "700" },
+    navigationHint: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+    navigationDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 70, marginRight: 16 },
     header: {
         gap: 10,
     },
@@ -312,7 +356,7 @@ const styles = StyleSheet.create({
         minHeight: 56,
         borderRadius: radii.pill,
         paddingHorizontal: 18,
-        backgroundColor: colors.primaryDeep,
+        backgroundColor: colors.userBubbleBottom,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
@@ -329,7 +373,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 8,
         borderRadius: radii.md,
-        backgroundColor: "rgba(124,58,237,0.08)",
+        backgroundColor: colors.primarySoft,
         paddingHorizontal: 12,
         paddingVertical: 10,
     },
@@ -476,4 +520,4 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: "900",
     },
-});
+}); }

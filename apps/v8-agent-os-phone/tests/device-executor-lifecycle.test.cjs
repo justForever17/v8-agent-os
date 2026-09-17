@@ -30,7 +30,7 @@ function screen(forget) {
       return [states[id], next => { states[id] = typeof next === "function" ? next(states[id]) : next; }];
     } },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
-    "react-native": { ActivityIndicator: "ActivityIndicator", FlatList: "FlatList", Modal: "Modal", Pressable: "Pressable",
+    "react-native": { ActivityIndicator: "ActivityIndicator", FlatList: "FlatList", Modal: "Modal", Pressable: "Pressable", Platform: { OS: "android" }, KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView",
       Text: "Text", TextInput: "TextInput", View: "View", StyleSheet: { create: x => x },
       Alert: { alert: (_label, _message, actions) => { confirmation = actions.find(a => a.style === "destructive"); } } },
     "expo-router": { router: {} }, "@react-navigation/native": { useIsFocused: () => false },
@@ -48,7 +48,7 @@ function screen(forget) {
     "@/src/providers/app-session": { useAppSession: () => ({ status: "authenticated", activeProfileId: "B" }) },
     "@/src/providers/ui-prefs": { useUiPrefs: () => ({ t: key => key, colors: {} }) },
   }).default;
-  function nodes(node) { return !node || typeof node !== "object" ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(nodes)]; }
+  function nodes(node) { return !node || typeof node !== "object" ? [] : [node, ...[node.props?.children, node.props?.ListHeaderComponent].flat(Infinity).flatMap(nodes)]; }
   const render = () => { cursor = 0; return nodes(component()); };
   const list = render().find(node => node.type === "FlatList");
   const row = nodes(list.props.renderItem({ item: { kind: "profile", value: profiles[0] } }));

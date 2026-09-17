@@ -26,9 +26,9 @@ def peer(key, online=True, local_role="primary"):
             "localRole": local_role, "remoteRole": "companion" if local_role == "primary" else "primary"}
 
 
-def templates():
+def templates(state):
     return [{"id": "model-policy", "label": "模型预算与参数", "description": "同步预算和温度。",
-             "values": {"governance": {"budgets": {"runMaxTokens": 2000}}}, "roles": []},
+             "values": {"governance": {"budgets": {"runMaxTokens": 2000}}}, "roles": state.get("policyRoles", [])},
             {"id": "model-roles", "label": "模型角色映射", "description": "选择目标本地模型。",
              "values": {"roles": {"supervisor": ""}}, "roles": [{"id": "supervisor", "label": "Supervisor"}]}]
 
@@ -67,14 +67,14 @@ class Handler(SimpleHTTPRequestHandler):
             jobs = state["jobs"]
             if state["paged"]:
                 jobs = [{**row, "summary": True, "targetCount": len(row["targets"]), "targetNames": [item["displayName"] for item in row["targets"][:3]], "targets": []} for row in jobs[:20]]
-            return self.send_json({"servingInstanceId": authority, "templates": templates(), "peers": peers, "jobs": copy.deepcopy(jobs), "jobsNextCursor": "20" if state["paged"] else None})
+            return self.send_json({"servingInstanceId": authority, "templates": templates(state), "peers": peers, "jobs": copy.deepcopy(jobs), "jobsNextCursor": "20" if state["paged"] else None})
         if tail.startswith("jobs?cursor="):
             offset = int(tail.split("=")[1]); rows = state["jobs"][offset:offset+20]
             return self.send_json({"items": [{**row, "summary": True, "targets": [], "targetCount": len(row["targets"])} for row in rows], "nextCursor": str(offset+20) if offset+20 < len(state["jobs"]) else None})
         if tail.startswith("targets/"):
             link = tail.split("/")[1]
             return self.send_json({"peerId": "peer-" + link, "protocolVersion": 1, "pathPolicy": "target_local_only",
-                "roles": [{"id": "supervisor", "label": "Supervisor"}], "models": [
+                "roles": state.get("policyRoles", [{"id": "supervisor", "label": "Supervisor"}]), "models": [
                     {"modelRef": "target/ready", "label": "Ready model", "ready": True, "missingRequirements": []},
                     {"modelRef": "target/missing", "label": "Missing credential model", "ready": state["credentialReady"], "missingRequirements": [] if state["credentialReady"] else ["credential"]}]})
         state["reads"] += 1
@@ -320,6 +320,41 @@ try:
         page.wait_for_timeout(300)
         assert states["A"]["inventoryReads"] == before + 1 and states["A"]["reads"] <= 3
         results.append("61_job_summaries_paginate_100_targets_expand_one_detail_bounded_requests")
+        context.close()
+        # Larger synthetic role catalog verifies optional mappings do not mount N x N choices.
+        context, page = new_page(browser)
+        roles = [{"id": f"role-{index:02d}", "label": f"Role {index:02d}"} for index in range(18)]
+        states["A"]["policyRoles"] = roles
+        page.reload()
+        button(page, "选择所有从设备").click()
+        expect(page.get_by_role("radio")).to_have_count(2)  # Templates only, no hidden role radios.
+        expect(page.get_by_text("角色映射：18/18 项已设置", exact=True)).to_have_count(2)
+        button(page, "Alpha: 调整角色映射").click()
+        expect(page.get_by_role("radio")).to_have_count(2)
+        button(page, "Alpha: Role 00 → Role 00").click()
+        expect(page.get_by_role("radio")).to_have_count(20)
+        page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True).click()
+        expect(page.get_by_text("其中 1 个角色使用自定义映射。", exact=True)).to_be_visible()
+        expect(page.get_by_role("radio", name="Alpha: Role 00 → Role 01", exact=True)).to_have_attribute("aria-checked", "true")
+        page.get_by_role("radio", name="Alpha: Role 00 → Role 00", exact=True).click()
+        button(page, "Alpha: Role 01 → Role 01").click()
+        expect(page.get_by_role("radio")).to_have_count(20)
+        expect(page.get_by_role("radio", name="Alpha: Role 00 → Role 00", exact=True)).to_have_count(0)
+        button(page, "Beta: 调整角色映射").click()
+        expect(page.get_by_role("radio")).to_have_count(2)
+        expect(button(page, "Alpha: 调整角色映射")).to_be_visible()
+        button(page, "Beta: 收起角色映射").click()
+        page.screenshot(path=str(output / "collapsed-policy-mappings.png"), full_page=True)
+        button(page, "预览 2 台设备的差异").click()
+        expect(button(page, "确认应用到 1 台设备")).to_be_visible()
+        expected_roles = {role["id"]: role["id"] for role in roles}
+        assert all(row["mapping"] == {"roles": expected_roles, "models": {}} for row in states["A"]["requests"][0]["body"]["targets"])
+        button(page, "新建分发").click()
+        page.get_by_role("radio", name="模型角色映射", exact=True).click()
+        page.get_by_role("checkbox", name="Alpha", exact=True).click()
+        expect(page.get_by_role("radio", name="Alpha: Supervisor → Ready model", exact=True)).to_be_visible()
+        expect(button(page, "Alpha: 调整角色映射")).to_have_count(0)
+        results.append("optional_policy_roles_mount_only_one_selector_preserve_mapping_and_required_models")
         context.close()
         browser.close()
 finally:

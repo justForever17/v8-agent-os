@@ -31,6 +31,8 @@ function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: {
     const [editingJob, setEditingJob] = useState<DistributionJob | null>(null);
     const [localSettings, setLocalSettings] = useState(false);
     const [expandedTarget, setExpandedTarget] = useState<string | null>(null);
+    const [expandedPolicyTarget, setExpandedPolicyTarget] = useState<string | null>(null);
+    const [expandedPolicyRole, setExpandedPolicyRole] = useState<string | null>(null);
     const [reviewed, setReviewed] = useState("");
     const [pendingDecision, setPendingDecision] = useState<{ action: "cancel" | "withdraw"; planKey: string } | null>(null);
     const [busy, setBusy] = useState(false);
@@ -167,11 +169,13 @@ function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: {
     }
     function newPlan() {
         abortRequests(); commands.current.clear(); jobRef.current = null; setJob(null); setEditingJob(null); setReviewed(""); setPendingDecision(null); setError("");
+        setExpandedPolicyTarget(null); setExpandedPolicyRole(null);
     }
     function editMappings() {
         if (!job) return;
         const remaining = job.targets.filter((target) => !target.approved && !["committed", "rolled_back", "cancelled"].includes(target.state));
         setEditingJob(job); setTemplateId(job.templateId); setCapabilities({});
+        setExpandedPolicyTarget(null); setExpandedPolicyRole(null);
         setSelected(Object.fromEntries(remaining.map((target) => [target.linkId, target.mapping || { roles: {}, models: {} }])));
         jobRef.current = null; setJob(null); setReviewed("");
         for (const target of remaining) { const peer = catalog?.peers.find((item) => item.linkId === target.linkId); if (peer) void loadTarget(peer); }
@@ -217,7 +221,7 @@ function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: {
                 {catalog && !job ? <>
                     <Text accessibilityRole="header" style={[styles.section, { color: colors.text }]}>{text("template")}</Text>
                     {catalog.templates.map((item) => <Pressable key={item.id} accessibilityRole="radio" accessibilityLabel={templateLabel(item.id, item.label)} aria-checked={templateId === item.id}
-                        accessibilityState={{ checked: templateId === item.id }} disabled={busy || Boolean(editingJob)} onPress={() => { setTemplateId(item.id); setSelected({}); }}
+                        accessibilityState={{ checked: templateId === item.id }} disabled={busy || Boolean(editingJob)} onPress={() => { setTemplateId(item.id); setSelected({}); setExpandedPolicyTarget(null); setExpandedPolicyRole(null); }}
                         style={[styles.card, { backgroundColor: colors.surface, borderColor: templateId === item.id ? colors.primary : colors.border }]}>
                         <Text style={{ color: colors.text, fontWeight: "700" }}>{templateLabel(item.id, item.label)}</Text>
                         <Text style={{ color: colors.textMuted, lineHeight: 21 }}>{templateDescription(item.id, item.description)}</Text>
@@ -235,6 +239,10 @@ function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: {
                     {catalog.peers.map((peer) => {
                         const mapping = selected[peer.linkId];
                         const options = capabilities[peer.linkId];
+                        const policyTemplate = template?.id === "model-policy";
+                        const policyExpanded = expandedPolicyTarget === peer.linkId;
+                        const roles = template?.roles || [];
+                        const customRoles = roles.filter((role) => mapping?.roles[role.id] && mapping.roles[role.id] !== role.id).length;
                         return <View key={peer.linkId} style={[styles.card, { backgroundColor: colors.surface, borderColor: mapping ? colors.primary : colors.border }]}>
                             <Pressable accessibilityRole="checkbox" accessibilityLabel={peer.displayName} aria-checked={Boolean(mapping)} accessibilityState={{ checked: Boolean(mapping), disabled: peer.localRole !== "primary" || busy }}
                                 disabled={peer.localRole !== "primary" || busy} onPress={() => selectPeer(peer)} style={styles.targetHeading}>
@@ -251,12 +259,30 @@ function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: {
                                 {targetErrors[peer.linkId] ? <View><Text style={{ color: colors.warning }}>{showError(targetErrors[peer.linkId])}</Text>
                                     </View> : null}
                                 {button(text("reloadTarget"), () => void loadTarget(peer), busy)}
-                                {(template?.roles || []).map((role) => <View key={role.id} style={styles.mapping}>
-                                    <Text style={{ color: colors.text, fontWeight: "600" }}>{role.label} → {text("targetRole")}</Text>
-                                    {options ? <View style={styles.choices}>{options.roles.map((targetRole) => <Pressable key={targetRole.id} accessibilityRole="radio"
+                                {policyTemplate && roles.length ? <View style={[styles.mappingSummary, { backgroundColor: colors.backgroundDeep, borderColor: colors.border }]}>
+                                    <Text style={{ color: colors.text, fontWeight: "600" }}>{text("roleMappingSummary", { mapped: roles.filter((role) => Boolean(mapping.roles[role.id])).length, total: roles.length })}</Text>
+                                    <Text style={{ color: colors.textMuted, fontSize: 12, lineHeight: 19 }}>{customRoles ? text("roleMappingCustom", { count: customRoles }) : text("roleMappingDefault")}</Text>
+                                    <Pressable accessibilityRole="button" accessibilityLabel={`${peer.displayName}: ${text(policyExpanded ? "hideRoleMappings" : "adjustRoleMappings")}`}
+                                        accessibilityState={{ expanded: policyExpanded, disabled: busy }} disabled={busy}
+                                        onPress={() => { setExpandedPolicyTarget(policyExpanded ? null : peer.linkId); setExpandedPolicyRole(null); }}
+                                        style={[styles.mappingToggle, { borderColor: colors.border }]}>
+                                        <Text style={{ flex: 1, color: colors.primaryDeep, fontWeight: "600" }}>{text(policyExpanded ? "hideRoleMappings" : "adjustRoleMappings")}</Text>
+                                        <Text style={{ color: colors.primaryDeep }}>{policyExpanded ? "−" : "+"}</Text>
+                                    </Pressable>
+                                </View> : null}
+                                {(!policyTemplate || policyExpanded) ? roles.map((role) => <View key={role.id} style={styles.mapping}>
+                                    {policyTemplate ? <Pressable accessibilityRole="button"
+                                        accessibilityLabel={`${peer.displayName}: ${role.label} → ${options?.roles.find((item) => item.id === mapping.roles[role.id])?.label || mapping.roles[role.id] || text("missingLocal")}`}
+                                        accessibilityState={{ expanded: expandedPolicyRole === role.id, disabled: busy }} disabled={busy}
+                                        onPress={() => setExpandedPolicyRole(expandedPolicyRole === role.id ? null : role.id)}
+                                        style={[styles.mappingToggle, { borderColor: expandedPolicyRole === role.id ? colors.primary : colors.border }]}>
+                                        <Text style={{ flex: 1, color: colors.text, fontWeight: "600", lineHeight: 21 }}>{role.label} → {options?.roles.find((item) => item.id === mapping.roles[role.id])?.label || mapping.roles[role.id] || text("missingLocal")}</Text>
+                                        <Text style={{ color: colors.textMuted }}>{expandedPolicyRole === role.id ? "−" : "+"}</Text>
+                                    </Pressable> : <Text style={{ color: colors.text, fontWeight: "600" }}>{role.label} → {text("targetRole")}</Text>}
+                                    {(!policyTemplate || expandedPolicyRole === role.id) ? options ? <View style={styles.choices}>{options.roles.map((targetRole) => <Pressable key={targetRole.id} accessibilityRole="radio"
                                         accessibilityLabel={`${peer.displayName}: ${role.label} → ${targetRole.label}`} aria-checked={mapping.roles[role.id] === targetRole.id} accessibilityState={{ checked: mapping.roles[role.id] === targetRole.id }} disabled={busy}
                                         onPress={() => setMapping(peer.linkId, "roles", role.id, targetRole.id)} style={[styles.choice, { borderColor: mapping.roles[role.id] === targetRole.id ? colors.primary : colors.border }]}>
-                                        <Text style={{ color: colors.text }}>{targetRole.label}</Text></Pressable>)}</View> : <Text style={{ color: colors.textMuted }}>{mapping.roles[role.id]}</Text>}
+                                        <Text style={{ color: colors.text }}>{targetRole.label}</Text></Pressable>)}</View> : <Text style={{ color: colors.textMuted }}>{mapping.roles[role.id]}</Text> : null}
                                     {template?.id === "model-roles" ? <>
                                         <Text style={{ color: colors.textMuted }}>{text("chooseModel")}</Text>
                                         {!options ? <Text style={{ color: colors.warning }}>{text("needsOnlineMapping")}</Text> : null}
@@ -269,7 +295,7 @@ function DistributionContent({ instanceId, fetcher, onClose, onChooseDevice }: {
                                         </Pressable>)}
                                         {options && !options.models.length ? <Text style={{ color: colors.warning }}>{text("noModels")}</Text> : null}
                                     </> : null}
-                                </View>)}
+                                </View>) : null}
                             </> : null}
                         </View>;
                     })}
@@ -348,6 +374,8 @@ const styles = StyleSheet.create({
     content: { padding: 16, paddingBottom: 40, gap: 12 }, card: { padding: 14, borderRadius: 14, borderWidth: 1, gap: 10 },
     button: { minHeight: 44, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
     targetHeading: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10 }, mapping: { gap: 8, paddingTop: 8 },
+    mappingSummary: { padding: 12, borderWidth: 1, borderRadius: 12, gap: 8 },
+    mappingToggle: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 10, padding: 10 },
     choices: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, choice: { minHeight: 44, borderWidth: 1, borderRadius: 10, padding: 10, gap: 5 },
     diff: { borderTopWidth: 1, paddingTop: 10, gap: 6 },
 });

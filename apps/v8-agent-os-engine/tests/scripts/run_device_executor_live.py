@@ -115,6 +115,13 @@ def main():
     def cancel(command_id: str):
         return service.cancel(owner, command_id)
 
+    @app.post("/fixture/reconcile/{command_id}")
+    def reconcile(command_id: str):
+        result = service.status(owner, command_id)
+        if result["command"]["resourceId"] != package:
+            return {"ok": False, "code": "fixture_target_required"}
+        return service.reconcile(owner, command_id, "Synthetic no-effect button verified unchanged after deadline; preserve unknown result.")
+
     @app.post("/fixture/revoke/{device_id}")
     def revoke(device_id: str):
         service.revoke(owner, device_id)

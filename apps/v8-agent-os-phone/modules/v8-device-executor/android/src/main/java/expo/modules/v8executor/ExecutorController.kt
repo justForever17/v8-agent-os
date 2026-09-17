@@ -136,10 +136,15 @@ class ExecutorController private constructor(private val context: Context) {
   }
   fun stop(reason: String = "local_stop") {
     guard?.stop(); connected = false; lastError = reason; generation++
-    main.removeCallbacks(heartbeat); settlePending(reason)
-    ExecutorAccessibilityService.instance?.clearObservation()
-    socket?.close(1000, "local_stop"); socket = null
-    context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID); publish()
+    main.removeCallbacks(heartbeat)
+    try { settlePending(reason) }
+    catch (_: Exception) { pending = null; applying = false; lastError = "journal_failed" }
+    finally {
+      ExecutorAccessibilityService.instance?.clearObservation()
+      socket?.close(1000, "local_stop"); socket = null
+      context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+    }
+    publish()
   }
   fun forgetProfile(profileAuthorityKey: String): Boolean {
     if (binding?.optString("profileAuthorityKey") != profileAuthorityKey) return false
@@ -207,7 +212,10 @@ class ExecutorController private constructor(private val context: Context) {
   }
   private fun disconnected(connectionGeneration: Int) {
     if (connectionGeneration != generation) return
-    connected = false; guard?.disconnect(); settlePending("connection_lost"); socket = null; lastError = "offline"; publish()
+    connected = false; guard?.disconnect()
+    try { settlePending("connection_lost") }
+    catch (_: Exception) { stop("journal_failed"); return }
+    socket = null; lastError = "offline"; publish()
     if (isEnabled()) {
       val retryGeneration = generation; val delay = backoffMs; backoffMs = minOf(30_000, backoffMs * 2)
       main.postDelayed({ if (retryGeneration == generation && isEnabled()) connect() }, delay)
@@ -255,7 +263,10 @@ class ExecutorController private constructor(private val context: Context) {
     if (pending != null) { record(c, "rejected", "device_busy"); return }
     if (identity.capability !in listOf("android.observe", "android.action")) { record(c, "rejected", "unsupported_capability"); return }
     record(c, "received"); pending = c; publish()
-    main.post { if (pending === c) apply(c) }
+    main.post {
+      if (pending === c) try { apply(c) }
+      catch (_: Exception) { stop("native_action_error") }
+    }
   }
   private fun apply(c: JSONObject) {
     if (!notificationsGranted()) { stop("requires_notification_permission"); return }
@@ -275,8 +286,10 @@ class ExecutorController private constructor(private val context: Context) {
         val delay = minOf(250L, guard!!.remaining(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis()).coerceAtLeast(0))
         main.postDelayed({
           if (pending !== c) return@postDelayed
-          val observation = try { if (isEnabled()) driver.observe(identity.resourceId) else null } catch (_: Exception) { null }
-          record(c, if (accepted) "succeeded" else "failed", if (observation == null) "post_observation_unavailable" else null, observation, accepted)
+          try {
+            val observation = try { if (isEnabled()) driver.observe(identity.resourceId) else null } catch (_: Exception) { null }
+            record(c, if (accepted) "succeeded" else "failed", if (observation == null) "post_observation_unavailable" else null, observation, accepted)
+          } catch (_: Exception) { stop("journal_failed") }
           pending = null; applying = false; publish()
         }, delay)
       }

@@ -56,8 +56,15 @@ class ExecutorStore(context: Context, private val storeName: String = "v8-execut
     val authority = receipt.optString("authorityId")
     val device = receipt.optString("deviceId")
     if (get(id, authority, device) == null) {
-      // Expired terminal records can never be re-executed: admission also enforces 30s TTL.
-      db.delete("receipts", "updated_ms < ?", arrayOf((System.currentTimeMillis() - 7 * 86_400_000L).toString()))
+      // Unsettled and unknown outcomes remain available for reconciliation.
+      // Expired settled records cannot execute again because admission enforces 30s TTL.
+      val expired = mutableListOf<String>()
+      db.query("receipts", arrayOf("command_id", "body"), "updated_ms < ?",
+        arrayOf((System.currentTimeMillis() - 7 * 86_400_000L).toString()), null, null, null).use { cursor ->
+        while (cursor.moveToNext()) if (JSONObject(cursor.getString(1)).getString("status") in
+          setOf("succeeded", "failed", "rejected", "cancelled", "expired")) expired.add(cursor.getString(0))
+      }
+      expired.forEach { db.delete("receipts", "command_id=?", arrayOf(it)) }
       db.rawQuery("SELECT count(*) FROM receipts", null).use { it.moveToFirst(); require(it.getInt(0) < 512) { "journal_full" } }
     }
     val values = ContentValues().apply {

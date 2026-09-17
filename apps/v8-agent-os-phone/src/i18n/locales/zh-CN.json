@@ -1,4 +1,5 @@
 {
+  "executor.error.journal_failed": "本机回执存储失败，控制已停止；请保留设备数据以核对动作结果。",
   "executor.error.remote_authorization_revoked": "Engine 授权已撤销，本机控制已停止",
   "executor.error.credential_or_connection_unavailable": "执行器凭据或连接不可用，控制已停止",
   "executor.error.device_locked": "屏幕已锁定或关闭，请在本机重新启用控制",

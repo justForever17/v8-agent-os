@@ -95,6 +95,18 @@ def main():
                                    "error": (result.get("receipt") or {}).get("error"), **detail})
         print(name + ": passed", flush=True)
 
+    def reconcile_noop(result):
+        # This helper only acknowledges the known no-op fixture; production
+        # outcomes require an explicit human decision and remain unknown.
+        assert result["command"]["resourceId"] == FIXTURE
+        assert result["command"]["capability"] == "android.action"
+        deadline = result["command"]["deadlineUnixMs"]
+        while time.time() * 1000 <= deadline:
+            time.sleep(.1)
+        acknowledged = api("/fixture/reconcile/" + result["commandId"], {})
+        assert acknowledged["status"] == "unknown_outcome" and acknowledged["reconciled"]
+        return acknowledged
+
     try:
         ready_deadline = time.monotonic() + 25
         while len([device for device in state()["devices"] if device["online"]]) != 1:
@@ -165,6 +177,9 @@ def main():
         cancelled = terminal(pending_cancel["commandId"])
         assert cancelled["status"] == "unknown_outcome" and cancelled["cancelRequested"], cancelled
         check("cancel_after_started_records_unknown_not_zero_execution", cancelled)
+        _, after_cancel = observe()
+        assert count(after_cancel) == initial_count + 1
+        check("explicit_reconciliation_preserves_unknown_outcome", reconcile_noop(cancelled))
 
         before_crash, crash_observation = observe()
         crash_command = create("android.action", {"action": "click", "nodeId": node(crash_observation, "No effect (driver can accept)")["nodeId"]},
@@ -185,6 +200,8 @@ def main():
         assert recovered["status"] == "unknown_outcome"
         assert recovered["receipt"]["status"] == "unknown_outcome" and recovered["receipt"]["error"] == "process_restarted", recovered
         check("crashed_intent_recovered_from_device_journal_without_replay", recovered)
+        assert count(reboot_observation) == initial_count + 1
+        reconcile_noop(recovered)
 
         # A second local app process activates its own fixture button. This is
         # independent of the remote driver and exercises the platform UI event

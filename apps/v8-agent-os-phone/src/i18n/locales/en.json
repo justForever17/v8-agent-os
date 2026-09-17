@@ -1,4 +1,5 @@
 {
+  "executor.error.journal_failed": "Local receipt storage failed. Control is stopped; preserve the device data for reconciliation.",
   "executor.error.remote_authorization_revoked": "Engine authorization was revoked; control stopped locally",
   "executor.error.credential_or_connection_unavailable": "The executor credential or connection is unavailable; control stopped",
   "executor.error.device_locked": "Screen locked or turned off; enable control again locally",

@@ -514,7 +514,8 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_ch
                                 and isinstance(payload.get("items"), list))
         # Inspection recovery must expose the retained proof/control identities,
         # not another summary that drops handoffs. Reuse redacted text pagination.
-        if episode_inspection or delegation_repair or dispatch_receipt:
+        device_evidence = record.get("tool_name") == "device_broker"
+        if episode_inspection or delegation_repair or dispatch_receipt or device_evidence:
             payload = None
         if offset and payload:
             return "start_char is only supported for plain-text observations and episode inspections, not other JSON previews."
@@ -558,6 +559,7 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000, start_ch
             f"tool: {record.get('tool_name') or 'unknown'}",
             f"raw_ref: {normalized_ref}",
             f"start_char: {offset}",
+            *(["Fragment only; read every page before parsing JSON or using action anchors."] if device_evidence else []),
             "",
             "<preview>",
             preview,

@@ -363,7 +363,15 @@ def test_server_existing_vision_tool_calls_selected_model_with_real_frame_and_bu
     from core.runtime_tool_access import runtime_tool_available
     assert runtime_tool_available("vision_media_analyzer") and runtime_tool_available("device_broker")
     _, _, captured = finish(b, command(b))
-    path = captured["screenshotRef"]["filePath"]
+    from core.tool_surface import apply_tool_surface_budget
+    from langchain_core.messages import ToolMessage
+    projected = apply_tool_surface_budget(ToolMessage(name="device_broker", tool_call_id="capture-view", content=json.dumps(captured)), {"agentVisibleBudget": 6000})
+    agent_data = json.loads(projected.content.split("\nData: ", 1)[1])
+    path = agent_data["screenshotRef"]["filePath"]
+    # Consume only the projected anchors in the next real admission.
+    next_action = command(b, "from-agent-frame", "android.action", {"action": "tap", "x": 12, "y": 8}, agent_data["precondition"])
+    assert next_action["resourceId"] == PACKAGE
+    b.service.cancel(b.owner, "from-agent-frame")
     monkeypatch.setattr(vision, "get_runtime_context", lambda: context)
     monkeypatch.setattr(storage, "get_supervisor_config", lambda: {"compressedDirectImages": False})
     resolution = {"resolvedModelId": "fixture-vision", "resolvedProviderId": "fixture-api",

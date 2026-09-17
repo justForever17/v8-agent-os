@@ -56,7 +56,7 @@ def _agent_surface_for_missing_tool_result(tool_name: str, raw_result: Any) -> t
     known_surface = (
         normalized_name in {"runtime_broker", "agent_broker", "config_broker", "plugin_broker",
                              "session_context_broker", "session_command_broker", "session_message_broker",
-                             "system_operations", "read_native_file", "grep_search"}
+                             "system_operations", "device_broker", "read_native_file", "grep_search"}
         or normalized_name.startswith(("research", "web_", "delegation", "subagent_", "computer_use_", "creative_media_", "rpa_", "memory_"))
     )
     if known_surface:
@@ -940,6 +940,8 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                     "result": agent_visible_result,
                     "agentVisibleResult": agent_visible_result,
                     "agentVisibleChars": tool.get("agentVisibleChars") or tool.get("agent_visible_chars"),
+                    **({"resultStatus": tool["resultStatus"]} if tool.get("resultStatus") else {}),
+                    **({"resultReasonCode": tool["resultReasonCode"]} if tool.get("resultReasonCode") else {}),
                     **({"detailRef": detail_ref} if detail_ref else {}),
                     **lineage,
                     **({"mcpApp": tool.get("mcpApp") or tool.get("mcp_app")} if (tool.get("mcpApp") or tool.get("mcp_app")) else {}),

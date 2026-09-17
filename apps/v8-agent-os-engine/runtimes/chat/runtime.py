@@ -8420,6 +8420,10 @@ class ChatRuntime:
     def _resolve_tool_result_status(cls, value: Any) -> tuple[str, str]:
         raw_value = getattr(value, "content", value)
         candidate = cls._coerce_json_like_value(to_jsonable(raw_value))
+        if getattr(value, "name", "") == "device_broker":
+            execution = (getattr(value, "additional_kwargs", {}) or {}).get("v8_device_execution")
+            if isinstance(execution, dict):
+                candidate = execution
         if not isinstance(candidate, dict):
             legacy_text = str(candidate or "").lstrip().lower()
             if legacy_text.startswith("error:") or legacy_text.startswith("error "):
@@ -8440,7 +8444,9 @@ class ChatRuntime:
 
         if kind in {"command_session_required", "command_session_redirect"}:
             return "waiting", reason_code or "command_session_required"
-        if status in {"timed_out", "timeout"} or failure_kind == "deadline_exceeded":
+        if status in {"unknown", "unknown_outcome"}:
+            return "unknown", reason_code or "unknown_outcome"
+        if status in {"timed_out", "timeout", "expired"} or failure_kind == "deadline_exceeded":
             return "timed_out", reason_code or "deadline_exceeded"
         if status in {"terminated", "stopped", "cancelled", "canceled", "interrupted"}:
             return "terminated", reason_code or "terminated"
@@ -8452,7 +8458,7 @@ class ChatRuntime:
             return "blocked", reason_code or "blocked"
         if status in {"awaiting_input", "waiting_input", "waiting_approval", "approval_required", "waiting"}:
             return "waiting", reason_code or status
-        if status in {"running", "queued", "pending", "starting", "streaming"}:
+        if status in {"running", "queued", "pending", "starting", "streaming", "authorized", "sent", "received", "started"}:
             return "running", reason_code or status
         if candidate.get("ok") is False or status in {"failed", "failure", "error", "exception"}:
             return "failed", reason_code or "tool_result_failed"

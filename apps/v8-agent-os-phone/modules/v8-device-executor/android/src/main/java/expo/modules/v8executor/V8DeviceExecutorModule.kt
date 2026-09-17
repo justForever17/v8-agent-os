@@ -18,6 +18,7 @@ class V8DeviceExecutorModule : Module() {
       controller.onMain { controller.state() }
     }
     AsyncFunction("setAllowedApps") { apps: List<String> -> controller.onMain { controller.setAllowedApps(apps); controller.state() } }
+    AsyncFunction("setFullDisplayCapture") { enabled: Boolean -> controller.onMain { controller.setFullDisplayCapture(enabled); controller.state() } }
     AsyncFunction("acknowledgeGrantRevision") { revision: Long -> controller.onMain { controller.acknowledgeGrantRevision(revision); controller.state() } }
     AsyncFunction("enable") { controller.onMain { controller.enable(); controller.state() } }
     AsyncFunction("stop") { controller.onMain { controller.stop(); controller.state() } }

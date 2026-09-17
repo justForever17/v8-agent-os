@@ -7,6 +7,11 @@ export type ExecutorState = {
     connected: boolean;
     accessibilityGranted: boolean;
     notificationGranted: boolean;
+    androidApi?: number;
+    fullDisplayCapture: boolean;
+    windowCaptureAvailable: boolean;
+    gestureAvailable: boolean;
+    gestureUnavailableReason?: string;
     authorityId?: string | null;
     profileAuthorityKey?: string | null;
     deviceId?: string | null;
@@ -22,6 +27,7 @@ type NativeExecutor = {
     getState(): Promise<ExecutorState>;
     enroll(ticket: string, authorityId: string, baseUrl: string, name: string, profileAuthorityKey: string, apps: string[]): Promise<ExecutorState>;
     setAllowedApps(apps: string[]): Promise<ExecutorState>;
+    setFullDisplayCapture(enabled: boolean): Promise<ExecutorState>;
     acknowledgeGrantRevision(revision: number): Promise<ExecutorState>;
     enable(): Promise<ExecutorState>;
     stop(): Promise<ExecutorState>;
@@ -34,6 +40,7 @@ type NativeExecutor = {
 const native = Platform.OS === "android" ? requireOptionalNativeModule<NativeExecutor>("V8DeviceExecutor") : null;
 const unsupported: ExecutorState = {
     supported: false, enabled: false, connected: false, accessibilityGranted: false, notificationGranted: false,
+    fullDisplayCapture: false, windowCaptureAvailable: false, gestureAvailable: false,
     allowedApps: [], grantRevision: 0, status: "unsupported", lastError: "native_build_required", recentReceipts: [],
 };
 const required = () => { if (!native) throw new Error("native_build_required"); return native; };
@@ -43,6 +50,7 @@ export const deviceExecutor = {
     subscribe: (listener: (state: ExecutorState) => void) => native?.addListener("onState", listener) ?? { remove() {} },
     enroll: (...args: Parameters<NativeExecutor["enroll"]>) => required().enroll(...args),
     setAllowedApps: (apps: string[]) => required().setAllowedApps(apps),
+    setFullDisplayCapture: (enabled: boolean) => required().setFullDisplayCapture(enabled),
     acknowledgeGrantRevision: (revision: number) => required().acknowledgeGrantRevision(revision),
     enable: () => required().enable(),
     stop: () => native?.stop() ?? Promise.resolve(unsupported),
@@ -72,7 +80,15 @@ export async function updateExecutorGrants(fetcher: AuthorizedFetch, state: Exec
     await deviceExecutor.setAllowedApps(allowedApps);
     const result = await managementJson(fetcher, `/api/client/executors/${encodeURIComponent(state.deviceId)}/grants`, {
         expectedRevision: state.grantRevision || 1,
-        grants: allowedApps.flatMap(resourceId => ["android.observe", "android.action"].map(capability => ({ capability, resourceId }))),
+        grants: executorGrants(state, allowedApps),
     }, "PUT");
     return deviceExecutor.acknowledgeGrantRevision(result.grantRevision);
+}
+
+export function executorGrants(state: ExecutorState, allowedApps: string[]) {
+    const capabilities = ["android.observe", "android.action"];
+    if (state.windowCaptureAvailable || state.fullDisplayCapture) capabilities.push("android.capture");
+    const grants = allowedApps.flatMap(resourceId => capabilities.map(capability => ({ capability, resourceId })));
+    if (state.fullDisplayCapture) grants.push({ capability: "android.capture", resourceId: "display" });
+    return grants;
 }

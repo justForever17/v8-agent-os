@@ -1,6 +1,6 @@
 <resources>
   <string name="v8_executor_name">V8 本机执行器</string>
-  <string name="v8_executor_description">由你选定的 V8 Engine 远程控制。只读取你明确允许的应用节点并执行固定动作。请手动开启，然后在 V8 中开始控制会话。通知中可随时停止。本功能不是无障碍辅助工具。</string>
+  <string name="v8_executor_description">由你选定的 V8 Engine 远程控制。读取你允许的应用节点和窗口截图，执行固定节点动作或手势。整屏截图需要你单独开启并取得服务端授权。请手动开启，然后在 V8 中开始控制会话。通知中可随时停止。本功能不是无障碍辅助工具。</string>
   <string name="v8_executor_stop">停止远程控制</string>
   <string name="v8_executor_active">远程控制已开启</string>
 </resources>

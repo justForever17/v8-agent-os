@@ -171,15 +171,28 @@ class ExecutorController private constructor(private val context: Context) {
     stop("bound_profile_forgotten"); return true
   }
   fun revoke(): Boolean {
-    val config = onMain {
+    val (originalBinding, config, credential) = onMain {
       stop("revoking")
-      binding?.let { it.put("pendingRevocation", true); store.saveConfig(it); JSONObject(it.toString()) }
+      binding?.let {
+        it.put("pendingRevocation", true); store.saveConfig(it)
+        Triple(it, JSONObject(it.toString()), store.credential())
+      }
     } ?: return true
     val request = Request.Builder().url(config.getString("baseUrl") + "/api/executor/revoke")
-      .header("Authorization", "Bearer " + store.credential()).post("{}".toRequestBody("application/json".toMediaType())).build()
-    val revoked = try { client.newCall(request).execute().use { it.isSuccessful } } catch (_: Exception) { false }
+      .header("Authorization", "Bearer " + credential).post("{}".toRequestBody("application/json".toMediaType())).build()
+    val revoked = try {
+      client.newCall(request).execute().use {
+        // The exact trusted authority may already have revoked this credential.
+        // That typed denial confirms it cannot control a device anymore; generic
+        // auth/transport errors still retain pending revocation for a later retry.
+        ExecutorWire.revocationConfirmed(it.code, if (it.code == 401) it.peekBody((ExecutorWire.MAX_BYTES + 1).toLong()).string() else "")
+      }
+    } catch (_: Exception) { false }
     onMain {
-      if (revoked && binding?.optString("deviceId") == config.getString("deviceId")) {
+      // A reply belongs to this binding lifetime, even if another authority later
+      // assigns the same deviceId. Neither success nor failure can mutate its replacement.
+      if (binding !== originalBinding) return@onMain
+      if (revoked) {
         store.clearBinding(); binding = null; guard = null; lastError = "not_enrolled"
       } else lastError = "revocation_pending"
       publish()

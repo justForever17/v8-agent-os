@@ -6,8 +6,89 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 class ExecutorNativeTest {
+  @Test fun lateRevocationCannotClearOrChangeAReplacementBinding() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val context = instrumentation.targetContext
+    // A failed old request must not change the new status either. This case also
+    // kills the old deviceId-only implementation without deleting any Keystore key.
+    for (status in listOf(503, 401)) {
+      val name = "executor-revoke-${UUID.randomUUID()}"
+      val store = ExecutorStore(context, name)
+      val controller = ExecutorController::class.java.getDeclaredConstructor(Context::class.java)
+        .apply { isAccessible = true }.newInstance(context)
+      fun field(name: String) = ExecutorController::class.java.getDeclaredField(name).apply { isAccessible = true }
+      (field("store").get(controller) as ExecutorStore).close()
+      field("store").set(controller, store)
+      val entered = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      val client = OkHttpClient.Builder().addInterceptor { chain ->
+        assertEquals("old-authority.invalid", chain.request().url.host)
+        assertEquals("Bearer synthetic-old-credential", chain.request().header("Authorization"))
+        entered.countDown()
+        check(release.await(10, TimeUnit.SECONDS))
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(status).message("fixture")
+          .body("""{"code":"executor_credential_revoked"}""".toResponseBody()).build()
+      }.build()
+      field("client").set(controller, client)
+      val oldBinding = JSONObject().put("authorityId", "old-authority").put("deviceId", "same-device-id")
+        .put("baseUrl", "https://old-authority.invalid")
+      val newBinding = JSONObject().put("authorityId", "new-authority").put("deviceId", "same-device-id")
+        .put("baseUrl", "https://new-authority.invalid")
+      val revoke = FutureTask { controller.revoke() }
+      val worker = Thread(revoke, "fixture-revoke")
+      try {
+        store.saveCredential("synthetic-old-credential")
+        instrumentation.runOnMainSync {
+          field("binding").set(controller, oldBinding)
+          field("guard").set(controller, null)
+          store.saveConfig(oldBinding)
+        }
+        worker.start()
+        assertTrue(entered.await(10, TimeUnit.SECONDS))
+        instrumentation.runOnMainSync {
+          store.saveCredential("synthetic-new-credential")
+          store.saveConfig(newBinding)
+          field("binding").set(controller, newBinding)
+          field("lastError").set(controller, "requires_local_resume")
+        }
+        release.countDown()
+        assertEquals(status == 401, revoke.get(10, TimeUnit.SECONDS))
+        instrumentation.runOnMainSync {
+          assertSame(newBinding, field("binding").get(controller))
+          assertEquals("requires_local_resume", controller.state()["lastError"])
+          assertEquals("new-authority", store.config()!!.getString("authorityId"))
+          assertEquals("synthetic-new-credential", store.credential())
+        }
+      } finally {
+        release.countDown()
+        worker.join(11000)
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
+        store.close()
+        context.deleteDatabase("$name.db")
+        context.deleteSharedPreferences(name)
+      }
+    }
+  }
+  @Test fun anAlreadyRevokedCredentialCanBeForgottenButOtherFailuresStayPending() {
+    assertTrue(ExecutorWire.revocationConfirmed(200, "{}"))
+    assertTrue(ExecutorWire.revocationConfirmed(401, """{"ok":false,"code":"executor_credential_revoked"}"""))
+    for ((status, body) in listOf(401 to """{"code":"executor_credential_required"}""",
+        403 to """{"code":"executor_credential_revoked"}""", 503 to "{}", 401 to "<html>error</html>",
+        401 to """{"code":"executor_credential_revoked","code":"other"}""",
+        401 to (" ".repeat(17000) + """{"code":"executor_credential_revoked"}"""))) {
+      assertFalse(ExecutorWire.revocationConfirmed(status, body))
+    }
+  }
   @Test fun strictWireRejectsAmbiguousAndOversizedFrames() {
     listOf("{\"type\":\"query\",\"type\":\"command\"}", "{\"x\":NaN}", "{\"x\":1.5}", "{\"x\":01}",
       "{\"x\":" + "[".repeat(14) + "0" + "]".repeat(14) + "}", "{\"x\":\"" + "x".repeat(17000) + "\"}")

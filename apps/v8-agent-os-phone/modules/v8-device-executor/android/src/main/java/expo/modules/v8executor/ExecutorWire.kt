@@ -9,6 +9,8 @@ import java.security.MessageDigest
 
 object ExecutorWire {
   const val MAX_BYTES = 16_384
+  fun revocationConfirmed(status: Int, body: String): Boolean = status in 200..299 ||
+    (status == 401 && runCatching { parse(body).optString("code") == "executor_credential_revoked" }.getOrDefault(false))
   fun parse(text: String): JSONObject {
     require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "frame_too_large" }
     val reader = JsonReader(StringReader(text)).apply { isLenient = false }

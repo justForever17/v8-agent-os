@@ -42,7 +42,7 @@ test('slow reads permit local navigation and detach; late pages cannot replace c
   assert.equal(ui.busy, true);
   await ui.dispatch({ key: 'escape' }); assert.equal(ui.page, null);
   await ui.dispatch({ key: 'ctrl-p' }); await ui.dispatch({ key: 'text', text: '帮助' });
-  assert.match(ui.page!.lines.join(''), /搜索：帮助/);
+  assert.equal(ui.suggestions!.query.text, '帮助'); assert.equal(ui.page, null);
   await ui.dispatch({ key: 'enter' }); assert.equal(ui.page!.title, '帮助 / 首次安装');
   release({ currentRun: { id: 'r', status: 'completed' } }); await loading;
   assert.equal(ui.page!.title, '帮助 / 首次安装');

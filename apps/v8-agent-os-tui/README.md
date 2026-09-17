@@ -30,7 +30,8 @@ postinstall 下载、启动 Engine 或执行特权操作。普通 `v8os` CLI 仍
 | --- | --- |
 | Enter / F9 | 发送；多行模式用 F9；粘贴后显式 F9 发送 |
 | F8 / Alt+Enter | 多行模式开关 / 插入换行 |
-| Ctrl+P / `/` | 可搜索操作菜单，键被终端占用时可用菜单 |
+| Ctrl+P / 空输入 `/` | 输入附近的命令候选；↑↓ 选择，Tab 补全，Enter 执行，Esc 返回原草稿 |
+| 候选中再按 Ctrl+P | 完整操作菜单；页面内 Ctrl+P 仍打开完整菜单 |
 | Ctrl+B / Ctrl+T / Ctrl+N | 会话列表 / 任务详情 / 新会话 |
 | F2 / F3 / F4 / F1 | 待处理 / 设置 / 连接 / 帮助 |
 | PageUp / PageDown | 滚动并暂停自动跟随；菜单可回到底部、载入更早历史 |
@@ -57,7 +58,10 @@ Phone 配对票据只在添加页面显示，关闭页面撤销未消费票据�
 审批或免审。累计预算、上下文窗口和模型单次输出长度在设置中分别编辑；模型输出
 参数会影响使用同一模型的全部角色。
 
-操作菜单显示搜索词和匹配数量。多行草稿支持上下键按显示列移动，中文和 emoji
+命令候选显示搜索词、短说明和匹配数量，每次最多显示六项。候选查询不会写入聊天
+草稿；Esc 保留原输入位置与历史滚动位置。粘贴仍进入草稿，不执行斜杠命令。
+执行命令后连续 Enter 不会误发原草稿；编辑后可正常 Enter，或用 F9 明确发送。
+多行草稿支持上下键按显示列移动，中文和 emoji
 不会被拆开。慢请求期间仍可 Esc 返回、打开其他页面或 Ctrl+D 退出；退出不停止
 Engine 任务，已发送操作通过原事务记录回读。
 
@@ -80,6 +84,9 @@ npm run build
 npm pack
 # Linux：对实际安装的 bin 运行真实 PTY
 python3 tests/terminal_pty.py --node /path/to/node --bin /prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs
+# 候选浮层：真实 PTY + 隔离 HTTP fixture；pyte 仅为测试依赖
+python3 -m pip install pyte==0.8.2 wcwidth==0.8.3
+python3 tests/command_suggestions_pty.py --node /path/to/node --bin /prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs --evidence /tmp/v8-command-evidence
 # 显式隔离状态目录、已配置真实 provider
 V8_AGENT_OS_HOME=/path/to/isolated-state npm run test:live
 ```

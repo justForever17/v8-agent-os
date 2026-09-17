@@ -46,11 +46,29 @@ test('optional-component cleanup precedes main file deletion and is skipped duri
   }
 });
 
-test('real installed-component dry run never elevates or removes anything', { skip: process.platform !== 'win32' }, () => {
-  const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper, '-EngineRoot', engineRoot, '-DryRun'], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
-  assert.equal(result.error, undefined);
+function runDryRun(t, executable = powershell) {
+  // Match the snapshot probe: bound cold CLR startup separately from the
+  // unchanged 15s component-operation budget, and retain the real script entry.
+  const source = `$ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine('v8-probe:script-entered')
+$probeClock = [Diagnostics.Stopwatch]::StartNew()
+& ${quote(helper)} -EngineRoot ${quote(engineRoot)} -DryRun
+$helperExit = $LASTEXITCODE
+[Console]::Error.WriteLine('v8-probe:dry-run-complete:' + $probeClock.ElapsedMilliseconds)
+exit $helperExit`;
+  const started = performance.now();
+  const result = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', source], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const wallMs = performance.now() - started;
+  assert.equal(result.error, undefined, `${executable}: ${result.error?.code || 'process error'}; ${result.stderr || 'no script-entry receipt'}`);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-});
+  const receipt = /^v8-probe:dry-run-complete:(\d+)\r?$/m.exec(result.stderr);
+  assert.ok(receipt, 'dry run did not complete the actual helper entrypoint');
+  const operationMs = Number(receipt[1]);
+  assert.ok(operationMs < 15000, `native component dry run exceeded its 15s operation budget: ${operationMs}ms`);
+  t.diagnostic(`${path.relative(process.env.SystemRoot || 'C:/Windows', executable)} dry-run: wallMs=${Math.round(wallMs)}, operationMs=${operationMs}, bootstrapAndSerializationMs=${Math.round(wallMs - operationMs)}`);
+}
+
+test('real installed-component dry run never elevates or removes anything', { skip: process.platform !== 'win32' }, (t) => runDryRun(t));
 
 test('real 32-bit and 64-bit PowerShell see identical native component paths and dry-run plans', { skip: process.platform !== 'win32' }, (t) => {
   const wow64 = path.join(process.env.SystemRoot || 'C:/Windows', 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe');
@@ -80,9 +98,7 @@ $operationMs = $probeClock.Elapsed.TotalMilliseconds
       `native component snapshot exceeded its 15s operation budget: ${parsed.operationMs}ms`);
     t.diagnostic(`${path.relative(process.env.SystemRoot || 'C:/Windows', executable)}: wallMs=${Math.round(wallMs)}, operationMs=${Math.round(parsed.operationMs)}, bootstrapAndSerializationMs=${Math.round(wallMs - parsed.operationMs)}`);
     snapshots.push(parsed);
-    const dryRun = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper, '-EngineRoot', engineRoot, '-DryRun'], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
-    assert.equal(dryRun.error, undefined);
-    assert.equal(dryRun.status, 0, dryRun.stderr || dryRun.stdout);
+    runDryRun(t, executable);
   }
   assert.equal(snapshots[0].process64, false);
   assert.equal(snapshots[1].process64, true);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, AppState, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, AppState, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { deviceExecutor, enrollExecutor, updateExecutorGrants, type ExecutorState } from "@/src/lib/device-executor";
@@ -72,6 +72,14 @@ export default function DeviceExecutorScreen() {
                     </>}
                     <Text style={styles.label}>{t("executor.allowed_apps")}</Text>
                     <Text style={styles.body}>{t("executor.scope_help")}</Text>
+                    <Text style={styles.body}>{t(state.windowCaptureAvailable ? "executor.window_capture_ready" : "executor.window_capture_unavailable")}</Text>
+                    <Text style={styles.body}>{t(state.gestureAvailable ? "executor.gesture_ready" : "executor.gesture_unavailable")}</Text>
+                    {state.deviceId ? <>
+                        <Text style={styles.label}>{t("executor.full_display_capture")}</Text>
+                        <Text style={styles.body}>{t("executor.full_display_capture_help")}</Text>
+                        <Switch accessibilityLabel={t("executor.full_display_capture")} value={state.fullDisplayCapture} disabled={busy}
+                            onValueChange={enabled => void run(() => deviceExecutor.setFullDisplayCapture(enabled))} />
+                    </> : null}
                     <TextInput accessibilityLabel={t("executor.allowed_apps")} value={appText} onChangeText={setAppText} multiline autoCapitalize="none" autoCorrect={false} placeholder="com.example.fixture" placeholderTextColor={colors.textMuted} style={styles.input} />
                     {!state.deviceId ? button("enroll", () => void run(async () => {
                         const enrolled = await enrollExecutor(authorizedFetch, { baseUrl, name, authorityKey, allowedApps: apps() });

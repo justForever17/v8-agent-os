@@ -39,11 +39,20 @@ def device_broker(
     """Use registered fixed-capability Android/ESP32 executors without delegation.
 
     list exposes exact device/resource grants. execute queues one device.health,
-    sensor.read, actuator.set, android.observe or android.action runtime episode.
+    sensor.read, actuator.set, android.observe, android.capture or android.action episode.
     Observe first: Android node actions require the returned app/window/node map
     and device/boot/control session anchors; actuator.set requires a current
     resourceRevision, boolean level and positive maxHoldMs. No raw pin, shell,
-    arbitrary tap, authorization-page action or LLM runs on the endpoint.
+    authorization-page action or LLM runs on the endpoint.
+    android.capture takes scope='window' (Android 14+) or explicitly granted
+    scope='display'. It returns a screenshot artifact for vision analysis.
+    Tap/swipe require a current window screenshot's frameId, geometryRevision,
+    width/height, rotation and viewport anchors. Coordinates are frame pixels.
+    A tree-only observation cannot authorize coordinates; a display screenshot
+    permits observation only. Screenshot-only actions need no fabricated nodeMap.
+    Use vision_media_analyzer with the returned screenshotRef.filePath;
+    a reference alone is not visual inspection. Refresh the capture
+    if the target or screenshot expires; never guess a frame ID or coordinates.
     Keep commandId and inspect status/receipt. received/started are progress;
     succeeded proves driver completion only, businessVerification stays unverified.
     Never repeat an unknown_outcome: query status and obtain local reconciliation.

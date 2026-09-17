@@ -10,8 +10,9 @@ MAX_FRAME = 16_384
 LEASE_MS = 30_000
 MAX_TTL_MS = 30_000
 TERMINAL = frozenset({"succeeded", "failed", "rejected", "cancelled", "expired", "unknown_outcome"})
-CAPABILITIES = frozenset({"device.health", "sensor.read", "actuator.set", "android.observe", "android.action"})
+CAPABILITIES = frozenset({"device.health", "sensor.read", "actuator.set", "android.observe", "android.capture", "android.action"})
 MUTATING = frozenset({"actuator.set", "android.action"})
+GESTURES = frozenset({"tap", "swipe"})
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}\Z")
 
 
@@ -95,25 +96,58 @@ def action(capability: str, resource: str, arguments: dict, precondition: dict):
     require(isinstance(capability, str) and capability in CAPABILITIES, "capability_unsupported", 400)
     identifier(resource, "resource_invalid")
     require(isinstance(arguments, dict) and isinstance(precondition, dict), "action_invalid", 400)
+    if capability.startswith("android."):
+        require(resource not in {"display", "android", "com.v8agentos.phone", "com.android.settings"}
+                and "permissioncontroller" not in resource.lower(), "protected_android_resource", 403)
     if capability in {"device.health", "android.observe"}:
         require(not arguments, "arguments_invalid", 400)
     elif capability == "sensor.read":
         require(set(arguments) <= {"maxAgeMs"}, "arguments_invalid", 400)
         integer(arguments.get("maxAgeMs", 0), 0, 60_000, "max_age_invalid")
+    elif capability == "android.capture":
+        require(set(arguments) <= {"scope"} and arguments.get("scope", "window") in ("window", "display"), "capture_scope_invalid", 400)
     elif capability == "actuator.set":
         require(set(arguments) == {"level", "maxHoldMs"} and type(arguments["level"]) is bool, "arguments_invalid", 400)
         integer(arguments["maxHoldMs"], 1, MAX_TTL_MS, "hold_invalid")
         integer(precondition.get("resourceRevision"), 0, 2**53 - 1, "resource_revision_required")
     elif capability == "android.action":
-        require(set(arguments) <= {"action", "nodeId", "text"}, "arguments_invalid", 400)
-        require(arguments.get("action") in {"click", "long_click", "set_text", "scroll_forward", "scroll_backward"}, "android_action_unsupported", 400)
-        identifier(arguments.get("nodeId"), "node_required")
-        if arguments["action"] == "set_text":
-            require(isinstance(arguments.get("text"), str) and len(arguments["text"]) <= 1000, "text_invalid", 400)
+        operation = arguments.get("action")
+        require(isinstance(operation, str), "android_action_unsupported", 400)
+        if operation in GESTURES:
+            expected = {"action", "x", "y"} | ({"endX", "endY", "durationMs"} if operation == "swipe" else set())
+            require(set(arguments) == expected, "arguments_invalid", 400)
+            frame_geometry(precondition)
+            identifier(precondition.get("frameId"), "frame_required")
+            for key in ("x", "y", "endX", "endY"):
+                if key in arguments:
+                    integer(arguments[key], 0, precondition["width" if key in ("x", "endX") else "height"] - 1, "gesture_outside_frame")
+            if operation == "swipe":
+                integer(arguments["durationMs"], 100, 1000, "gesture_duration_invalid")
         else:
-            require("text" not in arguments, "text_invalid", 400)
-        for key in ("observationId", "appId", "windowId", "nodeMapRevision"):
+            require(set(arguments) <= {"action", "nodeId", "text"}, "arguments_invalid", 400)
+            require(operation in {"click", "long_click", "set_text", "scroll_forward", "scroll_backward"}, "android_action_unsupported", 400)
+            identifier(arguments.get("nodeId"), "node_required")
+            if operation == "set_text":
+                require(isinstance(arguments.get("text"), str) and len(arguments["text"]) <= 1000, "text_invalid", 400)
+            else:
+                require("text" not in arguments, "text_invalid", 400)
+            require(isinstance(precondition.get("nodeMapRevision"), (str, int)), "observation_anchor_required", 400)
+        for key in ("observationId", "appId", "windowId"):
             require(key in precondition and isinstance(precondition[key], (str, int)), "observation_anchor_required", 400)
         require(precondition["appId"] == resource, "observation_resource_mismatch", 400)
     # Reuse the wire budget/depth parser for trusted callers too.
     parse(canonical({"arguments": arguments, "precondition": precondition}))
+
+
+def frame_geometry(value: dict):
+    for key in ("width", "height"):
+        integer(value.get(key), 1, 4096, "frame_dimensions_invalid")
+    require(value["width"] * value["height"] <= 8 * 1024 * 1024, "frame_dimensions_invalid", 400)
+    integer(value.get("rotation"), 0, 3, "frame_rotation_invalid")
+    require(isinstance(value.get("geometryRevision"), str) and 0 < len(value["geometryRevision"]) <= 128, "geometry_revision_required", 400)
+    viewport = value.get("viewport")
+    require(isinstance(viewport, dict) and set(viewport) == {"left", "top", "width", "height"}, "viewport_required", 400)
+    for key in ("left", "top"):
+        integer(viewport[key], 0, 16384, "viewport_invalid")
+    for key in ("width", "height"):
+        integer(viewport[key], 1, 16384, "viewport_invalid")

@@ -36,6 +36,8 @@ class ExecutorController private constructor(private val context: Context) {
   private var generation = 0
   private var connected = false
   private var pending: JSONObject? = null
+  private var pendingWork: CommandWork? = null
+  private var deadline: Runnable? = null
   private var applying = false
   private var lastError = if (binding == null) "not_enrolled" else if (binding?.optBoolean("pendingRevocation") == true) "revocation_pending" else "requires_local_resume"
   private var backoffMs = 1_000L
@@ -68,6 +70,9 @@ class ExecutorController private constructor(private val context: Context) {
     "supported" to true, "enabled" to isEnabled(), "connected" to connected,
     "accessibilityGranted" to (ExecutorAccessibilityService.instance != null),
     "notificationGranted" to notificationsGranted(), "authorityId" to binding?.optString("authorityId"),
+    "androidApi" to Build.VERSION.SDK_INT, "fullDisplayCapture" to fullDisplayCapture(),
+    "windowCaptureAvailable" to (Build.VERSION.SDK_INT >= 34), "gestureAvailable" to (Build.VERSION.SDK_INT >= 34),
+    "gestureUnavailableReason" to (if (Build.VERSION.SDK_INT >= 34) "" else "requires_android_14_window_capture"),
     "profileAuthorityKey" to binding?.optString("profileAuthorityKey"), "deviceId" to binding?.optString("deviceId"),
     "baseUrl" to binding?.optString("baseUrl"), "name" to binding?.optString("name"),
     "allowedApps" to allowedApps().toList(), "grantRevision" to maxOf(guard?.grantRevision ?: 0, binding?.optLong("grantRevision") ?: 0),
@@ -77,10 +82,19 @@ class ExecutorController private constructor(private val context: Context) {
       mapOf("commandId" to receipt.getString("commandId"), "status" to receipt.getString("status"), "error" to receipt.optString("error"))
     }
   )
-  private fun publish() { onState?.invoke(state()) }
+  private fun publish() { runCatching { onState?.invoke(state()) } }
   fun observationIdentity() = JSONObject().put("deviceId", binding?.getString("deviceId"))
     .put("bootId", bootId).put("controlSessionId", guard?.controlSessionId)
   fun permissionChanged(granted: Boolean) { if (!granted) stop("accessibility_revoked") else publish() }
+  fun observationChanged(windowChanged: Boolean) {
+    val command = pending ?: return
+    if (command.getString("capability") == "android.capture") finish(command, "failed", "window_changed")
+    else if (command.getJSONObject("arguments").optString("action") in setOf("tap", "swipe")) {
+      if (!applying) finish(command, "rejected", "stale_frame")
+      else if (windowChanged) settlePending("window_changed_during_gesture")
+    }
+  }
+  fun fullDisplayCapture() = binding?.optBoolean("fullDisplayCapture", false) == true
   private fun notificationsGranted() = (Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) &&
     context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
 
@@ -120,6 +134,11 @@ class ExecutorController private constructor(private val context: Context) {
     val config = binding ?: error("not_enrolled"); config.put("allowedApps", JSONArray(allowedApps)); store.saveConfig(config)
     guard?.localApps = allowedApps.toSet(); publish()
   }
+  fun setFullDisplayCapture(enabled: Boolean) {
+    stop("scope_changed")
+    val config = binding ?: error("not_enrolled")
+    config.put("fullDisplayCapture", enabled); store.saveConfig(config); publish()
+  }
   fun acknowledgeGrantRevision(revision: Long) {
     val config = binding ?: error("not_enrolled")
     require(revision >= config.optLong("grantRevision")) { "stale_revision" }
@@ -135,6 +154,7 @@ class ExecutorController private constructor(private val context: Context) {
     catch (_: Exception) { stop("credential_or_connection_unavailable"); error("credential_or_connection_unavailable") }
   }
   fun stop(reason: String = "local_stop") {
+    pendingWork?.cancel()
     guard?.stop(); connected = false; lastError = reason; generation++
     main.removeCallbacks(heartbeat)
     try { settlePending(reason) }
@@ -176,9 +196,14 @@ class ExecutorController private constructor(private val context: Context) {
       .setContentTitle(context.getString(R.string.v8_executor_active)).setContentText(binding?.optString("baseUrl"))
       .setContentIntent(content).setOngoing(true).addAction(Notification.Action.Builder(null, context.getString(R.string.v8_executor_stop), stop).build()).build())
   }
-  private fun capabilities(): JSONArray = JSONArray().also { out -> allowedApps().sorted().forEach { resource ->
-    listOf("android.observe", "android.action").forEach { out.put(JSONObject().put("capability", it).put("resourceId", resource)) }
-  } }
+  private fun capabilities(): JSONArray = JSONArray().also { out ->
+    allowedApps().sorted().forEach { resource ->
+      val supported = mutableListOf("android.observe", "android.action")
+      if (Build.VERSION.SDK_INT >= 34 || fullDisplayCapture()) supported.add("android.capture")
+      supported.forEach { out.put(JSONObject().put("capability", it).put("resourceId", resource)) }
+    }
+    if (fullDisplayCapture()) out.put(JSONObject().put("capability", "android.capture").put("resourceId", "display"))
+  }
   private fun connect() {
     if (!isEnabled() || ExecutorAccessibilityService.instance == null) return
     val config = binding ?: return
@@ -213,6 +238,7 @@ class ExecutorController private constructor(private val context: Context) {
   private fun disconnected(connectionGeneration: Int) {
     if (connectionGeneration != generation) return
     connected = false; guard?.disconnect()
+    ExecutorAccessibilityService.instance?.clearObservation()
     try { settlePending("connection_lost") }
     catch (_: Exception) { stop("journal_failed"); return }
     socket = null; lastError = "offline"; publish()
@@ -231,8 +257,10 @@ class ExecutorController private constructor(private val context: Context) {
         require(frame.getInt("protocolVersion") == 1) { "unsupported_protocol" }
         val array = frame.getJSONArray("grants")
         val grants = (0 until array.length()).map { array.getJSONObject(it).let { grant -> grant.getString("capability") to grant.getString("resourceId") } }.toSet()
+        if (connected && frame.getLong("grantRevision") != guard!!.grantRevision) { stop("grant_or_lease_changed"); return }
         guard!!.lease(frame.getLong("leaseEpoch"), frame.getLong("grantRevision"), frame.getLong("serverUnixMs"), frame.getLong("leaseExpiresUnixMs"), SystemClock.elapsedRealtime(), grants)
         config.put("leaseEpoch", guard!!.leaseEpoch).put("grantRevision", guard!!.grantRevision); store.saveConfig(config)
+        pending?.let { if (checkCommand(it) != null) settlePending("grant_or_lease_changed") }
         connected = true; backoffMs = 1_000; lastError = ""; publish()
       }
       "command" -> command(frame)
@@ -258,11 +286,14 @@ class ExecutorController private constructor(private val context: Context) {
       sendReceipt(previous); return
     }
     val identity = ExecutorWire.identity(c)
-    val error = guard?.check(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis()) ?: if (!isEnabled()) "locally_stopped" else null
+    val error = checkCommand(c)
     if (error != null) { record(c, "rejected", error); return }
     if (pending != null) { record(c, "rejected", "device_busy"); return }
-    if (identity.capability !in listOf("android.observe", "android.action")) { record(c, "rejected", "unsupported_capability"); return }
-    record(c, "received"); pending = c; publish()
+    if (identity.capability !in listOf("android.observe", "android.action", "android.capture")) { record(c, "rejected", "unsupported_capability"); return }
+    record(c, "received"); pending = c; pendingWork = CommandWork(); publish()
+    deadline = Runnable { if (pending === c) settlePending("command_deadline_expired") }.also {
+      main.postDelayed(it, guard!!.remaining(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis()).coerceAtLeast(1))
+    }
     main.post {
       if (pending === c) try { apply(c) }
       catch (_: Exception) { stop("native_action_error") }
@@ -271,33 +302,120 @@ class ExecutorController private constructor(private val context: Context) {
   private fun apply(c: JSONObject) {
     if (!notificationsGranted()) { stop("requires_notification_permission"); return }
     val identity = ExecutorWire.identity(c)
-    guard?.check(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis())?.let { record(c, "rejected", it); pending = null; publish(); return }
+    checkCommand(c)?.let { finish(c, "rejected", it); return }
+    val work = pendingWork ?: return
     val driver = ExecutorAccessibilityService.instance
     if (driver == null) { settlePending("accessibility_revoked"); return }
+    if (identity.capability == "android.capture") { applyCapture(c, work, driver); return }
+    val gesture = identity.capability == "android.action" && c.getJSONObject("arguments").optString("action") in setOf("tap", "swipe")
+    if (gesture) {
+      try {
+        driver.gesture(identity.resourceId, c.getJSONObject("arguments"), c.getJSONObject("precondition"), work, { current(c, work) }, {
+          require(current(c, work)) { "gesture_cancelled" }
+          val duration = c.getJSONObject("arguments").optLong("durationMs", 60)
+          require(guard!!.remaining(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis()) > duration) { "insufficient_gesture_deadline" }
+          record(c, "started"); applying = true
+        }) { status, error ->
+          if (current(c, work)) {
+            if (status == "succeeded") postAction(c, work, driver, true)
+            else finish(c, status, error?.takeIf { it.matches(Regex("[a-z_]{1,80}")) } ?: "gesture_failed")
+          }
+        }
+      } catch (error: Exception) { finish(c, "rejected", safeError(error)) }
+      return
+    }
     try {
       if (identity.capability == "android.action") driver.validateAction(identity.resourceId, c.getJSONObject("arguments"), c.getJSONObject("precondition"))
-    } catch (error: Exception) { record(c, "rejected", safeError(error)); pending = null; publish(); return }
+    } catch (error: Exception) { finish(c, "rejected", safeError(error)); return }
     record(c, "started"); applying = true
     try {
       if (identity.capability == "android.observe") {
-        record(c, "succeeded", observation = driver.observe(identity.resourceId)); pending = null; applying = false; publish()
+        finish(c, "succeeded", observation = driver.observe(identity.resourceId))
       } else {
         val accepted = driver.applyAction(identity.resourceId, c.getJSONObject("arguments"), c.getJSONObject("precondition"))
-        val delay = minOf(250L, guard!!.remaining(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis()).coerceAtLeast(0))
-        main.postDelayed({
-          if (pending !== c) return@postDelayed
-          try {
-            val observation = try { if (isEnabled()) driver.observe(identity.resourceId) else null } catch (_: Exception) { null }
-            record(c, if (accepted) "succeeded" else "failed", if (observation == null) "post_observation_unavailable" else null, observation, accepted)
-          } catch (_: Exception) { stop("journal_failed") }
-          pending = null; applying = false; publish()
-        }, delay)
+        postAction(c, work, driver, accepted)
       }
-    } catch (error: Exception) { record(c, "unknown_outcome", safeError(error)); pending = null; applying = false; publish() }
+    } catch (error: Exception) { finish(c, "unknown_outcome", safeError(error)) }
+  }
+  private fun checkCommand(c: JSONObject): String? {
+    val identity = ExecutorWire.identity(c)
+    val currentGuard = guard ?: return "locally_stopped"
+    currentGuard.check(identity, SystemClock.elapsedRealtime(), System.currentTimeMillis())?.let { return it }
+    return try {
+      if (identity.capability == "android.capture") {
+        val arguments = c.getJSONObject("arguments")
+        require(arguments.keys().asSequence().all { it == "scope" }) { "invalid_capture_arguments" }
+        CapturePolicy.authorize(Build.VERSION.SDK_INT, arguments.optString("scope", "window"), fullDisplayCapture(), currentGuard.hasGrant("android.capture", "display"))
+      }
+      if (identity.capability == "android.action" && c.getJSONObject("arguments").optString("action") in setOf("tap", "swipe")) {
+        require(Build.VERSION.SDK_INT >= 34) { "requires_android_14_window_capture" }
+        require(currentGuard.hasGrant("android.capture", identity.resourceId)) { "capture_grant_required" }
+      }
+      null
+    } catch (error: Exception) { safeError(error) }
+  }
+  private fun current(c: JSONObject, work: CommandWork): Boolean {
+    if (pending !== c || pendingWork !== work || !work.active) return false
+    return try {
+      if (!notificationsGranted() || ExecutorAccessibilityService.instance == null || checkCommand(c) != null) {
+        settlePending("permission_or_deadline_changed"); false
+      } else true
+    } catch (_: Exception) { stop("journal_failed"); false }
+  }
+  private fun applyCapture(c: JSONObject, work: CommandWork, driver: ExecutorAccessibilityService) {
+    record(c, "started")
+    try {
+      driver.capture(c.getString("resourceId"), c.getJSONObject("arguments").optString("scope", "window"), work, { current(c, work) }) { result ->
+        if (!current(c, work)) { result.getOrNull()?.jpeg?.fill(0); return@capture }
+        val image = result.getOrNull()
+        if (image == null) { finish(c, "failed", safeError(result.exceptionOrNull() as? Exception ?: IllegalStateException("capture_unavailable"))); return@capture }
+        val config = binding ?: return@capture
+        fun validImage(): Boolean {
+          if (!current(c, work)) return false
+          return try { driver.validateCaptureTarget(image.target); true }
+          catch (_: Exception) { finish(c, "failed", "window_changed"); false }
+        }
+        try {
+          ExecutorMediaUploader(client, config.getString("baseUrl"), store.credential()).upload(c, image, work, ::validImage) { uploaded ->
+            if (!validImage()) return@upload
+            try {
+              if (uploaded.isSuccess) {
+                driver.acceptCapturedFrame(uploaded.getOrThrow())
+                finish(c, "succeeded", observation = uploaded.getOrThrow().observation)
+              } else finish(c, "failed", safeError(uploaded.exceptionOrNull() as? Exception ?: IllegalStateException("media_upload_failed")))
+            } catch (error: Exception) { finish(c, "failed", safeError(error)) }
+          }
+        } catch (error: Exception) { image.jpeg.fill(0); finish(c, "failed", safeError(error)) }
+      }
+    } catch (error: Exception) { finish(c, "failed", safeError(error)) }
+  }
+  private fun postAction(c: JSONObject, work: CommandWork, driver: ExecutorAccessibilityService, accepted: Boolean) {
+    val delay = minOf(250L, guard!!.remaining(ExecutorWire.identity(c), SystemClock.elapsedRealtime(), System.currentTimeMillis()).coerceAtLeast(0))
+    main.postDelayed({
+      if (!current(c, work)) return@postDelayed
+      val observation = try {
+        if (guard?.hasGrant("android.observe", c.getString("resourceId")) == true) driver.observe(c.getString("resourceId")) else null
+      } catch (_: Exception) { null }
+      try { finish(c, if (accepted) "succeeded" else "failed", if (observation == null) "post_observation_unavailable" else null, observation, accepted) }
+      catch (_: Exception) { stop("journal_failed") }
+    }, delay)
+  }
+  private fun finish(c: JSONObject, status: String, error: String? = null, observation: JSONObject? = null, driverAccepted: Boolean? = null) {
+    if (pending !== c) return
+    try { record(c, status, error, observation, driverAccepted) }
+    catch (_: Exception) { stop("journal_failed"); return }
+    if (status == "succeeded") pendingWork?.complete() else pendingWork?.cancel()
+    pendingWork = null; pending = null; applying = false
+    deadline?.let(main::removeCallbacks); deadline = null; publish()
   }
   private fun settlePending(reason: String) {
-    pending?.let { c -> record(c, if (history(c.getString("commandId"))?.optString("status") == "started") "unknown_outcome" else "cancelled", reason) }
+    pendingWork?.cancel(); pendingWork = null
+    deadline?.let(main::removeCallbacks); deadline = null
+    val interrupted = pending
     pending = null; applying = false
+    try {
+      interrupted?.let { c -> record(c, if (history(c.getString("commandId"))?.optString("status") == "started") "unknown_outcome" else "cancelled", reason) }
+    } catch (_: Exception) { stop("journal_failed") }
   }
   private fun safeError(error: Exception) = error.message?.takeIf { it.matches(Regex("[a-z_]{1,80}")) } ?: "native_action_error"
   private fun record(c: JSONObject, status: String, error: String? = null, observation: JSONObject? = null, driverAccepted: Boolean? = null) {

@@ -81,6 +81,21 @@ test("unsupported platforms do not load or arm native code", async () => {
   assert.equal((await facade.deviceExecutor.stop()).enabled, false);
 });
 
+test("window capture grants never silently include full-display observation", () => {
+  const facade = load("src/lib/device-executor.ts", {
+    "react-native": { Platform: { OS: "ios" } },
+    "expo-modules-core": {},
+  });
+  const window = facade.executorGrants({ windowCaptureAvailable: true, fullDisplayCapture: false }, ["fixture.a"]);
+  assert.deepEqual(window, ["android.observe", "android.action", "android.capture"].map(capability => ({ capability, resourceId: "fixture.a" })));
+  const old = facade.executorGrants({ windowCaptureAvailable: false, fullDisplayCapture: false }, ["fixture.a"]);
+  assert.equal(old.some(grant => grant.capability === "android.capture"), false);
+  const consented = facade.executorGrants({ windowCaptureAvailable: false, fullDisplayCapture: true }, ["fixture.a"]);
+  assert.deepEqual(consented.filter(grant => grant.capability === "android.capture"), [
+    { capability: "android.capture", resourceId: "fixture.a" }, { capability: "android.capture", resourceId: "display" },
+  ]);
+});
+
 test("enrollment refuses a changed ticket origin before any native credential exchange", async () => {
   let nativeCalls = 0;
   const facade = load("src/lib/device-executor.ts", {

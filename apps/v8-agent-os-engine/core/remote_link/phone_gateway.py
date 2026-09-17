@@ -103,8 +103,13 @@ def _route(
 PHONE_GATEWAY_ROUTES: tuple[PhoneGatewayRoute, ...] = (
     _route("executor.enroll", r"/api/executor/enroll", ("POST",), auth="public", max_body_bytes=16384, requests_per_minute=8),
     _route("executor.self-revoke", r"/api/executor/revoke", ("POST",), auth="public", max_body_bytes=16384, requests_per_minute=30),
+    # These exact routes authenticate independent executor credentials themselves.
+    _route("executor.media.reserve", r"/api/executor/media", ("POST",), auth="public", max_body_bytes=16384, requests_per_minute=60),
+    _route("executor.media.upload", r"/api/executor/media/media_[0-9a-f]{32}", ("PUT",), auth="public", max_body_bytes=2097152, requests_per_minute=60),
+    _route("executor.media.cancel", r"/api/executor/media/media_[0-9a-f]{32}", ("DELETE",), auth="public", max_body_bytes=1024, requests_per_minute=60),
     _route("executor.tickets", r"/api/client/executors/tickets", ("POST",), max_body_bytes=16384, requests_per_minute=8),
     _route("executor.list", r"/api/client/executors", ("GET",)),
+    _route("executor.media.delete", r"/api/client/executors/media/media_[0-9a-f]{32}", ("DELETE",)),
     _route("executor.grants", rf"/api/client/executors/{_SEGMENT}/grants", ("PUT",), max_body_bytes=16384),
     _route("executor.revoke", rf"/api/client/executors/{_SEGMENT}", ("DELETE",)),
     _route("executor.command", rf"/api/client/executors/commands/{_SEGMENT}", ("GET",)),

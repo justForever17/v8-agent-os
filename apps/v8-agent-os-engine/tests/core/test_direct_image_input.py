@@ -12,6 +12,11 @@ from core.direct_image_input import caller_accepts_direct_images, direct_image_r
 from core.tools.vision_image_inputs import prepare_ordered_images
 
 
+@pytest.fixture(autouse=True)
+def media_install_profile(monkeypatch):
+    monkeypatch.setenv("ENGINE_INSTALL_PROFILE", "desktop")
+
+
 @pytest.fixture
 def example(tmp_path):
     paths = []

@@ -26,6 +26,7 @@ class CommandGuard(val authorityId: String, val deviceId: String, val bootId: St
   fun arm(session: String) { require(session.isNotBlank()); enabled = true; controlSessionId = session; leaseUntil = 0 }
   fun stop() { enabled = false; controlSessionId = ""; leaseUntil = 0; grants = emptySet() }
   fun disconnect() { leaseUntil = 0 }
+  fun hasGrant(capability: String, resource: String) = (capability to resource) in grants
 
   fun lease(epoch: Long, revision: Long, serverUnix: Long, expiresUnix: Long, nowMono: Long,
             allowed: Set<Pair<String, String>>) {

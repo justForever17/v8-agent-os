@@ -1645,6 +1645,14 @@ async def get_runtime_artifact_content(
 ):
     try:
         normalized, workspace_root = _authorized_runtime_artifact(artifact_id, session_id)
+        metadata = normalized.get("metadata") or {}
+        # Device screenshots carry a finite cache lifetime. The existing owned
+        # artifact route remains the read authority; a stale URL cannot extend it.
+        if metadata.get("executorCapture") is True:
+            import time
+            expires = metadata.get("expiresUnixMs")
+            if type(expires) is not int or expires <= int(time.time() * 1000):
+                raise HTTPException(status_code=410, detail="Executor screenshot expired")
         source_path = str(normalized.get("sourcePath") or "").strip()
         if not source_path:
             raise HTTPException(status_code=404, detail="Artifact has no local source path")

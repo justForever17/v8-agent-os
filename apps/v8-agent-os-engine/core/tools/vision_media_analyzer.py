@@ -41,7 +41,7 @@ from erc.safety_guardian import safety_guardian
 from core.system_base import get_engine_origin
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.tools.vision_image_inputs import (
-    MAX_VISION_IMAGES, VisionImageInput, VisionImageInputError, ordered_image_content, prepare_ordered_images,
+    MAX_VISION_IMAGES, VisionImageInput, VisionImageInputError, ordered_image_content, prepare_ordered_images, server_capture_only,
 )
 
 _LARGE_MEDIA_S3_THRESHOLD = 25 * 1024 * 1024
@@ -526,8 +526,18 @@ def vision_media_analyzer(
         source_url (str): 远程图片/视频/音频 URL，可直接消费 web_fetch 返回的 visionCandidates；非 MP3 音频会先下载并转换为 MP3。
         mime_type_hint (str): 远程媒体的 MIME 类型提示，可选。
         prompt (str): Your specific instructions to the Vision LLM (e.g., "Extract the error code from this screenshot").
+
+    Minimal Server supports registered session-owned executor JPEG screenshots
+    without an image-processing pack. General images/video/audio may require
+    their optional media dependencies; never substitute a guessed observation.
     """
     try:
+        if server_capture_only() and images is None:
+            # No generic download, workspace mounting or video/audio processing
+            # is activated by exposing this tool for native executor images.
+            if not file_path or source_url or mime_type_hint:
+                raise VisionImageInputError("server_media_requires_creative_media: use a registered executor JPEG")
+            return _analyze_ordered_images([{"file_path": file_path}], prompt=prompt, tool_call_id=tool_call_id)
         if images is not None:
             media_kind = "image"
             if file_path or source_url or mime_type_hint:
@@ -570,7 +580,11 @@ def vision_media_analyzer(
         media_kind = infer_media_kind(mime)
         if media_kind == "image" and path is not None:
             from core.direct_image_input import caller_accepts_direct_images
-            if caller_accepts_direct_images(runtime_context):
+            # The executor cache is only a routing hint. Ordered preparation
+            # still resolves the exact session artifact and persisted upload
+            # ledger before granting its no-transcode Server image path.
+            executor_capture_candidate = path.parent.name == "executor-media" and path.name.startswith("media_")
+            if executor_capture_candidate or caller_accepts_direct_images(runtime_context):
                 return _analyze_ordered_images([{"file_path": str(path)}], prompt=prompt, tool_call_id=tool_call_id)
         if media_kind == "file" and _looks_like_audio_source(resolved_url or str(path or "")):
             mime = _normalize_audio_mime(mime if mime != "application/octet-stream" else "", resolved_url or str(path or "")) or "audio/mpeg"

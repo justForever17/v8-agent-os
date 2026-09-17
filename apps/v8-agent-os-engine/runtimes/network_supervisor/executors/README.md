@@ -19,14 +19,22 @@ when chat is logged out or the Engine cannot be reached. Forgetting the bound ch
 profile stops that executor. Revocation uses the independent device credential;
 an offline revocation remains pending. A process restart requires local re-enabling.
 
-The first Android capabilities are `android.observe` and `android.action` for
-allowed external apps. Observation returns a bounded accessibility tree, marked
-`partial` when incomplete. Actions are click, long click, set text and scrolling
-on nodes from that observation. Each action rechecks device, boot, control session,
-app, window, node map and node identity before applying, and then observes again.
-Password nodes and Phone's own approval/settings surfaces are unavailable to the
-executor. Screenshots, coordinate tapping and arbitrary iOS cross-app control are
-not part of these capabilities. The module shares Phone's Android process and UID.
+`android.observe` returns a bounded accessibility tree for an allowed app, marked
+`partial` when incomplete. `android.action` supports node click, long click, set
+text and scrolling, and pixel-coordinate `tap`/`swipe` anchored to a screenshot.
+Node actions require the observed node-map revision; gestures require the actual
+frame ID, geometry revision, viewport, rotation and dimensions. Both recheck the
+device, boot, local control session, app and window. An observed frame expires for
+actions after ten seconds and is superseded by the next observation.
+
+`android.capture` captures an allowed window on Android 14+. Android 11–13 can
+capture the display only with an explicit local opt-in and an additional
+`android.capture/display` grant. Display scope can include other apps/system
+chrome and cannot authorize gestures. Gestures require Android 14+ window capture
+and a fresh secure-window probe. Password nodes, Phone's own approval/settings
+surfaces and protected system surfaces are excluded. Platform screenshot/gesture
+behavior remains subject to physical-device verification. The module shares
+Phone's Android process and UID; arbitrary iOS cross-app control is unsupported.
 
 ## Engine interface
 
@@ -42,6 +50,10 @@ following explicit routes; Admin is not required in the device execution path.
 | `DELETE /api/client/executors/{id}` | Human; revoke this device |
 | `POST /api/executor/revoke` | Executor credential; revoke only itself |
 | `WS /api/executor/ws` | Executor Bearer credential only; bounded v1 control frames |
+| `POST /api/executor/media` | Executor; reserve one bounded JPEG for its current capture command |
+| `PUT /api/executor/media/{id}` | Same executor; stream JPEG to the exact reserved handle |
+| `DELETE /api/executor/media/{id}` | Same executor; discard unpublished media |
+| `DELETE /api/client/executors/media/{id}` | Owned human; delete the captured image |
 | `GET /api/client/executors/commands/{id}` | Human; immutable command and device receipts |
 | `POST /api/client/executors/commands/{id}/cancel` | Human; request cancellation |
 | `POST /api/client/executors/commands/{id}/reconcile` | Human; acknowledge an expired unknown outcome with a note; never marks it successful |
@@ -78,6 +90,30 @@ operate executors. Stop local executors and revoke their grants before rolling
 back the Engine. Preserve the tables for later receipt reconciliation; do not
 clear identity or journal data to recover a stalled action.
 
+## Captured media
+
+Android encodes one metadata-free sRGB baseline JPEG, longest edge at most 1600
+pixels and at most 2 MiB. WSS carries only frame references. The HTTPS upload
+checks the executor identity, current command, lease, grants, cancellation,
+deadline, exact manifest and content hash. Server validates JPEG markers,
+dimensions and transport integrity without claiming to decode image pixels.
+Only a matching successful receipt publishes a session-owned artifact through
+the existing artifact store. Device credentials cannot read human artifacts.
+
+Capture status returns `screenshotRef` and the artifact's existing authenticated
+content URL. Pass its exact `filePath` to `vision_media_analyzer`; this uses the
+existing model selection, image ordering, permissions and budget. A persisted
+upload record and session ownership qualify the native JPEG path; a caller flag,
+filename or forged artifact metadata cannot qualify it. Minimal Server needs no
+Pillow/NumPy for this path. Ordinary media input still requires its media pack.
+
+Unpublished media expires at the command deadline. Published images expire
+after 24 hours, are immediately unreadable at expiry or explicit deletion, and
+expired bytes are reaped on the next reservation. The per-device stored-image
+budget is 64 MiB. Local Stop cancels capture/upload work, but cannot retract
+already transmitted bytes or an already dispatched platform gesture. A failed,
+cancelled or stale callback cannot publish a new screenshot.
+
 ## ESP32 and verification
 
 See [the ESP32 bench firmware](../../../../../firmware/v8-device-executor-esp32/README.md) for
@@ -91,3 +127,11 @@ Focused Engine tests live in `tests/network/test_device_executor.py`. The explic
 creates an isolated synthetic owner and TLS endpoint for the separate Android
 fixture package. Its `/fixture/*` fault injection endpoints exist only in that
 test server. Never expose this bench server or use it with private application data.
+
+`tests/network/test_executor_media.py` covers upload, ownership, cancellation,
+frame drift, deletion and existing visual-tool dispatch. Run
+`tests/scripts/run_executor_media_server_smoke.py --live --require-no-imaging --output <isolated-directory>`
+in a Server environment to exercise real loopback HTTPS/WSS, tool/episode,
+artifact and model-input construction with synthetic device/model boundaries.
+It never contacts a phone or provider. These layers do not prove Android
+screenshot/gesture behavior or a real model's interpretation.

@@ -1,6 +1,6 @@
 <resources>
   <string name="v8_executor_name">V8 device executor</string>
-  <string name="v8_executor_description">Optional remote control from your selected V8 Engine. Reads accessible nodes and performs fixed actions only in apps you explicitly allow. Enable manually, then start a control session in V8. Stop is always available in the notification. This is not an accessibility aid.</string>
+  <string name="v8_executor_description">Optional remote control from your selected V8 Engine. Reads nodes and window screenshots and performs fixed node actions or gestures in apps you allow. Whole-display screenshots require a separate local opt-in and server grant. Enable manually, then start a control session in V8. Stop is always available in the notification. This is not an accessibility aid.</string>
   <string name="v8_executor_stop">Stop remote control</string>
   <string name="v8_executor_active">Remote control enabled</string>
 </resources>

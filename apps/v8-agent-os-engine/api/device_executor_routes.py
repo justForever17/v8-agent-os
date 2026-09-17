@@ -6,6 +6,7 @@ import time
 
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from core.auth_context import require_client_principal, revalidate_client_principal
 from core.client_identity import IdentityError
@@ -15,12 +16,65 @@ from runtimes.network_supervisor.executors.service import get_executor_service
 router = APIRouter(tags=["device-executors"])
 
 
+def executor_principal(request: Request):
+    authorization = request.headers.get("authorization", "")
+    require(authorization.startswith("Bearer "), "executor_credential_required", 401)
+    return get_executor_service().identities.verify(authorization.removeprefix("Bearer "))
+
+
 async def body(request: Request) -> dict:
     data = bytearray()
     async for part in request.stream():
         data.extend(part)
         require(len(data) <= MAX_FRAME, "frame_too_large", 413)
     return parse(bytes(data))
+
+
+@router.post("/api/executor/media")
+async def reserve_media(request: Request):
+    try:
+        principal = executor_principal(request)
+        return await run_in_threadpool(get_executor_service().media.reserve, principal, await body(request))
+    except (ExecutorError, IdentityError) as exc:
+        return error(exc)
+
+
+@router.put("/api/executor/media/{media_id}")
+async def upload_media(media_id: str, request: Request):
+    media, begun, complete = get_executor_service().media, False, False
+    try:
+        principal = executor_principal(request)
+        require(request.headers.get("content-type", "").split(";", 1)[0] == "image/jpeg", "media_type_invalid", 415)
+        reservation = await run_in_threadpool(media.begin, principal, media_id)
+        begun = True
+        size = 0
+        async with asyncio.timeout(15):
+            with media.path(media_id, temporary=True).open("xb") as output:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    require(size <= reservation["byte_length"], "media_size_invalid", 413)
+                    # Revalidate on each network chunk; no human session token is used.
+                    executor_principal(request)
+                    output.write(chunk)
+            result = await run_in_threadpool(media.finish, principal, media_id)
+        complete = True
+        return result
+    except (ExecutorError, IdentityError) as exc:
+        return error(exc)
+    except TimeoutError:
+        return error(ExecutorError("media_upload_timeout", 408))
+    finally:
+        if begun and not complete:
+            await run_in_threadpool(media.abort, media_id)
+
+
+@router.delete("/api/executor/media/{media_id}")
+async def delete_pending_media(media_id: str, request: Request):
+    try:
+        await run_in_threadpool(get_executor_service().media.delete, executor_principal(request), media_id)
+        return {"ok": True}
+    except (ExecutorError, IdentityError) as exc:
+        return error(exc)
 
 
 def human(request: Request):
@@ -78,6 +132,15 @@ def devices(principal=Depends(human)):
     return {"items": get_executor_service().list(principal.subject)}
 
 
+@router.delete("/api/client/executors/media/{media_id}")
+async def delete_owned_media(media_id: str, principal=Depends(human)):
+    try:
+        await run_in_threadpool(get_executor_service().media.delete_owned, principal.subject, media_id)
+        return {"ok": True, "mediaStatus": "gone"}
+    except (ExecutorError, IdentityError) as exc:
+        return error(exc)
+
+
 @router.put("/api/client/executors/{device_id}/grants")
 async def grant(device_id: str, request: Request, principal=Depends(human)):
     try:
@@ -97,9 +160,10 @@ def revoke(device_id: str, principal=Depends(human)):
 
 
 @router.get("/api/client/executors/commands/{command_id}")
-def command(command_id: str, principal=Depends(human)):
+def command(command_id: str, request: Request, principal=Depends(human)):
     try:
-        return get_executor_service().status(principal.subject, command_id)
+        from api.client_routes import normalize_client_surface
+        return normalize_client_surface(get_executor_service().status(principal.subject, command_id), request, principal)
     except (ExecutorError, IdentityError) as exc:
         return error(exc)
 

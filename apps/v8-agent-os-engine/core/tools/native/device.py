@@ -100,6 +100,7 @@ def device_broker(
         })
         queued = enqueue_runtime_episode(episode, session_id=str(context.get("session_id") or ""), run_id=run_id)
         return canonical({"commandId": command_id, "episodeId": episode_id, "status": queued["state"],
+                          "deviceId": device_id, "resourceId": resource_id, "capability": capability,
                           "businessVerification": "unverified", "next": "等待设备回执；使用 status 查询，不重复发送。"})
     except (ExecutorError, IdentityError) as exc:
         return canonical({"ok": False, "code": exc.code})

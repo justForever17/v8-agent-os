@@ -107,6 +107,13 @@ upload record and session ownership qualify the native JPEG path; a caller flag,
 filename or forged artifact metadata cannot qualify it. Minimal Server needs no
 Pillow/NumPy for this path. Ordinary media input still requires its media pack.
 
+The Agent tool projection preserves device/grant/resource discovery, command and
+episode IDs, exact screenshot paths and complete action preconditions. Oversized
+node maps are omitted as whole blocks with redacted, paged detail recovery;
+executable JSON and identifiers are never spliced. Runtime keeps the original
+receipt and typed execution status. Received/started remain in progress, expired
+is a timeout, and unknown outcomes remain unknown through events and history.
+
 Unpublished media expires at the command deadline. Published images expire
 after 24 hours, are immediately unreadable at expiry or explicit deletion, and
 expired bytes are reaped on the next reservation. The per-device stored-image
@@ -135,3 +142,10 @@ in a Server environment to exercise real loopback HTTPS/WSS, tool/episode,
 artifact and model-input construction with synthetic device/model boundaries.
 It never contacts a phone or provider. These layers do not prove Android
 screenshot/gesture behavior or a real model's interpretation.
+
+For one explicit provider check, use
+`tests/scripts/run_executor_media_provider_live.py --live --output <new-directory>`.
+It generates a geometric JPEG locally and uses the existing configured vision
+model and credential reference without changing settings. Its input path comes
+from the projected `device_broker` ToolMessage. The separate minimal Server test
+above remains the evidence for absence of imaging dependencies.

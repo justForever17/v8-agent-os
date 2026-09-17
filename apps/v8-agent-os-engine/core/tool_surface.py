@@ -2860,6 +2860,9 @@ def _decision_agent_visible_surface(
     elif tool_name == "system_operations":
         from core.system_operations.surface import render_system_operation
         renderer_result = render_system_operation(payload, raw_ref)
+    elif tool_name == "device_broker":
+        from core.device_tool_surface import render_device_surface
+        renderer_result = render_device_surface(payload, raw_ref, budget=budget)
     elif tool_name == "research_broker":
         renderer_result = _render_research_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name == "web_broker" or tool_name.startswith("web_"):
@@ -3298,6 +3301,15 @@ def _copy_tool_message_with_budget(message: ToolMessage, content: str, budget_me
     additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
     response_metadata = dict(getattr(message, "response_metadata", {}) or {})
     additional_kwargs["v8_tool_output_budget"] = budget_meta
+    if getattr(message, "name", "") == "device_broker":
+        try:
+            device_payload = json.loads(message.content)
+        except (ValueError, TypeError):
+            device_payload = None
+        if isinstance(device_payload, dict):
+            additional_kwargs["v8_device_execution"] = {
+                key: device_payload[key] for key in ("status", "ok", "code", "businessVerification") if key in device_payload
+            }
     # Keep native command lifecycle facts when the Agent Surface renders JSON
     # as terminal text. This receipt is runtime metadata, never inferred from
     # the model's prose or from a session admission being labelled "ok".

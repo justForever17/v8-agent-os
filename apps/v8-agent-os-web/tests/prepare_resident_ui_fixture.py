@@ -26,20 +26,20 @@ if not (target / "node_modules").exists():
 layout = target / "src/app/layout.tsx"
 text = layout.read_text(encoding="utf-8").replace('import { auth } from "@/lib/auth";', '').replace('import { resolveInitialProductTheme } from "@/lib/server/product-theme";', '')
 text = text.replace('const initialSession = await auth();', 'const initialSession = { user: { id: "fixture-owner", email: "fixture@example.invalid", name: "测试用户" }, expires: "2099-01-01T00:00:00Z" };')
-text = text.replace('const initialTheme = await resolveInitialProductTheme(normalizeProductTheme(themeCookie));', 'const initialTheme = { theme: "light", syncState: "synced" };')
+text = text.replace('const initialTheme = await resolveInitialProductTheme(normalizeProductTheme(themeCookie));', 'const initialTheme = { theme: "light", syncState: "synced" } as const;')
 text = 'import ProfileDebug from "./ProfileDebug";\n'+text.replace('<PersonalizationProvider>','<PersonalizationProvider><ProfileDebug />')
 layout.write_text(text, encoding="utf-8")
 (target/"src/app/ProfileDebug.tsx").write_text('''"use client";import {useClientProfile} from "@/hooks/use-client-profile";export default function Debug(){const {profile,canonicalLoaded,status}=useClientProfile();return <pre hidden id="fixture-profile">{JSON.stringify({profile,canonicalLoaded,status})}</pre>}''',encoding="utf-8")
 (target / "src/lib/actions/user.actions.ts").write_text('''"use server";
 import { cookies } from "next/headers";
 export type SharedUserProfile = { id?: string; login?: string; email?: string; name?: string; image?: string; role?: string; appearance?: any; mustChangePassword?: boolean };
-export async function getUserProfile() {
+export async function getUserProfile(): Promise<{ success: boolean; user?: SharedUserProfile; error?: string }> {
  const jar = await cookies(); const count = Math.min(50, Number(jar.get("fixture-count")?.value || 0));
  const generated = count ? { webBackground: { revision: 1, enabled: true, imageDurationMs: 60000, order: "ordered", items: Array.from({length: count}, (_, i) => ({ id: `media-${i}`, media: `/user-assets/background/fixture-${i}.${i%2 ? "mp4" : "webp"}`, kind: i%2 ? "video" : "image", fit: "cover", position: "50% 50%" })) } } : {};
  return { success: true, user: { id: "fixture-owner", name: "测试用户", email: "fixture@example.invalid", appearance: jar.get("fixture-appearance") ? JSON.parse(jar.get("fixture-appearance")!.value) : generated } };
 }
-export async function updateUserNickname() { return { success: false, error: "fixture" }; }
-export async function updateUserAvatar() { return { success: false, error: "fixture" }; }
+export async function updateUserNickname(_name?: string): Promise<{ success: boolean; user?: SharedUserProfile; error?: string }> { return { success: false, error: "fixture" }; }
+export async function updateUserAvatar(_image?: string): Promise<{ success: boolean; user?: SharedUserProfile; error?: string }> { return { success: false, error: "fixture" }; }
 export async function updateUserAppearance(appearance: any) { (await cookies()).set("fixture-appearance", JSON.stringify(appearance)); return getUserProfile(); }
 ''', encoding="utf-8")
 print(target)

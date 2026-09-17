@@ -2404,9 +2404,16 @@ export default function ChatClient() {
         if (ownerChanged) {
             messageCacheRef.current.clear();
             queueCacheRef.current.clear();
+            queueSequenceRef.current.clear();
             scopeCacheRef.current.clear();
+            scopeRequestSeqRef.current += 1;
+            runLoadGenerationRef.current += 1;
+            reasoningEffortRequestSeqRef.current += 1;
             transcriptIdentitiesRef.current.clear();
             setTranscriptIdentity({ transcriptRevision: 0, contextEpoch: 0 });
+            setSessionProjection(null);
+            setRunEntries([]);
+            setSessionProcessSurface([]);
             setScopeOwner("");
             setScopeBinding(null);
             stop();
@@ -4313,6 +4320,9 @@ export default function ChatClient() {
                     }
                     return {
                         ...nextView,
+                        currentRun: current?.currentRun && current.currentRun.id === nextView.currentRun?.id
+                            && current.currentRun.status === nextView.currentRun?.status
+                            ? { ...current.currentRun, ...nextView.currentRun } : nextView.currentRun,
                         ...mergeRuntimeTimelineSnapshot(current, {
                             sessionId: activeConversationId,
                             latestSeq: snapshotLatestSeq,

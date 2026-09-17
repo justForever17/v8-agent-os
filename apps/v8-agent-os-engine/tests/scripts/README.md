@@ -29,6 +29,8 @@ Phone 真实网关联测：先在 Phone 目录执行 `node tests/build-config-di
 
 物理验收只在独立验证包对所选 LAN IP 信任生成的公开 CA，正式包不带测试 CA。私钥不离开 fixture；证书/主机名验证保持开启，并分别验证缺少该 CA 和错误主机名拒绝。`public.json` 只包含端口、origin 与公开 CA 路径/指纹；配对票据不要放进聊天、日志或仓库。由设备协调者独占安装/UI操作，保留原正式应用。
 
+可复跑 Phone 故障注入：`config_distribution_phone_faults.py --live resume --root <existing-isolated-folder> --node source --minutes 30 --trace <report.jsonl>` 包装原 fixture `resume`，保留同 CA/端口/状态和原有总期限；不要与已运行的同一 fixture 同时启动。在另一终端运行同脚本 `--live arm-refresh --root <same-folder> --node source --phase refresh-first`，只对该节点下一次精确 catalog GET 返回一次 typed401/pre_execution；再次 arm 可测第二轮刷新。`--live arm-management --root <same-folder> --node source --device-id <exact-synthetic-executor-id> --phase management-recovery` 只对该执行器的精确 PUT grants 返回两次 typed400，之后真实转发。端口从 `public.json` 读取，未命中不消费；flag 自动消费，不覆盖尚未用完的同类 flag。记录仅含时间、路径、方法、状态、白名单错误码和非秘密 phase，不含查询、header、body 或凭据。`--live self-check` 仅以 MockTransport 检查精确目标、次数、后续转发及日志去敏，不启动服务或操作 Phone。此前旧 a4/新536 的实体证据来自临时 wrapper，不能追溯归因于此新脚本。
+
 ## 受控系统操作
 
 `run_system_operations_windows_live.py --help` 给出分阶段入口。`status --live` 只显示组件和凭据是否配置；`privilege` / `unlock` 另需 `--allow-side-effects`，使用用户已在 Admin 配置的凭据，只打印去敏结果。`unlock` 会真实锁定当前会话再核验解锁，须提前告知用户；不自动重试认证。`lifecycle` 会请求 Windows UAC，移除并恢复两个自有组件，同时核对系统原有登录 Provider 未变。`--source-unlock-client` 仅标记源码客户端候选验证，不证明默认安装副本。

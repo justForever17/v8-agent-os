@@ -15,6 +15,8 @@ import ipaddress
 import json
 from pathlib import Path
 import secrets
+import select
+import socket
 import ssl
 import subprocess
 import sys
@@ -59,7 +61,28 @@ def tls_fixture(root, hostname):
 def start_tls_gateway(root, gateway_port, tls_port):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_): pass
+        def tunnel_websocket(self):
+            # Keep the actual gateway's handshake, authentication, frames and
+            # close codes intact. TLS terminates only at this isolated fixture.
+            self.close_connection = True
+            with socket.create_connection(("127.0.0.1", gateway_port), timeout=10) as upstream:
+                headers = "".join(f"{key}: {value}\r\n" for key, value in self.headers.items())
+                upstream.sendall(f"{self.command} {self.path} HTTP/1.1\r\n{headers}\r\n".encode("latin-1"))
+                upstream.settimeout(10)
+                while True:
+                    ready, _, _ = select.select([upstream, self.connection], [], [], 0 if self.connection.pending() else 30)
+                    if self.connection.pending() and self.connection not in ready:
+                        ready.append(self.connection)
+                    if not ready: return
+                    for source in ready:
+                        chunk = source.recv(65536)
+                        if not chunk: return
+                        (self.connection if source is upstream else upstream).sendall(chunk)
         def forward(self):
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                try: self.tunnel_websocket()
+                except OSError: pass
+                return
             headers = {key: value for key, value in self.headers.items() if key.lower() not in {"host", "connection", "content-length", "accept-encoding"}}
             body = self.rfile.read(int(self.headers.get("content-length", "0")))
             try:

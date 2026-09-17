@@ -23,6 +23,8 @@ Phone 真实网关联测：先在 Phone 目录执行 `node tests/build-config-di
 
 实体 Phone 可用 `config_distribution_mobile_fixture.py --live --root <new-isolated-folder> --hostname <actual-LAN-IP> --minutes 120 serve` 常驻启动同源码三 Engine。`status` 输出去敏 readiness 与预算；`ticket --node source` 通过生产 API 签发标准 HTTPS 票据，仅写 fixture 内的 private 文件；`stop/start --node target2` 可注入离线/恢复，`edit --node target1 --tokens 999` 通过目标本地 Broker 注入撤回冲突。脚本不操作 adb、不安装 APK、不读取真实用户状态。
 
+同一 fixture 到期后用 `resume` 保留 CA、端口及隔离状态续开（仍最多 120 分钟）。HTTPS 入口对 WebSocket Upgrade 做透明字节转发，握手、鉴权、子协议、帧和关闭码仍由真实 gateway 处理，可用于实际 Phone 原生执行器的 WSS hello 验收；隧道或匿名拒绝检查通过本身不代表原生应用闭环通过。
+
 物理验收只在独立验证包对所选 LAN IP 信任生成的公开 CA，正式包不带测试 CA。私钥不离开 fixture；证书/主机名验证保持开启，并分别验证缺少该 CA 和错误主机名拒绝。`public.json` 只包含端口、origin 与公开 CA 路径/指纹；配对票据不要放进聊天、日志或仓库。由设备协调者独占安装/UI操作，保留原正式应用。
 
 ## 受控系统操作

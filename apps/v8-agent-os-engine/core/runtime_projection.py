@@ -1079,6 +1079,7 @@ def _canvas_graph_run_state_metadata(
             "canvas_operation_id",
             "run_id",
             "retry_of_graph_run_id",
+            "context_epoch",
         )
     ):
         return None
@@ -1126,6 +1127,11 @@ def _canvas_graph_run_state_metadata(
         "runId": run_id,
         "status": status,
     }
+    if "contextEpoch" in payload:
+        epoch = payload["contextEpoch"]
+        if type(epoch) is not int or epoch < 0:
+            return None
+        metadata["contextEpoch"] = epoch
     if transition:
         metadata["transition"] = transition
     if retry_of_graph_run_id:

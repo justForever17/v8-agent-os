@@ -38,16 +38,32 @@ _LIST_FIELDS = {
     "artifactIds",
     "artifactProof",
     "artifacts",
+    "assets",
     "assetIds",
     "audioAssetIds",
     "detailRefs",
     "imageUrls",
+    "inputAssets",
+    "characterBibleIds",
+    "keyframeIds",
+    "identityAnchors",
+    "visualAnchors",
+    "voiceAnchors",
+    "wardrobe",
+    "props",
+    "negativeConstraints",
+    "cameraLanguage",
+    "compositionStructure",
     "layers",
     "media",
     "musicAssetIds",
     "proof",
     "questions",
     "referenceAssetIds",
+    "referenceAudioUrls",
+    "referenceImageUrls",
+    "referenceMedia",
+    "referenceVideoUrls",
     "references",
     "requiredKinds",
     "sampleArtifactRefs",
@@ -63,6 +79,7 @@ _BOOL_FIELDS = {
     "execute",
     "generateAudio",
     "promptOptimizer",
+    "promptExtend",
     "fastPretreatment",
     "isInstrumental",
     "preserveNativeAudio",
@@ -175,6 +192,7 @@ _GENERATION_FIELDS = frozenset(
         "previewText",
         "prompt",
         "promptOptimizer",
+        "promptExtend",
         "probeFingerprint",
         "fastPretreatment",
         "pronunciationDict",
@@ -184,8 +202,12 @@ _GENERATION_FIELDS = frozenset(
         "qualityProfile",
         "referenceAssetIds",
         "referenceAudioUrl",
+        "referenceAudioUrls",
         "referenceImageUrl",
+        "referenceImageUrls",
+        "referenceMedia",
         "referenceVideoUrl",
+        "referenceVideoUrls",
         "resolution",
         "resultFormat",
         "sampleRate",
@@ -209,7 +231,10 @@ _GENERATION_FIELDS = frozenset(
         "workspaceAssetId",
     }
 )
-_RECIPE_FIELDS = _GENERATION_FIELDS | frozenset({"intent", "ratio", "size"})
+_RECIPE_FIELDS = _GENERATION_FIELDS | frozenset({
+    "intent", "ratio", "size", "assets", "inputAssets", "assetIds",
+    "characterBibleIds", "keyframeIds", "negativeConstraints", "cameraLanguage", "compositionStructure",
+})
 _WORK_ORDER_FIELDS = _RECIPE_FIELDS | frozenset(
     {"assetRole", "referenceAssets", "requestingRuntime", "workOrderKind"}
 )
@@ -264,7 +289,9 @@ _ASSET_REGISTER_FIELDS = frozenset(
     {"artifactId", "metadata", "modality", "name", "role", "sourcePath", "title", "type"}
 )
 _CHARACTER_FIELDS = frozenset(
-    {"artifactIds", "characterBibleId", "details", "name", "referenceAssetIds", "title"}
+    {"artifactIds", "characterBibleId", "details", "name", "referenceAssetIds", "title",
+     "description", "identityAnchors", "visualAnchors", "voiceAnchors", "wardrobe",
+     "props", "negativeConstraints", "sourceRefs", "assetIds"}
 )
 _KEYFRAME_FIELDS = frozenset(
     {"artifactId", "characterBibleId", "name", "recipeId", "role", "sourcePath", "title"}
@@ -1337,6 +1364,13 @@ async def creative_media_jobs(
     indices. Poll with action='get'
     and obtain deliverable artifact refs with action='artifacts'; provider raw JSON is never the deliverable.
     For image.edit, pass sourceId and optional maskSourceId from the current session source ledger; never pass paths.
+    Video references use ordered referenceImageUrls/referenceVideoUrls/referenceAudioUrls; keep each prompt label aligned
+    with its actual media slot. Wan uses Image 1 / Video 1 (capitalized, with a space, counted separately in media order);
+    do not reuse Seedance @image1 / @video1 syntax for Wan. For DashScope reference-to-video, referenceMedia can instead contain provider-native
+    {type: reference_image|reference_video|first_frame, url, reference_voice?: audio URL} items to bind voices to specific
+    subjects. The legacy global referenceAudioUrl applies the same voice to all visual references; use referenceMedia
+    for distinct subject voices. Do not mix referenceMedia with other reference fields. negativePrompt is retained as a native field where
+    supported or as explicit prompt exclusions; promptExtend=false disables supported provider prompt rewriting.
     An authorized Supervisor may call this directly; no Director is required. Use the exact configured modelRef to preserve
     the chosen provider/model. A queued/running job is not a finished image; retain errors and validate returned artifacts.
     """

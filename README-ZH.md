@@ -84,15 +84,28 @@ Phone 是唯一远程交互入口。它用于查看正在运行的会话、接�
 
 在桌面控制台生成配对二维码，或使用 `v8os config phone pair --base-url https://你的网关地址` 生成配对信息，在 Phone 扫码或粘贴即可。配对和会话由 Engine 提供，关闭控制台后仍可使用。Phone 会保存各服务器的连接档案，网络暂时中断时保留草稿和已保存连接。
 
+控制台顶栏提供「连接手机」按钮。先配置手机可达的 HTTPS Phone 网关；手机上的 `127.0.0.1` 指向手机自身。弹窗使用 Engine 中配置的 Phone 地址，缺少配置时可直接进入设置。地址格式有效仍需网络路由和可信 TLS 证书正常。
+
+### Linux Server 与终端界面
+
+9.17.1发布流程增加独立Linux x64 Server归档与可通过npm安装的TUI包，实际下载以已发布Release资产为准。Server需要Python3.11和Node.js20+，交互TUI需要Node.js22+。先按 [Server安装说明](./scripts/server/README.md) 启动常驻Engine服务，再安装下载的TUI包：
+
+```sh
+npm install -g ./V8OS-TUI-2026.09.17.1.tgz
+v8os-tui
+```
+
+当前尚未上架公开npm registry。退出TUI后，Engine服务、Phone与已授权组网连接继续运行。Server排除桌面自动化；媒体、语音、文档和向量增强按需安装。
+
 ## 当前状态
 
 | 产品形态 | 状态 | 说明 |
 | --- | --- | --- |
 | 桌面版 | Preview | 已提供 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 unsigned preview；支持自动检测更新与托盘手动检查，签名、自动下载安装和稳定版仍在后续阶段。 |
 | Phone | Preview | Android APK 是必需发布目标；iOS 目标为 16.4 及以上，但在非交互签名配置完成前保持禁用。 |
-| TUI / server 独立发行 | 尚未发布 | 已有本机 CLI 和 Engine API，尚未提供独立终端或服务器安装包。 |
-| 轻量远程执行器 | 规划中 | 尚未提供面向低配或边缘设备的独立执行器发行。 |
-| 跨设备配置分发 | 规划中 | Phone 已能保存多个服务器档案，一键跨设备分发配置尚未上线。 |
+| TUI / Server | 9.17.1 Preview | 独立Linux x64 Server与npm TUI归档；下载以已发布Release为准，Server暂不支持ARM/musl。 |
+| 轻量远程执行器 | 实验功能 | Android Phone内置默认关闭、限定应用的执行器和本地Stop；ESP32-C3提供固件源码/构建说明，实体硬件验收待完成。见 [能力边界](./apps/v8-agent-os-engine/runtimes/network_supervisor/executors/README.md)。 |
+| 跨设备配置分发 | Preview | Phone向已信任从设备准备、确认和分发模型策略/角色，逐设备回执与撤回；不传凭据、grant或工作区路径。 |
 
 ## 安全与边界
 

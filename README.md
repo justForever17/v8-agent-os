@@ -84,15 +84,28 @@ This rebuilds Admin, Web, and the native sandbox helper, stops preview processes
 
 Generate a pairing code in the desktop control center or with `v8os config phone pair --base-url https://your-gateway.example`, then scan or paste it in Phone. Engine owns pairing and sessions, so the control center can stay closed. Phone keeps a profile for each server and preserves drafts and saved connections during temporary network failures.
 
+Use **Connect Phone** in the control-center top bar. Before pairing, configure an HTTPS Phone gateway reachable from the phone; `127.0.0.1` on the phone refers to the phone itself. The dialog uses the Engine's configured Phone address and links to settings when it is missing. A valid address still needs working network routing and a trusted TLS certificate.
+
+### Linux Server and terminal UI
+
+The 9.17.1 release flow adds a Linux x64 Server archive and a separate npm-installable TUI tarball. Check the published release assets before downloading. Server needs Python 3.11 and Node.js 20+; the interactive TUI needs Node.js 22+. Follow the [Server installation guide](./scripts/server/README.md) to install and start the persistent Engine service, then install the downloaded TUI package:
+
+```sh
+npm install -g ./V8OS-TUI-2026.09.17.1.tgz
+v8os-tui
+```
+
+No public npm registry installation is enabled yet. Closing TUI leaves the Engine service, Phone and trusted peer connections running. Server excludes desktop automation and installs media, voice, document and vector capabilities only when requested.
+
 ## Current Status
 
 | Product | Status | Notes |
 | --- | --- | --- |
 | Desktop | Preview | Windows x64/ARM64, macOS Intel/Apple Silicon, and Linux x64/arm64 unsigned preview builds are available. Automatic update detection and a manual tray check are included; signing, automatic installation, and stable releases are still future work. |
 | Phone | Preview | Android APK is the required release target. iOS targets 16.4 and later but remains disabled until non-interactive signing is configured. |
-| TUI / server distribution | Not released | The local CLI and Engine APIs are available; a standalone terminal/server package is not yet provided. |
-| Lightweight remote executor | Planned | No standalone executor release is available for constrained or edge devices. |
-| Cross-device configuration distribution | Planned | Saved Phone server profiles are available; one-click configuration distribution between devices is not. |
+| TUI / Server | 9.17.1 Preview | Independent Linux x64 Server and npm TUI archives; actual availability follows the published release assets. Server ARM/musl are not supported yet. |
+| Lightweight remote executor | Experimental | Android Phone includes a locally enabled, app-scoped executor with Stop controls. ESP32-C3 source and build instructions are available; physical hardware acceptance remains pending. See the [executor boundaries](./apps/v8-agent-os-engine/runtimes/network_supervisor/executors/README.md). |
+| Cross-device configuration distribution | Preview | Phone prepares, confirms and tracks model policy/role distribution to trusted peers, with per-device results and rollback. Credentials, grants and workspace paths are excluded. |
 
 ## Safety and Boundaries
 

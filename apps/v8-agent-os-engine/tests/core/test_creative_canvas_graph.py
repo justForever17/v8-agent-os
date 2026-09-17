@@ -768,6 +768,25 @@ def test_execution_updates_persistent_result_slot_and_keeps_versions(canvas_serv
     assert runtime.requests[0]["workspaceId"] == "workspace-a"
 
 
+@pytest.mark.parametrize("epoch", [0, 7, -1, True, "7", 7.0, None])
+def test_graph_run_timeline_preserves_only_valid_canonical_context_epoch(epoch) -> None:
+    payload = {
+        "schema": "v8.creative_canvas_graph_run_state.v1", "sessionId": "session-a",
+        "workspaceId": "workspace-a", "graphId": "graph-a", "graphRunId": "run-a",
+        "canvasOperationId": "operation-a", "runId": None, "status": "completed", "contextEpoch": epoch,
+    }
+    timeline = project_runtime_timeline_from_events([{
+        "id": "event-a", "session_id": "session-a", "run_id": None,
+        "topic": "canvas.graph.run.state", "payload": payload,
+    }])
+    if type(epoch) is int and epoch >= 0:
+        assert len(timeline) == 1
+        assert timeline[0]["metadata"]["contextEpoch"] == epoch
+        assert timeline[0]["metadata"] == payload
+    else:
+        assert timeline == []
+
+
 def test_execution_emits_only_canonical_graph_run_state_changes(canvas_service) -> None:
     service, database = canvas_service
     saved = service.save_graph(
@@ -799,6 +818,7 @@ def test_execution_emits_only_canonical_graph_run_state_changes(canvas_service) 
     } for event in events)
     assert events[0]["payload"] == {
         "schema": "v8.creative_canvas_graph_run_state.v1",
+        "contextEpoch": 0,
         "sessionId": "session-a",
         "workspaceId": "workspace-a",
         "graphId": "canvas-graph-test",

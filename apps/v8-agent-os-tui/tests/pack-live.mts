@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { packEntry, packCommands, previewPack } from '../src/feature-packs.js';
+if (!process.argv.includes('--live') || !process.env.V8_AGENT_OS_HOME) throw new Error('--live and isolated state required');
+const bundle = process.argv[process.argv.indexOf('--bundle') + 1];
+const entry = await packEntry(bundle);
+const plan = await previewPack(entry, 'cloud_voice');
+assert.equal(plan.status, 'dry_run'); assert.equal(plan.packId, 'cloud_voice');
+assert.ok(plan.commandSummary); assert.ok(plan.targetDir.startsWith(entry.stateRoot));
+const commands = packCommands(entry, 'cloud_voice');
+assert.ok(commands.install.includes(entry.launcher)); assert.ok(commands.install.includes(entry.stateRoot));
+console.log(JSON.stringify({ actualServerCliDryRun: true, exactStateRoot: true, exactLauncher: true, noInstallStarted: true }));

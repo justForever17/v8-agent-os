@@ -61,6 +61,11 @@ export type CanvasEdge = {
     role: "data" | "relation";
     order: number;
     note: string;
+    entityId?: string;
+    bindingKey?: string;
+    semanticRole?: string;
+    purpose?: string;
+    resourceDigest?: string;
 };
 
 export type CanvasViewport = { x: number; y: number; scale: number };
@@ -151,7 +156,7 @@ export type CanvasActionDefinition = {
     inputs: CanvasActionPort[];
     output: { portId: string; slot: string; mediaTypes: CreativeCanvasMediaType[] };
     requiresPrompt: boolean;
-    parameterEditor?: "frame_pick" | "time_range" | "psd_composition" | "psd_layers";
+    parameterEditor?: "frame_pick" | "time_range" | "psd_composition" | "psd_layers" | "proxy_scene";
     networkRequired?: boolean;
     mayIncurCost?: boolean;
     providerLabel?: string;

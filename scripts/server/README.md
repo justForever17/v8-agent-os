@@ -2,7 +2,7 @@
 
 V8OS Server runs Engine and the CLI on Linux without Admin, Web, Electron, a desktop session or local audio devices. Supervisor, subagents, research, engineering, text memory, scheduling, plugins, headless Chromium, Phone pairing and trusted Supervisor networking remain available. Admin can be installed separately as an optional configuration client.
 
-The initial package targets glibc Linux x64 with Python 3.11 and Node.js 20 or newer. Ubuntu 22.04 and 24.04 are the validation targets; ARM and musl are not supported by this package. The archive contains source and a hashed production dependency lock. Python packages and the pinned Chromium binary download during installation; this is not an offline bundle. No TUI renderer is included yet.
+The initial package targets glibc Linux x64 with Python 3.11 and Node.js 20 or newer. Ubuntu 22.04 and 24.04 are the validation targets; ARM and musl are not supported by this package. The archive contains source and a hashed production dependency lock. Python packages and the pinned Chromium binary download during installation; this is not an offline bundle. The TUI renderer is distributed separately as a versioned npm tarball and requires Node.js 22 or newer.
 
 ## Install
 
@@ -31,6 +31,8 @@ An administrator must enable lingering for this account (`loginctl enable-linger
 ```
 
 Engine listens on loopback. Phone remote access uses the existing Engine client gateway and its configured transport; do not publish the bare Engine control port. Use `./v8os config phone` for owner initialization, pairing tickets, device listing and revocation, and `./v8os config network` for trusted peer configuration. Configuration changes use Engine transactions. See `./v8os --help` for current command arguments.
+
+For interactive chat and configuration, install the matching `V8OS-TUI-<release-version>.tgz` asset with `npm install -g ./V8OS-TUI-2026.09.17.1.tgz`, then run `v8os-tui` under the same service account and state root. Public npm registry installation is not enabled yet. The TUI attaches to the existing Engine; it does not start another Engine, own credentials, or stop the service when the terminal closes.
 
 ## Manage and upgrade
 

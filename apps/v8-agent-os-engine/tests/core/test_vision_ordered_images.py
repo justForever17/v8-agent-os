@@ -18,6 +18,13 @@ from core.tools import vision_image_inputs as image_inputs
 from core.tools import vision_media_analyzer as vision
 
 
+@pytest.fixture(autouse=True)
+def media_install_profile(monkeypatch):
+    # General image decoding belongs to the media-capable profile. Device-only
+    # Server behavior is exercised separately in test_executor_media.
+    monkeypatch.setenv("ENGINE_INSTALL_PROFILE", "desktop")
+
+
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
     root = tmp_path / "workspace"

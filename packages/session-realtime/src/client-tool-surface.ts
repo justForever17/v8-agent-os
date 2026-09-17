@@ -209,11 +209,14 @@ function resolveStatus(
     resultStatus?: string,
 ): ClientToolSurfaceStatus {
     const authoritativeStatus = normalizeSessionToolResultStatus(resultStatus);
-    if (authoritativeStatus && authoritativeStatus !== "unknown") {
-        return authoritativeStatus;
+    // A receipt explicitly marked unknown is not successful merely because a
+    // tool_result event arrived. Fall back only when no typed status was sent.
+    if (typeof resultStatus === "string" && resultStatus.trim()) {
+        return authoritativeStatus || "unknown";
     }
     const normalizedState = String(state || "").toLowerCase();
     const statusText = String(record?.status || record?.state || "").toLowerCase();
+    if (statusText === "unknown" || statusText === "unknown_outcome") return "unknown";
     const combined = `${statusText}\n${resultText.slice(0, 2000)}`.toLowerCase();
     if (/(timed_out|timeout|deadline_exceeded|超时)/.test(combined)) {
         return "timed_out";

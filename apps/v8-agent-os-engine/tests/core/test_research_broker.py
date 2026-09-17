@@ -275,7 +275,8 @@ def test_web_research_architect_is_global_default_subagent():
 
     assert research_architect.globalExposure is True
     assert research_architect.capabilitySnapshot["specialistFamily"] == "research"
-    assert "Research orchestration, quality policy, stage schemas" in research_architect.system_prompt
+    assert "evidence-based research" in research_architect.system_prompt
+    assert "Research Runtime" not in research_architect.system_prompt
     assert "Query-plan stage" not in research_architect.system_prompt
     assert "hard rejection floor" not in research_architect.system_prompt
     assert "3000" not in research_architect.system_prompt

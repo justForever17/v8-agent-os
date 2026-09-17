@@ -1532,6 +1532,9 @@ class RuntimeEpisodeRunner:
                 handoff = await self._await_episode_executor(episode, self._execute_computer_use(episode))
             elif kind == "rpa":
                 handoff = await self._await_episode_executor(episode, self._execute_rpa(episode))
+            elif kind == "device_action":
+                from runtimes.network_supervisor.executors.episode import execute_device_episode
+                handoff = await self._await_episode_executor(episode, execute_device_episode(episode))
             elif kind == "delegation":
                 handoff = await self._await_episode_executor(episode, self._execute_delegation(episode))
             else:
@@ -8053,7 +8056,15 @@ class RuntimeEpisodeRunner:
 
     def _build_agent_nodes_map(self, *, force_refresh: bool = False) -> dict[str, Any]:
         if self._agent_nodes_map_cache is not None and not force_refresh:
-            return self._agent_nodes_map_cache
+            from core.agents import build_subagent_registry_snapshot
+            from core.storage import storage
+
+            current = build_subagent_registry_snapshot(
+                storage.get_all_agents(),
+                (storage.get_supervisor_config() or {}).get("specialistRegistry") or {},
+            )
+            if current["hash"] == self._agent_nodes_map_snapshot_hash:
+                return self._agent_nodes_map_cache
         from graph.compat import sanitize_message_chain as compat_sanitize_message_chain
         from graph.compat import sanitize_response_tool_calls as compat_sanitize_response_tool_calls
         from graph.supervisor_builder import build_supervisor_runtime_bundle

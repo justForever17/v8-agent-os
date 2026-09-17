@@ -95,6 +95,7 @@ Usage:
   v8os service install|upgrade --bundle <server-package-root> [--key-file <absolute-path>] [--port 9530] [--json]
   v8os service start|stop|restart|status|rollback|uninstall [--json]
   v8os chat "message" [--session id] [--workspace path] [--safety-approval manual|reduced|minimal] [--interactive]
+  v8os tui [--session id] [--screen-reader] [--no-color]
   v8os acp
   v8os sessions list|show|turns|open|resume [--json]
   v8os inbox list|approve|reject|answer [--json]
@@ -369,6 +370,7 @@ export async function main(argv) {
     help();
     return;
   }
+  if (command === "tui") return (await import("./tui_command.mjs")).commandTui(args);
   if (args.includes("-h") || args.includes("--help")) {
     help();
     return;

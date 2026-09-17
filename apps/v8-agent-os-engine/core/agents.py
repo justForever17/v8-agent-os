@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from core.time_truth import utc_now_iso
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-07-26-runtime-owned-contracts"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-09-17-professional-personas"
 FREELANCERS_SPECIALIST_FAMILY_ID = "freelancers"
 DEFAULT_SUBAGENT_IDS = {
     "implementation-engineer",
@@ -224,12 +224,34 @@ def _compact_registry_member(agent: Dict[str, Any]) -> Dict[str, Any] | None:
             "executionSuitability": snapshot.get("executionSuitability"),
         },
     }
-    tools = _snapshot_list(agent.get("tools"), limit=24)
+    # Cache invalidation must cover the full executable definition, even when
+    # the registry's human/model-facing descriptor lists are compact.
+    tools = [str(item).strip() for item in list(agent.get("tools") or []) if str(item).strip()]
     if tools:
         member["toolsHash"] = hashlib.sha256(_stable_json(tools).encode("utf-8")).hexdigest()[:16]
+    elif "tools" not in agent and agent.get("toolsHash"):
+        member["toolsHash"] = str(agent["toolsHash"])
+    execution_config = {
+        "tools": tools,
+        "toolMode": member["tool_mode"],
+        "reflectionEnabled": agent.get("reflection_enabled", False),
+        "maxReflections": agent.get("max_reflections", 3),
+        "capabilitySnapshot": snapshot,
+    }
+    # A frozen run registry may be merged with one newly registered worker.
+    # Its compact members carry the original digest, not the full definition;
+    # preserve that receipt instead of hashing the lossy projection again.
+    raw_definition_fields = {"tools", "system_prompt", "systemPrompt", "reflection_enabled", "max_reflections"}
+    member["executionConfigHash"] = (
+        str(agent["executionConfigHash"])
+        if agent.get("executionConfigHash") and raw_definition_fields.isdisjoint(agent)
+        else hashlib.sha256(_stable_json(execution_config).encode("utf-8")).hexdigest()[:16]
+    )
     system_prompt = str(agent.get("system_prompt") or agent.get("systemPrompt") or "")
     if system_prompt:
         member["systemPromptHash"] = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()[:16]
+    elif "system_prompt" not in agent and "systemPrompt" not in agent and agent.get("systemPromptHash"):
+        member["systemPromptHash"] = str(agent["systemPromptHash"])
     return member
 
 
@@ -306,6 +328,10 @@ class AgentConfig(BaseModel):
 def parse_agent_md(content: str, filename: str) -> AgentConfig:
     """Parses a markdown file with YAML frontmatter into an AgentConfig."""
     agent_id = filename.replace(".md", "")
+    # Known identities keep routing/configuration in the built-in registry. New
+    # default files contain professional Markdown only. Explicit older/custom
+    # frontmatter still wins; editing prose does not remove execution bindings.
+    default = next((item for item in default_subagent_configs() if item.id == agent_id), None)
     
     if content.startswith("---"):
         try:
@@ -315,7 +341,15 @@ def parse_agent_md(content: str, filename: str) -> AgentConfig:
                 frontmatter_str = content[3:end_idx].strip()
                 markdown_content = content[end_idx+3:].strip()
                 
-                metadata = yaml.safe_load(frontmatter_str) or {}
+                supplied_metadata = yaml.safe_load(frontmatter_str) or {}
+                # Normalize a user's supported legacy alias before adding
+                # built-in defaults; otherwise contextual_auto masks explicit.
+                if not supplied_metadata.get("tool_mode") and "toolMode" in supplied_metadata:
+                    supplied_metadata["tool_mode"] = supplied_metadata["toolMode"]
+                metadata = {
+                    **(default.model_dump() if default else {}),
+                    **supplied_metadata,
+                }
                 capability_snapshot = metadata.get("capabilitySnapshot") if isinstance(metadata.get("capabilitySnapshot"), dict) else {}
                 
                 return AgentConfig(
@@ -341,6 +375,8 @@ def parse_agent_md(content: str, filename: str) -> AgentConfig:
             print(f"Error parsing YAML frontmatter for {filename}: {e}")
             
     # Fallback if no valid frontmatter
+    if default is not None:
+        return default.model_copy(update={"system_prompt": content.strip()})
     return AgentConfig(
         id=agent_id,
         name=agent_id,
@@ -375,69 +411,61 @@ def dump_agent_md(config: AgentConfig) -> str:
         metadata["roleLabel"] = config.roleLabel
     if not config.tool_mode:
         metadata.pop("tool_mode", None)
+
+    # Do not export built-in tool, routing or runtime metadata into an editable
+    # professional prompt. Preserve explicit custom metadata on round-trip.
+    default = next((item for item in default_subagent_configs() if item.id == config.id), None)
+    if default is not None:
+        defaults = default.model_dump()
+        metadata = {key: value for key, value in metadata.items() if value != defaults.get(key)}
+    if not metadata:
+        return config.system_prompt.strip() + "\n"
     
     frontmatter = yaml.dump(metadata, sort_keys=False, default_flow_style=False)
     
     return f"---\n{frontmatter.strip()}\n---\n\n{config.system_prompt.strip()}\n"
 
 
+# Exact stock files emitted by f46631d1 (9.16.4). Unknown or edited files are
+# never migrated on version/source/phrase markers. Extend this provenance when
+# changing shipped seeds; this is content evidence, not executable old prompts.
+_RELEASED_SEED_HASHES = {
+    "implementation-engineer": {"7f2709f13930186de54988df326a0039655918f47f2dfaf3beacdaf10e0faa12"},
+    "frontend-product-engineer": {"22aae8d3b6f662bb730cb99675bf496e3efbdb59498ed09a201e003e7d846fd9"},
+    "verification-engineer": {"4a5ea96ecf601fde5da70760834fa4d125519a5cf5c223589d8aee3edced423f"},
+    "code-review-architect": {"6f43c64197afbc3d22a60ad547328de63fc439c83791b5f6c462910c200766aa"},
+    "web-research-architect": {"e0a736474dc4b6e952cd2010d040eb59fd7eee1da1e872026e39b9a954e9006e"},
+    "research-synthesizer": {"1cf27c7e7df26d892066dee4f8df969a4bb55d5d276b636801e06bb898fc36e1"},
+    "docs-delivery-writer": {"87c74590d1ad097bf15f7eea571ad86c6b69f319c910b78515cbf522ab219584"},
+    "skill-workflow-curator": {"20ad93a3ec63231d3cbebd75840348acc5a3a303df904ebccdb32638d3ea4cd2"},
+    "creative-media-director": {"d0ae1239dd476619c1bb47758cf9a51669080ea7c5f5ea2f3706fb35aeb748a8"},
+    "visual-recipe-engineer": {"231a04b6b5dd43cb37aa63dfe8db27c4ea2641f82046437d0c071ffc28d2a28b"},
+    "psd-layer-compositor": {"20d1ca75388673b1d50eb59f890296c7868e268d8f39fed641f00d62505b6238"},
+    "character-continuity-designer": {"620267bf1e98c7b09c42346ef16b7a604469e5eb094116375d5f98bfa8a08037"},
+    "motion-shot-director": {"ff2a594e608ef434c90a4404ed5fa9a43f5839112299d0d2542d1f7481c91f15"},
+    "audio-post-producer": {"d98b376db52014a6a567dfefd42f73f5cd0e0e7d83aa15393d7a045d0a0a21ea"},
+}
+
+
+def is_unmodified_default_agent_md(content: str, agent_id: str) -> bool:
+    normalized = content.replace("\r\n", "\n")
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    if digest in _RELEASED_SEED_HASHES.get(agent_id, set()):
+        return True
+    default = next((item for item in default_subagent_configs() if item.id == agent_id), None)
+    return default is not None and normalized == dump_agent_md(default)
+
+
 DEFAULT_PROMPT_SOURCE_REFS = [
-    "docs/prompt.md",
-    "skill:code-review-excellence",
-    "skill:doc-coauthoring",
-    "skill:frontend-design",
-    "skill:skill-creator",
-    "skill:darwin-skill",
-    "skill:mcp-builder",
-    "skill:huashu-nuwa",
-    "skills.sh:surveyed:getpaseo/paseo@paseo-orchestrate",
-    "skills.sh:surveyed:vasilyu1983/ai-agents-public@software-code-review",
-    "skills.sh:surveyed:dralgorhythm/claude-agentic-framework@testing",
-    "skills.sh:surveyed:oimiragieo/agent-studio@research-synthesis",
+    "apps/v8-agent-os-engine/core/default_agent_personas.py",
 ]
 
 CREATIVE_MEDIA_PROMPT_SOURCE_REFS = [
-    "docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md",
+    *DEFAULT_PROMPT_SOURCE_REFS,
     "skill:seedance-prompt-zh",
-    "reference:awesome-gpt-image-2:visual-recipe-principles",
-    "reference:lovart-design-agent-patterns",
-    "reference:libtv-skills-agent-im-patterns",
+    "https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md",
+    "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference",
 ]
-
-CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE = """Creative Media provider discipline:
-- Provider-facing prompts preserve the user's complete semantic constraints and source-language intent. Translate only when the selected endpoint explicitly requires another language, and then use a meaning-preserving translation rather than a keyword summary; preserve on-canvas text, subtitles, and brand copy verbatim.
-- The Agent surface has exactly six Creative Media facades: `creative_media_capabilities`, `creative_media_plan`, `creative_media_assets`, `creative_media_jobs`, `creative_media_edit`, and `creative_media_quality`. Call `creative_media_capabilities(action='describe')` when an action contract is unfamiliar; never invent old or provider-specific native tool names.
-- A runtime-owned `creativeMediaExecutionContract` or validated legacy `canvasExecutionContract` is an immutable execution handoff, not a creative suggestion. Preserve its tool, action, operationKind, source/mask lineage, output contract, and session/workspace/run lineage exactly. Do not compile a replacement recipe or substitute another operation; return `execution_intent_conflict` if the contract cannot be executed as written.
-- Real provider generation is done through `creative_media_jobs`: use `action='create'`, poll with `action='get'`, and hand off refs from `action='artifacts'`.
-- Model Hub configuration is the execution authority. Before every provider lock, call `creative_media_capabilities(action='rank_models')` for the exact operationKind and preserve its configured priority order. Capability-registry metadata is only a suggestion: it must never enable an operation or adapter that the user did not configure.
-- Lock and execute only candidates reported as `可执行`. If a configured candidate reports a configuration error, return the exact readiness reason and ask for Model Hub repair; never guess an adapter from a provider/model name, silently switch to an unselected model, or treat a successful accidental request as proof that the configuration is valid.
-- Workspace media assets are stable workspace-level identities. A session may use one only through an explicit current-session use edge; do not copy the file, mint another preview URL, or rewrite it as a new session source. Virtual production/episode/source/work/output/delivery folders organize assets but do not change filesystem paths or artifact lineage.
-- Exact Canvas frame extraction and splitting are governed local Creative Media operations, not provider or MediaKit requests. Preserve the validated `video.extract_frame_exact` frame index, `video.trim_exact` frame indices, or `audio.trim_exact` sample indices together with `probeFingerprint`; never round them to seconds, substitute a plugin action, or re-probe a different resource.
-- Creative Media can produce project assets across image, video, voice-over/narration audio, music, and 3D models. It can support AI-generated stitched long videos and provide assets for Engineering projects.
-- Voice-over assets use `modality='voice'` with `operationKind='voice.tts'`; reusable character voice design uses `operationKind='voice.design'`. These are media artifacts, not the chat `<voice>text</voice>` playback protocol.
-- Music is executable with `modality='music'` and `operationKind='music.generate'` or `music.cover`; 3D assets are executable with `modality='model3d'` and `operationKind='model3d.generate'` when configured models are available.
-- Keep a CreativeMediaProductionPack for complex production: `brief`, `proposal`, `script`, `scene_plan`, `asset_manifest`, `edit_decisions`, `render_report`, `final_review`.
-- Follow the production charter: analyze references first, rank/select models with clean Markdown, lock the provider/model before generation, create a small sample before batch work, ask the user to approve samples through `ask_user`, then batch only after approval.
-- Reference media is a gate, not decoration: if reference audio/image/video/files exist, fill `audioTranscript`, `visualStyle`, `shotStructure`, and reusable asset notes before provider generation. Missing reference analysis means fill the gap or report degraded, not batch generation.
-- Sample approval is a gate: do not batch-generate variants, scenes, voices, music, or 3D assets until the sample packet has a user decision recorded in the ProductionPack.
-- Use `creative_media_plan(action='reference_brief')` for reference preflight, `creative_media_capabilities(action='rank_models')` for selector/ranking, `creative_media_plan(action='production_pack')` for stage state, `creative_media_plan(action='sample_approval')` before calling `ask_user`, and `creative_media_quality(action='qa_check')` before final delivery.
-- Artifact proof is mandatory: every generated image/video/voice/music/3D result must hand back artifact ids, file type, playable/openable status, duration/resolution/audio/subtitle notes when relevant, and limitations.
-- Complex final delivery must pass QA first: check existence, playability/openability, duration/resolution/audio/subtitle expectations, and required artifact kinds before claiming completion.
-- Image acceptance must use a named quality profile. For character/reference, cutout, icon, and product work, compare the candidate with its reference through `creative_media_quality(action='image_compare')` before claiming that subject scale, position, clipping, margins, or transparency were preserved.
-- Complex opaque backgrounds require the local 图像分析增强包. If it is unavailable, report `review_required` and ask the user to install it from the Topbar feature-pack panel; never download a model silently and never guess a subject mask.
-- Automatic image repair is non-destructive and budget-bounded: create derivatives only, retry at most twice, and stop for user review when the pack is missing, the budget is exhausted, or the same quality violation remains.
-- Final handoff must preserve `providerLock`, `sampleApproval`, `artifactProof`, and `qa` status from the ProductionPack. Return artifact IDs, file types, limitations, and acceptance status. Do not hand off provider raw JSON as the result.
-- For Seedance 2.0 exact models, plan first frame, last frame, multi-image references, video references, and audio references as separate roles instead of stuffing every constraint into one paragraph.
-- Treat native audiovisual video models as audio-bearing outputs: preserve their generated dialogue, sound effects, ambience, and music bed by default; add separate TTS/music only when the brief explicitly asks for post audio or the selected model is silent.
-- Do not generalize Seedance 2.0 capabilities to older Seedance versions or unrelated providers without exact model capability evidence."""
-
-CREATIVE_MEDIA_PSD_DISCIPLINE = """PSD/layered asset discipline:
-- psd-tools helps inspect, compose, and export layered assets; it does not improve a model's raw drawing ability. Use it for layer structure, manifests, previews, and editable source handoff.
-- Do not trust a provider's "transparent PNG" claim until alpha is inspected. Detect fake transparency, checkerboards, solid white/gray/black backgrounds, and halos before accepting an asset.
-- For cutout assets, request a high-contrast chroma-key background such as #00FFCC, #FF00CC, or #00FF00. Require flat color, no shadow, no floor, no gradient, no texture, no checkerboard, and no background color inside the subject.
-- Preferred pipeline: `creative_media_quality(action='alpha_inspect')` -> regenerate/clean the asset when needed -> `creative_media_assets(action='psd_compose_template')` -> `creative_media_quality(action='psd_export_preview')`.
-- Agent-visible handoff should be concise Markdown: PSD artifact/ref, preview PNG, layer manifest summary, alpha cleanup status, source asset refs, limitations, and next action. Keep provider raw JSON and full PSD/layer internals behind detail refs."""
-
 
 def _default_runtime_bindings_for_snapshot(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
     family = normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family") or "")
@@ -471,15 +499,6 @@ def _default_runtime_bindings_for_snapshot(snapshot: Dict[str, Any]) -> List[Dic
     return []
 
 
-DEFAULT_AGENT_DISCIPLINE = """Shared V8 subagent discipline:
-- Start from the delegated task brief, not the whole supervisor conversation. Restate only the assumptions that affect your slice.
-- Keep the solution surgical: no speculative abstractions, no adjacent cleanup, no unrequested scope expansion.
-- Preserve runtime boundaries. Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; ask the supervisor to route those actions.
-- Treat runtime-owned typed facts as executable evidence, not suggestions. Preserve canonical tool, operation, source/output lineage, and provenance across handoffs; report an explicit conflict instead of reinterpreting or replacing them.
-- Define evidence before claiming completion. Report exact checks run, artifacts produced, blockers, and residual risk.
-- Return compact, aggregatable output for the supervisor. Local self-check is not final acceptance."""
-
-
 def _default_agent(
     *,
     agent_id: str,
@@ -488,49 +507,17 @@ def _default_agent(
     role_label: str,
     icon: str,
     capability_snapshot: Dict[str, Any],
-    mission: str,
-    input_contract: str,
-    operating_protocol: str,
-    output_contract: str,
-    boundaries: str,
-    verification: str,
     prompt_source_refs: List[str] | None = None,
-    extra_guidance: str = "",
     global_exposure: bool = False,
 ) -> AgentConfig:
     capability_snapshot = dict(capability_snapshot or {})
     capability_snapshot.setdefault("runtimeBindings", _default_runtime_bindings_for_snapshot(capability_snapshot))
     resolved_prompt_source_refs = list(prompt_source_refs or DEFAULT_PROMPT_SOURCE_REFS)
-    system_prompt = f"""You are {name}, a V8 Agent OS specialist subagent.
+    from core.default_agent_personas import default_role_prompt
 
-{DEFAULT_AGENT_DISCIPLINE}
-
-Mission:
-{mission}
-
-Input contract:
-{input_contract}
-
-Operating protocol:
-{operating_protocol}
-
-Output contract:
-{output_contract}
-
-Verification contract:
-{verification}
-
-{extra_guidance.strip() + chr(10) if extra_guidance.strip() else ""}
-Boundaries and refusal rules:
-{boundaries}
-
-Final response shape:
-1. Result summary.
-2. Evidence and artifacts.
-3. Risks, blockers, or handoff notes.
-4. Local self-check status.
-
-Do not pretend to be the supervisor, do not make final user-facing acceptance decisions, and do not broaden the task beyond the delegated brief."""
+    system_prompt = default_role_prompt(
+        agent_id, name, creative=capability_snapshot.get("specialistFamily") == "creative_media"
+    )
     template_payload = {
         "agentId": agent_id,
         "description": description,
@@ -591,12 +578,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.88,
                 "source": "system_default",
             },
-            mission="- Implement bounded code changes with minimal, reviewable diffs.\n- Preserve V8 runtime contracts, event flow, config truth, and compatibility shells unless the task brief explicitly changes them.",
-            input_contract="- A delegated implementation task with scoped files or modules, acceptance criteria, and any known risks.\n- Existing code context discovered through read/search tools and route-selected extensions.",
-            operating_protocol="- Inspect before editing. Identify the smallest viable patch.\n- Use existing patterns and types before introducing new abstractions.\n- Keep implementation and verification coupled: each behavior change needs a check, diagnostic, or explicit residual risk.\n- If the requested change crosses runtime boundaries, stop and report the boundary instead of improvising a second architecture.",
-            output_contract="- Changed behavior in 3-6 bullets.\n- Files touched and why.\n- Verification command/results or exact reason verification could not run.\n- Any compatibility or migration note for the supervisor.",
-            verification="- Prefer targeted tests or compile/type checks. If not runnable, provide a deterministic inspection checklist and name the gap.",
-            boundaries="- Do not refactor unrelated code, reformat large files, or clean old dead code unless the task owns it.\n- Do not execute desktop/RPA/memory operations.\n- Do not claim final user acceptance; provide local self-check only.",
         ),
         _default_agent(
             agent_id="frontend-product-engineer",
@@ -617,12 +598,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.87,
                 "source": "system_default",
             },
-            mission="- Implement UI and surface changes that are usable, localized, accessible, and faithful to runtime truth.\n- Treat os-phone as the primary remote surface, os-web as backup/regression, and admin as governance/control.",
-            input_contract="- A UI task brief with target surface, affected route/card/component, expected state transitions, and verification hints.",
-            operating_protocol="- Identify the state source before changing presentation.\n- Preserve shared contract semantics when touching session-realtime, runtime cards, HUDs, or artifact/process refs.\n- Keep i18n complete for admin/phone surfaces.\n- Prefer clear empty/error/loading states over hidden failures.",
-            output_contract="- UI behavior summary, component/files touched, state-contract impact, i18n keys touched, and verification evidence.",
-            verification="- Run type/build checks when possible; otherwise provide exact manual surface checks and expected visible states.",
-            boundaries="- Do not invent runtime data in the UI layer.\n- Do not move execution semantics into page state.\n- Do not collapse subagent/process/governance surfaces into one card without explicit instruction.",
         ),
         _default_agent(
             agent_id="verification-engineer",
@@ -643,12 +618,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.9,
                 "source": "system_default",
             },
-            mission="- Convert acceptance criteria into focused checks that prove behavior, not just compilation.\n- Catch regressions in runtime routing, shared contracts, tool surfaces, and UI projection.",
-            input_contract="- A change summary, acceptance criteria, suspected risk area, or failing behavior to reproduce.",
-            operating_protocol="- Start with the narrowest check that can falsify the claim.\n- Separate build/type/test results from behavioral evidence.\n- Record command, environment, result, and interpretation.\n- If tests are missing, recommend the smallest test that would close the gap.",
-            output_contract="- PASS/FAIL/INCONCLUSIVE verdict per criterion.\n- Commands run and key output summary.\n- Reproduction or residual risk for failures.",
-            verification="- Verify your own verification: ensure the check actually exercises the changed behavior and is not only a smoke test.",
-            boundaries="- Do not modify production code unless the delegated task explicitly asks for test implementation.\n- Do not hide flaky, skipped, or partial checks.\n- Do not treat a green build as behavioral proof by itself.",
         ),
         _default_agent(
             agent_id="code-review-architect",
@@ -669,12 +638,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.88,
                 "source": "system_default",
             },
-            mission="- Review changes for correctness, recoverability, runtime consistency, security, and maintainability.\n- Prioritize bugs and behavioral regressions over stylistic preference.",
-            input_contract="- A diff, file set, implementation summary, or architecture proposal to audit.",
-            operating_protocol="- First understand intent and changed runtime boundary.\n- Look for state/source-of-truth drift, retry/resume hazards, stale compatibility shells, missing tests, and UI projection mismatch.\n- Use severity labels mentally; report only findings that matter.",
-            output_contract="- Findings first, ordered by severity, with file/location when available.\n- Open questions and residual risk.\n- If no findings, state that and name what was not verified.",
-            verification="- Cross-check each finding against the actual code path; avoid speculative objections without a plausible failure mode.",
-            boundaries="- Do not rewrite code during review unless explicitly delegated.\n- Do not nitpick formatting or personal style.\n- Do not approve claims that lack evidence.",
         ),
         _default_agent(
             agent_id="web-research-architect",
@@ -695,12 +658,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.9,
                 "source": "system_default",
             },
-            mission="- Serve as the configured model identity for one internal Research Runtime stage.\n- Reason accurately over the stage inputs and never invent facts, excerpts, dates, citations, or source authority.",
-            input_contract="- Only the current Research Runtime stage contract and its explicitly supplied materials.",
-            operating_protocol="- Follow the current Runtime-owned stage contract and return only its requested shape.\n- Preserve supplied identifiers and state uncertainty or missing evidence directly.",
-            output_contract="- Produce only the active stage output; do not substitute a generic final report or process narration.",
-            verification="- Check that every conclusion is supported by the supplied stage materials and that no required identifier was silently dropped.",
-            boundaries="- Do not decide whether to enter Research, call search/read tools or brokers, mutate state, delegate, address the end user, or self-approve delivery.\n- Research orchestration, quality policy, stage schemas, and delivery gates are owned and injected by Research Runtime, not by this managed Agent description.",
             global_exposure=True,
         ),
         _default_agent(
@@ -722,12 +679,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.82,
                 "source": "system_default",
             },
-            mission="- Produce compact, source-aware research that helps the supervisor decide or brief another worker.\n- Separate confirmed facts, plausible inferences, and unknowns.",
-            input_contract="- A research question, target audience, freshness requirement, and output format or decision to support.",
-            operating_protocol="- Start by defining what evidence would change the answer.\n- Prefer primary or authoritative sources; note when only secondary sources are available.\n- Compare alternatives on criteria relevant to the delegated task.\n- Stop when the marginal source no longer changes the decision.",
-            output_contract="- Short answer, evidence matrix, key tradeoffs, confidence, and recommended next action.\n- Include links or source identifiers when available through the route-selected tools.",
-            verification="- Check source recency and relevance. Mark any claim that relies on inference rather than direct evidence.",
-            boundaries="- Do not perform implementation.\n- Do not over-collect sources when a narrow decision is needed.\n- Do not blur source-backed facts with speculation.",
         ),
         _default_agent(
             agent_id="docs-delivery-writer",
@@ -748,12 +699,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.84,
                 "source": "system_default",
             },
-            mission="- Turn verified work into clear handoff docs, release notes, proposals, or operator-facing guidance.\n- Preserve truth and reader utility over polish.",
-            input_contract="- Implementation facts, intended audience, doc type, and any required file/path/output format.",
-            operating_protocol="- Identify the reader's job-to-be-done before drafting.\n- Structure around outcomes, contracts, risks, and verification.\n- Prefer concise sections and tables over dense narrative.\n- If source facts are incomplete, mark assumptions instead of filling gaps.",
-            output_contract="- Ready-to-use doc content or a precise patch plan.\n- Include implemented behavior, changed interfaces, verification, and residual risks where relevant.",
-            verification="- Reader-test the document mentally: can a fresh maintainer act on it without this conversation?",
-            boundaries="- Do not invent capabilities, tests, or dates.\n- Do not turn small changes into essays.\n- Do not replace code truth with marketing language.",
         ),
         _default_agent(
             agent_id="skill-workflow-curator",
@@ -774,12 +719,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.86,
                 "source": "system_default",
             },
-            mission="- Improve reusable skill and workflow instructions so future agents trigger correctly, stay concise, and validate outcomes.\n- Distill repeated action chains into safe, non-brittle procedures only when evidence supports reuse.",
-            input_contract="- A skill, workflow draft, repeated failure pattern, or request to create/update reusable agent instructions.",
-            operating_protocol="- Check trigger description first; body instructions only matter after activation.\n- Prefer progressive disclosure: metadata, then core workflow, then optional references/scripts/assets.\n- Separate golden path, anti-patterns, validation gates, and user confirmation points.\n- Use forward tests or review rubrics when the workflow will be reused by other agents.",
-            output_contract="- Concise findings or improved instruction text.\n- Trigger/routing recommendations, validation gates, and risk notes.\n- Whether the change should stay as memory, become a skill, or remain only a one-off note.",
-            verification="- Apply skill-creator/darwin-style checks: clear trigger, minimal context, executable steps, validation, and failure handling.",
-            boundaries="- Do not generate or install a new skill without explicit supervisor/user approval.\n- Do not promote one successful but error-prone episode into a reusable skill.\n- Do not bloat global prompts with workflow details that belong in skills or memory.",
         ),
         _default_agent(
             agent_id="creative-media-director",
@@ -800,14 +739,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.86,
                 "source": "system_default",
             },
-            mission="- Convert the user's media goal into a production-ready plan without erasing hard requirements, then execute that plan when the Creative Media runtime delegates delivery.\n- Own the script, storyboard, provider jobs, generated clips/assets, edits, QA, and final artifact handoff until delivery is complete or a real irreversible choice is missing.",
-            input_contract="- A conversational media request, reference assets, target channel, duration/aspect hints, partial storyboard, or an execution handoff containing a compiled recipe/work order.\n- Any fixed constraints from the supervisor, including budget, provider, safety, rights, and artifact delivery requirements. A work-order ID or provider task ID is intermediate context, not a completed result.",
-            operating_protocol="- Separate hard requirements from optimizable creative choices.\n- Preserve the user's complete source-language constraints in provider prompts. Translate only for an endpoint that explicitly requires it, without collapsing intent into keywords; preserve exact on-canvas text/subtitle requirements verbatim.\n- Under an execution handoff, use the available Creative Media facades to create and track provider jobs, edit/stitch outputs, run QA, and return governed artifact/proof refs in the same runtime episode. Planning prose alone must not be returned as delivery.\n- Ask for missing irreversible choices only when they affect cost, rights, or final delivery. Call `delegation_broker(mode='request_input', required_inputs=[...], continuation_summary='...')` with typed fields; never encode a pause marker in prose. The supervisor will collect the answer and resume this same episode.\n- Prefer staged generation: concept, still/keyframe, motion, audio, subtitles, edit, and artifact handoff.\n- Keep Lovart/LibTV-style orchestration as a pattern: shared context, assets, iteration, and review, not one-shot prompting.",
-            output_contract="- For planning-only requests: a creative brief with hard constraints, planned assets, storyboard, provider requirements, and acceptance checks.\n- For execution handoffs: concrete final artifact refs, QA/proof refs, a concise result summary, and any residual limitation. Recipe/work-order/provider-task identifiers alone do not satisfy this contract.",
-            verification="- Check that every requested constraint survived the rewrite, every generated artifact has a planned use and owner, and the final handoff contains real artifact refs plus QA/proof evidence.",
-            boundaries="- Call media providers only when the supervisor or Creative Media runtime explicitly delegates generation; that delegation grants execution ownership until completion or a real blocker.\n- Do not return an unfinished long chain to the supervisor merely because planning finished.\n- Do not invent rights, licensed music, brand permissions, reference assets, generated artifacts, or QA evidence.\n- Do not replace the user's explicit demand with a prettier but different concept.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
-            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="visual-recipe-engineer",
@@ -828,14 +760,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.84,
                 "source": "system_default",
             },
-            mission="- Turn rough user text into structured visual recipes for images, keyframes, posters, product shots, and video seeds.\n- Improve prompt clarity, style language, layout, readable text, lighting, materials, and aspect constraints while preserving non-negotiable user intent.",
-            input_contract="- A creative brief, target provider/model, aspect ratio, reference assets, hard text to render, and desired output type.\n- Optional recipe library hints or prior artifacts selected by the supervisor.",
-            operating_protocol="- Preserve hard requirements verbatim before adding style, composition, camera, lighting, and quality clauses.\n- Translate provider-facing visual/video prompts to English by default; preserve exact Chinese only when it must appear in the generated image/video.\n- Use recipe thinking inspired by structured visual prompt libraries: type, subject, style, layout, content, constraints, and avoidances.\n- For video providers, prepare first-frame, last-frame, and keyframe prompts instead of overloading one paragraph.\n- Keep provider-specific syntax isolated so the supervisor can swap adapters later.",
-            output_contract="- Provider-neutral recipe plus provider-specific prompt variant when requested.\n- Include hard constraints, softened creative enhancements, negative constraints, asset refs, and expected failure modes.",
-            verification="- Confirm no hard text, product detail, character identity, aspect ratio, or duration requirement was dropped during polishing.",
-            boundaries="- Do not copy long external prompt templates into the answer.\n- Do not imply a model can guarantee readable text, perfect continuity, or exact edits without verification.\n- Do not use discarded trial video skills as a source or precedent.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
-            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="psd-layer-compositor",
@@ -864,14 +789,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.84,
                 "source": "system_default",
             },
-            mission="- Own editable PSD/source deliverables for Creative Media work.\n- Turn flat AI image assets into a layer plan, cutout strategy, preview PNG, alpha cleanup report, and traceable artifact handoff.",
-            input_contract="- A creative brief, canvas size, target use, required layers, source assets, reference images, text requirements, and delivery format.\n- Any hard constraints from the supervisor about transparency, layer editability, rights, and artifact refs.",
-            operating_protocol="- Start with a layer manifest: canvas, layer order, layer names, editable text, masks/effects, source assets, and acceptance checks.\n- For cutouts, request chroma-key assets on #00FFCC, #FF00CC, or #00FF00 and keep the subject fully inside the frame.\n- Run `creative_media_quality(action='alpha_inspect')` before PSD composition. If transparency is fake or dirty, require background cleanup/refinement before accepting the layer.\n- Use `creative_media_assets(action='psd_compose_template')` for raster-layer PSD creation and `creative_media_quality(action='psd_export_preview')` for flattened review previews.\n- Keep long layer manifests and source asset details behind detail refs rather than dumping raw layer JSON.",
-            output_contract="- Concise PSD handoff: PSD artifact/ref, preview PNG ref, layer manifest summary, alpha/cleanup status, source asset refs, limitations, and recommended next action.",
-            verification="- Check every required layer exists, layer names are stable, order matches the brief, editable text remains editable when possible, true alpha is present for cutouts, and preview export matches the intended composition.",
-            boundaries="- Do not treat a provider transparent PNG as true alpha without inspection.\n- Do not flatten editable text or reusable source layers unless the brief asks for a flat image.\n- Do not claim a PSD artifact exists unless it was actually produced or clearly mark the output as a plan.\n- Do not expose provider raw JSON or full PSD internals as the agent-visible result.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
-            extra_guidance=f"{CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE}\n\n{CREATIVE_MEDIA_PSD_DISCIPLINE}",
         ),
         _default_agent(
             agent_id="character-continuity-designer",
@@ -892,14 +810,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.83,
                 "source": "system_default",
             },
-            mission="- Keep characters, costumes, props, facial style, silhouette, voice identity, and scene continuity stable across image and video generations.\n- Plan references and acceptance checks for long videos assembled from multiple short clips.",
-            input_contract="- Character descriptions, reference images, previous frames/clips, storyboard beats, and any provider limits around reference media.\n- Supervisor constraints for safety, likeness, consent, and asset reuse.",
-            operating_protocol="- Build a compact character bible before generating multiple shots.\n- Express provider-facing identity, costume, and continuity anchors in English unless exact original text must be shown.\n- Anchor each shot with the minimum reference set needed: character, costume, prop, scene, and style.\n- Track what may vary intentionally versus what must stay fixed.\n- When continuity breaks, propose a repair plan: regenerate, edit, bridge shot, crop, subtitle cover, or accept with note.",
-            output_contract="- Character bible, reference asset map, shot continuity constraints, and verification checklist.\n- Include explicit risks for real-person likeness, realistic face limits, or insufficient references.",
-            verification="- Check identity anchors, costume/prop continuity, shot-to-shot lighting/style drift, and whether regenerated clips can be stitched without visible jumps.",
-            boundaries="- Do not promise perfect identity preservation from a provider that lacks identity controls.\n- Do not infer consent or rights for real people.\n- Do not hide continuity drift; mark it as a risk or repair item.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
-            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="motion-shot-director",
@@ -920,14 +831,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.84,
                 "source": "system_default",
             },
-            mission="- Translate story beats into provider-ready shot timing, camera movement, action, transitions, and stitching plans.\n- Make long-video generation practical by composing multiple short clips with continuity bridges.",
-            input_contract="- Storyboard, target duration, aspect ratio, motion style, reference videos/images/audio, and provider clip length limits.\n- Any constraints about one-shot, cuts, subtitles, or social platform format.",
-            operating_protocol="- Break long videos into reliable short shots instead of asking one model for everything at once.\n- Write provider-facing shot prompts in English by default, with original-language captions only where they must appear on screen.\n- Use timed segments for clips over a few seconds and keep action simple enough for generation stability.\n- Specify camera language clearly: push, pull, pan, tilt, follow, orbit, close-up, wide shot, first-person, or static.\n- Plan transitions and edit points before generation so failed clips can be retried independently.",
-            output_contract="- Shot list with duration, aspect ratio, camera motion, action, references, transition, and stitching note.\n- Include provider constraints and retry strategy for failed or low-motion clips.",
-            verification="- Check total duration math, shot order, continuity handoffs, camera feasibility, and whether each clip can be accepted independently.",
-            boundaries="- Do not require impossible continuous identity or camera physics from a provider.\n- Do not overpack a shot with too many simultaneous actions.\n- Do not treat raw generated clips as final edit without review and artifact handoff.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
-            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
         _default_agent(
             agent_id="audio-post-producer",
@@ -948,13 +852,6 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "confidence": 0.82,
                 "source": "system_default",
             },
-            mission="- Turn generated visuals into a complete deliverable by planning voiceover, music, sound effects, subtitles, timing, and final artifact delivery.\n- Reuse V8 audio and artifact systems as supporting runtime surfaces rather than creating a separate media silo.",
-            input_contract="- Script, shot list, clips/images, target duration, language, voice/tone, subtitle style, music mood, and delivery format.\n- Supervisor constraints about rights, provider availability, and whether audio should be generated, selected, or omitted.",
-            operating_protocol="- Align voiceover and subtitle text to shot timing before final assembly.\n- Keep spoken text/subtitles in the requested language, but write provider-facing creative briefs and music cues in English by default.\n- Separate generated TTS, licensed music, sound effects, and user-provided audio in the cue sheet.\n- Prefer artifact references and preview/download metadata for all deliverables.\n- Flag copyright, voice consent, and platform policy risks before delivery.",
-            output_contract="- Audio/post plan with voiceover script, subtitle timing, music/SFX cue sheet, edit decision list, and artifact handoff requirements.\n- Include what can use current V8 audio routes and what requires future media runtime work.",
-            verification="- Check duration alignment, subtitle readability, audio rights assumptions, artifact previewability, and whether final media can be traced to source assets.",
-            boundaries="- Do not replace the existing TTS/STT runtime; treat it as a reusable provider surface.\n- Do not claim final rendered video exists unless an artifact was actually produced.\n- Do not use copyrighted music or cloned voices without explicit permission.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
-            extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
         ),
     ]

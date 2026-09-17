@@ -332,6 +332,25 @@ ACTION_DEFINITIONS = {
             requires_prompt=True,
         ),
         _action(
+            "creative_media.render_proxy_scene_control_pack",
+            "video.render_proxy_scene_control_pack",
+            [_port("references", ["image"], 0, 32, ordered=True)],
+            "control_pack",
+            ["document"],
+            requires_prompt=False,
+            parameter_editor="proxy_scene",
+            network_required=False,
+            may_incur_cost=False,
+        ),
+        _action(
+            "creative_media.generate_video_from_scene",
+            "video.reference_to_video",
+            [_port("controlPack", ["document"], 1, 1)],
+            "video",
+            ["video"],
+            requires_prompt=False,
+        ),
+        _action(
             "creative_media.generate_voice",
             "voice.tts",
             [_port("references", ["text", "document"], 0, 4, ordered=True)],
@@ -555,6 +574,13 @@ def _command_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
 
 def _normalize_action_parameters(definition: ActionDefinition, value: Any) -> dict[str, Any]:
     parameters = _record(value)
+    if definition.parameter_editor == "proxy_scene":
+        from runtimes.creative_media.scene_control import normalize_scene
+
+        try:
+            return {**parameters, "scene": normalize_scene(parameters.get("scene"))}
+        except ValueError as exc:
+            raise CreativeCanvasGraphError(str(exc)) from exc
     if definition.parameter_editor == "psd_composition":
         canvas = _record(parameters.get("canvas"))
         layers: list[dict[str, Any]] = []
@@ -1023,7 +1049,7 @@ class CreativeCanvasGraphService:
                     raise CreativeCanvasGraphError(f"Canvas action is not graph-compatible: {action_id}")
                 normalized.update({
                     "actionDefinitionId": action_id,
-                    "prompt": _clean_text(node.get("prompt"), limit=12000),
+                    "prompt": str(node.get("prompt") or "").replace("\x00", "").strip(),
                     "parameters": _normalize_action_parameters(definition, node.get("parameters")),
                     "configurationRevision": _bounded_int(node.get("configurationRevision"), default=1, minimum=1, maximum=2_147_483_647, label="Canvas action configuration revision"),
                 })
@@ -1067,6 +1093,9 @@ class CreativeCanvasGraphService:
                 "role": role,
                 "order": _bounded_int(edge.get("order"), default=0, minimum=0, maximum=MAX_GRAPH_EDGES, label="Canvas edge order"),
                 "note": _clean_text(edge.get("note"), limit=2000),
+                **({key: str(edge.get(key) or "").strip() for key in (
+                    "entityId", "bindingKey", "semanticRole", "purpose", "resourceDigest"
+                )} if edge.get("entityId") or edge.get("bindingKey") else {}),
             })
 
         viewport = _record(raw.get("viewport"))
@@ -3123,6 +3152,7 @@ class CreativeCanvasGraphService:
                         "resultNodeId": edge["from"] if nodes[edge["from"]]["kind"] == "result" else None,
                         "order": edge["order"],
                         "note": edge.get("note") or "",
+                        **{key: edge[key] for key in ("entityId", "bindingKey", "semanticRole", "purpose", "resourceDigest") if key in edge},
                     }
                     for edge in input_edges
                 ],
@@ -3589,6 +3619,7 @@ class CreativeCanvasGraphService:
             "canvasGraphRunId": graph_run_id,
             "canvasGraphNodeId": entry["actionNodeId"],
             "canvasResultNodeId": entry["resultNodeId"],
+            "canvasConfigurationRevision": entry.get("configurationRevision"),
         }
         source_ids: list[str] = []
         artifact_ids: list[str] = []
@@ -3607,6 +3638,7 @@ class CreativeCanvasGraphService:
                     "id": resource_id,
                     "mediaType": str(resource.get("mediaType") or "unknown"),
                     "order": int(item.get("order") or 0),
+                    **{key: item[key] for key in ("entityId", "bindingKey", "semanticRole", "purpose", "resourceDigest") if key in item},
                 })
                 if str(item.get("portId") or "") == "mask":
                     mask_source_id = resource_id
@@ -3631,6 +3663,7 @@ class CreativeCanvasGraphService:
                 "mediaType": str(item.get("mediaType") or "unknown"),
                 "order": int(item.get("order") or 0),
                 "resultNodeId": result_node_id,
+                **{key: item[key] for key in ("entityId", "bindingKey", "semanticRole", "purpose", "resourceDigest") if key in item},
             })
         if canvas_inputs:
             request["canvasInputs"] = canvas_inputs

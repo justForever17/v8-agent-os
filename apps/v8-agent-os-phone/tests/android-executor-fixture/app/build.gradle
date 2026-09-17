@@ -1,0 +1,13 @@
+plugins { id 'com.android.application' version '8.12.0' }
+
+android {
+  namespace 'com.v8agentos.executorfixture'
+  compileSdk 36
+  defaultConfig {
+    applicationId 'com.v8agentos.executorfixture'
+    minSdk 30
+    targetSdk 35
+    versionCode 1
+    versionName '1.0'
+  }
+}

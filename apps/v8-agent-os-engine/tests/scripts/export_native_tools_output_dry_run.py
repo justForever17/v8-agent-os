@@ -61,6 +61,7 @@ DETAIL_VISIBLE_BUDGET = 4000
 DEFAULT_VISIBLE_BUDGET = 6000
 
 UNSAFE_REASONS: dict[str, str] = {
+    "device_broker": "may dispatch or cancel real device actions; status/list require an owned runtime and private device ledger",
     "rpa_run_draft": "would execute a Robot Framework draft script",
     "rpa_run_existing_flow": "would execute a Robot Framework flow",
     "computer_use_click": "would perform a real desktop click",

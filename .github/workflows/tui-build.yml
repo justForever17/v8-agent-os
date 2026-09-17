@@ -41,6 +41,11 @@ jobs:
           npm run build --prefix apps/v8-agent-os-tui
       - name: Pack the versioned public archive
         run: node scripts/release/pack-tui-release.mjs --output out/tui --source-commit "$GITHUB_SHA"
+      - name: Verify linear reader with a synthetic canonical stream
+        working-directory: apps/v8-agent-os-tui
+        run: |
+          node node_modules/esbuild/bin/esbuild tests/reader_stream_fixture.mts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=.artifacts/reader-stream-fixture.mjs
+          python tests/reader_stream_pty.py --node "$(command -v node)" --entry .artifacts/reader-stream-fixture.mjs
       - name: Install exact tarball and exercise the installed terminal
         shell: bash
         run: |
@@ -51,6 +56,8 @@ jobs:
           installed="$RUNNER_TEMP/tui-prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs"
           node "$installed" --help
           python apps/v8-agent-os-tui/tests/terminal_pty.py --node "$(command -v node)" --bin "$installed" --state "$RUNNER_TEMP/tui-state"
+          python -m pip install pyte==0.8.2 wcwidth==0.8.3
+          python apps/v8-agent-os-tui/tests/command_suggestions_pty.py --node "$(command -v node)" --bin "$installed" --evidence "$RUNNER_TEMP/tui-command-evidence"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '20.0.0'

@@ -84,7 +84,7 @@ test("Web waits for the trusted local session before hydrating conversation hist
   );
   assert.match(
     client,
-    /\[activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages\]/,
+    /\[activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, sessionOwnerKey, status, stop, setMessages\]/,
   );
   assert.match(
     client,

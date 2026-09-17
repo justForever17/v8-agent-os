@@ -210,6 +210,18 @@ UI Patch Workbench 是 Web 专属全尺寸工作台。一次修改必须完成 D
 
 Creative Artifact Canvas 也是 Web 专属工作台。它组织当前会话产物与已采用的工作区素材，支持媒体卡片、连线、框选、蒙版局部编辑和受治理的 Creative Media 动作；运行中锁定会破坏 lineage 的自由修改。typed Canvas Graph 以 Engine snapshot/event 为真相，绑定当前 Session/Workspace 后直接进入 Creative Media Runtime；页面只做投影和交互，不建立旁路状态。输出版本持有自己的资源、Provider/model/recipe、耗时、成本与 QA 证据，Review 通过 revision fence 批准、拒绝和选择交付版本。精确抽帧、视频分段与音频分段由 Engine 自有媒体路径执行，要求配对的 FFmpeg/FFprobe 7+，并通过 probe fingerprint、frame index/time base 或 sample index 验证边界，不经过 provider 或 MediaKit 插件。
 
+### 多实体代理场景
+
+Canvas 的「多实体代理场景」使用 `parameters.scene.schema = v8.proxy_scene.v1` 保存独立实体身份、代理色、基本形体、米制尺寸/位置、材质/外形、动作关键帧及镜头时间轴。坐标 Y 向上，以地面中心为实体原点；当前支持方体、球体和四肢关节人形代理，不是自动绑骨或物理模拟。实体没有默认性别、族裔或画面风格。
+
+逐图参考边保存 `entityId/bindingKey/semanticRole/purpose/resourceDigest`，并保留现有 source/artifact、端口和顺序。角色可为正面、左右侧、背面、面部、细节、材质、风格或比例；同图可有多个明确用途。Engine 重新解析会话/工作区权限并核对文件摘要，不能只信 UI 标签。
+
+`creative_media.render_proxy_scene_control_pack` 明确运行后生成 `v8.proxy_scene_control_pack.v1` 文档与代理视频、身份参考板、冻结参考图、全帧无损身份/16 位深度通道、镜头和场景 JSON；清单逐项登记 artifact ID、SHA-256 和 graph/operation/source lineage。`creative_media.generate_video_from_scene` 仅接收一个已登记控制包，再经实际配置的 provider 生成视频。编辑和连线不执行、不计费。
+
+消费报告逐项说明已提交参考及不支持通道。通用模型仅作软参考引导，不提供精确姿势、身份或几何保证；不允许静默丢图和截断长提示。缺少可用 provider、引用失效或取消时，已有控制包保留，不能把本地代理当生成成片。Web 可编辑和播放，Phone 沿现有媒体入口预览结果。
+
+定向验收入口为 Engine `tests/creative_media/test_scene_control.py`、Web `tests/proxy-scene-contract.test.cjs`；显式本机验收使用 `run_canvas_scene_local_server.py --live --state-root <隔离目录>`、`proxy_scene_ui.mjs` 与 `proxy_scene_acceptance.mjs`。Phone `canvas-scene-preview.mjs` 验证真实组件的 Web 运行环境，原生 WebView 和真机另行验收。
+
 ## 10. 模型与 provider 合同
 
 模型控制面区分：
@@ -326,7 +338,7 @@ Storage Retention：
 - README/快速开始写用户能执行的路径，不写内部交付报告。
 - API/开发者指南明确权威层、权限和失败边界，不把 mock 当真实验收。
 - Site 只宣传已提交且有代码/测试事实的能力。
-- Windows unsigned preview、Phone APK、TUI 未实现、轻量版长期规划等状态必须如实区分。
+- Windows unsigned preview、Phone APK、独立Server/TUI归档和实验远程执行器须按精确版本与资产区分；源码、构建通过、真实运行和实体平台验收不能互相替代。
 - 服务 bootstrap 与 Electron Desktop Preview 是两种入口，任何公开页面都不能混写。
 
 继续阅读：

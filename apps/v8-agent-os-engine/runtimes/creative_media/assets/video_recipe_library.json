@@ -13,7 +13,7 @@
   "seedance2": {
     "providerIds": ["volcengine_seedance"],
     "modelIds": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast"],
-    "promptLanguage": "provider-facing English by default; preserve required on-screen text or subtitles in the original language",
+    "promptLanguage": "preserve source-language intent; translate only for an explicit user or selected endpoint requirement, keeping dialogue and visible text in their original roles",
     "referenceSyntax": {
       "image": "@imageN / @图片N",
       "video": "@videoN / @视频N",

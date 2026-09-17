@@ -1,0 +1,548 @@
+import { Client, idOf } from './client.js';
+import { editor, edit, graphemes, safeText, type Editor, type Input } from './terminal.js';
+import type { EditedDraft } from './external-editor.js';
+import { featurePacks, plugins } from './extension-pages.js';
+import { createPeerInvitation, consumePeerInvitation } from './peer-pages.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { commandMatches, type CommandEntry } from './command-suggestions.js';
+
+export type Action = CommandEntry & { run: () => void | Promise<void>; navigation?: boolean };
+export type Field = { key: string; label: string; value: string; secret?: boolean };
+export type Page = { title: string; lines: string[]; actions: Action[]; selected: number; offset: number; fields?: Field[]; fieldIndex?: number; onSave?: (fields: Record<string, string>) => Promise<void>; sensitive?: boolean };
+const listOf = (data: any): any[] => Array.isArray(data) ? data : data.items || data.devices || data.peers || data.links || data.packs || data.models || [];
+export const secretField = (key: string) => /(?:apikey|accesstoken|refreshtoken|idtoken|bearertoken|authtoken|sessiontoken|apitoken|csrftoken|pairingcode|privatekey|signingkey|secret|password)$|^(?:token|authorization|cookie|credentials?)$/i.test(key.replace(/[-_]/g, ''));
+export function containsSecretField(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, item]) => secretField(key) || containsSecretField(item));
+}
+// Human summaries never dump the raw response or credential-bearing fields.
+export function describe(value: any, prefix = ''): string[] {
+  if (value == null) return [];
+  if (typeof value !== 'object') return [`${prefix}${safeText(value)}`];
+  return Object.entries(value).flatMap(([key, val]) => {
+    if (secretField(key) || /^(raw|trace|internal)$/i.test(key)) return [];
+    if (Array.isArray(val)) return [`${prefix}${key}：${val.length} 项`, ...val.flatMap((x, i) => describe(x, `${prefix}  ${i + 1}. `))];
+    if (val && typeof val === 'object') return [`${prefix}${key}`, ...describe(val, prefix + '  ')];
+    return [`${prefix}${key}：${safeText(val)}`];
+  });
+}
+export function approvalLines(item: any) {
+  const request = item.request || item.payload || {};
+  return [`来源：${item.agentName || item.agent_name || request.agentName || 'Engine 审批记录'}`,
+    `状态：${item.status || 'pending'}`, `会话：${item.session_id || item.sessionId || '当前会话'}`,
+    ...describe(request), ...describe(item.risk || {}), item.expiresAt ? `有效期：${item.expiresAt}` : '有效性将在执行前重新核对'];
+}
+export function approvalTransparent(item: any) {
+  const request = item.request || item.payload || {};
+  return Object.keys(request).length > 0 && Boolean(request.target || request.path || request.command || request.action || request.tool_name || request.toolName || request.operation || request.actionRequest);
+}
+function schemaFields(root: any, schema = root, prefix = ''): { key: string; definition: any }[] {
+  const resolved = schema.$ref ? root.$defs?.[schema.$ref.split('/').at(-1)] || schema : schema;
+  if (resolved.properties) return Object.entries(resolved.properties).flatMap(([key, value]) => schemaFields(root, value, prefix ? `${prefix}.${key}` : key));
+  if (resolved.readOnly || prefix.split('.').some(secretField) || /(?:^|\.)peerId$/.test(prefix)) return [];
+  return [{ key: prefix, definition: resolved }];
+}
+function fieldPatch(key: string, value: unknown) {
+  const settings: any = {}, parts = key.split('.');
+  if (parts.some(x => !x || ['__proto__', 'constructor', 'prototype'].includes(x))) throw new Error('无效字段');
+  let item = settings; for (const part of parts.slice(0, -1)) item = item[part] = {}; item[parts.at(-1)!] = value; return settings;
+}
+function numericInput(value: string, label: string) {
+  if (!value.trim()) throw new Error(`${label}不能为空，请输入明确数值`);
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${label}必须是有限数字`);
+  return number;
+}
+export class Surface {
+  page: Page | null = null; input: Editor; multiline = false; undo = ''; anchor = 0; following = true; unread = 0;
+  scrollDelta = 0; editorWidth = 78;
+  busy = false; paletteQuery = ''; formEditor = editor(); private pageSerial = 0; private ticketId = '';
+  suggestions: { query: Editor; selected: number; sessionId: string } | null = null;
+  private commandReturnGuard = false;
+  private navigation = 0; private pendingOperations = new Map<symbol, { navigation: number; mutable: boolean }>(); private operation = new AsyncLocalStorage<number>();
+  onExit: () => void = () => {}; onChange: () => void = () => {};
+  onEditor: (text: string) => Promise<EditedDraft> = async () => { throw new Error('当前终端未提供外部编辑器入口。'); };
+  constructor(readonly client: Client) {
+    this.input = editor(client.draft.text);
+    let instanceId = client.instance.instanceId;
+    client.subscribe(() => {
+      if (this.suggestions && this.suggestions.sessionId !== client.view.sessionId) this.suggestions = null;
+      if (instanceId === client.instance.instanceId) return;
+      instanceId = client.instance.instanceId;
+      this.invalidateNavigation();
+      for (const field of this.page?.fields || []) if (field.secret) field.value = '';
+      this.page = null; this.suggestions = null; this.formEditor = editor(); this.input = editor(client.draft.text);
+      this.following = client.view.scroll[client.view.sessionId]?.following ?? true;
+      if (this.ticketId) { this.ticketId = ''; client.notice = '实例已切换，旧实例配对票据将在原有效期结束时失效。'; }
+      this.changed();
+    });
+  }
+  changed() { this.onChange(); }
+  private updateBusy() { this.busy = [...this.pendingOperations.values()].some(operation => operation.mutable || operation.navigation === this.navigation); }
+  private checkPage() {
+    if (this.operation.getStore() !== undefined && this.operation.getStore() !== this.navigation) throw Object.assign(new Error('已离开此页面，旧响应不再更新界面。'), { stalePage: true });
+  }
+  invalidateNavigation() { this.navigation++; this.updateBusy(); }
+  suggest() {
+    this.invalidateNavigation();
+    this.suggestions = { query: editor(), selected: 0, sessionId: this.client.view.sessionId };
+    this.changed();
+  }
+  private async suggestionInput(event: Input): Promise<boolean> {
+    const menu = this.suggestions!;
+    const matches = commandMatches(this.commands(), menu.query.text);
+    if (event.key === 'escape' || event.key === 'ctrl-c') { this.suggestions = null; this.changed(); return true; }
+    if (event.key === 'ctrl-p') { this.suggestions = null; this.palette(menu.query.text); return true; }
+    if (event.key === 'enter') {
+      const action = matches[menu.selected];
+      if (!action || action.disabled) { this.client.notice = action ? '此操作当前不可用。' : '没有匹配的操作；请修改关键词或 Esc 返回。'; this.changed(); return true; }
+      if ((this.busy || this.client.busy) && !action.navigation) { this.client.notice = '操作仍在处理中；可继续搜索、切换页面或 Esc 返回。'; this.changed(); return true; }
+      // Repeated Enter after a command must not send the draft behind the menu.
+      this.commandReturnGuard = true; this.suggestions = null;
+      await this.execute(action.run, action.navigation); return true;
+    }
+    if (event.key === 'f9') { this.client.notice = '命令候选中不会发送草稿；Enter 选择，Esc 返回。'; this.changed(); return true; }
+    if (['up', 'down', 'backtab', 'pageup', 'pagedown'].includes(event.key)) {
+      const delta = ['up', 'backtab', 'pageup'].includes(event.key) ? -1 : 1;
+      menu.selected = Math.max(0, Math.min(matches.length - 1, menu.selected + delta));
+    } else if (event.key === 'tab') {
+      const action = matches[menu.selected];
+      if (action) { menu.query = editor(action.command); menu.selected = 0; }
+    } else if (['text', 'backspace', 'delete', 'left', 'right', 'home', 'end'].includes(event.key)) {
+      menu.query = edit(menu.query, event.key === 'text' ? 'insert' : event.key, event.text || '', this.editorWidth);
+      if (['text', 'backspace', 'delete'].includes(event.key)) menu.selected = 0;
+    } else {
+      // Paste returns to the original composer and retains its inert-paste guard.
+      // Other existing shortcuts keep their original owner and behavior.
+      this.suggestions = null; this.changed(); return false;
+    }
+    this.changed(); return true;
+  }
+  async dispatch(event: Input) {
+    if (this.suggestions && await this.suggestionInput(event)) return;
+    const pending = this.busy || this.client.busy;
+    if (pending && event.key === 'ctrl-d') { this.invalidateNavigation(); this.onExit(); return; }
+    const navigate = ['escape', 'ctrl-p', 'f1', 'f2', 'f3', 'f4', 'ctrl-b', 'ctrl-t'].includes(event.key)
+      || event.key === 'ctrl-c' && Boolean(this.page)
+      || event.key === 'text' && event.text === '/' && !this.input.text && !this.page
+      || event.key === 'enter' && Boolean(!this.page?.fields && this.page?.actions[this.page.selected]?.navigation);
+    const browse = !this.page?.fields && ['up', 'down', 'pageup', 'pagedown', 'tab', 'backtab'].includes(event.key)
+      || this.page?.title === '操作菜单' && ['text', 'backspace'].includes(event.key);
+    if (pending && !navigate && !browse) {
+      if (!this.page && ['text', 'paste'].includes(event.key)) {
+        if (this.client.busy) {
+          this.client.draft.nextText = (this.client.draft.nextText || '') + (event.text || ''); this.client.save();
+          this.client.notice = '发送期间输入已暂存为下一条草稿，受理后可继续编辑。';
+        } else { await this.handle(event); return; }
+      } else this.client.notice = '操作仍在处理中；可 Esc 返回、Ctrl+P 导航或 Ctrl+D 退出终端。';
+      this.client.changed(); return;
+    }
+    const actionKey = ['enter', 'f9', 'f1', 'f2', 'f3', 'f4', 'ctrl-p', 'ctrl-b', 'ctrl-t', 'ctrl-n', 'escape', 'ctrl-c'].includes(event.key);
+    if (actionKey || navigate) await this.execute(() => this.handle(event), navigate);
+    else await this.handle(event);
+  }
+  async execute(action: () => void | Promise<void>, navigate = false) {
+    if (this.busy && !navigate) return;
+    if (navigate) this.invalidateNavigation();
+    const navigation = this.navigation;
+    const operation = Symbol(); this.pendingOperations.set(operation, { navigation, mutable: !navigate }); this.updateBusy(); this.changed();
+    try { await this.operation.run(navigation, action); }
+    catch (e: any) {
+      if (e.stalePage || navigation !== this.navigation) return;
+      this.client.notice = this.page?.sensitive ? '配置未确认保存。请检查连接和配置状态后重试；密钥不会回显。' : `操作未确认完成：${e.message}。请回读状态后再操作。`;
+    }
+    finally { this.pendingOperations.delete(operation); this.updateBusy(); this.changed(); }
+  }
+  open(title: string, lines: string[], actions: Action[] = []) {
+    this.checkPage();
+    this.suggestions = null; this.pageSerial++; this.page = { title, lines, actions, selected: 0, offset: 0 }; this.changed();
+  }
+  async close(force = false) {
+    this.checkPage();
+    if (this.page?.fields && !force) {
+      const old = this.page;
+      this.open('未保存的修改', ['返回将放弃此表单，聊天草稿仍保留。'], [
+        { label: '继续编辑', run: () => { this.page = old; } }, { label: '放弃并返回', run: () => this.close(true) },
+      ]); return;
+    }
+    if (this.ticketId) {
+      const id = this.ticketId;
+      await this.client.api(`/v1/client-identity/pairing-ticket/${encodeURIComponent(id)}`, { method: 'DELETE' }); this.ticketId = '';
+      this.checkPage();
+    }
+    if (this.page?.fields) for (const f of this.page.fields) if (f.secret) f.value = '';
+    this.formEditor = editor(); this.page = null; this.pageSerial++; this.changed();
+  }
+  form(title: string, fields: Field[], save: (values: Record<string, string>) => Promise<void>, lines: string[] = []) {
+    this.open(title, lines);
+    this.page!.fields = fields; this.page!.fieldIndex = 0; this.page!.onSave = save;
+    this.page!.sensitive = fields.some(f => f.secret); this.formEditor = editor(fields[0]?.value || '');
+  }
+  confirm(title: string, lines: string[], label: string, run: () => Promise<void>) {
+    this.open(title, lines, [{ label: '返回', run: () => this.close(true) }, { label, run }]);
+  }
+  async submit() { await this.client.submit(); this.input = editor(this.client.draft.text); this.following = true; }
+  async sessions() {
+    await this.client.listSessions();
+    this.open('会话', ['选择只恢复查看；后台任务继续运行。'], [
+      { label: '新建会话', run: () => this.newSession() },
+      { label: '搜索会话', run: () => this.form('搜索会话', [{ key: 'q', label: '标题关键词', value: '' }], async v => { await this.client.listSessions(v.q); this.sessionResults(); }) },
+      { label: '当前工作区', run: async () => { await this.client.listSessions('', false, true); this.sessionResults(); } },
+      ...this.sessionActions(),
+    ]);
+  }
+  sessionActions(): Action[] {
+    const actions: Action[] = this.client.sessions.map(s => ({ label: `${s.title || '未命名'} · ${s.status || '历史'}`, navigation: true, run: async () => { await this.client.attach(idOf(s)); this.input = editor(this.client.draft.text); this.following = true; await this.close(true); } }));
+    if (this.client.sessionCursor) actions.push({ label: '加载更多会话', run: async () => { await this.client.listSessions(undefined, true); this.sessionResults(); } });
+    return actions;
+  }
+  sessionResults() { this.open('会话列表', [], [{ label: '返回对话', run: () => this.close(true) }, ...this.sessionActions()]); }
+  async newSession() { await this.client.attach(''); this.input = editor(this.client.draft.text); this.following = true; await this.close(true); }
+  async details() {
+    await this.client.refreshSnapshot();
+    const s = this.client.snapshot;
+    this.open('任务详情', [
+      `状态：${s.currentRun?.status || s.runtimeStatus || '未运行'}`,
+      `重试：${this.client.retryControl.allowed ? 'Engine 支持重新执行；可能再次产生副作用。' : this.client.retryControl.reason}`,
+      ...describe(s.summary || {}), ...describe(s.lane || {}), ...describe(s.workflowProjection || {}),
+      ...describe(s.todos || {}), ...this.client.outputs.map(x => `产物：${x.name} · ${x.path || x.artifactId || ''}`),
+    ], [
+      { label: '返回对话', run: () => this.close(true) }, { label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
+      { label: '重试当前任务', disabled: !this.client.retryControl.allowed, run: () => this.retryRun() },
+      { label: '查看完整任务证据', run: () => { this.open('任务证据', describe({ timeline: s.runtimeTimeline, controls: s.controls, recovery: s.recoverable }), [{ label: '返回', run: () => this.details() }]); } },
+      { label: '重命名会话', disabled: !this.client.view.sessionId, run: () => this.form('重命名会话', [{ key: 'title', label: '标题', value: '' }], async v => { await this.client.api(`/v1/sessions/${encodeURIComponent(this.client.view.sessionId)}`, { method: 'PATCH', body: { title: v.title } }); await this.sessions(); }) },
+    ]);
+  }
+  stopRun() {
+    const runId = idOf(this.client.run);
+    this.confirm('停止当前任务', [`会话：${this.client.view.sessionId}`, `任务：${runId}`, '停止会影响当前任务；退出终端只会断开界面。'], '请求停止', async () => { await this.client.interrupt(runId); await this.details(); });
+  }
+  retryRun() {
+    const control = this.client.retryControl;
+    if (!control.allowed) { this.open('无法重试', [control.reason], [{ label: '返回任务详情', run: () => this.details() }]); return; }
+    this.confirm('重试任务', [`会话：${this.client.view.sessionId}`, `运行：${control.runId}`, 'Engine 将重新执行该运行，可能新建 run 并再次产生副作用。', '确认时重新读取当前能力；不会重发聊天草稿。'], '请求 Engine 重试', async () => { await this.client.retryRun(control.runId); await this.details(); });
+  }
+  async externalEditor() {
+    const view = this.client.view, sessionId = view.sessionId, draft = this.client.draft;
+    const original = this.client.draft.text;
+    if (draft.unknown) throw new Error('当前草稿的发送结果仍待确认，请先核对结果再使用外部编辑器。');
+    let edited: EditedDraft;
+    try { edited = await this.onEditor(original); }
+    finally { this.page = null; this.changed(); }
+    try { await this.client.tick(); } catch { /* Keep an offline draft; submit rechecks authority. */ }
+    if (this.client.view !== view || this.client.view.sessionId !== sessionId) throw new Error(`实例或会话已变化；编辑内容保留在 ${edited.file}，没有写入其他草稿。`);
+    if (this.client.draft !== draft || draft.text !== original || draft.unknown) throw new Error(`草稿在编辑期间已变化；编辑内容保留在 ${edited.file}，没有覆盖当前草稿。`);
+    this.undo = original; this.client.setDraft(edited.text); this.input = editor(edited.text); this.input.pasted = true;
+    this.client.save(true); await edited.remove();
+    this.page = null; this.client.notice = '编辑内容已回到草稿；按 F9 或菜单“发送”提交。'; this.changed();
+  }
+  async inbox() {
+    await this.client.refreshSnapshot();
+    const items = await this.client.listInbox();
+    this.open('待处理', [items.length ? '当前会话优先；选择事项查看来源和完整范围。' : '已加载会话暂无待处理事项。', ...(this.client.sessionCursor ? ['更多会话可在会话列表继续加载后查看提问。'] : [])], [
+      { label: '返回对话', run: () => this.close(true) },
+      ...items.map((item: any) => ({ label: `${item.kind === 'question' ? '提问' : '审批'} · ${item.title || item.question || item.request?.question || item.summary || idOf(item)}`, run: async () => {
+        if (item.sessionId && item.sessionId !== this.client.view.sessionId) { await this.client.attach(item.sessionId); this.input = editor(this.client.draft.text); }
+        this.inboxItem(item);
+      } })),
+      { label: '其他会话', run: () => this.sessions() },
+    ]);
+  }
+  inboxItem(item: any) {
+    if (item.kind === 'question') {
+      this.form('回复提问', [{ key: 'answer', label: item.question || item.request?.question || '你的回答', value: '' }], async v => { await this.client.decide(item, 'answer', v.answer); await this.inbox(); }, describe(item.request || item));
+      return;
+    }
+    this.open('审批详情', [...approvalLines(item), ...(approvalTransparent(item) ? [] : ['请求缺少可核对的动作目标；无法批准，请拒绝或返回。'])], [
+      { label: '返回', run: () => this.inbox() },
+      { label: '拒绝', run: async () => { await this.client.decide(item, 'reject'); await this.inbox(); } },
+      { label: '批准本次', disabled: !approvalTransparent(item), run: async () => { await this.client.decide(item, 'approve'); await this.inbox(); } },
+    ]);
+  }
+  async settings() {
+    this.open('设置', ['修改通过 Engine 校验并回读；密钥只在隐藏字段输入。'], [
+      { label: '返回对话', run: () => this.close(true) },
+      { label: '模型 / Provider / 预算', run: () => this.models() },
+      { label: '工作区与信任', run: () => this.form('选择工作区', [{ key: 'path', label: '已有目录的绝对路径', value: this.client.view.workspace }], async v => this.confirm('确认工作区信任', [v.path, '允许此目录用于后续 Agent 任务；现有会话绑定保持独立。'], '信任并用于新会话', async () => { await this.client.trustWorkspace(v.path); await this.close(true); })) },
+      { label: 'Runtime 能力包', run: () => featurePacks(this) },
+      { label: 'MCP / 插件', run: () => this.extensions() },
+      { label: '记忆 / 调度', run: () => this.open('记忆 / 调度', [], [{ label: '记忆配置', run: () => this.registry('memory') }, { label: '调度配置', run: () => this.registry('cron') }, { label: 'Hooks', run: () => this.registry('hooks') }]) },
+      { label: '实例 / 诊断', run: () => this.readPage('实例', '/v1/client-identity/instance') },
+      { label: '手机网关设置', run: () => this.brokerSettings('client-gateway') },
+      { label: '组网设置', run: () => this.brokerSettings('network') },
+    ]);
+  }
+  async readPage(title: string, route: string) { const data = await this.client.api(route); this.open(title, describe(data), [{ label: '返回', run: () => this.close(true) }, { label: '刷新', run: () => this.readPage(title, route) }]); }
+  async models() {
+    const roles = await this.client.api('/v1/config-broker/roles');
+    this.open('模型 / Provider / 预算', describe(roles), [
+      { label: '返回设置', run: () => this.settings() },
+      { label: '连接 Provider / 模型', run: () => this.form('连接模型', [
+        { key: 'providerId', label: 'Provider ID', value: '' }, { key: 'modelId', label: '模型 ID', value: '' },
+        { key: 'baseUrl', label: 'API 地址（留空使用目录默认）', value: '' }, { key: 'apiKey', label: 'API 密钥（隐藏，留空复用已存凭据）', value: '', secret: true },
+      ], async v => {
+        try { await this.client.api('/v1/models/connect', { method: 'POST', body: v, timeoutMs: 60000 }); }
+        finally { v.apiKey = ''; if (this.page?.fields) for (const f of this.page.fields) if (f.secret) f.value = ''; this.formEditor = editor(); }
+        await this.models();
+      }) },
+      { label: '为角色选择模型', run: () => this.form('角色模型', [{ key: 'role', label: '角色 ID（上方角色列表）', value: 'supervisor' }, { key: 'modelRef', label: '模型引用', value: '' }], async v => this.prepare('/v1/config-broker/roles/prepare', v, '/v1/config-broker/roles')) },
+      { label: '浏览已安装模型', run: () => this.readPage('模型目录', '/v1/config-broker/models?limit=50') },
+      { label: '累计 Token / 费用预算', run: () => this.budgets() },
+      { label: '模型单次输出长度', run: () => this.outputParameters() },
+      { label: '上下文配置', run: () => this.contextSettings() },
+    ]);
+  }
+  async budgets() {
+    const payload = await this.client.api('/v1/models/control-plane');
+    const budgets = (payload.config || payload).governance?.budgets || {};
+    const fields: Field[] = [
+      ['globalDailyTokenLimit', '每日累计 Token 上限'], ['globalDailyCostLimit', '每日费用上限'],
+      ['runMaxTokens', '单任务累计 Token 上限'], ['runMaxCost', '单任务费用上限'],
+    ].map(([key, label]) => ({ key, label: `${label}（0 为不限）`, value: String(budgets[key] ?? 0) }));
+    this.form('累计预算', fields, async values => {
+      const next = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, numericInput(value, fields.find(f => f.key === key)!.label)]));
+      if (Object.values(next).some(value => !Number.isFinite(value) || value < 0)) throw new Error('预算必须是有限非负数');
+      await this.prepare('/v1/config-broker/model-policy/prepare', { governance: { budgets: next } }, '/v1/models/control-plane');
+    }, ['累计用量上限与单次输出长度、上下文窗口分别生效。', `预算启用：${budgets.enabled ?? true}`]);
+  }
+  async outputParameters() {
+    const data = await this.client.api('/v1/models/control-plane');
+    const models = (data.models || []).filter((model: any) => ['TEXT', 'MULTIMODAL', 'VISION', 'CHAT'].includes(String(model.type || 'TEXT').toUpperCase()));
+    this.open('模型单次输出长度', ['设置保存在所选模型；使用同一模型的角色共享此值。auto 由协议与 Provider 决定。'], [{ label: '返回模型设置', run: () => this.models() },
+      ...models.map((model: any) => ({ label: `${model.modelId} · ${model.providerName || model.providerId}`, run: () => this.form('输出长度', [
+        { key: 'mode', label: '输出模式（auto / fixed）', value: model.outputTokenMode || (model.maxTokens ? 'fixed' : 'auto') },
+        { key: 'maxTokens', label: 'fixed 模式的单次输出 Token 上限', value: String(model.maxTokens || '') },
+      ], async values => {
+        const mode = values.mode.trim(); if (!['auto', 'fixed'].includes(mode)) throw new Error('请选择 auto 或 fixed');
+        const maxTokens = mode === 'fixed' ? numericInput(values.maxTokens, '单次输出上限') : 0; if (mode === 'fixed' && (!Number.isInteger(maxTokens) || maxTokens <= 0)) throw new Error('fixed 模式需要正整数 Token 上限');
+        const patch = { outputTokenMode: mode, ...(mode === 'fixed' ? { maxTokens } : {}) };
+        this.confirm('模型输出长度预览', [`模型：${model.modelRef}`, ...describe(patch)], '保存并回读', async () => {
+          const result = await this.client.api('/v1/models/bindings', { method: 'PUT', body: { providerId: model.providerId, modelId: model.modelId, model: patch } });
+          this.open('模型参数已回读', describe(result.model), [{ label: '返回模型设置', run: () => this.models() }]);
+        });
+      }) })),
+      { label: '高级角色配置', run: () => this.registry('supervisor') },
+    ]);
+  }
+  async contextSettings() {
+    const current = await this.client.api('/v1/config-registry/context');
+    const policy = current.data?.policy || {}, compression = policy.compression || {};
+    this.form('上下文窗口', [
+      { key: 'window', label: '上下文窗口 Token 上限', value: String(compression.default_context_window_tokens || 32000) },
+      { key: 'ratio', label: '压缩触发比例（0–1）', value: String(compression.trigger_ratio ?? 0.94) },
+      { key: 'turns', label: '保留最近轮数', value: String(compression.keep_recent_turns ?? 4) },
+    ], async values => {
+      const window = numericInput(values.window, '上下文窗口'), ratio = numericInput(values.ratio, '触发比例'), turns = numericInput(values.turns, '保留轮数');
+      if (!Number.isInteger(window) || window <= 0 || !(ratio > 0 && ratio <= 1) || !Number.isInteger(turns) || turns < 1) throw new Error('请输入正整数窗口/轮数及 0–1 的触发比例');
+      const patch = { policy: { ...policy, compression: { ...compression, default_context_window_tokens: window, trigger_ratio: ratio, keep_recent_turns: turns } } };
+      this.confirm('上下文配置预览', describe(patch), '保存并回读', async () => { await this.client.api('/v1/config-registry/context', { method: 'POST', body: patch }); await this.registry('context'); });
+    }, ['此处调整输入上下文容量；不会改动模型的单次输出上限。']);
+  }
+  async prepare(route: string, payload: any, readback: string) {
+    const plan = await this.client.api(route, { method: 'POST', body: payload });
+    if (!plan.transactionId || !plan.planDigest) throw new Error('配置事务缺少 ID 或摘要。');
+    if (plan.state !== 'ready_to_commit') throw new Error(`配置尚不能提交：${plan.state || '状态待确认'}`);
+    this.confirm('配置变更预览', [...describe(payload), ...describe(plan)], '提交配置', async () => {
+      const committed = await this.client.api(`/v1/config-broker/transactions/${encodeURIComponent(plan.transactionId)}/commit`, { method: 'POST', body: { planDigest: plan.planDigest } });
+      if (committed.state !== 'committed') throw new Error(`配置未提交：${committed.state || '结果待确认'}`);
+      const saved = await this.client.api(readback);
+      this.open('配置已回读', describe(saved), [{ label: '返回设置', run: () => this.settings() },
+        { label: '回滚此次配置', run: () => this.confirm('回滚配置', [plan.transactionId], '执行回滚并回读', async () => { const restored = await this.client.api(`/v1/config-broker/transactions/${encodeURIComponent(plan.transactionId)}/rollback`, { method: 'POST' }); if (restored.state !== 'rolled_back') throw new Error(`回滚未完成：${restored.state || '待确认'}`); await this.readPage('回滚后配置', readback); }) }]);
+    });
+  }
+  async brokerSettings(domain: string) {
+    const [data, schema] = await Promise.all([this.client.api(`/v1/config-broker/${domain}`), this.client.api(`/v1/config-broker/${domain}/schema`)]);
+    const labels: Record<string, string> = { enabled: '启用', port: '监听端口', publicBaseUrl: '手机外部地址（HTTPS）', 'node.displayName': '节点名称', 'node.advertisedBaseUrl': 'Peer 公告地址', 'relay.enabled': '启用 Relay', 'discovery.lanEnabled': '局域网发现', 'delegation.maxConcurrent': '最大并行任务数' };
+    const fields = schemaFields(schema.schema || {});
+    const actions: Action[] = fields.map(({ key, definition }) => {
+      const current = key.split('.').reduce((v: any, part) => v?.[part], data.settings) ?? definition.default ?? '';
+      const label = labels[key] || key;
+      return { label: `${label}：${typeof current === 'object' ? '详细配置' : current}`, run: () => {
+        if (definition.type === 'boolean' || definition.enum) {
+          this.open(label, [definition.description || '', `当前：${current}`], [{ label: '返回', run: () => this.brokerSettings(domain) },
+            ...(definition.enum || [true, false]).map((value: any) => ({ label: `${typeof value === 'boolean' ? value ? '启用' : '关闭' : value}`, run: () => this.prepare(`/v1/config-broker/${domain}/prepare`, { settings: fieldPatch(key, value) }, `/v1/config-broker/${domain}`) }))]);
+        } else this.form(label, [{ key: 'value', label, value: typeof current === 'object' ? JSON.stringify(current) : String(current) }], async v => {
+          const type = definition.type;
+          const value = type === 'integer' || type === 'number' ? numericInput(v.value, label) : type === 'array' || type === 'object' ? JSON.parse(v.value) : v.value.trim();
+          await this.prepare(`/v1/config-broker/${domain}/prepare`, { settings: fieldPatch(key, value) }, `/v1/config-broker/${domain}`);
+        }, [definition.description || '', ...(domain === 'client-gateway' ? ['地址影响手机连接；端口/启用状态改动需要重启 Engine 才生效。'] : [])]);
+      } };
+    });
+    this.open(domain === 'network' ? '组网配置' : '手机网关配置', describe(data), [
+      { label: '返回设置', run: () => this.settings() },
+      ...actions,
+      { label: '查看可修改字段', run: () => this.open('配置字段', describe(schema), [{ label: '返回', run: () => this.brokerSettings(domain) }]) },
+      { label: '修改配置字段', run: () => this.form('配置字段', [{ key: 'key', label: '字段名（见 Engine 字段说明）', value: '' }, { key: 'value', label: '值（true / false / 数字 / 文本）', value: '' }], async v => {
+        let value: any = v.value; try { value = JSON.parse(v.value); } catch { /* plain string */ }
+        const settings: any = {}; const segments = v.key.split('.'); if (segments.some(x => !x || ['__proto__', 'constructor', 'prototype'].includes(x))) throw new Error('无效字段');
+        let current = settings; for (const part of segments.slice(0, -1)) current = current[part] = {}; current[segments.at(-1)!] = value;
+        await this.prepare(`/v1/config-broker/${domain}/prepare`, { settings }, `/v1/config-broker/${domain}`);
+      }) },
+    ]);
+  }
+  async registry(domain: string) {
+    const result = await this.client.api(`/v1/config-registry/${domain}`);
+    this.open(result.title || domain, describe(result.data), [{ label: '返回设置', run: () => this.settings() },
+      { label: '编辑普通配置', run: () => this.form(result.title || domain, [{ key: 'patch', label: '配置 JSON（只包含需要修改的字段）', value: '{}' }], async v => {
+        const patch = JSON.parse(v.patch); if (!patch || Array.isArray(patch) || typeof patch !== 'object' || containsSecretField(patch)) throw new Error('此表单只支持非凭据配置对象');
+        this.confirm('确认配置修改', describe(patch), '保存并回读', async () => { await this.client.api(`/v1/config-registry/${domain}`, { method: 'POST', body: patch }); await this.registry(domain); });
+      }, ['此页调用现有配置 registry；Engine 负责验证、保存和运行时更新。']) },
+    ]);
+  }
+  async extensions() {
+    this.open('MCP / 插件', [], [{ label: '返回设置', run: () => this.settings() },
+      { label: 'MCP 状态', run: () => this.readPage('MCP 状态', '/v1/mcp/status') },
+      { label: '添加 MCP', run: () => this.form('添加 MCP', [{ key: 'name', label: '名称', value: '' }, { key: 'command', label: '可执行程序', value: '' }, { key: 'args', label: '参数 JSON 数组（无凭据）', value: '[]' }], async v => {
+        if (/secret|password|api.?key|token|credential/i.test(v.args)) throw new Error('不可通过普通参数传递凭据');
+        const args = JSON.parse(v.args); if (!Array.isArray(args) || args.some(x => typeof x !== 'string')) throw new Error('参数需要字符串数组');
+        await this.prepare('/v1/config-broker/mcp/prepare', { operation: 'install', name: v.name, server: { type: 'stdio', command: v.command, args } }, '/v1/mcp/status');
+      }) },
+      { label: '移除 MCP', run: () => this.form('移除 MCP', [{ key: 'name', label: '名称', value: '' }], async v => this.prepare('/v1/config-broker/mcp/prepare', { operation: 'remove', name: v.name }, '/v1/mcp/status')) },
+      { label: '插件安装与管理', run: () => plugins(this) },
+    ]);
+  }
+  async connections() {
+    this.open('连接', ['手机与组网使用各自独立的配对和撤销边界。'], [
+      { label: '返回对话', run: () => this.close(true) }, { label: '手机', run: () => this.phones() },
+      { label: '组网 / Peer', run: () => this.peers() }, { label: '入口 / 可达性', run: () => this.readPage('连接入口', '/v1/client-identity/link-manifest') },
+    ]);
+  }
+  async phones() {
+    const owner = await this.client.api('/v1/client-identity/owner');
+    if (!owner.initialized) {
+      this.open('首次配置', ['创建本机所有者后，可在设置中连接模型、选择工作区，再添加手机。'], [
+        { label: '返回', run: () => this.close(true) },
+        { label: '初始化本机 owner', run: async () => { await this.client.api('/v1/client-identity/bootstrap', { method: 'POST', body: { login: 'owner', name: 'Owner' } }); await this.client.initialize(); await this.settings(); } },
+      ]); return;
+    }
+    const [devices, manifest] = await Promise.all([this.client.api('/v1/client-identity/devices'), this.client.api('/v1/client-identity/link-manifest')]);
+    const pairing = manifest.pairing || {};
+    this.open('手机连接', [...describe(devices), `配对地址：${pairing.baseUrl || '尚未配置'}`, pairing.available ? '地址来自实例配置；网络可达性尚未验证。' : `暂不可配对：${pairing.reason || '请先配置手机网关'}`], [{ label: '返回连接', run: () => this.connections() },
+      { label: '初始化本机 owner', run: () => this.confirm('初始化本机 owner', ['首次配置时创建本机所有者。已有 owner 不会替换。'], '初始化', async () => { const owner = await this.client.api('/v1/client-identity/owner'); if (!owner.initialized) await this.client.api('/v1/client-identity/bootstrap', { method: 'POST', body: { login: 'owner', name: 'Owner' } }); await this.phones(); }) },
+      { label: '手机网关设置', run: () => this.brokerSettings('client-gateway') },
+      { label: '添加手机', disabled: !pairing.available, run: () => this.form('添加手机', [{ key: 'deviceName', label: '设备名称', value: '' }], async v => {
+        const ticket = await this.client.api('/v1/client-identity/pairing-ticket', { method: 'POST', body: { ...v, ttlMs: 300000 } });
+        this.ticketId = ticket.pairingId || ticket.ticketId || '';
+        if (!this.ticketId || !ticket.pairingUri || !ticket.pairingCode) throw new Error('配对票据响应不完整');
+        this.open('手机配对', [`有效期：${ticket.expiresAt || '5 分钟'}`, `配对链接：${ticket.pairingUri}`, `配对码：${ticket.pairingCode}`, '关闭页面会撤销尚未使用的票据。'], [{ label: '关闭配对页', run: () => this.close(true) }]);
+      }) },
+      ...listOf(devices).map((device: any) => ({ label: `撤销 ${device.deviceName || device.name || idOf(device)}`, run: () => this.confirm('撤销手机', describe(device), '撤销所选设备', async () => { await this.client.api(`/v1/client-identity/devices/${encodeURIComponent(idOf(device))}`, { method: 'DELETE' }); await this.phones(); }) })),
+    ]);
+  }
+  async peers() {
+    const [links, status, relay] = await Promise.all([this.client.api('/v1/network-supervisor/neighbors/links'), this.client.api('/v1/network-supervisor/status'), this.client.api('/v1/network-supervisor/relay/status')]);
+    this.open('组网 / Peer', [...describe(status), ...describe(relay), ...describe(links)], [
+      { label: '返回连接', run: () => this.connections() },
+      { label: '创建 Peer 邀请', run: () => createPeerInvitation(this) },
+      { label: '接受 Peer 邀请 / 配对码', run: () => consumePeerInvitation(this) },
+      { label: '远端任务', run: () => this.readPage('远端任务', '/v1/network-supervisor/neighbors/tasks?limit=30') },
+      ...listOf(links).map((link: any) => ({ label: `撤销连接 ${link.nickname || link.peerId || idOf(link)}`, run: () => this.confirm('撤销 Peer', describe(link), '撤销所选 Peer', async () => { await this.client.api(`/v1/network-supervisor/neighbors/${encodeURIComponent(link.linkId || idOf(link))}`, { method: 'DELETE' }); await this.peers(); }) })),
+    ]);
+  }
+  attachments() {
+    this.open('附件 / 产物', [...this.client.draft.attachments.map(x => `待发送来源：${x.name} · ${x.size} 字节`), ...this.client.outputs.map(x => `生成产物：${x.name}\n位置：${x.path || x.artifactId}`)], [
+      { label: '返回对话', run: () => this.close(true) },
+      { label: '添加附件', run: () => this.form('添加附件', [{ key: 'path', label: '文件绝对路径（上传到当前工作区）', value: '' }], async v => { await this.client.attachFile(v.path); this.attachments(); }) },
+      ...this.client.draft.attachments.map((x, i) => ({ label: `从草稿移除 ${x.name}`, run: () => { this.client.draft.attachments.splice(i, 1); this.client.save(); this.attachments(); } })),
+    ]);
+  }
+  help() {
+    this.open('帮助 / 首次安装', [
+      'V8OS · 对话优先的本机终端', '对话中 Ctrl+P 或空输入 /：命令候选；↑↓ 选择、Tab 补全、Enter 执行、Esc 返回原草稿。',
+      '候选中再次 Ctrl+P 打开完整操作菜单；页面内 Ctrl+P 仍打开完整菜单。',
+      'Enter 发送；F8 多行开关；F9 发送；Alt+Enter 换行。',
+      'Ctrl+B 会话；Ctrl+T 任务；Ctrl+N 新会话；F2 待处理；F3 设置；F4 连接。',
+      'PageUp 暂停跟随 / 读历史；PageDown 向下；菜单“回到底部”恢复。',
+      'Ctrl+C 关闭页面或清空输入；Ctrl+Z 撤销清空；Ctrl+D 空输入退出。',
+      '退出终端不停止 Engine / Phone / Peer；停止任务须选菜单“停止当前任务”。',
+      '粘贴不会执行命令；大段粘贴使用 F9 或菜单明确发送。',
+      '多行输入支持 ↑↓ 按显示列移动；操作菜单可搜索。外部编辑器使用 VISUAL / EDITOR（如 nano 或 code --wait），返回后须明确发送。',
+      'NO_COLOR / --no-color 无色；--screen-reader 线性阅读与编号菜单。',
+      'Node.js 22+。安装：npm install -g，后接下载的 .tgz 文件路径。',
+      '没有 Engine：从官方 Release 下载 server 包并解压，执行 ./install.sh；不需要 Admin。',
+      '已有 Engine：v8os service start。进入 F3 设置连接模型并选择工作区。',
+      '无法响应时可重新连接 SSH 后运行 reset；SIGKILL/掉电无法执行终端恢复。',
+    ], [{ label: '返回对话', run: () => this.close(true) }]);
+  }
+  commands(): Action[] { return [
+    { label: '发送', run: () => this.submit() }, { command: 'multiline', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
+    { command: 'sessions', description: '搜索并恢复已有会话', label: '会话列表', navigation: true, run: () => this.sessions() }, { command: 'new', description: '保留当前草稿，进入新会话', label: '新建会话', run: () => this.newSession() },
+    { command: 'task', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() }, { command: 'inbox', description: '查看审批与待回答问题', label: '待处理', navigation: true, run: () => this.inbox() },
+    { command: 'attach', description: '管理附件和生成产物', label: '附件 / 产物', navigation: true, run: () => this.attachments() }, { command: 'settings', description: '模型、工作区与预算配置', label: '设置', navigation: true, run: () => this.settings() },
+    { command: 'connect', description: '管理 Phone 与 Peer 连接', label: '连接', navigation: true, run: () => this.connections() }, { command: 'stop', description: '查看目标，再确认停止', label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
+    { command: 'retry', description: '核对 Engine 能力并确认重试', label: '重试当前任务', run: () => this.retryRun() },
+    { command: 'editor', description: '使用 VISUAL / EDITOR 编辑草稿', label: '外部编辑器 /editor', run: () => this.externalEditor() },
+    { command: 'approval', description: '显式选择后续消息审批模式', label: '本次会话审批模式', run: () => this.open('审批模式', ['默认沿用 Engine / 会话现有设置。显式选择仅作用于后续发送。', `当前选择：${this.client.approvalMode || '沿用 Engine'}`], [
+      { label: '返回', run: () => this.close(true) },
+      ...([['', '沿用 Engine'], ['manual', '逐项审批'], ['reduced', '减少审批'], ['minimal', '免审（保留系统内核与凭据边界）']] as const).map(([mode, label]) => ({ label, run: () => { this.client.approvalMode = mode; this.client.notice = `后续消息审批模式：${label}`; this.page = null; } })),
+    ]) },
+    { command: 'reconcile', description: '只回读，避免重复发送', label: '核对发送结果', run: async () => { await this.client.tick(); this.input = editor(this.client.draft.text); this.client.notice = this.client.draft.unknown ? 'Engine 尚未证明受理；仍禁止自动重发，可查看会话或保留草稿等待恢复。' : '已回读会话状态。'; await this.close(true); } },
+    { command: 'history', description: '读取更早的会话消息', label: '加载更早历史', run: async () => { await this.client.older(); this.following = false; this.anchor = 0; await this.close(true); } },
+    { command: 'bottom', description: '恢复跟随最新输出', label: '回到底部', navigation: true, run: () => { this.following = true; this.unread = 0; this.page = null; } },
+    { command: 'sidebar', description: '显示或隐藏会话概览', label: '切换会话侧栏', navigation: true, run: () => { this.client.view.sidebar = !this.client.view.sidebar; this.client.save(); this.page = null; } },
+    { command: 'details', description: '显示或隐藏任务概览', label: '切换任务侧栏', navigation: true, run: () => { this.client.view.detail = !this.client.view.detail; this.client.save(); this.page = null; } },
+    { command: 'exit', description: '退出界面，后台任务继续', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } }, { command: 'help', description: '快捷键与首次安装指导', label: '帮助', navigation: true, run: () => this.help() },
+  ]; }
+  palette(query = '') {
+    this.paletteQuery = query;
+    const all = this.commands(), matches = all.filter(x => `${x.command || ''} ${x.label}`.toLowerCase().includes(query.toLowerCase()));
+    this.open('操作菜单', [`搜索：${query || '（输入关键词）'}`, `匹配 ${matches.length} / ${all.length}`, matches.length ? '输入搜索 · 上下选择 · Enter 执行 · Esc 返回' : '没有匹配的操作；退格修改关键词，或 Esc 返回。'], matches);
+  }
+  async handle(event: Input) {
+    const { key, text = '' } = event;
+    if (key === 'ctrl-p') { if (this.page) this.palette(); else this.suggest(); return; }
+    if (key === 'escape' || key === 'ctrl-c' && this.page) { await this.close(); return; }
+    if (key === 'f1') { this.help(); return; }
+    if (this.page) {
+      const page = this.page;
+      if (page.fields) {
+        const index = page.fieldIndex || 0, fields = page.fields;
+        if (key === 'tab' || key === 'backtab') {
+          fields[index].value = this.formEditor.text;
+          page.fieldIndex = (index + (key === 'tab' ? 1 : fields.length - 1)) % fields.length; this.formEditor = editor(fields[page.fieldIndex].value);
+        } else if (key === 'f9') {
+          fields[index].value = this.formEditor.text;
+          const values = Object.fromEntries(fields.map(f => [f.key, f.value]));
+          try { await page.onSave?.(values); }
+          finally { for (const f of fields) if (f.secret) { f.value = ''; values[f.key] = ''; } if (page.sensitive && this.page === page) this.formEditor = editor(); }
+        } else {
+          this.formEditor = edit(this.formEditor, key === 'text' ? 'insert' : key === 'enter' || key === 'newline' ? 'insert' : key, key === 'enter' || key === 'newline' ? '\n' : text, this.editorWidth, fields[index].secret);
+          fields[index].value = this.formEditor.text;
+        }
+        this.changed(); return;
+      }
+      if (page.title === '操作菜单' && ['text', 'backspace'].includes(key)) { this.palette(key === 'backspace' ? graphemes(this.paletteQuery).slice(0, -1).join('') : this.paletteQuery + text); return; }
+      if (key === 'up' || key === 'backtab') page.selected = Math.max(0, page.selected - 1);
+      else if (key === 'down' || key === 'tab') page.selected = Math.max(0, Math.min(page.actions.length - 1, page.selected + 1));
+      else if (key === 'pageup') page.offset = Math.max(0, page.offset - 6);
+      else if (key === 'pagedown') page.offset += 6;
+      else if (key === 'enter') { const action = page.actions[page.selected]; if (action && !action.disabled) await action.run(); }
+      this.changed(); return;
+    }
+    if (key === 'f2') await this.inbox();
+    else if (key === 'f3') await this.settings();
+    else if (key === 'f4') await this.connections();
+    else if (key === 'ctrl-b') await this.sessions();
+    else if (key === 'ctrl-t') await this.details();
+    else if (key === 'ctrl-n') await this.newSession();
+    else if (key === 'f8') this.multiline = !this.multiline;
+    else if (key === 'f9') await this.submit();
+    else if (key === 'ctrl-c') { if (this.input.text) { this.undo = this.input.text; this.input = editor(); this.client.setDraft(''); this.client.notice = '输入已清空；Ctrl+Z 撤销。'; } else this.client.notice = 'Ctrl+D 退出终端；停止任务请选择菜单中的停止动作。'; }
+    else if (key === 'ctrl-z') { if (this.undo) { this.input = editor(this.undo); this.undo = ''; this.client.setDraft(this.input.text); } }
+    else if (key === 'ctrl-d' && !this.input.text) this.onExit();
+    else if (key === 'pageup') { this.following = false; this.scrollDelta -= 6; }
+    else if (key === 'pagedown') { this.following = false; this.scrollDelta += 6; }
+    else if (key === 'enter') {
+      if (this.commandReturnGuard) this.client.notice = '已返回草稿；编辑后按 Enter，或 F9 明确发送。';
+      else if (this.multiline) { this.input = edit(this.input, 'insert', '\n'); this.client.setDraft(this.input.text); }
+      else if (this.input.pasted) this.client.notice = '粘贴内容已保留，请按 F9 或菜单“发送”确认发送。';
+      else await this.submit();
+    } else if (key === 'text' && text === '/' && !this.input.text) this.suggest();
+    else {
+      if (['text', 'backspace', 'delete', 'newline'].includes(key)) this.commandReturnGuard = false;
+      this.input = edit(this.input, key === 'text' ? 'insert' : key === 'newline' ? 'insert' : key === 'ctrl-d' ? 'delete' : key, key === 'newline' ? '\n' : text, this.editorWidth);
+      this.client.setDraft(this.input.text);
+    }
+    this.changed();
+  }
+}

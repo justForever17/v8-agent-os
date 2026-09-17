@@ -12,6 +12,8 @@ import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { type AdminConnectionProfile, readAdminConnectionProfiles, updateAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
 import { listSupervisorPeers, updateSupervisorPeer, revokeSupervisorPeer, type SupervisorPeer } from "@/src/lib/supervisor-peers";
 import { readMetadata, writeMetadata } from "@/src/lib/mobile-storage";
+import { deviceExecutor } from "@/src/lib/device-executor";
+import { phoneAuthorityKey } from "@/src/lib/phone-identity";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
@@ -99,6 +101,11 @@ export default function ConnectScreen() {
                 if (target.kind === "peer") { await revokeSupervisorPeer(authorizedFetch, target.value); await refreshPeers(); }
                 else if (isActive) await signOut();
                 else {
+                    const instanceId = target.value.instanceId || target.value.serverId;
+                    const principalId = target.value.user?.id || target.value.principalId;
+                    if (instanceId && principalId) {
+                        await deviceExecutor.forgetProfile(phoneAuthorityKey({ instanceId, principalId, profileId: target.value.id }));
+                    }
                     await updateAdminConnectionProfiles((current) => current.filter((item) => item.id !== target.value.id));
                     await loadProfiles();
                 }

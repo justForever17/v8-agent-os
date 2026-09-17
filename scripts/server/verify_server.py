@@ -35,7 +35,8 @@ def verify(bundle: Path, browser: bool) -> dict:
         assert set(registry["installedRuntimeFamilies"]) == FAMILIES, registry["installedRuntimeFamilies"]
         assert inspect_memory_backend()["mode"] == "sqlite_fts5"
         names = {tool.name for tool in NATIVE_TOOLS if runtime_tool_available(tool.name)}
-        assert {"browser_broker", "web_broker", "delegation_broker", "agent_broker", "run_system_command"} <= names
+        assert {"browser_broker", "web_broker", "delegation_broker", "agent_broker", "run_system_command", "device_broker", "vision_media_analyzer"} <= names
+        assert "download_media_for_vision" not in names
         assert not any(name.startswith(("computer_use_", "rpa_", "creative_media_")) for name in names)
         assert not {"chromadb", "PIL", "edge_tts", "runtimes.creative_media.runtime", "runtimes.computer_use.runtime", "runtimes.rpa.runtime"}.intersection(sys.modules)
         result = {"profile": registry["installProfile"], "families": sorted(FAMILIES), "packages": len(installed), "tools": len(names), "memory": "sqlite_fts5", "supervisorImport": bool(supervisor_runner)}

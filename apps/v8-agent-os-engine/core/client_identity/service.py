@@ -29,12 +29,22 @@ def phone_pairing_origin(value: str) -> str:
     """Validate an explicit Phone origin; never infer it from an Admin port."""
     value = str(value or "").strip().rstrip("/").removesuffix("/api")
     try:
+        # Browser/Phone URL parsers treat backslashes as separators and strip
+        # controls. Reject these before urllib can interpret a different host.
+        if "\\" in value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+            return ""
         parsed = urlsplit(value)
         host = (parsed.hostname or "").rstrip(".").lower()
         if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
             return ""
         # Accessing port also rejects malformed/out-of-range ports.
         _ = parsed.port
+        if "%" in host or any(character.isspace() for character in host):
+            return ""
+        if ":" not in host:
+            # IDNA also maps full-width digits and Unicode dot separators.
+            # Check the same ASCII hostname the Phone URL client will resolve.
+            host = host.encode("idna").decode("ascii").rstrip(".").lower()
         if host == "localhost" or host.endswith(".localhost"):
             return ""
         try:
@@ -50,7 +60,7 @@ def phone_pairing_origin(value: str) -> str:
             if address.is_loopback or address.is_unspecified or address.is_link_local or address.is_multicast:
                 return ""
         return value
-    except ValueError:
+    except (ValueError, UnicodeError):
         return ""
 
 

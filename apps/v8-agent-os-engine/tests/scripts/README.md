@@ -9,6 +9,12 @@
 - 报告默认写到 `~/.v8-agent-os/reports/...`；不要把私有 live 报告提交进 Git。
 - 如果脚本被 Admin、cron、runtime 或部署流程正式调用，应迁移到 `apps/v8-agent-os-engine/scripts/` 并补稳定调用契约。
 
+## 首条对话与升级验证
+
+`run_first_chat_upgrade_live.py --live --repo <checkout> --state <isolated-state> --seed` 用指定 checkout 的初始化逻辑生成合成工作区和会话。真实模型模式仅复用当前模型配置及 OS 凭据引用，拒绝明文凭据，不复制用户会话。后续不带 `--seed`，依次用旧版本和候选 checkout 启动同一隔离状态。`probe_first_chat_live.py --live --state <isolated-state> --out <report.json> --samples 1` 记录实际提交、事件与最终历史的计时、长度和 hash。
+
+`run_first_chat_upgrade_live.py --live --fault-503 --repo <checkout> --state <new-isolated-state> --port <engine-port> --web-port <web-port>` 启动真实 Engine 与本地确定性 503 provider。它仅使用进程内合成凭据，不访问付费 provider；`provider-fault-proof.json` 只记录请求次数和状态码。生产 Web BFF 的失败原因、重新编辑、reload 不重发由 Web `tests/first_chat_live.py --live --expect-failure` 验证；细节见 Web `tests/first-chat-acceptance.md`。这些脚本不代表 Win10 安装包或原故障机器验收。
+
 ## 配置分发
 
 `run_config_distribution_live.py --live --output <report.json>` 在三个隔离状态根启动真实 `main.app` Engine 进程，经现有签名 peer HTTP 验证准备不写入、逐目标 diff、一台离线另一台提交、磁盘读回、源与目标进程重启后续作、同命令去重、精确撤回、远端撤销信任与未鉴权拒绝。仅使用临时合成凭据，不调用 provider，不读用户状态。此为本机真实网络/持久化证据，不等同 Android/iOS、LAN/VPN 或安装包验收；补充故障反例见 `tests/network/test_config_distribution.py`。
@@ -25,6 +31,8 @@
 
 | 脚本 | 用途 | 副作用 |
 | --- | --- | --- |
+| `export_default_agent_prompt_contract.py --output-dir <新目录>` | 从新种子加载 14 个角色，捕获 OpenAI/Anthropic 适配器原生调用边界的完整合成 system prompt、段顺序与实际工具 schema。 | 只写指定报告目录及其隔离状态根，不联网、不读取真实配置、不调用模型；不证明模型行为或真实媒体质量。 |
+| `replay_default_agent_prompt_regressions.py --output-dir <新目录>` | 对比旧种子迁移覆盖用户编辑的反例，以及移除内置 charter 的消融。 | 只写隔离 fixture 与结果；旧代码取自指定 Git baseline，不修改当前工作树或真实用户文件。 |
 | `export_context_management_assessment.py` | 导出超长上下文管理评估报告。 | 写本地报告。 |
 | `export_child_delegation_contract_dry_run.py` | 导出 Subagent → 孙 agent 任务契约与 handoff 回流空运行矩阵，检查孙 agent 拿到的是可执行任务而不是孤立 ID。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `export_memory_capability_assessment.py` | 导出 V8OS memory capability 评估报告。 | 写本地报告。 |

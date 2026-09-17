@@ -54,8 +54,11 @@ def test_server_never_loads_desktop_pack_paths(server, monkeypatch, tmp_path):
 def test_server_tools_preserve_browser_and_remove_desktop_and_media(server, monkeypatch):
     monkeypatch.setattr(profile, "build_feature_pack_statuses", lambda *args, **kwargs: [])
     from core.runtime_tool_access import runtime_tool_available, runtime_tool_group_available
-    for tool in ("computer_use_list_apps", "computer_use_desktop_capabilities", "computer_use_click", "rpa_run_draft", "creative_media_jobs", "vision_media_analyzer"):
+    for tool in ("computer_use_list_apps", "computer_use_desktop_capabilities", "computer_use_click", "rpa_run_draft", "creative_media_jobs", "download_media_for_vision"):
         assert not runtime_tool_available(tool), tool
+    # The fixed device image path is owned by Network/vision, not a local decoder.
+    assert runtime_tool_available("vision_media_analyzer")
+    assert runtime_tool_group_available("device.control")
     assert runtime_tool_group_available("browser.control")
     assert runtime_tool_available("web_broker")
     assert runtime_tool_available("delegation_broker")

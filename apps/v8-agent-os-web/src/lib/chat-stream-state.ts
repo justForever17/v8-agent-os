@@ -314,6 +314,13 @@ export function normalizeMessagesForState(messages: Message[]): Message[] {
             if (leftPosition > 0 && rightPosition > 0 && leftPosition !== rightPosition) {
                 return leftPosition - rightPosition;
             }
+            // The durable user receipt may arrive after its optimistic answer
+            // placeholder. Known canonical ordinals/turns still take priority.
+            if (left.message.runId && left.message.runId === right.message.runId
+                && left.message.role !== right.message.role) {
+                if (left.message.role === 'user') return -1;
+                if (right.message.role === 'user') return 1;
+            }
             const timestampDelta = Number(left.message.timestamp || 0) - Number(right.message.timestamp || 0);
             if (timestampDelta !== 0) {
                 return timestampDelta;
@@ -325,6 +332,16 @@ export function normalizeMessagesForState(messages: Message[]): Message[] {
 
 export function mergeMessageCollections(base: Message[], incoming: Message[]): Message[] {
     return normalizeMessagesForState([...base, ...incoming]);
+}
+
+// Preserve only the rendering identity when authoritative history replaces
+// content. Text, versions, nodes and epoch ownership still come from Engine.
+export function preserveMessageRenderKeys(current: Message[], incoming: Message[]): Message[] {
+    const byKey = new Map(current.flatMap((message) => buildMessageIdentityKeys(message).map((key) => [key, message] as const)));
+    return incoming.map((message) => {
+        const previous = buildMessageIdentityKeys(message).map((key) => byKey.get(key)).find(Boolean);
+        return previous ? { ...message, renderKey: previous.renderKey || (previous.role === 'assistant' && previous.runId ? `assistant:${previous.runId}` : previous.id) } : message;
+    });
 }
 
 export function normalizeProjectedMessages(input: unknown[]): Message[] {

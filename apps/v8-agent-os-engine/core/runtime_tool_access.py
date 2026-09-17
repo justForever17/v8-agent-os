@@ -158,6 +158,13 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "delegate_network_task",
         ],
     },
+    "device.control": {
+        "runtimeKind": "network_supervisor",
+        "label": "Fixed remote executors",
+        "summary": "Supervisor 直接读取或执行已授权 Android/ESP32 固定能力，保留设备回执与未知结果。",
+        "toolNames": ["device_broker"],
+        "guidance": "List exact device grants, observe the resource, then use device_broker execute. android.observe returns a node tree; android.capture returns a screenshotRef for vision_media_analyzer. Tap/swipe need a fresh API34 window frame and its geometry anchors; full-display capture is observation-only. Never retry unknown_outcome or infer business success from driver completion. Device credentials and grants are human settings, never tool arguments.",
+    },
     "creative_media.core": {
         "runtimeKind": "creative_media",
         "label": "Creative Media core",
@@ -181,6 +188,7 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
 }
 
 SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
+    "device_broker",
     "system_operations",
     RUNTIME_BROKER_TOOL_NAME,
     "ask_user",
@@ -280,7 +288,10 @@ def runtime_kind_for_tool_name(tool_name: Any) -> str:
         return "rpa"
     if normalized.startswith("creative_media_"):
         return "creative_media"
-    if normalized in {"vision_media_analyzer", "download_media_for_vision"}:
+    # Native executor JPEGs can be inspected through the existing model/vision
+    # owner without a local image-processing pack. Other image formats still
+    # report their explicit optional dependency at that tool's input boundary.
+    if normalized == "download_media_for_vision":
         from core.runtime.startup_profile import get_configured_install_profile
         if get_configured_install_profile() == "server":
             return "creative_media"

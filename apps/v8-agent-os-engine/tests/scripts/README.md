@@ -19,6 +19,12 @@
 
 `run_config_distribution_live.py --live --output <report.json>` 在三个隔离状态根启动真实 `main.app` Engine 进程，经现有签名 peer HTTP 验证准备不写入、逐目标 diff、一台离线另一台提交、磁盘读回、源与目标进程重启后续作、同命令去重、精确撤回、远端撤销信任与未鉴权拒绝。仅使用临时合成凭据，不调用 provider，不读用户状态。此为本机真实网络/持久化证据，不等同 Android/iOS、LAN/VPN 或安装包验收；补充故障反例见 `tests/network/test_config_distribution.py`。
 
+Phone 真实网关联测：先在 Phone 目录执行 `node tests/build-config-distribution-ui.cjs <ui-output> <admin-with-installed-webpack> live`，再运行 `run_config_distribution_live.py --live --ui-only --ui-dir <ui-output> --output <report.json>`。此模式使用实际 Phone 组件与 `PhoneTransport`、真实配对票据、bearer、gateway 和三台 Engine，替换的仅是浏览器中的原生 session 容器/存储。请求响应不由 synthetic HTTP 生成。`PHONE_TEST_BROWSER` 可指定已有 Chromium；原生 APK/存储仍须另验。
+
+实体 Phone 可用 `config_distribution_mobile_fixture.py --live --root <new-isolated-folder> --hostname <actual-LAN-IP> --minutes 120 serve` 常驻启动同源码三 Engine。`status` 输出去敏 readiness 与预算；`ticket --node source` 通过生产 API 签发标准 HTTPS 票据，仅写 fixture 内的 private 文件；`stop/start --node target2` 可注入离线/恢复，`edit --node target1 --tokens 999` 通过目标本地 Broker 注入撤回冲突。脚本不操作 adb、不安装 APK、不读取真实用户状态。
+
+物理验收只在独立验证包对所选 LAN IP 信任生成的公开 CA，正式包不带测试 CA。私钥不离开 fixture；证书/主机名验证保持开启，并分别验证缺少该 CA 和错误主机名拒绝。`public.json` 只包含端口、origin 与公开 CA 路径/指纹；配对票据不要放进聊天、日志或仓库。由设备协调者独占安装/UI操作，保留原正式应用。
+
 ## 受控系统操作
 
 `run_system_operations_windows_live.py --help` 给出分阶段入口。`status --live` 只显示组件和凭据是否配置；`privilege` / `unlock` 另需 `--allow-side-effects`，使用用户已在 Admin 配置的凭据，只打印去敏结果。`unlock` 会真实锁定当前会话再核验解锁，须提前告知用户；不自动重试认证。`lifecycle` 会请求 Windows UAC，移除并恢复两个自有组件，同时核对系统原有登录 Provider 未变。`--source-unlock-client` 仅标记源码客户端候选验证，不证明默认安装副本。

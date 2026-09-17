@@ -45,13 +45,24 @@ test("authoritative command redirect stays waiting through lifecycle and client 
 });
 
 test("authoritative terminal statuses override result-event completion fallback", () => {
-  for (const status of ["failed", "blocked", "timed_out", "terminated"]) {
+  for (const status of ["failed", "blocked", "timed_out", "terminated", "unknown"]) {
     assert.equal(buildClientToolSurface({
       toolName: "run_system_command",
       state: "result",
       result: "tool result received",
       resultStatus: status,
     }).status, status);
+  }
+});
+
+test("unknown receipt survives the real event projection without success inferred from receipt arrival", () => {
+  const node = applyToolResult({ toolCallId: "uncertain-device", toolName: "device_broker",
+    result: { summary: "连接中断，动作结果未确认", businessVerification: "unverified" }, resultStatus: "unknown" });
+  assert.equal(node.resultStatus, "unknown");
+  assert.equal(buildClientToolSurface({ toolName: node.toolName, state: "result", result: node.result, resultStatus: node.resultStatus }).status, "unknown");
+  assert.equal(buildClientToolSurface({ toolName: "device_broker", state: "result", result: "received", resultStatus: "future-unrecognized-status" }).status, "unknown");
+  for (const status of ["unknown", "unknown_outcome"]) {
+    assert.equal(buildClientToolSurface({ toolName: "device_broker", state: "result", result: { status, summary: "回执收到，动作待对账" } }).status, "unknown");
   }
 });
 

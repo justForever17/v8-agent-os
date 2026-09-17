@@ -318,10 +318,11 @@ def test_dashscope_payloads_match_wan_and_qwen_multimodal_contracts():
         model="wan2.7-r2v-2026-06-12",
         prompt="preserve this character",
         operation_kind="video.reference_to_video",
-        reference_image_urls=["https://example.com/reference.png"],
-        reference_video_urls=["https://example.com/reference.mp4"],
-        audio_url="https://example.com/voice.mp3",
-        duration=15,
+        reference_media=[
+            {"type": "reference_image", "url": "https://example.com/reference.png", "reference_voice": "https://example.com/voice.mp3"},
+            {"type": "reference_video", "url": "https://example.com/reference.mp4", "reference_voice": "https://example.com/voice.mp3"},
+        ],
+        duration=10,
     )
     assert r2v["input"]["media"] == [
         {
@@ -1203,8 +1204,8 @@ def test_seedance_recipe_prompt_keeps_multimodal_reference_roles(monkeypatch):
 
     prompt = recipe["providerPrompts"]["volcengine_seedance"]
     assert "@image1 as first_frame" in prompt
-    assert "@video2 as camera_motion" in prompt
-    assert "@audio3 as background_music" in prompt
+    assert "@video1 as camera_motion" in prompt
+    assert "@audio1 as background_music" in prompt
     assert "Seedance 2.0 reference discipline" in prompt
 
 
@@ -1224,15 +1225,15 @@ def test_image_recipe_persists_a_named_quality_profile(monkeypatch):
     assert character["qualityThresholds"]["maxReferenceAreaDelta"] == 0.18
 
 
-def test_prompt_policy_defaults_to_english_and_rewrites_protected_ip():
+def test_prompt_policy_preserves_named_subject_and_records_non_rewriting_observation():
     policy = prepare_provider_prompt_policy("生成钢铁侠海报，标题必须显示「未来战甲」", modality="image")
 
     assert policy["providerPromptLanguage"] == "source"
-    assert "钢铁侠" not in policy["translatedPrompt"]
-    assert "powered exoskeleton" in policy["translatedPrompt"]
+    assert policy["translatedPrompt"] == "生成钢铁侠海报，标题必须显示「未来战甲」"
     assert "标题必须显示" in policy["translatedPrompt"]
     assert "未来战甲" in policy["preservedTextTokens"]
-    assert policy["safetyTransform"]["applied"] is True
+    assert policy["safetyTransform"]["applied"] is False
+    assert policy["safetyTransform"]["detected"] is True
 
 
 def test_prompt_policy_preserves_exact_multilingual_image_edit_constraints():
@@ -2910,7 +2911,7 @@ def test_video_recipe_compilation_uses_timed_segments_and_asset_refs(monkeypatch
     assert recipe["controls"]["durationSeconds"] == 5
     assert recipe["providerNeutralRecipe"]["timedSegments"][0]["start"] == 0
     assert recipe["providerNeutralRecipe"]["timedSegments"][0]["end"] == 5
-    assert "One clear action" in recipe["providerNeutralRecipe"]["timedSegments"][0]["description"]
+    assert recipe["providerNeutralRecipe"]["timedSegments"][0]["description"] == recipe["prompt"]
     assert "@image1 as first_frame" in recipe["providerPrompts"]["volcengine_seedance"]
     assert "5秒产品视频" in recipe["providerPrompts"]["volcengine_seedance"]
     assert recipe["constraintCheck"]["warnings"]

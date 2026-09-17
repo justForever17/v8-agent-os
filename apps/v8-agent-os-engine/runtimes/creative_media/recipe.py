@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import uuid
 from copy import deepcopy
@@ -22,43 +23,18 @@ CHARACTER_BIBLE_STORE_FILE = "creative_media/character_bibles.json"
 KEYFRAME_STORE_FILE = "creative_media/keyframes.json"
 SUPPORTED_RECIPE_MODALITIES = {"image", "video", "voice", "music"}
 SUPPORTED_MUSIC_KINDS = {"cue_sheet", "score_brief", "music_reference", "future_generation"}
-PROTECTED_REFERENCE_REWRITES = [
+PROMPT_REFERENCE_MARKERS = [
     {
-        "kind": "copyright_character",
-        "risk": "medium",
-        "names": ["钢铁侠", "iron man", "ironman", "tony stark", "托尼史塔克", "托尼·史塔克"],
-        "replacement": (
-            "an original hyper-realistic cinematic high-tech powered exoskeleton suit for an adult male silhouette, "
-            "matte deep red armor with bright gold mechanical highlights, streamlined aerodynamic plating, fine brushed metal texture, "
-            "a cool blue-white circular energy core embedded in the chest, a fully enclosed helmet with a liftable gold faceplate, "
-            "narrow white glowing rectangular eye slits, segmented modular shoulder, arm, and leg armor, exposed hydraulic joints and servo motors, "
-            "round palm-mounted directional thrusters, vector flight engines under both feet, subtle tactical indicator lights and sensor arrays, "
-            "dynamic combat pose, dusk city skyline, backlight, volumetric lighting, natural metallic reflections, sharp subject and soft background"
-        ),
+        "kind": "named_character_reference",
+        "names": [
+            "钢铁侠", "iron man", "ironman", "tony stark", "托尼史塔克", "托尼·史塔克",
+            "蜘蛛侠", "spider-man", "spiderman", "彼得帕克", "彼得·帕克",
+            "蝙蝠侠", "batman", "bruce wayne", "布鲁斯韦恩", "布鲁斯·韦恩",
+        ],
     },
     {
-        "kind": "copyright_character",
-        "risk": "medium",
-        "names": ["蜘蛛侠", "spider-man", "spiderman", "彼得帕克", "彼得·帕克"],
-        "replacement": (
-            "an original agile urban acrobat hero in a red and midnight-blue technical fabric suit, abstract web-like seam geometry, "
-            "large expressive white eye lenses, dynamic wall-running pose, no logos, no named franchise symbols"
-        ),
-    },
-    {
-        "kind": "copyright_character",
-        "risk": "medium",
-        "names": ["蝙蝠侠", "batman", "bruce wayne", "布鲁斯韦恩", "布鲁斯·韦恩"],
-        "replacement": (
-            "an original nocturnal armored vigilante silhouette with a matte black tactical suit, angular protective cowl, cape-like glider fabric, "
-            "industrial city rooftop at night, no bat emblem, no franchise insignia"
-        ),
-    },
-    {
-        "kind": "brand_logo",
-        "risk": "low",
+        "kind": "named_brand_reference",
         "names": ["迪士尼", "disney", "marvel", "漫威", "dc comics"],
-        "replacement": "an original entertainment-inspired cinematic style without any brand logo, franchise name, or protected character identity",
     },
 ]
 
@@ -126,77 +102,62 @@ def _contains_cjk(value: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff]", value or ""))
 
 
-def _remove_preserved_text(value: str, preserved: list[str]) -> str:
-    result = value
-    for token in preserved:
-        if token:
-            result = result.replace(token, "")
-    return result
-
-
-def _apply_safety_transform(prompt: str) -> dict[str, Any]:
-    sanitized = prompt
+def _observe_prompt_references(prompt: str) -> dict[str, Any]:
+    # Keyword observations cannot determine intent, consent, or lawfulness.
+    # Negation and existing authorization remain in the complete prompt for
+    # the author and the existing execution/provider boundaries to assess.
     matches: list[dict[str, Any]] = []
-    lowered = sanitized.lower()
-    for rule in PROTECTED_REFERENCE_REWRITES:
+    lowered = prompt.lower()
+    for rule in PROMPT_REFERENCE_MARKERS:
         matched_names = [name for name in rule["names"] if name.lower() in lowered]
         if not matched_names:
             continue
-        for name in matched_names:
-            sanitized = re.sub(re.escape(name), rule["replacement"], sanitized, flags=re.IGNORECASE)
-        lowered = sanitized.lower()
         matches.append(
             {
                 "kind": rule["kind"],
-                "risk": rule["risk"],
                 "matched": matched_names,
-                "replacementSummary": rule["replacement"][:240],
-                "action": "descriptive_substitute",
+                "assessment": "not_determined",
+                "action": "observe_only",
             }
         )
     identity_patterns = [
-        (r"(克隆|模仿|复刻).{0,12}(声音|嗓音|声线)", "protected_voice_request"),
-        (r"(换脸|复刻真人|真人肖像|明星脸)", "sensitive_identity_request"),
+        (r"(克隆|模仿|复刻).{0,12}(声音|嗓音|声线)", "voice_identity_terms"),
+        (r"(换脸|复刻真人|真人肖像|明星脸)", "person_identity_terms"),
     ]
     for pattern, kind in identity_patterns:
         if re.search(pattern, prompt, flags=re.IGNORECASE):
             matches.append(
                 {
                     "kind": kind,
-                    "risk": "high",
                     "matched": [kind],
-                    "replacementSummary": "Use an original fictional presenter or anonymized consented identity instead of a real person or protected voice.",
-                    "action": "human_review_gate_if_user_requires_identity_replication",
+                    "assessment": "not_determined",
+                    "action": "observe_only",
                 }
             )
-            sanitized = re.sub(pattern, "an original fictional presenter with consent-safe identity", sanitized, flags=re.IGNORECASE)
     return {
-        "applied": bool(matches),
+        "applied": False,
+        "detected": bool(matches),
         "rawPrompt": prompt,
-        "sanitizedPrompt": sanitized,
         "events": matches,
-        "policy": "copyright_ip_avoidance_by_default",
+        "policy": "reference_observation_only",
     }
 
 
-def _provider_prompt_preserving_semantics(prompt: str, *, preserved_tokens: list[str]) -> str:
-    working = _remove_preserved_text(prompt, preserved_tokens)
+def _provider_prompt_preserving_semantics(prompt: str) -> str:
     # Provider-facing prompts are executable intent, not search keywords.
-    # Without a semantics-preserving translator, retaining the sanitized
+    # Without a semantics-preserving translator, retaining the original
     # source language is safer than collapsing exact constraints into a small
     # keyword summary. Current media providers accept multilingual prompts.
-    return working.strip() or prompt.strip()
+    # Quotes may identify dialogue, labels, or literal exclusions. Keep them
+    # in place with their speaker/timing/context; punctuation is not a license
+    # to turn speech into on-screen text.
+    return prompt.strip()
 
 
 def prepare_provider_prompt_policy(prompt: str, *, modality: str, preserved_tokens: list[str] | None = None) -> dict[str, Any]:
     preserved = list(preserved_tokens or _extract_quoted_text(prompt))
-    safety = _apply_safety_transform(prompt)
-    translated = _provider_prompt_preserving_semantics(
-        str(safety.get("sanitizedPrompt") or prompt),
-        preserved_tokens=preserved,
-    )
-    if preserved:
-        translated = f"{translated}\nPreserve these exact on-canvas text tokens verbatim: " + " | ".join(preserved)
+    safety = _observe_prompt_references(prompt)
+    translated = _provider_prompt_preserving_semantics(prompt)
     return {
         "rawUserRequest": prompt,
         "translatedPrompt": translated.strip(),
@@ -213,6 +174,16 @@ def _safe_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 600)
     except (TypeError, ValueError):
         parsed = default
     return max(minimum, min(maximum, parsed))
+
+
+def _requested_duration(value: Any) -> int | float:
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("durationSeconds must be a positive finite number") from exc
+    if isinstance(value, bool) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError("durationSeconds must be a positive finite number")
+    return int(duration) if duration.is_integer() else duration
 
 
 def _library_templates(library: dict[str, Any]) -> dict[str, Any]:
@@ -329,7 +300,11 @@ def _character_bible_summary(character_bibles: list[dict[str, Any]]) -> list[str
     result: list[str] = []
     for bible in character_bibles:
         anchors = [*list(bible.get("identityAnchors") or []), *list(bible.get("visualAnchors") or [])]
-        summary = "；".join(str(item) for item in anchors[:4] if str(item).strip())
+        parts = [_clean_str(bible.get("description")), *[str(item) for item in anchors if str(item).strip()]]
+        for key, label in (("voiceAnchors", "Voice"), ("wardrobe", "Wardrobe"), ("props", "Props"), ("negativeConstraints", "Exclusions")):
+            if bible.get(key):
+                parts.append(label + ": " + "; ".join(str(item) for item in bible[key]))
+        summary = "；".join(part for part in parts if part)
         name = bible.get("name") or bible.get("characterBibleId")
         if name:
             result.append(f"{name}: {summary}" if summary else str(name))
@@ -449,7 +424,7 @@ class CreativeRecipeCompiler:
             "characterBibleId": bible_id,
             **_scope_fields(request, previous),
             "name": _clean_str(request.get("name") or previous.get("name")) or bible_id,
-            "description": _clean_str(request.get("description") or previous.get("description")),
+            "description": _clean_str(request.get("description") or request.get("details") or previous.get("description")),
             "identityAnchors": _list_of_strings(request.get("identityAnchors") or request.get("identity_anchors") or previous.get("identityAnchors")),
             "visualAnchors": _list_of_strings(request.get("visualAnchors") or request.get("visual_anchors") or previous.get("visualAnchors")),
             "voiceAnchors": _list_of_strings(request.get("voiceAnchors") or request.get("voice_anchors") or previous.get("voiceAnchors")),
@@ -660,20 +635,30 @@ class CreativeRecipeCompiler:
 
     def _normalize_assets(self, request: dict[str, Any]) -> list[dict[str, Any]]:
         assets: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+
+        def append_asset(raw: dict[str, Any]) -> None:
+            modality = _normalize_modality(raw.get("modality") or raw.get("kind") or "image")
+            # Providers count images, videos, and audio independently. Voice
+            # and music share the audio sequence on the video wire.
+            sequence = "audio" if modality in {"voice", "music"} else modality
+            counts[sequence] = counts.get(sequence, 0) + 1
+            assets.append(_normalize_asset(raw, index=counts[sequence]))
+
         for raw in list(request.get("assets") or request.get("inputAssets") or request.get("input_assets") or []):
             if isinstance(raw, dict):
-                assets.append(_normalize_asset(raw, index=len(assets) + 1))
+                append_asset(raw)
         for asset_id in _list_of_strings(request.get("assetIds") or request.get("asset_ids")):
             existing = self.list_assets()
             match = next((item for item in existing if item.get("assetId") == asset_id), None)
             if match:
-                assets.append(_normalize_asset(match, index=len(assets) + 1))
+                append_asset(match)
         return assets
 
     def _base_recipe(self, request: dict[str, Any], prompt: str, modality: str, recipe_kind: str) -> dict[str, Any]:
         now = utc_now_iso()
         ratio = _clean_str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio"))
-        duration = request.get("durationSeconds") or request.get("duration_seconds") or request.get("duration")
+        duration = next((request[key] for key in ("durationSeconds", "duration_seconds", "duration") if key in request and request[key] is not None), None)
         assets = self._normalize_assets(request)
         character_bible_ids = _list_of_strings(request.get("characterBibleIds") or request.get("character_bible_ids"))
         keyframe_ids = _list_of_strings(request.get("keyframeIds") or request.get("keyframe_ids"))
@@ -703,8 +688,12 @@ class CreativeRecipeCompiler:
             "mustPreserve": hard_requirement_values or [prompt],
             "textTokens": text_tokens,
             "ratio": ratio,
-            "durationSeconds": _safe_int(duration, 0, minimum=0, maximum=600) if duration is not None else None,
-            "negativeConstraints": _list_of_strings(request.get("negativeConstraints") or request.get("negative_constraints") or request.get("negative")),
+            "durationSeconds": _requested_duration(duration) if duration is not None else None,
+            "negativeConstraints": [
+                *_list_of_strings(request.get("negativeConstraints") or request.get("negative_constraints") or request.get("negative")),
+                *([_clean_str(request.get("negativePrompt") or request.get("negative_prompt"))]
+                  if _clean_str(request.get("negativePrompt") or request.get("negative_prompt")) else []),
+            ],
             "assetRefs": source_refs,
             "characterBibleIds": character_bible_ids,
             "keyframeIds": keyframe_ids,
@@ -765,10 +754,10 @@ class CreativeRecipeCompiler:
         recipe_kind, template = _select_template(library, prompt, "narrative_scene")
         recipe = self._base_recipe(request, prompt, "image", recipe_kind)
         ratio = recipe["controls"]["ratio"] or "1:1"
-        enhancements = list(template.get("enhancements") or [])
-        recipe["softEnhancements"] = enhancements
-        structure = list(template.get("structure") or [])
-        avoidances = [*list(template.get("avoid") or []), *recipe["hardRequirements"]["negativeConstraints"]]
+        recipe["softEnhancements"] = list(template.get("enhancements") or [])
+        enhancements = _list_of_strings(request.get("style"))
+        structure = _list_of_strings(request.get("compositionStructure"))
+        avoidances = list(recipe["hardRequirements"]["negativeConstraints"])
         asset_lines = _asset_summary(recipe["assets"])
         character_lines = _character_bible_summary(recipe["characterBibles"])
         keyframe_lines = _keyframe_summary(recipe["keyframes"])
@@ -800,14 +789,16 @@ class CreativeRecipeCompiler:
             recipe_kind = "local_edit"
             template = dict(_library_templates(library).get("local_edit") or template)
         recipe = self._base_recipe(request, prompt, "video", recipe_kind)
-        duration = _safe_int(recipe["controls"].get("durationSeconds"), 5, minimum=1, maximum=60)
+        duration = recipe["controls"].get("durationSeconds") or 5
         ratio = recipe["controls"]["ratio"] or "16:9"
         segments = self._timed_segments(duration, prompt)
         asset_lines = _asset_summary(recipe["assets"])
         character_lines = _character_bible_summary(recipe["characterBibles"])
         keyframe_lines = _keyframe_summary(recipe["keyframes"])
-        camera_terms = list(template.get("cameraLanguage") or [])
-        avoidances = [*list(template.get("avoid") or []), *recipe["hardRequirements"]["negativeConstraints"]]
+        # A vocabulary list is guidance for the author, not simultaneous
+        # camera instructions. Only explicit choices belong in execution.
+        camera_terms = _list_of_strings(request.get("cameraLanguage"))
+        avoidances = list(recipe["hardRequirements"]["negativeConstraints"])
         recipe["softEnhancements"] = list(template.get("enhancements") or [])
         recipe["controls"].update({"ratio": ratio, "durationSeconds": duration})
         recipe["providerNeutralRecipe"] = {
@@ -904,7 +895,7 @@ class CreativeRecipeCompiler:
         if provider_neutral.get("keyframes"):
             lines.append("Keyframes: " + "; ".join(str(item) for item in provider_neutral["keyframes"]))
         if hard_requirements.get("preservedTextTokens"):
-            lines.append("Preserve exact on-canvas text: " + " | ".join(hard_requirements["preservedTextTokens"]))
+            lines.append("Preserve quoted text in its specified role and position: " + " | ".join(hard_requirements["preservedTextTokens"]))
         if hard_requirements.get("ratio"):
             lines.append(f"Aspect ratio: {hard_requirements['ratio']}")
         if provider_neutral.get("avoid"):
@@ -927,10 +918,12 @@ class CreativeRecipeCompiler:
             lines.append("Keyframe constraints: " + "; ".join(str(item) for item in keyframes))
         lines.append(f"{duration}-second video. Objective: {provider_neutral.get('objective')}")
         for segment in list(provider_neutral.get("timedSegments") or []):
+            if segment.get("description") == provider_neutral.get("objective"):
+                continue
             lines.append(f"{segment['start']}-{segment['end']}s: {segment['description']}")
         camera = provider_neutral.get("cameraLanguage") or []
         if camera:
-            lines.append("Camera language: " + ", ".join(str(item) for item in camera[:4]))
+            lines.append("Camera language: " + ", ".join(str(item) for item in camera))
         avoid = provider_neutral.get("avoid") or []
         if avoid:
             lines.append("Avoid: " + "; ".join(str(item) for item in avoid))
@@ -939,21 +932,9 @@ class CreativeRecipeCompiler:
     def _timed_segments(self, duration: int, prompt: str) -> list[dict[str, Any]]:
         prompt_policy = prepare_provider_prompt_policy(prompt, modality="video")
         objective = prompt_policy["translatedPrompt"]
-        if duration <= 5:
-            return [{"start": 0, "end": duration, "description": f"One clear action or establishing shot: {objective}"}]
-        if duration <= 10:
-            midpoint = max(3, duration // 2)
-            return [
-                {"start": 0, "end": midpoint, "description": f"Establish the subject, scene, and one primary action: {objective}"},
-                {"start": midpoint, "end": duration, "description": "Continue the action and settle into an edit-friendly ending; avoid abrupt scene changes."},
-            ]
-        first = min(5, duration // 3)
-        second = min(10, max(first + 3, (duration * 2) // 3))
-        return [
-            {"start": 0, "end": first, "description": f"Establish subject and spatial relationship: {objective}"},
-            {"start": first, "end": second, "description": "Develop one main action or camera movement while keeping character and scene continuity."},
-            {"start": second, "end": duration, "description": "End on a stable hold or transition frame for later stitching."},
-        ]
+        # Do not invent a second timeline or place the entire requested
+        # timeline inside its opening seconds. The author owns shot timing.
+        return [{"start": 0, "end": duration, "description": objective}]
 
     def _music_cues(self, duration: int, prompt: str) -> list[dict[str, Any]]:
         if duration <= 15:

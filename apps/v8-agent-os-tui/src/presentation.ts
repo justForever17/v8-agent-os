@@ -48,6 +48,28 @@ export function messageText(message: any): string {
     + executionSummaries(message).map(line => `\n${line}`).join('') + '\n';
 }
 
+/** Linear readers append prose without replaying the whole message on every
+ * token. The final newline belongs to messageText's layout, not the prose. */
+export function readerMessageUpdate(previous: string | undefined, next: string): string {
+  if (previous === next) return '';
+  const split = (value: string) => {
+    const separator = value.indexOf('\n');
+    const body = separator < 0 ? '' : value.slice(separator + 1);
+    return { heading: separator < 0 ? value : value.slice(0, separator), body: body.endsWith('\n') ? body.slice(0, -1) : body };
+  };
+  const current = split(next);
+  const full = `${current.heading}\n${current.body}`;
+  if (previous === undefined) return `\n${full}`;
+  const old = split(previous);
+  if (current.body.startsWith(old.body)) {
+    const append = current.body.slice(old.body.length);
+    return append + (current.heading !== old.heading ? `\n${current.heading}\n` : '');
+  }
+  // Revisions, deletions and changed tool outcomes need an explicit correction;
+  // a longest-common-prefix diff could silently erase a previously spoken fact.
+  return `\n消息已更新\n${full}`;
+}
+
 /** Counts changed messages while reading history, not individual token deltas. */
 export class PausedTranscriptUpdates {
   private previous = new Map<string, { content: unknown; nodes: unknown; state: unknown }>();

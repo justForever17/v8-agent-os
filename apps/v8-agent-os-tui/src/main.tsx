@@ -5,7 +5,7 @@ import { Client } from './client.js';
 import { Surface } from './surface.js';
 import { editExternal, editorArgv } from './external-editor.js';
 import { clip, dimensions, editor, editorLayout, InputDecoder, safeText, wrap, type Input } from './terminal.js';
-import { messageText, statusLabel, PausedTranscriptUpdates } from './presentation.js';
+import { messageText, readerMessageUpdate, statusLabel, PausedTranscriptUpdates } from './presentation.js';
 import { TranscriptLayout } from './transcript-layout.js';
 export { messageText } from './presentation.js';
 
@@ -177,7 +177,7 @@ export async function start(args: string[]) {
     if (key !== readerSession) { lastMessages.clear(); readerSession = key; }
     for (const m of client.messages) {
       const next = safeText(messageText(m)), previous = lastMessages.get(m.id);
-      if (next !== previous) { process.stdout.write(`\n${previous && next.startsWith(previous) ? next.slice(previous.length) : next}\n`); lastMessages.set(m.id, next); }
+      if (next !== previous) { process.stdout.write(readerMessageUpdate(previous, next)); lastMessages.set(m.id, next); }
     }
   }) : () => {};
   try {

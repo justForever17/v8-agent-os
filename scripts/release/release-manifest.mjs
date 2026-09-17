@@ -6,6 +6,7 @@ export const UNIFIED_TAG_RE = /^v8-os-v(20\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[1
 export const LEGACY_PRODUCT_TAG_RE = /^v8-os-(phone|desktop)-v(20\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])\.(?:[1-9]|[1-9]\d))$/;
 
 export const PRODUCT_TARGETS = Object.freeze({
+  tui: Object.freeze(["npm"]),
   server: Object.freeze(["linux-x64", "linux-arm64"]),
   desktop: Object.freeze([
     "windows-x64",
@@ -20,6 +21,18 @@ export const PRODUCT_TARGETS = Object.freeze({
 
 export function toUnifiedTag(version) {
   return `v8-os-v${version}`;
+}
+
+export function evaluateReleaseGate({ runBuilds, publish, products }) {
+  if (!runBuilds) {
+    if (publish || Object.values(products).some((product) => product.result !== "skipped")) throw new Error("A validation-only plan cannot build or publish products");
+    return false;
+  }
+  for (const [name, product] of Object.entries(products)) {
+    if (product.enabled && product.required && product.result !== "success") throw new Error(`Required product ${name} ended with ${product.result}`);
+    if (!product.enabled && product.result !== "skipped") throw new Error(`Disabled product ${name} unexpectedly ended with ${product.result}`);
+  }
+  return Boolean(publish);
 }
 
 export function toLegacyProductTag(product, version) {
@@ -159,6 +172,14 @@ export function validateReleaseProjections(manifest, repoRoot) {
     }
   }
 
+  if (manifest.products.tui?.enabled) {
+    for (const filename of ["package.json", "package-lock.json"]) {
+      const value = readProjectionJson(path.join(root, "apps", "v8-agent-os-tui", filename), `TUI ${filename}`, problems);
+      if (value && value.version !== semver) problems.push(`TUI ${filename} version is ${value.version}, expected ${semver}`);
+      if (filename === "package-lock.json" && value?.packages?.[""]?.version !== semver) problems.push(`TUI package-lock root version must be ${semver}`);
+    }
+  }
+
   if (problems.length > 0) {
     throw new Error(`Invalid release version projections:\n- ${problems.join("\n- ")}`);
   }
@@ -245,21 +266,21 @@ export function validateReleaseManifest(manifest) {
     for (const product of Object.keys(PRODUCT_TARGETS)) {
       const entry = products[product];
       // Historical schema-2 desktop/phone manifests predate this optional product.
-      if (product === "server" && !entry) continue;
+      if (["server", "tui"].includes(product) && !entry) continue;
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
         problems.push(`products.${product} must be an object`);
         continue;
       }
       validateBoolean(entry.enabled, `products.${product}.enabled`, problems);
       validateBoolean(entry.required, `products.${product}.required`, problems);
-      if (product !== "server" && (entry.enabled !== true || entry.required !== true)) {
+      if (!["server", "tui"].includes(product) && (entry.enabled !== true || entry.required !== true)) {
         problems.push(`products.${product} must be enabled and required`);
       }
       if (entry.required === true && entry.enabled !== true) {
         problems.push(`products.${product} cannot be required when it is disabled`);
       }
-      if (product === "server" && !entry.enabled && !String(entry.reason || "").trim()) {
-        problems.push("products.server.reason is required when the product is disabled");
+      if (["server", "tui"].includes(product) && !entry.enabled && !String(entry.reason || "").trim()) {
+        problems.push(`products.${product}.reason is required when the product is disabled`);
       }
       for (const duplicateField of ["version", "channel", "tag"]) {
         if (Object.hasOwn(entry, duplicateField)) {
@@ -267,6 +288,9 @@ export function validateReleaseManifest(manifest) {
         }
       }
       validateTargets(product, entry, problems);
+      if (entry.required && !Object.values(entry.targets || {}).some((target) => target?.enabled && target?.required)) {
+        problems.push(`products.${product} requires at least one enabled required target`);
+      }
     }
   }
 
@@ -372,6 +396,7 @@ export function resolveReleasePlan(manifest) {
   const desktop = manifest.products.desktop;
   const phone = manifest.products.phone;
   const server = manifest.products.server;
+  const tui = manifest.products.tui;
   const android = phone.targets.android;
   const ios = phone.targets.ios;
   const phonePlatform = android.enabled && ios.enabled
@@ -389,6 +414,7 @@ export function resolveReleasePlan(manifest) {
     tag: manifest.release.tag,
     prerelease: manifest.release.channel !== "stable",
     server: { enabled: Boolean(server?.enabled), required: Boolean(server?.required), targets: server ? targetList(server) : [] },
+    tui: { enabled: Boolean(tui?.enabled), required: Boolean(tui?.required), targets: tui ? targetList(tui) : [] },
     desktop: {
       enabled: desktop.enabled,
       required: desktop.required,

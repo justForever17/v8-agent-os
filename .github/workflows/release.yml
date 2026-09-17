@@ -44,6 +44,8 @@ jobs:
       desktop_required: ${{ steps.release-plan.outputs.desktop_required }}
       server_enabled: ${{ steps.release-plan.outputs.server_enabled }}
       server_required: ${{ steps.release-plan.outputs.server_required }}
+      tui_enabled: ${{ steps.release-plan.outputs.tui_enabled }}
+      tui_required: ${{ steps.release-plan.outputs.tui_required }}
       desktop_targets_json: ${{ steps.release-plan.outputs.desktop_targets_json }}
       phone_enabled: ${{ steps.release-plan.outputs.phone_enabled }}
       phone_required: ${{ steps.release-plan.outputs.phone_required }}
@@ -80,6 +82,11 @@ jobs:
     needs: [plan]
     if: needs.plan.outputs.run_builds == 'true' && needs.plan.outputs.server_enabled == 'true'
     uses: ./.github/workflows/server-build.yml
+
+  tui-build:
+    needs: [plan]
+    if: needs.plan.outputs.run_builds == 'true' && needs.plan.outputs.tui_enabled == 'true'
+    uses: ./.github/workflows/tui-build.yml
 
   desktop-build:
     name: Build required Desktop targets
@@ -197,6 +204,7 @@ jobs:
       - desktop-build
       - phone-build-contract
       - server-build
+      - tui-build
     if: ${{ always() && !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -206,6 +214,10 @@ jobs:
       publish_ready: ${{ steps.release-gate.outputs.publish_ready }}
 
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
       - id: release-gate
         name: Enforce required product results
         shell: bash
@@ -221,40 +233,27 @@ jobs:
           SERVER_ENABLED: ${{ needs.plan.outputs.server_enabled }}
           SERVER_REQUIRED: ${{ needs.plan.outputs.server_required }}
           SERVER_RESULT: ${{ needs.server-build.result }}
+          TUI_ENABLED: ${{ needs.plan.outputs.tui_enabled }}
+          TUI_REQUIRED: ${{ needs.plan.outputs.tui_required }}
+          TUI_RESULT: ${{ needs.tui-build.result }}
         run: |
           set -euo pipefail
           echo "publish_ready=false" >> "$GITHUB_OUTPUT"
 
-          verify_product() {
-            local product="$1"
-            local enabled="$2"
-            local required="$3"
-            local result="$4"
-            if [[ "$enabled" == "true" && "$required" == "true" && "$result" != "success" ]]; then
-              echo "Required product $product ended with $result" >&2
-              exit 1
-            fi
-            if [[ "$enabled" != "true" && "$result" != "skipped" ]]; then
-              echo "Disabled product $product unexpectedly ended with $result" >&2
-              exit 1
-            fi
-          }
-
-          if [[ "$RUN_BUILDS" != "true" ]]; then
-            [[ "$PUBLISH" == "false" ]]
-            [[ "$DESKTOP_RESULT" == "skipped" ]]
-            [[ "$PHONE_RESULT" == "skipped" ]]
-            [[ "$SERVER_RESULT" == "skipped" ]]
-            exit 0
-          fi
-
-          verify_product desktop "$DESKTOP_ENABLED" "$DESKTOP_REQUIRED" "$DESKTOP_RESULT"
-          verify_product phone "$PHONE_ENABLED" "$PHONE_REQUIRED" "$PHONE_RESULT"
-          verify_product server "$SERVER_ENABLED" "$SERVER_REQUIRED" "$SERVER_RESULT"
-
-          if [[ "$PUBLISH" == "true" ]]; then
-            echo "publish_ready=true" >> "$GITHUB_OUTPUT"
-          fi
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { evaluateReleaseGate, PRODUCT_TARGETS } from './scripts/release/release-manifest.mjs';
+          const products = Object.fromEntries(Object.keys(PRODUCT_TARGETS).map((name) => {
+            const prefix = name.toUpperCase();
+            return [name, {
+              enabled: process.env[prefix + '_ENABLED'] === 'true',
+              required: process.env[prefix + '_REQUIRED'] === 'true',
+              result: process.env[prefix + '_RESULT'],
+            }];
+          }));
+          const ready = evaluateReleaseGate({ runBuilds: process.env.RUN_BUILDS === 'true', publish: process.env.PUBLISH === 'true', products });
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish_ready=' + ready + '\n');
+          NODE
 
   publish:
     name: Publish one V8OS release
@@ -284,6 +283,13 @@ jobs:
           name: v8os-server-linux-x64
           path: release-input/server
 
+      - name: Download TUI npm artifact
+        if: needs.plan.outputs.tui_enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: v8os-tui-npm
+          path: release-input/tui
+
       - name: Download Desktop build artifacts
         if: needs.plan.outputs.desktop_enabled == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -312,6 +318,7 @@ jobs:
           node scripts/release/prepare-unified-release-assets.mjs
           --manifest release-manifest.json
           --tag "${{ needs.plan.outputs.tag }}"
+          --source-commit "${{ github.sha }}"
           --input-dir release-input
           --output-dir release-assets
 
@@ -322,7 +329,7 @@ jobs:
           test -f release-assets/SHA256SUMS.txt
           while IFS= read -r asset; do
             case "$asset" in
-              V8-Agent-OS-*|V8OS-Phone-*|V8OS-Server-*|SHA256SUMS.txt) ;;
+              V8-Agent-OS-*|V8OS-Phone-*|V8OS-Server-*|V8OS-TUI-*.tgz|SHA256SUMS.txt) ;;
               *) echo "Unexpected public release asset: $asset" >&2; exit 1 ;;
             esac
           done < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
@@ -342,6 +349,7 @@ jobs:
           esac
           mkdir -p release-work
           node scripts/release/generate-release-notes.mjs \
+            --manifest release-manifest.json \
             --product "$product" \
             --version "$RELEASE_VERSION" \
             --tag "$RELEASE_TAG" \

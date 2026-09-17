@@ -2,7 +2,8 @@
 import { AdminLoadState } from "@/components/admin-shell/AdminLoadState";
 import { AdminSaveBar } from "@/components/admin-shell/AdminSaveBar";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AlertTriangle, CheckCircle2, KeyRound, Loader2, RefreshCw, Save, Shield, Server, Trash2, Wrench } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
@@ -312,7 +313,13 @@ function deriveDesktopLivePreset(config?: SystemBaseData["desktopLive"]): Deskto
 }
 
 export default function SystemBasePage() {
+    return <Suspense><SystemBaseContent /></Suspense>;
+}
+
+function SystemBaseContent() {
     const t = useT();
+    const searchParams = useSearchParams();
+    const focusPhone = searchParams.get("section") === "phone";
     const [initialEnvelope] = useState(() => peekConfigDomain<SystemBaseData>("system-base") ?? null);
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(initialEnvelope);
     const [saving, setSaving] = useState(false);
@@ -328,6 +335,11 @@ export default function SystemBasePage() {
     const [cloudflareProbeMessage, setCloudflareProbeMessage] = useState("");
 
     const [loadError, setLoadError] = useState("");
+    const contentReady = Boolean(envelope);
+    useEffect(() => {
+        if (!focusPhone || !contentReady) return;
+        document.getElementById("phone-connection")?.scrollIntoView({ block: "start" });
+    }, [focusPhone, contentReady]);
     const loadData = async () => {
         setLoadError("");
         try {
@@ -351,7 +363,19 @@ export default function SystemBasePage() {
                     force: true,
                     refreshEnvironment: true,
                 });
-                if (active) setEnvelope(next);
+                if (active) setEnvelope((current) => current ? {
+                    ...current,
+                    data: {
+                        ...current.data,
+                        // A background probe may finish after typing or saving.
+                        // Only its diagnostics may replace the current form.
+                        environmentProbe: next.data.environmentProbe,
+                        desktopReadiness: next.data.desktopReadiness,
+                        detectedDesktopTools: next.data.detectedDesktopTools,
+                        dependencyStatus: next.data.dependencyStatus,
+                        remoteLinkMeshStatus: next.data.remoteLinkMeshStatus,
+                    },
+                } : current);
             } catch {
                 if (!active) return;
                 setEnvelope((current) => current ? {
@@ -719,6 +743,9 @@ export default function SystemBasePage() {
                 </ConfigCard>
 
                 <ConfigCard collapsible
+                    id="phone-connection"
+                    className="scroll-mt-20"
+                    defaultOpen={focusPhone}
                     title={t("app.admin.dashboard.system.base.remoteLink.title")}
                     description={t("app.admin.dashboard.system.base.remoteLink.description")}
                     variant="editor"
@@ -774,8 +801,9 @@ export default function SystemBasePage() {
                                     />
                                 </div>
                                 <div className="space-y-2 md:col-span-2">
-                                    <Label>{t("app.admin.dashboard.system.base.remoteLink.phoneGatewayPublicUrl")}</Label>
+                                    <Label htmlFor="phone-gateway-public-url">{t("app.admin.dashboard.system.base.remoteLink.phoneGatewayPublicUrl")}</Label>
                                     <Input
+                                        id="phone-gateway-public-url"
                                         value={phoneGateway.publicBaseUrl || ""}
                                         onChange={(event) => updateData((current) => ({
                                             ...current,

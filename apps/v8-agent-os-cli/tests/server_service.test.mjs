@@ -3,9 +3,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { createServerServiceManager, inspectServerBundle, renderServerServiceUnit, SERVER_SERVICE_NAME } from "../src/server_service.mjs";
+
+const PYTHON = process.env.V8_SERVER_TEST_PYTHON || (process.platform === "win32" ? "python" : "python3");
+
+function sqliteFixture(stateRoot, script) {
+  const result = spawnSync(PYTHON, ["-I", "-c", `import sqlite3,sys\nconn=sqlite3.connect(sys.argv[1])\n${script}\nconn.commit()\nconn.close()`, path.join(stateRoot, "state.db")], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-service-"));
@@ -27,6 +36,8 @@ function fixture(t) {
     }
     fs.writeFileSync(path.join(dir, "server-manifest.json"), JSON.stringify({ schema: 1, profile: "server", platform: "linux", arch: process.arch,
       version, engine: "apps/v8-agent-os-engine", cli: "apps/v8-agent-os-cli/bin/v8os.mjs" }));
+    fs.mkdirSync(path.join(dir, "apps/v8-agent-os-engine/core"));
+    fs.writeFileSync(path.join(dir, "apps/v8-agent-os-engine/core/database.py"), "DATABASE_SCHEMA_VERSION = 3\nraise RuntimeError('must never import Engine during schema preflight')\n");
     return dir;
   };
   const first = bundle("v1", "2026.09.16.3");
@@ -38,6 +49,7 @@ function fixture(t) {
   let failure = null;
   let healthOverride;
   let ownSocket = true;
+  let onStart;
   let tick = 0;
   const activeBundle = () => {
     const unit = fs.readFileSync(unitPath, "utf8");
@@ -50,6 +62,10 @@ function fixture(t) {
       engineRuntime: { managedRuntimeRoot: path.join(activeBundle(), "apps/v8-agent-os-engine/.venv"), reload: false } }),
     run: async (command, args) => {
       calls.push([command, ...args]);
+      if (command.endsWith("python3")) {
+        const result = spawnSync(PYTHON, args, { encoding: "utf8" });
+        return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+      }
       if (command === "loginctl") return { code: 0, stdout: linger };
       assert.equal(command, "systemctl");
       assert.deepEqual(args.slice(0, 3), ["--user", "--no-pager", "--no-ask-password"]);
@@ -61,6 +77,8 @@ function fixture(t) {
         state = { ...state, LoadState: fs.existsSync(unitPath) ? "loaded" : "not-found", FragmentPath: fs.existsSync(unitPath) ? unitPath : "" };
       } else if (action === "start" || action === "restart") {
         assert.equal(state.LoadState, "loaded");
+        try { onStart?.(activeBundle()); }
+        catch (error) { state = { ...state, ActiveState: "failed", SubState: "failed", MainPID: "0" }; return { code: 1, stderr: error.message }; }
         state = { ...state, ActiveState: "active", SubState: "running", MainPID: String(Number(state.MainPID) + 100), Result: "success" };
       } else if (action === "stop") state = { ...state, ActiveState: "inactive", SubState: "dead", MainPID: "0" };
       else if (action === "enable") state.UnitFileState = "enabled";
@@ -69,9 +87,10 @@ function fixture(t) {
       return { code: 0, stdout: "" };
     },
   });
-  return { root, stateRoot, configHome, keyFile, first, second, calls, manager, activeBundle,
+  return { root, stateRoot, configHome, keyFile, first, second, bundle, calls, manager, activeBundle,
     setLinger: (value) => { linger = value; }, setFailure: (value) => { failure = value; },
     setHealth: (value) => { healthOverride = value; }, setOwnSocket: (value) => { ownSocket = value; },
+    setOnStart: (value) => { onStart = value; },
     updateState: (value) => { state = { ...state, ...value }; }, state: () => state };
 }
 
@@ -109,6 +128,132 @@ test("upgrade preserves the old release and manual rollback restores it", async 
   assert.equal(f.state().ActiveState, "active");
   assert.equal(f.state().UnitFileState, "enabled");
   assert.ok(fs.existsSync(f.second));
+});
+
+function migratingFixture(t) {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.second, "apps/v8-agent-os-engine/core/database.py"), "DATABASE_SCHEMA_VERSION = 4\nraise RuntimeError('no Engine import')\n");
+  sqliteFixture(f.stateRoot, "conn.execute('PRAGMA user_version=3')\nconn.execute('CREATE TABLE messages(content TEXT)')\nconn.execute(\"INSERT INTO messages VALUES ('synthetic preserved conversation')\")");
+  const starts = [];
+  f.setOnStart((bundle) => {
+    starts.push(bundle);
+    const supported = bundle === f.first ? 3 : 4;
+    const current = Number(sqliteFixture(f.stateRoot, "print(conn.execute('PRAGMA user_version').fetchone()[0])"));
+    if (current > supported) throw new Error(`Old Engine refuses schema ${current}`);
+    sqliteFixture(f.stateRoot, `conn.execute('PRAGMA user_version=${supported}')`);
+  });
+  return { ...f, starts };
+}
+
+test("schema migration followed by readiness failure blocks old binary rollback and preserves new state", async (t) => {
+  const f = migratingFixture(t);
+  await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  f.setHealth({ status: "not-ready" });
+  await assert.rejects(f.manager.perform("upgrade", { bundleRoot: f.second }), /schema 4.*supports 3/u);
+  assert.deepEqual(f.starts, [f.first, f.second]);
+  assert.equal(f.activeBundle(), f.second);
+  assert.equal(JSON.parse(fs.readFileSync(f.manager.receiptPath)).phase, "pending");
+  assert.equal(sqliteFixture(f.stateRoot, "print(conn.execute('PRAGMA user_version').fetchone()[0])"), "4");
+  assert.equal(sqliteFixture(f.stateRoot, "print(conn.execute('SELECT content FROM messages').fetchone()[0])"), "synthetic preserved conversation");
+  f.setHealth(undefined);
+  assert.equal((await f.manager.perform("start")).status, "started");
+  assert.equal((await f.manager.perform("status")).status, "active");
+});
+
+test("manual rollback after schema upgrade does not stop the healthy new service", async (t) => {
+  const f = migratingFixture(t);
+  await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  const upgraded = await f.manager.perform("upgrade", { bundleRoot: f.second });
+  assert.equal(upgraded.rollbackAvailable, false);
+  const before = f.calls.length;
+  await assert.rejects(f.manager.perform("rollback"), /schema 4.*supports 3/u);
+  assert.ok(f.calls.slice(before).every((call) => call[4] !== "stop"));
+  assert.equal(f.activeBundle(), f.second);
+  assert.equal(f.state().ActiveState, "active");
+  assert.equal(JSON.parse(fs.readFileSync(f.manager.receiptPath)).phase, "ready");
+});
+
+test("explicit downgrade through upgrade is rejected before stopping or altering the unit", async (t) => {
+  const f = migratingFixture(t);
+  await f.manager.perform("install", { bundleRoot: f.second, keyFile: f.keyFile });
+  const unit = fs.readFileSync(f.manager.unitPath);
+  await assert.rejects(f.manager.perform("upgrade", { bundleRoot: f.first }), /schema 4.*supports 3/u);
+  assert.equal(f.activeBundle(), f.second);
+  assert.deepEqual(fs.readFileSync(f.manager.unitPath), unit);
+  assert.equal(f.state().ActiveState, "active");
+});
+
+test("a pending migrated upgrade can recover forward into a compatible fixed bundle", async (t) => {
+  const f = migratingFixture(t);
+  await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  f.setHealth({ status: "not-ready" });
+  await assert.rejects(f.manager.perform("upgrade", { bundleRoot: f.second }), /schema 4.*supports 3/u);
+  const fixed = f.bundle("fixed", "2026.09.17.2");
+  fs.writeFileSync(path.join(fixed, "apps/v8-agent-os-engine/core/database.py"), "DATABASE_SCHEMA_VERSION = 4\n");
+  f.setHealth(undefined);
+  const result = await f.manager.perform("upgrade", { bundleRoot: fixed });
+  assert.equal(result.status, "upgraded");
+  assert.equal(result.rollbackAvailable, false);
+  assert.equal(f.activeBundle(), fixed);
+  const receipt = JSON.parse(fs.readFileSync(f.manager.receiptPath));
+  assert.equal(receipt.phase, "ready");
+  assert.equal(receipt.previous.bundleRoot, f.first);
+  assert.equal(sqliteFixture(f.stateRoot, "print(conn.execute('SELECT content FROM messages').fetchone()[0])"), "synthetic preserved conversation");
+});
+
+test("pending start repairs a unit missing after interruption without dropping its journal", async (t) => {
+  const f = fixture(t);
+  await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  const receipt = JSON.parse(fs.readFileSync(f.manager.receiptPath));
+  fs.writeFileSync(f.manager.receiptPath, JSON.stringify({ ...receipt, phase: "pending" }));
+  fs.unlinkSync(f.manager.unitPath);
+  f.updateState({ LoadState: "not-found", FragmentPath: "", ActiveState: "inactive", MainPID: "0" });
+  assert.equal((await f.manager.perform("start")).status, "started");
+  assert.equal(f.activeBundle(), f.first);
+  assert.equal(JSON.parse(fs.readFileSync(f.manager.receiptPath)).phase, "ready");
+});
+
+test("unverifiable database or schema source blocks lifecycle mutation", async (t) => {
+  for (const fault of ["corrupt-db", "missing-source", "nonliteral-source"]) {
+    const f = fixture(t);
+    await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+    if (fault === "corrupt-db") fs.writeFileSync(path.join(f.stateRoot, "state.db"), "not sqlite");
+    else {
+      const source = path.join(f.second, "apps/v8-agent-os-engine/core/database.py");
+      if (fault === "missing-source") fs.unlinkSync(source);
+      else fs.writeFileSync(source, "DATABASE_SCHEMA_VERSION = int('4')\n");
+    }
+    const before = f.calls.length;
+    const unit = fs.readFileSync(f.manager.unitPath);
+    await assert.rejects(f.manager.perform("upgrade", { bundleRoot: f.second }), { code: "server_schema_unverified" });
+    assert.ok(f.calls.slice(before).every((call) => call[4] !== "stop"));
+    assert.deepEqual(fs.readFileSync(f.manager.unitPath), unit);
+    assert.equal(f.state().ActiveState, "active");
+  }
+});
+
+test("schema admission reads committed WAL instead of the stale main-file version", async (t) => {
+  const f = fixture(t);
+  sqliteFixture(f.stateRoot, "conn.execute('PRAGMA user_version=3')");
+  await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  const child = spawn(PYTHON, ["-I", "-u", "-c", [
+    "import sqlite3,sys", "conn=sqlite3.connect(sys.argv[1])", "conn.execute('PRAGMA journal_mode=WAL')",
+    "conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')", "conn.execute('PRAGMA user_version=4')",
+    "conn.commit()", "print('ready',flush=True)", "sys.stdin.readline()", "conn.close()",
+  ].join("\n"), path.join(f.stateRoot, "state.db")], { stdio: ["pipe", "pipe", "pipe"] });
+  const exited = once(child, "exit");
+  try {
+    const [chunk] = await once(child.stdout, "data");
+    assert.match(String(chunk), /ready/u);
+    assert.equal(fs.readFileSync(path.join(f.stateRoot, "state.db")).readUInt32BE(60), 3);
+    const before = f.calls.length;
+    await assert.rejects(f.manager.perform("restart"), { code: "server_schema_incompatible" });
+    assert.ok(f.calls.slice(before).every((call) => call[4] !== "restart"));
+    assert.equal(f.state().ActiveState, "active");
+  } finally {
+    child.stdin.end("done\n");
+    await exited;
+  }
 });
 
 test("failed new process restores prior running unit and reports failed upgrade", async (t) => {

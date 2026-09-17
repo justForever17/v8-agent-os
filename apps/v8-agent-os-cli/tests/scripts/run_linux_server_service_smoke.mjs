@@ -30,9 +30,17 @@ const port = await new Promise((resolve, reject) => {
   server.once("error", reject);
   server.listen(0, "127.0.0.1", () => { const value = server.address().port; server.close(() => resolve(value)); });
 });
-const pythonFixture = `import http.server, json, os, sys
+const pythonFixture = `import http.server, json, os, sqlite3, sys
+from core.database import DATABASE_SCHEMA_VERSION
 assert not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
 assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == os.path.join(os.path.dirname(__file__), ".playwright-browsers")
+with sqlite3.connect(os.path.join(os.environ["V8_AGENT_OS_HOME"], "state.db")) as connection:
+    assert connection.execute("PRAGMA user_version").fetchone()[0] <= DATABASE_SCHEMA_VERSION, "cannot downgrade this state"
+    connection.execute("CREATE TABLE IF NOT EXISTS fixture_data (schema_version INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+    connection.execute("INSERT OR IGNORE INTO fixture_data VALUES (?, ?)", (DATABASE_SCHEMA_VERSION, "synthetic schema " + str(DATABASE_SCHEMA_VERSION)))
+    connection.execute("PRAGMA user_version=" + str(DATABASE_SCHEMA_VERSION))
+if os.path.exists(os.path.join(os.environ["V8_AGENT_OS_HOME"], "fail-after-migration")):
+    raise SystemExit(32)
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         result = {"status": "ok", "service": "v8-agent-os-engine", "startupProfile": os.environ["ENGINE_INSTALL_PROFILE"], "engineRuntime": {"managedRuntimeRoot": sys.prefix, "reload": False}}
@@ -47,10 +55,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer((os.environ["ENGINE_HOST"], int(os.environ["ENGINE_PORT"])), Handler).serve_forever()
 `;
 
-function bundle(name, version, fail = false) {
+function bundle(name, version, fail = false, schemaVersion = 3) {
   const dir = path.join(root, name);
   const engineDir = path.join(dir, "apps/v8-agent-os-engine");
-  fs.mkdirSync(engineDir, { recursive: true });
+  fs.mkdirSync(path.join(engineDir, "core"), { recursive: true });
+  fs.writeFileSync(path.join(engineDir, "core", "database.py"), `DATABASE_SCHEMA_VERSION = ${schemaVersion}\n`);
   fs.cpSync(path.join(cliRoot, "src"), path.join(dir, "apps/v8-agent-os-cli/src"), { recursive: true });
   fs.cpSync(path.join(cliRoot, "bin"), path.join(dir, "apps/v8-agent-os-cli/bin"), { recursive: true });
   fs.writeFileSync(path.join(engineDir, "main.py"), fail ? "raise SystemExit(31)\n" : pythonFixture);
@@ -64,6 +73,10 @@ const first = bundle("v1 space $dollar %percent", "2026.09.16.3");
 const second = bundle("v2", "2026.09.16.4");
 const broken = bundle("broken", "2026.09.16.5", true);
 const interrupted = bundle("interrupted", "2026.09.16.6");
+const migrating = bundle("schema4", "2026.09.17.1", false, 4);
+function databaseEvidence() {
+  return JSON.parse(execFileSync("python3", ["-I", "-c", "import json,sqlite3,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); print(json.dumps({'schema':c.execute('PRAGMA user_version').fetchone()[0], 'rows':c.execute('SELECT schema_version,value FROM fixture_data ORDER BY schema_version').fetchall()}))", path.join(stateRoot, "state.db")], { encoding: "utf8" }));
+}
 const manager = createServerServiceManager({ stateRoot, timeoutMs: 8000 });
 const evidence = { platform: os.platform(), systemd: execFileSync("systemd-analyze", ["--version"], { encoding: "utf8" }).split("\n")[0],
   fixture: "synthetic HTTP Engine; real systemd user service, Python process and TCP ownership", checks: [] };
@@ -121,6 +134,31 @@ try {
   assert.equal((await manager.perform("status")).version, "2026.09.16.4");
   assert.equal((await manager.perform("status")).status, "active");
   evidence.checks.push("crashing_upgrade_restores_prior_running_release");
+  assert.deepEqual(databaseEvidence(), { schema: 3, rows: [[3, "synthetic schema 3"]] });
+  fs.writeFileSync(path.join(stateRoot, "fail-after-migration"), "synthetic readiness failure\n");
+  await assert.rejects(manager.perform("upgrade", { bundleRoot: migrating }), { code: "server_schema_incompatible" });
+  const pending = await manager.perform("status");
+  assert.equal(pending.status, "recovery_required");
+  assert.equal(pending.version, "2026.09.17.1");
+  assert.equal(pending.mainPid, null);
+  assert.equal(pending.rollbackAvailable, false);
+  assert.equal(pending.rollbackBlockedCode, "server_schema_incompatible");
+  const migratedData = { schema: 4, rows: [[3, "synthetic schema 3"], [4, "synthetic schema 4"]] };
+  assert.deepEqual(databaseEvidence(), migratedData);
+  await assert.rejects(manager.perform("rollback"), { code: "server_schema_incompatible" });
+  assert.deepEqual(databaseEvidence(), migratedData);
+  evidence.checks.push("schema3_to4_readiness_failure_stops_candidate_preserves_rows_and_blocks_old_binary");
+  fs.unlinkSync(path.join(stateRoot, "fail-after-migration"));
+  const recovered = await manager.perform("start");
+  assert.equal(recovered.status, "started");
+  process.kill(recovered.mainPid, 0);
+  assert.equal((await manager.perform("status")).status, "active");
+  assert.deepEqual(databaseEvidence(), migratedData);
+  await assert.rejects(manager.perform("rollback"), { code: "server_schema_incompatible" });
+  await assert.rejects(manager.perform("upgrade", { bundleRoot: second }), { code: "server_schema_incompatible" });
+  assert.equal((await manager.perform("status")).mainPid, recovered.mainPid);
+  process.kill(recovered.mainPid, 0);
+  evidence.checks.push("forward_start_retries_schema4_and_unsafe_downgrade_keeps_healthy_pid");
   await manager.perform("stop");
   assert.equal((await manager.perform("status")).status, "inactive");
   const restarted = await manager.perform("restart");
@@ -138,7 +176,15 @@ try {
 } finally {
   if (!clean) {
     try {
-      if ((await manager.perform("status")).status === "recovery_required") await manager.perform("rollback");
+      const current = await manager.perform("status");
+      if (current.status === "recovery_required") {
+        if (current.rollbackAvailable) await manager.perform("rollback");
+        else {
+          // This fixture intentionally migrates state; recover forward before cleanup.
+          fs.rmSync(path.join(stateRoot, "fail-after-migration"), { force: true });
+          await manager.perform("start");
+        }
+      }
       await manager.perform("uninstall");
       clean = true;
     } catch (error) { console.error(`Cleanup needs attention. Fixture retained at ${root}: ${error.message}`); }

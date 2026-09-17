@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FramePolicyTest {
+  @Test fun overlayFreeScreenshotDoesNotAuthorizeTappingOrCrossingItsScreenOverlay() {
+    val overlay = listOf(Viewport(900, 1700, 180, 180))
+    assertTrue(CapturePolicy.pathUnobstructed(400f to 800f, 600f to 800f, overlay))
+    assertFalse(CapturePolicy.pathUnobstructed(950f to 1750f, 950f to 1750f, overlay))
+    assertFalse(CapturePolicy.pathUnobstructed(900f to 1700f, 900f to 1700f, overlay))
+    assertTrue(CapturePolicy.pathUnobstructed(1080f to 1880f, 1080f to 1880f, overlay))
+    assertFalse(CapturePolicy.pathUnobstructed(850f to 1750f, 1079f to 1750f, overlay))
+    assertFalse(CapturePolicy.pathUnobstructed(1000f to 1600f, 1000f to 1950f, overlay))
+    assertTrue(CapturePolicy.pathUnobstructed(800f to 1600f, 899f to 1699f, overlay))
+  }
   @Test fun displayCaptureRequiresBothIndependentPermissionsAtEveryApiLevel() {
     for (api in listOf(30, 33, 34, 36)) {
       for ((local, server) in listOf(false to false, true to false, false to true)) {

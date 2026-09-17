@@ -56,7 +56,11 @@ class ExecutorCapture(private val service: ExecutorAccessibilityService) {
                 Canvas(software).drawBitmap(source, null, Rect(0, 0, width, height), Paint(Paint.FILTER_BITMAP_FLAG))
                 val output = LimitedOutput(MAX_BYTES, work)
                 require(software.compress(Bitmap.CompressFormat.JPEG, 80, output)) { "jpeg_encoding_failed" }
-                val jpeg = output.bytes()
+                // Some Android Skia encoders embed ICC even for explicit sRGB.
+                // The wire contract has no APP metadata; keep compressed pixels
+                // intact and hash only the exact bytes that will be uploaded.
+                val encoded = output.bytes()
+                val jpeg = try { JpegMetadata.strip(encoded) } finally { encoded.fill(0) }
                 require(work.active && jpeg.isNotEmpty()) { "capture_cancelled" }
                 val hash = MessageDigest.getInstance("SHA-256").digest(jpeg).joinToString("") { "%02x".format(it) }
                 val frameId = UUID.randomUUID().toString()

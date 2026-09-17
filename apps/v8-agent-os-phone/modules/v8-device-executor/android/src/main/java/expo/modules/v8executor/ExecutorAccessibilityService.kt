@@ -163,7 +163,8 @@ class ExecutorAccessibilityService : AccessibilityService() {
 
   data class CaptureTarget(val resource: String, val windowId: Int, val displayId: Int, val rotation: Int,
     val viewport: Viewport, val interactionBounds: Viewport, val scope: String, val revision: Long, val windows: String,
-    val identity: String, val observationId: String, val observedUnixMs: Long, val observedMono: Long)
+    val identity: String, val observationId: String, val observedUnixMs: Long, val observedMono: Long,
+    val blockers: List<Viewport> = emptyList())
 
   fun captureTarget(resource: String, scope: String): CaptureTarget {
     val root = allowedRoot(resource)
@@ -176,9 +177,11 @@ class ExecutorAccessibilityService : AccessibilityService() {
       val size = Point(); display.getRealSize(size)
       val rect = Rect(); target.getBoundsInScreen(rect)
       require(!rect.isEmpty && rect.left >= 0 && rect.top >= 0 && rect.right <= size.x && rect.bottom <= size.y) { "window_geometry_unavailable" }
-      val insets = getSystemService(WindowManager::class.java).maximumWindowMetrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+      val insets = getSystemService(WindowManager::class.java).maximumWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
+        WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.systemGestures())
       val interactionRect = Rect(rect)
       require(interactionRect.intersect(insets.left, insets.top, size.x - insets.right, size.y - insets.bottom)) { "window_geometry_unavailable" }
+      val blockers = mutableListOf<Viewport>()
       val descriptions = available.map { window ->
         val bounds = Rect(); window.getBoundsInScreen(bounds)
         val windowRoot = window.root
@@ -195,14 +198,19 @@ class ExecutorAccessibilityService : AccessibilityService() {
               (window.type != AccessibilityWindowInfo.TYPE_APPLICATION || app.isNotEmpty()) &&
               !window.isActive && !window.isFocused) { "capture_scope_obstructed" }
           }
-          if (intersects && window.layer > target.layer) require(passiveBar) { "window_obstructed" }
+          if (intersects && window.layer > target.layer && !passiveBar) {
+            // API34's window capture excludes overlay pixels. An overlay still
+            // blocks gesture hits/paths, and full-display scope stays strict.
+            require(scope == "window") { "window_obstructed" }
+            blockers.add(Viewport(bounds.left, bounds.top, bounds.width(), bounds.height()))
+          }
         }
         listOf(window.id, window.displayId, window.type, window.layer, bounds.flattenToString(), app, window.isActive, window.isFocused).joinToString(":")
       }.sorted().joinToString("|")
       val viewport = if (scope == "window") Viewport(rect.left, rect.top, rect.width(), rect.height()) else Viewport(0, 0, size.x, size.y)
       return CaptureTarget(resource, targetId, target.displayId, display.rotation, viewport,
         Viewport(interactionRect.left, interactionRect.top, interactionRect.width(), interactionRect.height()), scope, revision, descriptions,
-        controller.observationIdentity().toString(), UUID.randomUUID().toString(), System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+        controller.observationIdentity().toString(), UUID.randomUUID().toString(), System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime(), blockers)
     } finally { available.forEach { it.recycle() } }
   }
   fun validateCaptureTarget(target: CaptureTarget) {
@@ -254,6 +262,9 @@ class ExecutorAccessibilityService : AccessibilityService() {
       }
       else -> error("unsupported_gesture")
     }
+    val start = geometry.displayPoint(coordinate(arguments, "x"), coordinate(arguments, "y"))
+    val end = if (arguments.getString("action") == "swipe") geometry.displayPoint(coordinate(arguments, "endX"), coordinate(arguments, "endY")) else start
+    require(CapturePolicy.pathUnobstructed(start, end, target.blockers)) { "coordinate_in_obstructed_region" }
     // Magnification/explore-by-touch transform coordinates after the API, so
     // those modes cannot consume a frame's untransformed pixel geometry.
     val untransformed = if (Build.VERSION.SDK_INT >= 34) magnificationController.magnificationConfig?.let { !it.isActivated } == true else false

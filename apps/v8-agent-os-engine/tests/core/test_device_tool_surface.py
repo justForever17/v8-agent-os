@@ -84,6 +84,14 @@ def test_incomplete_frame_never_invents_action_anchors(observations):
     assert not data(shown)["preconditionComplete"] and "precondition" not in data(shown)
 
 
+def test_window_overlay_rejection_keeps_a_specific_non_replay_recovery(observations):
+    shown = project({"commandId": "cmd", "status": "rejected", "businessVerification": "unverified",
+                     "receipt": {"error": "coordinate_in_obstructed_region", "status": "rejected"}})
+    parsed = data(shown)
+    assert parsed["receipt"]["error"] == "coordinate_in_obstructed_region"
+    assert "window capture excludes" in parsed["next"] and "do not replay" in parsed["next"]
+
+
 @pytest.mark.parametrize("status,expected", [
     ("authorized", "running"), ("queued", "running"), ("sent", "running"), ("received", "running"), ("started", "running"),
     ("succeeded", "completed"), ("failed", "failed"), ("rejected", "blocked"), ("cancelled", "terminated"),

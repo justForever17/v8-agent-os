@@ -523,6 +523,8 @@ test("Web scopes realtime sequence state to the active conversation", () => {
     const bindings = {activeConversationId: next, renderedConversationIdRef: {current:'a'}, activeConversationIdRef:{current:'a'},
       sessionOwnerKey: changedOwner ? 'instance-b/principal-b' : 'instance-a/principal-a', renderedSessionOwnerRef:{current:'instance-a/principal-a'},
       messageCacheRef:{current:new Map()}, scopeCacheRef:{current:new Map()}, transcriptIdentitiesRef:{current:new Map()},
+      queueSequenceRef:{current:new Map()}, scopeRequestSeqRef:{current:1}, runLoadGenerationRef:{current:1},reasoningEffortRequestSeqRef:{current:1},
+      setSessionProjection(){},setRunEntries(){},setSessionProcessSurface(){},
       setTranscriptIdentity(){},setScopeOwner(){},setScopeBinding(){},stop(){},streamingConversationIdRef:{current:null},streamingTransportRef:{current:null},
       queueCacheRef:{current:new Map()}, queuedMessagesRef:{current:[]}, setQueuedMessages(){}, latestRealtimeSeqRef,snapshotCoveredRealtimeSeqRef,
       seenRealtimeEventIdentitiesRef:{current:{clear(){cleared++}}}};

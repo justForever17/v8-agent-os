@@ -16,6 +16,7 @@ export const pending = (item: any) => ['pending', 'waiting', 'open', 'requested'
 export class Client {
   view: ViewState; messages: any[] = []; snapshot: any = {}; instance: any = {};
   sessions: any[] = []; sessionCursor = ''; page: any = {}; syncCursor = ''; seq = 0;
+  sessionWorkspace = '';
   connection = '连接中'; notice = ''; busy = false; revision = 0; generation = 0;
   identity = { transcriptRevision: 0, contextEpoch: 0 };
   private stopped = false; private listeners = new Set<() => void>(); private saveTimer?: NodeJS.Timeout;
@@ -56,6 +57,7 @@ export class Client {
   get draft(): Draft { return this.view.drafts[this.view.sessionId || 'new'] ||= { text: '', attachments: [] }; }
   setDraft(text: string) { this.draft.text = text; this.save(); }
   get run() { return this.snapshot.currentRun || {}; }
+  get workspace() { return this.view.sessionId ? this.sessionWorkspace : this.view.workspace; }
   get active() { return isActiveRunStatus(this.run.status || this.snapshot.runtimeStatus); }
   get inbox() {
     return [...(this.snapshot.approvals || []).map((x: any) => ({ ...x, kind: 'approval' })),
@@ -86,7 +88,7 @@ export class Client {
         clearTimeout(this.saveTimer);
         this.store.write(this.view);
         this.transportAbort.abort(); this.transportAbort = new AbortController();
-        this.generation++; this.messages = []; this.snapshot = {}; this.sessions = []; this.sessionCursor = ''; this.syncCursor = ''; this.seq = 0;
+        this.generation++; this.messages = []; this.snapshot = {}; this.sessions = []; this.sessionCursor = ''; this.syncCursor = ''; this.seq = 0; this.sessionWorkspace = '';
         this.owner = {}; this.page = {}; this.approvalMode = ''; this.query = ''; this.workspaceOnly = false;
         this.identity = { transcriptRevision: 0, contextEpoch: 0 };
         this.view = this.store.bind(instance.instanceId);
@@ -127,14 +129,22 @@ export class Client {
     this.generation++; const generation = this.generation;
     if (sessionId !== this.view.sessionId) this.approvalMode = '';
     this.view.sessionId = sessionId; this.messages = []; this.snapshot = {}; this.seq = 0; this.page = {}; this.syncCursor = '';
+    this.sessionWorkspace = ''; this.notice = sessionId ? '正在加载会话…' : '新建对话 · F3 配置模型与工作区 · Ctrl+P 查看操作';
     this.identity = { transcriptRevision: 0, contextEpoch: 0 };
     this.save(); this.changed();
     if (!sessionId) return;
-    const data = await this.api(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=10`);
+    const [data, scope] = await Promise.all([
+      this.api(`/v1/sessions/${encodeURIComponent(sessionId)}/turns?limit=10`),
+      this.api(`/v1/sessions/${encodeURIComponent(sessionId)}/scope`),
+    ]);
     if (generation !== this.generation) return;
     this.messages = data.messages || []; this.page = data.pageInfo || {}; this.syncCursor = data.syncCursor || '';
+    this.sessionWorkspace = String(scope.binding?.workspace_path || scope.binding?.workspacePath || '');
     this.identity = readTranscriptIdentity(data);
-    await this.refreshSnapshot(generation); this.changed();
+    await this.refreshSnapshot(generation);
+    if (generation !== this.generation) return;
+    if (this.notice === '正在加载会话…') this.notice = this.draft.unknown ? '已恢复会话；前次发送结果待确认，未自动重发。' : '已恢复会话 · 草稿可继续编辑';
+    this.changed();
   }
   async refreshSnapshot(generation = this.generation) {
     const sessionId = this.view.sessionId;
@@ -264,6 +274,36 @@ export class Client {
     if (idOf(this.run) !== runId || !this.active) throw new Error('任务状态已变化，请重新打开详情。');
     await this.api(`/v1/runs/${encodeURIComponent(runId)}/commands/interrupt`, { method: 'POST', body: { reason: 'tui_user_stop' } });
     this.notice = '已请求停止，等待 Engine 确认终态。'; await this.refreshSnapshot();
+  }
+  get retryControl() {
+    const controls = this.snapshot.controls || {}, recovery = this.snapshot.recoveryClass || {};
+    const runId = String(controls.runId || idOf(this.run));
+    const advertised = typeof controls.canRetry === 'boolean' ? controls.canRetry : recovery.canRetry === true;
+    const prior = this.view.retryRequests[runId];
+    const reason = !runId ? '当前会话没有可定位的运行。'
+      : prior ? prior.nextRunId ? `该运行已请求重试，新运行：${prior.nextRunId}。` : '前次重试结果待确认，请回读运行记录；不会自动重发。'
+      : !advertised ? `当前状态 ${this.run.status || this.snapshot.runtimeStatus || '未知'} 未提供重试操作。${recovery.reason || 'Engine 未声明可恢复的重试入口。'}` : '';
+    return { runId, allowed: Boolean(runId && advertised && !prior), reason };
+  }
+  async retryRun(runId: string) {
+    await this.refreshSnapshot();
+    const control = this.retryControl;
+    if (control.runId !== runId || !control.allowed) throw new Error(control.reason || '任务已变化，请重新打开详情。');
+    const view = this.view;
+    view.retryRequests[runId] = { requestedAt: new Date().toISOString() }; this.save(true);
+    try {
+      const result = await this.api(`/v1/runs/${encodeURIComponent(runId)}/commands/retry`, { method: 'POST', body: { reason: 'tui_user_retry' } });
+      const nextRunId = String(result.next_run_id || result.nextRunId || '');
+      if (nextRunId) view.retryRequests[runId].nextRunId = nextRunId;
+      this.save(true);
+      this.notice = nextRunId ? `Engine 已调度重试 ${nextRunId}，等待运行状态。` : '重试请求已送达，调度结果待确认。';
+      await this.refreshSnapshot();
+    } catch (error: any) {
+      if (error.staleView || this.view !== view) return;
+      if (error.definiteNotSent || error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) { delete view.retryRequests[runId]; this.save(true); throw error; }
+      this.notice = '重试结果待确认；请查看任务详情，不会自动重发。';
+    }
+    this.changed();
   }
   async decide(item: any, action: 'approve' | 'reject' | 'answer', answer = '') {
     const identity = idOf(item), sessionId = this.view.sessionId;

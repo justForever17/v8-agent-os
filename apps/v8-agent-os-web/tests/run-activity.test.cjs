@@ -87,6 +87,16 @@ function runActualChatMessageTimeline(nodes) {
   return target.exports.evaluate();
 }
 
+test("lifecycle markers and empty reasoning never create a visible assistant surface", () => {
+  const nodes = [
+    {id: "started", kind: "execution", executionType: "agent_start", agentName: "Supervisor"},
+    {id: "thinking", kind: "execution", executionType: "reasoning", content: "", time: 1234, reasoningKind: "summary"},
+  ];
+  assert.deepEqual(runActualChatMessageTimeline(nodes), []);
+  assert.equal(nodes.length, 2, "presentation filtering must not remove canonical facts");
+  assert.equal(runActualChatMessageTimeline([...nodes, {...nodes[1], content: "Visible reasoning"}]).length, 1);
+});
+
 test("ChatMessage caller preserves whitespace-only transport fragments before Markdown filtering", () => {
   const chunks = ["第一段", "\n\n", "```text", "\n", "approved", "\n", "```", "\n\n", "第二段"];
   const nodes = chunks.map((content, index) => ({

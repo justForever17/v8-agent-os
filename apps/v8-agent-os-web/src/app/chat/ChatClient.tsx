@@ -14,6 +14,7 @@ import {
     normalizeMessagesForState,
     normalizeProjectedMessages,
     preserveMessageRenderKeys,
+    resolveAgentAvatar,
     WEB_STREAM_LIFECYCLE_OPTIONS,
 } from "@/lib/chat-stream-state";
 import { normalizeRealtimeEvent } from "@/lib/realtime";
@@ -29,6 +30,7 @@ import {
     shouldApplyRunScopedStatus,
     shouldPreserveCurrentHistoryOnEmpty,
     readRunFailureMessage,
+    summarizeRunFailure,
     terminalRunStatusFromTopic,
 } from "@/lib/chat/run-activity";
 import {
@@ -1008,7 +1010,7 @@ export default function ChatClient() {
         const next = {
             name: readString(payload.name) || "智能主管",
             roleLabel: readString(payload.roleLabel) || "主理人",
-            avatar: resolveProfileAvatarSrc(readString(payload.avatar)),
+            avatar: resolveAgentAvatar(payload.avatar) || "",
         };
         setSupervisorDisplayProfile((current) => (
             current.name === next.name
@@ -1803,6 +1805,8 @@ export default function ChatClient() {
         ? readRunFailureMessage(currentRun,
             readRunFailureMessage(runEntries.find((run) => run.id === currentRun?.id), "") || t("web.chat.runFailed")) : "";
     const visibleChatError = chatTransportError || runFailureMessage;
+    const chatErrorDetail = visibleChatError || queuedMessageError;
+    const chatErrorSummary = summarizeRunFailure(chatErrorDetail, t("web.chat.providerUnavailable"));
     useEffect(() => {
         if (!localConversationLoading || !submittedRunId) return;
         const terminal = deriveMatchingTerminalProjection({
@@ -4718,7 +4722,7 @@ export default function ChatClient() {
                                     ) : null}
                                     {visibleChatError || queuedMessageError ? (
                                         <div role="alert" className="pointer-events-auto mx-auto w-full max-w-4xl rounded-xl border border-destructive/25 bg-background px-3 py-2 text-xs text-destructive shadow-sm">
-                                            <span className="break-words">{visibleChatError || queuedMessageError}</span>
+                                            <span className="break-words">{chatErrorSummary}</span>
                                             {runFailureMessage && draftKey ? <button type="button" className="ml-2 underline" onClick={() => {
                                                 const original = [...messagesRef.current].reverse().find((message) => message.role === "user" && message.runId === currentRun?.id)?.content || "";
                                                 setDraftField<string>(draftKey, "text", (value) => value.trim() ? value : original, "");
@@ -4739,6 +4743,10 @@ export default function ChatClient() {
                                                     if (activeConversationIdRef.current === conversationId) setChatTransportError(error instanceof Error ? error.message : String(error));
                                                 }
                                             }}>重新同步</button>
+                                            {chatErrorSummary !== chatErrorDetail ? <details className="mt-2">
+                                                <summary className="cursor-pointer">{t("web.chat.errorDetails")}</summary>
+                                                <pre className="mt-1 whitespace-pre-wrap break-words font-sans">{chatErrorDetail}</pre>
+                                            </details> : null}
                                         </div>
                                     ) : null}
                                 </div>

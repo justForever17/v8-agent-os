@@ -78,6 +78,13 @@ export function readRunFailureMessage(run: unknown, fallback: string): string {
         .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim() || fallback;
 }
 
+export function summarizeRunFailure(message: string, unavailableSummary: string): string {
+    // The SDK's persisted diagnostic can contain a Python dict representation.
+    // Keep it verbatim in details; use the existing provider-unavailable meaning
+    // for this explicit HTTP failure, without parsing/evaluating that payload.
+    return /^Error code:\s*503\b/i.test(message.trim()) ? unavailableSummary : message;
+}
+
 export function deriveInterruptibleRunId(input: InterruptibleRunInput): string | null {
     const runId = String(input.controlRunId || input.currentRunId || "").trim();
     if (!runId) return null;

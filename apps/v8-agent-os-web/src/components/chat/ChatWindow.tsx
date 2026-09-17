@@ -354,10 +354,12 @@ export function ChatWindow({
                                             executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
                                             animateEntrance={Boolean(isLoading && index >= messages.length - 2)}
                                         />
-                                        {recovery && <ConversationRecoveryActions message={m} recovery={recovery}
+                                        {recovery && <div className={m.role === "assistant" ? "hidden peer-data-[assistant-state=content]:block" : undefined}>
+                                            <ConversationRecoveryActions message={m} recovery={recovery}
                                             hasDescendants={index < messages.length - 1 || Number(m.turnPosition || 0) < totalTurnCount}
                                             laterTurnCount={Math.max(0, totalTurnCount - Number(m.turnPosition || 0)) + (messages[index + 1]?.turnId === m.turnId ? 1 : 0)}
-                                            turnEnd={messages[index + 1]?.turnId !== m.turnId} />}
+                                            turnEnd={messages[index + 1]?.turnId !== m.turnId} />
+                                        </div>}
                                     </div>
                                 ))
                             )}

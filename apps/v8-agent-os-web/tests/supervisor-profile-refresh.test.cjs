@@ -39,7 +39,7 @@ function fixture() {
   vm.runInNewContext(compiled, {
     module, window, document, AbortController,
     isSurfaceVisible: () => document.visibilityState === 'visible',
-    readString: value => typeof value === 'string' ? value : '', resolveProfileAvatarSrc: value => value,
+    readString: value => typeof value === 'string' ? value : '', resolveAgentAvatar: value => value,
     setSupervisorDisplayProfile: update => updates.push(update({ name: 'before', roleLabel: 'before', avatar: '' })),
     fetch: (_url, options) => new Promise((resolve, reject) => requests.push({ options, resolve, reject })),
   });

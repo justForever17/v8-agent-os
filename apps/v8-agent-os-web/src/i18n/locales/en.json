@@ -1,6 +1,8 @@
 {
   "web.chat.runFailed": "This reply did not finish. Review the error, then edit and send again.",
   "web.chat.editFailedMessage": "Edit again",
+  "web.chat.providerUnavailable": "The model service is temporarily unavailable (503). Please try sending again later.",
+  "web.chat.errorDetails": "Error details",
   "web.workbench.canvas.scene.invalidTimeline": "Keyframes must start at zero and stay within the duration. Adjust the duration or keys.",
   "web.workbench.canvas.scene.duplicateColors": "Choose a different proxy color for each entity.",
   "web.workbench.canvas.scene.title": "Proxy scene",

@@ -198,6 +198,22 @@ test('typed failed and interrupted runs expose a reason while unknown/active/can
     for (const status of ['running', 'cancelled', 'unknown', 'completed']) assert.equal(readRunFailureMessage({status, error: 'old'}, 'fallback'), '');
 });
 
+test('SDK 503 details have a readable summary without interpreting the diagnostic payload', () => {
+    const { summarizeRunFailure } = harness(async () => Response.json({})).load('@/lib/chat/run-activity');
+    const diagnostic = "Error code: 503 - {'error': {'message': 'Synthetic provider unavailable (503)'}}";
+    assert.equal(summarizeRunFailure(diagnostic, 'Service unavailable (503)'), 'Service unavailable (503)');
+    for (const message of ['File 503 was not found', 'Error code: 401 - Unauthorized', 'Budget denied']) {
+        assert.equal(summarizeRunFailure(message, 'Service unavailable (503)'), message);
+    }
+});
+
+test('current supervisor profile uses the same avatar normalization as transcript messages', () => {
+    const { resolveAgentAvatar } = harness(async () => Response.json({})).load('@/lib/chat-stream-state');
+    assert.equal(resolveAgentAvatar('http://127.0.0.1:9528/brand-mark.png'), '/brand-mark.png');
+    assert.equal(resolveAgentAvatar('/Avatar/default-supervisor.svg'), '/brand-mark.png');
+    assert.equal(resolveAgentAvatar('http://127.0.0.1:9528/Avatar/custom.png'), '/api/avatar?src=http%3A%2F%2F127.0.0.1%3A9528%2FAvatar%2Fcustom.png');
+});
+
 test('a compact failed-run snapshot reads its durable error by run id; older run errors stay isolated', () => {
     const h = harness(async () => Response.json({}));
     const { readRunFailureMessage } = h.load('@/lib/chat/run-activity');
@@ -404,7 +420,7 @@ test('composer renders a transport error without a queue and offers GET recovery
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     }).outputText;
     vm.runInNewContext(jsx, { exports, require, activeConversationId: 'A', activeConversationIdRef: { current: 'A' },
-        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', visibleChatError: 'Unauthorized', runFailureMessage: '', queuedMessageError: '', scopeLoading: false,
+        hasAskUserSurface: false, visibleQueuedMessages: [], chatTransportError: 'Unauthorized', visibleChatError: 'Unauthorized', chatErrorSummary: 'Unauthorized', chatErrorDetail: 'Unauthorized', runFailureMessage: '', queuedMessageError: '', scopeLoading: false,
         loadSessionScope: async id => { recovery.push(['scope', id]); return true; },
         loadConversationHistory: async id => recovery.push(['history', id]), loadRuns: async id => recovery.push(['runs', id]),
         synchronizeQueue: async id => recovery.push(['queue', id]), setChatTransportError: value => errors.push(value),

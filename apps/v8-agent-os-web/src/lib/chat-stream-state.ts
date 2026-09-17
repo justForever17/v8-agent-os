@@ -69,7 +69,7 @@ function buildAvatarProxyUrl(avatar: string): string {
     return `/api/avatar?src=${encodeURIComponent(avatar)}`;
 }
 
-function resolveAgentAvatar(value: unknown): string | undefined {
+export function resolveAgentAvatar(value: unknown): string | undefined {
     const avatar = typeof value === "string" ? value.trim() : "";
     if (!avatar) {
         return undefined;

@@ -66,6 +66,15 @@ async def main():
                 alert = page.locator('[role="alert"]:not(#__next-route-announcer__)')
                 composer = page.locator('textarea[data-v8os-chat-composer="true"]')
                 await expect(alert).to_contain_text(args.expected_failure_text, timeout=30000)
+                await expect(page.locator('[data-assistant-state]')).to_have_count(0)
+                await expect(page.get_by_role("button", name="从此轮分支")).to_have_count(0)
+                await expect(page.get_by_role("button", name="编辑消息", exact=True)).to_have_count(1)
+                await expect(alert.locator("pre")).not_to_be_visible()
+                assert "{'error':" not in await alert.inner_text()
+                await alert.locator("summary").click()
+                await expect(alert.locator("pre")).to_contain_text("Synthetic provider unavailable (503)")
+                result["rawFailureDetail"] = await alert.locator("pre").inner_text()
+                await alert.locator("summary").click()
                 result["failureBeforeReload"] = await alert.inner_text()
                 await composer.fill("")
                 await page.get_by_role("button", name="重新编辑", exact=True).click()
@@ -76,6 +85,9 @@ async def main():
                 await expect(alert).to_contain_text(args.expected_failure_text, timeout=30000)
                 await expect(composer).to_have_value("你好")
                 result["failureAfterReload"] = await alert.inner_text()
+                await expect(page.locator('[data-assistant-state]')).to_have_count(0)
+                assert await page.locator("img").evaluate_all("es=>es.every(e=>e.complete && e.naturalWidth > 0)")
+                result["noEmptyBubbleOrBrokenAvatar"] = True
                 assert result["failureBeforeReload"] == result["failureAfterReload"]
                 after = json.loads((state/"provider-fault-proof.json").read_text())
                 assert after == proof

@@ -20,7 +20,8 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:22827")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--scenario", choices=["normal", "snapshot-before-event", "recorded-burst", "failed", "delayed-instance"], default="normal")
+    parser.add_argument("--scenario", choices=["normal", "snapshot-before-event", "recorded-burst", "failed", "cancelled", "delayed-instance"], default="normal")
+    parser.add_argument("--missing-avatar", action="store_true")
     parser.add_argument("--no-screenshots", action="store_true")
     parser.add_argument("--assert-fixed", action="store_true")
     parser.add_argument("--reduced-motion", action="store_true")
@@ -28,7 +29,8 @@ async def main():
     args.out.mkdir(parents=True, exist_ok=True)
     started = perf_counter()
     result = {"layer": "production React, synthetic HTTP/SSE", "requests": [], "console": [], "errors": []}
-    state = {"sessions": [], "messages": [], "submits": [], "run": None}
+    state = {"sessions": [], "messages": [], "submits": [], "run": None,
+             "avatar": "/Avatar/missing.png" if args.missing_avatar else "http://127.0.0.1:9528/brand-mark.png"}
     instance_gate = asyncio.Event()
     sid = "first-chat-fixture"
     async with async_playwright() as p:
@@ -89,7 +91,8 @@ async def main():
             elif path.endswith("/detail"): body = {"id": sid, "projection": projection(), "processes": []}
             elif path.endswith("/turns"): body = {"messages": state["messages"], "pageInfo": {"totalTurnCount": int(bool(state["messages"])), "hasMore": False}}
             elif path.endswith("/turn-index"): body = {"turns": [], "pageInfo": {"totalTurnCount": int(bool(state["messages"]))}}
-            elif path == "/api/supervisor-profile": body = {"name": "测试主管", "roleLabel": "主管"}
+            elif path == "/api/supervisor-profile": body = {"name": "测试主管", "roleLabel": "主管", "avatar": state["avatar"]}
+            elif path == "/api/avatar": return await r.fulfill(status=404, json={"error": "Not found"})
             elif path == "/api/runs": body = {"runs": [state["run"]] if state["run"] else []}
             elif path.endswith("/processes"): body = {"processes": []}
             elif "supervisor-reasoning-effort" in path: body = {"visible": False, "levels": ["auto"]}
@@ -134,42 +137,63 @@ async def main():
                 assert styles == {"background":"rgba(0, 0, 0, 0)","shadow":"none","border":"0px"}, styles
                 if args.reduced_motion:
                     assert await waiting.get_by_role("status").locator("span").evaluate_all("es=>es.every(e=>getComputedStyle(e).animationName==='none')")
-            if args.scenario == "snapshot-before-event":
+            terminal = args.scenario in {"failed", "cancelled"}
+            if args.scenario == "snapshot-before-event" or terminal:
                 state["messages"].append({"id": "canonical-assistant", "role": "assistant", "runId": "fixture-run",
                                          "content": "", "timestamp": 2, "metadata": {"transcriptVersion": 1},
                                          "nodes": [{"id": "agent-start", "kind": "execution", "executionType": "agent_start", "agentName": "测试主管"}]})
             await send("snapshot", projection())
+            if args.assert_fixed and (args.scenario == "snapshot-before-event" or terminal):
+                await expect(page.locator('[data-assistant-state="waiting"]')).to_be_visible()
+                await expect(page.locator('[data-assistant-state="content"]')).to_have_count(0)
             events = [{"seq": 1, "topic": "agent.started", "run_id": "fixture-run", "payload": {"agentName": "测试主管"}},
                       {"seq": 2, "topic": "run.text.delta", "run_id": "fixture-run", "message_id": "canonical-assistant", "payload": {"content": "你好！有什么我可以帮你？"}}]
             if args.scenario == "recorded-burst":
                 events.insert(0, {"seq": 1, "topic": "message.user.recorded", "run_id": "fixture-run", "payload": {"message_id": state["submits"][0]["clientMessageId"], "content": "你好"}})
                 for i, event in enumerate(events): event["seq"] = i+1
-            if args.scenario == "failed":
-                state["run"]["status"] = "failed"
-                state["run"]["error"] = "Provider temporarily unavailable (503)"
-                events = [{"seq": 3, "topic": "run.failed", "run_id": "fixture-run", "payload": {"error": state["run"]["error"], "code": "provider_unavailable"}}]
+            if terminal:
+                state["run"]["status"] = args.scenario
+                state["run"]["error"] = "Error code: 503 - {'error': {'message': 'Synthetic provider unavailable (503)', 'type': 'service_unavailable'}}" if args.scenario == "failed" else ""
+                events = [{"seq": 3, "topic": "run."+args.scenario, "run_id": "fixture-run", "payload": {"error": state["run"]["error"]}}]
             await page.evaluate("([sid,events])=>{window.__sentAt=performance.now();window.__streams.filter(s=>s.readyState===1&&s.url.includes('/sessions/'+sid+'/')).forEach(s=>events.forEach(e=>s.send('runtime',e)))}", [sid, events])
-            if args.scenario != "failed":
+            if not terminal:
                 await page.wait_for_function("window.__rows().some(r=>r.text.includes('你好！'))")
                 result["eventToDomMs"] = await page.evaluate("window.__domChanges.find(c=>c.at>=window.__sentAt&&c.rows.some(r=>r.text.includes('你好！'))).at-window.__sentAt")
             else:
                 await expect(composer).to_be_enabled()
                 if args.assert_fixed:
-                    alert = page.get_by_role("alert").filter(has_text="Provider temporarily unavailable (503)")
+                    await expect(page.locator('[data-assistant-state]')).to_have_count(0)
+                if args.assert_fixed and args.scenario == "failed":
+                    alert = page.get_by_role("alert").filter(has_text="模型服务暂时不可用（503）")
                     await expect(alert).to_be_visible()
+                    await expect(alert.locator("pre")).not_to_be_visible()
+                    await alert.locator("summary").click()
+                    await expect(alert.locator("pre")).to_have_text(state["run"]["error"])
+                    await alert.locator("summary").click()
                     await send("snapshot", {**projection(), "latestSeq": 1, "runtimeStatus": "running", "currentRun": {"id": "fixture-run", "status": "running"}, "messages": []})
                     await expect(alert).to_be_visible()
                     await page.get_by_role("button", name="重新编辑", exact=True).click()
                     await expect(composer).to_have_value("你好")
+                    await expect(page.locator('[data-assistant-state]')).to_have_count(0)
                     await page.wait_for_timeout(400)
                     await page.reload(wait_until="domcontentloaded")
                     await expect(alert).to_be_visible()
                     await expect(composer).to_have_value("你好")
             await page.evaluate("()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
             result["afterTextEvent"] = await page.evaluate("window.__rows()")
-            if args.assert_fixed and args.scenario != "failed":
+            if args.assert_fixed and not terminal:
                 assert [r["id"] for r in result["afterTextEvent"]] == result["placeholderIds"], "first event must keep both DOM identities"
                 assert max(len(c["rows"]) for c in await page.evaluate("window.__domChanges")) == 2, "no third empty assistant"
+                content = page.locator('[data-assistant-state="content"]')
+                if args.missing_avatar:
+                    await expect(content.get_by_text("测", exact=True)).to_be_visible()
+                    await expect(content.locator("img")).to_have_count(0)
+                    result["avatarFallback"] = True
+                    state["avatar"] = "http://127.0.0.1:9528/brand-mark.png"
+                    await page.evaluate("window.dispatchEvent(new Event('focus'))")
+                await expect(content.get_by_role("img", name="测试主管")).to_be_visible()
+                assert await content.locator("img").evaluate("e=>e.complete && e.naturalWidth > 0")
+                result["avatarLoadedWithoutAdmin"] = True
             await screenshot("03-stream.png")
             result["streamCounts"] = await page.evaluate("({created:window.__streams.length,active:window.__streams.filter(s=>s.readyState===1&&s.url.includes('/sessions/')).length})")
         finally:

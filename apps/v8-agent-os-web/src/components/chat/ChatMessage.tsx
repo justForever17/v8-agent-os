@@ -3,6 +3,7 @@
 
 import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, ChevronUp, Orbit, AtSign, FileText, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { useState, memo, useMemo, useCallback } from "react";
 import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
 import { motion } from "framer-motion";
@@ -152,17 +153,14 @@ function isMicroStageSupersededTimelineNode(node: UiTimelineNode) {
     return false;
 }
 
-function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
+function isRenderableTimelineNode(node: UiTimelineNode) {
     if (node.kind === "narrative") {
         return String(node.content || "").trim().length > 0;
     }
 
     if (node.kind === "execution") {
         if (node.executionType === "reasoning") {
-            return isStreaming
-                || String(node.content || "").trim().length > 0
-                || Number(node.time || 0) > 0
-                || Boolean(node.reasoningKind || node.data?.reasoningKind);
+            return String(node.content || "").trim().length > 0;
         }
         if (node.executionType === "tool_call" || node.executionType === "tool_result") {
             const toolName = getExecutionToolName(node);
@@ -173,7 +171,9 @@ function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
         if (node.executionType === "runtime_progress") {
             return Boolean(String(node.label || node.topic || "").trim());
         }
-        return true;
+        // Lifecycle markers remain in the transcript, but ContentDispatcher
+        // renders no surface for them. They must not open an empty bubble.
+        return false;
     }
 
     if (node.kind === "governance" && node.governanceType === "ask_user") {
@@ -677,8 +677,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         });
     }, [message.nodes, microStageVisible, toolCallIds]);
     const renderableNodes = useMemo(
-        () => visibleNodes.filter((node) => isRenderableTimelineNode(node, Boolean(isLoading && isLast))),
-        [isLast, isLoading, visibleNodes],
+        () => visibleNodes.filter(isRenderableTimelineNode),
+        [visibleNodes],
     );
     const [expandedTraceGroups, setExpandedTraceGroups] = useState<Record<string, boolean>>({});
     const timelineSegments = useMemo(() => {
@@ -690,7 +690,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             if (traceChunk.length === 0) return;
             const grouped = groupTimelineNodes(traceChunk, resultNodesByToolCallId);
             segments.push(...grouped.filter((segment) => segment.kind !== "node"
-                || isRenderableTimelineNode(segment.node, Boolean(isLoading && isLast))).map((segment) => ({
+                || isRenderableTimelineNode(segment.node)).map((segment) => ({
                 ...segment,
                 id: `chunk-${chunkIndex}:${segment.id}`,
             })));
@@ -715,7 +715,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             }
             // Whitespace can carry Markdown structure between identified stream
             // fragments. Coalesce first; isolated/anonymous blank nodes stay hidden.
-            if (node.kind !== "narrative" && !isRenderableTimelineNode(node, Boolean(isLoading && isLast))) {
+            if (node.kind !== "narrative" && !isRenderableTimelineNode(node)) {
                 return;
             }
             traceChunk.push(node);
@@ -730,8 +730,6 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         }
         return segments;
     }, [
-        isLast,
-        isLoading,
         message.id,
         message.nodes,
         messageBoundMicroStagePlacement?.id,
@@ -795,10 +793,11 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 <div className={cn("w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 shadow-lg mt-1 overflow-hidden backdrop-blur-sm border", isTool ? "bg-zinc-800/80 border-zinc-700 text-zinc-400" : "bg-gradient-to-br from-primary to-violet-600 border-white/20 text-white")}>
                     {isTool ? (
                         <TerminalSquare className="w-5 h-5" />
-                    ) : userAvatar ? (
-                        <img src={userAvatar} alt={userDisplayName} className="w-full h-full object-cover" />
                     ) : (
-                        <span className="text-sm font-bold">{userDisplayName.charAt(0).toUpperCase() || <User className="w-5 h-5" />}</span>
+                        <Avatar className="h-full w-full">
+                            <AvatarImage src={userAvatar || undefined} alt={userDisplayName} className="object-cover" />
+                            <AvatarFallback className="bg-transparent text-sm font-bold">{userDisplayName.charAt(0).toUpperCase() || <User className="w-5 h-5" />}</AvatarFallback>
+                        </Avatar>
                     )}
                 </div>
 
@@ -1003,18 +1002,19 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             initial={animateEntrance ? { opacity: 0, y: 10, scale: 0.98 } : false}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            className="group mx-auto mb-6 flex w-full max-w-4xl flex-col gap-2.5 sm:mb-7 sm:gap-3"
+            className="peer group mx-auto mb-6 flex w-full max-w-4xl flex-col gap-2.5 sm:mb-7 sm:gap-3"
         >
             {/* Header */}
             {!assistantEmptyActive && <div className="flex select-none items-center gap-3 pl-1 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
                 <div className="relative h-9 w-9 sm:h-10 sm:w-10">
-                    <div className={cn(
+                    <Avatar className={cn(
                         "flex h-9 w-9 items-center justify-center overflow-hidden rounded-2xl border shadow-md transition-all duration-500 sm:h-10 sm:w-10",
                         "bg-white/80 dark:bg-zinc-800/80 border-white/50 dark:border-white/10 backdrop-blur-md",
                         isLoading && isLast ? "shadow-[0_0_15px_rgba(139,92,246,0.3)] border-violet-500/30" : ""
                     )}>
-                        <img src={displayAgentAvatar} alt={displayAgentName} className="w-full h-full object-cover" />
-                    </div>
+                        <AvatarImage src={displayAgentAvatar} alt={displayAgentName} className="object-cover" />
+                        <AvatarFallback className="rounded-none bg-transparent text-sm font-bold text-primary">{displayAgentName.charAt(0).toUpperCase() || <User className="w-5 h-5" />}</AvatarFallback>
+                    </Avatar>
                     {/* Status Dot */}
                     {isLoading && isLast && (
                         <span className="absolute -bottom-1 -right-1 flex h-3 w-3 sm:h-3.5 sm:w-3.5">

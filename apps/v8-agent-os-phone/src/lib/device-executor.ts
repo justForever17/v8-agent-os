@@ -64,7 +64,14 @@ export const deviceExecutor = {
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 async function managementJson(fetcher: AuthorizedFetch, path: string, body: unknown, method = "POST") {
     const response = await fetcher(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!response.ok) throw new Error(`executor_management_${response.status}`);
+    if (!response.ok) {
+        try {
+            // PhoneTransport owns the permit until the body is consumed or cancelled.
+            // Keep Expo's lazy body getter untouched on this finite response path.
+            await response.text();
+        } catch { /* Preserve the HTTP failure if body cleanup also fails. */ }
+        throw new Error(`executor_management_${response.status}`);
+    }
     return response.json();
 }
 export async function enrollExecutor(fetcher: AuthorizedFetch, input: { baseUrl: string; name: string; authorityKey: string; allowedApps: string[] }) {

@@ -107,3 +107,86 @@ test("enrollment refuses a changed ticket origin before any native credential ex
   }), /enrollment_origin_changed/);
   assert.equal(nativeCalls, 0);
 });
+
+function executorTransport(fetcher) {
+  const adminClient = load("src/lib/admin-client.ts", {
+    "@/src/lib/locale": { translateCurrent: key => key },
+  });
+  const { PhoneTransport } = load("src/lib/phone-transport.ts", {
+    "expo/fetch": { fetch: fetcher },
+    "@/src/lib/admin-client": adminClient,
+  });
+  return new PhoneTransport({ endpoints: ["https://engine.invalid", "https://alias.invalid"],
+    instanceId: "fixture-instance", principalId: "fixture-owner", native: true,
+    credentials: { accessToken: "synthetic-access", refreshToken: "synthetic-refresh" },
+    persistRefresh: async () => assert.fail("A management 404 must not refresh credentials"),
+    onEndpoint: () => assert.fail("A management write must not switch endpoints"), onClock() {},
+  });
+}
+
+const enrollmentInput = { baseUrl: "https://engine.invalid", authorityKey: "fixture-profile-A",
+  name: "Fixture", allowedApps: ["test.fixture"] };
+
+test("executor management releases two failed response bodies before a third enrollment reaches HTTP", async () => {
+  const requests = [], nativeCalls = [], errorResponses = []; let textReads = 0, bodyReads = 0, third;
+  const facade = load("src/lib/device-executor.ts", {
+    "react-native": { Platform: { OS: "android" } },
+    "expo-modules-core": { requireOptionalNativeModule: () => ({ enroll: async (...args) => {
+      nativeCalls.push(args); return { deviceId: "fixture-device" };
+    } }) },
+  });
+  const transport = executorTransport(async (url, init) => {
+    if (url.endsWith("/instance")) return Response.json({ instanceId: "fixture-instance" });
+    assert.equal(url, "https://engine.invalid/api/client/executors/tickets");
+    assert.equal(init.method, "POST");
+    requests.push(JSON.parse(init.body));
+    if (requests.length <= 2) {
+      const response = new Response("fixture not found", { status: 404 });
+      const readText = response.text.bind(response);
+      response.text = () => { textReads++; return readText(); };
+      // Expo has a lazy body getter that starts a different streaming sink.
+      // A finite error must use text(), even when constructing that sink would fail.
+      Object.defineProperty(response, "body", { configurable: true, get() { bodyReads++; throw new Error("synthetic lazy body getter failure"); } });
+      errorResponses.push(response);
+      return response;
+    }
+    return Response.json({ ticket: "synthetic-one-use", authorityId: "fixture-authority", baseUrl: enrollmentInput.baseUrl });
+  });
+  try {
+    await assert.rejects(facade.enrollExecutor(transport.authorizedFetch, enrollmentInput), /^Error: executor_management_404$/);
+    await assert.rejects(facade.enrollExecutor(transport.authorizedFetch, enrollmentInput), /^Error: executor_management_404$/);
+    third = facade.enrollExecutor(transport.authorizedFetch, enrollmentInput).then(value => ({ value }), error => ({ error }));
+    await tick(); await tick();
+    assert.equal(requests.length, 3, "The third write must reach HTTP without waiting for either 10-second body deadline");
+    assert.deepEqual(await third, { value: { deviceId: "fixture-device" } });
+    assert.equal(textReads, 2); assert.equal(bodyReads, 0);
+    assert.equal(transport.activeReads, 0); assert.equal(transport.controllers.size, 0);
+    assert.deepEqual(requests, Array.from({ length: 3 }, () => ({ deviceClass: "android", name: "Fixture", baseUrl: enrollmentInput.baseUrl })));
+    assert.deepEqual(nativeCalls, [["synthetic-one-use", "fixture-authority", enrollmentInput.baseUrl, "Fixture", "fixture-profile-A", ["test.fixture"]]]);
+  } finally {
+    for (const response of errorResponses) delete response.body;
+    transport.dispose(); await third;
+  }
+});
+
+test("executor management preserves HTTP status and releases permits for absent bodies and body read failure", async () => {
+  const facade = load("src/lib/device-executor.ts", {
+    "react-native": { Platform: { OS: "android" } },
+    "expo-modules-core": { requireOptionalNativeModule: () => ({ enroll: () => assert.fail("A failed ticket must not enroll natively") }) },
+  });
+  let writes = 0;
+  const transport = executorTransport(async url => {
+    if (url.endsWith("/instance")) return Response.json({ instanceId: "fixture-instance" });
+    writes++;
+    return writes === 1 ? new Response(null, { status: 404 }) : new Response(new ReadableStream({
+      start(controller) { controller.error(new Error("synthetic body read failure")); },
+    }), { status: 503 });
+  });
+  try {
+    for (const status of [404, 503]) {
+      await assert.rejects(facade.enrollExecutor(transport.authorizedFetch, enrollmentInput), new RegExp(`^Error: executor_management_${status}$`));
+      assert.equal(transport.activeReads, 0); assert.equal(transport.controllers.size, 0);
+    }
+    assert.equal(writes, 2, "Cleanup must not replay a failed write");
+  } finally { transport.dispose(); }
+});

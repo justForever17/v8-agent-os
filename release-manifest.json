@@ -1,25 +1,35 @@
 {
   "schema": 2,
   "release": {
-    "version": "2026.09.16.4",
+    "version": "2026.09.17.1",
     "channel": "preview",
-    "tag": "v8-os-v2026.09.16.4",
-    "updatedAt": "2026-09-16T13:21:05.557Z"
+    "tag": "v8-os-v2026.09.17.1",
+    "updatedAt": "2026-09-17T01:27:53.962Z"
   },
   "products": {
     "tui": {
-      "enabled": false,
-      "required": false,
-      "reason": "TUI is not part of 2026.09.16.4; enable with a newer unified release after package acceptance.",
-      "targets": { "npm": { "enabled": true, "required": true } }
+      "enabled": true,
+      "required": true,
+      "targets": {
+        "npm": {
+          "enabled": true,
+          "required": true
+        }
+      }
     },
     "server": {
-      "enabled": false,
-      "required": false,
-      "reason": "Server is not part of 2026.09.16.4; enable only with a newer unified release after server acceptance.",
+      "enabled": true,
+      "required": true,
       "targets": {
-        "linux-x64": { "enabled": true, "required": true },
-        "linux-arm64": { "enabled": false, "required": false, "reason": "ARM production dependency closure and physical acceptance are pending." }
+        "linux-x64": {
+          "enabled": true,
+          "required": true
+        },
+        "linux-arm64": {
+          "enabled": false,
+          "required": false,
+          "reason": "ARM production dependency closure and physical acceptance are pending."
+        }
       }
     },
     "desktop": {

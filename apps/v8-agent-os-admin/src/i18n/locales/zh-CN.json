@@ -4331,6 +4331,7 @@
   "lib.runtime.admin.researchRuntime": "深度调研",
   "shared.advancedSection.moreOptions": "更多选项",
   "shared.inlineSaveState.idle": "未变更",
+  "shared.inlineSaveState.dirty": "未保存",
   "shared.inlineSaveState.label": "保存状态",
   "shared.inlineSaveState.saved": "已保存",
   "shared.inlineSaveState.saving": "保存中",

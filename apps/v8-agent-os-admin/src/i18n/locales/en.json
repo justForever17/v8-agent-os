@@ -4328,6 +4328,7 @@
   "lib.runtime.admin.researchRuntime": "Deep Research",
   "shared.advancedSection.moreOptions": "More options",
   "shared.inlineSaveState.idle": "No changes",
+  "shared.inlineSaveState.dirty": "Unsaved changes",
   "shared.inlineSaveState.label": "Save status",
   "shared.inlineSaveState.saved": "Saved",
   "shared.inlineSaveState.saving": "Saving",

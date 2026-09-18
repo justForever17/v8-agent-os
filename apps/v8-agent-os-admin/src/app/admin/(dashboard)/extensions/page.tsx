@@ -1040,7 +1040,7 @@ export default function ExtensionsPage() {
   return <AdminPageShell className="max-w-[var(--v8-product-settings-width,1040px)] gap-4">
             {sectionLoadError && <p role="alert" className="text-sm text-destructive">{t("extensions.store.sectionFailed")}</p>}
             <AdminPageHeader title={"app.admin.dashboard.extensions.page.k5b035c36"} description={"app.admin.dashboard.extensions.page.k042a5a79"} actions={<div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-                        <div className="shrink-0 whitespace-nowrap"><InlineSaveState saving={saving} saved={saved && !configDraft} label={t("app.admin.dashboard.extensions.page.kcc06e009")} /></div>
+                        <div className="shrink-0 whitespace-nowrap"><InlineSaveState saving={saving} saved={saved && !configDraft} dirty={Boolean(configDraft)} label={t("app.admin.dashboard.extensions.page.kcc06e009")} /></div>
                         <Button variant="outline" asChild>
                             <Link href="/admin/extensions/store">
                                 <Store className="mr-2 h-4 w-4" />

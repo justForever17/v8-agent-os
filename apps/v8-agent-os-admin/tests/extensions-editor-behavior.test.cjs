@@ -99,6 +99,24 @@ function mount() {
 }
 
 function answer(request, data, status = 200) { request.resolve({ ok: status < 400, status, json: async () => data }); }
+function inlineSaveStateText(ui) {
+  const sourcePath = path.resolve(__dirname, '../src/components/admin-shell/InlineSaveState.tsx');
+  const source = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
+    fileName: sourcePath,
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const locale = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../src/i18n/locales/zh-CN.json'), 'utf8'));
+  const translate = key => locale[key] || key;
+  const jsx = (type, props) => ({ type, props });
+  const imports = name => {
+    if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
+    if (name.endsWith('LocaleProvider')) return { useT: () => translate, useResolveText: () => translate };
+    return new Proxy({}, { get: (_, key) => String(key) });
+  };
+  const exports = {};
+  new Function('require', 'exports', source)(imports, exports);
+  return ui.content(exports.InlineSaveState(ui.find(n => n.type === 'InlineSaveState').props));
+}
 async function openPolicy(ui) {
   await ui.settle();
   ui.find(n => n.type === 'details').props.onToggle({ currentTarget: { open: true } });
@@ -133,7 +151,10 @@ test('refresh updates the server snapshot without overwriting a policy draft', a
 });
 
 test('policy save failure is retryable; a late success keeps newer edits visibly unsaved', async () => {
-  const ui = mount(); await openPolicy(ui); setModel(ui, 'fixture::submitted');
+  const ui = mount(); await openPolicy(ui);
+  assert.match(inlineSaveStateText(ui), /未变更/);
+  setModel(ui, 'fixture::submitted');
+  assert.match(inlineSaveStateText(ui), /未保存/);
   ui.button('k6010e1ed').props.onClick();
   ui.saves[0].reject(new Error('permission denied')); await ui.settle();
   assert.equal(model(ui), 'fixture::submitted');
@@ -143,8 +164,11 @@ test('policy save failure is retryable; a late success keeps newer edits visibly
   ui.saves[1].resolve({ ...ui.fixture.config, data: ui.saves[1].payload.data }); await ui.settle();
   assert.equal(model(ui), 'fixture::newer');
   assert.equal(ui.find(n => n.type === 'InlineSaveState').props.saved, false);
+  assert.match(inlineSaveStateText(ui), /未保存/);
   ui.button('k6010e1ed').props.onClick();
   assert.equal(ui.saves[2].payload.data.modelBindings.prefilterModel, 'fixture::newer');
+  ui.saves[2].resolve({ ...ui.fixture.config, data: ui.saves[2].payload.data }); await ui.settle();
+  assert.match(inlineSaveStateText(ui), /已保存/);
 });
 
 for (const kind of ['form', 'json']) {

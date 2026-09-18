@@ -77,7 +77,7 @@ test("operations center owns one runtime data hook and its summary route only re
 });
 
 test("model hub paints cached bootstrap data instead of resetting to a loading screen", () => {
-    const source = read("src", "app", "admin", "(dashboard)", "model-hub", "page.tsx");
+    const source = read("src", "hooks", "use-model-hub-bootstrap.ts");
 
     assert.match(source, /peekAdminJsonCache<ModelHubBootstrapPayload>/);
     assert.match(source, /useState\(\(\) => !cachedBootstrap\)/);

@@ -10,7 +10,7 @@ import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { EmptyState } from "@/components/admin-shell/EmptyState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
-import type { ControlPlaneModel, ProviderOverview } from "@/components/models/control-plane-types";
+import type { ControlPlaneModel } from "@/components/models/control-plane-types";
 import { ProviderCard } from "@/components/models/ProviderCard";
 import { ModelCardV2 } from "@/components/models/ModelCardV2";
 import { SearchableVoiceSelect } from "@/components/models/SearchableVoiceSelect";
@@ -27,27 +27,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
-import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { useModelHubBootstrap } from "@/hooks/use-model-hub-bootstrap";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
 import { deriveMediaOperationKinds, getMediaCapabilityOptions, resolveMediaCapabilityModes } from "@/lib/models/media-capabilities";
 import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, type ProviderChannel, } from "@/lib/models/provider-admin";
 import {
-    AIModel, AIProvider, AUDIO_VOICE_PRESET_TABLE, AudioRuntimeConfig, AudioVoiceOption,
-    AudioVoicePreset, AudioVoicePresetProvider, AudioVoicePresetTable, buildCatalogProvidersForPurpose, catalogProviderChannels,
+    AIModel, AIProvider, AudioVoiceOption, buildCatalogProvidersForPurpose, catalogProviderChannels,
     CATALOG_PURPOSES, CatalogModel, CatalogProvider, CatalogPurpose, CatalogRuntimeProtocol,
     comfyWorkflowDraft, ComfyWorkflowDraft, createProviderChannel, CUSTOM_PROVIDER_CAPABILITIES,
-    CustomProviderCapability, DEFAULT_AUDIO_CONFIG, editableProviderChannels, EMPTY_COMFY_WORKFLOW,
-    endpointMediaCatalogModel, extractErrorText, getCatalogPurposeConfig, getModelTypeForPurpose,
+    CustomProviderCapability, editableProviderChannels, EMPTY_COMFY_WORKFLOW,
+    extractErrorText, getCatalogPurposeConfig, getModelTypeForPurpose,
     hasAudioInputCapability, hasAudioOutputCapability, headerValueForInput, isXiaomiAnthropicBaseUrl,
-    localizeAudioVoicePresets, MEDIA_MODEL_TYPES, mediaRelativeSubmitPath, mergeAudioConfig,
-    ModelConnectionStatus, ModelHubBootstrapPayload, MODEL_HUB_BOOTSTRAP_URL, MODEL_WIRE_PROTOCOLS, ModelHubPayload,
-    modelLabel, modelMatchesTab, modelRefFor, ModelReasoningRepairStatus, ModelWireProtocol,
-    normalizeModelType, preserveModelOrder, previewModelsUrl, PROVIDER_CHANNEL_PRESETS, providerMatchesPurpose,
+    localizeAudioVoicePresets, MEDIA_MODEL_TYPES, mergeAudioConfig,
+    modelLabel, modelMatchesTab, modelRefFor, ModelConnectionStatus, ModelReasoningRepairStatus, ModelWireProtocol,
+    MODEL_WIRE_PROTOCOLS, PROVIDER_CHANNEL_PRESETS, previewModelsUrl,
     readJsonErrorMessage, RETRIEVAL_MODEL_TYPES, resolveAudioVoicePresetKey, sttEndpointPlaceholder,
-    TTS_MODEL_TYPES, ttsEndpointPlaceholder, TtsVoiceAssetPolicy, TtsVoiceCapabilities,
-    TtsVoiceDesignCandidate, TtsVoiceDesignConstraints, TtsVoiceProviderInfo, TtsVoiceTextConstraint,
+    ttsEndpointPlaceholder, TtsVoiceDesignCandidate, TtsVoiceProviderInfo,
     voiceManagerErrorText, voicePresetsForCustomTtsProtocol,
 } from "@/lib/model-hub/model-hub-domain";
 function ProviderOptionLabel({
@@ -75,12 +71,22 @@ function ProviderOptionLabel({
 export default function ModelHubPage() {
     const { toast } = useToast();
     const t = useT();
-    const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>(MODEL_HUB_BOOTSTRAP_URL);
-    const [providers, setProviders] = useState<AIProvider[]>(() => Array.isArray(cachedBootstrap?.providers) ? cachedBootstrap.providers : []);
-    const [models, setModels] = useState<AIModel[]>(() => Array.isArray(cachedBootstrap?.models) ? cachedBootstrap.models : []);
-    const [hubEnvelope, setHubEnvelope] = useState<ConfigRegistryEnvelope<ModelHubPayload> | null>(() => cachedBootstrap?.hubEnvelope || null);
-    const [isLoading, setIsLoading] = useState(() => !cachedBootstrap);
-    const [hasLoadedAudioConfig, setHasLoadedAudioConfig] = useState(() => Boolean(cachedBootstrap));
+    const {
+        providers,
+        models,
+        setModels,
+        hubEnvelope,
+        isLoading,
+        bootstrapError,
+        hasLoadedAudioConfig,
+        audioConfig,
+        setAudioConfig,
+        defaultModelRef,
+        setDefaultModelRef,
+        catalogProviders,
+        setCatalogProviders,
+        fetchData,
+    } = useModelHubBootstrap();
     const [activeTab, setActiveTab] = useState("all");
     const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
     const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -105,11 +111,6 @@ export default function ModelHubPage() {
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
     const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
-    const [defaultModelRef, setDefaultModelRef] = useState<string | null>(() => {
-        const value = cachedBootstrap?.defaultModel || {};
-        return value.modelRef || value.modelId || value.value || null;
-    });
-    const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>(() => Array.isArray(cachedBootstrap?.catalog?.providers) ? cachedBootstrap.catalog.providers : []);
     const [catalogPurpose, setCatalogPurpose] = useState<CatalogPurpose>("chat");
     const [catalogRuntimeProtocol, setCatalogRuntimeProtocol] = useState<CatalogRuntimeProtocol>("default");
     const [selectedCatalogProviderId, setSelectedCatalogProviderId] = useState("");
@@ -136,7 +137,6 @@ export default function ModelHubPage() {
     const [manualModelEntryEnabled, setManualModelEntryEnabled] = useState(false);
     const [isCatalogBusy, setIsCatalogBusy] = useState(false);
     const pendingCatalogProviderIdRef = useRef("");
-    const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(() => mergeAudioConfig(cachedBootstrap?.audioConfig || null));
     const [isAudioSaving, setIsAudioSaving] = useState(false);
     const [customTtsRemoteVoices, setCustomTtsRemoteVoices] = useState<AudioVoiceOption[]>([]);
     const [isCustomTtsVoiceLoading, setIsCustomTtsVoiceLoading] = useState(false);
@@ -163,28 +163,6 @@ export default function ModelHubPage() {
     const [ttsPreviewUrl, setTtsPreviewUrl] = useState("");
     const [isTtsPreviewing, setIsTtsPreviewing] = useState(false);
     const selectedTtsModelRefRef = useRef("");
-    const fetchData = async (force = false, keepModelOrder = false) => {
-        if (!peekAdminJsonCache(MODEL_HUB_BOOTSTRAP_URL)) setIsLoading(true);
-        try {
-            const payload = await fetchAdminJson<ModelHubBootstrapPayload>(MODEL_HUB_BOOTSTRAP_URL, { force, ttlMs: 30_000 });
-            setProviders(Array.isArray(payload.providers) ? payload.providers : []);
-            const nextModels = Array.isArray(payload.models) ? payload.models : [];
-            setModels((current) => keepModelOrder ? preserveModelOrder(current, nextModels) : nextModels);
-            setHubEnvelope(payload.hubEnvelope || null);
-            setAudioConfig(mergeAudioConfig(payload.audioConfig || null));
-            setHasLoadedAudioConfig(true);
-            const defaultData = payload.defaultModel || {};
-            setDefaultModelRef(defaultData.modelRef || defaultData.modelId || defaultData.value || null);
-            const catalogData = payload.catalog || {};
-            setCatalogProviders(Array.isArray(catalogData.providers) ? catalogData.providers : []);
-        }
-        finally {
-            setIsLoading(false);
-        }
-    };
-    useEffect(() => {
-        void fetchData();
-    }, []);
     const controlModelsById = useMemo(() => new Map((hubEnvelope?.data.models || []).map((item) => [item.modelRef || item.id, item])), [hubEnvelope]);
     const providerOverviewById = useMemo(() => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])), [hubEnvelope]);
     const apiCatalogProviders = useMemo(() => buildCatalogProvidersForPurpose(catalogProviders, catalogPurpose), [catalogProviders, catalogPurpose]);
@@ -2077,6 +2055,7 @@ export default function ModelHubPage() {
         </ConfigCard>
     );
     return (<AdminPageShell>
+            {bootstrapError ? <p role="alert" className="text-sm text-destructive">{bootstrapError}</p> : null}
             <AdminPageHeader title={t("app.admin.dashboard.model.hub.page.kf88eff69")} description={t("app.admin.dashboard.model.hub.page.k45bea0e7")} actions={<>
                         <Button variant="outline" onClick={() => void fetchData(true)} disabled={isLoading}>
                             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`}/>

@@ -11,7 +11,8 @@ function read(relativePath) {
 
 function modelHubSource() {
   return read("src/app/admin/(dashboard)/model-hub/page.tsx")
-    + "\n" + read("src/lib/model-hub/model-hub-domain.ts");
+    + "\n" + read("src/lib/model-hub/model-hub-domain.ts")
+    + "\n" + read("src/hooks/use-model-hub-bootstrap.ts");
 }
 
 test("model edit uses compact capability checkboxes instead of a free-form operation field", () => {

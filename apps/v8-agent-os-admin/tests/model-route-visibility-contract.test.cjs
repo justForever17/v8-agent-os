@@ -11,7 +11,8 @@ function readText(relativePath) {
 
 function modelHubSource() {
   return readText("src/app/admin/(dashboard)/model-hub/page.tsx")
-    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts");
+    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts")
+    + "\n" + readText("src/hooks/use-model-hub-bootstrap.ts");
 }
 
 test("Model Hub exposes the provider model as the title and keeps the complete request route as secondary evidence", () => {

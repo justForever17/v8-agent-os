@@ -11,7 +11,8 @@ function readText(relativePath) {
 
 function modelHubSource() {
   return readText("src/app/admin/(dashboard)/model-hub/page.tsx")
-    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts");
+    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts")
+    + "\n" + readText("src/hooks/use-model-hub-bootstrap.ts");
 }
 
 test("voice customization stays behind the Engine credential boundary", () => {
@@ -143,7 +144,9 @@ test("The audio surface only exposes loaded or cached canonical audio config", (
   assert.match(hub, /const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>\(MODEL_HUB_BOOTSTRAP_URL\)/);
   assert.match(hub, /const \[hasLoadedAudioConfig, setHasLoadedAudioConfig\] = useState\(\(\) => Boolean\(cachedBootstrap\)\)/);
   assert.match(hub, /const \[audioConfig, setAudioConfig\] = useState<AudioRuntimeConfig>\(\(\) => mergeAudioConfig\(cachedBootstrap\?\.audioConfig \|\| null\)\)/);
-  assert.match(hub, /setAudioConfig\(mergeAudioConfig\(payload\.audioConfig \|\| null\)\);\s*setHasLoadedAudioConfig\(true\)/);
+  assert.match(hub, /setAudioConfig\(mergeAudioConfig\(payload\.audioConfig \|\| null\)\)/);
+  assert.match(hub, /audioDraftRevisionRef\.current === audioRevision/);
+  assert.match(hub, /setHasLoadedAudioConfig\(true\)/);
   assert.match(hub, /hasLoadedAudioConfig \? systemAudioConfigCard/);
   assert.match(hub, /audio\.loadingConfig/);
 });

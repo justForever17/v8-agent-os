@@ -13,7 +13,7 @@ from uuid import uuid4
 from core.context_policy import DEFAULT_CONTEXT_POLICY, normalize_context_policy
 from core.delegation_broker import default_external_worker_descriptors, normalize_external_worker_descriptors
 from core.agents import DEFAULT_SPECIALIST_FAMILIES, ensure_specialist_family, normalize_specialist_families_config
-from core.runtime.supervisor_tool_policy import sanitize_supervisor_allowed_tools
+from core.supervisor_tool_policy import sanitize_supervisor_allowed_tools
 from core.source_provider_registry import get_source_provider_config_defaults, get_source_router_defaults
 from core.v8_agent_os_identity import default_system_identity, normalize_system_identity
 from core.v8_agent_os_paths import (
@@ -3165,7 +3165,7 @@ class StorageManager:
 
     # --- Agent Accessors ---
     def get_all_agents(self) -> List[Dict[str, Any]]:
-        from core.runtime.agents import parse_agent_md
+        from core.agents import parse_agent_md
         agents_dir = self.base_dir / "agents"
         agents = []
         model_bindings = self.get_agent_model_bindings()
@@ -3183,7 +3183,7 @@ class StorageManager:
         return agents
 
     def get_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        from core.runtime.agents import parse_agent_md
+        from core.agents import parse_agent_md
         agent_path = self.base_dir / "agents" / f"{agent_id}.md"
         if not agent_path.exists():
             return None
@@ -3199,7 +3199,7 @@ class StorageManager:
             return None
 
     def save_agent(self, agent_config_dict: Dict[str, Any]):
-        from core.runtime.agents import dump_agent_md, AgentConfig
+        from core.agents import dump_agent_md, AgentConfig
         payload = dict(agent_config_dict or {})
         snapshot = payload.get("capabilitySnapshot") if isinstance(payload.get("capabilitySnapshot"), dict) else {}
         payload["capabilitySnapshot"] = ensure_specialist_family(snapshot)

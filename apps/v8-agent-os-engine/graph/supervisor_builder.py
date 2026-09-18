@@ -14,7 +14,7 @@ from core.model_ref import parse_model_ref
 from core.system_tools.native import NATIVE_TOOLS
 from core.agents import build_subagent_registry_snapshot
 from core.model_thinking_control import normalize_reasoning_effort
-from core.runtime.extensions_runtime import extensions_runtime_service
+from core.extensions_runtime import extensions_runtime_service
 from runtimes.network_supervisor.openai_compat import build_external_langchain_tools
 from core.storage import storage
 from erc.capability_registry import capability_registry

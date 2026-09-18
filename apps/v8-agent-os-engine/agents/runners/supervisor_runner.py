@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Any
 
 from api.models import EngineConfig
-from core.runtime.extensions_runtime import extensions_runtime_service
+from core.extensions_runtime import extensions_runtime_service
 from core.agents import build_subagent_registry_snapshot
 from core.storage import storage
 from graph.supervisor import AgentState, create_supervisor_graph

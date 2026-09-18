@@ -29,7 +29,7 @@ from core.delegated_agent_charter import delegated_agent_operating_charter
 from core.host_load import render_host_load_line
 from core.safety_active_defense import render_host_alerts_line
 from core.prompt_cache_segments import build_prompt_segments_from_parts, split_environment_prompt_parts, static_prompt_parts_first
-from core.runtime.extensions_runtime import ExtensionRouteBundle, extensions_runtime_service
+from core.extensions_runtime import ExtensionRouteBundle, extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content, extract_text_and_reasoning
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools

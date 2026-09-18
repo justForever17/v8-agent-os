@@ -148,6 +148,50 @@ test('policy save failure is retryable; a late success keeps newer edits visibly
 });
 
 for (const kind of ['form', 'json']) {
+  test(`${kind} MCP late success keeps newer editable text and permits its next save`, async () => {
+    const ui = mount(); await ui.settle(); openMcp(ui, kind); saveMcp(ui, kind); ui.render();
+    const input = kind === 'form' ? ui.input('npx -y @modelcontextprotocol/server-filesystem') : ui.jsonInput();
+    assert.ok(!input.props.disabled);
+    const newer = kind === 'form' ? 'fixture-newer-command' : JSON.stringify({ mcpServers: { synthetic: { type: 'stdio', command: 'fixture-newer-command' } } });
+    // Do not render yet: the change and the response can land in the same batch.
+    input.props.onChange({ target: { value: newer } });
+    assert.equal(JSON.parse(ui.requests[0].options.body).mcpServers.synthetic.command, 'fixture-command');
+    answer(ui.requests[0], { status: 'success' }); await ui.settle();
+    assert.equal((kind === 'form' ? ui.input('npx -y @modelcontextprotocol/server-filesystem') : ui.jsonInput()).props.value, newer);
+    assert.equal(ui.dialog(kind === 'form' ? 'mcpFormInstall' : 'k061b2335').props.open, true);
+    saveMcp(ui, kind);
+    assert.equal(JSON.parse(ui.requests[1].options.body).mcpServers.synthetic.command, 'fixture-newer-command');
+    answer(ui.requests[1], { status: 'success' }); await ui.settle();
+    assert.equal(ui.dialog(kind === 'form' ? 'mcpFormInstall' : 'k061b2335').props.open, false);
+  });
+
+  test(`${kind} MCP late success cannot close a reopened editor even with identical content`, async () => {
+    const ui = mount(); await ui.settle(); openMcp(ui, kind); saveMcp(ui, kind); ui.render();
+    const suffix = kind === 'form' ? 'mcpFormInstall' : 'k061b2335';
+    ui.dialog(suffix).props.onOpenChange(false); ui.render();
+    openMcp(ui, kind);
+    const before = (kind === 'form' ? ui.input('npx -y @modelcontextprotocol/server-filesystem') : ui.jsonInput()).props.value;
+    answer(ui.requests[0], { status: 'success' }); await ui.settle();
+    assert.equal(ui.dialog(suffix).props.open, true);
+    assert.equal((kind === 'form' ? ui.input('npx -y @modelcontextprotocol/server-filesystem') : ui.jsonInput()).props.value, before);
+  });
+
+  test(`${kind} MCP late failure does not contaminate another editor and releases the save lock`, async () => {
+    const ui = mount(); await ui.settle(); openMcp(ui, kind); saveMcp(ui, kind); ui.render();
+    ui.dialog(kind === 'form' ? 'mcpFormInstall' : 'k061b2335').props.onOpenChange(false); ui.render();
+    const next = kind === 'form' ? 'json' : 'form';
+    openMcp(ui, next);
+    // The same synchronous lock covers both input modes until the old POST settles.
+    ui.nodes().filter(n => n.type === 'Button' && ui.content(n).endsWith('.kfc8f3cfd')).forEach(n => n.props.onClick());
+    assert.equal(ui.requests.length, 1);
+    answer(ui.requests[0], { detail: 'old save denied' }, 403); await ui.settle();
+    assert.ok(!ui.content(ui.dialog(next === 'form' ? 'mcpFormInstall' : 'k061b2335')).includes('old save denied'));
+    assert.equal(ui.notifications.at(-1).description, 'old save denied', 'the completed request still reports its failure');
+    saveMcp(ui, next);
+    assert.equal(ui.requests.length, 2);
+    answer(ui.requests[1], { status: 'success' }); await ui.settle();
+  });
+
   test(`${kind} MCP editor can be dismissed without sending a write`, async () => {
     const ui = mount(); await ui.settle(); openMcp(ui, kind);
     const dialog = ui.dialog(kind === 'form' ? 'mcpFormInstall' : 'k061b2335');
@@ -214,4 +258,44 @@ test('MCP form editing keeps unknown fields, exact argv, credential refs and the
   delete saved['x-v8-edit-base'];
   assert.deepEqual(saved, base);
   answer(ui.requests[1], { status: 'success' }); await ui.settle();
+});
+
+test('advanced MCP fields and credential choices also invalidate a pending save cleanup', async () => {
+  const cases = [
+    { name: 'arguments', input: '-y\n@example/server', value: '["", "new argument"]' },
+    { name: 'environment', input: 'API_KEY=...\nDEBUG=false', value: 'KEEP=new-value' },
+    { name: 'endpoint', type: 'http', input: 'https://example.com/mcp', value: 'https://new.fixture.invalid/mcp' },
+    { name: 'headers', type: 'http', input: 'Authorization=Bearer ...\nX-Client=V8OS', value: 'X-New=1' },
+    { name: 'transport', type: 'http' },
+    { name: 'credential', type: 'http' },
+  ];
+  for (const row of cases) {
+    const ui = mount(); await ui.settle();
+    ui.find(n => n.type === 'Button' && n.props.title?.endsWith('.mcpEditServer')).props.onClick();
+    const base = { type: row.type || 'stdio', command: 'fixture-command', args: [], endpointRef: 'synthetic-endpoint', 'x-v8-credential-refs': { key: { secretRef: 'synthetic-ref' } }, future: { keep: false } };
+    answer(ui.requests[0], { mcpServers: { synthetic: base } }); await ui.settle();
+    ui.button('mcpUpdateServer').props.onClick(); ui.render();
+    if (row.input) ui.set(ui.input(row.input), row.value);
+    else if (row.name === 'transport') {
+      ui.find(n => n.type === 'Select' && n.props.value === 'http').props.onValueChange('sse'); ui.render();
+    } else {
+      ui.find(n => n.type === 'input' && n.props.type === 'checkbox').props.onChange({ target: { checked: true } }); ui.render();
+    }
+    answer(ui.requests[1], { status: 'success' }); await ui.settle();
+    assert.equal(ui.dialog('mcpFormEdit').props.open, true, row.name);
+    if (row.input) assert.equal(ui.input(row.input).props.value, row.value, row.name);
+    else if (row.name === 'transport') assert.ok(ui.nodes().some(n => n.type === 'Select' && n.props.value === 'sse'));
+    else assert.equal(ui.find(n => n.type === 'input' && n.props.type === 'checkbox').props.checked, true);
+    assert.deepEqual(JSON.parse(ui.requests[1].options.body).mcpServers.synthetic['x-v8-edit-base'], base);
+  }
+});
+
+test('a late MCP edit load cannot replace a newly opened create editor', async () => {
+  const ui = mount(); await ui.settle();
+  ui.find(n => n.type === 'Button' && n.props.title?.endsWith('.mcpEditServer')).props.onClick();
+  openMcp(ui, 'form');
+  answer(ui.requests[0], { mcpServers: { synthetic: { type: 'stdio', command: 'old-edit-command' } } }); await ui.settle();
+  assert.equal(ui.dialog('mcpFormInstall').props.open, true);
+  assert.equal(ui.input('npx -y @modelcontextprotocol/server-filesystem').props.value, 'fixture-command');
+  assert.ok(!ui.input('context7').props.disabled);
 });

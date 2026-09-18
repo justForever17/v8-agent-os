@@ -604,6 +604,7 @@ export default function ExtensionsPage() {
   const [uploadingZip, setUploadingZip] = useState(false);
   const [savingMcp, setSavingMcp] = useState(false);
   const mcpSavePending = useRef(false);
+  const mcpEditorRevision = useRef(0);
   const [deletingMcpServer, setDeletingMcpServer] = useState("");
   const [deletingSkillId, setDeletingSkillId] = useState("");
   const [commandInput, setCommandInput] = useState("");
@@ -621,6 +622,23 @@ export default function ExtensionsPage() {
   const [mcpFormMode, setMcpFormMode] = useState<McpFormMode>("create");
   const [sectionLoadError, setSectionLoadError] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
+  const updateMcpForm = (update: (previous: McpInstallFormState) => McpInstallFormState) => {
+    mcpEditorRevision.current += 1;
+    setMcpInstallForm(update);
+    setMcpValidationError("");
+  };
+  const setMcpEditorOpen = (editor: "json" | "form", open: boolean) => {
+    // Closing/reopening is a new editing session even when its text is identical.
+    mcpEditorRevision.current += 1;
+    if (editor === "form") {
+      setMcpFormDialogOpen(open);
+      if (!open) setMcpFormMode("create");
+    } else {
+      setMcpDialogOpen(open);
+    }
+    setMcpValidationError("");
+    setMcpValidationSummary("");
+  };
   useEffect(() => {
     if (policyOpen) void fetchAdminJson<SysModel[]>("/api/models").then(setModels).catch(() => setSectionLoadError(true));
   }, [policyOpen]);
@@ -815,6 +833,7 @@ export default function ExtensionsPage() {
   const saveMcpConfig = async (editor: "json" | "form") => {
     if (mcpSavePending.current || (editor === "json" && !mcpConfigInput.trim())) return;
     mcpSavePending.current = true;
+    const submittedRevision = mcpEditorRevision.current;
     setSavingMcp(true);
     setMcpValidationError("");
     try {
@@ -838,20 +857,21 @@ export default function ExtensionsPage() {
         const validationError = extractValidationPayload(data);
         throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.k6e203323"));
       }
-      if (editor === "json") {
-        setMcpDialogOpen(false);
-        setMcpConfigInput("");
-        setMcpValidationSummary("");
-      } else {
-        setMcpFormDialogOpen(false);
-        setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
-        setMcpFormMode("create");
+      if (mcpEditorRevision.current === submittedRevision) {
+        setMcpEditorOpen(editor, false);
+        if (editor === "json") {
+          setMcpConfigInput("");
+        } else {
+          setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
+        }
       }
       toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
       await loadData(true);
     }
     catch (error) {
-      setMcpValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"));
+      if (mcpEditorRevision.current === submittedRevision) {
+        setMcpValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"));
+      }
       toast({
         title: t("app.admin.dashboard.extensions.page.ka7539197"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"),
@@ -866,18 +886,19 @@ export default function ExtensionsPage() {
   const openMcpCreateForm = () => {
     setMcpFormMode("create");
     setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
-    setMcpValidationError("");
-    setMcpFormDialogOpen(true);
+    setMcpEditorOpen("form", true);
   };
   const openMcpEditForm = async (serverName: string) => {
     const normalizedName = String(serverName || "").trim();
     if (!normalizedName)
     return;
+    const editRevision = ++mcpEditorRevision.current;
     setMcpFormMode("edit");
     setMcpValidationError("");
     try {
       const res = await fetch("/api/mcp/config", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
+      if (mcpEditorRevision.current !== editRevision) return;
       if (!res.ok) {
         const validationError = extractValidationPayload(data);
         throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"));
@@ -894,6 +915,7 @@ export default function ExtensionsPage() {
       setMcpFormDialogOpen(true);
     }
     catch (error) {
+      if (mcpEditorRevision.current !== editRevision) return;
       setMcpFormMode("create");
       toast({
         title: t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"),
@@ -1358,13 +1380,7 @@ export default function ExtensionsPage() {
                             <StatPill label={t("app.admin.dashboard.extensions.page.k51f11e87")} value={health?.mcp?.statusBreakdown?.error || 0} />
                         </div>
                         <div className="flex flex-wrap gap-3">
-                        <Dialog open={mcpFormDialogOpen} onOpenChange={(open) => {
-          setMcpFormDialogOpen(open);
-          if (open)
-          setMcpValidationError("");
-          else
-          setMcpFormMode("create");
-        }}>
+                        <Dialog open={mcpFormDialogOpen} onOpenChange={(open) => setMcpEditorOpen("form", open)}>
                             <Button type="button" onClick={openMcpCreateForm}>
                                 <Plus className="mr-2 h-4 w-4" />
                                 {t("app.admin.dashboard.extensions.page.mcpFormInstall")}
@@ -1377,23 +1393,19 @@ export default function ExtensionsPage() {
                                 <div className="min-h-0 space-y-4 overflow-y-auto py-4">
                                     {mcpInstallForm.baseConfig && <div className="space-y-2 rounded-lg border p-3 text-xs">
                                       <p>{t("extensions.store.credentialsKept")}</p>
-                                      {[...(mcpInstallForm.baseConfig.endpointRef ? ["endpointRef"] : []), ...Object.keys(mcpInstallForm.baseConfig["x-v8-credential-refs"] as Record<string, unknown> || {})].map(key => <Label key={key} className="flex items-center gap-2"><input type="checkbox" checked={mcpInstallForm.clearedCredentials?.includes(key) || false} onChange={event => setMcpInstallForm(previous => ({ ...previous, clearedCredentials: event.target.checked ? [...(previous.clearedCredentials || []), key] : (previous.clearedCredentials || []).filter(value => value !== key) }))} />{t("extensions.store.clearCredential", { name: key })}</Label>)}
+                                      {[...(mcpInstallForm.baseConfig.endpointRef ? ["endpointRef"] : []), ...Object.keys(mcpInstallForm.baseConfig["x-v8-credential-refs"] as Record<string, unknown> || {})].map(key => <Label key={key} className="flex items-center gap-2"><input type="checkbox" checked={mcpInstallForm.clearedCredentials?.includes(key) || false} onChange={event => updateMcpForm(previous => ({ ...previous, clearedCredentials: event.target.checked ? [...(previous.clearedCredentials || []), key] : (previous.clearedCredentials || []).filter(value => value !== key) }))} />{t("extensions.store.clearCredential", { name: key })}</Label>)}
                                     </div>}
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.extensions.page.mcpServerName")}</Label>
                                         <Input value={mcpInstallForm.name} onChange={(event) => {
-                    setMcpInstallForm((previous) => ({ ...previous, name: event.target.value }));
-                    if (mcpValidationError)
-                    setMcpValidationError("");
+                    updateMcpForm((previous) => ({ ...previous, name: event.target.value }));
                   }} placeholder="context7" disabled={mcpFormMode === "edit"} />
                                     </div>
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.extensions.page.mcpTransportType")}</Label>
                                         <Select value={mcpInstallForm.type} onValueChange={(value) => {
                     const next = normalizeMcpTransportType(value) || "stdio";
-                    setMcpInstallForm((previous) => ({ ...previous, type: next }));
-                    if (mcpValidationError)
-                    setMcpValidationError("");
+                    updateMcpForm((previous) => ({ ...previous, type: next }));
                   }}>
                                             <SelectTrigger>
                                                 <SelectValue />
@@ -1409,31 +1421,27 @@ export default function ExtensionsPage() {
                                             <div className="space-y-2">
                                                 <Label>{t("app.admin.dashboard.extensions.page.mcpCommand")}</Label>
                                                 <Input value={mcpInstallForm.command} onChange={(event) => {
-                          setMcpInstallForm((previous) => ({ ...previous, command: event.target.value }));
-                          if (mcpValidationError)
-                          setMcpValidationError("");
+                          updateMcpForm((previous) => ({ ...previous, command: event.target.value }));
                         }} placeholder="npx -y @modelcontextprotocol/server-filesystem" />
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>{t("app.admin.dashboard.extensions.page.mcpArgs")}</Label>
-                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.argsText} onChange={(event) => setMcpInstallForm((previous) => ({ ...previous, argsText: event.target.value }))} placeholder={"-y\n@example/server"} />
+                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.argsText} onChange={(event) => updateMcpForm((previous) => ({ ...previous, argsText: event.target.value }))} placeholder={"-y\n@example/server"} />
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>{t("app.admin.dashboard.extensions.page.mcpEnv")}</Label>
-                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.envText} onChange={(event) => setMcpInstallForm((previous) => ({ ...previous, envText: event.target.value }))} placeholder={"API_KEY=...\nDEBUG=false"} />
+                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.envText} onChange={(event) => updateMcpForm((previous) => ({ ...previous, envText: event.target.value }))} placeholder={"API_KEY=...\nDEBUG=false"} />
                                             </div>
                                         </> : <>
                                             <div className="space-y-2">
                                                 <Label>{t("app.admin.dashboard.extensions.page.mcpUrl")}</Label>
                                                 <Input type="password" autoComplete="off" value={mcpInstallForm.url} onChange={(event) => {
-                          setMcpInstallForm((previous) => ({ ...previous, url: event.target.value }));
-                          if (mcpValidationError)
-                          setMcpValidationError("");
+                          updateMcpForm((previous) => ({ ...previous, url: event.target.value }));
                         }} placeholder={mcpInstallForm.type === "http" ? "https://example.com/mcp" : "https://example.com/sse"} />
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>{t("app.admin.dashboard.extensions.page.mcpHeaders")}</Label>
-                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.headersText} onChange={(event) => setMcpInstallForm((previous) => ({ ...previous, headersText: event.target.value }))} placeholder={"Authorization=Bearer ...\nX-Client=V8OS"} />
+                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.headersText} onChange={(event) => updateMcpForm((previous) => ({ ...previous, headersText: event.target.value }))} placeholder={"Authorization=Bearer ...\nX-Client=V8OS"} />
                                             </div>
                                         </>}
                                     {mcpValidationError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -1441,12 +1449,12 @@ export default function ExtensionsPage() {
                                         </div> : null}
                                 </div>
                                 <DialogFooter>
-                                    <Button variant="outline" onClick={() => setMcpFormDialogOpen(false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
+                                    <Button variant="outline" onClick={() => setMcpEditorOpen("form", false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
                                     <Button onClick={() => void saveMcpConfig("form")} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpUpdateServer") : t("app.admin.dashboard.extensions.page.mcpSaveServer")}</Button>
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>
-                        <Dialog open={mcpDialogOpen} onOpenChange={setMcpDialogOpen}>
+                        <Dialog open={mcpDialogOpen} onOpenChange={(open) => setMcpEditorOpen("json", open)}>
                             <DialogTrigger asChild>
                                 <Button variant="outline">
                                     <Upload className="mr-2 h-4 w-4" />
@@ -1460,6 +1468,7 @@ export default function ExtensionsPage() {
                                 </DialogHeader>
                                 <div className="space-y-3 py-4">
                                     <Textarea className="h-[300px] bg-muted/50 font-mono text-sm" value={mcpConfigInput} onChange={(event) => {
+                  mcpEditorRevision.current += 1;
                   setMcpConfigInput(event.target.value);
                   if (mcpValidationError)
                   setMcpValidationError("");
@@ -1474,7 +1483,7 @@ export default function ExtensionsPage() {
                                         </div> : null}
                                 </div>
                                 <DialogFooter>
-                                    <Button variant="outline" onClick={() => setMcpDialogOpen(false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
+                                    <Button variant="outline" onClick={() => setMcpEditorOpen("json", false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
                                     <Button onClick={() => void saveMcpConfig("json")} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : t("app.admin.dashboard.extensions.page.k836f3c8b")}</Button>
                                 </DialogFooter>
                             </DialogContent>

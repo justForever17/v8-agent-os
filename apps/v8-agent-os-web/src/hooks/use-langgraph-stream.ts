@@ -25,6 +25,7 @@ import { useChatStore } from '@/store/chat-store';
 import {
     createInitialSessionRealtimeMessageState,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isActiveAssistantStreamPhase,
     isClientVisualAttachment,
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
@@ -47,10 +48,7 @@ interface UseLangGraphStreamOptions {
 }
 
 function appendAssistantPlaceholderIfNeeded(messages: Message[], clientMessageId?: string) {
-    const lastMessage = messages[messages.length - 1] as (Message & {
-        uiEphemeral?: boolean;
-        uiStreamPhase?: string | null;
-    }) | undefined;
+    const lastMessage = messages[messages.length - 1];
     if (
         lastMessage?.role === 'assistant'
         && (lastMessage.uiEphemeral || isActiveAssistantStreamPhase(lastMessage.uiStreamPhase))
@@ -62,10 +60,6 @@ function appendAssistantPlaceholderIfNeeded(messages: Message[], clientMessageId
         ...messages,
         { ...buildAssistantMessage({}), ...(clientMessageId ? { metadata: { clientMessageId } } : {}) },
     ]);
-}
-
-function isActiveAssistantStreamPhase(phase?: string | null) {
-    return phase === 'placeholder' || phase === 'agent_started' || phase === 'streaming' || phase === 'settling';
 }
 
 function applyScopeRequestFields(requestBody: Record<string, unknown>, data?: Record<string, unknown>) {

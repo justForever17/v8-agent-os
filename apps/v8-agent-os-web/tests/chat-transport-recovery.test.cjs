@@ -54,6 +54,37 @@ const streamResponse = (...events) => new Response(events.map(event => typeof ev
     { headers: { 'x-v8-agent-os-conversation-id': 'A', 'Content-Type': 'application/x-ndjson' } });
 const textDelta = { type: 'text_chunk', content: 'Partial', run_id: 'run-A', message_id: 'assistant-A' };
 
+test('tool-output continuation keeps the existing assistant throughout every active phase', async () => {
+    for (const phase of ['placeholder', 'agent_started', 'task_planning', 'tooling', 'artifact_ready', 'waiting_input', 'streaming', 'settling']) {
+        let finish;
+        const h = harness(() => new Promise(resolve => { finish = resolve; }));
+        h.state.messages = [{ id: 'answer-A', renderKey: 'stable-render', role: 'assistant', runId: 'run-A',
+            content: 'Work so far', uiEphemeral: false, uiStreamPhase: phase, nodes: [] }];
+        const pending = h.render().sendToolOutput('call-A', 'tool result', { conversationId: 'A' });
+        const identities = h.state.messages.map(message => message.id);
+        finish(streamResponse({ type: 'done', run_id: 'run-A' }));
+        await pending;
+        assert.deepEqual(Array.from(identities), ['answer-A'], phase);
+        assert.equal(h.state.messages[0].renderKey, 'stable-render', phase);
+    }
+});
+
+test('tool-output continuation does not reuse a settled, failed, or unknown assistant phase', async () => {
+    for (const phase of [undefined, 'error', 'completed', 'unknown']) {
+        let finish;
+        const h = harness(() => new Promise(resolve => { finish = resolve; }));
+        h.state.messages = [{ id: 'answer-A', role: 'assistant', runId: 'run-A',
+            content: 'Previous answer', uiEphemeral: false, uiStreamPhase: phase, nodes: [] }];
+        const pending = h.render().sendToolOutput('call-B', 'tool result', { conversationId: 'A' });
+        const identities = h.state.messages.map(message => message.id);
+        finish(streamResponse({ type: 'done' }));
+        await pending;
+        assert.equal(identities.length, 2, String(phase));
+        assert.equal(identities[0], 'answer-A');
+        assert.notEqual(identities[1], 'answer-A');
+    }
+});
+
 for (const [name, tail] of [
     ['EOF without terminal', ''],
     ['Admin transport envelope', { type: 'transport_error', code: 'engine_stream_disconnected', error: 'connection lost', sessionId: 'A', runId: 'run-A', unknownOutcome: true, retryable: false, recovery: 'resync' }],

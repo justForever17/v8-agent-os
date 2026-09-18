@@ -15,13 +15,6 @@ import {
     type SessionStreamUiEvent,
 } from "@v8/session-realtime";
 
-export type PhoneUiStreamPhase =
-    | SessionStreamPhase
-    | "task_planning"
-    | "tooling"
-    | "artifact_ready"
-    | "waiting_input";
-
 export type AgentProfile = SessionAgentProfile;
 
 export type PhoneRealtimeUiEvent = SessionStreamUiEvent & {
@@ -175,21 +168,10 @@ export const PHONE_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
     resolveArtifact: (event) => buildArtifact(event.artifact || resolveRecord(event.data).artifact || event.data),
 };
 
-export function isActiveAssistantStreamPhase(phase?: PhoneUiStreamPhase | null) {
-    return phase === "placeholder"
-        || phase === "agent_started"
-        || phase === "task_planning"
-        || phase === "tooling"
-        || phase === "artifact_ready"
-        || phase === "waiting_input"
-        || phase === "streaming"
-        || phase === "settling";
-}
-
 export function buildAssistantMessage(
     activeAgentProfile: AgentProfile,
     runId?: string,
-    phase: PhoneUiStreamPhase = "placeholder",
+    phase: SessionStreamPhase = "placeholder",
 ): ChatMessage {
     return buildSharedAssistantMessage(activeAgentProfile, runId, phase, PHONE_STREAM_LIFECYCLE_OPTIONS) as ChatMessage;
 }

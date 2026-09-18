@@ -59,7 +59,6 @@ import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
 import {
     buildAssistantMessage,
-    isActiveAssistantStreamPhase,
     PHONE_STREAM_LIFECYCLE_OPTIONS,
     type AgentProfile,
     type PhoneRealtimeUiEvent,
@@ -178,6 +177,7 @@ import {
     contextUsagePercent as resolveContextUsagePercent,
     evaluateSessionRuntimeEvent,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isActiveAssistantStreamPhase,
     isActiveRunStatus,
     isActiveCommandSessionStatus,
     isClientAudioAttachment,

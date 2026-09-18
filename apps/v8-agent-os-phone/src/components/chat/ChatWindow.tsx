@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
+import { isActiveAssistantStreamPhase, type AdminProcessRef, type ContextReferenceItem } from "@v8/session-realtime";
 
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
@@ -19,7 +19,6 @@ import { MessageBubble } from "@/src/components/chat/MessageBubble";
 import { ConversationRecoveryActions, type ConversationRecoveryProps } from "./ConversationRecoveryActions";
 import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
-import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { createFrameTaskScheduler } from "@/src/lib/motion-behavior";
 import { usePhoneDraftField, usePhoneDraftStatus } from "@/src/hooks/use-phone-draft";
 import { useIsFocused } from "@react-navigation/native";

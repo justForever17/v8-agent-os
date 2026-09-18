@@ -94,7 +94,8 @@ class ToolAuthorityDecision:
 
 def resolve_tool_authority(task_brief: dict[str, Any] | None) -> ToolAuthorityDecision:
     task = dict(task_brief or {})
-    nested = task.get("toolPolicy") if isinstance(task.get("toolPolicy"), dict) else {}
+    _, raw_policy = _present(task, "toolPolicy", "tool_policy")
+    nested = raw_policy if isinstance(raw_policy, dict) else {}
     mode_present, raw_mode = _present(nested, "mode")
     if not mode_present:
         mode_present, raw_mode = _present(task, "toolPolicyMode", "tool_policy_mode")

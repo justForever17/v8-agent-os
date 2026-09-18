@@ -62,6 +62,7 @@ from core.runtime_continuation import (
 )
 from core.storage import StorageManager
 from core.time_truth import utc_now_iso
+from core.tool_authority import resolve_tool_authority
 from erc.runtime_context import bind_runtime_context, get_runtime_context
 
 storage = StorageManager()
@@ -1555,53 +1556,33 @@ def _terminalize_grandchild_task_brief(
     )
     terminal.pop("plugin_references", None)
 
-    parent_tool_policy = _task_scope_value(parent_task_brief, "toolPolicy", "tool_policy")
-    parent_tool_policy = dict(parent_tool_policy) if isinstance(parent_tool_policy, dict) else {}
-    parent_allowed_tools = _scope_text_values(
-        _task_scope_value(parent_task_brief, "allowedTools", "allowed_tools")
-        or parent_tool_policy.get("allowedTools")
-        or parent_tool_policy.get("allowed_tools")
-    )
-    resolved_parent_tools = _scope_text_values(parent_resolved_tools)
-    parent_forbidden_tools = _scope_text_values(
-        _task_scope_value(parent_task_brief, "forbiddenTools", "forbidden_tools")
-        or parent_tool_policy.get("forbiddenTools")
-        or parent_tool_policy.get("forbidden_tools")
-    )
+    parent_authority = resolve_tool_authority(parent_task_brief)
+    child_authority = resolve_tool_authority(terminal)
+    raw_tool_policy = terminal.get("toolPolicy", terminal.get("tool_policy"))
     tool_policy = (
-        dict(terminal.get("toolPolicy") or terminal.get("tool_policy") or {})
-        if isinstance(terminal.get("toolPolicy") or terminal.get("tool_policy"), dict)
-        else {}
-    )
-    child_allowed_tools = _scope_text_values(
-        terminal.get("allowedTools")
-        or terminal.get("allowed_tools")
-        or tool_policy.get("allowedTools")
-        or tool_policy.get("allowed_tools")
-    )
-    child_forbidden_tools = _scope_text_values(
-        terminal.get("forbiddenTools")
-        or terminal.get("forbidden_tools")
-        or tool_policy.get("forbiddenTools")
-        or tool_policy.get("forbidden_tools")
+        dict(raw_tool_policy) if isinstance(raw_tool_policy, dict) else {}
     )
     forbidden_tools = _scope_text_values(
-        [*parent_forbidden_tools, *child_forbidden_tools, "delegation_broker"]
+        [*parent_authority.forbidden, *child_authority.forbidden, "delegation_broker"]
     )
-    parent_mode = str(parent_tool_policy.get("mode") or "default").strip().lower()
-    child_mode = str(tool_policy.get("mode") or "default").strip().lower()
-    parent_tool_ceiling = set(parent_allowed_tools or resolved_parent_tools)
+    # Resolved candidates supply the default surface, never a replacement for
+    # an explicit (possibly empty) parent allowlist.
+    parent_tool_ceiling = set(
+        parent_authority.allowed
+        if parent_authority.mode == "allowlist"
+        else _scope_text_values(parent_resolved_tools)
+    )
     allowed_tools = [
         item
-        for item in child_allowed_tools
+        for item in child_authority.allowed
         if item in parent_tool_ceiling and item not in set(forbidden_tools)
     ]
-    if parent_mode == "none" or child_mode == "none":
+    if parent_authority.mode == "none" or child_authority.mode == "none":
         allowed_tools = []
         projected_tool_mode = "none"
-    elif child_allowed_tools:
+    elif child_authority.allowed:
         projected_tool_mode = "allowlist" if allowed_tools else "none"
-    elif parent_mode == "default" and child_mode == "default":
+    elif parent_authority.mode == "default" and child_authority.mode == "default":
         # An absent parent allowlist is not evidence that the parent had no
         # baseline tools. Keep the terminal verifier on the ordinary resolved
         # read surface; runtime/plugin/capsule filters below still enforce the

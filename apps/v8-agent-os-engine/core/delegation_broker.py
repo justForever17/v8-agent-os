@@ -17,6 +17,7 @@ from core.engineering_capsule import effective_engineering_capsule, ensure_engin
 from core.agents import normalize_specialist_family_id
 
 from core.runtime_tool_access import normalize_subagent_runtime_bindings
+from core.tool_authority import resolve_tool_authority
 
 
 _WORD_PATTERN = re.compile(r"[a-z0-9_+.-]+", re.IGNORECASE)
@@ -1028,30 +1029,12 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
             child_delegation_budget = {"maxChildren": 1, "maxDepth": 1}
     raw_tool_policy = _task_brief_first_present(payload, "toolPolicy")
     tool_policy = dict(raw_tool_policy or {}) if isinstance(raw_tool_policy, dict) else {}
-    allowed_tools_present = any(key in payload for key in ("allowedTools", "allowed_tools")) or any(
-        key in tool_policy for key in ("allowedTools", "allowed_tools")
-    )
-    allowed_tools = _normalize_scope_values(
-        _task_brief_first_present(payload, "allowedTools")
-        if any(key in payload for key in ("allowedTools", "allowed_tools"))
-        else _first_present(tool_policy, ("allowedTools", "allowed_tools"))
-    )
-    forbidden_tools = _normalize_scope_values(
-        _task_brief_first_present(payload, "forbiddenTools")
-        if any(key in payload for key in ("forbiddenTools", "forbidden_tools"))
-        else _first_present(tool_policy, ("forbiddenTools", "forbidden_tools"))
-    )
-    no_tools = _safe_bool(
-        _task_brief_first_present(payload, "noTools")
-        if any(key in payload for key in ("noTools", "no_tools"))
-        else _first_present(tool_policy, ("noTools", "no_tools"))
-    )
-    tool_policy_mode = str(tool_policy.get("mode") or "").strip().lower()
-    if no_tools or tool_policy_mode == "none":
-        tool_policy_mode = "none"
-        allowed_tools = []
-    elif tool_policy_mode not in {"default", "allowlist", "none"}:
-        tool_policy_mode = "allowlist" if allowed_tools_present else "default"
+    # Persist the same decision used by the worker factory, including explicit
+    # empty lists and nested-policy precedence. Top-level fields are projections.
+    tool_authority = resolve_tool_authority(payload)
+    tool_policy_mode = tool_authority.mode
+    allowed_tools = list(tool_authority.allowed) if tool_policy_mode != "none" else []
+    forbidden_tools = list(tool_authority.forbidden)
     constraints = _normalize_scope_values(
         _task_brief_first_present(payload, "constraints")
     )

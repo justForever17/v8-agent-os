@@ -49,7 +49,7 @@ jobs:
           fs.writeFileSync('recovery-manifest.json',execFileSync('git',['show',`${commit}:release-manifest.json`]));
           const manifest=JSON.parse(fs.readFileSync('recovery-manifest.json'));
           if(`v8-os-v${manifest.release.version}`!==tag) throw Error('Manifest mismatch');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT,`commit=${commit}\nversion=${manifest.release.version}\nprerelease=${manifest.release.channel!=='stable'}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,`commit=${commit}\nversion=${manifest.release.version}\nchannel=${manifest.release.channel}\nprerelease=${manifest.release.channel!=='stable'}\n`);
           NODE
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -83,6 +83,7 @@ jobs:
           SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
           PRERELEASE: ${{ steps.source.outputs.prerelease }}
           RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.source.outputs.channel }}
         run: |
-          node scripts/release/generate-release-notes.mjs --manifest recovery-manifest.json --product all --version "$RELEASE_VERSION" --tag "$RECOVERY_TAG" --out recovery-notes.md
+          node scripts/release/generate-release-notes.mjs --manifest recovery-manifest.json --product all --version "$RELEASE_VERSION" --tag "$RECOVERY_TAG" --channel "$RELEASE_CHANNEL" --out recovery-notes.md
           node scripts/release/publish-unified-release.mjs --repo "$GITHUB_REPOSITORY" --tag "$RECOVERY_TAG" --source-commit "$SOURCE_COMMIT" --prerelease "$PRERELEASE" --directory release-assets --notes recovery-notes.md

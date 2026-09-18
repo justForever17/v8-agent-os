@@ -14,7 +14,7 @@ from core.runtime_tool_access import (
 from core.tools.native.runtime import runtime_broker
 from core.tools.native.desktop_governance import _desktop_route_gate
 from core.tools.native.computer_use import _computer_use_compact_observation
-from core.tool_surface import _render_computer_use_surface
+from core.tool_surfaces.device_media import _render_computer_use_surface
 from graph.route_context import merge_route_context
 from graph.tool_routing import _supervisor_direct_scope_hard_block_message
 

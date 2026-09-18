@@ -25,7 +25,7 @@ from core.tools.research_quality import (
 
 
 def test_historical_length_issue_does_not_reinstate_a_current_rejection_gate():
-    from core.tool_surface import _research_surface_issue_text
+    from core.tool_surfaces.research_web import _research_surface_issue_text
 
     historical = _research_surface_issue_text("detailed_answer_floor_not_met:3000")
     assert "advisory" in historical

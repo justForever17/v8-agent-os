@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
-from core.tool_surface import _render_creative_media_surface
+from core.tool_surfaces.device_media import _render_creative_media_surface
 from core.tools.native import creative_media_facade as facade
 from core.tools.native.creative_media import _creative_media_quality_job_summary
 from core.tools.native.creative_media_facade import (

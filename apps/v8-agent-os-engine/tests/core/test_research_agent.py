@@ -704,7 +704,7 @@ def test_broker_persistence_surface_and_episode_share_the_same_review(monkeypatc
     from core.tools import research_broker as broker
     from core.tools import research_ledger
     from core.runtime_episode_runner import _research_evidence_status
-    from core.tool_surface import _render_research_broker_surface
+    from core.tool_surfaces.research_web import _render_research_broker_surface
     from core.database import db
     from erc.runtime_context import get_runtime_context
 
@@ -918,7 +918,7 @@ def test_changed_saved_source_cannot_inherit_original_read_proof():
 def test_durable_source_pages_recover_full_text_under_small_surface_budget(monkeypatch, tmp_path):
     import re
     from core.tools import research_broker as broker, research_ledger as ledger
-    from core.tool_surface import _render_research_broker_surface
+    from core.tool_surfaces.research_web import _render_research_broker_surface
     from runtimes.research.evidence import digest
     from tests.core.research_scope_fixture import research_sessions
 

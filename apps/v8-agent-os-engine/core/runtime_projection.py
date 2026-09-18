@@ -61,7 +61,7 @@ def _agent_surface_for_missing_tool_result(tool_name: str, raw_result: Any) -> t
     )
     if known_surface:
         try:
-            from core.tool_surface import _decision_agent_visible_surface
+            from core.tool_surfaces.terminal import _decision_agent_visible_surface
 
             rendered = _decision_agent_visible_surface(
                 tool_name=str(tool_name or "unknown"), content=content, raw_ref="", budget=6000,

@@ -290,7 +290,7 @@ def _render_delegation_observation_detail(payload: dict[str, Any], *, max_chars:
 def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str, max_chars: int) -> str | None:
     kind = str(payload.get("kind") or "").strip()
     if kind == "research_source_page":
-        from core.tool_surface import _render_research_broker_surface
+        from core.tool_surfaces.research_web import _render_research_broker_surface
         return _render_research_broker_surface(payload, raw_ref, budget=max_chars)
     if kind == "research_experience_pack" and isinstance(payload.get("item"), dict):
         item = payload["item"]

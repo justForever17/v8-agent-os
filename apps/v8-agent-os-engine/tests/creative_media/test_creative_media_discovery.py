@@ -7,7 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from core.tool_surface import _decision_agent_visible_surface
+from core.tool_surfaces.terminal import _decision_agent_visible_surface
 from core.tools.native import creative_media as native
 from core.tools.native import creative_media_facade as facade
 from runtimes.creative_media.production_pack import rank_candidates_markdown, rank_model_candidates

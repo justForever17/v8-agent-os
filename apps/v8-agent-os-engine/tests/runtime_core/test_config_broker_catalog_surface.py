@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.tool_surface import _render_config_broker_surface
+from core.tool_surfaces.runtime import _render_config_broker_surface
 
 
 def test_catalog_surface_bounds_providers_and_model_ids_without_transport_or_secret_fields() -> None:

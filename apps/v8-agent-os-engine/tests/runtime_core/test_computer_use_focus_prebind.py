@@ -113,7 +113,7 @@ def test_foreground_reuse_does_not_skip_a_requested_or_unresolved_visual_guard(g
     "status": "completed", "verification": {"passed": True}, "message": "An earlier step completed."}}}]])
 def test_canonical_controlled_result_remains_truthful_through_native_and_agent_surfaces(monkeypatch, command, status, prior_steps):
     from erc.runtime_control import control_payload
-    from core.tool_surface import _decision_agent_visible_surface
+    from core.tool_surfaces.terminal import _decision_agent_visible_surface
 
     native = importlib.import_module("core.tools.native.computer_use")
     runtime = object.__new__(ComputerUseRuntime)

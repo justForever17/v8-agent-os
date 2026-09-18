@@ -1,0 +1,88 @@
+name: Recover verified release uploads
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Completed canonical release run with successful required product gate
+        required: true
+        type: string
+      tag:
+        description: Existing immutable tag from that run
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: v8os-release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+      - name: Verify original builds and immutable tag
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN: ${{ inputs.run_id }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          import {validateRecoverySource} from './scripts/release/recovery-source.mjs';
+          const id=process.env.RECOVERY_RUN, tag=process.env.RECOVERY_TAG, repo=process.env.GITHUB_REPOSITORY;
+          if (!/^\d+$/.test(id) || !/^v8-os-v\d{4}\.\d{2}\.\d{2}\.\d+$/.test(tag)) throw Error('Invalid recovery identity');
+          const gh=args=>JSON.parse(execFileSync('gh',args,{encoding:'utf8'}));
+          const run=gh(['api',`repos/${repo}/actions/runs/${id}`]);
+          const jobs=gh(['api',`repos/${repo}/actions/runs/${id}/jobs?per_page=100`]);
+          if(jobs.total_count!==jobs.jobs.length) throw Error('Incomplete jobs inventory');
+          const commit=validateRecoverySource(run,jobs.jobs,tag);
+          if(execFileSync('git',['rev-parse',`${tag}^{}`],{encoding:'utf8'}).trim()!==commit) throw Error('Tag source mismatch');
+          fs.writeFileSync('recovery-manifest.json',execFileSync('git',['show',`${commit}:release-manifest.json`]));
+          const manifest=JSON.parse(fs.readFileSync('recovery-manifest.json'));
+          if(`v8-os-v${manifest.release.version}`!==tag) throw Error('Manifest mismatch');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,`commit=${commit}\nversion=${manifest.release.version}\nprerelease=${manifest.release.channel!=='stable'}\n`);
+          NODE
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          path: recovery-input
+      - name: Prepare the original complete asset inventory
+        env:
+          RECOVERY_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          mkdir -p release-input/{desktop,phone/android,phone/ios,server,tui}
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          for(const name of fs.readdirSync('recovery-input')) {
+            const dest=name.startsWith('v8os-desktop-')?'desktop':({'phone-android-package':'phone/android','phone-ios-package':'phone/ios','v8os-server-linux-x64':'server','v8os-tui-npm':'tui'})[name];
+            if(!dest) throw Error(`Unexpected artifact ${name}`);
+            for(const file of fs.readdirSync(path.join('recovery-input',name))) {
+              const source=path.join('recovery-input',name,file), target=path.join('release-input',dest,file);
+              if(!fs.statSync(source).isFile() || fs.existsSync(target)) throw Error(`Unexpected/duplicate artifact file ${file}`);
+              fs.renameSync(source,target);
+            }
+          }
+          NODE
+          node scripts/release/prepare-unified-release-assets.mjs --manifest recovery-manifest.json --tag "$RECOVERY_TAG" --source-commit "$SOURCE_COMMIT" --input-dir release-input --output-dir release-assets
+      - name: Reconcile and upload missing original assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          PRERELEASE: ${{ steps.source.outputs.prerelease }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          node scripts/release/generate-release-notes.mjs --manifest recovery-manifest.json --product all --version "$RELEASE_VERSION" --tag "$RECOVERY_TAG" --out recovery-notes.md
+          node scripts/release/publish-unified-release.mjs --repo "$GITHUB_REPOSITORY" --tag "$RECOVERY_TAG" --source-commit "$SOURCE_COMMIT" --prerelease "$PRERELEASE" --directory release-assets --notes recovery-notes.md

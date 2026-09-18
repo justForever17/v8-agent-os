@@ -266,7 +266,7 @@ jobs:
       needs.release-gate.result == 'success' &&
       needs.release-gate.outputs.publish_ready == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: write
 
@@ -356,13 +356,13 @@ jobs:
             --channel "$RELEASE_CHANNEL" \
             --out release-work/RELEASE_NOTES.md
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
-        with:
-          tag_name: ${{ needs.plan.outputs.tag }}
-          generate_release_notes: false
-          body_path: release-work/RELEASE_NOTES.md
-          prerelease: ${{ needs.plan.outputs.prerelease }}
-          make_latest: ${{ needs.plan.outputs.prerelease == 'true' && 'false' || 'true' }}
-          fail_on_unmatched_files: true
-          files: release-assets/*
+      - name: Publish verified assets without replacing existing files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+        run: >-
+          node scripts/release/publish-unified-release.mjs
+          --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+          --source-commit "$GITHUB_SHA" --prerelease "$RELEASE_PRERELEASE"
+          --directory release-assets --notes release-work/RELEASE_NOTES.md

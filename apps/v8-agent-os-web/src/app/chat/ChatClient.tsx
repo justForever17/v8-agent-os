@@ -6,8 +6,7 @@ import { conversationEventDisposition, isStaleTranscript, readTranscriptIdentity
 import type { ChatTurnIndexEntry } from "@/components/chat/TurnNavigator";
 import { InputArea } from "@/components/chat/InputArea";
 import { draftOwnerKey, hydrateDraft, readDraft, removeDrafts, setDraftField } from "@/lib/composer-drafts";
-import { readCompleteQueue, reconcileQueueSnapshot } from "@/lib/queue-snapshot";
-import { extractQueuedMessages, isVisibleQueuedMessage, normalizeQueuedMessage, sortQueuedMessages, type QueuedChatMessage } from "@/lib/chat-queue";
+import { extractQueuedMessages, normalizeQueuedMessage, type QueuedChatMessage } from "@/lib/chat-queue";
 import { attachSseEventId, mergeProjectedSnapshotMessages } from "@/lib/chat-message-reconciliation";
 import { QueuedMessageEditDialog, QueuedMessagesStrip, type QueueUiLabels } from "@/components/chat/QueuedMessagesDock";
 import {
@@ -22,6 +21,7 @@ import {
     type ContextSessionReference,
 } from "@/lib/chat-client-utils";
 import { useLangGraphStream } from "@/hooks/use-langgraph-stream";
+import { useChatQueue } from "@/hooks/use-chat-queue";
 import type { SpecReviewDecision } from "@/lib/spec-review";
 import {
     cloneMessages,
@@ -450,6 +450,8 @@ export default function ChatClient() {
     // which would cause `sendMessage` to send `conversationId: null` on subsequent messages 
     // and spawn duplicate history entries.
     const [activeConversationId, setActiveConversationId] = useState<string | null>(urlId);
+    const activeConversationIdRef = useRef<string | null>(activeConversationId);
+    const latestRealtimeSeqRef = useRef<number>(0);
     const [pendingContextSessionRefs, setPendingContextSessionRefs] = useState<ContextSessionReference[]>(() => (
         newConversationIntent && CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)
             ? [{ sessionId: contextSessionIdParam, source: "history_menu" }]
@@ -634,20 +636,6 @@ export default function ChatClient() {
     const turnIndexRef = useRef<ChatTurnIndexEntry[]>([]);
     const [totalTurnCount, setTotalTurnCount] = useState(0);
     const [focusedTurnId, setFocusedTurnId] = useState<string | null>(null);
-    const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
-    const queueCacheRef = useRef(new Map<string, QueuedChatMessage[]>());
-    const queueSequenceRef = useRef(new Map<string, number>());
-    const queuedMessagesRef = useRef(queuedMessages);
-    queuedMessagesRef.current = queuedMessages;
-    const queuedMessagesSessionIdRef = useRef<string | null>(activeConversationId);
-    queuedMessagesSessionIdRef.current = activeConversationId;
-    const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
-    const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string | null>(null);
-    const [queuedMessageBusyId, setQueuedMessageBusyId] = useState("");
-    const [editingQueuedMessage, setEditingQueuedMessage] = useState<QueuedChatMessage | null>(null);
-    const [queuedMessageEditText, setQueuedMessageEditText] = useState("");
-    const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
-    const [queuedMessageError, setQueuedMessageError] = useState("");
     const [chatTransportError, setChatTransportError] = useState("");
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const lastSessionProcessSurfaceAtRef = useRef(0);
@@ -723,62 +711,38 @@ export default function ChatClient() {
     const terminalCreateRef = useRef<{ owner: string; requestId: string; inFlight: boolean } | null>(null);
     const terminalListRequestRef = useRef(0);
     const hasActiveWorkbenchSession = Boolean(activeConversationId);
-
-    const upsertQueuedMessage = useCallback((incoming: unknown) => {
-        const normalized = normalizeQueuedMessage(incoming);
-        const sessionId = normalized?.sessionId;
-        if (!normalized || !sessionId) {
-            return;
-        }
-        const current = sessionId === queuedMessagesSessionIdRef.current ? queuedMessagesRef.current : queueCacheRef.current.get(sessionId) || [];
-        const next = sortQueuedMessages([...current.filter((item) => item.id !== normalized.id), normalized]);
-        queueCacheRef.current.set(sessionId, next);
-        if (sessionId === queuedMessagesSessionIdRef.current) { queuedMessagesRef.current = next; setQueuedMessages(next); }
-    }, []);
-
-    const applyQueuedMessagesSnapshot = useCallback((incoming: QueuedChatMessage[] | null, expectedSessionId?: string | null, sequence = 0, complete = false) => {
-        const sessionId = expectedSessionId || queuedMessagesSessionIdRef.current;
-        if (!incoming || !sessionId) {
-            return;
-        }
-        if (sessionId !== queuedMessagesSessionIdRef.current) return;
-        const knownSequence = Math.max(queueSequenceRef.current.get(sessionId) || 0, latestRealtimeSeqRef.current);
-        const next = reconcileQueueSnapshot(queuedMessagesRef.current, incoming.filter((item) => item.sessionId === sessionId), sequence, knownSequence, complete);
-        if (sequence < knownSequence) return;
-        queueSequenceRef.current.set(sessionId, sequence);
-        queueCacheRef.current.set(sessionId, next);
-        queuedMessagesRef.current = next;
-        setQueuedMessages(sortQueuedMessages(next));
-        setQueuedMessageError("");
-    }, []);
-
-    const visibleQueuedMessages = useMemo(
-        () => sortQueuedMessages(queuedMessages.filter((item) => (
-            item.sessionId === activeConversationId && isVisibleQueuedMessage(item)
-        ))),
-        [activeConversationId, queuedMessages],
-    );
-    const queueSyncControllerRef = useRef<AbortController | null>(null);
-    const synchronizeQueue = useCallback(async (sessionId: string) => {
-        if (!sessionId || sessionId !== activeConversationIdRef.current || queueSyncControllerRef.current) return;
-        const controller = new AbortController();
-        queueSyncControllerRef.current = controller;
-        try {
-            const result = await readCompleteQueue<QueuedChatMessage>(sessionId, async (cursor) => {
-                const query = new URLSearchParams({ session_id: sessionId });
-                if (cursor !== null) query.set("after_ordinal", String(cursor));
-                const response = await fetch(`/api/chat-queue?${query}`, { cache: "no-store", signal: controller.signal });
-                if (!response.ok) throw new Error("Queue sync failed");
-                return await response.json();
-            }, (sequence) => !controller.signal.aborted && activeConversationIdRef.current === sessionId && sequence >= latestRealtimeSeqRef.current);
-            if (!controller.signal.aborted) applyQueuedMessagesSnapshot(result.items, sessionId, result.sequence, true);
-        } catch {
-            if (!controller.signal.aborted && activeConversationIdRef.current === sessionId) setQueuedMessageError("队列同步未完成，保留上次状态。");
-        } finally { if (queueSyncControllerRef.current === controller) queueSyncControllerRef.current = null; }
-    }, [applyQueuedMessagesSnapshot]);
-    useEffect(() => {
-        return () => { queueSyncControllerRef.current?.abort(); queueSyncControllerRef.current = null; };
-    }, [activeConversationId, instanceId, session?.user?.id]);
+    const {
+        queuedMessages,
+        setQueuedMessages,
+        queuedMessagesRef,
+        queueCacheRef,
+        queueSequenceRef,
+        queuedMessagesSessionIdRef,
+        queuedMessagesCollapsed,
+        setQueuedMessagesCollapsed,
+        queuedMessageMenuId,
+        setQueuedMessageMenuId,
+        queuedMessageBusyId,
+        setQueuedMessageBusyId,
+        editingQueuedMessage,
+        setEditingQueuedMessage,
+        queuedMessageEditText,
+        setQueuedMessageEditText,
+        queuedMessageEditBusy,
+        setQueuedMessageEditBusy,
+        queuedMessageError,
+        setQueuedMessageError,
+        visibleQueuedMessages,
+        upsertQueuedMessage,
+        applyQueuedMessagesSnapshot,
+        synchronizeQueue,
+        resetQueueUi,
+    } = useChatQueue({
+        activeConversationId,
+        activeConversationIdRef,
+        latestRealtimeSeqRef,
+        ownerKey: sessionOwnerKey,
+    });
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
         const sessionId = String(payload?.sessionId || "").trim();
@@ -1159,7 +1123,6 @@ export default function ChatClient() {
     settleTerminalStreamRef.current = settleTerminalStream;
     isRunAcceptancePendingRef.current = isRunAcceptancePending;
 
-    const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const isLoadingRef = useRef(isLoading);
     const messagesRef = useRef<Message[]>(messages);
     const messageCacheRef = useRef(new Map<string, Message[]>());
@@ -1168,7 +1131,6 @@ export default function ChatClient() {
     const realtimeMessageStateRef = useRef(
         createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS),
     );
-    const latestRealtimeSeqRef = useRef<number>(0);
     const snapshotCoveredRealtimeSeqRef = useRef<number>(0);
     const seenRealtimeEventIdentitiesRef = useRef(new BoundedRuntimeEventIdentityLedger());
     const runtimeFlushFrameRef = useRef<number | null>(null);
@@ -3708,11 +3670,7 @@ export default function ChatClient() {
             setLegacyChatUnsupported(false);
             clearApprovalState();
             setRunEntries([]);
-            setQueuedMessages([]);
-            setQueuedMessageMenuId(null);
-            setEditingQueuedMessage(null);
-            setQueuedMessageEditText("");
-            setQueuedMessageError("");
+            resetQueueUi();
             turnBeforeCursorRef.current = null;
             isLoadingOlderTurnsRef.current = false;
             isJumpingTurnRef.current = false;
@@ -3725,7 +3683,7 @@ export default function ChatClient() {
             messagesRef.current = [];
             setMessages([]);
         }
-    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, sessionOwnerKey, status, stop, setMessages]);
+    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, resetQueueUi, sessionOwnerKey, status, stop, setMessages]);
 
     useEffect(() => {
         if (status !== "authenticated" || !activeConversationId) {

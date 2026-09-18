@@ -784,10 +784,11 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.deepEqual(tagPushCaller.matrix.include.map((target) => target.id), ['linux-x64']);
 });
 
-test('root release workflow is the only fan-in publisher and enforces required products', () => {
+test('root release gates new builds and recovery reuses their verified products', () => {
   const desktop = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   const phone = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'phone-build.yml'), 'utf8');
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+  const recovery = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release-recovery.yml'), 'utf8');
 
   assert.match(workflow, /"v8-os-v\*"/);
   assert.match(workflow, /"v8-os-desktop-v\*"/);
@@ -808,14 +809,16 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /prepare-unified-release-assets\.mjs/);
   assert.match(workflow, /pattern: v8os-desktop-\*/);
   assert.match(workflow, /name: phone-android-package/);
-  assert.match(workflow, /prerelease: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
-  assert.match(workflow, /fail_on_unmatched_files: true/);
+  assert.match(workflow, /RELEASE_PRERELEASE: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
+  assert.match(workflow, /--prerelease "\$RELEASE_PRERELEASE"/);
+  assert.match(workflow, /--directory release-assets --notes release-work\/RELEASE_NOTES\.md/);
   assert.equal((workflow.match(/contents: write/g) || []).length, 1);
-  assert.equal((workflow.match(/softprops\/action-gh-release@/g) || []).length, 1);
-  assert.equal(
-    (workflow.match(/softprops\/action-gh-release@[0-9a-f]{40}(?=\s|$)/g) || []).length,
-    1,
-  );
+  assert.equal((workflow.match(/node scripts\/release\/publish-unified-release\.mjs/g) || []).length, 1);
+  assert.doesNotMatch(workflow, /softprops\/action-gh-release|--clobber/);
+  assert.match(recovery, /validateRecoverySource\(run,jobs\.jobs,tag\)/);
+  assert.match(recovery, /run-id: \$\{\{ inputs\.run_id \}\}/);
+  assert.match(recovery, /node scripts\/release\/publish-unified-release\.mjs/);
+  assert.doesNotMatch(recovery, /--clobber|prepare-release\.mjs/);
   assert.equal((workflow.match(/environment: release/g) || []).length, 2);
   assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 2);
   assert.doesNotMatch(workflow, /secrets: inherit/);

@@ -732,15 +732,14 @@ def run_attempt(
     try:
         with forbid_evidence_acquisition(research_module) as guarded_counters:
             counters = guarded_counters
-            result = research_module._web_research_architect_pack(
+            result = research_module._execute_research_agent(
                 question=str(bundle.get("question") or ""),
-                source_matrix=copy.deepcopy(list(bundle.get("sourceMatrix") or [])),
-                shards=copy.deepcopy(list(bundle.get("shards") or [])),
+                shards=[] if bundle.get("researchEvidenceBank") else copy.deepcopy(list(bundle.get("shards") or [])),
                 confidence=str(bundle.get("confidence") or "medium"),
-                average_authority=float(bundle.get("authorityScore") or 0.0),
                 freshness=str(bundle.get("freshness") or "auto"),
-                architect_call_state={},
-                evidence_bank=copy.deepcopy(bundle.get("researchEvidenceBank")),
+                max_searches=0,
+                previous_bundle={"researchEvidenceBank": copy.deepcopy(bundle.get("researchEvidenceBank"))}
+                if bundle.get("researchEvidenceBank") else None,
             )
         terminal_status = "completed"
     except Exception as exc:  # noqa: BLE001 - terminal evidence must be recorded fail-closed.

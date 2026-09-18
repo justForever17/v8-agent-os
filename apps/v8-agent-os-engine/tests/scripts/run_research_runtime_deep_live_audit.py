@@ -1335,15 +1335,13 @@ def _run_fixed_bundle_case(path: Path, bundle_id: str, output_dir: Path, *, revi
             case.elapsed_ms = int((time.perf_counter() - started) * 1000)
             return case
         with fixed.forbid_evidence_acquisition(research_module) as counters:
-            result = research_module._web_research_architect_pack(
+            result = research_module._execute_research_agent(
                 question=str(bundle["question"]),
-                source_matrix=copy.deepcopy(bundle["sourceMatrix"]),
-                shards=copy.deepcopy(bundle["shards"]),
-                confidence=str(bundle.get("confidence") or "medium"),
-                average_authority=float(bundle.get("authorityScore") or 0),
+                shards=[] if bundle.get("researchEvidenceBank") else copy.deepcopy(bundle["shards"]),
                 freshness=str(bundle.get("freshness") or "auto"),
-                architect_call_state={},
-                evidence_bank=copy.deepcopy(bundle.get("researchEvidenceBank")),
+                max_searches=0,
+                previous_bundle={"researchEvidenceBank": copy.deepcopy(bundle.get("researchEvidenceBank"))}
+                if bundle.get("researchEvidenceBank") else None,
             )
         artifact, digest = fixed._write_result_artifact(
             output_dir, f"synthesis-{time.time_ns()}", result,

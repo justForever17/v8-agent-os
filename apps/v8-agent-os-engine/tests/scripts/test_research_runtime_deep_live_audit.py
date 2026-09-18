@@ -202,7 +202,7 @@ def test_fixed_review_protocol_keeps_rejection_and_avoids_writer(monkeypatch, tm
               "researchResult": {"candidateDraft": {"answer": "Candidate kept verbatim"}}}
     path = tmp_path / "ledger.json"
     path.write_text(json.dumps(bundle), encoding="utf-8")
-    monkeypatch.setattr(research, "_web_research_architect_pack", lambda **_: pytest.fail("Review replay called writer"))
+        monkeypatch.setattr(research, "_execute_research_agent", lambda **_: pytest.fail("Review replay called writer"))
 
     def review(value):
         assert value["researchResult"]["candidateDraft"]["answer"] == "Candidate kept verbatim"
@@ -253,7 +253,7 @@ def test_fixed_bundle_replay_blocks_acquisition_and_preserves_input(monkeypatch,
                 pass
         return {"answerMarkdown": "fixture answer"}
 
-    monkeypatch.setattr(research, "_web_research_architect_pack", synthesize)
+        monkeypatch.setattr(research, "_execute_research_agent", synthesize)
     case = audit._run_fixed_bundle_case(ledger_path, "fixture", tmp_path)
     assert case.status == ("failed" if attempt_fetch else "ok")
     assert ("fixed_evidence_acquisition_attempted" in case.failures) is attempt_fetch

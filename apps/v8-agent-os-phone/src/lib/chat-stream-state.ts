@@ -3,10 +3,10 @@ import type {
     ChatMessage,
 } from "@/src/types/admin";
 import { translateCurrent } from "@/src/lib/locale";
+import { normalizePhoneArtifact } from "@/src/lib/chat-realtime";
 import {
     applyRealtimeEventToMessages as applySharedRealtimeEventToMessages,
     buildAssistantMessage as buildSharedAssistantMessage,
-    coerceAdminResourceRef,
     deriveRealtimeStreamState as deriveSharedRealtimeStreamState,
     type SessionAgentProfile,
     type SessionStreamLifecycleOptions,
@@ -33,95 +33,6 @@ function createClientId(prefix: string) {
 
 function resolveRecord(value: unknown) {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
-}
-
-function buildArtifact(value: unknown): ChatArtifact | null {
-    const record = resolveRecord(value);
-    const candidate: ChatArtifact = {
-        id: typeof record.id === "string" ? record.id : undefined,
-        artifactId: typeof record.artifactId === "string"
-            ? record.artifactId
-            : typeof record.artifact_id === "string"
-                ? record.artifact_id
-                : undefined,
-        title: typeof record.title === "string" ? record.title : undefined,
-        kind: typeof record.kind === "string" ? record.kind : undefined,
-        previewUrl: typeof record.previewUrl === "string"
-            ? record.previewUrl
-            : typeof record.preview_url === "string"
-                ? record.preview_url
-                : undefined,
-        externalUrl: typeof record.externalUrl === "string"
-            ? record.externalUrl
-            : typeof record.external_url === "string"
-                ? record.external_url
-                : undefined,
-        sourcePath: typeof record.sourcePath === "string"
-            ? record.sourcePath
-            : typeof record.source_path === "string"
-                ? record.source_path
-                : undefined,
-        workspacePath: typeof record.workspacePath === "string"
-            ? record.workspacePath
-            : typeof record.workspace_path === "string"
-                ? record.workspace_path
-                : undefined,
-        workspaceRoot: typeof record.workspaceRoot === "string"
-            ? record.workspaceRoot
-            : typeof record.workspace_root === "string"
-                ? record.workspace_root
-                : undefined,
-        workspaceRelativePath: typeof record.workspaceRelativePath === "string"
-            ? record.workspaceRelativePath
-            : typeof record.workspace_relative_path === "string"
-                ? record.workspace_relative_path
-                : undefined,
-        canonicalPath: typeof record.canonicalPath === "string"
-            ? record.canonicalPath
-            : typeof record.canonical_path === "string"
-                ? record.canonical_path
-                : undefined,
-        projectId: typeof record.projectId === "string"
-            ? record.projectId
-            : typeof record.project_id === "string"
-                ? record.project_id
-                : undefined,
-        workspaceId: typeof record.workspaceId === "string"
-            ? record.workspaceId
-            : typeof record.workspace_id === "string"
-                ? record.workspace_id
-                : undefined,
-        storageClass: typeof record.storageClass === "string"
-            ? record.storageClass
-            : typeof record.storage_class === "string"
-                ? record.storage_class
-                : undefined,
-        surfaceVisible: typeof record.surfaceVisible === "boolean"
-            ? record.surfaceVisible
-            : typeof record.surface_visible === "boolean"
-                ? record.surface_visible
-                : undefined,
-        mimeType: typeof record.mimeType === "string"
-            ? record.mimeType
-            : typeof record.mime_type === "string"
-                ? record.mime_type
-                : undefined,
-        resourceRef: coerceAdminResourceRef(record.resourceRef || record.resource_ref || null),
-    };
-
-    if (
-        !candidate.id
-        && !candidate.artifactId
-        && !candidate.previewUrl
-        && !candidate.externalUrl
-        && !candidate.workspacePath
-        && !candidate.sourcePath
-        && !candidate.title
-    ) {
-        return null;
-    }
-
-    return candidate;
 }
 
 function resolveAgentProfile(event: PhoneRealtimeUiEvent, fallback: AgentProfile): AgentProfile {
@@ -165,7 +76,7 @@ export const PHONE_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
             agentRoleLabel: resolvedFallback.agentRoleLabel || defaultAgentProfile.agentRoleLabel,
         };
     },
-    resolveArtifact: (event) => buildArtifact(event.artifact || resolveRecord(event.data).artifact || event.data),
+    resolveArtifact: (event) => normalizePhoneArtifact(event.artifact || resolveRecord(event.data).artifact || event.data),
 };
 
 export function buildAssistantMessage(

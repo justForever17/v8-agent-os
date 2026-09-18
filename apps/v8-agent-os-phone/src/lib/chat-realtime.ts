@@ -20,12 +20,12 @@ export type PhoneRealtimeEvent = SessionStreamUiEvent & {
 };
 
 
-function buildArtifact(value: unknown): ChatArtifact | null {
+export function normalizePhoneArtifact(value: unknown): ChatArtifact | null {
     if (!value || typeof value !== "object") {
         return null;
     }
     const record = value as JsonRecord;
-    return {
+    const candidate: ChatArtifact = {
         id: typeof record.id === "string" ? record.id : undefined,
         artifactId: typeof record.artifactId === "string"
             ? record.artifactId
@@ -101,12 +101,26 @@ function buildArtifact(value: unknown): ChatArtifact | null {
                 : undefined,
         resourceRef: coerceAdminResourceRef(record.resourceRef || record.resource_ref || null),
     };
+
+    if (
+        !candidate.id
+        && !candidate.artifactId
+        && !candidate.previewUrl
+        && !candidate.externalUrl
+        && !candidate.workspacePath
+        && !candidate.sourcePath
+        && !candidate.title
+    ) {
+        return null;
+    }
+
+    return candidate;
 }
 
 export function normalizePhoneRealtimeEvent(raw: unknown, locale: LocaleCode = "zh-CN"): PhoneRealtimeEvent | null {
     return buildSessionStreamUiEvent(raw, {
         locale,
-        artifactResolver: (artifact, event) => buildArtifact(artifact || event.artifact || event.data?.artifact || event.data),
+        artifactResolver: (artifact, event) => normalizePhoneArtifact(artifact || event.artifact || event.data?.artifact || event.data),
     }) as PhoneRealtimeEvent | null;
 }
 

@@ -9,11 +9,16 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(adminRoot, relativePath), "utf8");
 }
 
+function modelHubSource() {
+  return readText("src/app/admin/(dashboard)/model-hub/page.tsx")
+    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts");
+}
+
 test("Model Hub exposes the provider model as the title and keeps the complete request route as secondary evidence", () => {
   const providerCard = readText("src/components/models/ProviderCard.tsx");
   const modelCard = readText("src/components/models/ModelCardV2.tsx");
   const modelAssets = readText("src/lib/models/model-assets.ts");
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(providerCard, /provider\.baseUrl \|\| provider\.code/);
   assert.match(modelCard, /resolveVisibleModelRoute/);
@@ -54,7 +59,7 @@ test("Manual and quick model setup share the canonical binding write surface", (
   const manualCreate = readText("src/app/api/models/route.ts");
   const manualUpdate = readText("src/app/api/models/[id]/route.ts");
   const quickConnect = readText("src/app/api/models/connect/route.ts");
-  const form = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const form = modelHubSource();
 
   assert.match(manualCreate, /\/models\/bindings/);
   assert.match(manualUpdate, /\/models\/bindings/);
@@ -84,7 +89,7 @@ test("Manual and quick model setup share the canonical binding write surface", (
 });
 
 test("Quick connect exposes an explicit entry selector only for multi-channel providers", () => {
-  const form = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const form = modelHubSource();
   const zh = JSON.parse(readText("src/i18n/locales/zh-CN.json"));
   const en = JSON.parse(readText("src/i18n/locales/en.json"));
 
@@ -108,7 +113,7 @@ test("Quick connect exposes an explicit entry selector only for multi-channel pr
 test("Reasoning effort is persisted per model without growing the fixed model card", () => {
   const modelCard = readText("src/components/models/ModelCardV2.tsx");
   const projection = readText("src/lib/models/model-admin.ts");
-  const form = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const form = modelHubSource();
   const sharedControl = readText("../../packages/product-ui/src/ReasoningEffortControl.tsx");
 
   assert.match(modelCard, /h-\[128px\]/);

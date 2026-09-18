@@ -9,6 +9,11 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(adminRoot, relativePath), "utf8");
 }
 
+function modelHubSource() {
+  return readText("src/app/admin/(dashboard)/model-hub/page.tsx")
+    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts");
+}
+
 test("voice customization stays behind the Engine credential boundary", () => {
   const route = readText("src/app/api/audio/model-ref-voices/route.ts");
 
@@ -21,7 +26,7 @@ test("voice customization stays behind the Engine credential boundary", () => {
 });
 
 test("Managed TTS voices use a searchable confirmed selector and reveal upload controls only on demand", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
   const start = hub.indexOf("{isManagedModelRefTtsVoice ? (");
   const end = hub.indexOf(") : ttsVoicePresets.length > 0 ? (", start);
   const managedBlock = hub.slice(start, end);
@@ -55,7 +60,7 @@ test("Only deletable custom voice options expose an inline transparent delete co
 });
 
 test("Audio save consumes a canonical response and exposes a real unsaved-config preview", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
   const previewRoute = readText("src/app/api/audio/tts/preview/route.ts");
 
   assert.match(hub, /"stt" in savedConfig/);
@@ -68,7 +73,7 @@ test("Audio save consumes a canonical response and exposes a real unsaved-config
 });
 
 test("Model Hub discovers voice customization from Engine capabilities instead of provider names", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(hub, /action: "capabilities", modelRef: selectedTtsModelRef/);
   assert.doesNotMatch(hub, /function isManagedModelRefTtsVoiceModel/);
@@ -83,7 +88,7 @@ test("Model Hub discovers voice customization from Engine capabilities instead o
 });
 
 test("Voice design follows Engine-declared direct, ephemeral, slot, and preview-commit semantics", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(hub, /action: "design"/);
   assert.match(hub, /action: "commit_design"/);
@@ -104,7 +109,7 @@ test("Voice design follows Engine-declared direct, ephemeral, slot, and preview-
 });
 
 test("Qualification-only providers expose official eligibility and consent paths without fake operations", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.eligibilityStatus === "eligible"/);
   assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.consentRequired/);
@@ -115,7 +120,7 @@ test("Qualification-only providers expose official eligibility and consent paths
 });
 
 test("Missing credentials block managed voice side effects while leaving capability discovery visible", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(hub, /isModelRefVoiceCredentialMissing/);
   assert.match(hub, /disabled=\{isModelRefTtsVoiceLoading \|\| !selectedTtsModelRef \|\| isModelRefVoiceCredentialMissing\}/);
@@ -124,7 +129,7 @@ test("Missing credentials block managed voice side effects while leaving capabil
 });
 
 test("Edge TTS remains the canonical no-key default and is not routed through voice customization", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(hub, /active_provider: "edge-tts"/);
   assert.match(hub, /edge_tts: \{ voice: "zh-CN-XiaoxiaoNeural", rate: "\+0%", volume: "\+0%" \}/);
@@ -133,7 +138,7 @@ test("Edge TTS remains the canonical no-key default and is not routed through vo
 });
 
 test("The audio surface only exposes loaded or cached canonical audio config", () => {
-  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const hub = modelHubSource();
 
   assert.match(hub, /const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>\(MODEL_HUB_BOOTSTRAP_URL\)/);
   assert.match(hub, /const \[hasLoadedAudioConfig, setHasLoadedAudioConfig\] = useState\(\(\) => Boolean\(cachedBootstrap\)\)/);

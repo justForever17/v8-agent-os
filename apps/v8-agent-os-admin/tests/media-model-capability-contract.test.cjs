@@ -9,8 +9,13 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
 }
 
+function modelHubSource() {
+  return read("src/app/admin/(dashboard)/model-hub/page.tsx")
+    + "\n" + read("src/lib/model-hub/model-hub-domain.ts");
+}
+
 test("model edit uses compact capability checkboxes instead of a free-form operation field", () => {
-  const page = read("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const page = modelHubSource();
   assert.match(page, /getMediaCapabilityOptions\(modelType\)\.map/);
   assert.match(page, /className="h-3\.5 w-3\.5 rounded-\[3px\]"/);
   assert.match(page, /payload\.capabilityModes = mediaCapabilityModes/);
@@ -25,7 +30,7 @@ test("manual capability modes persist both human and runtime projections", () =>
 });
 
 test("existing models use control-plane capability facts only when persisted modes are absent", () => {
-  const page = read("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const page = modelHubSource();
   assert.match(page, /hasOwnProperty\.call\(storedMediaLimits, "capabilityModes"\)/);
   assert.match(page, /\? storedMediaLimits\.capabilityModes\s*:\s*controlMediaLimits\.capabilityModes/);
   assert.match(page, /Array\.isArray\(controlMediaLimits\.operationKinds\)/);

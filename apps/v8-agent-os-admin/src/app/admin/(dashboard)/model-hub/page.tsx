@@ -30,648 +30,26 @@ import { useToast } from "@/components/ui/use-toast";
 import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
-import audioVoicePresets from "@/lib/models/audio-voice-presets.json";
 import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
 import { deriveMediaOperationKinds, getMediaCapabilityOptions, resolveMediaCapabilityModes } from "@/lib/models/media-capabilities";
 import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, type ProviderChannel, } from "@/lib/models/provider-admin";
-type AIProvider = {
-    id: string;
-    name: string;
-    code: string;
-    description?: string | null;
-    icon?: string | null;
-    logoAsset?: string | null;
-    baseUrl?: string | null;
-    apiKey?: string | null;
-    type: "API" | "LOCAL" | "PLATFORM";
-    apiStandard?: string;
-    voiceAppId?: string | null;
-    voiceResourceId?: string | null;
-    isEnabled: boolean;
-    credentialMode?: "apiKey" | "oauthFile";
-    hasCredential?: boolean;
-    oauthPath?: string;
-    oauthPathMasked?: string;
-    localBackendPreset?: LocalBackendPreset;
-    channels?: ProviderChannel[];
-    defaultChannelId?: string;
-    channelsSource?: string;
-    models: {
-        id: string;
-    }[];
-};
-type AIModel = {
-    id: string;
-    modelRef?: string;
-    providerId: string;
-    modelId: string;
-    type: string;
-    contextWindow?: number | null;
-    maxTokens?: number | null;
-    outputTokenMode?: "auto" | "fixed";
-    rerankApiFlavor?: string;
-    thinkingControl?: Record<string, unknown> | null;
-    reasoningEffortControl?: Record<string, unknown> | null;
-    operationKinds?: string[];
-    mediaLimits?: Record<string, unknown> | null;
-    endpointBinding?: Record<string, unknown> | null;
-    logoAsset?: string | null;
-    isEnabled: boolean;
-    provider?: {
-        id?: string;
-        name: string;
-        icon?: string | null;
-        logoAsset?: string | null;
-        baseUrl?: string | null;
-    };
-};
-type ModelHubPayload = {
-    summary?: {
-        providers?: number;
-        enabledProviders?: number;
-        models?: number;
-        rolesAssigned?: number;
-    };
-    models?: ControlPlaneModel[];
-    providersOverview?: ProviderOverview[];
-    config?: {
-        governance?: {
-            enabled?: boolean;
-            strictCapabilityMatch?: boolean;
-        };
-    };
-};
-type ModelConnectionStatus = {
-    status: "idle" | "testing" | "success" | "warning" | "error";
-    message?: string;
-};
-type ModelReasoningRepairStatus = {
-    status: "idle" | "repairing" | "success" | "warning" | "error";
-    message?: string;
-};
-type CatalogModel = {
-    id: string;
-    modelId?: string;
-    type?: string;
-    contextWindow?: number | null;
-    maxTokens?: number | null;
-    logoAsset?: string | null;
-    capabilities?: Record<string, boolean> | string[];
-    mediaLimits?: Record<string, unknown>;
-    operationKinds?: string[];
-    sourceProviderId?: string;
-    sourceProviderName?: string;
-};
-type CatalogProvider = {
-    id: string;
-    name: string;
-    apiStandard?: string;
-    providerKind?: string;
-    type?: string;
-    catalogVisibility?: string;
-    mediaModality?: string;
-    adapter?: string;
-    baseUrl?: string;
-    modelsUrl?: string;
-    modelsPath?: string;
-    request?: { submitPath?: string };
-    capabilityEntries?: CatalogProvider[];
-    sourceProviderId?: string;
-    credentialRealm?: string;
-    anthropicCompatible?: {
-        apiStandard?: string;
-        baseUrl?: string;
-        messagesPath?: string;
-        sourceUrl?: string;
-    };
-    channels?: ProviderChannel[];
-    defaultChannelId?: string;
-    auth?: { type?: string; path?: string };
-    probeStrategy?: string;
-    confidence?: string;
-    sourceUrl?: string;
-    logoAsset?: string | null;
-    credentialHelp?: {
-        label?: string;
-        url?: string;
-        kind?: "api_key" | "console" | "local_ui" | "docs";
-        urlFrom?: "baseUrl";
-    };
-    isCustom?: boolean;
-    singleActiveModel?: boolean;
-    declaredCapabilities?: string[];
-    models?: CatalogModel[];
-};
-type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
-type CustomProviderCapability = "text" | "vision" | "image" | "video" | "voice" | "music" | "model3d";
-type CatalogRuntimeProtocol = string;
-type ModelWireProtocol = "" | "openai.chat_completions" | "openai.responses" | "anthropic.messages" | "gemini.generate_content";
-type ComfyWorkflowDraft = {
-    promptJson: string;
-    imageNodeId: string;
-    imageInputName: string;
-    videoNodeId: string;
-    videoInputName: string;
-    outputNodeId: string;
-    outputField: string;
-};
-
-const EMPTY_COMFY_WORKFLOW: ComfyWorkflowDraft = {
-    promptJson: "",
-    imageNodeId: "",
-    imageInputName: "",
-    videoNodeId: "",
-    videoInputName: "",
-    outputNodeId: "",
-    outputField: "",
-};
-
-function comfyWorkflowDraft(mediaLimits: Record<string, unknown> | null | undefined): ComfyWorkflowDraft {
-    const workflow = mediaLimits?.comfyuiWorkflow && typeof mediaLimits.comfyuiWorkflow === "object"
-        ? mediaLimits.comfyuiWorkflow as Record<string, unknown>
-        : {};
-    const bindings = workflow.bindings && typeof workflow.bindings === "object"
-        ? workflow.bindings as Record<string, Record<string, unknown>>
-        : {};
-    const output = workflow.output && typeof workflow.output === "object"
-        ? workflow.output as Record<string, unknown>
-        : {};
-    const prompt = workflow.prompt && typeof workflow.prompt === "object" ? workflow.prompt : null;
-    return {
-        promptJson: prompt ? JSON.stringify(prompt, null, 2) : "",
-        imageNodeId: String(bindings.image?.nodeId || ""),
-        imageInputName: String(bindings.image?.inputName || ""),
-        videoNodeId: String(bindings.video?.nodeId || ""),
-        videoInputName: String(bindings.video?.inputName || ""),
-        outputNodeId: String(output.nodeId || ""),
-        outputField: String(output.field || ""),
-    };
-}
-
-const MODEL_WIRE_PROTOCOLS: Array<{ id: Exclude<ModelWireProtocol, "">; labelKey: string }> = [
-    { id: "openai.chat_completions", labelKey: "app.admin.dashboard.model.hub.protocol.openaiChatCompletions" },
-    { id: "openai.responses", labelKey: "app.admin.dashboard.model.hub.protocol.openaiResponses" },
-    { id: "anthropic.messages", labelKey: "app.admin.dashboard.model.hub.protocol.anthropicMessages" },
-    { id: "gemini.generate_content", labelKey: "app.admin.dashboard.model.hub.protocol.geminiGenerateContent" },
-];
-
-const PROVIDER_CHANNEL_PRESETS: Array<{
-    id: string;
-    labelKey: string;
-    apiStandard: "openai" | "anthropic" | "gemini" | "comfyui";
-    wireProtocols: Exclude<ModelWireProtocol, "">[];
-    defaultWireProtocol: ModelWireProtocol;
-}> = [
-    { id: "openai", labelKey: "app.admin.dashboard.model.hub.channel.openai", apiStandard: "openai", wireProtocols: ["openai.chat_completions", "openai.responses"], defaultWireProtocol: "openai.chat_completions" },
-    { id: "anthropic", labelKey: "app.admin.dashboard.model.hub.channel.anthropic", apiStandard: "anthropic", wireProtocols: ["anthropic.messages"], defaultWireProtocol: "anthropic.messages" },
-    { id: "gemini", labelKey: "app.admin.dashboard.model.hub.channel.gemini", apiStandard: "gemini", wireProtocols: ["gemini.generate_content"], defaultWireProtocol: "gemini.generate_content" },
-    { id: "comfyui", labelKey: "app.admin.dashboard.model.hub.channel.comfyui", apiStandard: "comfyui", wireProtocols: [], defaultWireProtocol: "" },
-];
-
-function createProviderChannel(apiStandard: string, baseUrl = "", id?: string): ProviderChannel {
-    const preset = PROVIDER_CHANNEL_PRESETS.find((item) => item.apiStandard === apiStandard) || PROVIDER_CHANNEL_PRESETS[0];
-    return {
-        id: id || preset.id,
-        label: preset.id,
-        apiStandard: preset.apiStandard,
-        baseUrl,
-        apiVersion: "",
-        wireProtocols: [...preset.wireProtocols],
-        defaultWireProtocol: preset.defaultWireProtocol,
-        source: "configured",
-    };
-}
-
-function editableProviderChannels(provider: AIProvider | null, apiStandard: string, baseUrl: string): ProviderChannel[] {
-    const configured = (provider?.channels || []).filter((channel) => channel.source !== "legacy_projection");
-    if (configured.length > 0) return configured.map((channel) => ({ ...channel, wireProtocols: [...channel.wireProtocols] }));
-    return [createProviderChannel(apiStandard, baseUrl, "default")];
-}
-
-const CUSTOM_PROVIDER_CAPABILITIES: Array<{ id: CustomProviderCapability; labelKey: string }> = [
-    { id: "text", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityText" },
-    { id: "vision", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVision" },
-    { id: "image", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityImage" },
-    { id: "video", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVideo" },
-    { id: "voice", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVoice" },
-    { id: "music", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityMusic" },
-    { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityModel3d" },
-];
-type AudioRuntimeConfig = {
-    stt: {
-        active_provider: string;
-        providers: {
-            custom: {
-                endpoint?: string;
-                api_key?: string;
-                protocol?: string;
-                model?: string;
-                language?: string;
-                fileField?: string;
-                responseTextPath?: string;
-                headers?: string | Record<string, string>;
-            };
-            baidu: { app_id?: string; api_key?: string; secret_key?: string };
-            volcengine?: { app_id?: string; access_token?: string; cluster?: string };
-        };
-        model_ref?: { modelRef?: string; mode?: string; language?: string; prompt?: string };
-    };
-    tts: {
-        active_provider: string;
-        edge_tts: { voice?: string; rate?: string; volume?: string };
-        custom: {
-            endpoint?: string;
-            api_key?: string;
-            voice?: string;
-            protocol?: string;
-            model?: string;
-            format?: string;
-            speed?: string;
-            responseAudioPath?: string;
-            headers?: string | Record<string, string>;
-        };
-        model_ref?: { modelRef?: string; voice?: string; format?: string; speed?: string };
-    };
-};
-
-type ModelHubBootstrapPayload = {
-    providers?: AIProvider[];
-    models?: AIModel[];
-    hubEnvelope?: ConfigRegistryEnvelope<ModelHubPayload> | null;
-    defaultModel?: { modelRef?: string | null; modelId?: string | null; value?: string | null };
-    catalog?: { providers?: CatalogProvider[] };
-    audioConfig?: unknown;
-};
-const MODEL_HUB_BOOTSTRAP_URL = "/api/model-hub/bootstrap";
-type AudioVoicePreset = {
-    value: string;
-    label?: string;
-    labelKey?: string;
-};
-type AudioVoiceOption = {
-    value: string;
-    label: string;
-    group?: string;
-    deletable?: boolean;
-    source?: "remote" | "preset" | "local_ledger" | string;
-    availability?: "available" | "confirmed" | "pending_activation" | string;
-};
-type TtsVoiceCapabilities = {
-    clone?: boolean;
-    design?: boolean;
-    list?: boolean;
-    delete?: boolean;
-    preview?: boolean;
-    commit?: boolean;
-};
-type TtsVoiceAssetPolicy = {
-    assetScope?: "durable_remote" | "provider_slot" | "ephemeral_request" | "qualification_only" | string;
-    inventorySource?: "remote" | "local_projection" | "none" | string;
-    designFlow?: "direct" | "ephemeral" | "preview_then_commit" | "qualification_only" | string;
-    eligibilityStatus?: "available" | "eligible" | "requires_approval" | string;
-    consentRequired?: boolean;
-    docsUrl?: string;
-    applicationUrl?: string;
-};
-type TtsVoiceDesignCandidate = {
-    generatedVoiceId: string;
-    previewAudio: string;
-};
-type TtsVoiceTextConstraint = {
-    required?: boolean;
-    minChars?: number;
-    maxChars?: number | null;
-};
-type TtsVoiceDesignConstraints = {
-    prompt?: TtsVoiceTextConstraint;
-    previewText?: TtsVoiceTextConstraint;
-    voiceId?: TtsVoiceTextConstraint & {
-        role?: "none" | "custom_id" | "prefix" | "provider_slot" | string;
-        format?: string;
-    };
-};
-type TtsVoiceProviderInfo = {
-    modelRef?: string;
-    provider?: string;
-    capabilities?: TtsVoiceCapabilities;
-    assetPolicy?: TtsVoiceAssetPolicy;
-    designConstraints?: TtsVoiceDesignConstraints;
-    credentialStatus?: "configured" | "missing";
-    sampleLimits?: {
-        minDurationSeconds?: number;
-        maxDurationSeconds?: number;
-        maxBytes?: number;
-        formats?: string[];
-    };
-};
-type AudioVoicePresetProvider = {
-    match?: string[];
-    protocol?: string;
-    defaultEndpoint?: string;
-    voices?: AudioVoicePreset[];
-    supportsRemoteVoiceList?: boolean;
-    remoteVoiceListPath?: string;
-};
-type AudioVoicePresetTable = {
-    providers?: Record<string, AudioVoicePresetProvider>;
-};
-
-const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string; modelType: string; modality?: string }[] = [
-    { id: "chat", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.chat", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.chatHint", modelType: "TEXT" },
-    { id: "image", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.image", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.imageHint", modelType: "IMAGE", modality: "image" },
-    { id: "video", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.video", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.videoHint", modelType: "VIDEO", modality: "video" },
-    { id: "voice", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.voice", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.voiceHint", modelType: "VOICE", modality: "voice" },
-    { id: "music", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.music", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.musicHint", modelType: "MUSIC", modality: "music" },
-    { id: "workflow", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.workflow", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.workflowHint", modelType: "WORKFLOW", modality: "workflow" },
-    { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.model3d", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.model3dHint", modelType: "MODEL3D", modality: "model3d" },
-];
-
-const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
-const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
-const TTS_MODEL_TYPES = new Set<string>(["AUDIO", "VOICE"]);
-const DEFAULT_AUDIO_CONFIG: AudioRuntimeConfig = {
-    stt: {
-        active_provider: "baidu",
-        providers: {
-            custom: { endpoint: "", api_key: "", protocol: "multipart", model: "", language: "zh-CN", fileField: "file", responseTextPath: "text", headers: "" },
-            baidu: { app_id: "", api_key: "", secret_key: "" },
-            volcengine: { app_id: "", access_token: "", cluster: "" },
-        },
-        model_ref: { modelRef: "", mode: "audio_input", language: "zh-CN", prompt: "" },
-    },
-    tts: {
-        active_provider: "edge-tts",
-        edge_tts: { voice: "zh-CN-XiaoxiaoNeural", rate: "+0%", volume: "+0%" },
-        custom: { endpoint: "", api_key: "", voice: "", protocol: "json_audio_stream", model: "", format: "mp3", speed: "", responseAudioPath: "", headers: "" },
-        model_ref: { modelRef: "", voice: "", format: "mp3", speed: "" },
-    },
-};
-const AUDIO_VOICE_PRESET_TABLE = audioVoicePresets as AudioVoicePresetTable;
-
-function localizeAudioVoicePresets(key: string, t: (key: string) => string): { value: string; label: string }[] {
-    const provider = AUDIO_VOICE_PRESET_TABLE.providers?.[key];
-    return (provider?.voices || []).map((voice) => ({
-        value: voice.value,
-        label: voice.labelKey ? t(voice.labelKey) : voice.label || voice.value,
-    }));
-}
-
-function resolveAudioVoicePresetKey(modelRef: string): string {
-    const normalized = modelRef.toLowerCase();
-    for (const [key, provider] of Object.entries(AUDIO_VOICE_PRESET_TABLE.providers || {})) {
-        if (key === "edge-tts") continue;
-        if ((provider.match || []).some((pattern) => normalized.includes(pattern.toLowerCase()))) {
-            return key;
-        }
-    }
-    return "";
-}
-
-function voicePresetsForCustomTtsProtocol(protocol: string, t: (key: string) => string): { value: string; label: string }[] {
-    if (protocol === "openai_speech") return localizeAudioVoicePresets("openai", t);
-    if (protocol === "minimax_t2a_v2") return localizeAudioVoicePresets("minimax", t);
-    return [];
-}
-
-function headerValueForInput(value: string | Record<string, string> | undefined): string {
-    if (!value) return "";
-    if (typeof value === "string") return value;
-    return JSON.stringify(value);
-}
-
-function sttEndpointPlaceholder(protocol: string): string {
-    if (protocol === "openai_transcription") return "https://api.openai.com/v1/audio/transcriptions";
-    if (protocol === "json_base64") return "https://example.com/transcribe-json";
-    return "https://example.com/transcribe";
-}
-
-function ttsEndpointPlaceholder(protocol: string): string {
-    if (protocol === "openai_speech") return "https://api.openai.com/v1/audio/speech";
-    if (protocol === "minimax_t2a_v2") return "https://api.minimaxi.com/v1/t2a_v2";
-    return "https://example.com/tts";
-}
-
-function mergeAudioConfig(value: unknown): AudioRuntimeConfig {
-    const incoming = value && typeof value === "object" ? value as Partial<AudioRuntimeConfig> : {};
-    const stt: Partial<AudioRuntimeConfig["stt"]> = incoming.stt || {};
-    const tts: Partial<AudioRuntimeConfig["tts"]> = incoming.tts || {};
-    return {
-        stt: {
-            ...DEFAULT_AUDIO_CONFIG.stt,
-            ...stt,
-            providers: {
-                ...DEFAULT_AUDIO_CONFIG.stt.providers,
-                ...(stt.providers || {}),
-            },
-            model_ref: {
-                ...DEFAULT_AUDIO_CONFIG.stt.model_ref,
-                ...(stt.model_ref || {}),
-            },
-        },
-        tts: {
-            ...DEFAULT_AUDIO_CONFIG.tts,
-            ...tts,
-            edge_tts: {
-                ...DEFAULT_AUDIO_CONFIG.tts.edge_tts,
-                ...(tts.edge_tts || {}),
-            },
-            custom: {
-                ...DEFAULT_AUDIO_CONFIG.tts.custom,
-                ...(tts.custom || {}),
-            },
-            model_ref: {
-                ...DEFAULT_AUDIO_CONFIG.tts.model_ref,
-                ...(tts.model_ref || {}),
-            },
-        },
-    };
-}
-
-function modelRefFor(model: AIModel): string {
-    return model.modelRef || `${model.providerId}::${model.modelId || model.id}`;
-}
-
-function modelLabel(model: AIModel): string {
-    return `${model.provider?.name || model.providerId} · ${model.modelId || model.id}`;
-}
-
-function hasAudioInputCapability(model: AIModel): boolean {
-    const ref = `${modelRefFor(model)} ${model.modelId || ""}`.toLowerCase();
-    return ref.includes("stt")
-        || ref.includes("asr")
-        || ref.includes("whisper")
-        || ref.includes("transcribe")
-        || ref.includes("speech-to-text")
-        || ref.includes("live-audio");
-}
-
-function hasAudioOutputCapability(model: AIModel, controlMeta?: ControlPlaneModel | null): boolean {
-    const type = normalizeModelType(model.type || controlMeta?.type);
-    const capabilities = controlMeta?.capabilities;
-    const ref = `${modelRefFor(model)} ${model.modelId || ""}`.toLowerCase();
-    return TTS_MODEL_TYPES.has(type) || Boolean(capabilities?.audio || capabilities?.voice) || ref.includes("tts") || ref.includes("live-audio");
-}
-
-function previewModelsUrl(provider?: CatalogProvider | null): string {
-    if (!provider?.baseUrl) return "";
-    if (provider.modelsUrl) return provider.modelsUrl;
-    const path = provider.modelsPath || "/models";
-    return `${provider.baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-function catalogProviderChannels(provider?: CatalogProvider | null): ProviderChannel[] {
-    if (!provider) return [];
-    if (provider.channels?.length) return provider.channels;
-    const primary = createProviderChannel(provider.apiStandard || "openai", provider.baseUrl || "", "default");
-    const channels = [primary];
-    if (provider.anthropicCompatible?.baseUrl) {
-        channels.push(createProviderChannel("anthropic", provider.anthropicCompatible.baseUrl, "anthropic"));
-    }
-    return channels;
-}
-
-function isXiaomiAnthropicBaseUrl(value: string | null | undefined) {
-    const normalized = String(value || "").trim().toLowerCase().replace(/\/+$/, "");
-    return normalized.includes("xiaomimimo.com/anthropic") || normalized.includes("token-plan-cn.xiaomimimo.com/anthropic");
-}
-
-function getCatalogPurposeConfig(purpose: CatalogPurpose) {
-    return CATALOG_PURPOSES.find((item) => item.id === purpose) || CATALOG_PURPOSES[0];
-}
-
-function urlPath(value: string | undefined) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    try {
-        const parsed = new URL(raw);
-        return parsed.pathname.replace(/\/$/, "");
-    } catch {
-        const path = raw.startsWith("/") ? raw : `/${raw}`;
-        return path.replace(/\/$/, "");
-    }
-}
-
-function mediaRelativeSubmitPath(rootBaseUrl: string | undefined, sourceBaseUrl: string | undefined, submitPath: string | undefined) {
-    const submit = urlPath(submitPath);
-    if (!submit) return "";
-    const sourceBase = urlPath(sourceBaseUrl);
-    const rootBase = urlPath(rootBaseUrl);
-    const fullPath = sourceBase && !submit.startsWith(`${sourceBase}/`) && submit !== sourceBase
-        ? `${sourceBase}/${submit.replace(/^\//, "")}`
-        : submit;
-    if (rootBase && (fullPath === rootBase || fullPath.startsWith(`${rootBase}/`))) {
-        return fullPath.slice(rootBase.length).replace(/^\//, "");
-    }
-    return submit.replace(/^\//, "");
-}
-
-function endpointMediaCatalogModel(model: CatalogModel, sourceProvider: CatalogProvider, rootProvider: CatalogProvider): CatalogModel {
-    const providerModelId = model.modelId || model.id;
-    const relativePath = mediaRelativeSubmitPath(rootProvider.baseUrl, sourceProvider.baseUrl, sourceProvider.request?.submitPath);
-    const displayModelId = relativePath && providerModelId ? `${relativePath}/${providerModelId}` : providerModelId;
-    return {
-        ...model,
-        id: displayModelId,
-        modelId: displayModelId,
-        mediaLimits: {
-            ...(model.mediaLimits || {}),
-            adapterProviderId: sourceProvider.id,
-            providerModelId,
-            displayModelId,
-            requestPath: relativePath,
-            routeSource: "provider_catalog",
-        },
-        sourceProviderId: sourceProvider.id,
-        sourceProviderName: sourceProvider.name,
-    };
-}
-
-function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], purpose: CatalogPurpose): CatalogProvider[] {
-    if (purpose === "chat") {
-        return catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
-    }
-    const expected = getCatalogPurposeConfig(purpose).modality || purpose;
-    const projected = new Map<string, CatalogProvider>();
-    const internalCapabilityIds = new Set<string>();
-    for (const rootProvider of catalogProviders) {
-        const capabilityEntries = (rootProvider.capabilityEntries || []).filter(
-            (entry) => String(entry.mediaModality || entry.type || "").toLowerCase() === expected,
-        );
-        if (!capabilityEntries.length) continue;
-        const models = capabilityEntries.flatMap((entry) => {
-            if (entry.sourceProviderId) internalCapabilityIds.add(entry.sourceProviderId);
-            return (entry.models || []).map((model) => endpointMediaCatalogModel(model, entry, rootProvider));
-        });
-        projected.set(rootProvider.id, {
-            ...rootProvider,
-            mediaModality: expected,
-            models,
-        });
-    }
-    const direct = catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
-    for (const provider of direct) {
-        if (provider.catalogVisibility === "internal_capability" && internalCapabilityIds.has(provider.id)) continue;
-        if (!projected.has(provider.id)) projected.set(provider.id, provider);
-    }
-    const customProviders = catalogProviders.filter((item) => item.isCustom && providerMatchesPurpose(item, purpose));
-    for (const provider of customProviders) {
-        projected.set(provider.id, provider);
-    }
-    return Array.from(projected.values());
-}
-
-function normalizeModelType(value: string | null | undefined) {
-    return String(value || "").trim().toUpperCase();
-}
-
-function modelMatchesTab(model: AIModel, tab: string) {
-    if (tab === "all") return true;
-    const type = normalizeModelType(model.type);
-    if (tab === "media") return MEDIA_MODEL_TYPES.has(type);
-    if (tab === "voice") return type === "VOICE" || type === "AUDIO";
-    if (tab === "model3d") return type === "MODEL3D";
-    return type.toLowerCase() === tab;
-}
-
-function preserveModelOrder(current: AIModel[], incoming: AIModel[]): AIModel[] {
-    if (!current.length || !incoming.length) return incoming;
-    const identity = (model: AIModel) => model.modelRef || `${model.providerId}:${model.id}`;
-    const incomingByIdentity = new Map(incoming.map((model) => [identity(model), model]));
-    const ordered = current
-        .map((model) => incomingByIdentity.get(identity(model)))
-        .filter((model): model is AIModel => Boolean(model));
-    const known = new Set(ordered.map(identity));
-    for (const model of incoming) {
-        if (!known.has(identity(model))) ordered.push(model);
-    }
-    return ordered;
-}
-
-function providerMatchesPurpose(provider: CatalogProvider, purpose: CatalogPurpose) {
-    const authType = provider.auth?.type;
-    if (authType === "oauth_file") return purpose === "chat";
-    const mediaModality = String(provider.mediaModality || "").toLowerCase();
-    const providerKind = String(provider.providerKind || "").toLowerCase();
-    const apiStandard = String(provider.apiStandard || "").toLowerCase();
-    const declaredCapabilities = new Set((provider.declaredCapabilities || []).map((item) => String(item).toLowerCase()));
-    if (provider.isCustom && declaredCapabilities.size > 0) {
-        return purpose === "chat"
-            ? declaredCapabilities.has("text") || declaredCapabilities.has("vision")
-            : declaredCapabilities.has(purpose);
-    }
-    if (purpose === "chat") {
-        return providerKind !== "media_generation";
-    }
-    const expected = getCatalogPurposeConfig(purpose).modality;
-    if (purpose === "workflow") {
-        return mediaModality === "workflow" || apiStandard === "comfyui" || provider.id === "comfyui";
-    }
-    return providerKind === "media_generation" && mediaModality === expected;
-}
-
-function getModelTypeForPurpose(purpose: CatalogPurpose) {
-    return getCatalogPurposeConfig(purpose).modelType;
-}
+import {
+    AIModel, AIProvider, AUDIO_VOICE_PRESET_TABLE, AudioRuntimeConfig, AudioVoiceOption,
+    AudioVoicePreset, AudioVoicePresetProvider, AudioVoicePresetTable, buildCatalogProvidersForPurpose, catalogProviderChannels,
+    CATALOG_PURPOSES, CatalogModel, CatalogProvider, CatalogPurpose, CatalogRuntimeProtocol,
+    comfyWorkflowDraft, ComfyWorkflowDraft, createProviderChannel, CUSTOM_PROVIDER_CAPABILITIES,
+    CustomProviderCapability, DEFAULT_AUDIO_CONFIG, editableProviderChannels, EMPTY_COMFY_WORKFLOW,
+    endpointMediaCatalogModel, extractErrorText, getCatalogPurposeConfig, getModelTypeForPurpose,
+    hasAudioInputCapability, hasAudioOutputCapability, headerValueForInput, isXiaomiAnthropicBaseUrl,
+    localizeAudioVoicePresets, MEDIA_MODEL_TYPES, mediaRelativeSubmitPath, mergeAudioConfig,
+    ModelConnectionStatus, ModelHubBootstrapPayload, MODEL_HUB_BOOTSTRAP_URL, MODEL_WIRE_PROTOCOLS, ModelHubPayload,
+    modelLabel, modelMatchesTab, modelRefFor, ModelReasoningRepairStatus, ModelWireProtocol,
+    normalizeModelType, preserveModelOrder, previewModelsUrl, PROVIDER_CHANNEL_PRESETS, providerMatchesPurpose,
+    readJsonErrorMessage, RETRIEVAL_MODEL_TYPES, resolveAudioVoicePresetKey, sttEndpointPlaceholder,
+    TTS_MODEL_TYPES, ttsEndpointPlaceholder, TtsVoiceAssetPolicy, TtsVoiceCapabilities,
+    TtsVoiceDesignCandidate, TtsVoiceDesignConstraints, TtsVoiceProviderInfo, TtsVoiceTextConstraint,
+    voiceManagerErrorText, voicePresetsForCustomTtsProtocol,
+} from "@/lib/model-hub/model-hub-domain";
 function ProviderOptionLabel({
     provider,
     suffix,
@@ -690,41 +68,9 @@ function ProviderOptionLabel({
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground dark:bg-card/10 dark:text-slate-300">
                 {logo ? <Image src={logo} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : initial}
             </span>
-            <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` · ${suffix}` : ""}</span>
+            <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` 路 ${suffix}` : ""}</span>
         </span>
     );
-}
-function extractErrorText(value: unknown, fallback: string): string {
-    if (typeof value === "string" && value.trim())
-        return value;
-    if (Array.isArray(value)) {
-        const joined = value
-            .map((item) => extractErrorText(item, ""))
-            .filter(Boolean)
-            .join(" · ");
-        return joined || fallback;
-    }
-    if (value && typeof value === "object") {
-        const record = value as Record<string, unknown>;
-        return (extractErrorText(record.error, "")
-            || extractErrorText(record.message, "")
-            || extractErrorText(record.detail, "")
-            || fallback);
-    }
-    return fallback;
-}
-function voiceManagerErrorText(payload: Record<string, unknown>, fallback: string): string {
-    const message = extractErrorText(payload.error, fallback);
-    const providerCode = typeof payload.providerCode === "string" ? payload.providerCode.trim() : "";
-    const traceId = typeof payload.traceId === "string" ? payload.traceId.trim() : "";
-    return [message, providerCode ? `code ${providerCode}` : "", traceId ? `trace ${traceId}` : ""]
-        .filter(Boolean)
-        .join(" · ");
-}
-async function readJsonErrorMessage(response: Response, fallback: string) {
-    const data = await response.json().catch(() => null);
-    const detail = extractErrorText(data?.detail, "") || extractErrorText(data?.error, "");
-    return detail || fallback;
 }
 export default function ModelHubPage() {
     const { toast } = useToast();
@@ -1273,7 +619,7 @@ export default function ModelHubPage() {
         }
         toast({
             title: t("app.admin.dashboard.model.hub.page.reasoningEffortSaved"),
-            description: `${model.modelId} · ${level}`,
+            description: `${model.modelId} 路 ${level}`,
         });
         await fetchData(true, true);
     };
@@ -1668,7 +1014,7 @@ export default function ModelHubPage() {
                 });
                 return;
             }
-            toast({ title: t("app.admin.dashboard.model.hub.catalog.connected"), description: `${provider?.name || customProviderName || providerId} · ${modelId}` });
+            toast({ title: t("app.admin.dashboard.model.hub.catalog.connected"), description: `${provider?.name || customProviderName || providerId} 路 ${modelId}` });
             if (isCustomProvider) {
                 setSelectedCatalogProviderId(data.providerId || providerId);
             }
@@ -2186,12 +1532,12 @@ export default function ModelHubPage() {
             const skippedCapabilities = capabilityChecks.filter((item) => (item as { status?: string })?.status === "skipped").length;
             const successMessage = [
                 protocolWarning,
-                `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} · ${Math.round(Number(data.latencyMs || 0))}ms`,
+                `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} 路 ${Math.round(Number(data.latencyMs || 0))}ms`,
                 resolvedEndpoint,
                 recommendedRoute,
                 skippedCapabilities ? t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities") : "",
                 data.message || "",
-            ].filter(Boolean).join(" · ");
+            ].filter(Boolean).join(" 路 ");
             setConnectionStatusMap((current) => ({
                 ...current,
                 [modelRef]: { status: protocolWarning ? "warning" : "success", message: successMessage },
@@ -2234,7 +1580,7 @@ export default function ModelHubPage() {
                 data.matchedField ? `${t("app.admin.dashboard.model.hub.reasoningRepair.field")}: ${data.matchedField}` : "",
                 data.saveStatus ? `${t("app.admin.dashboard.model.hub.reasoningRepair.saveStatus")}: ${data.saveStatus}` : "",
                 data.status || "",
-            ].filter(Boolean).join(" · ") || t("app.admin.dashboard.model.hub.reasoningRepair.done");
+            ].filter(Boolean).join(" 路 ") || t("app.admin.dashboard.model.hub.reasoningRepair.done");
             setReasoningRepairStatusMap((current) => ({
                 ...current,
                 [modelRef]: { status, message },
@@ -2881,7 +2227,7 @@ export default function ModelHubPage() {
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {selectedCatalogChannels.map((channel) => <SelectItem key={channel.id} value={channel.id}>{channel.label} · {channel.apiStandard}</SelectItem>)}
+                                            {selectedCatalogChannels.map((channel) => <SelectItem key={channel.id} value={channel.id}>{channel.label} 路 {channel.apiStandard}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
                                 </HydrationSafeClientOnly>
@@ -3480,7 +2826,7 @@ export default function ModelHubPage() {
                             >
                                 {(selectedModelProvider?.channels || []).map((channel) => (
                                     <option key={channel.id} value={channel.id}>
-                                        {channel.label} · {channel.apiStandard} · {channel.baseUrl}
+                                        {channel.label} 路 {channel.apiStandard} 路 {channel.baseUrl}
                                     </option>
                                 ))}
                             </select>

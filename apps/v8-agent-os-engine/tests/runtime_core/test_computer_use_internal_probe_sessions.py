@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.database import DatabaseManager
+import core.database_schema as schema_module
 from runtimes.computer_use.runtime import ComputerUseRuntime
 
 
@@ -64,7 +65,7 @@ def test_backfill_hides_legacy_computer_use_observer_sessions() -> None:
             },
         )
         with manager.get_connection() as conn:
-            manager._backfill_internal_computer_use_probe_sessions(conn)
+            schema_module.backfill_internal_computer_use_probe_sessions(conn)
             conn.commit()
 
         session = manager.get_session(session_id)

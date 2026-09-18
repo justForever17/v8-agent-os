@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import core.database as database_module
+import core.database_schema as schema_module
 from core.database import DATABASE_SCHEMA_VERSION, DatabaseManager
 
 
@@ -364,12 +365,12 @@ def test_failed_legacy_migration_is_not_marked_current(
 ) -> None:
     path = tmp_path / "state.db"
 
-    def fail_backfill(self, conn) -> None:  # noqa: ANN001, ARG001
+    def fail_backfill(conn) -> None:  # noqa: ANN001
         raise sqlite3.OperationalError("simulated migration failure")
 
     monkeypatch.setattr(
-        DatabaseManager,
-        "_backfill_internal_computer_use_probe_sessions",
+        schema_module,
+        "backfill_internal_computer_use_probe_sessions",
         fail_backfill,
     )
 

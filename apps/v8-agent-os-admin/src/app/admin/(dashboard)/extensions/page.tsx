@@ -591,7 +591,9 @@ export default function ExtensionsPage() {
   const [catalogSnapshot, setCatalog] = useState<ExtensionCatalogResponse | null>(initialState.catalog);
   const catalog = useMemo<ExtensionCatalogResponse>(() => catalogSnapshot || { summary: { skillCount: 0, mcpServerCount: 0, connectedMcpServerCount: 0, mcpToolCount: 0 }, mcp: { servers: [] } }, [catalogSnapshot]);
   const [health, setHealth] = useState<ExtensionHealthResponse | null>(initialState.health);
-  const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(initialState.configEnvelope);
+  const [configSnapshot, setConfigSnapshot] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(initialState.configEnvelope);
+  const [configDraft, setConfigDraft] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(null);
+  const configEnvelope = configDraft ?? configSnapshot;
   const [models, setModels] = useState<SysModel[]>(initialState.models);
   const [skillSafetyReviews, setSkillSafetyReviews] = useState<SkillSafetyReview[]>(initialState.skillSafetyReviews);
   const [loading, setLoading] = useState(!initialState.catalog || !initialState.health || !initialState.configEnvelope);
@@ -601,6 +603,7 @@ export default function ExtensionsPage() {
   const [installingCommand, setInstallingCommand] = useState(false);
   const [uploadingZip, setUploadingZip] = useState(false);
   const [savingMcp, setSavingMcp] = useState(false);
+  const mcpSavePending = useRef(false);
   const [deletingMcpServer, setDeletingMcpServer] = useState("");
   const [deletingSkillId, setDeletingSkillId] = useState("");
   const [commandInput, setCommandInput] = useState("");
@@ -625,7 +628,7 @@ export default function ExtensionsPage() {
     try {
       const outcomes = await Promise.allSettled([
         fetchAdminJson<ExtensionHealthResponse>("/api/extensions/health", { force }).then(setHealth),
-        fetchConfigDomain<ExtensionsConfigData>("extensions", { force }).then(setConfigEnvelope),
+        fetchConfigDomain<ExtensionsConfigData>("extensions", { force }).then(setConfigSnapshot),
         fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100", { force }).then(data => setSkillSafetyReviews(data.items || [])),
         fetchAdminJson<ExtensionCatalogResponse>("/api/extensions/catalog", { force }).then(data => { setCatalog(data); setLoading(false); }),
       ]);
@@ -659,7 +662,8 @@ export default function ExtensionsPage() {
   const updateConfig = (patch: Partial<ExtensionsConfigData>) => {
     if (!configEnvelope)
     return;
-    setConfigEnvelope({
+    setSaved(false);
+    setConfigDraft({
       ...configEnvelope,
       data: {
         ...configEnvelope.data,
@@ -672,6 +676,7 @@ export default function ExtensionsPage() {
   const handleSaveConfig = async () => {
     if (!configEnvelope)
     return;
+    const submittedDraft = configDraft;
     setSaving(true);
     try {
       const next = await saveConfigDomain<ExtensionsConfigData>("extensions", {
@@ -701,7 +706,8 @@ export default function ExtensionsPage() {
           modelBindings: { ...configEnvelope.data?.modelBindings, prefilterModel: String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim() }
         }
       });
-      setConfigEnvelope(next);
+      setConfigSnapshot(next);
+      setConfigDraft(current => current === submittedDraft ? null : current);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
       toast({ title: t("app.admin.dashboard.extensions.page.k0498cb65") });
@@ -806,29 +812,41 @@ export default function ExtensionsPage() {
       fileInputRef.current.value = "";
     }
   };
-  const saveMcpConfig = async () => {
-    if (!mcpConfigInput.trim())
-    return;
+  const saveMcpConfig = async (editor: "json" | "form") => {
+    if (mcpSavePending.current || (editor === "json" && !mcpConfigInput.trim())) return;
+    mcpSavePending.current = true;
     setSavingMcp(true);
     setMcpValidationError("");
     try {
-      const validation = validateMcpJsonInput(mcpConfigInput, t);
-      setMcpValidationSummary(t("app.admin.dashboard.extensions.page.k26d037a0", {
-        validation_serverCount: validation.serverCount
-      }));
+      let body: string;
+      if (editor === "json") {
+        const validation = validateMcpJsonInput(mcpConfigInput, t);
+        setMcpValidationSummary(t("app.admin.dashboard.extensions.page.k26d037a0", {
+          validation_serverCount: validation.serverCount
+        }));
+        body = mcpConfigInput;
+      } else {
+        body = JSON.stringify(buildMcpFormPayload(mcpInstallForm, t));
+      }
       const res = await fetch("/api/mcp/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: mcpConfigInput
+        body
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const validationError = extractValidationPayload(data);
         throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.k6e203323"));
       }
-      setMcpDialogOpen(false);
-      setMcpConfigInput("");
-      setMcpValidationSummary("");
+      if (editor === "json") {
+        setMcpDialogOpen(false);
+        setMcpConfigInput("");
+        setMcpValidationSummary("");
+      } else {
+        setMcpFormDialogOpen(false);
+        setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
+        setMcpFormMode("create");
+      }
       toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
       await loadData(true);
     }
@@ -841,6 +859,7 @@ export default function ExtensionsPage() {
       });
     } finally
     {
+      mcpSavePending.current = false;
       setSavingMcp(false);
     }
   };
@@ -881,39 +900,6 @@ export default function ExtensionsPage() {
         description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"),
         variant: "destructive"
       });
-    }
-  };
-  const saveMcpFormConfig = async () => {
-    setSavingMcp(true);
-    setMcpValidationError("");
-    try {
-      const payload = buildMcpFormPayload(mcpInstallForm, t);
-      const res = await fetch("/api/mcp/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const validationError = extractValidationPayload(data);
-        throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.k6e203323"));
-      }
-      setMcpFormDialogOpen(false);
-      setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
-      setMcpFormMode("create");
-      toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
-      await loadData(true);
-    }
-    catch (error) {
-      setMcpValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"));
-      toast({
-        title: t("app.admin.dashboard.extensions.page.ka7539197"),
-        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"),
-        variant: "destructive"
-      });
-    } finally
-    {
-      setSavingMcp(false);
     }
   };
   const deleteMcpServer = async (serverName: string) => {
@@ -1032,7 +1018,7 @@ export default function ExtensionsPage() {
   return <AdminPageShell className="max-w-[var(--v8-product-settings-width,1040px)] gap-4">
             {sectionLoadError && <p role="alert" className="text-sm text-destructive">{t("extensions.store.sectionFailed")}</p>}
             <AdminPageHeader title={"app.admin.dashboard.extensions.page.k5b035c36"} description={"app.admin.dashboard.extensions.page.k042a5a79"} actions={<div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-                        <div className="shrink-0 whitespace-nowrap"><InlineSaveState saving={saving} saved={saved} label={t("app.admin.dashboard.extensions.page.kcc06e009")} /></div>
+                        <div className="shrink-0 whitespace-nowrap"><InlineSaveState saving={saving} saved={saved && !configDraft} label={t("app.admin.dashboard.extensions.page.kcc06e009")} /></div>
                         <Button variant="outline" asChild>
                             <Link href="/admin/extensions/store">
                                 <Store className="mr-2 h-4 w-4" />
@@ -1456,7 +1442,7 @@ export default function ExtensionsPage() {
                                 </div>
                                 <DialogFooter>
                                     <Button variant="outline" onClick={() => setMcpFormDialogOpen(false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
-                                    <Button onClick={() => void saveMcpFormConfig()} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpUpdateServer") : t("app.admin.dashboard.extensions.page.mcpSaveServer")}</Button>
+                                    <Button onClick={() => void saveMcpConfig("form")} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpUpdateServer") : t("app.admin.dashboard.extensions.page.mcpSaveServer")}</Button>
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>
@@ -1489,7 +1475,7 @@ export default function ExtensionsPage() {
                                 </div>
                                 <DialogFooter>
                                     <Button variant="outline" onClick={() => setMcpDialogOpen(false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
-                                    <Button onClick={() => void saveMcpConfig()} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : t("app.admin.dashboard.extensions.page.k836f3c8b")}</Button>
+                                    <Button onClick={() => void saveMcpConfig("json")} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : t("app.admin.dashboard.extensions.page.k836f3c8b")}</Button>
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>

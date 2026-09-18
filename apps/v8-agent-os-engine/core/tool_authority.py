@@ -21,11 +21,25 @@ def _present(mapping: dict[str, Any], *keys: str) -> tuple[bool, Any]:
     return False, None
 
 
+def _name_values(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(decoded, list):
+                    return decoded
+    return [value]
+
+
 def _names(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        raw = [value]
+        raw = _name_values(value)
     else:
         try:
             raw = list(value)
@@ -33,9 +47,13 @@ def _names(value: Any) -> tuple[str, ...]:
             raw = [value]
     result: list[str] = []
     for item in raw:
-        name = str(item or "").strip()
-        if name and name not in result:
-            result.append(name)
+        # The public delegation schema accepts both a scalar JSON array string
+        # and JSON array strings inside list[str]. Keep both ingress forms here
+        # so forbidden entries have the same meaning before and after resume.
+        for entry in _name_values(item):
+            name = str(entry or "").strip()
+            if name and name not in result:
+                result.append(name)
     return tuple(result)
 
 

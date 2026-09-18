@@ -13,11 +13,10 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
 from core.tool_surface import (
-    MAX_TOOL_OUTPUT_LENGTH,
     apply_agent_visible_budget,
     apply_tool_surface_budget,
-    tool_output_budget_for_request,
 )
+from core.tool_surfaces.budget import MAX_TOOL_OUTPUT_LENGTH, tool_output_budget_for_request
 from core.runtime_route_contract import render_runtime_route_repair_hint
 
 DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000

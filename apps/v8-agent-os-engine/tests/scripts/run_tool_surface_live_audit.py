@@ -22,7 +22,8 @@ if str(ENGINE_ROOT) not in sys.path:
 
 from langchain_core.messages import ToolMessage  # noqa: E402
 
-from core.tool_surface import TOOL_OUTPUT_TARGET_CHARS, apply_tool_surface_budget  # noqa: E402
+from core.tool_surface import apply_tool_surface_budget
+from core.tool_surfaces.budget import TOOL_OUTPUT_TARGET_CHARS  # noqa: E402
 from core.tools.web_fetcher import web_broker  # noqa: E402
 from runtimes.extensions.skills.loader import fetch_skill_instructions  # noqa: E402
 

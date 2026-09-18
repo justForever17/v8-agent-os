@@ -8,7 +8,8 @@ import pytest
 
 from langchain_core.messages import ToolMessage
 
-from core.tool_surface import MAX_RESEARCH_DELIVERY_SURFACE_CHARS, apply_tool_surface_budget
+from core.tool_surface import apply_tool_surface_budget
+from core.tool_surfaces.budget import MAX_RESEARCH_DELIVERY_SURFACE_CHARS
 from core.tools.research_quality import build_research_review_binding
 from runtimes.extensions.skills.loader import _read_skill_text_file
 

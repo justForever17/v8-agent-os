@@ -32,12 +32,11 @@ from core.native_tools import NATIVE_TOOLS  # noqa: E402
 from core.tools.native.registry import native_tool_family_for_name  # noqa: E402
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor  # noqa: E402
 from core.tool_surface import (  # noqa: E402
-    MAX_TOOL_OUTPUT_LENGTH,
-    TOOL_OUTPUT_TARGET_CHARS,
     apply_tool_surface_budget,
     record_raw_observation,
     runtime_kind_for_tool,
 )
+from core.tool_surfaces.budget import MAX_TOOL_OUTPUT_LENGTH, TOOL_OUTPUT_TARGET_CHARS
 from graph.tool_routing import create_routed_tool_node  # noqa: E402
 from runtimes.extensions.skills.loader import fetch_skill_instructions  # noqa: E402
 

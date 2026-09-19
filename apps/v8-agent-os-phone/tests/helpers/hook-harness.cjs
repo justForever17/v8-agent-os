@@ -22,6 +22,11 @@ function loadHook(relative, overrides = {}, mutate = source => source) {
         if (!slots[index] || changed(slots[index].deps, deps)) pending.push({ index, callback, deps, layout });
     };
     const react = {
+        useState(initial) {
+            const index = cursor++;
+            slots[index] ||= { value: typeof initial === 'function' ? initial() : initial };
+            return [slots[index].value, next => { slots[index].value = typeof next === 'function' ? next(slots[index].value) : next; }];
+        },
         useRef(initial) { return slots[cursor++] ||= { current: initial }; },
         useCallback(callback, deps) {
             const index = cursor++;
@@ -48,10 +53,10 @@ function loadHook(relative, overrides = {}, mutate = source => source) {
     const filename = path.resolve(__dirname, '../../', relative);
     const exports = {};
     vm.runInNewContext(ts.transpileModule(mutate(fs.readFileSync(filename, 'utf8')), {
-        fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+        fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     }).outputText, {
         exports, require: name => name === 'react' ? react : overrides[name] || require(name),
-        AbortController, Date: class extends Date { static now() { return now; } },
+        AbortController, Error, Date: class extends Date { static now() { return now; } },
         setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
         console: { warn() {} },
     });

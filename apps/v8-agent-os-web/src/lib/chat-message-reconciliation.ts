@@ -122,4 +122,3 @@ export function mergeProjectedSnapshotMessages(current: Message[], projectedMess
     const retainedHistory = current.filter((message) => !matchedCurrent.has(message));
     return normalizeMessagesForState([...retainedHistory, ...mergedSnapshot]);
 }
-

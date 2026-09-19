@@ -75,4 +75,3 @@ export function sortQueuedMessages(items: QueuedChatMessage[]): QueuedChatMessag
             .localeCompare(String(right.createdAt || right.updatedAt || right.id));
     });
 }
-

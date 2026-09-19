@@ -467,4 +467,3 @@ class ChatTranscriptRepository:
         data["artifacts"] = json.loads(data["artifacts_json"]) if data.get("artifacts_json") else []
         data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
         return data
-

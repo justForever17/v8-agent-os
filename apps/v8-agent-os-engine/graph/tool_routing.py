@@ -19,7 +19,6 @@ from core.tool_surface import (
 from core.tool_surfaces.budget import MAX_TOOL_OUTPUT_LENGTH, tool_output_budget_for_request
 from core.runtime_route_contract import render_runtime_route_repair_hint
 
-DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000
 DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = float(os.environ.get("V8_AGENT_OS_TOOL_CALL_TIMEOUT_SECONDS", "240").strip() or "240")
 _PARAMETER_VALIDATION_MARKERS = (
     "Field required",
@@ -968,22 +967,6 @@ def _maybe_raise_supervisor_direct_scope_gate(request: Any, *, tool_node_name: s
     # keep doing complex project work directly. The hard-block ToolMessage above
     # now returns the route-required next action instead.
     return
-
-
-def _tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, Any]:
-    return tool_output_budget_for_request(request, tool_name)
-
-
-def _truncate_tool_message_content(message: ToolMessage, budget_meta: dict[str, Any] | None = None) -> ToolMessage:
-    return apply_tool_surface_budget(message, budget_meta)
-
-
-def _truncate_command_tool_messages(command: Command, budget_meta: dict[str, Any] | None = None) -> Command:
-    return apply_agent_visible_budget(command, budget_meta)
-
-
-def _truncate_agent_visible_result(result, budget_meta: dict[str, Any] | None = None):
-    return apply_agent_visible_budget(result, budget_meta)
 
 
 def _validation_error_fields(error_text: str) -> list[str]:

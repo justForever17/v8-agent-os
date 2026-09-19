@@ -301,12 +301,12 @@ def test_client_surface_redacts_local_paths_from_summary() -> None:
 
 def test_command_embedded_tool_messages_are_truncated() -> None:
     from core.tool_surfaces.budget import MAX_TOOL_OUTPUT_LENGTH
-    from graph.tool_routing import _truncate_agent_visible_result
+    from core.tool_surface import apply_agent_visible_budget
 
     original = "x" * (MAX_TOOL_OUTPUT_LENGTH + 100)
     command = Command(update={"messages": [ToolMessage(content=original, tool_call_id="call-1")]})
 
-    truncated = _truncate_agent_visible_result(command)
+    truncated = apply_agent_visible_budget(command)
     message = truncated.update["messages"][0]
 
     assert isinstance(message, ToolMessage)

@@ -7,12 +7,8 @@ import unittest
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from graph.tool_routing import (
-    DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS,
-    _tool_output_budget_for_request,
-    _truncate_agent_visible_result,
-    _truncate_tool_message_content,
-)
+from core.tool_surfaces.budget import DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS, tool_output_budget_for_request
+from core.tool_surface import apply_agent_visible_budget, apply_tool_surface_budget
 
 
 class ToolOutputDynamicBudgetTest(unittest.TestCase):
@@ -26,7 +22,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         )
 
     def test_default_budget_is_below_15k_hard_ceiling(self):
-        budget = _tool_output_budget_for_request(self._request("read_native_file"), "read_native_file")
+        budget = tool_output_budget_for_request(self._request("read_native_file"), "read_native_file")
 
         self.assertLess(budget["agentVisibleBudget"], DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS)
         self.assertEqual(budget["hardMaxChars"], DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS)
@@ -35,20 +31,20 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
     def test_explicit_detail_read_honors_requested_size_within_context_and_hard_limit(self):
         request = self._request("tool_observation_detail")
         request.tool_call["args"] = {"raw_ref": "toolobs://evidence", "max_chars": 60000}
-        budget = _tool_output_budget_for_request(request, "tool_observation_detail")
+        budget = tool_output_budget_for_request(request, "tool_observation_detail")
         self.assertEqual(budget["agentVisibleBudget"], 60000)
         request.config = {"configurable": {"toolOutputHardMaxChars": 12000}}
-        self.assertEqual(_tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 12000)
+        self.assertEqual(tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 12000)
         request.config = {"configurable": {"contextWindowTokens": 32000, "reservedOutputTokens": 2048}}
         request.state["messages"] = [HumanMessage(content="x" * 110000)]
-        self.assertLessEqual(_tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 2000)
+        self.assertLessEqual(tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 2000)
         request.state["messages"] = []
         request.config = {}
         request.tool_call["args"]["max_chars"] = 600000
-        self.assertEqual(_tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 60000)
+        self.assertEqual(tool_output_budget_for_request(request, "tool_observation_detail")["agentVisibleBudget"], 60000)
 
     def test_budget_inherits_session_run_and_workspace_from_tool_node_state(self):
-        budget = _tool_output_budget_for_request(
+        budget = tool_output_budget_for_request(
             self._request(
                 "research_broker",
                 state={
@@ -65,7 +61,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         self.assertEqual(budget["workspacePath"], "E:/Projects/test2")
 
     def test_long_context_models_raise_clean_web_budget(self):
-        budget = _tool_output_budget_for_request(
+        budget = tool_output_budget_for_request(
             self._request(
                 "web_read",
                 config={"configurable": {"contextWindowTokens": 1_000_000, "reservedOutputTokens": 4096}},
@@ -85,7 +81,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
             config={"configurable": {"contextWindowTokens": 32000, "reservedOutputTokens": 2048}},
         )
 
-        budget = _tool_output_budget_for_request(request, "read_native_file")
+        budget = tool_output_budget_for_request(request, "read_native_file")
 
         self.assertLessEqual(budget["agentVisibleBudget"], 2000)
         self.assertGreaterEqual(budget["agentVisibleBudget"], 1200)
@@ -106,7 +102,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
             tool_call_id="tool-call-1",
         )
 
-        truncated = _truncate_tool_message_content(
+        truncated = apply_tool_surface_budget(
             message,
             {
                 "budgetSource": "dynamic_context_budget",
@@ -142,7 +138,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
             tool_call_id="tool-call-web",
         )
 
-        truncated = _truncate_tool_message_content(
+        truncated = apply_tool_surface_budget(
             message,
             {
                 "budgetSource": "dynamic_context_budget",
@@ -165,7 +161,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
             tool_call_id="tool-call-1",
         )
 
-        truncated = _truncate_tool_message_content(
+        truncated = apply_tool_surface_budget(
             message,
             {
                 "budgetSource": "dynamic_context_budget",
@@ -198,7 +194,7 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         )
         command = Command(update={"messages": [message], "other": "kept"})
 
-        result = _truncate_agent_visible_result(
+        result = apply_agent_visible_budget(
             command,
             {
                 "budgetSource": "dynamic_context_budget",

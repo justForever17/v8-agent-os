@@ -112,13 +112,13 @@ test("Web realtime recovery merges only the active session while normal navigati
 
 test("Web realtime snapshot application replays queued runtime events and preserves live nodes", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+  const reconciliation = readText("apps/v8-agent-os-web/src/lib/chat-message-reconciliation.ts");
 
   assert.match(client, /const pendingRuntimeEvents = realtimeMessageStateRef\.current\.pendingRuntimeEvents\.slice\(\)/);
   assert.match(client, /const pendingState = syncSessionRealtimeMessageState\(/);
   assert.match(client, /for \(const runtimeEvent of pendingRuntimeEvents\) \{\s+queueSessionRealtimeRuntimeEvent\(pendingState, runtimeEvent\)/);
   assert.match(client, /const replayed = flushQueuedSessionRealtimeRuntimeEvents\(/);
-  assert.match(client, /normalizeMessagesForState\(\[matchingCurrent, snapshotMessage\]\)\[0\]/);
-  assert.match(client, /During an active durable run the snapshot can contain a/);
+  assert.match(reconciliation, /normalizeMessagesForState\(\[matchingCurrent, snapshotMessage\]\)\[0\]/);
 });
 
 test("local HTTP preview cookies follow the configured public protocol instead of production mode", () => {

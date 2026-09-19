@@ -58,10 +58,11 @@ test("Web keeps historical messages mounted without replaying entrance motion", 
 
 test("Web keeps queued messages isolated to the active conversation", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+  const queue = readText("apps/v8-agent-os-web/src/hooks/use-chat-queue.ts");
 
-  assert.match(client, /sessionId === queuedMessagesSessionIdRef.current/);
-  assert.match(client, /incoming\.filter\(\(item\) => item\.sessionId === sessionId\)/);
-  assert.match(client, /item\.sessionId === activeConversationId && isVisibleQueuedMessage\(item\)/);
+  assert.match(queue, /sessionId !== scopeRef\.current\.sessionId/);
+  assert.match(queue, /incoming\.filter\(\(item\) => item\.sessionId === sessionId\)/);
+  assert.match(queue, /item\.sessionId === activeConversationId && isVisibleQueuedMessage\(item\)/);
   assert.match(client, /applyQueuedMessagesSnapshot\(extractQueuedMessages\(snapshotPayload\), activeConversationId, snapshotLatestSeq/);
 });
 

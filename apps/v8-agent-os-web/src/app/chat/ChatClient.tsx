@@ -9,17 +9,6 @@ import { draftOwnerKey, hydrateDraft, readDraft, removeDrafts, setDraftField } f
 import { extractQueuedMessages, normalizeQueuedMessage, type QueuedChatMessage } from "@/lib/chat-queue";
 import { attachSseEventId, mergeProjectedSnapshotMessages } from "@/lib/chat-message-reconciliation";
 import { QueuedMessageEditDialog, QueuedMessagesStrip, type QueueUiLabels } from "@/components/chat/QueuedMessagesDock";
-import {
-    asPlainRecord,
-    CONTEXT_SESSION_ID_PATTERN,
-    earlierTimestamp,
-    isLegacyChatUnsupportedPayload,
-    isWorkspaceBindingErrorMessage,
-    readErrorPayloadMessage,
-    readString,
-    type ChatQueueSubmitResponse,
-    type ContextSessionReference,
-} from "@/lib/chat-client-utils";
 import { useLangGraphStream } from "@/hooks/use-langgraph-stream";
 import { useChatQueue } from "@/hooks/use-chat-queue";
 import type { SpecReviewDecision } from "@/lib/spec-review";
@@ -69,7 +58,6 @@ import { CreateConversationPayload, useConversationContext } from "@/context/Con
 import { signIn, useSession } from "next-auth/react";
 import {
     AlertCircle,
-    Loader2,
     PanelRight,
     PlugZap,
     TerminalSquare,
@@ -194,6 +182,67 @@ type SessionProjectionView = AuthoritativeSessionView & {
     contextGovernance?: Record<string, unknown> | null;
     contextGovernanceHistory?: Record<string, unknown>[];
 };
+
+type ChatQueueSubmitResponse = {
+    accepted?: boolean;
+    session_id?: string;
+    conversationId?: string;
+    queued?: boolean;
+    queuedMessage?: QueuedChatMessage | null;
+    clientMessageId?: string;
+    run_id?: string;
+    runId?: string;
+    error?: string;
+};
+
+type ContextSessionReference = {
+    sessionId: string;
+    source: "history_menu";
+};
+
+const CONTEXT_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/;
+
+function isLegacyChatUnsupportedPayload(value: unknown) {
+    const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const snapshot = root.snapshot && typeof root.snapshot === "object" ? root.snapshot as Record<string, unknown> : {};
+    return Boolean(root.legacyChatUnsupported || snapshot.legacyChatUnsupported);
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function readString(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function earlierTimestamp(left?: string, right?: string) {
+    if (!left) return right;
+    if (!right) return left;
+    const leftTime = Date.parse(left);
+    const rightTime = Date.parse(right);
+    if (!Number.isFinite(leftTime)) return right;
+    if (!Number.isFinite(rightTime)) return left;
+    return leftTime <= rightTime ? left : right;
+}
+
+function isWorkspaceBindingErrorMessage(value: unknown) {
+    const text = String(value || "").toLowerCase();
+    return text.includes("workspace_binding_required")
+        || text.includes("workspace_trust_required")
+        || text.includes("workspace_side_effect_blocked");
+}
+
+function readErrorPayloadMessage(payload: Record<string, unknown>) {
+    const detail = asPlainRecord(payload.detail);
+    return readString(detail.error)
+        || readString(detail.summary)
+        || readString(detail.recommendedNextAction)
+        || readString(payload.error)
+        || readString(payload.message);
+}
 
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     if (!raw || typeof raw !== "object") {
@@ -711,38 +760,39 @@ export default function ChatClient() {
     const terminalCreateRef = useRef<{ owner: string; requestId: string; inFlight: boolean } | null>(null);
     const terminalListRequestRef = useRef(0);
     const hasActiveWorkbenchSession = Boolean(activeConversationId);
-    const {
-        queuedMessages,
-        setQueuedMessages,
-        queuedMessagesRef,
-        queueCacheRef,
-        queueSequenceRef,
-        queuedMessagesSessionIdRef,
-        queuedMessagesCollapsed,
-        setQueuedMessagesCollapsed,
-        queuedMessageMenuId,
-        setQueuedMessageMenuId,
-        queuedMessageBusyId,
-        setQueuedMessageBusyId,
-        editingQueuedMessage,
-        setEditingQueuedMessage,
-        queuedMessageEditText,
-        setQueuedMessageEditText,
-        queuedMessageEditBusy,
-        setQueuedMessageEditBusy,
-        queuedMessageError,
-        setQueuedMessageError,
-        visibleQueuedMessages,
-        upsertQueuedMessage,
-        applyQueuedMessagesSnapshot,
-        synchronizeQueue,
-        resetQueueUi,
-    } = useChatQueue({
+    const queue = useChatQueue({
         activeConversationId,
         activeConversationIdRef,
         latestRealtimeSeqRef,
         ownerKey: sessionOwnerKey,
+        translate: t,
     });
+    const {
+        visibleMessages: visibleQueuedMessages,
+        collapsed: queuedMessagesCollapsed,
+        menuOpenId: queuedMessageMenuId,
+        busyId: queuedMessageBusyId,
+        editingItem: editingQueuedMessage,
+        editText: queuedMessageEditText,
+        editBusy: queuedMessageEditBusy,
+        error: queuedMessageError,
+    } = queue.view;
+    const {
+        upsert: upsertQueuedMessage,
+        applySnapshot: applyQueuedMessagesSnapshot,
+        synchronize: synchronizeQueue,
+        promote: handlePromoteQueuedMessage,
+        cancel: handleCancelQueuedMessage,
+        openEditor: handleOpenQueuedMessageEditor,
+        closeEditor: closeQueuedMessageEditor,
+        setEditText: setQueuedMessageEditText,
+        saveEdit: handleSaveQueuedMessageEdit,
+        toggleCollapsed: toggleQueuedMessagesCollapsed,
+        expand: expandQueuedMessages,
+        openMenu: setQueuedMessageMenuId,
+        removeMessage: removeQueuedMessage,
+        setError: setQueuedMessageError,
+    } = queue.commands;
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
         const sessionId = String(payload?.sessionId || "").trim();
@@ -1866,8 +1916,6 @@ export default function ChatClient() {
         renderedSessionOwnerRef.current = sessionOwnerKey;
         if (ownerChanged) {
             messageCacheRef.current.clear();
-            queueCacheRef.current.clear();
-            queueSequenceRef.current.clear();
             scopeCacheRef.current.clear();
             scopeRequestSeqRef.current += 1;
             runLoadGenerationRef.current += 1;
@@ -1887,10 +1935,6 @@ export default function ChatClient() {
         if (previousConversationId === activeConversationId) {
             return;
         }
-        if (previousConversationId) queueCacheRef.current.set(previousConversationId, queuedMessagesRef.current);
-        const cachedQueue = queueCacheRef.current.get(activeConversationId || "") || [];
-        queuedMessagesRef.current = cachedQueue;
-        setQueuedMessages(cachedQueue);
         latestRealtimeSeqRef.current = 0;
         snapshotCoveredRealtimeSeqRef.current = 0;
         seenRealtimeEventIdentitiesRef.current.clear();
@@ -2311,7 +2355,7 @@ export default function ChatClient() {
             }
         };
         window.setTimeout(() => void hydrateTurnIndex(), 0);
-    }, [applyAskUserPendingApproval, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router, synchronizeQueue]);
+    }, [applyAskUserPendingApproval, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router, setQueuedMessageError, synchronizeQueue]);
 
     useEffect(() => {
         if (!draftKey || !activeConversationId) return;
@@ -2620,14 +2664,14 @@ export default function ChatClient() {
         if (payload.queued && payload.queuedMessage) {
             upsertQueuedMessage(payload.queuedMessage);
             if (activeConversationIdRef.current === conversationId) {
-                setQueuedMessagesCollapsed(false);
+                expandQueuedMessages();
                 setQueuedMessageError("");
             }
             return;
         }
         if (payload.queued) {
             if (activeConversationIdRef.current === conversationId) {
-                setQueuedMessagesCollapsed(false);
+                expandQueuedMessages();
                 setQueuedMessageError("");
                 void synchronizeQueue(conversationId);
             }
@@ -2646,93 +2690,7 @@ export default function ChatClient() {
             return;
         }
         throw new Error(t("web.generated.0bf47da6e3"));
-    }, [buildScopePayload, loadConversationHistory, loadRuns, session?.user?.id, synchronizeQueue, t, upsertQueuedMessage]);
-
-    const handlePromoteQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
-        const id = String(item.id || "").trim();
-        if (!id || queuedMessageBusyId) {
-            return;
-        }
-        setQueuedMessageBusyId(id);
-        setQueuedMessageError("");
-        setQueuedMessageMenuId(null);
-        try {
-            const response = await fetch(`/api/chat-queue/${encodeURIComponent(id)}/promote`, { method: "POST" });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.ok === false) {
-                throw new Error(readString(payload?.error) || readString(payload?.detail));
-            }
-            upsertQueuedMessage(payload?.queuedMessage || { ...item, state: "promoted" });
-        } catch (error) {
-            console.error("[ChatClient] Failed to promote queued message:", error);
-            setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.8f1e4072ac"));
-        } finally {
-            setQueuedMessageBusyId("");
-        }
-    }, [queuedMessageBusyId, t, upsertQueuedMessage]);
-
-    const handleCancelQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
-        const id = String(item.id || "").trim();
-        if (!id || queuedMessageBusyId) {
-            return;
-        }
-        setQueuedMessageBusyId(id);
-        setQueuedMessageError("");
-        setQueuedMessageMenuId(null);
-        try {
-            const response = await fetch(`/api/chat-queue/${encodeURIComponent(id)}`, { method: "DELETE" });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.ok === false) {
-                throw new Error(readString(payload?.error) || readString(payload?.detail));
-            }
-            upsertQueuedMessage(payload?.queuedMessage || { ...item, state: "cancelled" });
-        } catch (error) {
-            console.error("[ChatClient] Failed to cancel queued message:", error);
-            setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.5c2e41d9a8"));
-        } finally {
-            setQueuedMessageBusyId("");
-        }
-    }, [queuedMessageBusyId, t, upsertQueuedMessage]);
-
-    const handleOpenQueuedMessageEditor = useCallback((item: QueuedChatMessage) => {
-        const state = String(item.state || "pending").trim().toLowerCase();
-        if (state !== "pending") {
-            return;
-        }
-        setQueuedMessageMenuId(null);
-        setEditingQueuedMessage(item);
-        setQueuedMessageEditText(String(item.content || ""));
-    }, []);
-
-    const handleSaveQueuedMessageEdit = useCallback(async () => {
-        const item = editingQueuedMessage;
-        const id = String(item?.id || "").trim();
-        const nextContent = queuedMessageEditText.trim();
-        if (!id || !item || !nextContent || queuedMessageEditBusy) {
-            return;
-        }
-        setQueuedMessageEditBusy(true);
-        setQueuedMessageError("");
-        try {
-            const response = await fetch(`/api/chat-queue/${encodeURIComponent(id)}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ content: nextContent }),
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.ok === false) {
-                throw new Error(readString(payload?.error) || readString(payload?.detail));
-            }
-            upsertQueuedMessage(payload?.queuedMessage || { ...item, content: nextContent, state: "pending" });
-            setEditingQueuedMessage(null);
-            setQueuedMessageEditText("");
-        } catch (error) {
-            console.error("[ChatClient] Failed to edit queued message:", error);
-            setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.76ac182bf4"));
-        } finally {
-            setQueuedMessageEditBusy(false);
-        }
-    }, [editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
+    }, [buildScopePayload, expandQueuedMessages, loadConversationHistory, loadRuns, session?.user?.id, setQueuedMessageError, synchronizeQueue, t, upsertQueuedMessage]);
 
     const clearNewConversationIntent = useCallback(() => {
         if (typeof window === "undefined") {
@@ -3132,7 +3090,7 @@ export default function ChatClient() {
             const terminalEvent = ["human_guidance.injected", "human_guidance.consumed", "human_guidance.cancelled"].includes(String(normalizedEvent.topic || ""))
                 || ["injected", "consumed", "cancelled"].includes(queueState);
             if (queueId && terminalEvent) {
-                setQueuedMessages((current) => current.filter((item) => item.id !== queueId));
+                removeQueuedMessage(queueId);
             } else if (queueMessage) {
                 upsertQueuedMessage(queueMessage);
             }
@@ -3258,7 +3216,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, patchConversationSummary, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
+    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, patchConversationSummary, removeGovernanceApproval, removeQueuedMessage, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;
@@ -3670,7 +3628,6 @@ export default function ChatClient() {
             setLegacyChatUnsupported(false);
             clearApprovalState();
             setRunEntries([]);
-            resetQueueUi();
             turnBeforeCursorRef.current = null;
             isLoadingOlderTurnsRef.current = false;
             isJumpingTurnRef.current = false;
@@ -3683,7 +3640,7 @@ export default function ChatClient() {
             messagesRef.current = [];
             setMessages([]);
         }
-    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, resetQueueUi, sessionOwnerKey, status, stop, setMessages]);
+    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, sessionOwnerKey, status, stop, setMessages]);
 
     useEffect(() => {
         if (status !== "authenticated" || !activeConversationId) {
@@ -4167,7 +4124,7 @@ export default function ChatClient() {
                                                 menuOpenId={queuedMessageMenuId}
                                                 busyId={queuedMessageBusyId}
                                                 labels={queueLabels}
-                                                onToggleCollapsed={() => setQueuedMessagesCollapsed((current) => !current)}
+                                                onToggleCollapsed={toggleQueuedMessagesCollapsed}
                                                 onOpenMenu={setQueuedMessageMenuId}
                                                 onPromote={handlePromoteQueuedMessage}
                                                 onCancel={handleCancelQueuedMessage}
@@ -4315,10 +4272,7 @@ export default function ChatClient() {
             busy={queuedMessageEditBusy}
             labels={queueLabels}
             onChange={setQueuedMessageEditText}
-            onCancel={() => {
-                setEditingQueuedMessage(null);
-                setQueuedMessageEditText("");
-            }}
+            onCancel={closeQueuedMessageEditor}
             onSave={handleSaveQueuedMessageEdit}
         />
 

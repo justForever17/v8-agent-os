@@ -418,7 +418,7 @@ test('running composer uses durable JSON acceptance, preserving scope and id acr
             return Response.json(busy ? { accepted: true, queued: true, session_id: 'A', queuedMessage: { id: 'q-A', sessionId: 'A', clientMessageId: request.clientMessageId } }
                 : { accepted: true, queued: false, session_id: 'A', runId: 'run-next' });
         },
-        upsertQueuedMessage: item => queue.push(item), setQueuedMessagesCollapsed() {}, setQueuedMessageError() {},
+        upsertQueuedMessage: item => queue.push(item), expandQueuedMessages() {}, setQueuedMessagesCollapsed() {}, setQueuedMessageError() {},
         synchronizeQueue() {}, loadConversationHistory: async id => reloads.push(id), loadRuns: async () => {},
         readErrorPayloadMessage: payload => payload.error, t: key => key,
     });

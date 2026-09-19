@@ -320,6 +320,7 @@ test("Workbench confirmation status reopens the authoritative interaction and ne
 
 test("User sources stay separate from session artifacts and Phone renders voice playback inline", () => {
   const database = readText("apps/v8-agent-os-engine/core/database.py");
+  const schema = readText("apps/v8-agent-os-engine/core/database_schema.py");
   const artifactStore = readText("apps/v8-agent-os-engine/core/artifact_store.py");
   const vision = readText("apps/v8-agent-os-engine/core/tools/vision_media_analyzer.py");
   const sourceProjection = readText("packages/session-realtime/src/session-source-projection.ts");
@@ -327,7 +328,7 @@ test("User sources stay separate from session artifacts and Phone renders voice 
   const phoneOverview = readText("apps/v8-agent-os-phone/src/components/chat/SessionOverviewPanel.tsx");
   const phoneMedia = readText("apps/v8-agent-os-phone/src/components/chat/MediaRenderers.tsx");
 
-  assert.match(database, /CREATE TABLE IF NOT EXISTS session_sources/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS session_sources/);
   assert.match(database, /COALESCE\(resource_role, 'artifact'\) = 'artifact'/);
   assert.match(database, /COALESCE\(auto_attach_to_message, 1\) = 1/);
   assert.match(artifactStore, /resource_role: str = "artifact"/);

@@ -76,12 +76,12 @@ test("operations center owns one runtime data hook and its summary route only re
     assert.doesNotMatch(summarySource, /proxyEngineJson\("\/runs/);
 });
 
-test("model hub paints cached bootstrap data instead of resetting to a loading screen", () => {
+test("model hub delegates cache hydration to its bootstrap hook", () => {
     const source = read("src", "hooks", "use-model-hub-bootstrap.ts");
 
     assert.match(source, /peekAdminJsonCache<ModelHubBootstrapPayload>/);
-    assert.match(source, /useState\(\(\) => !cachedBootstrap\)/);
-    assert.match(source, /if \(!peekAdminJsonCache\(MODEL_HUB_BOOTSTRAP_URL\)\) setIsLoading\(true\)/);
+    assert.match(source, /useState\(\(\) => !peekAdminJsonCache\(BOOTSTRAP_URL\)\)/);
+    assert.match(source, /if \(!peekAdminJsonCache\(BOOTSTRAP_URL\)\) setIsLoading\(true\)/);
 });
 
 test("observable resources refresh on focus without discarding their cached snapshot", () => {

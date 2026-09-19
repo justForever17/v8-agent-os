@@ -11,7 +11,12 @@ function readText(relativePath) {
 
 function modelHubSource() {
   return readText("src/app/admin/(dashboard)/model-hub/page.tsx")
-    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts")
+    + "\n" + readText("src/lib/model-hub/catalog.ts")
+    + "\n" + readText("src/lib/model-hub/audio.ts")
+    + "\n" + readText("src/lib/model-hub/models.ts")
+    + "\n" + readText("src/lib/model-hub/editor-drafts.ts")
+    + "\n" + readText("src/components/model-hub/ModelEditorDialog.tsx")
+    + "\n" + readText("src/components/model-hub/ProviderEditorDialog.tsx")
     + "\n" + readText("src/hooks/use-model-hub-bootstrap.ts");
 }
 
@@ -141,12 +146,8 @@ test("Edge TTS remains the canonical no-key default and is not routed through vo
 test("The audio surface only exposes loaded or cached canonical audio config", () => {
   const hub = modelHubSource();
 
-  assert.match(hub, /const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>\(MODEL_HUB_BOOTSTRAP_URL\)/);
-  assert.match(hub, /const \[hasLoadedAudioConfig, setHasLoadedAudioConfig\] = useState\(\(\) => Boolean\(cachedBootstrap\)\)/);
-  assert.match(hub, /const \[audioConfig, setAudioConfig\] = useState<AudioRuntimeConfig>\(\(\) => mergeAudioConfig\(cachedBootstrap\?\.audioConfig \|\| null\)\)/);
-  assert.match(hub, /setAudioConfig\(mergeAudioConfig\(payload\.audioConfig \|\| null\)\)/);
-  assert.match(hub, /audioDraftRevisionRef\.current === audioRevision/);
-  assert.match(hub, /setHasLoadedAudioConfig\(true\)/);
+  assert.match(hub, /loaded: hasLoadedAudioConfig/);
+  assert.match(hub, /loaded: snapshot\.audioConfig !== null/);
   assert.match(hub, /hasLoadedAudioConfig \? systemAudioConfigCard/);
   assert.match(hub, /audio\.loadingConfig/);
 });

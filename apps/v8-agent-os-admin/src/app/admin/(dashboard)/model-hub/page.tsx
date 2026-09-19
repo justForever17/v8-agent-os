@@ -1,51 +1,41 @@
 "use client";
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, ExternalLink, LoaderCircle, Mic, Plus, RefreshCw, Save, Trash2, Upload, Volume2, X } from "lucide-react";
-import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
-import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
-import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
-import { AdminSurfaceCard } from "@/components/admin-shell/AdminSurfaceCard";
-import { ConfigCard } from "@/components/admin-shell/ConfigCard";
-import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
-import { EmptyState } from "@/components/admin-shell/EmptyState";
-import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
-import type { ControlPlaneModel } from "@/components/models/control-plane-types";
-import { ProviderCard } from "@/components/models/ProviderCard";
-import { ModelCardV2 } from "@/components/models/ModelCardV2";
-import { SearchableVoiceSelect } from "@/components/models/SearchableVoiceSelect";
-import { useT } from "@/components/providers/LocaleProvider";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { OutputTokenBudgetField } from "@/components/models/OutputTokenBudgetField";
-import { HydrationSafeClientOnly } from "@/components/ui/hydration-safe-client-only";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
-import { useToast } from "@/components/ui/use-toast";
+import { type CatalogProvider, type CatalogPurpose, type CatalogRuntimeProtocol, type CatalogModel, type CustomProviderCapability, buildCatalogProvidersForPurpose, getCatalogPurposeConfig, catalogProviderChannels, isXiaomiAnthropicBaseUrl, getModelTypeForPurpose, CATALOG_PURPOSES, CUSTOM_PROVIDER_CAPABILITIES, previewModelsUrl } from "@/lib/model-hub/catalog";
+import { resolveProviderLogo, resolveModelIcon } from "@/lib/models/model-assets";
 import { useModelHubBootstrap } from "@/hooks/use-model-hub-bootstrap";
-import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
-import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
-import { deriveMediaOperationKinds, getMediaCapabilityOptions, resolveMediaCapabilityModes } from "@/lib/models/media-capabilities";
-import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, type ProviderChannel, } from "@/lib/models/provider-admin";
-import {
-    AIModel, AIProvider, AudioVoiceOption, buildCatalogProvidersForPurpose, catalogProviderChannels,
-    CATALOG_PURPOSES, CatalogModel, CatalogProvider, CatalogPurpose, CatalogRuntimeProtocol,
-    comfyWorkflowDraft, ComfyWorkflowDraft, createProviderChannel, CUSTOM_PROVIDER_CAPABILITIES,
-    CustomProviderCapability, editableProviderChannels, EMPTY_COMFY_WORKFLOW,
-    extractErrorText, getCatalogPurposeConfig, getModelTypeForPurpose,
-    hasAudioInputCapability, hasAudioOutputCapability, headerValueForInput, isXiaomiAnthropicBaseUrl,
-    localizeAudioVoicePresets, MEDIA_MODEL_TYPES, mergeAudioConfig,
-    modelLabel, modelMatchesTab, modelRefFor, ModelConnectionStatus, ModelReasoningRepairStatus, ModelWireProtocol,
-    MODEL_WIRE_PROTOCOLS, PROVIDER_CHANNEL_PRESETS, previewModelsUrl,
-    readJsonErrorMessage, RETRIEVAL_MODEL_TYPES, resolveAudioVoicePresetKey, sttEndpointPlaceholder,
-    ttsEndpointPlaceholder, TtsVoiceDesignCandidate, TtsVoiceProviderInfo,
-    voiceManagerErrorText, voicePresetsForCustomTtsProtocol,
-} from "@/lib/model-hub/model-hub-domain";
+import { useState, useRef, useMemo, useEffect } from "react";
+import { useToast } from "@/components/ui/use-toast";
+import { useT } from "@/components/providers/LocaleProvider";
+import { type AIProvider, type AIModel, type ModelConnectionStatus, type ModelReasoningRepairStatus } from "@/lib/model-hub/types";
+import { type ProviderChannel } from "@/lib/models/provider-admin";
+import { createProviderChannel, PROVIDER_CHANNEL_PRESETS } from "@/lib/model-hub/channels";
+import { type AudioVoiceOption, type TtsVoiceProviderInfo, type TtsVoiceDesignCandidate, hasAudioInputCapability, hasAudioOutputCapability, localizeAudioVoicePresets, resolveAudioVoicePresetKey, voicePresetsForCustomTtsProtocol, voiceManagerErrorText, mergeAudioConfig, sttEndpointPlaceholder, headerValueForInput, ttsEndpointPlaceholder } from "@/lib/model-hub/audio";
+import { modelRefFor, modelMatchesTab, modelLabel } from "@/lib/model-hub/models";
+import { readJsonErrorMessage, extractErrorText } from "@/lib/model-hub/errors";
+import { type ControlPlaneModel } from "@/components/models/control-plane-types";
+import { ConfigCard } from "@/components/admin-shell/ConfigCard";
+import { AdminSurfaceCard } from "@/components/admin-shell/AdminSurfaceCard";
+import { Mic, Volume2, RefreshCw, ExternalLink, CircleAlert, Upload, Plus, LoaderCircle, Save, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { SearchableVoiceSelect } from "@/components/models/SearchableVoiceSelect";
+import { Textarea } from "@/components/ui/textarea";
+import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
+import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
+import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
+import { HydrationSafeClientOnly } from "@/components/ui/hydration-safe-client-only";
+import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState } from "@/components/admin-shell/EmptyState";
+import { ProviderCard } from "@/components/models/ProviderCard";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ModelCardV2 } from "@/components/models/ModelCardV2";
+import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
+import { ProviderEditorDialog } from "@/components/model-hub/ProviderEditorDialog";
+import { ModelEditorDialog } from "@/components/model-hub/ModelEditorDialog";
+
 function ProviderOptionLabel({
     provider,
     suffix,
@@ -64,51 +54,22 @@ function ProviderOptionLabel({
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground dark:bg-card/10 dark:text-slate-300">
                 {logo ? <Image src={logo} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : initial}
             </span>
-            <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` 路 ${suffix}` : ""}</span>
+            <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` · ${suffix}` : ""}</span>
         </span>
     );
 }
 export default function ModelHubPage() {
+    const { snapshot, isLoading, bootstrapError, refresh: fetchData, removeModel, rememberCatalogProvider, setDefaultModel, audio } = useModelHubBootstrap();
+    const { providers, models, hubEnvelope, catalogProviders, defaultModelRef } = snapshot;
+    const { value: audioConfig, update: setAudioConfig, acceptSaved: acceptSavedAudio, loaded: hasLoadedAudioConfig } = audio;
+
     const { toast } = useToast();
     const t = useT();
-    const {
-        providers,
-        models,
-        setModels,
-        hubEnvelope,
-        isLoading,
-        bootstrapError,
-        hasLoadedAudioConfig,
-        audioConfig,
-        setAudioConfig,
-        defaultModelRef,
-        setDefaultModelRef,
-        catalogProviders,
-        setCatalogProviders,
-        fetchData,
-    } = useModelHubBootstrap();
     const [activeTab, setActiveTab] = useState("all");
     const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
     const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
     const [editingProvider, setEditingProvider] = useState<AIProvider | null>(null);
     const [editingModel, setEditingModel] = useState<AIModel | null>(null);
-    const [providerType, setProviderType] = useState<AIProvider["type"]>("API");
-    const [providerCredentialMode, setProviderCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
-    const [providerApiStandard, setProviderApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
-    const [providerBaseUrl, setProviderBaseUrl] = useState("");
-    const [providerChannels, setProviderChannels] = useState<ProviderChannel[]>([createProviderChannel("openai", "", "default")]);
-    const [providerDefaultChannelId, setProviderDefaultChannelId] = useState("default");
-    const [providerApiKey, setProviderApiKey] = useState("");
-    const [providerOauthPath, setProviderOauthPath] = useState("");
-    const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("codex");
-    const [localBackendPreset, setLocalBackendPreset] = useState<LocalBackendPreset>("ollama");
-    const [modelType, setModelType] = useState("TEXT");
-    const [mediaCapabilityModes, setMediaCapabilityModes] = useState<string[]>([]);
-    const [modelProviderId, setModelProviderId] = useState("");
-    const [modelChannelId, setModelChannelId] = useState("");
-    const [modelWireProtocol, setModelWireProtocol] = useState<ModelWireProtocol>("");
-    const [comfyWorkflow, setComfyWorkflow] = useState<ComfyWorkflowDraft>(EMPTY_COMFY_WORKFLOW);
-    const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
     const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
     const [catalogPurpose, setCatalogPurpose] = useState<CatalogPurpose>("chat");
@@ -169,17 +130,6 @@ export default function ModelHubPage() {
     const selectedCatalogProvider = useMemo(
         () => apiCatalogProviders.find((item) => item.id === selectedCatalogProviderId) || catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null,
         [apiCatalogProviders, catalogProviders, selectedCatalogProviderId],
-    );
-    const selectedModelProvider = useMemo(
-        () => providers.find((provider) => provider.id === modelProviderId) || null,
-        [modelProviderId, providers],
-    );
-    const selectedModelChannel = useMemo(
-        () => selectedModelProvider?.channels?.find((channel) => channel.id === modelChannelId)
-            || selectedModelProvider?.channels?.find((channel) => channel.id === selectedModelProvider.defaultChannelId)
-            || selectedModelProvider?.channels?.[0]
-            || null,
-        [modelChannelId, selectedModelProvider],
     );
     const selectedCustomChannel = useMemo(
         () => customProviderChannels.find((channel) => channel.id === customProviderDefaultChannelId)
@@ -392,160 +342,6 @@ export default function ModelHubPage() {
         if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
     }, [ttsPreviewUrl]);
     const filteredModels = models.filter((model) => modelMatchesTab(model, activeTab));
-    const entitySaveBusy = useRef(false);
-    const [entitySaving, setEntitySaving] = useState(false);
-    const [entitySaveError, setEntitySaveError] = useState("");
-    const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        if (entitySaveBusy.current) return;
-        entitySaveBusy.current = true;
-        setEntitySaving(true); setEntitySaveError("");
-        try {
-        const formData = new FormData(event.currentTarget);
-        const payload: Record<string, unknown> = Object.fromEntries(formData.entries());
-        if (providerType === "API") {
-            const normalizedChannels = providerChannels.map((channel) => ({
-                ...channel,
-                id: channel.id.trim().toLowerCase(),
-                label: channel.label.trim() || channel.id.trim(),
-                baseUrl: channel.baseUrl.trim().replace(/\/+$/, ""),
-                apiVersion: channel.apiVersion.trim().replace(/^\/+|\/+$/g, ""),
-            }));
-            const invalidAnthropicChannel = normalizedChannels.find(
-                (channel) => channel.apiStandard === "anthropic" && /\/v1$/i.test(channel.baseUrl),
-            );
-            if (invalidAnthropicChannel) {
-                toast({
-                    variant: "destructive",
-                    title: t("app.admin.dashboard.model.hub.page.kd2b2caac"),
-                    description: t("app.admin.dashboard.model.hub.channel.anthropicBaseUrlError"),
-                });
-                return;
-            }
-            const defaultChannel = normalizedChannels.find((channel) => channel.id === providerDefaultChannelId) || normalizedChannels[0];
-            payload.channels = normalizedChannels;
-            payload.defaultChannelId = defaultChannel?.id || "";
-            payload.baseUrl = defaultChannel?.baseUrl || providerBaseUrl;
-            payload.apiStandard = defaultChannel?.apiStandard || providerApiStandard;
-        }
-        const url = editingProvider ? `/api/providers/${editingProvider.id}` : "/api/providers";
-        const method = editingProvider ? "PUT" : "POST";
-        const response = await fetch(url, {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        });
-        if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kd2b2caac"));
-            toast({
-                variant: "destructive",
-                title: t("app.admin.dashboard.model.hub.page.kd2b2caac"),
-                description: errorMessage,
-            });
-            return;
-        }
-        setIsProviderDialogOpen(false);
-        setEditingProvider(null);
-        await fetchData(true);
-        } catch (error) { setEntitySaveError(`${t("admin.experience.saveFailed")} ${String(error)}`); }
-        finally { entitySaveBusy.current = false; setEntitySaving(false); }
-    };
-    const platformProviderSelected = providerType === "PLATFORM";
-    const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
-    const oauthHint = platformProviderSelected
-        ? t(activePlatformPreset.helpText)
-        : t("app.admin.dashboard.model.hub.page.k2daf728b");
-    const localBackendConfig = getLocalBackendPresetConfig(localBackendPreset);
-    const handleSaveModel = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        if (entitySaveBusy.current) return;
-        entitySaveBusy.current = true;
-        setEntitySaving(true); setEntitySaveError("");
-        try {
-        const formData = new FormData(event.currentTarget);
-        const payload: Record<string, unknown> = {
-            ...Object.fromEntries(formData.entries()),
-            mediaLimits: editingModel?.mediaLimits || undefined,
-            endpointBinding: editingModel?.endpointBinding || undefined,
-            channelId: modelChannelId,
-        };
-        if (modelType === "WORKFLOW") {
-            let prompt: Record<string, unknown>;
-            try {
-                const parsed = JSON.parse(comfyWorkflow.promptJson || "null");
-                if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("invalid");
-                prompt = parsed as Record<string, unknown>;
-            } catch {
-                toast({
-                    variant: "destructive",
-                    title: t("app.admin.dashboard.model.hub.comfy.workflowInvalidTitle"),
-                    description: t("app.admin.dashboard.model.hub.comfy.workflowInvalid"),
-                });
-                return;
-            }
-            const requiredBindings = [
-                comfyWorkflow.imageNodeId,
-                comfyWorkflow.imageInputName,
-                comfyWorkflow.videoNodeId,
-                comfyWorkflow.videoInputName,
-                comfyWorkflow.outputNodeId,
-                comfyWorkflow.outputField,
-            ];
-            if (requiredBindings.some((value) => !value.trim())) {
-                toast({
-                    variant: "destructive",
-                    title: t("app.admin.dashboard.model.hub.comfy.workflowInvalidTitle"),
-                    description: t("app.admin.dashboard.model.hub.comfy.bindingsRequired"),
-                });
-                return;
-            }
-            payload.mediaLimits = {
-                ...(editingModel?.mediaLimits || {}),
-                comfyuiWorkflow: {
-                    schema: "v8.comfyui.workflow.v1",
-                    operationKind: "video.action_transfer",
-                    prompt,
-                    bindings: {
-                        image: { nodeId: comfyWorkflow.imageNodeId.trim(), inputName: comfyWorkflow.imageInputName.trim() },
-                        video: { nodeId: comfyWorkflow.videoNodeId.trim(), inputName: comfyWorkflow.videoInputName.trim() },
-                    },
-                    output: { nodeId: comfyWorkflow.outputNodeId.trim(), field: comfyWorkflow.outputField.trim(), index: 0 },
-                },
-            };
-        }
-        if (["TEXT", "MULTIMODAL", "VISION", "CHAT"].includes(modelType)) {
-            payload.wireProtocol = modelWireProtocol;
-        }
-        if (getMediaCapabilityOptions(modelType).length > 0) {
-            payload.capabilityModes = mediaCapabilityModes;
-        }
-        for (const key of ["contextWindow", "maxTokens"]) {
-            if (payload[key] === "") payload[key] = null;
-        }
-        const url = editingModel
-            ? `/api/models/${encodeURIComponent(editingModel.id)}?providerId=${encodeURIComponent(editingModel.providerId)}`
-            : "/api/models";
-        const method = editingModel ? "PUT" : "POST";
-        const response = await fetch(url, {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        });
-        if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kd2b2caac"));
-            toast({
-                variant: "destructive",
-                title: t("app.admin.dashboard.model.hub.page.kd2b2caac"),
-                description: errorMessage,
-            });
-            return;
-        }
-        setIsModelDialogOpen(false);
-        setEditingModel(null);
-        await fetchData(true);
-        } catch (error) { setEntitySaveError(`${t("admin.experience.saveFailed")} ${String(error)}`); }
-        finally { entitySaveBusy.current = false; setEntitySaving(false); }
-    };
     const handleSetReasoningLevel = async (model: AIModel, controlMeta: ControlPlaneModel | null, level: string) => {
         const supportsNoThink = Boolean(controlMeta?.thinkingControl?.supportsNoThink);
         const disabled = supportsNoThink && level === "none";
@@ -597,7 +393,7 @@ export default function ModelHubPage() {
         }
         toast({
             title: t("app.admin.dashboard.model.hub.page.reasoningEffortSaved"),
-            description: `${model.modelId} 路 ${level}`,
+            description: `${model.modelId} · ${level}`,
         });
         await fetchData(true, true);
     };
@@ -710,7 +506,7 @@ export default function ModelHubPage() {
                 });
                 return;
             }
-            setModels((current) => current.filter((item) => !(item.id === model.id && item.providerId === model.providerId)));
+            removeModel({ id: model.id, providerId: model.providerId });
             pendingToast.update({
                 id: pendingToast.id,
                 title: t("app.admin.dashboard.model.hub.page.k55262795"),
@@ -741,7 +537,7 @@ export default function ModelHubPage() {
             return;
         }
         if (!categoryKey || categoryKey === "text_generation") {
-            setDefaultModelRef(modelRef);
+            setDefaultModel(modelRef);
         }
         await fetchData(true);
     };
@@ -891,10 +687,7 @@ export default function ModelHubPage() {
                     : null;
                 pendingCatalogProviderIdRef.current = providerId;
                 if (persistedProvider?.id) {
-                    setCatalogProviders((current) => [
-                        persistedProvider,
-                        ...current.filter((item) => item.id !== persistedProvider.id),
-                    ]);
+                    rememberCatalogProvider(persistedProvider);
                 }
                 setSelectedCatalogProviderId(providerId);
                 await fetchData(true);
@@ -992,7 +785,7 @@ export default function ModelHubPage() {
                 });
                 return;
             }
-            toast({ title: t("app.admin.dashboard.model.hub.catalog.connected"), description: `${provider?.name || customProviderName || providerId} 路 ${modelId}` });
+            toast({ title: t("app.admin.dashboard.model.hub.catalog.connected"), description: `${provider?.name || customProviderName || providerId} · ${modelId}` });
             if (isCustomProvider) {
                 setSelectedCatalogProviderId(data.providerId || providerId);
             }
@@ -1075,7 +868,7 @@ export default function ModelHubPage() {
                 });
                 return;
             }
-            setAudioConfig(mergeAudioConfig(savedConfig));
+            acceptSavedAudio(audioConfig, mergeAudioConfig(savedConfig));
             toast({ title: t("app.admin.dashboard.model.hub.audio.saved"), description: t("app.admin.dashboard.model.hub.audio.savedDescription") });
         } finally {
             setIsAudioSaving(false);
@@ -1510,12 +1303,12 @@ export default function ModelHubPage() {
             const skippedCapabilities = capabilityChecks.filter((item) => (item as { status?: string })?.status === "skipped").length;
             const successMessage = [
                 protocolWarning,
-                `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} 路 ${Math.round(Number(data.latencyMs || 0))}ms`,
+                `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} · ${Math.round(Number(data.latencyMs || 0))}ms`,
                 resolvedEndpoint,
                 recommendedRoute,
                 skippedCapabilities ? t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities") : "",
                 data.message || "",
-            ].filter(Boolean).join(" 路 ");
+            ].filter(Boolean).join(" · ");
             setConnectionStatusMap((current) => ({
                 ...current,
                 [modelRef]: { status: protocolWarning ? "warning" : "success", message: successMessage },
@@ -1558,7 +1351,7 @@ export default function ModelHubPage() {
                 data.matchedField ? `${t("app.admin.dashboard.model.hub.reasoningRepair.field")}: ${data.matchedField}` : "",
                 data.saveStatus ? `${t("app.admin.dashboard.model.hub.reasoningRepair.saveStatus")}: ${data.saveStatus}` : "",
                 data.status || "",
-            ].filter(Boolean).join(" 路 ") || t("app.admin.dashboard.model.hub.reasoningRepair.done");
+            ].filter(Boolean).join(" · ") || t("app.admin.dashboard.model.hub.reasoningRepair.done");
             setReasoningRepairStatusMap((current) => ({
                 ...current,
                 [modelRef]: { status, message },
@@ -2055,42 +1848,17 @@ export default function ModelHubPage() {
         </ConfigCard>
     );
     return (<AdminPageShell>
-            {bootstrapError ? <p role="alert" className="text-sm text-destructive">{bootstrapError}</p> : null}
+            {bootstrapError && <p role="alert" className="text-sm text-destructive">{bootstrapError}</p>}
             <AdminPageHeader title={t("app.admin.dashboard.model.hub.page.kf88eff69")} description={t("app.admin.dashboard.model.hub.page.k45bea0e7")} actions={<>
                         <Button variant="outline" onClick={() => void fetchData(true)} disabled={isLoading}>
                             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`}/>
                             {t("app.admin.dashboard.model.hub.page.k876e8c06")}
                         </Button>
-                        <Button onClick={() => {
-                setEditingProvider(null);
-                setProviderType("API");
-                setProviderCredentialMode("apiKey");
-                setProviderApiStandard("openai");
-                setProviderBaseUrl("");
-                setProviderChannels([createProviderChannel("openai", "", "default")]);
-                setProviderDefaultChannelId("default");
-                setProviderApiKey("");
-                setProviderOauthPath("");
-                setPlatformLoginPreset("codex");
-                setLocalBackendPreset("ollama");
-                setIsProviderDialogOpen(true);
-            }}>
+                        <Button onClick={() => { setEditingProvider(null); setIsProviderDialogOpen(true); }}>
                             <Plus className="mr-2 h-4 w-4"/>
                             {t("app.admin.dashboard.model.hub.page.k9e31d9ed")}
                         </Button>
-                        <Button disabled={providers.length === 0} onClick={() => {
-                            const provider = providers[0];
-                            const channel = provider?.channels?.find((item) => item.id === provider.defaultChannelId) || provider?.channels?.[0];
-                            setEditingModel(null);
-                            setModelType("TEXT");
-                            setMediaCapabilityModes([]);
-                            setModelProviderId(provider?.id || "");
-                            setModelChannelId(channel?.id || "");
-                            setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
-                            setRerankApiFlavor("generic");
-                            setComfyWorkflow(EMPTY_COMFY_WORKFLOW);
-                            setIsModelDialogOpen(true);
-                        }}>
+                        <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setIsModelDialogOpen(true); }}>
                             <Plus className="mr-2 h-4 w-4"/>
                             {t("app.admin.dashboard.model.hub.page.k82b1063c")}
                         </Button>
@@ -2206,7 +1974,7 @@ export default function ModelHubPage() {
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {selectedCatalogChannels.map((channel) => <SelectItem key={channel.id} value={channel.id}>{channel.label} 路 {channel.apiStandard}</SelectItem>)}
+                                            {selectedCatalogChannels.map((channel) => <SelectItem key={channel.id} value={channel.id}>{channel.label} · {channel.apiStandard}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
                                 </HydrationSafeClientOnly>
@@ -2388,36 +2156,7 @@ export default function ModelHubPage() {
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.kd0251a96")} description={t("app.admin.dashboard.model.hub.page.k79d4e8e7")} variant="list" allowOverflow>
                 {visibleProviders.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k8d04b4ed")} description={t("app.admin.dashboard.model.hub.page.k9e469730")}/>) : (<div className="admin-entity-grid">
-                        {visibleProviders.map((provider) => (<ProviderCard key={provider.id} provider={provider} health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null} onEdit={() => {
-                    const inferredPreset = inferPlatformLoginPreset({
-                        providerType: provider.type,
-                        apiStandard: provider.apiStandard,
-                        baseUrl: provider.baseUrl,
-                        oauthPath: provider.oauthPath,
-                        code: provider.code,
-                        name: provider.name,
-                    });
-                    const inferredLocalPreset = inferLocalBackendPreset({
-                        providerType: provider.type,
-                        baseUrl: provider.baseUrl,
-                        preset: provider.localBackendPreset,
-                        code: provider.code,
-                        name: provider.name,
-                    });
-                    setEditingProvider(provider);
-                    setProviderType(provider.type || "API");
-                    setProviderCredentialMode(provider.type === "PLATFORM" ? "oauthFile" : (provider.credentialMode || "apiKey"));
-                    setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui") || "openai");
-                    setProviderBaseUrl(provider.baseUrl || "");
-                    const nextChannels = editableProviderChannels(provider, provider.apiStandard || "openai", provider.baseUrl || "");
-                    setProviderChannels(nextChannels);
-                    setProviderDefaultChannelId(provider.defaultChannelId || nextChannels[0]?.id || "default");
-                    setProviderApiKey(provider.apiKey || "");
-                    setProviderOauthPath(provider.oauthPath || "");
-                    setPlatformLoginPreset(inferredPreset);
-                    setLocalBackendPreset(inferredLocalPreset);
-                    setIsProviderDialogOpen(true);
-                }} onDelete={handleDeleteProvider} onToggle={async (id, enabled) => {
+                        {visibleProviders.map((provider) => (<ProviderCard key={provider.id} provider={provider} health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null} onEdit={() => { setEditingProvider(provider); setIsProviderDialogOpen(true); }} onDelete={handleDeleteProvider} onToggle={async (id, enabled) => {
                     await fetch(`/api/providers/${id}`, {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
@@ -2462,34 +2201,7 @@ export default function ModelHubPage() {
                         {filteredModels.map((model) => {
                             const modelRef = model.modelRef || model.id;
                             const controlMeta = controlModelsById.get(modelRef) || null;
-                            return (<ModelCardV2 key={modelRef} model={model} controlMeta={controlMeta} isDefault={modelRef === defaultModelRef} connectionStatus={connectionStatusMap[modelRef] || null} reasoningRepairStatus={reasoningRepairStatusMap[modelRef] || null} onEdit={() => {
-                    setEditingModel(model);
-                    setModelType(model.type || "TEXT");
-                    const storedMediaLimits = model.mediaLimits || {};
-                    const controlMediaLimits = controlMeta?.mediaLimits || {};
-                    const capabilityModes = Object.prototype.hasOwnProperty.call(storedMediaLimits, "capabilityModes")
-                        ? storedMediaLimits.capabilityModes
-                        : controlMediaLimits.capabilityModes;
-                    const operationCapabilityProfiles = Object.prototype.hasOwnProperty.call(storedMediaLimits, "operationCapabilityProfiles")
-                        ? storedMediaLimits.operationCapabilityProfiles
-                        : controlMediaLimits.operationCapabilityProfiles;
-                    setMediaCapabilityModes(resolveMediaCapabilityModes(
-                        model.type || "TEXT",
-                        capabilityModes,
-                        Array.isArray(storedMediaLimits.operationKinds)
-                            ? storedMediaLimits.operationKinds
-                            : Array.isArray(controlMediaLimits.operationKinds)
-                                ? controlMediaLimits.operationKinds
-                                : model.operationKinds || [model.endpointBinding?.operationKind],
-                        operationCapabilityProfiles,
-                    ));
-                    setModelProviderId(model.providerId);
-                    setModelChannelId(String(model.endpointBinding?.channelId || ""));
-                    setModelWireProtocol(String(model.endpointBinding?.wireProtocol || "") as ModelWireProtocol);
-                    setRerankApiFlavor(model.rerankApiFlavor || "generic");
-                    setComfyWorkflow(comfyWorkflowDraft(model.mediaLimits));
-                    setIsModelDialogOpen(true);
-                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
+                            return (<ModelCardV2 key={modelRef} model={model} controlMeta={controlMeta} isDefault={modelRef === defaultModelRef} connectionStatus={connectionStatusMap[modelRef] || null} reasoningRepairStatus={reasoningRepairStatusMap[modelRef] || null} onEdit={() => { setEditingModel(model); setIsModelDialogOpen(true); }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
                         })}
                     </div>)}
             </ConfigCard>
@@ -2505,537 +2217,32 @@ export default function ModelHubPage() {
 
             {hubEnvelope ? (<SourceMetaRow source={hubEnvelope.source} savePath={hubEnvelope.savePath} reloadRequired={hubEnvelope.reloadRequired}/>) : null}
 
-            <Dialog open={isProviderDialogOpen} onOpenChange={open => { if (!entitySaveBusy.current) { setIsProviderDialogOpen(open); if (open) setEntitySaveError(""); } }}>
-                <DialogContent guardUnsaved className="admin-editor-modal sm:max-w-2xl">
-                    <DialogHeader>
-                        <DialogTitle>{editingProvider ? t("app.admin.dashboard.model.hub.page.k03d9a3c5") : t("app.admin.dashboard.model.hub.page.k9e31d9ed")}</DialogTitle>
-                    </DialogHeader>
-                    <form key={editingProvider?.id || "new"} onSubmit={handleSaveProvider} className="admin-editor-form"><fieldset disabled={entitySaving} className="admin-editor-body space-y-4">
-                        <div className="space-y-2">
-                            <Label htmlFor="provider-name">{t("app.admin.dashboard.model.hub.page.kd00c0239")}</Label>
-                            <Input id="provider-name" name="name" defaultValue={editingProvider?.name || ""} required/>
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="provider-code">{t("app.admin.dashboard.model.hub.page.ke46386e9")}</Label>
-                            <Input id="provider-code" name="code" defaultValue={editingProvider?.code || ""} required/>
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="provider-type">{t("app.admin.dashboard.model.hub.page.k8de6f532")}</Label>
-                            <input type="hidden" name="type" value={providerType}/>
-                            <Select value={providerType} onValueChange={(value: AIProvider["type"]) => {
-            setProviderType(value);
-            if (value === "PLATFORM") {
-                const preset = editingProvider
-                    ? inferPlatformLoginPreset({
-                        providerType: value,
-                        apiStandard: providerApiStandard,
-                        baseUrl: providerBaseUrl,
-                        oauthPath: providerOauthPath,
-                        code: editingProvider.code,
-                        name: editingProvider.name,
-                    })
-                    : platformLoginPreset;
-                const config = getPlatformLoginPresetConfig(preset);
-                setProviderCredentialMode("oauthFile");
-                setPlatformLoginPreset(preset);
-                setProviderApiStandard(config.apiStandard);
-                setProviderBaseUrl(config.baseUrl);
-                setProviderOauthPath(providerOauthPath || config.oauthPath);
-                setProviderApiKey("");
-            }
-            else if (value === "LOCAL") {
-                const config = getLocalBackendPresetConfig(localBackendPreset);
-                setProviderCredentialMode("apiKey");
-                setProviderApiStandard(config.apiStandard);
-                setProviderBaseUrl(config.baseUrl);
-                setProviderApiKey(config.apiKey);
-                setProviderOauthPath("");
-            }
-        }}>
-                                    <SelectTrigger id="provider-type"><SelectValue>{resolveAdminLabel(t, "providerType", providerType)}</SelectValue></SelectTrigger>
-                                <SelectContent>
-                                    {getAdminOptions("providerType").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        {platformProviderSelected ? (<>
-                                <input type="hidden" name="platformLoginPreset" value={platformLoginPreset}/>
-                                <div className="space-y-2">
-                                    <Label htmlFor="platform-login-preset">{t("app.admin.dashboard.model.hub.page.k1f6f2bda")}</Label>
-                                    <Select value={platformLoginPreset} onValueChange={(value: PlatformLoginPreset) => {
-                const config = getPlatformLoginPresetConfig(value);
-                setPlatformLoginPreset(value);
-                setProviderCredentialMode("oauthFile");
-                setProviderApiStandard(config.apiStandard);
-                setProviderBaseUrl(config.baseUrl);
-                setProviderOauthPath(config.oauthPath);
-            }}>
-                                        <SelectTrigger id="platform-login-preset"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            {Object.values(PLATFORM_LOGIN_PRESETS).map((preset) => (<SelectItem key={preset.id} value={preset.id}>
-                                                    {preset.label}
-                                                </SelectItem>))}
-                                        </SelectContent>
-                                    </Select>
-                                    <p className="text-xs text-muted-foreground">{activePlatformPreset.description}</p>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="provider-api-standard-readonly">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
-                                    <Input id="provider-api-standard-readonly" value={resolveAdminLabel(t, "providerApiStandard", providerApiStandard)} readOnly/>
-                                    <input type="hidden" name="apiStandard" value={providerApiStandard}/>
-                                </div>
-                            </>) : providerType === "LOCAL" ? (<>
-                                <input type="hidden" name="localBackendPreset" value={localBackendPreset}/>
-                                <div className="space-y-2">
-                                    <Label htmlFor="provider-local-preset">{t("app.admin.dashboard.model.hub.page.kd683ee7e")}</Label>
-                                    <Select value={localBackendPreset} onValueChange={(value: LocalBackendPreset) => {
-                const config = getLocalBackendPresetConfig(value);
-                setLocalBackendPreset(value);
-                setProviderCredentialMode("apiKey");
-                setProviderApiStandard(config.apiStandard);
-                setProviderBaseUrl(config.baseUrl);
-                setProviderApiKey(config.apiKey);
-            }}>
-                                        <SelectTrigger id="provider-local-preset"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            {Object.values(LOCAL_BACKEND_PRESETS).map((preset) => (<SelectItem key={preset.id} value={preset.id}>
-                                                    {preset.label}
-                                                </SelectItem>))}
-                                        </SelectContent>
-                                    </Select>
-                                    <p className="text-xs text-muted-foreground">{t(localBackendConfig.description)}</p>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="provider-api-standard-readonly">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
-                                    <Input id="provider-api-standard-readonly" value={t("app.admin.dashboard.model.hub.page.kdab0f774")} readOnly/>
-                                    <input type="hidden" name="apiStandard" value={providerApiStandard}/>
-                                </div>
-                            </>) : (<div className="space-y-3 rounded-xl border border-border/70 p-3">
-                                <div className="flex items-center justify-between gap-3">
-                                    <div>
-                                        <Label>{t("app.admin.dashboard.model.hub.channel.title")}</Label>
-                                        <p className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.channel.help")}</p>
-                                    </div>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => {
-                                            const used = new Set(providerChannels.map((channel) => channel.id));
-                                            const preset = PROVIDER_CHANNEL_PRESETS.find((item) => !used.has(item.id)) || PROVIDER_CHANNEL_PRESETS[0];
-                                            const suffix = providerChannels.filter((channel) => channel.id.startsWith(preset.id)).length + 1;
-                                            setProviderChannels((current) => [...current, createProviderChannel(preset.apiStandard, "", used.has(preset.id) ? `${preset.id}-${suffix}` : preset.id)]);
-                                        }}
-                                    >
-                                        <Plus className="mr-1 h-3.5 w-3.5" />{t("app.admin.dashboard.model.hub.channel.add")}
-                                    </Button>
-                                </div>
-                                {providerChannels.map((channel, index) => (
-                                    <div key={`${channel.id}-${index}`} className="grid gap-2 rounded-lg border border-border/60 bg-muted/10 p-2 md:grid-cols-2">
-                                        <div className="flex items-center gap-2 md:col-span-2">
-                                            <input
-                                                type="radio"
-                                                name="default-provider-channel"
-                                                checked={providerDefaultChannelId === channel.id}
-                                                onChange={() => setProviderDefaultChannelId(channel.id)}
-                                                aria-label={t("app.admin.dashboard.model.hub.channel.default")}
-                                            />
-                                            <span className="text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.channel.default")}</span>
-                                            {providerChannels.length > 1 ? (
-                                                <Button
-                                                    type="button"
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    className="ml-auto h-7"
-                                                    onClick={() => {
-                                                        const next = providerChannels.filter((_, itemIndex) => itemIndex !== index);
-                                                        setProviderChannels(next);
-                                                        if (providerDefaultChannelId === channel.id) setProviderDefaultChannelId(next[0]?.id || "");
-                                                    }}
-                                                >
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </Button>
-                                            ) : null}
-                                        </div>
-                                        <Input
-                                            value={channel.id}
-                                            onChange={(event) => {
-                                                const previousId = channel.id;
-                                                const nextId = event.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, "");
-                                                setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, id: nextId } : item));
-                                                if (providerDefaultChannelId === previousId) setProviderDefaultChannelId(nextId);
-                                            }}
-                                            placeholder="openai"
-                                            aria-label={t("app.admin.dashboard.model.hub.channel.id")}
-                                        />
-                                        <Input
-                                            value={channel.label}
-                                            onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item))}
-                                            placeholder={t("app.admin.dashboard.model.hub.channel.label")}
-                                        />
-                                        <select
-                                            value={channel.apiStandard}
-                                            onChange={(event) => {
-                                                const preset = PROVIDER_CHANNEL_PRESETS.find((item) => item.apiStandard === event.target.value) || PROVIDER_CHANNEL_PRESETS[0];
-                                                setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? {
-                                                    ...item,
-                                                    apiStandard: preset.apiStandard,
-                                                    wireProtocols: [...preset.wireProtocols],
-                                                    defaultWireProtocol: preset.defaultWireProtocol,
-                                                } : item));
-                                            }}
-                                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
-                                        >
-                                            {PROVIDER_CHANNEL_PRESETS.map((preset) => <option key={preset.id} value={preset.apiStandard}>{t(preset.labelKey)}</option>)}
-                                        </select>
-                                        <select
-                                            value={channel.defaultWireProtocol}
-                                            disabled={channel.wireProtocols.length === 0}
-                                            onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, defaultWireProtocol: event.target.value } : item))}
-                                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground disabled:opacity-60"
-                                        >
-                                            {channel.wireProtocols.length === 0 ? <option value="">{t("app.admin.dashboard.model.hub.channel.noWireProtocol")}</option> : null}
-                                            {MODEL_WIRE_PROTOCOLS.filter((protocol) => channel.wireProtocols.includes(protocol.id)).map((protocol) => <option key={protocol.id} value={protocol.id}>{t(protocol.labelKey)}</option>)}
-                                        </select>
-                                        <Input
-                                            className="md:col-span-2"
-                                            value={channel.baseUrl}
-                                            onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, baseUrl: event.target.value } : item))}
-                                            placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}
-                                        />
-                                        {channel.apiStandard === "anthropic" ? (
-                                            <p className={`md:col-span-2 text-xs ${/\/v1\/?$/i.test(channel.baseUrl.trim()) ? "text-destructive" : "text-muted-foreground"}`}>
-                                                {t("app.admin.dashboard.model.hub.channel.anthropicBaseUrlHelp")}
-                                            </p>
-                                        ) : null}
-                                        {channel.apiStandard === "gemini" ? (
-                                            <Input
-                                                className="md:col-span-2"
-                                                value={channel.apiVersion}
-                                                onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, apiVersion: event.target.value } : item))}
-                                                placeholder={t("app.admin.dashboard.model.hub.channel.apiVersionPlaceholder")}
-                                            />
-                                        ) : null}
-                                    </div>
-                                ))}
-                            </div>)}
-                        {providerType !== "API" ? (<div className="space-y-2">
-                            <Label htmlFor="provider-base-url">{t("app.admin.dashboard.model.hub.page.k8331921c")}</Label>
-                            <Input
-                                id="provider-base-url"
-                                name="baseUrl"
-                                value={providerBaseUrl}
-                                onChange={(event) => {
-                                    const nextValue = event.target.value;
-                                    setProviderBaseUrl(nextValue);
-                                    if (isXiaomiAnthropicBaseUrl(nextValue) && providerApiStandard !== "anthropic") {
-                                        setProviderApiStandard("anthropic");
-                                    }
-                                }}
-                            />
-                            {isXiaomiAnthropicBaseUrl(providerBaseUrl) ? (
-                                <p className="text-xs text-amber-600">
-                                    {t("app.admin.dashboard.model.hub.catalog.manualAnthropicBaseUrlHint")}
-                                </p>
-                            ) : null}
-                        </div>) : null}
-                        {!platformProviderSelected ? (<div className="space-y-2">
-                                <Label htmlFor="provider-credential-mode">{t("app.admin.dashboard.model.hub.page.k1947a36f")}</Label>
-                                <input type="hidden" name="credentialMode" value={providerCredentialMode}/>
-                                <Select value={providerCredentialMode} onValueChange={(value: "apiKey" | "oauthFile") => setProviderCredentialMode(value)}>
-                                    <SelectTrigger id="provider-credential-mode"><SelectValue>{resolveAdminLabel(t, "providerCredentialMode", providerCredentialMode)}</SelectValue></SelectTrigger>
-                                    <SelectContent>
-                                        {getAdminOptions("providerCredentialMode").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                    </SelectContent>
-                                </Select>
-                            </div>) : (<input type="hidden" name="credentialMode" value="oauthFile"/>)}
-                        {platformProviderSelected || providerCredentialMode === "oauthFile" ? (<div className="space-y-2">
-                                <Label htmlFor="provider-oauth-path">{t("app.admin.dashboard.model.hub.page.k686313b2")}</Label>
-                                <div className="flex items-center rounded-xl border border-input bg-background focus-within:ring-2 focus-within:ring-ring">
-                                    <span className="shrink-0 border-r border-border/60 px-3 text-sm text-muted-foreground">oauth:</span>
-                                        <Input id="provider-oauth-path" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath}/>
-                                    </div>
-                                <p className={`text-xs ${(platformProviderSelected ? activePlatformPreset.supportState === "preset-only" : providerApiStandard === "gemini") ? "text-amber-600" : "text-muted-foreground"}`}>{oauthHint}</p>
-                            </div>) : (<div className="space-y-2">
-                            <Label htmlFor="provider-api-key">{t("admin.enums.providerCredentialMode.apiKey")}</Label>
-                                <Input id="provider-api-key" name="apiKey" type="password" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}/>
-                                {providerType === "LOCAL" ? (<p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>) : null}
-                            </div>)}
-                        </fieldset><div className="admin-editor-footer">{entitySaveError ? <p role="alert" className="text-sm text-destructive">{entitySaveError}</p> : null}<Button type="submit" disabled={entitySaving} className="w-full">{t("app.admin.dashboard.model.hub.page.k93b84c67")}</Button></div>
-                    </form>
-                </DialogContent>
-            </Dialog>
+            {isProviderDialogOpen && (
+                <ProviderEditorDialog
+                    key={editingProvider?.id || "new"}
+                    target={editingProvider}
+                    onSaved={async () => {
+                        setIsProviderDialogOpen(false);
+                        setEditingProvider(null);
+                        await fetchData(true);
+                    }}
+                    onClose={() => setIsProviderDialogOpen(false)}
+                />
+            )}
 
-            <Dialog open={isModelDialogOpen} onOpenChange={open => { if (!entitySaveBusy.current) { setIsModelDialogOpen(open); if (open) setEntitySaveError(""); } }}>
-                <DialogContent guardUnsaved className="admin-editor-modal">
-                    <DialogHeader>
-                        <DialogTitle>{editingModel ? t("app.admin.dashboard.model.hub.page.k37053cf7") : t("app.admin.dashboard.model.hub.page.k82b1063c")}</DialogTitle>
-                    </DialogHeader>
-                    <form onSubmit={handleSaveModel} className="admin-editor-form"><fieldset disabled={entitySaving} className="admin-editor-body space-y-4">
-                        {providers.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k5ca95d1d")} description={t("app.admin.dashboard.model.hub.page.k4119e026")}/>) : null}
-                        <div className="space-y-2">
-                            <Label htmlFor="model-provider">{t("app.admin.dashboard.model.hub.page.kc9371614")}</Label>
-                            <input type="hidden" name="providerId" value={modelProviderId}/>
-                            <Select value={modelProviderId} onValueChange={(value) => {
-                                const provider = providers.find((item) => item.id === value);
-                                const channel = provider?.channels?.find((item) => item.id === provider.defaultChannelId) || provider?.channels?.[0];
-                                setModelProviderId(value);
-                                setModelChannelId(channel?.id || "");
-                                setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
-                            }}>
-                                <SelectTrigger id="model-provider"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                    {providers.map((provider) => (<SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="model-channel">{t("app.admin.dashboard.model.hub.channel.modelChannel")}</Label>
-                            <select
-                                id="model-channel"
-                                name="channelId"
-                                value={modelChannelId || selectedModelChannel?.id || ""}
-                                onChange={(event) => {
-                                    const channel = selectedModelProvider?.channels?.find((item) => item.id === event.target.value);
-                                    setModelChannelId(event.target.value);
-                                    setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
-                                }}
-                                disabled={!selectedModelProvider?.channels?.length}
-                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-                            >
-                                {(selectedModelProvider?.channels || []).map((channel) => (
-                                    <option key={channel.id} value={channel.id}>
-                                        {channel.label} 路 {channel.apiStandard} 路 {channel.baseUrl}
-                                    </option>
-                                ))}
-                            </select>
-                            <p className="text-xs leading-5 text-muted-foreground">
-                                {t("app.admin.dashboard.model.hub.channel.modelChannelHelp")}
-                            </p>
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="model-model-id">{t("app.admin.dashboard.model.hub.page.k8dbca6d6")}</Label>
-                            <Input id="model-model-id" name="modelId" defaultValue={editingModel?.modelId || ""} required/>
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="model-type">{t("app.admin.dashboard.model.hub.page.k0bce4283")}</Label>
-                            <input type="hidden" name="type" value={modelType}/>
-                            <Select value={modelType} onValueChange={(value) => {
-                                setModelType(value);
-                                setMediaCapabilityModes(resolveMediaCapabilityModes(value, undefined, []));
-                            }}>
-                                <SelectTrigger id="model-type"><SelectValue>{resolveAdminLabel(t, "modelType", modelType)}</SelectValue></SelectTrigger>
-                                <SelectContent>
-                                    {["TEXT", "MULTIMODAL", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D", "MEDIA", "EMBEDDING", "RERANK"].map((value) => <SelectItem key={value} value={value}>{resolveAdminLabel(t, "modelType", value)}</SelectItem>)}
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        {modelType === "RERANK" ? (<div className="space-y-2">
-                                <Label htmlFor="model-rerank-flavor">{t("app.admin.dashboard.model.hub.page.k51b60583")}</Label>
-                                <input type="hidden" name="rerankApiFlavor" value={rerankApiFlavor}/>
-                                <Select value={rerankApiFlavor} onValueChange={setRerankApiFlavor}>
-                                    <SelectTrigger id="model-rerank-flavor"><SelectValue>{resolveAdminLabel(t, "rerankApiFlavor", rerankApiFlavor)}</SelectValue></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="generic">{resolveAdminLabel(t, "rerankApiFlavor", "generic")}</SelectItem>
-                                        <SelectItem value="vllm">{resolveAdminLabel(t, "localBackendPreset", "vllm")}</SelectItem>
-                                        <SelectItem value="nexa">{resolveAdminLabel(t, "localBackendPreset", "nexa")}</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                                <p className="text-xs text-muted-foreground">
-                                    {t("app.admin.dashboard.model.hub.page.kfaf657c9")}
-                                </p>
-                            </div>) : null}
-                        {modelType === "TEXT" || modelType === "MULTIMODAL" || modelType === "VISION" || modelType === "CHAT" ? (
-                            <div className="space-y-4">
-                                <div className="grid gap-4 md:grid-cols-2">
-                                <div className="space-y-2">
-                                    <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
-                                    <Input id="model-context-window" name="contextWindow" type="number" min={1} step={1} defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.contextWindowPlaceholder")}/>
-                                </div>
-                                <OutputTokenBudgetField key={editingModel?.id || "new"} id="model-max-tokens" model={editingModel} />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="model-wire-protocol">{t("app.admin.dashboard.model.hub.page.wireProtocol")}</Label>
-                                    <select
-                                        id="model-wire-protocol"
-                                        name="wireProtocol"
-                                        value={modelWireProtocol}
-                                        onChange={(event) => setModelWireProtocol(event.target.value as ModelWireProtocol)}
-                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                    >
-                                        <option value="">{t("app.admin.dashboard.model.hub.page.wireProtocolAuto")}</option>
-                                        {MODEL_WIRE_PROTOCOLS.filter((protocol) => !selectedModelChannel?.wireProtocols?.length || selectedModelChannel.wireProtocols.includes(protocol.id)).map((protocol) => (
-                                            <option key={protocol.id} value={protocol.id}>{t(protocol.labelKey)}</option>
-                                        ))}
-                                    </select>
-                                    <p className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.model.hub.page.wireProtocolHelp")}</p>
-                                </div>
-                            </div>
-                        ) : RETRIEVAL_MODEL_TYPES.has(modelType) ? (
-                            <div className="grid gap-4 md:grid-cols-2">
-                                <div className="space-y-2">
-                                    <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.retrievalInputWindow")}</Label>
-                                    <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.retrievalInputWindowPlaceholder")}/>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.retrievalMaxTokens")}</Label>
-                                    <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.retrievalMaxTokensPlaceholder")}/>
-                                </div>
-                                <p className="md:col-span-2 text-xs text-muted-foreground">
-                                    {t("app.admin.dashboard.model.hub.page.retrievalInputWindowHelp")}
-                                </p>
-                            </div>
-                        ) : MEDIA_MODEL_TYPES.has(modelType) ? (
-                            <div className="space-y-4">
-                                <AdminHoverInfo
-                                    content={t("app.admin.dashboard.model.hub.catalog.mediaModelNotice")}
-                                    panelClassName="text-xs leading-5"
-                                >
-                                    <Badge variant="secondary">
-                                        {t("app.admin.dashboard.model.hub.catalog.mediaModelNoticeTitle")}
-                                    </Badge>
-                                </AdminHoverInfo>
-                                {modelType !== "WORKFLOW" ? <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label htmlFor="model-endpoint-path">{t("app.admin.dashboard.model.hub.page.manualEndpointPath")}</Label>
-                                        <Input
-                                            id="model-endpoint-path"
-                                            name="endpointPath"
-                                            defaultValue={String(editingModel?.endpointBinding?.endpointPath || editingModel?.mediaLimits?.endpointPath || "")}
-                                            placeholder="images/generations"
-                                        />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label htmlFor="model-provider-model-id">{t("app.admin.dashboard.model.hub.page.manualProviderModelId")}</Label>
-                                        <Input
-                                            id="model-provider-model-id"
-                                            name="providerModelId"
-                                            defaultValue={String(editingModel?.endpointBinding?.providerModelId || editingModel?.mediaLimits?.providerModelId || "")}
-                                            placeholder="gpt-image-2"
-                                        />
-                                    </div>
-                                </div> : null}
-                                {modelType === "WORKFLOW" ? (
-                                    <div className="space-y-2">
-                                        <Label>{t("app.admin.dashboard.model.hub.page.mediaAdapter")}</Label>
-                                        <input type="hidden" name="adapter" value="comfyui_workflow" />
-                                        <div className="flex h-10 items-center rounded-md border border-input bg-muted/30 px-3 text-sm">ComfyUI Workflow</div>
-                                    </div>
-                                ) : <div className="space-y-2">
-                                    <Label htmlFor="model-media-adapter">{t("app.admin.dashboard.model.hub.page.mediaAdapter")}</Label>
-                                    <select
-                                        id="model-media-adapter"
-                                        name="adapter"
-                                        defaultValue={String(editingModel?.endpointBinding?.adapter || editingModel?.mediaLimits?.adapter || "")}
-                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                    >
-                                        <option value="">{t("app.admin.dashboard.model.hub.page.mediaAdapterUnbound")}</option>
-                                        <option value="openai_images">OpenAI Images</option>
-                                        <option value="agnes_images">Agnes Images</option>
-                                        <option value="agnes_video">Agnes Video</option>
-                                        <option value="volcengine_ark">Volcengine Ark</option>
-                                        <option value="dashscope">Alibaba Cloud Model Studio</option>
-                                        <option value="comfyui_workflow">ComfyUI Workflow</option>
-                                        <option value="minimax_video">MiniMax Video</option>
-                                        <option value="minimax_tts">MiniMax Speech</option>
-                                        <option value="minimax_music">MiniMax Music</option>
-                                        <option value="mureka_music">Mureka Music</option>
-                                        <option value="v8_audio_tts">V8OS System Speech</option>
-                                        <option value="tencent_hunyuan_3d">Tencent Hunyuan 3D</option>
-                                        <option value="catalog_only">{t("app.admin.dashboard.model.hub.page.mediaAdapterCatalogOnly")}</option>
-                                    </select>
-                                    <p className="text-xs leading-5 text-muted-foreground">
-                                        {t("app.admin.dashboard.model.hub.page.mediaAdapterHelp")}
-                                    </p>
-                                </div>}
-                                {getMediaCapabilityOptions(modelType).length > 0 ? (
-                                    <div className="space-y-2">
-                                        <div className="flex items-center justify-between gap-3">
-                                            <Label>{t("app.admin.dashboard.model.hub.capability.title")}</Label>
-                                            <span className="text-[11px] text-muted-foreground">
-                                                {t("app.admin.dashboard.model.hub.capability.selectedCount", { count: mediaCapabilityModes.length })}
-                                            </span>
-                                        </div>
-                                        <div className="flex flex-wrap gap-1.5 rounded-lg border border-border/70 bg-muted/20 p-2">
-                                            {getMediaCapabilityOptions(modelType).map((option) => {
-                                                const checked = mediaCapabilityModes.includes(option.id);
-                                                const isLastSelected = checked && mediaCapabilityModes.length === 1;
-                                                return (
-                                                    <label
-                                                        key={option.id}
-                                                        className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors ${checked ? "border-primary/40 bg-primary/10 text-foreground" : "border-border/70 bg-background text-muted-foreground hover:text-foreground"} ${isLastSelected ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
-                                                    >
-                                                        <Checkbox
-                                                            checked={checked}
-                                                            disabled={isLastSelected}
-                                                            onCheckedChange={(nextChecked) => {
-                                                                setMediaCapabilityModes((current) => nextChecked === true
-                                                                    ? Array.from(new Set([...current, option.id]))
-                                                                    : current.filter((item) => item !== option.id));
-                                                            }}
-                                                            className="h-3.5 w-3.5 rounded-[3px]"
-                                                        />
-                                                        <span>{t(option.labelKey)}</span>
-                                                    </label>
-                                                );
-                                            })}
-                                        </div>
-                                        <input type="hidden" name="operationKind" value={deriveMediaOperationKinds(modelType, mediaCapabilityModes)[0] || ""} />
-                                        <p className="text-xs leading-5 text-muted-foreground">
-                                            {t("app.admin.dashboard.model.hub.capability.help")}
-                                        </p>
-                                    </div>
-                                ) : null}
-                                {modelType === "WORKFLOW" ? (
-                                    <div className="space-y-4 rounded-lg border border-border/70 p-3">
-                                        <div className="space-y-2">
-                                            <Label htmlFor="comfy-workflow-file">{t("app.admin.dashboard.model.hub.comfy.apiWorkflow")}</Label>
-                                            <Input
-                                                id="comfy-workflow-file"
-                                                type="file"
-                                                accept="application/json,.json"
-                                                onChange={async (event) => {
-                                                    const file = event.target.files?.[0];
-                                                    if (!file) return;
-                                                    try {
-                                                        const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
-                                                        const prompt = parsed.prompt && typeof parsed.prompt === "object" ? parsed.prompt : parsed;
-                                                        if (!prompt || Array.isArray(prompt) || typeof prompt !== "object") throw new Error("invalid");
-                                                        setComfyWorkflow((current) => ({ ...current, promptJson: JSON.stringify(prompt, null, 2) }));
-                                                    } catch {
-                                                        toast({
-                                                            variant: "destructive",
-                                                            title: t("app.admin.dashboard.model.hub.comfy.workflowInvalidTitle"),
-                                                            description: t("app.admin.dashboard.model.hub.comfy.workflowInvalid"),
-                                                        });
-                                                    }
-                                                }}
-                                            />
-                                            <Textarea
-                                                value={comfyWorkflow.promptJson}
-                                                onChange={(event) => setComfyWorkflow((current) => ({ ...current, promptJson: event.target.value }))}
-                                                className="max-h-48 min-h-24 font-mono text-xs"
-                                                aria-label={t("app.admin.dashboard.model.hub.comfy.apiWorkflowJson")}
-                                            />
-                                        </div>
-                                        <div className="grid gap-3 md:grid-cols-2">
-                                            <Input value={comfyWorkflow.imageNodeId} onChange={(event) => setComfyWorkflow((current) => ({ ...current, imageNodeId: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.imageNodeId")} />
-                                            <Input value={comfyWorkflow.imageInputName} onChange={(event) => setComfyWorkflow((current) => ({ ...current, imageInputName: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.imageInputName")} />
-                                            <Input value={comfyWorkflow.videoNodeId} onChange={(event) => setComfyWorkflow((current) => ({ ...current, videoNodeId: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.videoNodeId")} />
-                                            <Input value={comfyWorkflow.videoInputName} onChange={(event) => setComfyWorkflow((current) => ({ ...current, videoInputName: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.videoInputName")} />
-                                            <Input value={comfyWorkflow.outputNodeId} onChange={(event) => setComfyWorkflow((current) => ({ ...current, outputNodeId: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.outputNodeId")} />
-                                            <Input value={comfyWorkflow.outputField} onChange={(event) => setComfyWorkflow((current) => ({ ...current, outputField: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.outputField")} />
-                                        </div>
-                                    </div>
-                                ) : null}
-                                <p className="text-xs leading-5 text-muted-foreground">
-                                    {t("app.admin.dashboard.model.hub.page.manualBindingHelp")}
-                                </p>
-                            </div>
-                        ) : null}
-                        </fieldset><div className="admin-editor-footer">{entitySaveError ? <p role="alert" className="text-sm text-destructive">{entitySaveError}</p> : null}<Button type="submit" disabled={entitySaving} className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button></div>
-                    </form>
-                </DialogContent>
-            </Dialog>
+            {isModelDialogOpen && (
+                <ModelEditorDialog
+                    key={editingModel ? modelRefFor(editingModel) : "new"}
+                    target={editingModel}
+                    providers={providers}
+                    controlMeta={editingModel ? controlModelsById.get(modelRefFor(editingModel)) || controlModelsById.get(editingModel.id) || null : null}
+                    onSaved={async () => {
+                        setIsModelDialogOpen(false);
+                        setEditingModel(null);
+                        await fetchData(true);
+                    }}
+                    onClose={() => setIsModelDialogOpen(false)}
+                />
+            )}
         </AdminPageShell>);
 }

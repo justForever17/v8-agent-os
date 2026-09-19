@@ -11,7 +11,13 @@ function readText(relativePath) {
 
 function modelHubSource() {
   return readText("src/app/admin/(dashboard)/model-hub/page.tsx")
-    + "\n" + readText("src/lib/model-hub/model-hub-domain.ts")
+    + "\n" + readText("src/lib/model-hub/catalog.ts")
+    + "\n" + readText("src/lib/model-hub/channels.ts")
+    + "\n" + readText("src/lib/model-hub/audio.ts")
+    + "\n" + readText("src/lib/model-hub/models.ts")
+    + "\n" + readText("src/lib/model-hub/editor-drafts.ts")
+    + "\n" + readText("src/components/model-hub/ModelEditorDialog.tsx")
+    + "\n" + readText("src/components/model-hub/ProviderEditorDialog.tsx")
     + "\n" + readText("src/hooks/use-model-hub-bootstrap.ts");
 }
 
@@ -79,7 +85,7 @@ test("Manual and quick model setup share the canonical binding write surface", (
   assert.match(form, /source: "manual"/);
   const capabilityBlock = form.slice(
     form.indexOf("const CUSTOM_PROVIDER_CAPABILITIES"),
-    form.indexOf("type AudioRuntimeConfig"),
+    form.indexOf("const CATALOG_PURPOSES"),
   );
   assert.doesNotMatch(capabilityBlock, /id: "workflow"/);
   assert.match(form, /const catalogEndpointPath = String\(mediaLimits\.endpointPath \|\| mediaLimits\.requestPath/);
@@ -99,7 +105,7 @@ test("Quick connect exposes an explicit entry selector only for multi-channel pr
   assert.match(form, /\[apiCatalogProviders, isCatalogBusy, isLoading, selectedCatalogProviderId\]/);
   assert.match(form, /selectedCatalogProviderId, setSelectedCatalogProviderId\] = useState\(""\)/);
   assert.match(form, /data-testid="quick-connect-provider-trigger"/);
-  assert.match(form, /setCatalogProviders\(\(current\) => \[/);
+  assert.match(form, /rememberCatalogProvider\(persistedProvider\)/);
   assert.match(form, /setCatalogApiKey\(""\)/);
   assert.match(form, /data-testid="quick-connect-entry-trigger"/);
   assert.match(form, /Select value=\{selectedCatalogRuntime\.channelId\}/);

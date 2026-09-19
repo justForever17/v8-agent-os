@@ -1,89 +1,111 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
-import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
-import {
-    AIModel,
-    AIProvider,
-    AudioRuntimeConfig,
-    CatalogProvider,
-    mergeAudioConfig,
-    ModelHubBootstrapPayload,
-    MODEL_HUB_BOOTSTRAP_URL,
-    ModelHubPayload,
-    preserveModelOrder,
-} from "@/lib/model-hub/model-hub-domain";
-import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
+import { mergeAudioConfig, type AudioRuntimeConfig } from "@/lib/model-hub/audio";
+import type { CatalogProvider } from "@/lib/model-hub/catalog";
+import { preserveModelOrder } from "@/lib/model-hub/models";
+import type { AIModel, ModelHubBootstrapPayload } from "@/lib/model-hub/types";
+
+const BOOTSTRAP_URL = "/api/model-hub/bootstrap";
+
+function updateBootstrapCache(update: (current: ModelHubBootstrapPayload) => ModelHubBootstrapPayload) {
+    // Priming replaces the old request identity/promise, so a pre-write read
+    // cannot refill this cache or be reused after the page remounts.
+    // Keep the saved facts visible while the next visit revalidates the rest.
+    primeAdminJsonCache(BOOTSTRAP_URL, update(peekAdminJsonCache<ModelHubBootstrapPayload>(BOOTSTRAP_URL) ?? {}), 0);
+}
+
+function snapshotFrom(payload?: ModelHubBootstrapPayload) {
+    return {
+        providers: Array.isArray(payload?.providers) ? payload.providers : [],
+        models: Array.isArray(payload?.models) ? payload.models : [],
+        hubEnvelope: payload?.hubEnvelope ?? null,
+        catalogProviders: Array.isArray(payload?.catalog?.providers) ? payload.catalog.providers : [],
+        defaultModelRef: payload?.defaultModel?.modelRef || null,
+        audioConfig: payload?.audioConfig ? mergeAudioConfig(payload.audioConfig) : null,
+    };
+}
 
 export function useModelHubBootstrap() {
-    const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>(MODEL_HUB_BOOTSTRAP_URL);
-    const [providers, setProviders] = useState<AIProvider[]>(() => Array.isArray(cachedBootstrap?.providers) ? cachedBootstrap.providers : []);
-    const [models, setModels] = useState<AIModel[]>(() => Array.isArray(cachedBootstrap?.models) ? cachedBootstrap.models : []);
-    const [hubEnvelope, setHubEnvelope] = useState<ConfigRegistryEnvelope<ModelHubPayload> | null>(() => cachedBootstrap?.hubEnvelope || null);
-    const [isLoading, setIsLoading] = useState(() => !cachedBootstrap);
-    const [hasLoadedAudioConfig, setHasLoadedAudioConfig] = useState(() => Boolean(cachedBootstrap));
-    const [defaultModelRef, setDefaultModelRef] = useState<string | null>(() => {
-        const value = cachedBootstrap?.defaultModel || {};
-        return value.modelRef || value.modelId || value.value || null;
-    });
-    const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>(() => Array.isArray(cachedBootstrap?.catalog?.providers) ? cachedBootstrap.catalog.providers : []);
-    const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(() => mergeAudioConfig(cachedBootstrap?.audioConfig || null));
+    const [snapshot, setSnapshot] = useState(() => snapshotFrom(peekAdminJsonCache<ModelHubBootstrapPayload>(BOOTSTRAP_URL)));
+    const [isLoading, setIsLoading] = useState(() => !peekAdminJsonCache(BOOTSTRAP_URL));
     const [bootstrapError, setBootstrapError] = useState<string | null>(null);
-    const generationRef = useRef(0);
-    const audioDraftRevisionRef = useRef(0);
+    const [audioDraft, setAudioDraft] = useState<AudioRuntimeConfig | null>(null);
+    const generation = useRef(0);
+    const mounted = useRef(true);
 
-    const updateAudioConfig = useCallback((next: SetStateAction<AudioRuntimeConfig>) => {
-        audioDraftRevisionRef.current += 1;
-        setAudioConfig(next);
-    }, []);
-
-    const fetchData = useCallback(async (force = false, keepModelOrder = false) => {
-        const generation = ++generationRef.current;
-        const audioRevision = audioDraftRevisionRef.current;
-        if (!peekAdminJsonCache(MODEL_HUB_BOOTSTRAP_URL)) setIsLoading(true);
+    const refresh = useCallback(async (force = false, keepModelOrder = false) => {
+        if (!mounted.current) return false;
+        const request = ++generation.current;
+        if (!peekAdminJsonCache(BOOTSTRAP_URL)) setIsLoading(true);
         setBootstrapError(null);
         try {
-            const payload = await fetchAdminJson<ModelHubBootstrapPayload>(MODEL_HUB_BOOTSTRAP_URL, { force, ttlMs: 30_000 });
-            if (generation !== generationRef.current) return false;
-            setProviders(Array.isArray(payload.providers) ? payload.providers : []);
-            const nextModels = Array.isArray(payload.models) ? payload.models : [];
-            setModels((current) => keepModelOrder ? preserveModelOrder(current, nextModels) : nextModels);
-            setHubEnvelope(payload.hubEnvelope || null);
-            if (audioDraftRevisionRef.current === audioRevision) {
-                setAudioConfig(mergeAudioConfig(payload.audioConfig || null));
-            }
-            setHasLoadedAudioConfig(true);
-            const defaultData = payload.defaultModel || {};
-            setDefaultModelRef(defaultData.modelRef || defaultData.modelId || defaultData.value || null);
-            const catalogData = payload.catalog || {};
-            setCatalogProviders(Array.isArray(catalogData.providers) ? catalogData.providers : []);
+            const payload = await fetchAdminJson<ModelHubBootstrapPayload>(BOOTSTRAP_URL, { force, ttlMs: 30_000 });
+            if (!mounted.current || request !== generation.current) return false;
+            const next = snapshotFrom(payload);
+            setSnapshot(current => ({ ...next, models: keepModelOrder ? preserveModelOrder(current.models, next.models) : next.models }));
             return true;
         } catch (error) {
-            if (generation === generationRef.current) {
+            if (mounted.current && request === generation.current) {
                 setBootstrapError(error instanceof Error ? error.message : String(error || "model_hub_load_failed"));
             }
             return false;
         } finally {
-            if (generation === generationRef.current) setIsLoading(false);
+            if (mounted.current && request === generation.current) setIsLoading(false);
         }
     }, []);
 
     useEffect(() => {
-        void fetchData();
-    }, [fetchData]);
+        mounted.current = true;
+        void refresh();
+        return () => { mounted.current = false; generation.current += 1; };
+    }, [refresh]);
+
+    const updateAudio = useCallback((next: SetStateAction<AudioRuntimeConfig>) => {
+        setAudioDraft(current => typeof next === "function"
+            ? next(current ?? snapshot.audioConfig ?? mergeAudioConfig(null)) : next);
+    }, [snapshot.audioConfig]);
+
+    const acceptSavedAudio = useCallback((submitted: AudioRuntimeConfig, saved: AudioRuntimeConfig) => {
+        if (!mounted.current) return;
+        // A read started before this write is no longer an admissible snapshot.
+        generation.current += 1;
+        setIsLoading(false);
+        updateBootstrapCache(current => ({ ...current, audioConfig: saved }));
+        setSnapshot(current => ({ ...current, audioConfig: saved }));
+        setAudioDraft(current => current === submitted ? null : current);
+    }, []);
+
+    const removeModel = useCallback((model: Pick<AIModel, "id" | "providerId">) => {
+        if (!mounted.current) return;
+        generation.current += 1;
+        setIsLoading(false);
+        updateBootstrapCache(current => ({ ...current, models: current.models?.filter(item => !(item.id === model.id && item.providerId === model.providerId)) }));
+        setSnapshot(current => ({ ...current, models: current.models.filter(item => !(item.id === model.id && item.providerId === model.providerId)) }));
+    }, []);
+
+    const rememberCatalogProvider = useCallback((provider: CatalogProvider) => {
+        if (!mounted.current) return;
+        generation.current += 1;
+        setIsLoading(false);
+        updateBootstrapCache(current => ({ ...current, catalog: { ...current.catalog, providers: [provider, ...(current.catalog?.providers ?? []).filter(item => item.id !== provider.id)] } }));
+        setSnapshot(current => ({ ...current, catalogProviders: [provider, ...current.catalogProviders.filter(item => item.id !== provider.id)] }));
+    }, []);
+
+    const setDefaultModel = useCallback((modelRef: string) => {
+        if (!mounted.current) return;
+        generation.current += 1;
+        setIsLoading(false);
+        updateBootstrapCache(current => ({ ...current, defaultModel: { modelRef } }));
+        setSnapshot(current => ({ ...current, defaultModelRef: modelRef }));
+    }, []);
 
     return {
-        providers,
-        models,
-        setModels,
-        hubEnvelope,
-        isLoading,
-        hasLoadedAudioConfig,
-        audioConfig,
-        setAudioConfig: updateAudioConfig,
-        bootstrapError,
-        defaultModelRef,
-        setDefaultModelRef,
-        catalogProviders,
-        setCatalogProviders,
-        fetchData,
+        snapshot, isLoading, bootstrapError, refresh, removeModel, rememberCatalogProvider, setDefaultModel,
+        audio: {
+            value: audioDraft ?? snapshot.audioConfig ?? mergeAudioConfig(null),
+            loaded: snapshot.audioConfig !== null,
+            update: updateAudio,
+            acceptSaved: acceptSavedAudio,
+        },
     };
 }

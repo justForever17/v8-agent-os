@@ -58,6 +58,10 @@ import { PhoneBackgroundMedia } from "@/src/components/personalization/PhoneBack
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
 import {
+    PHONE_STREAM_LIFECYCLE_OPTIONS,
+    type PhoneRealtimeUiEvent,
+} from "@/src/lib/chat-stream-state";
+import {
     applyAssistantTaskProgressPatch,
     applyTodoToolEvent,
     buildAssistantPlaceholder,
@@ -73,10 +77,6 @@ import {
     TODO_TOOL_NAMES,
     type AssistantTaskProgressPatch,
 } from "@/src/lib/phone-message-reconciliation";
-import {
-    PHONE_STREAM_LIFECYCLE_OPTIONS,
-    type PhoneRealtimeUiEvent,
-} from "@/src/lib/chat-stream-state";
 import { buildApprovalFromEvent, buildAskUserInteractionFromEvent, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
 import { BoundedRuntimeEventIdentityLedger } from "@/src/lib/runtime-event-identity-ledger";
 import {
@@ -145,7 +145,6 @@ import {
     submitChatMessage,
     sendDesktopLiveCandidate,
     speechToText,
-    streamRealtimeSession,
     uploadAttachment,
     type SupervisorReasoningEffortControl,
 } from "@/src/lib/phone-api";
@@ -154,6 +153,11 @@ import { buildLocalSessionIndexNamespace, createLocalDatabase } from "@/src/serv
 import { phoneSessionKey } from "@/src/lib/phone-identity";
 import { phoneDrafts } from "@/src/lib/phone-drafts";
 import { usePhoneDraftField, usePhoneDraftStatus } from "@/src/hooks/use-phone-draft";
+import {
+    usePhoneConversationLifecycle,
+    type PhoneConversationLoadOptions,
+} from "@/src/hooks/use-phone-conversation-lifecycle";
+import { usePhoneRealtimeSession } from "@/src/hooks/use-phone-realtime-session";
 import { isSpecStageApproval, specApprovalReviewHref, specReviewDraftKey } from "@/src/lib/spec-approval-review";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -772,10 +776,6 @@ function removeUploadedWorkspaceFile(
     return current.filter((item) => buildUploadedFileStableKey(item) !== targetKey);
 }
 
-const REALTIME_SNAPSHOT_FALLBACK_GRACE_MS = 8000;
-const REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS = 2400;
-const REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS = 900;
-
 function isLegacyChatUnsupportedPayload(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
     const root = asRecord(payload);
     const snapshot = asRecord(root.snapshot);
@@ -1065,17 +1065,10 @@ export default function ChatScreen() {
     const transcriptIdentitiesRef = useRef(new Map<string, TranscriptIdentity>());
     const [transcriptIdentity, setTranscriptIdentity] = useState<TranscriptIdentity>({ transcriptRevision: 0, contextEpoch: 0 });
 
-    const realtimeAbortRef = useRef<AbortController | null>(null);
-    const realtimeConversationIdRef = useRef<string | null>(null);
-    const realtimeSubscriptionTokenRef = useRef(0);
-    const loadingConversationIdRef = useRef<string | null>(null);
-    const hydratedConversationIdRef = useRef<string | null>(null);
     const loadSupportDataRef = useRef<() => Promise<void>>(async () => undefined);
     const conversationIndexRefreshRef = useRef<Promise<void> | null>(null);
     const conversationIndexRefreshPendingRef = useRef(false);
-    const loadConversationRef = useRef<(conversationId: string, options?: { force?: boolean; token?: number; replaceTranscript?: boolean }) => Promise<boolean>>(async () => false);
-    const startRealtimeRef = useRef<(conversationId: string, transitionToken?: number) => Promise<void>>(async () => undefined);
-    const stopRealtimeRef = useRef<(options?: { preserveMessageState?: boolean }) => void>(() => undefined);
+    const sendingRef = useRef(false);
     const handleSendRef = useRef<(options?: SendComposerOptions) => Promise<void>>(async () => undefined);
     const closeDesktopPreviewRef = useRef<() => Promise<void>>(async () => undefined);
     const latestSeqRef = useRef(0);
@@ -1087,16 +1080,12 @@ export default function ChatScreen() {
         lastSeenMessageKey: string;
         lastAutoPlayedKey: string;
     }>());
-    const realtimeSnapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const realtimeSnapshotInflightRef = useRef(false);
-    const realtimeSnapshotPendingRef = useRef(false);
     const waitingApprovalRefreshAtRef = useRef(0);
     const recentlyResolvedApprovalIdsRef = useRef<Set<string>>(new Set());
     const approvalResolutionInFlightRef = useRef<Set<string>>(new Set());
     const lastMessageFingerprintRef = useRef("");
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
-    const lastRealtimeSnapshotAtRef = useRef(0);
     const seenRealtimeEventKeysRef = useRef(new BoundedRuntimeEventIdentityLedger());
     const pendingRealtimeRenderDiagnosticRef = useRef<Record<string, unknown> | null>(null);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
@@ -1113,10 +1102,6 @@ export default function ChatScreen() {
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const activeRunIdRef = useRef<string>("");
     const pendingRunAcceptanceRef = useRef(false);
-    const activeConversationIdRef = useRef<string | null>(activeConversationId);
-    const previousConversationIdRef = useRef<string | null>(null);
-    const conversationTransitionTokenRef = useRef(0);
-    const optimisticSeedConversationIdRef = useRef<string | null>(null);
     const ttsRequestIdRef = useRef(0);
     const replyPopSeenRef = useRef(new Map<string, string>());
     const replyPopPlayedRef = useRef(new Set<string>());
@@ -1129,6 +1114,79 @@ export default function ChatScreen() {
     const reduceMotion = useReducedMotion();
     const isFocused = useIsFocused();
     const appVisible = useAppVisibility();
+    const realtimeSession = usePhoneRealtimeSession<RealtimeSessionSnapshot>({
+        identityKey: sessionIndexNamespace,
+        activeConversationId,
+        enabled: status === "authenticated" && isFocused && appVisible,
+        authorizedRealtimeStream,
+        isCurrentTransition: (conversationId, token) => activeConversationIdRef.current === conversationId
+            && (token === undefined || conversationTransitionTokenRef.current === token),
+        onEvent: (eventName, payload) => handleRealtimeEvent(eventName, payload),
+        shouldKeepAlive: () => {
+            const runtimeStatus = String(runtimeRef.current.status || "").trim().toLowerCase();
+            return sendingRef.current
+                || ["running", "waiting_input", "waiting_approval"].includes(runtimeStatus);
+        },
+        resetMessageState: () => resetConversationStreamState(),
+        snapshot: {
+            getSyncCursor: (conversationId) => localDatabase.getSyncCursor(conversationId),
+            fetchSnapshot: (conversationId, signal) => getRealtimeSnapshot(
+                (path, init) => authorizedFetch(path, { ...init, signal }), conversationId,
+            ),
+            syncTimeline: (conversationId, syncCursor, signal) => getConversationTimelineSync(
+                (path, init) => authorizedFetch(path, { ...init, signal }), conversationId, syncCursor,
+            ),
+            persistSync: async (conversationId, result, isCurrent) => {
+                if (!isCurrent()) return;
+                if (result.deletions.length > 0) {
+                    await localDatabase.deleteMessages(conversationId, result.deletions);
+                }
+                if (!isCurrent()) return;
+                if (result.messages.length > 0) {
+                    await localDatabase.upsertMessages(conversationId, result.messages as ChatMessage[]);
+                }
+                if (!isCurrent()) return;
+                if (result.syncCursor) {
+                    await localDatabase.setSyncCursor(conversationId, result.syncCursor);
+                }
+            },
+            applySnapshot: (snapshot) => applyRealtimeSnapshotPayload(snapshot),
+            onFetched: (snapshot, elapsedMs) => {
+                if (!__DEV__ && !isPhonePerfAuditEnabled()) return;
+                const payloadBytes = measureJsonBytes(snapshot);
+                if (isPhonePerfAuditEnabled() || elapsedMs >= 200 || payloadBytes >= 120000) {
+                    debugPerfTrace("snapshot-fetch", {
+                        sessionId: activeConversationId, elapsedMs, payloadBytes,
+                        latestSeq: buildSnapshotSequence(snapshot),
+                        runtimeEventCount: countPayloadRuntimeEvents(snapshot),
+                        engineProfile: readPayloadProfile(snapshot),
+                    });
+                }
+            },
+        },
+    });
+    const {
+        startRealtime,
+        stopRealtime,
+        scheduleSnapshotRefresh: scheduleRealtimeSnapshotRefresh,
+        isRealtimeActive,
+        markSnapshotApplied,
+    } = realtimeSession;
+    const conversationLifecycle = usePhoneConversationLifecycle({
+        identityKey: sessionIndexNamespace,
+        status,
+        activeConversationId,
+        draftKey,
+        isFocused,
+        appVisible,
+        realtime: realtimeSession,
+        hydrate: (conversationId, options) => loadConversation(conversationId, options),
+        resetView: (preserveMessages) => {
+            seenRealtimeEventKeysRef.current.clear();
+            if (!preserveMessages) clearActiveConversationViewState();
+        },
+    });
+    const { activeConversationIdRef, conversationTransitionTokenRef } = conversationLifecycle;
     const { width, height } = useWindowDimensions();
     const safeAreaInsets = useSafeAreaInsets();
     const isLandscape = width > height;
@@ -1507,10 +1565,6 @@ export default function ChatScreen() {
         tRef.current = t;
     }, [t]);
 
-    useLayoutEffect(() => {
-        activeConversationIdRef.current = activeConversationId;
-    }, [activeConversationId]);
-
     useEffect(() => {
         messagesRef.current = messages;
         lastMessageFingerprintRef.current = buildMessagesFingerprint(messages);
@@ -1555,8 +1609,6 @@ export default function ChatScreen() {
     useEffect(() => {
         todosRef.current = todos;
     }, [todos]);
-
-    const sendingRef = useRef(sending);
 
     useEffect(() => {
         sendingRef.current = sending;
@@ -1636,7 +1688,6 @@ export default function ChatScreen() {
         latestSeqRef.current = 0;
         lastAppliedSnapshotSeqRef.current = 0;
         lastAppliedSnapshotFingerprintRef.current = "";
-        lastRealtimeSnapshotAtRef.current = 0;
         waitingApprovalRefreshAtRef.current = 0;
         setGovernanceApprovalOpen(false);
         setDismissedGovernanceApprovalId("");
@@ -1756,25 +1807,6 @@ export default function ChatScreen() {
             return next;
         });
     }, []);
-
-    const stopRealtime = useCallback((options?: { preserveMessageState?: boolean }) => {
-        realtimeSubscriptionTokenRef.current += 1;
-        if (realtimeSnapshotTimerRef.current) {
-            clearTimeout(realtimeSnapshotTimerRef.current);
-            realtimeSnapshotTimerRef.current = null;
-        }
-        realtimeSnapshotPendingRef.current = false;
-        realtimeSnapshotInflightRef.current = false;
-        if (realtimeAbortRef.current) {
-            realtimeAbortRef.current.abort();
-            realtimeAbortRef.current = null;
-        }
-        realtimeConversationIdRef.current = null;
-        lastRealtimeSnapshotAtRef.current = 0;
-        if (!options?.preserveMessageState) {
-            resetConversationStreamState();
-        }
-    }, [resetConversationStreamState]);
 
     const refreshDesktopLiveStatus = useCallback(async () => {
         if (!desktopLiveUserIntentRef.current) {
@@ -2333,11 +2365,7 @@ export default function ChatScreen() {
         await phoneDrafts.hydrate(targetDraftKey);
         phoneDrafts.compareAndSet(targetDraftKey, phoneDrafts.get(targetDraftKey).composerRevision, phoneDrafts.get(draftKey).values);
         await phoneDrafts.flush(targetDraftKey);
-        stopRealtime();
-        optimisticSeedConversationIdRef.current = createdSessionId;
-        activeConversationIdRef.current = createdSessionId;
-        hydratedConversationIdRef.current = null;
-        loadingConversationIdRef.current = null;
+        conversationLifecycle.seedConversation(createdSessionId);
         setHistoryOpen(false);
         setActiveQueryMode(null);
         setActiveQueryText("");
@@ -2472,8 +2500,7 @@ export default function ChatScreen() {
                 scopeMode: "explicit",
             });
             const createdSessionId = createdConversation.sessionId || createdConversation.id;
-            optimisticSeedConversationIdRef.current = createdSessionId;
-            activeConversationIdRef.current = createdSessionId;
+            conversationLifecycle.seedConversation(createdSessionId);
             setConversations((current) => [createdConversation, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
             setWorkspaceChooserVisible(false);
             setWorkspaceInfoOpen(false);
@@ -2516,8 +2543,7 @@ export default function ChatScreen() {
                 scopeMode: "explicit",
             });
             const createdSessionId = createdConversation.sessionId || createdConversation.id;
-            optimisticSeedConversationIdRef.current = createdSessionId;
-            activeConversationIdRef.current = createdSessionId;
+            conversationLifecycle.seedConversation(createdSessionId);
             setConversations((current) => [createdConversation, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
             setWorkspaceChooserVisible(false);
             setWorkspaceInfoOpen(false);
@@ -2809,7 +2835,7 @@ export default function ChatScreen() {
         setTranscriptIdentity(incomingIdentity);
         if (epochChanged) {
             realtimeMessageStateRef.current.pendingRuntimeEvents = [];
-            void loadConversationRef.current(sessionId, { force: true, replaceTranscript: true });
+            void loadConversation(sessionId, { force: true, replaceTranscript: true });
             return;
         }
         const profileStartedAt = getPerfNowMs();
@@ -2830,9 +2856,8 @@ export default function ChatScreen() {
             const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
             const snapshotFingerprint = buildMessagesFingerprint(normalizedSnapshot);
             const snapshotOlderThanApplied = snapshotSeq > 0 && snapshotSeq < lastAppliedSnapshotSeqRef.current;
-            lastRealtimeSnapshotAtRef.current = Date.now();
-
             if (snapshotOlderThanApplied && snapshotFingerprint === lastAppliedSnapshotFingerprintRef.current) {
+                markSnapshotApplied();
                 applyConversationProjection(payload);
                 return;
             }
@@ -2848,7 +2873,7 @@ export default function ChatScreen() {
                     && messageConversationIdRef.current === targetConversationId
                     && (
                         sendingRef.current
-                        || optimisticSeedConversationIdRef.current === targetConversationId
+                        || conversationLifecycle.isSeeded(targetConversationId)
                         || hasPreservableLocalAssistantState(current)
                     )
                 );
@@ -2886,9 +2911,8 @@ export default function ChatScreen() {
             lastAppliedSnapshotSeqRef.current = Math.max(lastAppliedSnapshotSeqRef.current, snapshotSeq);
             if (snapshotWatermarkAdvanced) {
                 seenRealtimeEventKeysRef.current.pruneSnapshotCovered(snapshotSeq);
-            }
-            lastRealtimeSnapshotAtRef.current = Date.now();
-        }
+            }        }
+        markSnapshotApplied();
         applyConversationProjection(payload);
         const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
         const auditEnabled = isPhonePerfAuditEnabled();
@@ -2905,94 +2929,7 @@ export default function ChatScreen() {
                 engineProfile: readPayloadProfile(payload),
             });
         }
-    }, [draftKey, applyConversationProjection]);
-
-    const scheduleRealtimeSnapshotRefresh = useCallback((conversationId?: string | null, options?: { force?: boolean }) => {
-        const targetConversationId = String(conversationId || activeConversationIdRef.current || "").trim();
-        if (!targetConversationId || activeConversationIdRef.current !== targetConversationId) {
-            return;
-        }
-        const force = options?.force === true;
-        if (!force && Date.now() - lastRealtimeSnapshotAtRef.current < REALTIME_SNAPSHOT_FALLBACK_GRACE_MS) {
-            return;
-        }
-
-        const runRefresh = async () => {
-            if (realtimeSnapshotInflightRef.current) {
-                realtimeSnapshotPendingRef.current = true;
-                return;
-            }
-            realtimeSnapshotInflightRef.current = true;
-            realtimeSnapshotPendingRef.current = false;
-            try {
-                if (!force && lastRealtimeSnapshotAtRef.current > scheduledAt) {
-                    return;
-                }
-                if (!force && Date.now() - lastRealtimeSnapshotAtRef.current < REALTIME_SNAPSHOT_FALLBACK_GRACE_MS) {
-                    return;
-                }
-                const fetchStartedAt = getPerfNowMs();
-                const syncCursor = await localDatabase.getSyncCursor(targetConversationId);
-                const syncPromise = syncCursor
-                    ? getConversationTimelineSync(authorizedFetch, targetConversationId, syncCursor)
-                    : Promise.resolve({ messages: [], deletions: [], syncCursor: "", sessionId: targetConversationId });
-                const [snapshot, syncData] = await Promise.all([
-                    getRealtimeSnapshot(authorizedFetch, targetConversationId),
-                    syncPromise,
-                ]);
-                
-                if (syncData.deletions && syncData.deletions.length > 0) {
-                    await localDatabase.deleteMessages(targetConversationId, syncData.deletions);
-                }
-                if (syncData.messages && syncData.messages.length > 0) {
-                    await localDatabase.upsertMessages(targetConversationId, syncData.messages);
-                }
-                if (syncData.syncCursor) {
-                    await localDatabase.setSyncCursor(targetConversationId, syncData.syncCursor);
-                }
-                
-                if (__DEV__ || isPhonePerfAuditEnabled()) {
-                    const elapsedMs = Math.round(getPerfNowMs() - fetchStartedAt);
-                    const payloadBytes = measureJsonBytes(snapshot);
-                    if (isPhonePerfAuditEnabled() || elapsedMs >= 200 || payloadBytes >= 120000) {
-                        debugPerfTrace("snapshot-fetch", {
-                            sessionId: targetConversationId,
-                            elapsedMs,
-                            payloadBytes,
-                            latestSeq: buildSnapshotSequence(snapshot),
-                            runtimeEventCount: countPayloadRuntimeEvents(snapshot),
-                            engineProfile: readPayloadProfile(snapshot),
-                        });
-                    }
-                }
-                if (activeConversationIdRef.current === targetConversationId) {
-                    applyRealtimeSnapshotPayload(snapshot);
-                }
-            } catch (error) {
-                console.warn("[phone] realtime snapshot refresh failed:", error);
-            } finally {
-                realtimeSnapshotInflightRef.current = false;
-                if (realtimeSnapshotPendingRef.current && activeConversationIdRef.current === targetConversationId) {
-                    realtimeSnapshotPendingRef.current = false;
-                    realtimeSnapshotTimerRef.current = setTimeout(() => {
-                        realtimeSnapshotTimerRef.current = null;
-                        void runRefresh();
-                    }, force ? REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS : REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS);
-                }
-            }
-        };
-
-        if (realtimeSnapshotTimerRef.current) {
-            realtimeSnapshotPendingRef.current = true;
-            return;
-        }
-
-        const scheduledAt = Date.now();
-        realtimeSnapshotTimerRef.current = setTimeout(() => {
-            realtimeSnapshotTimerRef.current = null;
-            void runRefresh();
-        }, force ? REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS : REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS);
-    }, [applyRealtimeSnapshotPayload, authorizedFetch]);
+    }, [applyConversationProjection, markSnapshotApplied]);
 
     const upsertQueuedMessage = useCallback((item: QueuedChatMessage | null | undefined) => {
         const id = String(item?.id || "").trim();
@@ -3051,7 +2988,7 @@ export default function ChatScreen() {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
         }
         if (recoveryDisposition === "refresh") {
-            void loadConversationRef.current(String(activeConversationIdRef.current || ""), { force: true, replaceTranscript: true });
+            void loadConversation(String(activeConversationIdRef.current || ""), { force: true, replaceTranscript: true });
             return;
         }
         const terminalRunStatus = terminalRunStatusFromTopic(
@@ -3887,96 +3824,20 @@ export default function ChatScreen() {
         upsertQueuedMessage,
     ]);
 
-    const startRealtime = useCallback(async (conversationId: string, transitionToken?: number) => {
-        if (
-            activeConversationIdRef.current !== conversationId
-            || (typeof transitionToken === "number" && conversationTransitionTokenRef.current !== transitionToken)
-        ) {
-            return;
-        }
-        if (realtimeConversationIdRef.current === conversationId && realtimeAbortRef.current) {
-            return;
-        }
-        stopRealtime({ preserveMessageState: true });
-        const controller = new AbortController();
-        const subscriptionToken = realtimeSubscriptionTokenRef.current;
-        realtimeAbortRef.current = controller;
-        realtimeConversationIdRef.current = conversationId;
-        let reconnectAttempt = 0;
-        try {
-            while (
-                !controller.signal.aborted
-                && realtimeSubscriptionTokenRef.current === subscriptionToken
-                && activeConversationIdRef.current === conversationId
-                && (typeof transitionToken !== "number" || conversationTransitionTokenRef.current === transitionToken)
-            ) {
-                try {
-                    await streamRealtimeSession(authorizedRealtimeStream, conversationId, handleRealtimeEvent, controller.signal);
-                } catch (error) {
-                    if (!controller.signal.aborted) {
-                        console.warn("[phone] realtime stream stopped:", error);
-                    }
-                }
-
-                if (
-                    controller.signal.aborted
-                    || realtimeSubscriptionTokenRef.current !== subscriptionToken
-                    || activeConversationIdRef.current !== conversationId
-                    || (typeof transitionToken === "number" && conversationTransitionTokenRef.current !== transitionToken)
-                ) {
-                    break;
-                }
-
-                scheduleRealtimeSnapshotRefresh(conversationId, { force: true });
-                const currentStatus = String(runtimeRef.current.status || "").trim().toLowerCase();
-                const keepRealtimeAlive = sendingRef.current
-                    || currentStatus === "running"
-                    || currentStatus === "waiting_input"
-                    || currentStatus === "waiting_approval";
-
-                if (!keepRealtimeAlive) {
-                    break;
-                }
-
-                reconnectAttempt += 1;
-                const backoffMs = Math.min(800 + reconnectAttempt * 600, 3200);
-                await new Promise((resolve) => setTimeout(resolve, backoffMs));
-            }
-        } catch (error) {
-            if (!controller.signal.aborted) {
-                console.warn("[phone] realtime stream stopped:", error);
-            }
-        } finally {
-            if (realtimeSubscriptionTokenRef.current === subscriptionToken && realtimeAbortRef.current === controller) {
-                realtimeAbortRef.current = null;
-            }
-            if (realtimeSubscriptionTokenRef.current === subscriptionToken && realtimeConversationIdRef.current === conversationId) {
-                realtimeConversationIdRef.current = null;
-            }
-        }
-    }, [authorizedRealtimeStream, handleRealtimeEvent, scheduleRealtimeSnapshotRefresh, stopRealtime]);
-
-    const loadConversation = useCallback(async (conversationId: string, options?: { force?: boolean; token?: number; replaceTranscript?: boolean }) => {
-        const transitionToken = options?.token ?? conversationTransitionTokenRef.current;
-        if (!options?.force) {
-            if (loadingConversationIdRef.current === conversationId) {
-                return false;
-            }
-            if (hydratedConversationIdRef.current === conversationId) {
-                return false;
-            }
-        }
-        loadingConversationIdRef.current = conversationId;
+    const loadConversation = useCallback(async (conversationId: string, options?: PhoneConversationLoadOptions) => {
+        const lease = conversationLifecycle.beginHydration(conversationId, options);
+        if (!lease) return false;
         setConversationBusy(true);
         let hadCachedTurn = false;
         try {
             const cachedLatestTurn = await localDatabase.getLatestTurnMessages(conversationId);
+            if (!lease.isCurrent()) return false;
             const syncCursor = await localDatabase.getSyncCursor(conversationId);
+            if (!lease.isCurrent()) return false;
             if (
                 cachedLatestTurn.length > 0
                 && (messageConversationIdRef.current !== conversationId || messagesRef.current.length === 0)
-                && activeConversationIdRef.current === conversationId
-                && conversationTransitionTokenRef.current === transitionToken
+                && lease.isCurrent()
             ) {
                 const cachedMessages = normalizeMessagesForState(cachedLatestTurn);
                 hadCachedTurn = cachedMessages.length > 0;
@@ -3992,45 +3853,45 @@ export default function ChatScreen() {
             const syncPromise = syncCursor
                 ? getConversationTimelineSync(authorizedFetch, conversationId, syncCursor)
                 : Promise.resolve({ messages: [], deletions: [], syncCursor: "", sessionId: conversationId });
-const [detail, turnPage, syncData] = await Promise.all([
+            const [detail, turnPage, syncData] = await Promise.all([
                 getConversationDetail(authorizedFetch, conversationId, !options?.replaceTranscript),
                 getConversationTurnPage(authorizedFetch, conversationId, { limit: 1 }),
                 syncPromise,
             ]);
-            if (
-                activeConversationIdRef.current !== conversationId
-                || conversationTransitionTokenRef.current !== transitionToken
-            ) {
-                return false;
-            }
+            if (!lease.isCurrent()) return false;
             if (syncData.deletions && syncData.deletions.length > 0) {
                 await localDatabase.deleteMessages(conversationId, syncData.deletions);
             }
+            if (!lease.isCurrent()) return false;
             if (syncData.messages && syncData.messages.length > 0) {
                 await localDatabase.upsertMessages(conversationId, syncData.messages);
             }
+            if (!lease.isCurrent()) return false;
             if (syncData.syncCursor) {
                 await localDatabase.setSyncCursor(conversationId, syncData.syncCursor);
             } else if (turnPage.syncCursor) {
                 await localDatabase.setSyncCursor(conversationId, turnPage.syncCursor);
             }
+            if (!lease.isCurrent()) return false;
             if (turnPage.messages && turnPage.messages.length > 0) {
                 await localDatabase.upsertMessages(conversationId, turnPage.messages);
             }
-            if (activeConversationIdRef.current !== conversationId || conversationTransitionTokenRef.current !== transitionToken) return false;
+            if (!lease.isCurrent()) return false;
             const incomingIdentity = readTranscriptIdentity(detail);
             const previousIdentity = transcriptIdentitiesRef.current.get(conversationId);
             if (previousIdentity && isStaleTranscript(previousIdentity, incomingIdentity)) return false;
             const replaceTranscript = options?.replaceTranscript || incomingIdentity.contextEpoch > (previousIdentity?.contextEpoch || 0);
             let fullDetail = detail;
             if (replaceTranscript && !options?.replaceTranscript) fullDetail = await getConversationDetail(authorizedFetch, conversationId);
-            if (activeConversationIdRef.current !== conversationId || conversationTransitionTokenRef.current !== transitionToken) return false;
+            if (!lease.isCurrent()) return false;
             transcriptIdentitiesRef.current.set(conversationId, readTranscriptIdentity(fullDetail));
             setTranscriptIdentity(readTranscriptIdentity(fullDetail));
             if (replaceTranscript) {
                 await localDatabase.deleteSessionData(conversationId);
+                if (!lease.isCurrent()) return false;
                 await localDatabase.upsertMessages(conversationId, fullDetail.messages || []);
             }
+            if (!lease.isCurrent()) return false;
             const timelineMessages = replaceTranscript ? (fullDetail.messages || []) : Array.isArray(turnPage.messages) && turnPage.messages.length > 0
                 ? turnPage.messages
                 : cachedLatestTurn;
@@ -4043,8 +3904,8 @@ const [detail, turnPage, syncData] = await Promise.all([
             const preserveOptimisticLocalState = Boolean(
                 !replaceTranscript && messageConversationIdRef.current === conversationId
                 && (
-                    hydratedConversationIdRef.current === conversationId
-                    || optimisticSeedConversationIdRef.current === conversationId
+                    lease.previouslyHydrated
+                    || conversationLifecycle.isSeeded(conversationId)
                     || sendingRef.current
                     || hasPreservableLocalAssistantState(messagesRef.current)
                 )
@@ -4066,34 +3927,22 @@ const [detail, turnPage, syncData] = await Promise.all([
             const queue = extractQueuedMessages(detail);
             if (queue !== null) setQueuedMessages(queue);
             applyConversationProjection(detail);
+            markSnapshotApplied();
 
             lastAppliedSnapshotSeqRef.current = buildSnapshotSequence(detail);
             lastAppliedSnapshotFingerprintRef.current = buildMessagesFingerprint(normalized);
-            lastRealtimeSnapshotAtRef.current = Date.now();
-            hydratedConversationIdRef.current = conversationId;
+            lease.markHydrated();
             return true;
         } catch (error) {
-            if (
-                activeConversationIdRef.current === conversationId
-                && conversationTransitionTokenRef.current === transitionToken
-            ) {
-                if (!hadCachedTurn) {
-                    Alert.alert(t("src.screens.chatscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_load_the_conversation_detail"));
-                }
+            if (lease.isCurrent() && !hadCachedTurn) {
+                Alert.alert(t("src.screens.chatscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_load_the_conversation_detail"));
             }
             return hadCachedTurn;
         } finally {
-            if (loadingConversationIdRef.current === conversationId) {
-                loadingConversationIdRef.current = null;
-            }
-            if (
-                activeConversationIdRef.current === conversationId
-                && conversationTransitionTokenRef.current === transitionToken
-            ) {
-                setConversationBusy(false);
-            }
+            if (lease.isCurrent()) setConversationBusy(false);
+            lease.finish();
         }
-    }, [draftKey, applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState, t]);
+    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, draftKey, markSnapshotApplied, resetConversationStreamState, t]);
 
     const loadOlderConversationTurn = useCallback(async () => {
         const conversationId = activeConversationIdRef.current;
@@ -4134,9 +3983,6 @@ const [detail, turnPage, syncData] = await Promise.all([
     }, [authorizedFetch, hasOlderTurns]);
 
     loadSupportDataRef.current = loadSupportData;
-    loadConversationRef.current = loadConversation;
-    startRealtimeRef.current = startRealtime;
-    stopRealtimeRef.current = stopRealtime;
     closeDesktopPreviewRef.current = closeDesktopPreview;
 
     useEffect(() => {
@@ -4176,7 +4022,6 @@ const [detail, turnPage, syncData] = await Promise.all([
 
     useEffect(() => {
         if (status !== "authenticated" || !isFocused || !appVisible) {
-            stopRealtimeRef.current();
             if (status !== "booting") {
                 setLoading(false);
             }
@@ -4275,76 +4120,6 @@ const [detail, turnPage, syncData] = await Promise.all([
     }, [activeConversationId, clearNewConversationIntent, newConversationIntent, status]);
 
     useEffect(() => {
-        if (!isFocused || !appVisible) {
-            conversationTransitionTokenRef.current += 1;
-            stopRealtimeRef.current();
-            void phoneDrafts.flush(draftKey).catch(() => undefined);
-            return;
-        }
-        if (status !== "authenticated") {
-            conversationTransitionTokenRef.current += 1;
-            previousConversationIdRef.current = null;
-            optimisticSeedConversationIdRef.current = null;
-            hydratedConversationIdRef.current = null;
-            loadingConversationIdRef.current = null;
-            latestSeqRef.current = 0;
-            lastAppliedSnapshotSeqRef.current = 0;
-            lastAppliedSnapshotFingerprintRef.current = "";
-            lastRealtimeSnapshotAtRef.current = 0;
-            stopRealtimeRef.current();
-            return;
-        }
-        if (!activeConversationId) {
-            conversationTransitionTokenRef.current += 1;
-            previousConversationIdRef.current = null;
-            optimisticSeedConversationIdRef.current = null;
-            hydratedConversationIdRef.current = null;
-            loadingConversationIdRef.current = null;
-            stopRealtimeRef.current();
-            clearActiveConversationViewState();
-            return;
-        }
-        const conversationChanged = previousConversationIdRef.current !== activeConversationId;
-        previousConversationIdRef.current = activeConversationId;
-        const transitionToken = conversationTransitionTokenRef.current + 1;
-        conversationTransitionTokenRef.current = transitionToken;
-        const skipInitialHydration = conversationChanged && optimisticSeedConversationIdRef.current === activeConversationId;
-        if (conversationChanged) {
-            seenRealtimeEventKeysRef.current.clear();
-            stopRealtimeRef.current(skipInitialHydration ? { preserveMessageState: true } : undefined);
-            if (!skipInitialHydration) {
-                clearActiveConversationViewState();
-            }
-        }
-        let cancelled = false;
-        void (async () => {
-            if (skipInitialHydration) {
-                optimisticSeedConversationIdRef.current = null;
-                await startRealtimeRef.current(activeConversationId, transitionToken);
-                return;
-            }
-            const loaded = await loadConversationRef.current(activeConversationId, {
-                force: true,
-                token: transitionToken,
-            });
-            if (
-                cancelled
-                || conversationTransitionTokenRef.current !== transitionToken
-                || activeConversationIdRef.current !== activeConversationId
-            ) {
-                return;
-            }
-            if (loaded || realtimeConversationIdRef.current !== activeConversationId) {
-                await startRealtimeRef.current(activeConversationId, transitionToken);
-            }
-        })();
-        return () => {
-            cancelled = true;
-            stopRealtimeRef.current();
-        };
-    }, [activeConversationId, clearActiveConversationViewState, status, isFocused, appVisible]);
-
-    useEffect(() => {
         setSpeakingId("");
     }, [activeConversationId]);
 
@@ -4357,12 +4132,6 @@ const [detail, turnPage, syncData] = await Promise.all([
             setSpeakingId("");
         }
     }, [speakingId, ttsStatus.didJustFinish]);
-
-    useEffect(() => {
-        return () => {
-            stopRealtimeRef.current();
-        };
-    }, []);
 
     useEffect(() => {
         return () => {
@@ -4391,11 +4160,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
         clearNewConversationIntent();
-        conversationTransitionTokenRef.current += 1;
-        stopRealtimeRef.current();
-        optimisticSeedConversationIdRef.current = null;
-        hydratedConversationIdRef.current = null;
-        loadingConversationIdRef.current = null;
+        conversationLifecycle.invalidate();
         clearActiveConversationViewState();
         await setActiveConversationId(canonicalSessionId);
         router.replace("/chat" as Href);
@@ -4403,10 +4168,7 @@ const [detail, turnPage, syncData] = await Promise.all([
 
     const handleNewConversation = useCallback(async () => {
         await phoneDrafts.flush(draftKey);
-        stopRealtime();
-        optimisticSeedConversationIdRef.current = null;
-        hydratedConversationIdRef.current = null;
-        loadingConversationIdRef.current = null;
+        conversationLifecycle.invalidate();
         setHistoryOpen(false);
         setActiveQueryMode(null);
         setActiveQueryText("");
@@ -4972,7 +4734,7 @@ const [detail, turnPage, syncData] = await Promise.all([
             const conversationId = String(activeConversationIdRef.current || "").trim();
             if (conversationId) {
                 try {
-                    await loadConversationRef.current(conversationId, { force: true });
+                    await loadConversation(conversationId, { force: true });
                 } catch (error) {
                     console.warn("[ChatScreen] Failed to reconcile run command state", error);
                 }
@@ -5582,9 +5344,8 @@ const [detail, turnPage, syncData] = await Promise.all([
                     content: message.content,
                 }));
 
-            if (realtimeConversationIdRef.current !== currentConversationId || !realtimeAbortRef.current) {
-                activeConversationIdRef.current = currentConversationId;
-                void startRealtimeRef.current(currentConversationId);
+            if (!isRealtimeActive(currentConversationId)) {
+                void startRealtime(currentConversationId);
             }
 
             const userMessage = buildUserMessage(text, {
@@ -5990,6 +5751,7 @@ const [detail, turnPage, syncData] = await Promise.all([
         draftKey,
         getEngineNowMs,
         input,
+        isRealtimeActive,
         projection.runControlState.runId,
         projection.runControlState.status,
         pendingContextSessionRefs,
@@ -6559,7 +6321,7 @@ const [detail, turnPage, syncData] = await Promise.all([
                                             if (result.sessionId === activeConversationIdRef.current) {
                                                 transcriptIdentitiesRef.current.set(result.sessionId, readTranscriptIdentity(result));
                                                 realtimeMessageStateRef.current.pendingRuntimeEvents = [];
-                                                await loadConversationRef.current(result.sessionId, { force: true, replaceTranscript: true });
+                                                await loadConversation(result.sessionId, { force: true, replaceTranscript: true });
                                             }
                                             await loadSupportDataRef.current();
                                         },

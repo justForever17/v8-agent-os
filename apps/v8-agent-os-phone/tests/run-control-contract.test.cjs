@@ -104,7 +104,7 @@ test("Phone applies only the current run terminal realtime and interrupt respons
   assert.match(chatScreenSource, /status: terminalRunStatus/);
   assert.match(chatScreenSource, /status: "interrupted"/);
   assert.match(chatScreenSource, /canInterrupt: false/);
-  assert.match(chatScreenSource, /finally \{[\s\S]*?loadConversationRef\.current\(conversationId, \{ force: true \}\)/);
+  assert.match(chatScreenSource, /finally \{[\s\S]*?loadConversation\(conversationId, \{ force: true \}\)/);
 });
 
 test("Phone rejects stale terminal events while a new run identity is awaiting acceptance", () => {

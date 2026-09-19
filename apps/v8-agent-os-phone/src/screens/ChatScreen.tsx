@@ -53,7 +53,6 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
-import { ProfileMenuOverlay } from "@/src/components/chat/ProfileMenuOverlay";
 import { PhoneBackgroundMedia } from "@/src/components/personalization/PhoneBackgroundMedia";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
@@ -1051,7 +1050,6 @@ export default function ChatScreen() {
         themeMode,
         voiceEnabled,
         toggleThemeMode,
-        toggleVoiceEnabled,
         colors: palette,
         t,
     } = useUiPrefs();
@@ -1206,7 +1204,6 @@ export default function ChatScreen() {
     const [historySearchItems, setHistorySearchItems] = useState<ConversationSummary[]>([]);
     const historyPageAbortRef = useRef<AbortController | null>(null);
     const [historyCreatingGroupKey, setHistoryCreatingGroupKey] = useState<string | null>(null);
-    const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
     // Reconstruct Drawers & Indicators Animation / Ref state
     const historyBtnOpacity = useRef(new Animated.Value(1)).current;
@@ -2254,10 +2251,8 @@ export default function ChatScreen() {
             indicatorColor: desktopLiveConnected ? "#10B981" : undefined,
             disabled: desktopPreviewBusy || (desktopLiveStatus?.bridgeStartable === false && !desktopLiveConnecting && !desktopLiveConnected && !desktopLiveReady),
         },
-        { key: "rpa", onPress: () => router.push("/rpa" as Href) },
-        { key: "voice", onPress: () => void toggleVoiceEnabled() },
         { key: "theme", onPress: () => void toggleThemeMode() },
-    ], [desktopLiveConnected, desktopLiveConnecting, desktopLiveReady, desktopLiveStatus?.bridgeStartable, desktopPreviewBusy, openDesktopPreview, toggleThemeMode, toggleVoiceEnabled]);
+    ], [desktopLiveConnected, desktopLiveConnecting, desktopLiveReady, desktopLiveStatus?.bridgeStartable, desktopPreviewBusy, openDesktopPreview, toggleThemeMode]);
 
     useEffect(() => {
         maybeStartDesktopPreviewNegotiation(desktopPreviewSessionId);
@@ -6135,9 +6130,7 @@ export default function ChatScreen() {
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
                 <PhoneTopbar
                     actions={topbarActions}
-                    userImageUri={userAvatarUri || undefined}
                     onBrandPress={() => void handleBrandPress()}
-                    onProfilePress={() => setProfileMenuVisible(true)}
                 />
 
                 <View style={styles.chatShell}>
@@ -6682,8 +6675,6 @@ export default function ChatScreen() {
                     onDeleteConversation={(item) => handleDeleteConversation(item)}
                 />
             </SafeAreaView>
-
-            <ProfileMenuOverlay visible={profileMenuVisible} onClose={() => setProfileMenuVisible(false)} />
         </LinearGradient>
         </View>
     );

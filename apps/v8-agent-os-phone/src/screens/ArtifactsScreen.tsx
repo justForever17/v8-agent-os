@@ -20,7 +20,7 @@ import { MarkdownRenderer } from "@/src/components/chat/MarkdownRenderer";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
-import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
+import { PhoneTopbar } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { openCachedFile, saveResponseToCache } from "@/src/lib/file-transfer";
 import { BoundedResponseTextError, readBoundedResponseText } from "@/src/lib/bounded-response-text";
@@ -216,7 +216,7 @@ function ArtifactPreview({
 }
 
 export default function ArtifactsScreen() {
-    const { status, userAvatarUri, adminBaseUrl, authorityKey, servingInstanceId, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, adminBaseUrl, authorityKey, servingInstanceId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const params = useLocalSearchParams<{ conversationId?: string | string[]; artifactId?: string | string[] }>();
@@ -231,13 +231,6 @@ export default function ArtifactsScreen() {
     const [listError, setListError] = useState("");
     const [detailError, setDetailError] = useState("");
     const loadRequestRef = useRef(0);
-
-    const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
-        { key: "sessions", icon: "view-headline", onPress: () => router.push("/sessions" as Href) },
-        { key: "approvals", icon: "bell-outline", onPress: () => router.push("/approvals" as Href) },
-        { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
-    ];
 
     const load = useCallback(async () => {
         const requestId = ++loadRequestRef.current;
@@ -359,7 +352,7 @@ export default function ArtifactsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar onBrandPress={() => void goHomeToChat()} />
 
                 {loading ? (
                     <LoadingScreen label={t("src.screens.artifactsscreen.syncing_artifacts")} />

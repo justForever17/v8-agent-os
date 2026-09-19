@@ -89,8 +89,8 @@ const styles = StyleSheet.create({
         elevation: 0,
     },
     triggerCompact: {
-        width: 40,
-        height: 32,
+        width: 44,
+        height: 44,
         gap: 2,
         borderRadius: 11,
     },

@@ -241,7 +241,8 @@ export function ProfileMenuOverlay({
                     <View style={styles.header}>
                         <MaterialCommunityIcons name="account" size={20} color={colors.primaryDeep} />
                         <Text style={styles.title}>{t("src.components.chat.profilemenuoverlay.profile_center")}</Text>
-                        <Pressable style={styles.closeButton} onPress={onClose}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={t("phone.navigation.close")}
+                            style={({ pressed }) => [styles.closeButton, { opacity: pressed ? 0.6 : 1 }]} onPress={onClose}>
                             <MaterialCommunityIcons name="close" size={20} color={colors.textMuted} />
                         </Pressable>
                     </View>
@@ -401,7 +402,10 @@ const styles = StyleSheet.create({
         marginLeft: 8,
     },
     closeButton: {
-        padding: 4,
+        width: 44,
+        height: 44,
+        alignItems: "center",
+        justifyContent: "center",
     },
     scrollView: {
         marginTop: 10,

@@ -8,7 +8,7 @@ import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export default function RPAScreen() {
-    const { status, userAvatarUri } = useAppSession();
+    const { status } = useAppSession();
     const { colors, toggleThemeMode } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const actions: PhoneTopbarAction[] = [
@@ -20,7 +20,7 @@ export default function RPAScreen() {
 
     return (
         <SafeAreaView style={{ flex: 1, backgroundColor: colors.backgroundDeep }} edges={["top", "left", "right"]}>
-            <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
+            <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
             <RpaPanelContent />
         </SafeAreaView>
     );

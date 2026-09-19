@@ -17,7 +17,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { SpecApprovalReview } from "@/src/components/chat/SpecApprovalReview";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
-import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
+import { PhoneTopbar } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import {
     approveSpecStage,
@@ -41,9 +41,7 @@ export default function SpecApprovalScreen() {
     if (status === "anonymous") return <Redirect href="/login" />;
     if (status === "booting") return <LoadingScreen />;
     return <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-        <PhoneTopbar onBrandPress={() => void goHomeToChat()} actions={[
-            { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
-        ]} />
+        <PhoneTopbar onBrandPress={() => void goHomeToChat()} />
         <SpecApprovalReview key={`${authorityKey}:${params.approvalId}`} approvalId={String(params.approvalId)}
             authorityKey={authorityKey} authorizedFetch={authorizedFetch} workspacePath={String(params.workspace || "")}
             specId={String(params.specId || "")} stage={String(params.stage || "")} />
@@ -51,7 +49,7 @@ export default function SpecApprovalScreen() {
 }
 
 function SpecWorkspaceScreen() {
-    const { status, userAvatarUri, authorizedFetch } = useAppSession();
+    const { status, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const params = useLocalSearchParams<{ workspace?: string; workspacePath?: string; specId?: string; stage?: string }>();
@@ -71,12 +69,6 @@ function SpecWorkspaceScreen() {
     const [content, setContent] = useState("");
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
-
-    const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
-        { key: "approvals", icon: "bell-outline", onPress: () => router.push("/approvals" as Href) },
-        { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
-    ];
 
     const selectedSpec = useMemo(
         () => specs.find((item) => item.specId === selectedSpecId) || detail?.spec || null,
@@ -196,7 +188,7 @@ function SpecWorkspaceScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar onBrandPress={() => void goHomeToChat()} />
                 <View style={styles.header}>
                     <Text style={styles.eyebrow}>SPEC APPROVAL</Text>
                     <Text style={styles.title}>{t("src.screens.specapprovalscreen.title")}</Text>

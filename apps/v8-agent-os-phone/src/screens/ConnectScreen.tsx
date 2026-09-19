@@ -20,7 +20,7 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 type DeviceRow = { kind: "profile"; value: AdminConnectionProfile } | { kind: "peer"; value: SupervisorPeer };
 
 export default function ConnectScreen() {
-    const { status, userAvatarUri, adminBaseUrl, authorityKey, servingInstanceId, activeProfileId, activateProfile, signOut, authorizedFetch } = useAppSession();
+    const { status, adminBaseUrl, authorityKey, servingInstanceId, activeProfileId, activateProfile, signOut, authorizedFetch } = useAppSession();
     const { t, colors } = useUiPrefs();
     const home = useGoHomeToChat();
     const focused = useIsFocused();
@@ -115,9 +115,7 @@ export default function ConnectScreen() {
     };
 
     return <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]}>
-        <PhoneTopbar userImageUri={userAvatarUri || undefined} onBrandPress={() => void home()} actions={[
-            { key: "chat", icon: "chat-processing-outline", onPress: () => void home() },
-            { key: "settings", icon: "cog-outline", onPress: () => router.navigate("/settings" as Href) },
+        <PhoneTopbar onBrandPress={() => void home()} actions={[
         ]} />
         <FlatList data={rows} keyExtractor={(row) => row.kind === "profile" ? row.value.id : row.value.linkId} contentContainerStyle={styles.list}
             initialNumToRender={12} maxToRenderPerBatch={8} windowSize={7} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic"

@@ -1,5 +1,5 @@
 import { X } from "lucide-react-native";
-import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { RpaPanelContent } from "@/src/components/rpa/RpaPanelContent";
@@ -7,7 +7,6 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export function PhoneRpaOverlay({ visible, onClose }: { visible: boolean; onClose: () => void }) {
     const { colors, themeMode, t } = useUiPrefs();
-    const { width, height } = useWindowDimensions();
 
     return (
         <Modal
@@ -19,20 +18,15 @@ export function PhoneRpaOverlay({ visible, onClose }: { visible: boolean; onClos
             onRequestClose={onClose}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "right", "bottom", "left"]}>
-                <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t("src.components.chat.sessionoverviewpanel.close")}
-                    onPress={onClose}
+                <View
                     style={[styles.backdrop, { backgroundColor: themeMode === "dark" ? "rgba(0,0,0,0.58)" : "rgba(15,23,42,0.28)" }]}
                 >
-                    <Pressable
-                        accessibilityRole="none"
-                        onPress={(event) => event.stopPropagation()}
+                    <Pressable accessibilityRole="button" accessibilityLabel={t("phone.navigation.close")}
+                        onPress={onClose} style={StyleSheet.absoluteFill} />
+                    <View
                         style={[
                             styles.panel,
                             {
-                                width: Math.min(Math.max(width - 24, 280), 680),
-                                maxHeight: Math.max(360, height * 0.82),
                                 backgroundColor: colors.backgroundDeep,
                                 borderColor: colors.border,
                                 shadowOpacity: themeMode === "dark" ? 0.46 : 0.18,
@@ -43,7 +37,7 @@ export function PhoneRpaOverlay({ visible, onClose }: { visible: boolean; onClos
                             <Text style={[styles.title, { color: colors.text }]}>{t("src.screens.rpascreen.title")}</Text>
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel={t("src.components.chat.sessionoverviewpanel.close")}
+                                accessibilityLabel={t("phone.navigation.close")}
                                 hitSlop={8}
                                 onPress={onClose}
                                 style={({ pressed }) => [
@@ -55,8 +49,8 @@ export function PhoneRpaOverlay({ visible, onClose }: { visible: boolean; onClos
                             </Pressable>
                         </View>
                         <RpaPanelContent embedded />
-                    </Pressable>
-                </Pressable>
+                    </View>
+                </View>
             </SafeAreaView>
         </Modal>
     );
@@ -71,6 +65,10 @@ const styles = StyleSheet.create({
         padding: 12,
     },
     panel: {
+        width: "100%",
+        maxWidth: 680,
+        maxHeight: "100%",
+        flexShrink: 1,
         overflow: "hidden",
         borderWidth: StyleSheet.hairlineWidth,
         borderRadius: 24,
@@ -88,10 +86,10 @@ const styles = StyleSheet.create({
         justifyContent: "space-between",
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
-    title: { fontSize: 16, fontWeight: "900" },
+    title: { flex: 1, minWidth: 0, fontSize: 16, fontWeight: "900", paddingVertical: 10 },
     closeButton: {
-        width: 34,
-        height: 34,
+        width: 44,
+        height: 44,
         borderRadius: 17,
         alignItems: "center",
         justifyContent: "center",

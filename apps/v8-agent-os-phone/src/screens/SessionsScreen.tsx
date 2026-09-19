@@ -31,7 +31,7 @@ import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
 
 export default function SessionsScreen() {
-    const { status, user, userAvatarUri, authorityKey, servingInstanceId, createNewDraft, activeConversationId, sessionActivityVersion, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, user, authorityKey, servingInstanceId, createNewDraft, activeConversationId, sessionActivityVersion, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const sessionIndexNamespace = useMemo(
@@ -52,11 +52,7 @@ export default function SessionsScreen() {
     const suppressNextPressRef = useRef<string | null>(null);
 
     const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
-        { key: "connect", icon: "lan-connect", onPress: () => router.push("/connect" as Href) },
-        { key: "desktop-live", icon: "monitor-dashboard", onPress: () => router.push("/desktop-live" as Href), tone: "primary" },
-        { key: "rpa", icon: "robot-outline", onPress: () => router.push("/rpa" as Href), tone: "accent" },
-        { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
+        { key: "desktop-live", onPress: () => router.push("/desktop-live" as Href), tone: "primary" },
     ];
 
     const load = useCallback(async (options?: { showSpinner?: boolean; useCache?: boolean; surfaceErrors?: boolean; cursor?: string }) => {
@@ -184,7 +180,7 @@ export default function SessionsScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <SectionList
                     sections={grouped.map((group, index) => ({ ...group, data: (openGroups[group.key] ?? index === 0) ? group.items : [] }))}

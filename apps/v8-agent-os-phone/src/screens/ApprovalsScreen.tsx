@@ -18,7 +18,7 @@ import { colors, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
 
 export default function ApprovalsScreen() {
-    const { status, userAvatarUri, authorizedFetch, authorityKey } = useAppSession();
+    const { status, authorizedFetch, authorityKey } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const [items, setItems] = useState<PendingApproval[]>([]);
@@ -26,11 +26,7 @@ export default function ApprovalsScreen() {
     const [busyId, setBusyId] = useState("");
 
     const actions: PhoneTopbarAction[] = [
-        { key: "chat", icon: "chat-processing-outline", onPress: () => router.dismissTo("/chat" as Href) },
-        { key: "connect", icon: "lan-connect", onPress: () => router.push("/connect" as Href) },
-        { key: "desktop-live", icon: "monitor-dashboard", onPress: () => router.push("/desktop-live" as Href), tone: "primary" },
-        { key: "rpa", icon: "robot-outline", onPress: () => router.push("/rpa" as Href), tone: "accent" },
-        { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
+        { key: "desktop-live", onPress: () => router.push("/desktop-live" as Href), tone: "primary" },
     ];
 
     const load = useCallback(async () => {
@@ -83,7 +79,7 @@ export default function ApprovalsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}

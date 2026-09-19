@@ -1,19 +1,17 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Image,
-    Modal,
     LayoutChangeEvent,
     Pressable,
     StyleSheet,
     Text,
     View,
+    useWindowDimensions,
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
-import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { router, type Href } from "expo-router";
-import { phoneDrafts } from "@/src/lib/phone-drafts";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { LucideIcon } from "lucide-react-native";
-import { Monitor, MoonStar, SunMedium, Workflow } from "lucide-react-native";
+import { Monitor, MoonStar, SunMedium } from "lucide-react-native";
 import MaskedView from "@react-native-masked-view/masked-view";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
@@ -28,15 +26,14 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
-import { PhoneRpaOverlay } from "@/src/components/rpa/PhoneRpaOverlay";
+import { PhoneNavigationMenu } from "@/src/components/layout/PhoneNavigationMenu";
 import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 const PRODUCT_MARK = require("../../../assets/images/product-mark.png");
 
 export type PhoneTopbarAction = {
-    key: string;
-    icon?: string;
+    key: "desktop-live" | "theme";
     onPress: () => void;
     badge?: number;
     indicatorColor?: string;
@@ -44,7 +41,7 @@ export type PhoneTopbarAction = {
     tone?: "default" | "primary" | "accent";
 };
 
-const ACTION_ORDER = ["desktop-live", "rpa", "theme"] as const;
+const ACTION_ORDER = ["desktop-live", "theme"] as const;
 const WORDMARK_COLORS = [
     "#F8FAFC", "#E5E7EB", "#BFC4CC", "#7F8794", "#D8DCE3", "#F6F7F9",
     "#A8AFBA", "#ECEFF4", "#727A86", "#DADDE4", "#F8FAFC", "#B5BBC5",
@@ -210,8 +207,6 @@ function resolveActionIcon(key: string, themeMode: "light" | "dark"): LucideIcon
     switch (key) {
         case "desktop-live":
             return Monitor;
-        case "rpa":
-            return Workflow;
         case "theme":
             return themeMode === "dark" ? MoonStar : SunMedium;
         default:
@@ -228,6 +223,7 @@ function TopbarButton({
     colors: ReturnType<typeof useUiPrefs>["colors"];
     themeMode: "light" | "dark";
 }) {
+    const { t } = useUiPrefs();
     const Icon = resolveActionIcon(action.key, themeMode);
     const color = iconColor(action.tone, colors);
     const round = isRoundAction(action.key);
@@ -240,6 +236,9 @@ function TopbarButton({
     return (
         <Pressable
             key={action.key}
+            accessibilityRole="button"
+            accessibilityLabel={t(action.key === "desktop-live" ? "phone.navigation.desktop" : "phone.navigation.theme")}
+            accessibilityState={{ disabled: Boolean(action.disabled) }}
             onPress={action.onPress}
             disabled={action.disabled}
             style={({ pressed }) => [
@@ -279,12 +278,14 @@ function BrandArea({
     onBrandPress?: () => void;
     wordmarkActive: boolean;
 }) {
+    const insets = useSafeAreaInsets();
+    const compact = useWindowDimensions().width - insets.left - insets.right < 360;
     const content = (
         <>
             <View style={[styles.brandMarkWrap, { borderColor: `${colors.border}A6`, backgroundColor: colors.surfaceStrong }]}>
                 <Image source={PRODUCT_MARK} style={styles.brandMark} />
             </View>
-            <PhoneWordmark dark={themeMode === "dark"} active={wordmarkActive} />
+            {!compact ? <PhoneWordmark dark={themeMode === "dark"} active={wordmarkActive} /> : null}
         </>
     );
 
@@ -306,29 +307,14 @@ function BrandArea({
 }
 
 export function PhoneTopbar({
-    actions,
-    userImageUri,
-    onProfilePress,
+    actions = [],
     onBrandPress,
 }: {
-    actions: PhoneTopbarAction[];
-    userImageUri?: string;
-    onProfilePress?: () => void;
+    actions?: PhoneTopbarAction[];
     onBrandPress?: () => void;
 }) {
-    const { colors, themeMode, t } = useUiPrefs();
+    const { colors, themeMode } = useUiPrefs();
     const isFocused = useIsFocused();
-    const [rpaOpen, setRpaOpen] = useState(false);
-    const [navigationOpen, setNavigationOpen] = useState(false);
-    const [navigationError, setNavigationError] = useState("");
-    const navigate = async (path: string) => {
-        try {
-            await phoneDrafts.flushAll();
-            setNavigationOpen(false);
-            if (path === "/chat") router.dismissTo(path as Href);
-            else router.navigate(path as Href);
-        } catch (error) { setNavigationError(error instanceof Error ? error.message : t("phone.devices.failed")); }
-    };
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
         .map((key) => actionMap.get(key))
@@ -347,16 +333,12 @@ export function PhoneTopbar({
             <BrandArea colors={colors} themeMode={themeMode} onBrandPress={onBrandPress} wordmarkActive={isFocused} />
 
             <View style={styles.actions}>
-                <Pressable accessibilityRole="button" accessibilityLabel={t("phone.devices.navigation")} onPress={() => setNavigationOpen(true)}
-                    style={{ width: 40, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
-                    <MaterialCommunityIcons name="menu" size={21} color={colors.textMuted} />
-                </Pressable>
                 {orderedActions
-                    .filter((action) => action.key === "desktop-live" || action.key === "rpa")
+                    .filter((action) => action.key === "desktop-live")
                     .map((action) => (
                         <TopbarButton
                             key={action.key}
-                            action={action.key === "rpa" ? { ...action, onPress: () => setRpaOpen(true) } : action}
+                            action={action}
                             colors={colors}
                             themeMode={themeMode}
                         />
@@ -375,46 +357,8 @@ export function PhoneTopbar({
                         />
                     ))}
 
-                <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t("src.components.layout.phonetopbar.user_profile")}
-                    style={({ pressed }) => [
-                        styles.profileButton,
-                        {
-                            backgroundColor: pressed
-                                ? (themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.045)")
-                                : "transparent",
-                            borderColor: "transparent",
-                            shadowOpacity: pressed ? 0.10 : 0,
-                            elevation: pressed ? 2 : 0,
-                            opacity: pressed ? 0.82 : 1,
-                        },
-                    ]}
-                    onPress={onProfilePress || (() => void navigate("/settings"))}
-                >
-                    {userImageUri ? (
-                        <Image source={{ uri: userImageUri }} style={styles.profileImage} />
-                    ) : (
-                        <Image source={PRODUCT_MARK} style={styles.profileImage} />
-                    )}
-                </Pressable>
+                <PhoneNavigationMenu />
             </View>
-            <PhoneRpaOverlay visible={rpaOpen} onClose={() => setRpaOpen(false)} />
-            <Modal visible={navigationOpen} transparent animationType="fade" onRequestClose={() => setNavigationOpen(false)}>
-                <Pressable onPress={() => setNavigationOpen(false)} style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", padding: 28 }}>
-                    <View style={{ borderRadius: 18, backgroundColor: colors.surface, padding: 12 }}>
-                        {([
-                            ["/chat", t("phone.devices.returnChat")],
-                            ["/sessions", t("src.components.layout.historydrawer.history")],
-                            ["/connect", t("phone.devices.title")],
-                            ["/settings", t("phone.devices.settings")],
-                        ] as const).map(([path, label]) => <Pressable key={path} accessibilityRole="button" onPress={() => void navigate(path)} style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 12 }}>
-                            <Text style={{ color: colors.text, fontWeight: "600" }}>{label}</Text>
-                        </Pressable>)}
-                        {navigationError ? <Text style={{ color: colors.danger, padding: 12 }}>{navigationError}</Text> : null}
-                    </View>
-                </Pressable>
-            </Modal>
         </View>
     );
 }
@@ -435,12 +379,13 @@ const styles = StyleSheet.create({
         elevation: 1,
     },
     brandSide: {
+        minHeight: 44,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
         minWidth: 0,
         flexGrow: 1,
-        flexShrink: 0,
+        flexShrink: 1,
     },
     brandPressable: {
         paddingRight: 4,
@@ -505,12 +450,12 @@ const styles = StyleSheet.create({
     actions: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 5,
+        gap: 2,
         flexShrink: 0,
     },
     actionButton: {
-        width: 32,
-        height: 32,
+        width: 44,
+        height: 44,
         alignItems: "center",
         justifyContent: "center",
         shadowColor: "#0F172A",
@@ -524,22 +469,6 @@ const styles = StyleSheet.create({
     },
     actionButtonSoftSquare: {
         borderRadius: 11,
-    },
-    profileButton: {
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-        overflow: "hidden",
-        borderWidth: StyleSheet.hairlineWidth,
-        shadowColor: "#0F172A",
-        shadowOpacity: 0,
-        shadowRadius: 14,
-        shadowOffset: { width: 0, height: 4 },
-        elevation: 0,
-    },
-    profileImage: {
-        width: "100%",
-        height: "100%",
     },
     badge: {
         position: "absolute",

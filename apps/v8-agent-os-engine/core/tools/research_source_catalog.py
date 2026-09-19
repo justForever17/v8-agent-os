@@ -44,19 +44,3 @@ def match_source_catalog(url: str, entries: list[dict[str, Any]]) -> dict[str, A
         if specificity > best_specificity:
             best, best_specificity = entry, specificity
     return best
-
-
-def scoped_catalog_projection(source: dict[str, Any], entry: dict[str, Any] | None) -> dict[str, Any]:
-    """Requalify old domain-wide metadata without editing the stored bundle."""
-    if not entry or not entry.get("pathPrefixes"):
-        return source
-    role = str(entry.get("authorityTier") or "").lower()
-    if role not in {"primary", "secondary"}:
-        return source
-    return {
-        **source,
-        "tier": role,
-        "authorityTier": role,
-        "catalogSourceId": entry.get("id"),
-        "catalogCategory": entry.get("category"),
-    }

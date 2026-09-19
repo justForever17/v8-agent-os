@@ -22,6 +22,11 @@ DEFAULT_CODE_PATHS = (
     ENGINE_ROOT / "core" / "tools" / "research_broker.py",
     ENGINE_ROOT / "core" / "tools" / "research_quality.py",
     ENGINE_ROOT / "core" / "tools" / "web_fetcher.py",
+    ENGINE_ROOT / "core" / "research_runtime_prompts.py",
+    ENGINE_ROOT / "core" / "tools" / "research_source_identity.py",
+    ENGINE_ROOT / "runtimes" / "research" / "agent.py",
+    ENGINE_ROOT / "runtimes" / "research" / "evidence.py",
+    ENGINE_ROOT / "runtimes" / "research" / "model_call.py",
     Path(__file__).resolve(),
 )
 IMMUTABLE_BUNDLE_FIELDS = (
@@ -735,7 +740,6 @@ def run_attempt(
             result = research_module._execute_research_agent(
                 question=str(bundle.get("question") or ""),
                 shards=[] if bundle.get("researchEvidenceBank") else copy.deepcopy(list(bundle.get("shards") or [])),
-                confidence=str(bundle.get("confidence") or "medium"),
                 freshness=str(bundle.get("freshness") or "auto"),
                 max_searches=0,
                 previous_bundle={"researchEvidenceBank": copy.deepcopy(bundle.get("researchEvidenceBank"))}

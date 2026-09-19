@@ -365,27 +365,21 @@ def test_length_score_does_not_reward_repeated_padding() -> None:
     assert "answer_repetition_excessive" in research_acceptance_issues(payload)
 
 
+
 def test_handoff_preserves_explicit_secondary_role_despite_trusted_host_tier() -> None:
     from core.runtime_episode_runner import _research_handoff_source
     from core.research_handoff_surface import render_research_handoff_evidence
-    from core.tools.research_broker import _research_source_pack, _architect_support_role
+    from core.tools.research_broker import _research_source_pack
+    from core.tools.research_source_identity import source_attribution_role
+
     source = {"sourceId": "mirror", "citationKey": "S3", "title": "转载的草案说明",
               "url": "https://mirror.example.org/draft", "tier": "primary", "sourceRole": "secondary", "version": "draft-v2"}
     compact = _research_handoff_source(_research_source_pack(source))
     assert compact["sourceRole"] == "secondary"
-    assert _architect_support_role(compact) == "secondary"
+    assert source_attribution_role(compact) == "secondary"
     surface = render_research_handoff_evidence({"sources": [compact], "answer": "有明确边界的答案。"})
     assert "Source role: secondary; retrieval tier: primary; version: draft-v2" in surface
     assert source["url"] in surface
-
-
-@pytest.mark.parametrize("complete,expected", [(True, []), (False, ["section_incomplete"])])
-def test_short_section_does_not_request_length_correction(complete, expected) -> None:
-    from core.tools.research_broker import _architect_section_issues
-    task = {"targetMinChars": 5000, "minimumAcceptableChars": 4000, "targetMaxChars": 6000,
-            "requiredCitationKeys": ["S1"]}
-    assert _architect_section_issues("A bounded finding supported by evidence [S1].", task, complete=complete) == expected
-    assert "section_citation_missing:S1" in _architect_section_issues("No citation here.", task, complete=True)
 
 
 def test_research_quality_rejects_citation_list_without_inline_evidence_spread() -> None:

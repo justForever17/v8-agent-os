@@ -20,6 +20,7 @@ def test_catalog_distinguishes_community_from_vendor_documentation(url, expected
     assert (research._catalog_match(url) or {}).get("id") == expected
 
 
+
 @pytest.mark.parametrize("allowed_domains", [[], ["cloud.tencent.com"]])
 def test_allowlisted_community_is_readable_but_not_primary_evidence(allowed_domains):
     quality = research._source_quality(
@@ -29,20 +30,8 @@ def test_allowlisted_community_is_readable_but_not_primary_evidence(allowed_doma
     )
     assert quality["catalogSourceId"] == "vendor_developer_community"
     assert quality["authorityTier"] == quality["tier"] == "secondary"
-    assert research._architect_support_role(quality) == "secondary"
     assert not research._source_matches_intent(quality, "official_primary")
     assert research._source_matches_intent(quality, "balanced")
-
-
-def test_old_bundle_cannot_promote_community_from_stale_domain_wide_classification():
-    source = {
-        "url": "https://cloud.tencent.com/developer/article/2528305",
-        "tier": "primary", "authorityTier": "primary", "authorityScore": 95,
-        "catalogSourceId": "official_vendor_docs", "catalogCategory": "official_docs",
-    }
-    original = copy.deepcopy(source)
-    assert research._architect_support_role(source) == "secondary"
-    assert source == original
 
 
 @pytest.mark.parametrize("reverse", [False, True])

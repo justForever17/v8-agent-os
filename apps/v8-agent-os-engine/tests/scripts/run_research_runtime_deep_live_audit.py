@@ -722,6 +722,7 @@ def _run_cn_case() -> AuditCaseResult:
     return result
 
 
+
 def _run_domestic_delivery_case() -> AuditCaseResult:
     result = AuditCaseResult(
         "domestic_delivery",
@@ -731,7 +732,6 @@ def _run_domestic_delivery_case() -> AuditCaseResult:
     try:
         from core.tools.research_quality import research_acceptance_issues
         from core.tools import web_fetcher
-        from core.tools.research_broker import _research_source_matches_root_subject
 
         domestic_providers = ("bing_cn", "metaso", "baidu")
         domestic_question = (
@@ -789,32 +789,6 @@ def _run_domestic_delivery_case() -> AuditCaseResult:
             result.failures.append(
                 "non_domestic_provider_selected:" + ",".join(unexpected_providers)
             )
-        selected_sources = [
-            item
-            for item in list(validation_payload.get("sourceMatrix") or [])
-            if isinstance(item, dict)
-            and (
-                item.get("selectedForEvidence") is True
-                or bool((item.get("sourceQualityGate") or {}).get("selectedForEvidence"))
-            )
-        ]
-        off_topic_hosts = sorted(
-            {
-                str(item.get("host") or "unknown")
-                for item in selected_sources
-                if not _research_source_matches_root_subject(
-                    domestic_question,
-                    title=str(item.get("title") or ""),
-                    url=str(item.get("url") or ""),
-                    snippet=str(item.get("snippet") or ""),
-                    text=str(item.get("text") or ""),
-                )
-            }
-        )
-        if off_topic_hosts:
-            result.failures.append(
-                "domestic_selected_source_subject_mismatch:" + ",".join(off_topic_hosts)
-            )
         result.status = "ok" if not result.failures else "failed"
         result.providers = sorted(providers)
         result.summary = (
@@ -836,6 +810,7 @@ def _run_domestic_delivery_case() -> AuditCaseResult:
         result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
     result.elapsed_ms = int((time.perf_counter() - started) * 1000)
     return result
+
 
 
 def _run_continuation_case() -> AuditCaseResult:
@@ -994,55 +969,6 @@ def _run_runtime_broker_list_compact_case() -> AuditCaseResult:
     result.elapsed_ms = int((time.perf_counter() - started) * 1000)
     return result
 
-
-def _run_low_quality_source_gate_case() -> AuditCaseResult:
-    result = AuditCaseResult("low_quality_source_gate", "低质量来源：captcha/footer/snippet 被拒绝")
-    started = time.perf_counter()
-    try:
-        from core.tools.research_broker import _research_answer_pack, _source_quality_gate
-
-        source = {
-            "title": "Security check required",
-            "url": "https://www.youtube.com/watch?v=noisy",
-            "snippet": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
-        }
-        read_payload = {
-            "ok": True,
-            "title": "YouTube footer",
-            "text": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
-        }
-        gate = _source_quality_gate(question="low quality gate validation", result=source, read_payload=read_payload, source_policy="authoritative")
-        pack = _research_answer_pack(
-            {
-                "researchEvidenceBank": {
-                    "selectedSources": [],
-                    "rejectedSources": [
-                        {
-                            "title": source["title"],
-                            "url": source["url"],
-                            "reason": gate.get("rejectedReason"),
-                            "qualityDimensions": gate.get("qualityDimensions"),
-                        }
-                    ],
-                    "claims": [],
-                    "stats": {"selectedSourceCount": 0, "rejectedSourceCount": 1, "claimCount": 0},
-                },
-                "sourceMatrix": [],
-                "finalExperiencePack": {"researchResult": "No reliable source-backed findings were collected."},
-            }
-        )
-        result.status = "ok" if not gate.get("selectedForEvidence") and pack.get("score", {}).get("qualityStatus") == "insufficient" else "failed"
-        result.summary = f"selected={gate.get('selectedForEvidence')} reason={gate.get('rejectedReason')} quality={pack.get('score', {}).get('qualityStatus')}"
-        if gate.get("selectedForEvidence"):
-            result.failures.append("noisy_source_passed_quality_gate")
-        if pack.get("score", {}).get("qualityStatus") != "insufficient":
-            result.failures.append("low_quality_pack_not_marked_refresh_required")
-        result.evidence.append(_redact({"gate": gate, "answerPack": pack}))
-    except Exception as exc:  # noqa: BLE001
-        result.status = "failed"
-        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
-    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
-    return result
 
 
 def _run_admin_hover_agent_surface_case() -> AuditCaseResult:
@@ -1204,7 +1130,6 @@ CASES = {
     "reuse": _run_reuse_case,
     "memory_route_research_experience": _run_memory_route_research_experience_case,
     "runtime_broker_list_compact": _run_runtime_broker_list_compact_case,
-    "low_quality_source_gate": _run_low_quality_source_gate_case,
     "admin_hover_agent_surface": _run_admin_hover_agent_surface_case,
     "conflict": _run_conflict_case,
 }

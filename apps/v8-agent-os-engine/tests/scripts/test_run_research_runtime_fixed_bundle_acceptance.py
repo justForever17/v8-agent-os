@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from contextlib import nullcontext
@@ -8,6 +9,64 @@ from contextlib import nullcontext
 import pytest
 
 from tests.scripts import run_research_runtime_fixed_bundle_acceptance as audit
+
+
+@pytest.mark.parametrize("has_evidence_bank", [False, True])
+def test_fixed_attempt_binds_actual_agent_signature_without_acquisition(monkeypatch, tmp_path, has_evidence_bank):
+    from core.tools import research_broker as broker
+
+    signature = inspect.signature(broker._execute_research_agent)
+    calls = []
+
+    def execute(**kwargs):
+        signature.bind(**kwargs)  # Extra legacy arguments fail before recording a call.
+        assert kwargs["max_searches"] == 0
+        assert kwargs.get("acquire") is None
+        calls.append(kwargs)
+        return {"answer": "Fixed evidence answer", "reviewDecision": "accept"}
+
+    monkeypatch.setattr(broker, "_execute_research_agent", execute)
+    monkeypatch.setattr(audit, "_result_assessment", lambda _: {
+        "reviewDecision": "accept", "highQualityIssues": [], "qualityRecommendations": [],
+        "qualityMetrics": {}, "writerMode": "agent", "writerSectionCount": 0, "providerModels": [],
+    })
+    bundle = _bundle()
+    if has_evidence_bank:
+        bundle["researchEvidenceBank"] = {"sources": [{"text": "Complete recorded body"}]}
+    before = json.dumps(bundle, sort_keys=True)
+    _, outcome = audit.run_attempt(bundle=bundle, snapshot={"bindingKey": "fixture"},
+        result_dir=tmp_path, binding_probe=lambda: {"bindingKey": "fixture"})
+    assert outcome["terminalStatus"] == "completed", outcome["error"]
+    assert outcome["qualified"] is True
+    assert outcome["evidenceSearchCalls"] == outcome["evidenceReadCalls"] == 0
+    assert len(calls) == 1
+    if has_evidence_bank:
+        assert calls[0]["shards"] == []
+        assert calls[0]["previous_bundle"]["researchEvidenceBank"] == bundle["researchEvidenceBank"]
+        calls[0]["previous_bundle"]["researchEvidenceBank"].clear()
+    else:
+        assert calls[0]["previous_bundle"] is None
+        assert calls[0]["shards"] == bundle["shards"]
+        calls[0]["shards"].clear()
+    assert json.dumps(bundle, sort_keys=True) == before
+    assert json.loads(Path(outcome["resultRef"]).read_text(encoding="utf-8"))["answer"] == "Fixed evidence answer"
+
+
+@pytest.mark.parametrize("owner", ["agent.py", "evidence.py", "model_call.py"])
+def test_fixed_fingerprint_changes_when_current_research_owner_changes(tmp_path, monkeypatch, owner):
+    # Use isolated byte copies; a change to an executing owner must invalidate
+    # a previous passing streak even if the broker entrypoint is unchanged.
+    runtime_path = audit.ENGINE_ROOT / "runtimes" / "research" / owner
+    assert runtime_path in audit.DEFAULT_CODE_PATHS
+    isolated_paths = []
+    for source_path in audit.DEFAULT_CODE_PATHS:
+        target = tmp_path / source_path.relative_to(audit.ENGINE_ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source_path.read_bytes())
+        isolated_paths.append(target)
+    before = audit.code_fingerprint(isolated_paths)
+    (tmp_path / runtime_path.relative_to(audit.ENGINE_ROOT)).write_bytes(b"# changed owner\n")
+    assert audit.code_fingerprint(isolated_paths) != before
 
 
 @pytest.mark.parametrize("argv", [[], ["--bundle", "private-evidence.json", "--attempt-log", "private-attempts.jsonl"]])

@@ -103,7 +103,7 @@ test("actual Web/Phone event handlers deduplicate mutation refresh before the fi
       seenRealtimeEventIdentitiesRef: { current: ledger }, seenRealtimeEventKeysRef: { current: ledger },
       snapshotCoveredRealtimeSeqRef: { current: 0 }, lastAppliedSnapshotSeqRef: { current: 0 },
       latestRealtimeSeqRef: { current: 0 }, latestSeqRef: { current: 0 },
-      loadConversationHistory: refresh, loadConversationRef: { current: refresh },
+      loadConversationHistory: refresh, loadConversation: refresh,
       readRealtimeDiagnostics: () => ({}), getPerfNowMs: () => 0, locale: "en",
     };
     vm.runInNewContext(callbackSource(filename, name), sandbox);

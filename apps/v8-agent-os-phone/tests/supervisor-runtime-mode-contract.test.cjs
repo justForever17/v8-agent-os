@@ -32,7 +32,9 @@ test("Phone snapshots the selected mode for queued and immediate submissions", (
 
 test("Phone serializes mode persistence per session and isolates stale failures", () => {
   const chatScreen = read("src/screens/ChatScreen.tsx");
-  assert.match(chatScreen, /useLayoutEffect\(\(\) => \{\s*activeConversationIdRef\.current = activeConversationId/);
+  const lifecycle = read("src/hooks/use-phone-conversation-lifecycle.ts");
+  assert.match(chatScreen, /const \{ activeConversationIdRef, conversationTransitionTokenRef \} = conversationLifecycle/);
+  assert.match(lifecycle, /useLayoutEffect\(\(\) => \{\s*activeConversationIdRef\.current = options\.activeConversationId/);
   assert.match(chatScreen, /supervisorRuntimeModeRequestSeqRef = useRef<Record<string, number>>/);
   assert.match(chatScreen, /supervisorRuntimeModePersistChainRef = useRef<Record<string, Promise<void>>>/);
   assert.match(chatScreen, /const requestSeq = \(supervisorRuntimeModeRequestSeqRef\.current\[sessionId\] \|\| 0\) \+ 1/);

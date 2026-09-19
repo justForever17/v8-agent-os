@@ -110,11 +110,13 @@ test("canonical ordinal and turn position keep Phone history and live merges ord
 test("overview and optimistic placeholders resolve authoritative profile assets", () => {
   const overview = read("src/components/chat/SessionOverviewPanel.tsx");
   const screen = read("src/screens/ChatScreen.tsx");
+  const reconciliation = read("src/lib/phone-message-reconciliation.ts");
 
   assert.match(overview, /resolveAdminAssetUrl\(adminBaseUrl, item\.avatar\)/);
   assert.match(overview, /<SubagentReturnItem[^>]*adminBaseUrl=\{adminBaseUrl\}/);
   assert.match(screen, /realtimeMessageStateRef\.current\.activeAgentProfile/);
-  assert.match(screen, /agentName: agentProfile\?\.agentName/);
-  assert.match(screen, /agentAvatar: agentProfile\?\.agentAvatar/);
-  assert.match(screen, /agentRoleLabel: agentProfile\?\.agentRoleLabel/);
+  assert.match(screen, /buildAssistantPlaceholder,[\s\S]*?from "@\/src\/lib\/phone-message-reconciliation"/);
+  assert.match(reconciliation, /agentName: agentProfile\?\.agentName/);
+  assert.match(reconciliation, /agentAvatar: agentProfile\?\.agentAvatar/);
+  assert.match(reconciliation, /agentRoleLabel: agentProfile\?\.agentRoleLabel/);
 });

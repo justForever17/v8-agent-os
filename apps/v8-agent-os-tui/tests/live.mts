@@ -34,10 +34,20 @@ const { readFileSync } = await import('node:fs');
 assert.equal(readFileSync(source.workspacePath, 'utf8'), '中文附件往返');
 const owner = await client.api('/v1/client-identity/owner');
 if (!owner.initialized) await client.api('/v1/client-identity/bootstrap', { method: 'POST', body: { login: 'tui-fixture', name: 'TUI Fixture' } });
-const ticket = await client.api('/v1/client-identity/pairing-ticket', { method: 'POST', body: { baseUrl: 'https://fixture.example.invalid', ttlMs: 60000 } });
-assert.ok(ticket.pairingCode); assert.ok(ticket.pairingId);
-await client.api(`/v1/client-identity/pairing-ticket/${encodeURIComponent(ticket.pairingId)}`, { method: 'DELETE' });
-const result = { realEngine: true, sessionId, status, canonicalReloadParity: true, observedAssistantVersions: seen.size, attachmentRegistered: true, phoneTicketCreatedAndRevoked: true, elapsedMs: Date.now() - start, realProviderSucceeded: ['completed', 'succeeded'].includes(status) };
+const manifest = await client.api('/v1/client-identity/link-manifest');
+let phoneTicketCreatedAndRevoked = false;
+if (manifest.pairing?.available) {
+  const ticket = await client.api('/v1/client-identity/pairing-ticket', { method: 'POST', body: { ttlMs: 60000 } });
+  assert.ok(ticket.pairingCode); assert.ok(ticket.pairingId);
+  const revoked = await client.api(`/v1/client-identity/pairing-ticket/${encodeURIComponent(ticket.pairingId)}`, { method: 'DELETE' });
+  assert.equal(revoked.revoked, true);
+  phoneTicketCreatedAndRevoked = true;
+} else {
+  // A chat-only isolated Engine intentionally disables remote access. Prove
+  // the rejection instead of inventing a reachable public gateway for it.
+  await assert.rejects(client.api('/v1/client-identity/pairing-ticket', { method: 'POST', body: { ttlMs: 60000 } }), (error: any) => error.status === 400);
+}
+const result = { realEngine: true, sessionId, status, canonicalReloadParity: true, observedAssistantVersions: seen.size, attachmentRegistered: true, phoneTicketCreatedAndRevoked, phonePairingUnavailableReason: manifest.pairing?.reason || '', elapsedMs: Date.now() - start, realProviderSucceeded: ['completed', 'succeeded'].includes(status) };
 client.stop();
 console.log(JSON.stringify(result));
 assert.ok(result.realProviderSucceeded, 'Engine conversation did not complete successfully; do not report as live chat passed');

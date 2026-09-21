@@ -179,8 +179,20 @@ async def _prewarm_supervisor_graph(
 
     try:
         pending_prerequisite_tasks: set[asyncio.Task] = set()
+        provider_prewarm_error_type: str | None = None
         if provider_prewarm_task is not None:
-            await provider_prewarm_task
+            try:
+                await provider_prewarm_task
+            except Exception as exc:
+                # Provider capability probing is optional for graph assembly. A
+                # rejected probe must not prevent the graph from warming up;
+                # the first request can still use the configured provider and
+                # receives the diagnostic below.
+                provider_prewarm_error_type = type(exc).__name__
+                print(
+                    "[Engine] Provider prewarm failed; continuing Supervisor graph prewarm:",
+                    provider_prewarm_error_type,
+                )
         if extension_prerequisite_tasks:
             _completed, pending_prerequisite_tasks = await asyncio.wait(
                 extension_prerequisite_tasks,
@@ -201,11 +213,14 @@ async def _prewarm_supervisor_graph(
                 runner.build_graph(config),
                 task_name=task_name,
             )
-            return {
+            result = {
                 "ok": True,
                 "graphCacheHit": bool((diagnostics or {}).get("graphCacheHit")),
                 "graphBuildMs": float((diagnostics or {}).get("graphBuildMs") or 0),
             }
+            if provider_prewarm_error_type:
+                result["providerPrewarmErrorType"] = provider_prewarm_error_type
+            return result
 
         safe_diagnostics = await _build_once(task_name="supervisor-graph-prewarm")
         print("[Engine] Supervisor graph prewarm completed:", safe_diagnostics)

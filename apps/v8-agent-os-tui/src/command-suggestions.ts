@@ -2,11 +2,37 @@ import { clip } from './terminal.js';
 
 // Metadata belongs to the existing action catalog; this module only projects it.
 export type CommandEntry = { command?: string; description?: string; label: string; disabled?: boolean };
+
+function fuzzyScore(value: string | undefined, term: string): number {
+  const text = value?.toLocaleLowerCase() || '';
+  if (!term) return 0;
+  if (!text) return -1;
+  if (text === term) return 1000;
+  if (text.startsWith(term)) return 800 - Math.min(text.length, 200);
+  const index = text.indexOf(term);
+  if (index >= 0) return 500 - Math.min(index, 200);
+  let cursor = 0;
+  let gaps = 0;
+  for (const character of term) {
+    const found = text.indexOf(character, cursor);
+    if (found < 0) return -1;
+    gaps += found - cursor;
+    cursor = found + 1;
+  }
+  return 250 - Math.min(gaps, 200);
+}
+
 export function commandMatches<T extends CommandEntry>(actions: T[], query: string): T[] {
   const term = query.trim().replace(/^\//, '').toLocaleLowerCase();
-  return actions.filter(action => action.command && [action.command, action.label, action.description]
-    .some(value => value?.toLocaleLowerCase().includes(term)))
-    .sort((a, b) => Number(b.command === term) - Number(a.command === term));
+  return actions
+    .map((action, index) => ({ action, index, score: Math.max(
+      fuzzyScore(action.command, term),
+      fuzzyScore(action.label, term),
+      fuzzyScore(action.description, term),
+    ) }))
+    .filter(item => item.action.command && item.score >= 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(item => item.action);
 }
 
 /** Keep the selected action visible; the caller reserves the composer first. */

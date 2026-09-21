@@ -34,6 +34,17 @@ test('suggestions project the canonical actions, never Send; query by alias, lab
   assert.deepEqual(commandMatches(commands, 'not-a-command'), []);
 });
 
+test('command search accepts a fuzzy subsequence without changing empty-query order', () => {
+  const actions = [
+    { command: 'settings', label: '设置', description: '模型与上下文' },
+    { command: 'sessions', label: '会话列表', description: '搜索并恢复' },
+    { command: 'stop', label: '停止', description: '查看任务' },
+  ];
+  assert.deepEqual(commandMatches(actions, '').map(item => item.command), ['settings', 'sessions', 'stop']);
+  assert.equal(commandMatches(actions, 'stngs')[0].command, 'settings');
+  assert.equal(commandMatches(actions, '/会话')[0].command, 'sessions');
+});
+
 test('visible window follows selection and reserves rows even in a 24-column terminal', t => {
   const { ui } = make(t), commands = ui.commands(), last = commandMatches(commands, '').length - 1;
   for (const width of [128, 80, 59, 40, 24]) for (const rows of [1, 2, 3, 5, 8, 20]) {

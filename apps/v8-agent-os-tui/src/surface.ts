@@ -57,6 +57,29 @@ function numericInput(value: string, label: string) {
   if (!Number.isFinite(number)) throw new Error(`${label}必须是有限数字`);
   return number;
 }
+function booleanInput(value: string, label: string) {
+  const normalized = value.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on', '启用', '是'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off', '禁用', '否'].includes(normalized)) return false;
+  throw new Error(`${label}请输入 true / false`);
+}
+function modelRefOf(model: any) {
+  return String(model?.modelRef || `${model?.providerId || ''}:${model?.modelId || ''}`).replace(/^:/, '') || '未命名模型';
+}
+function contextFacts(value: unknown, prefix = '', out: string[] = [], depth = 0): string[] {
+  if (depth > 4 || value == null || typeof value !== 'object') return out;
+  const allowed = /(?:context|token|compaction|compression|prompt|summary|baseline|latency|saved|window|usage|threshold)/i;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (!allowed.test(path)) continue;
+    if (item && typeof item === 'object') contextFacts(item, path, out, depth + 1);
+    else if (typeof item === 'number' || typeof item === 'boolean' || typeof item === 'string') {
+      const text = String(item);
+      if (text.length <= 160) out.push(`${path}：${text}`);
+    }
+  }
+  return out;
+}
 export class Surface {
   page: Page | null = null; input: Editor; multiline = false; undo = ''; anchor = 0; following = true; unread = 0;
   scrollDelta = 0; editorWidth = 78;
@@ -397,8 +420,19 @@ export class Surface {
   }
   async readPage(title: string, route: string) { const data = await this.client.api(route); this.open(title, describe(data), [{ label: '返回', run: () => this.close(true) }, { label: '刷新', run: () => this.readPage(title, route) }]); }
   async models() {
-    const roles = await this.client.api('/v1/config-broker/roles');
-    this.open('模型 / Provider / 预算', describe(roles), [
+    const [roles, controlPlane] = await Promise.all([
+      this.client.api('/v1/config-broker/roles'),
+      this.client.api('/v1/models/control-plane'),
+    ]);
+    const modelRows = Array.isArray(controlPlane?.models) ? controlPlane.models : [];
+    const modelLines = modelRows.slice(0, 12).flatMap((model: any) => {
+      const eligibility = model.eligibility || {};
+      const state = eligibility.eligible === false ? `不可用：${eligibility.message || '能力或元数据不完整'}` : '可用';
+      return [`模型 ${modelRefOf(model)} · ${state}`,
+        `  上下文：${model.contextWindow || '未知'} · 输出：${model.outputTokenMode || (model.maxTokens ? `fixed ${model.maxTokens}` : 'auto')}`];
+    });
+    const lines = [...describe(roles), ...(modelLines.length ? ['模型目录（前 12 项）', ...modelLines] : ['模型目录暂无可用条目'])];
+    this.open('模型 / Provider / 预算', lines, [
       { label: '返回设置', run: () => this.settings() },
       { label: '连接 Provider / 模型', run: () => this.form('连接模型', [
         { key: 'providerId', label: 'Provider ID', value: '' }, { key: 'modelId', label: '模型 ID', value: '' },
@@ -411,8 +445,44 @@ export class Surface {
       { label: '为角色选择模型', run: () => this.form('角色模型', [{ key: 'role', label: '角色 ID（上方角色列表）', value: 'supervisor' }, { key: 'modelRef', label: '模型引用', value: '' }], async v => this.prepare('/v1/config-broker/roles/prepare', v, '/v1/config-broker/roles')) },
       { label: '浏览已安装模型', run: () => this.readPage('模型目录', '/v1/config-broker/models?limit=50') },
       { label: '累计 Token / 费用预算', run: () => this.budgets() },
+      { label: '近 24 小时用量', run: () => this.modelUsage() },
+      { label: 'Supervisor 推理强度', run: () => this.reasoningEffort() },
       { label: '模型单次输出长度', run: () => this.outputParameters() },
       { label: '上下文配置', run: () => this.contextSettings() },
+    ]);
+  }
+  async modelUsage() {
+    const data = await this.client.api('/v1/telemetry/overview?days=1');
+    const stats = data.stats || {};
+    const lines = [
+      `统计窗口：${stats.recentWindowDays || 1} 天`,
+      `调用：${stats.recentWindowInvocations ?? 0} · Token：${stats.recentWindowTokens ?? 0}`,
+      `估算费用：${stats.recentWindowEstimatedCost ?? 0}`,
+      `提示：Provider 未回报用量时，Engine 会明确标记 unknown，不把估算当实际结算。`,
+      ...((data.recentInvocations || []).slice(0, 8).flatMap((item: any) => [
+        `${item.modelId || item.model_id || 'unknown'} · ${item.status || 'unknown'} · ${item.durationMs ?? item.latencyMs ?? item.latency_ms ?? '?'} ms`,
+        `  input ${item.inputTokens ?? item.input_tokens ?? item.promptTokens ?? '?'} / output ${item.outputTokens ?? item.output_tokens ?? item.completionTokens ?? '?'}`,
+      ])),
+    ];
+    this.open('近 24 小时模型用量', lines, [{ label: '返回模型设置', run: () => this.models() }, { label: '刷新', run: () => this.modelUsage() }]);
+  }
+  async reasoningEffort() {
+    if (!this.client.view.sessionId) {
+      this.open('Supervisor 推理强度', ['需要先选择一个会话；该设置只作用于当前会话，不修改全局模型默认值。'], [{ label: '返回模型设置', run: () => this.models() }]);
+      return;
+    }
+    const current = await this.client.api(`/v1/models/supervisor-reasoning-effort?sessionId=${encodeURIComponent(this.client.view.sessionId)}`);
+    const levels = Array.isArray(current.levels) && current.levels.length ? current.levels : ['auto', 'low', 'medium', 'high'];
+    this.open('Supervisor 推理强度', [
+      `当前：${current.effectiveLevel || current.sessionLevel || 'auto'}`,
+      `来源：${current.selectionSource || 'model_default'}`,
+      current.reason || '切换后从下一条消息生效。',
+    ], [
+      { label: '返回模型设置', run: () => this.models() },
+      ...levels.map((level: string) => ({ label: `设为 ${level}`, run: async () => {
+        const result = await this.client.api('/v1/models/supervisor-reasoning-effort', { method: 'PATCH', body: { sessionId: this.client.view.sessionId, level } });
+        this.open('推理强度已更新', [`当前：${result.effectiveLevel || level}`, `来源：${result.selectionSource || 'session'}`], [{ label: '返回模型设置', run: () => this.models() }]);
+      } })),
     ]);
   }
   async budgets() {
@@ -450,16 +520,107 @@ export class Surface {
   async contextSettings() {
     const current = await this.client.api('/v1/config-registry/context');
     const policy = current.data?.policy || {}, compression = policy.compression || {};
-    this.form('上下文窗口', [
+    const summaryModel = current.data?.modelBindings?.summaryModel || current.data?.bindings?.summary_model || current.bindings?.summary_model || 'Engine 默认';
+    const c = { ...compression };
+    const status = c.enabled === false ? '已关闭（不会自动压缩）' : `已启用 · ${c.mode || 'persistent_baseline'}`;
+    this.open('上下文与压缩', [
+      `状态：${status}`,
+      `窗口：${c.default_context_window_tokens || 32000} · 软阈值：${c.soft_trigger_ratio ?? 0.90} · 硬阈值：${c.hard_trigger_ratio ?? c.trigger_ratio ?? 0.94}`,
+      `保留：${c.keep_recent_turns ?? 4} 轮 / ${c.keep_recent_messages ?? 8} 条 · 摘要模型：${summaryModel}`,
+      '配置保存由 Engine 校验并回读；TUI 不直接修改会话 transcript。',
+      '当前 Engine 未暴露手动压缩命令；只能在下一次运行达到阈值时自动压缩。',
+    ], [
+      { label: '返回模型设置', run: () => this.models() },
+      { label: '查看当前上下文用量', run: () => this.contextUsage() },
+      { label: '查看最近压缩记录', run: () => this.compactionHistory() },
+      { label: '编辑基础压缩策略', run: () => this.editContextBasics(policy, c) },
+      { label: '编辑高级压缩参数', run: () => this.editContextAdvanced(policy, c) },
+    ]);
+  }
+  private contextSaveForm(policy: any, compression: any, fields: Field[], parse: (values: Record<string, string>) => any, lines: string[]) {
+    this.form('上下文压缩策略', fields, async values => {
+      const patch = { policy: { ...policy, compression: { ...compression, ...parse(values) } } };
+      this.confirm('上下文配置预览', [...lines, ...describe(patch)], '保存并回读', async () => {
+        await this.client.api('/v1/config-registry/context', { method: 'POST', body: patch });
+        await this.contextSettings();
+      });
+    }, lines);
+  }
+  editContextBasics(policy: any, compression: any) {
+    this.contextSaveForm(policy, compression, [
+      { key: 'enabled', label: '自动压缩（true / false）', value: String(compression.enabled !== false) },
+      { key: 'mode', label: '压缩模式', value: String(compression.mode || 'persistent_baseline') },
       { key: 'window', label: '上下文窗口 Token 上限', value: String(compression.default_context_window_tokens || 32000) },
-      { key: 'ratio', label: '压缩触发比例（0–1）', value: String(compression.trigger_ratio ?? 0.94) },
-      { key: 'turns', label: '保留最近轮数', value: String(compression.keep_recent_turns ?? 4) },
-    ], async values => {
-      const window = numericInput(values.window, '上下文窗口'), ratio = numericInput(values.ratio, '触发比例'), turns = numericInput(values.turns, '保留轮数');
-      if (!Number.isInteger(window) || window <= 0 || !(ratio > 0 && ratio <= 1) || !Number.isInteger(turns) || turns < 1) throw new Error('请输入正整数窗口/轮数及 0–1 的触发比例');
-      const patch = { policy: { ...policy, compression: { ...compression, default_context_window_tokens: window, trigger_ratio: ratio, keep_recent_turns: turns } } };
-      this.confirm('上下文配置预览', describe(patch), '保存并回读', async () => { await this.client.api('/v1/config-registry/context', { method: 'POST', body: patch }); await this.registry('context'); });
-    }, ['此处调整输入上下文容量；不会改动模型的单次输出上限。']);
+      { key: 'ratio', label: '硬压缩触发比例（0.70–0.99）', value: String(compression.trigger_ratio ?? 0.94) },
+      { key: 'turns', label: '保留最近轮数（1–40）', value: String(compression.keep_recent_turns ?? 4) },
+      { key: 'messages', label: '保留最近消息数（至少轮数 × 2）', value: String(compression.keep_recent_messages ?? 8) },
+      { key: 'llm', label: '使用模型生成摘要（true / false）', value: String(compression.use_llm_summary !== false) },
+    ], values => {
+      const window = numericInput(values.window, '上下文窗口');
+      const ratio = numericInput(values.ratio, '触发比例');
+      const turns = numericInput(values.turns, '保留轮数');
+      const messages = numericInput(values.messages, '保留消息数');
+      if (!Number.isInteger(window) || window < 2048 || window > 2_000_000) throw new Error('上下文窗口必须是 2048–2000000 的整数');
+      if (!Number.isInteger(turns) || turns < 1 || turns > 40 || !Number.isInteger(messages) || messages < turns * 2 || messages > 100) throw new Error('保留轮数/消息数超出范围，消息数至少为轮数的两倍');
+      if (!(ratio >= 0.70 && ratio <= 0.99)) throw new Error('硬压缩触发比例必须在 0.70–0.99');
+      const enabled = booleanInput(values.enabled, '自动压缩');
+      const llm = booleanInput(values.llm, '模型摘要');
+      const mode = values.mode.trim() || 'persistent_baseline';
+      if (!['persistent_baseline', 'ephemeral'].includes(mode)) throw new Error('压缩模式只能是 persistent_baseline 或 ephemeral');
+      return { enabled, mode, default_context_window_tokens: window, trigger_ratio: ratio, hard_trigger_ratio: ratio, keep_recent_turns: turns, keep_recent_messages: messages, use_llm_summary: llm };
+    }, ['基础策略控制自动压缩边界；保存后由 Engine 规范化阈值和保留数量。']);
+  }
+  editContextAdvanced(policy: any, compression: any) {
+    this.contextSaveForm(policy, compression, [
+      { key: 'soft', label: '软阈值（0.10–0.99）', value: String(compression.soft_trigger_ratio ?? 0.90) },
+      { key: 'input', label: '摘要输入 Token 上限', value: String(compression.max_summary_input_tokens ?? 5000) },
+      { key: 'inputMessages', label: '摘要输入消息上限', value: String(compression.max_summary_input_messages ?? 60) },
+      { key: 'output', label: '摘要输出 Token 上限', value: String(compression.max_summary_output_tokens ?? 800) },
+      { key: 'safety', label: '压缩模型安全比例（0.50–0.95）', value: String(compression.compression_model_safety_ratio ?? 0.90) },
+      { key: 'latency', label: '显著延迟提示（毫秒）', value: String(compression.noticeable_latency_ms ?? 800) },
+    ], values => {
+      const soft = numericInput(values.soft, '软阈值');
+      const input = numericInput(values.input, '摘要输入上限');
+      const inputMessages = numericInput(values.inputMessages, '摘要消息上限');
+      const output = numericInput(values.output, '摘要输出上限');
+      const safety = numericInput(values.safety, '安全比例');
+      const latency = numericInput(values.latency, '延迟提示');
+      if (soft < 0.10 || soft > 0.99 || soft >= Number(compression.hard_trigger_ratio ?? compression.trigger_ratio ?? 0.94)) throw new Error('软阈值必须低于硬阈值且在 0.10–0.99');
+      if (![input, inputMessages, output, latency].every(Number.isInteger) || input < 512 || inputMessages < 5 || output < 128 || latency < 50) throw new Error('高级上限必须是合法正整数');
+      if (safety < 0.50 || safety > 0.95) throw new Error('压缩模型安全比例必须在 0.50–0.95');
+      return { soft_trigger_ratio: soft, max_summary_input_tokens: input, max_summary_input_messages: inputMessages, max_summary_output_tokens: output, compression_model_safety_ratio: safety, noticeable_latency_ms: latency };
+    }, ['高级参数影响摘要成本和延迟；范围约束与 Engine normalize_context_policy 保持一致。']);
+  }
+  async contextUsage() {
+    const sessionId = this.client.view.sessionId;
+    if (!sessionId) { this.open('当前上下文用量', ['尚未选择会话。'], [{ label: '返回上下文设置', run: () => this.contextSettings() }]); return; }
+    await this.client.refreshSnapshot();
+    const [telemetry, compactions] = await Promise.all([
+      this.client.api('/v1/telemetry/overview?days=1').catch(() => ({})),
+      this.client.api(`/v1/observability/compactions?sessionId=${encodeURIComponent(sessionId)}&limit=5`).catch(() => ({ items: [] })),
+    ]);
+    const governance = this.client.snapshot.contextGovernance || this.client.snapshot.snapshot?.contextGovernance || this.client.snapshot.currentRun?.contextGovernance || {};
+    const window = Number(governance.context_window_tokens || governance.contextWindowTokens || 0);
+    const input = Number(governance.estimated_effective_input_tokens || governance.estimatedEffectiveInputTokens || governance.estimated_input_tokens || governance.estimatedInputTokens || 0);
+    const usageLine = window > 0 && input >= 0 ? `使用率：${Math.min(100, Math.round(input / window * 100))}%（${input} / ${window} tokens）` : '使用率：Engine 尚未回报';
+    const lines = [
+      `会话：${sessionId}`,
+      usageLine,
+      ...(contextFacts(this.client.snapshot.currentRun || this.client.snapshot.snapshot || this.client.snapshot, 'snapshot') || ['Engine 尚未回报本会话的上下文计量。']),
+      `近 24 小时总 Token：${telemetry.stats?.recentWindowTokens ?? '未知'}（仅全局统计）`,
+      `最近压缩：${(compactions.items || []).length} 条`,
+    ];
+    this.open('当前上下文用量', lines, [{ label: '返回上下文设置', run: () => this.contextSettings() }, { label: '刷新', run: () => this.contextUsage() }]);
+  }
+  async compactionHistory() {
+    const sessionId = this.client.view.sessionId;
+    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}&limit=20` : '?limit=20';
+    const result = await this.client.api(`/v1/observability/compactions${query}`);
+    const lines = (result.items || []).flatMap((item: any) => [
+      `${item.createdAt || item.created_at || 'unknown'} · ${item.trigger_reason || item.triggerReason || 'unknown'} · ${item.summary_method || 'summary'}`,
+      `  摘要 ${item.summary_tokens || 0} tokens · 节省约 ${item.estimated_saved_tokens || 0} · 覆盖 ${item.covered_message_count || 0} 条`,
+    ]);
+    this.open('最近压缩记录', lines.length ? lines : ['当前没有已记录的会话压缩。'], [{ label: '返回上下文设置', run: () => this.contextSettings() }, { label: '刷新', run: () => this.compactionHistory() }]);
   }
   async prepare(route: string, payload: any, readback: string) {
     const plan = await this.client.api(route, { method: 'POST', body: payload });
@@ -477,6 +638,7 @@ export class Surface {
     const [data, schema] = await Promise.all([this.client.api(`/v1/config-broker/${domain}`), this.client.api(`/v1/config-broker/${domain}/schema`)]);
     const labels: Record<string, string> = { enabled: '启用', port: '监听端口', publicBaseUrl: '手机外部地址（HTTPS）', 'node.displayName': '节点名称', 'node.advertisedBaseUrl': 'Peer 公告地址', 'relay.enabled': '启用 Relay', 'discovery.lanEnabled': '局域网发现', 'delegation.maxConcurrent': '最大并行任务数' };
     const fields = schemaFields(schema.schema || {});
+    const editable = new Set(fields.map(field => field.key));
     const actions: Action[] = fields.map(({ key, definition }) => {
       const current = key.split('.').reduce((v: any, part) => v?.[part], data.settings) ?? definition.default ?? '';
       const label = labels[key] || key;
@@ -491,8 +653,16 @@ export class Surface {
         }, [definition.description || '', ...(domain === 'client-gateway' ? ['地址影响手机连接；端口/启用状态改动需要重启 Engine 才生效。'] : [])]);
       } };
     });
-    this.open(domain === 'network' ? '组网配置' : '手机网关配置', describe(data), [
+    const title = domain === 'network' ? '组网配置' : '手机网关配置';
+    const settings = data.settings || {};
+    const summary = [
+      `当前状态：${settings.enabled === false ? '已关闭' : '已启用'}`,
+      ...(domain === 'client-gateway' ? [`监听端口：${settings.port || '未设置'}`, `手机地址：${settings.publicBaseUrl || '未设置（仅本机）'}`] : [`节点：${settings.node?.displayName || '未命名'}`, `Peer 地址：${settings.node?.advertisedBaseUrl || '未公告'}`]),
+      `可编辑字段：${editable.size} 个 · 凭据字段由配对/Engine 身份服务管理`,
+    ];
+    this.open(title, summary, [
       { label: '返回设置', run: () => this.settings() },
+      { label: '重新读取状态', run: () => this.brokerSettings(domain) },
       ...actions,
       { label: '查看可修改字段', run: () => this.open('配置字段', describe(schema), [{ label: '返回', run: () => this.brokerSettings(domain) }]) },
       { label: '修改配置字段', run: () => this.form('配置字段', [{ key: 'key', label: '字段名（见 Engine 字段说明）', value: '' }, { key: 'value', label: '值（true / false / 数字 / 文本）', value: '' }], async v => {

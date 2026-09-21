@@ -71,6 +71,46 @@ test('empty numeric budgets stay on the form and send no request; explicit zero 
   ui.formEditor = editor('0'); await ui.dispatch({ key: 'f9' }); assert.equal(writes, 1); assert.equal(ui.page!.title, '配置变更预览');
 });
 
+test('context settings expose usage/history and reject values Engine would silently normalize', async t => {
+  const calls: string[] = [];
+  const { ui, client } = make(t, async (route: string, opts: any) => {
+    calls.push(route);
+    if (route === '/v1/config-registry/context') return { data: { policy: { compression: { enabled: true, mode: 'persistent_baseline', default_context_window_tokens: 32000, trigger_ratio: 0.94, keep_recent_turns: 4, keep_recent_messages: 8 } }, bindings: { summary_model: 'Engine 默认' } } };
+    if (route.startsWith('/v1/observability/compactions')) return { items: [{ createdAt: 'now', trigger_reason: 'threshold', summary_tokens: 100, estimated_saved_tokens: 900, covered_message_count: 6 }] };
+    if (route.startsWith('/v1/telemetry/overview')) return { stats: { recentWindowTokens: 1234 } };
+    if (route.includes('/snapshot')) return { contextGovernance: { context_window_tokens: 32000, estimated_input_tokens: 1200, estimated_effective_input_tokens: 900, compaction_applied: false } };
+    return {};
+  });
+  await ui.contextSettings();
+  assert.equal(ui.page?.title, '上下文与压缩');
+  assert.ok(ui.page?.actions.some(action => action.label === '查看当前上下文用量'));
+  assert.ok(ui.page?.actions.some(action => action.label === '查看最近压缩记录'));
+  ui.editContextBasics(client as any, { enabled: true, mode: 'persistent_baseline', default_context_window_tokens: 32000, trigger_ratio: 0.94, keep_recent_turns: 4, keep_recent_messages: 8 });
+  assert.equal(ui.page?.title, '上下文压缩策略');
+  ui.page!.fieldIndex = 2;
+  ui.formEditor = editor('1024');
+  await ui.dispatch({ key: 'f9' });
+  assert.match(client.notice, /上下文窗口必须是 2048/);
+  await ui.contextUsage();
+  assert.match(ui.page?.lines.join('\n') || '', /context_window_tokens/);
+  await ui.compactionHistory();
+  assert.match(ui.page?.lines.join('\n') || '', /节省约 900/);
+  assert.ok(calls.some(route => route.startsWith('/v1/observability/compactions')));
+});
+
+test('reasoning effort is session scoped and only advertises Engine supplied levels', async t => {
+  const { ui, client } = make(t, async (route: string, opts: any) => {
+    if (route.startsWith('/v1/models/supervisor-reasoning-effort') && opts?.method === 'PATCH') return { effectiveLevel: 'high', selectionSource: 'session' };
+    if (route.startsWith('/v1/models/supervisor-reasoning-effort')) return { effectiveLevel: 'auto', selectionSource: 'model_default', levels: ['auto', 'high'] };
+    return {};
+  });
+  await ui.reasoningEffort();
+  assert.ok(ui.page?.actions.some(action => action.label === '设为 high'));
+  assert.ok(!ui.page?.actions.some(action => action.label === '设为 medium'));
+  await ui.page?.actions.find(action => action.label === '设为 high')?.run();
+  assert.match(ui.page?.lines.join('\n') || '', /high/);
+});
+
 test('attach uses actual session binding while new drafts retain selected workspace', async t => {
   const { client } = make(t, async route => route.endsWith('/scope') ? { binding: { workspace_path: '/bound/session' } } : { messages: [] });
   client.view.workspace = '/new/default'; client.notice = '新建对话'; await client.attach('s');

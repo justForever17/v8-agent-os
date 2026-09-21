@@ -240,7 +240,7 @@ export class Client {
     const draft = this.draft; delete this.view.drafts.new;
     this.view.drafts[id] = draft; await this.attach(id); this.approvalMode = approvalMode; return id;
   }
-  async submit() {
+  async submit(extraData: Record<string, unknown> = {}) {
     if (this.busy) return;
     if (this.draft.unknown) throw new Error('前次发送结果待确认；请先对账，不可重复提交。');
     if (!this.draft.text.trim() && !this.draft.attachments.length) return;
@@ -256,7 +256,7 @@ export class Client {
         const result = await this.api('/v1/chat/submit', { method: 'POST', timeoutMs: 20000, body: {
           session_id: sessionId, conversationId: sessionId, clientMessageId,
           messages: [{ id: clientMessageId, role: 'user', content: draft.text }],
-          data: { conversationId: sessionId, clientMessageId, attachments, fileUrls: attachments.map(x => x.url), ...(this.approvalMode ? { safetyApprovalMode: this.approvalMode } : {}) },
+          data: { conversationId: sessionId, clientMessageId, attachments, fileUrls: attachments.map(x => x.url), ...(this.approvalMode ? { safetyApprovalMode: this.approvalMode } : {}), ...extraData },
         } });
         if (!result.accepted || !(result.runId || result.run_id)) throw new Error('Engine 未返回可核对的受理结果。');
         draft.text = draft.nextText || ''; delete draft.nextText; draft.attachments = []; delete draft.unknown; this.save(true);

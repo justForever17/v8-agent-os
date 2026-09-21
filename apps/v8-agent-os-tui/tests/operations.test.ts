@@ -78,6 +78,21 @@ test('attach uses actual session binding while new drafts retain selected worksp
   await client.attach(''); assert.equal(client.workspace, '/new/default'); assert.match(client.notice, /新建对话/);
 });
 
+test('submit preserves structured @ session and skill references in the Engine request', async t => {
+  let submitted: any;
+  const { client } = make(t, async (route: string, opts: any) => {
+    if (route === '/v1/chat/submit') { submitted = opts.body; return { accepted: true, runId: 'run-at' }; }
+    if (route.includes('/timeline/sync')) return { messages: [], syncCursor: 'cursor' };
+    if (route.includes('/runtime-events')) return { events: [] };
+    if (route.includes('/snapshot')) return { currentRun: { id: 'run-at', status: 'completed' } };
+    return {};
+  });
+  client.setDraft('请参考 @session:session-1 @skill:browser');
+  await client.submit({ contextSessionRefs: [{ sessionId: 'session-1', source: 'history_menu' }], contextMentions: [{ kind: 'skill', name: 'browser', label: 'browser', sourceType: 'explicit_mention' }] });
+  assert.deepEqual(submitted.data.contextSessionRefs, [{ sessionId: 'session-1', source: 'history_menu' }]);
+  assert.equal(submitted.data.contextMentions[0].name, 'browser');
+});
+
 test('retry refreshes capability and target; lost response is durable and never replays prose', async t => {
   let writes = 0, runId = 'r', canRetry = false;
   const { client, ui } = make(t, async (route: string, opts: any) => {

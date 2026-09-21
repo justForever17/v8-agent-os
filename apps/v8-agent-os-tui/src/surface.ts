@@ -6,6 +6,8 @@ import { createPeerInvitation, consumePeerInvitation } from './peer-pages.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { commandMatches, type CommandEntry } from './command-suggestions.js';
 import { type Locale } from './locale.js';
+import { parseAtReferences, workspaceReferencePath } from './mentions.js';
+import { stat } from 'node:fs/promises';
 
 export type Action = CommandEntry & { run: () => void | Promise<void>; navigation?: boolean };
 export type Field = { key: string; label: string; value: string; secret?: boolean };
@@ -184,7 +186,58 @@ export class Surface {
   confirm(title: string, lines: string[], label: string, run: () => Promise<void>) {
     this.open(title, lines, [{ label: '返回', run: () => this.close(true) }, { label, run }]);
   }
-  async submit() { await this.client.submit(); this.input = editor(this.client.draft.text); this.following = true; }
+  private async attachAtFiles() {
+    const refs = parseAtReferences(this.client.draft.text);
+    const filesRefs = refs.filter(ref => ref.kind === 'file' && !/^(skill|agent|subagent|plugin):/i.test(ref.value));
+    if (!filesRefs.length) return { contextMentions: [], contextSessionRefs: [], pluginReferences: [] };
+    if (!this.client.workspace) throw new Error('@ 文件引用需要先在 F3 设置并确认工作区。');
+    const files = [...new Set(filesRefs.map(ref => workspaceReferencePath(this.client.workspace, ref.value)))];
+    for (const filename of files) {
+      const info = await stat(filename).catch(() => null);
+      if (!info?.isFile()) throw new Error(`@ 文件不存在或不是普通文件：${filename}`);
+    }
+    for (const filename of files) await this.client.attachFile(filename);
+    this.client.notice = `已登记 ${files.length} 个 @ 文件来源；发送时由 Engine 读取。`;
+    return { contextMentions: [], contextSessionRefs: [], pluginReferences: [] };
+  }
+  private async resolveStructuredAtMentions() {
+    const refs = parseAtReferences(this.client.draft.text);
+    const contextSessionRefs = refs.filter(ref => ref.kind === 'session').map(ref => ({ sessionId: ref.value.slice('session:'.length), source: 'history_menu' as const }));
+    if (contextSessionRefs.some(ref => !/^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/.test(ref.sessionId))) throw new Error('@session 引用需要完整的会话 ID。');
+    const contextMentions: any[] = [], pluginReferences: any[] = [];
+    const skillRefs = refs.filter(ref => ref.value.startsWith('skill:'));
+    const agentRefs = refs.filter(ref => ref.value.startsWith('agent:') || ref.value.startsWith('subagent:'));
+    const pluginRefs = refs.filter(ref => ref.value.startsWith('plugin:'));
+    if (skillRefs.length || agentRefs.length) {
+      const catalog = await this.client.api('/v1/skills/list');
+      const skills = catalog.skills || [], families = catalog.subagentFamilies || [];
+      for (const ref of skillRefs) {
+        const name = ref.value.slice('skill:'.length), skill = skills.find((item: any) => String(item.name || item.id || '').toLowerCase() === name.toLowerCase());
+        if (!skill) throw new Error(`未找到 @skill:${name}；请先查看 Engine 当前能力目录。`);
+        contextMentions.push({ kind: 'skill', name: skill.name, label: skill.name, description: skill.description || '', path: skill.path || '', sourceType: 'explicit_mention' });
+      }
+      for (const ref of agentRefs) {
+        const name = ref.value.replace(/^(agent|subagent):/, ''), family = families.find((item: any) => String(item.familyId || item.id || item.name || '').toLowerCase() === name.toLowerCase());
+        if (!family) throw new Error(`未找到 @agent:${name}；请先查看 Engine 当前 subagent 族目录。`);
+        contextMentions.push({ kind: 'subagent_family', id: family.familyId || family.id || family.name, familyId: family.familyId || family.id || family.name, name: family.displayName || family.name, label: family.displayName || family.name, description: family.description || '', sourceType: 'explicit_mention' });
+      }
+    }
+    if (pluginRefs.length) {
+      const catalog = await this.client.api('/v1/api/plugins/mentions'), plugins = catalog.items || [];
+      for (const ref of pluginRefs) {
+        const id = ref.value.slice('plugin:'.length), plugin = plugins.find((item: any) => String(item.pluginId || '').toLowerCase() === id.toLowerCase());
+        if (!plugin) throw new Error(`未找到 @plugin:${id}；请先查看插件目录。`);
+        pluginReferences.push({ pluginId: plugin.pluginId, name: plugin.displayName, scope: 'task', componentIds: plugin.componentIds });
+      }
+    }
+    return { contextMentions, contextSessionRefs, pluginReferences };
+  }
+  async submit() {
+    const atData = await this.resolveStructuredAtMentions();
+    await this.attachAtFiles();
+    await this.client.submit(atData);
+    this.input = editor(this.client.draft.text); this.following = true;
+  }
   async sessions() {
     await this.client.listSessions();
     this.open('会话', ['选择只恢复查看；后台任务继续运行。'], [
@@ -214,6 +267,8 @@ export class Surface {
       { label: '重试当前任务', disabled: !this.client.retryControl.allowed, run: () => this.retryRun() },
       { label: '查看完整任务证据', run: () => { this.open('任务证据', describe({ timeline: s.runtimeTimeline, controls: s.controls, recovery: s.recoverable }), [{ label: '返回', run: () => this.details() }]); } },
       { label: '重命名会话', disabled: !this.client.view.sessionId, run: () => this.form('重命名会话', [{ key: 'title', label: '标题', value: '' }], async v => { await this.client.api(`/v1/sessions/${encodeURIComponent(this.client.view.sessionId)}`, { method: 'PATCH', body: { title: v.title } }); await this.sessions(); }) },
+      { label: this.client.sessions.find(s => idOf(s) === this.client.view.sessionId)?.pinned ? '取消置顶会话' : '置顶会话', disabled: !this.client.view.sessionId, run: async () => { const session = this.client.sessions.find(s => idOf(s) === this.client.view.sessionId); await this.client.api(`/v1/sessions/${encodeURIComponent(this.client.view.sessionId)}`, { method: 'PATCH', body: { pinned: !session?.pinned } }); await this.sessions(); } },
+      { label: '删除会话', disabled: !this.client.view.sessionId || this.client.active, run: () => this.confirm('删除会话', [`会话：${this.client.view.sessionId}`, '删除会清理会话记录、运行检查点和会话授权，无法由 TUI 撤销。', '运行中的会话必须先停止。'], '确认删除', async () => { const deleted = this.client.view.sessionId; await this.client.api(`/v1/sessions/${encodeURIComponent(deleted)}`, { method: 'DELETE' }); await this.client.attach(''); await this.client.listSessions(); this.client.notice = '会话已删除；已回到新会话。'; await this.close(true); }) },
     ]);
   }
   stopRun() {
@@ -465,6 +520,7 @@ export class Surface {
       '退出终端不停止 Engine / Phone / Peer；停止任务须选菜单“停止当前任务”。',
       '粘贴不会执行命令；大段粘贴使用 F9 或菜单明确发送。',
       '多行输入支持 ↑↓ 按显示列移动；操作菜单可搜索。外部编辑器使用 VISUAL / EDITOR（如 nano 或 code --wait），返回后须明确发送。',
+      '@文件路径会登记为当前工作区来源；支持 @"含空格的文件名"。session:/mcp:/ext: 和 URL 保留为文本引用，未确认路径不会自动读取。',
       'NO_COLOR / --no-color 无色；--screen-reader 线性阅读与编号菜单；Ctrl+P → language 切换语言。',
       'Node.js 22+。安装：npm install -g，后接下载的 .tgz 文件路径。',
       '没有 Engine：从官方 Release 下载 server 包并解压，执行 ./install.sh；不需要 Admin。',

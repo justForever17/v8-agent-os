@@ -34,6 +34,21 @@ test('editing preserves CJK, combining marks, skin tones, flags and ZWJ grapheme
   state = edit(editor('中👍🏽Z'), 'left'); assert.equal(edit(state, 'delete').text, '中👍🏽');
 });
 
+test('readline editing controls remain grapheme-safe and keep the cursor aligned', () => {
+  let state = editor('前缀 中间词 后缀');
+  state.cursor = graphemes('前缀 中间词').length;
+  state = edit(state, 'ctrl-w');
+  assert.equal(state.text, '前缀 后缀');
+  assert.equal(state.cursor, graphemes('前缀 ').length);
+  state = edit(state, 'ctrl-k');
+  assert.equal(state.text, '前缀 ');
+  state = edit(state, 'insert', '中👩‍🚀');
+  state = edit(state, 'ctrl-u');
+  assert.equal(state.text, '');
+  assert.equal(state.cursor, 0);
+  assert.deepEqual(editorLayout(editor('中👩‍🚀A'), 4).cursor, { row: 1, column: 1 });
+});
+
 test('every byte split of bracketed paste is one inert paste event, with UTF-8 intact', () => {
   const text = '中é👨‍👩‍👧‍👦\n/stop\n/exit\x03\x04\x1b[20~';
   const bytes = Buffer.from('\x1b[200~' + text + '\x1b[201~');

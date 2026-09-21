@@ -1,80 +1,110 @@
-# V8OS TUI
+# V8OS TUI / V8OS 终端界面
 
-以对话为主的终端界面，连接本机 V8OS Engine。默认单栏；会话与任务详情按需展开。
+`@v8-agent-os/v8-agent-os` is the conversation-first terminal client for a
+local V8OS Engine. It is intended for Linux servers, SSH and tmux. The TUI
+does not start Engine, own credentials, or stop the server when the terminal
+closes.
 
-## 安装
+`@v8-agent-os/v8-agent-os` publishes the `v8os-tui` command only. The
+administrative/automation CLI remains the separate `@v8/agent-os-cli` command
+(`v8os`). Keeping these commands separate prevents a global TUI install from
+silently replacing `v8os chat`, `v8os service` or JSON automation commands.
 
-需要 Node.js 22+。下载 Release 中的 npm 包，在任意目录安装：
+## Install / 安装
+
+Requires Node.js 22 or newer. Install the public package:
 
 ```sh
-npm install -g ./V8OS-TUI-2026.09.17.1.tgz
+npm install --global @v8-agent-os/v8-agent-os
 v8os-tui
 ```
 
-上面使用统一 Release 的资产名。开发者直接运行 `npm pack` 得到的是
-`v8-agent-os-tui-<package-version>.tgz`（当前版本为 `v8-agent-os-tui-2026.9.17-1.tgz`）；
-本地安装使用 npm 实际打印的文件名，发布脚本会生成统一 Release 名称。
+To install a verified release asset instead:
 
-公开 npm 包名登记后再启用 registry 安装；当前先分发 tarball。本包不会在
-postinstall 下载、启动 Engine 或执行特权操作。普通 `v8os` CLI 仍支持 Node 20；
-已装 CLI 时可用 `v8os tui` 惰性启动独立终端包。
+```sh
+npm install --global ./V8OS-TUI-<release-version>.tgz
+v8os-tui
+```
 
-首次使用需要安装 server 发行包：下载对应 Linux x64 server 包、解压，执行包内
-`./install.sh`，再按其 README 初始化凭据并运行 `./v8os service install`。
-已有服务用 `v8os service start` 启动。TUI 的 F3 设置可连接 Provider/模型并确认
-已有工作区目录。身份、授权、配置和后台任务均由 Engine 管理，无需 Admin 页面。
+需要 Node.js 22+。公开 npm 包安装方式：
 
-## 操作
+```sh
+npm install -g @v8-agent-os/v8-agent-os
+v8os-tui
+```
 
-| 按键 | 操作 |
-| --- | --- |
-| Enter / F9 | 发送；多行模式用 F9；粘贴后显式 F9 发送 |
-| F8 / Alt+Enter | 多行模式开关 / 插入换行 |
-| Ctrl+P / 空输入 `/` | 输入附近的命令候选；↑↓ 选择，Tab 补全，Enter 执行，Esc 返回原草稿 |
-| 候选中再按 Ctrl+P | 完整操作菜单；页面内 Ctrl+P 仍打开完整菜单 |
-| Ctrl+B / Ctrl+T / Ctrl+N | 会话列表 / 任务详情 / 新会话 |
-| F2 / F3 / F4 / F1 | 待处理 / 设置 / 连接 / 帮助 |
-| PageUp / PageDown | 滚动并暂停自动跟随；菜单可回到底部、载入更早历史 |
-| Tab / 上下键 / Esc | 切换字段、选择动作 / 返回 |
-| Ctrl+C / Ctrl+Z | 关闭页面或清空输入 / 撤销清空 |
-| Ctrl+D | 空草稿退出终端，后台服务继续运行 |
+也可以安装 Release 中的已校验 tarball。`v8os-tui` 只连接已有 Engine，
+不会在 `postinstall` 下载、启动 Engine 或执行特权操作。普通运维和非交互
+命令继续使用 server 包随附的 `v8os` CLI：
 
-停止任务使用菜单“停止当前任务”；Engine 确认之前显示请求中。审批默认选择
-“返回”，只有用户选中批准才提交。断线恢复只读取状态，不会自动重发消息、
-审批或配置修改。未能核对的发送会保留“结果待确认”和草稿。
+```sh
+v8os service start
+v8os chat "hello" --json
+v8os sessions list --json
+```
 
-附件通过 Engine 上传登记为来源，生成产物显示位置，均不会自动执行或打开。
-Phone 配对票据只在添加页面显示，关闭页面撤销未消费票据。
+First install the matching V8OS server package on the host. Extract it, run
+`./install.sh`, initialize the server credentials, and start Engine with
+`v8os service install` / `v8os service start`. TUI settings (F3) then select a
+provider, model and workspace. Phone pairing and Engine identity remain owned
+by Engine; no Admin page is required for local chat.
 
-`--no-color` / `NO_COLOR=1` 禁用颜色。`--screen-reader` 使用线性输出和编号菜单，
-兼容 `TERM=dumb`。重绘模式需要 stdin/stdout 均为 TTY；非交互场景使用
-`v8os chat`、`v8os sessions list --json` 或 `v8os inbox list --json`。
+先在服务器安装匹配版本的 V8OS server 包，解压后运行 `./install.sh`，再按
+server README 初始化凭据并执行 `v8os service install` / `v8os service start`。
+进入 TUI 后按 F3 配置 Provider、模型和工作区。Phone 配对和 Engine 身份仍由
+Engine 管理，本机对话不要求打开 Admin。
 
-视图和未发送草稿保存在状态目录 `runtime/tui/view-<instance-hash>.json`，按 Engine
-实例隔离。旧的未绑定 `view.json` 保留原处，不会自动导入另一实例。
-模型密钥只通过隐藏表单提交 Engine，不进入草稿文件。Unix 文件权限为 0600。
+## Controls / 操作
 
-审批模式默认沿用 Engine / 当前会话的设置；操作菜单可以显式选择逐项审批、减少
-审批或免审。累计预算、上下文窗口和模型单次输出长度在设置中分别编辑；模型输出
-参数会影响使用同一模型的全部角色。
+| Key | Action | 按键 | 操作 |
+| --- | --- | --- | --- |
+| Enter / F9 | Send | Enter / F9 | 发送 |
+| F8 / Alt+Enter | Toggle or insert multiline mode | F8 / Alt+Enter | 切换或插入多行 |
+| Ctrl+P or `/` at empty input | Search commands | Ctrl+P 或空输入 `/` | 搜索操作 |
+| Ctrl+B / Ctrl+T / Ctrl+N | Sessions / task details / new session | Ctrl+B / Ctrl+T / Ctrl+N | 会话 / 任务详情 / 新会话 |
+| F2 / F3 / F4 / F1 | Inbox / settings / connections / help | F2 / F3 / F4 / F1 | 待处理 / 设置 / 连接 / 帮助 |
+| PageUp / PageDown | Pause or resume transcript follow | PageUp / PageDown | 暂停或恢复消息跟随 |
+| Tab / arrows / Esc | Move focus, select, return | Tab / 方向键 / Esc | 切换焦点、选择、返回 |
+| Ctrl+C / Ctrl+Z | Close page or clear / undo draft | Ctrl+C / Ctrl+Z | 关闭页面或清空 / 撤销草稿 |
+| Ctrl+U / Ctrl+K / Ctrl+W | Delete to line start / end / previous word | Ctrl+U / Ctrl+K / Ctrl+W | 删除至行首 / 行尾 / 前一个词 |
+| Ctrl+X | Open the current input in `$VISUAL` or `$EDITOR` | Ctrl+X | 使用 `$VISUAL` 或 `$EDITOR` 编辑当前输入 |
+| Ctrl+D | Detach when the draft is empty | Ctrl+D | 草稿为空时退出 TUI |
 
-命令候选显示搜索词、短说明和匹配数量，每次最多显示六项。候选查询不会写入聊天
-草稿；Esc 保留原输入位置与历史滚动位置。粘贴仍进入草稿，不执行斜杠命令。
-执行命令后连续 Enter 不会误发原草稿；编辑后可正常 Enter，或用 F9 明确发送。
-多行草稿支持上下键按显示列移动，中文和 emoji
-不会被拆开。慢请求期间仍可 Esc 返回、打开其他页面或 Ctrl+D 退出；退出不停止
-Engine 任务，已发送操作通过原事务记录回读。
+Enter never approves a pending action by itself. Use the explicit action in the
+inbox or operation menu. Closing the TUI detaches the terminal; Engine, Phone
+and network peers continue running. A lost submission stays marked as
+“result pending confirmation” and is never silently retried.
 
-菜单中的外部编辑器读取 `VISUAL` 或 `EDITOR`（例如 `nano`、`code --wait`），以
-程序和参数直接启动，不执行 shell 表达式。编辑后回到草稿，需 F9 明确发送；
-失败或会话、实例、草稿已变化时保留临时副本并显示位置。
+Enter 不会单独批准待处理动作，必须在待处理页或操作菜单中显式选择。关闭 TUI
+只退出终端，Engine、Phone 和组网连接继续运行。发送结果无法核对时会保留“结果待
+确认”，不会静默重试。
 
-插件支持 dry-run 预览、确认安装和事务/回执回读。Runtime 能力包复用 server 包
-内的安装入口：预览后提供带精确状态目录的安装命令，在另一服务器终端执行，
-再回 TUI 核对结果。Peer 支持创建和接受一次性邀请；邀请不进入聊天草稿。
-任务重试仅在 Engine 声明可重试时启用，发送结果不明时禁止重复请求。
+`--screen-reader` selects the linear, numbered reader surface and works with
+`TERM=dumb`. `--no-color` or `NO_COLOR=1` disables styling. Non-TTY calls belong
+to the server CLI; `v8os-tui --json` only reports the clear `tty_required`
+diagnostic and never waits for hidden input.
 
-## 开发与验证
+`--screen-reader` 使用线性编号输出并兼容 `TERM=dumb`；`--no-color` 或
+`NO_COLOR=1` 禁用颜色。非 TTY 命令应使用 server 包的 `v8os` CLI；
+`v8os-tui --json` 只返回明确的 `tty_required` 诊断，不会隐藏等待输入。
+
+`--lang en` 或 `V8OS_LANG=en` 选择英文界面，也可从 Ctrl+P → language 持久化到
+本机 TUI 视图；该设置不会修改 Engine、Provider 或其他客户端。未知的 Engine
+业务内容保留原文，避免把模型输出误当成 UI 翻译。
+
+## State and safety / 状态与安全
+
+Only the view, scroll anchor and unsent draft are stored locally, under an
+Engine-instance-specific TUI state file. Provider secrets are submitted through
+Engine hidden fields and are never written to draft history. Attachments are
+registered as sources by Engine and generated artifacts are displayed without
+being executed.
+
+本地只保存视图、滚动锚点和未发送草稿，并按 Engine 实例隔离。Provider 密钥通过
+Engine 隐藏字段提交，不写入草稿历史。附件由 Engine 登记为来源，产物只展示位置，
+不会自动执行。
+
+## Development / 开发验证
 
 ```sh
 npm ci
@@ -82,15 +112,17 @@ npm run typecheck
 npm test
 npm run build
 npm pack
-# Linux：对实际安装的 bin 运行真实 PTY
-python3 tests/terminal_pty.py --node /path/to/node --bin /prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs
-# 候选浮层：真实 PTY + 隔离 HTTP fixture；pyte 仅为测试依赖
-python3 -m pip install pyte==0.8.2 wcwidth==0.8.3
-python3 tests/command_suggestions_pty.py --node /path/to/node --bin /prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs --evidence /tmp/v8-command-evidence
-# 显式隔离状态目录、已配置真实 provider
-V8_AGENT_OS_HOME=/path/to/isolated-state npm run test:live
 ```
 
-共享投影与 Engine 客户端在构建时从同一仓库打包，不依赖 `file:../../` 或源码目录。
-Qwen 研究版本和采用边界见 NOTICE.md。PTY 字符测试不等于真实中文 IME、读屏软件
-或移动设备验收；各发布版本分别报告实际覆盖平台。
+Run the installed tarball in a real PTY on Linux. The PTY tests cover grapheme
+editing, bracketed paste, command suggestions and reader output; they do not
+replace real Chinese IME, screen-reader, SSH or tmux validation.
+
+在 Linux 的真实 PTY 中运行安装后的 tarball。PTY 测试覆盖 grapheme 编辑、括号
+粘贴、命令候选和读屏输出，但不能替代真实中文输入法、读屏软件、SSH 或 tmux
+验收。
+
+Qwen Code interaction notes and licensing boundaries are recorded in
+`NOTICE.md` and the V8OS TUI skill references. V8OS adopts the useful terminal
+contracts while keeping Engine authorization, message state and runtime facts
+in their existing owners.

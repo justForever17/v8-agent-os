@@ -69,6 +69,19 @@ export function edit(state: Editor, action: string, value = '', width = Number.M
   else if (action === 'right') cursor++;
   else if (action === 'home') { while (cursor > 0 && parts[cursor - 1] !== '\n') cursor--; }
   else if (action === 'end') { while (cursor < parts.length && parts[cursor] !== '\n') cursor++; }
+  else if (action === 'ctrl-u') {
+    const lineStart = parts.slice(0, cursor).lastIndexOf('\n') + 1;
+    parts.splice(lineStart, cursor - lineStart); cursor = lineStart;
+  } else if (action === 'ctrl-k') {
+    const lineEnd = parts.indexOf('\n', cursor);
+    parts.splice(cursor, (lineEnd < 0 ? parts.length : lineEnd) - cursor);
+  } else if (action === 'ctrl-w') {
+    let start = cursor;
+    while (start > 0 && /\s/.test(parts[start - 1] || '')) start--;
+    while (start > 0 && !/\s/.test(parts[start - 1] || '')) start--;
+    parts.splice(start, cursor - start); cursor = start;
+    if (cursor > 0 && /\s/.test(parts[cursor - 1] || '') && /\s/.test(parts[cursor] || '')) parts.splice(cursor, 1);
+  }
   else if (action === 'backspace' && cursor > 0) { parts.splice(--cursor, 1); }
   else if (action === 'delete') parts.splice(cursor, 1);
   else if (action === 'insert' || action === 'paste') {

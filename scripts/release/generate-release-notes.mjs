@@ -346,7 +346,7 @@ function optionalProductNotes(release) {
   if (release.products?.tui?.enabled && release.products.tui.targets.npm.enabled) {
     result.names.push("TUI");
     result.assets.push(`- \`V8OS-TUI-${release.version}.tgz\`：可使用 npm 安装的独立终端客户端。`);
-    result.installation.push(`TUI：使用 Node.js 22+ 执行 \`npm install -g ./V8OS-TUI-${release.version}.tgz\`，然后运行 \`v8os-tui\` 连接本机 Engine；该包不下载或启动 Engine。普通 v8os CLI 仍支持 Node.js 20。`);
+    result.installation.push(`TUI：使用 Node.js 22+ 执行 \`npm install -g @v8-agent-os/v8-agent-os\`（或安装 \`V8OS-TUI-${release.version}.tgz\`），然后运行 \`v8os-tui\` 连接本机 Engine；该包不下载或启动 Engine。普通 v8os CLI 仍由 server 包提供并支持 Node.js 20。`);
   }
   return result;
 }

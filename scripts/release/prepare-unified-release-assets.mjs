@@ -86,7 +86,7 @@ export function verifyArchiveIdentity(filename, { product, version, target, sour
   }
   if (product !== "tui") throw new Error(`Unsupported archive product: ${product}`);
   const pkg = JSON.parse(archiveMember(filename, "package/package.json"));
-  if (pkg.name !== "@v8/agent-os-tui" || pkg.version !== toSemver(version)
+  if (pkg.name !== "@v8-agent-os/v8-agent-os" || pkg.version !== toSemver(version)
       || pkg.bin?.["v8os-tui"] !== "bin/v8os-tui.mjs" || pkg.engines?.node !== ">=22"
       || pkg.v8Release?.version !== version || !/^[a-f0-9]{40}$/.test(pkg.v8Release?.sourceCommit || "")
       || (sourceCommit && pkg.v8Release.sourceCommit !== sourceCommit)) throw new Error("TUI archive identity does not match the release package, version, bin, runtime or source commit");

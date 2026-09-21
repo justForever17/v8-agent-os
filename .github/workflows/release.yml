@@ -269,6 +269,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - name: Checkout
@@ -366,3 +367,25 @@ jobs:
           --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
           --source-commit "$GITHUB_SHA" --prerelease "$RELEASE_PRERELEASE"
           --directory release-assets --notes release-work/RELEASE_NOTES.md
+
+      - name: Publish verified TUI package to npm via OIDC Trusted Publishing
+        if: needs.plan.outputs.tui_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball=$(find release-assets -maxdepth 1 -name "V8OS-TUI-*.tgz" | head -n 1)
+          if [[ -z "$tarball" || ! -f "$tarball" ]]; then
+            echo "::warning::No TUI package archive found in release-assets; skipping npm publish"
+            exit 0
+          fi
+          pkg_name=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).name);")
+          pkg_ver=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).version);")
+          echo "Verifying $pkg_name@$pkg_ver against npm registry..."
+
+          published=$(npm view "$pkg_name@$pkg_ver" version 2>/dev/null || true)
+          if [[ "$published" == "$pkg_ver" ]]; then
+            echo "::error::Version $pkg_ver of $pkg_name is already published on npmjs.org; bump the package version before publishing."
+            exit 1
+          fi
+          echo "Publishing $tarball to npm via OIDC Trusted Publishing with SLSA Provenance..."
+          npm publish "$tarball" --access public --tag latest --provenance

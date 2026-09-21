@@ -36,7 +36,7 @@ function fixture(t) {
 }
 
 function tuiPackage() {
-  return { name: "@v8/agent-os-tui", version: toSemver(VERSION), type: "module", bin: { "v8os-tui": "bin/v8os-tui.mjs" },
+  return { name: "@v8-agent-os/v8-agent-os", version: toSemver(VERSION), type: "module", bin: { "v8os-tui": "bin/v8os-tui.mjs" },
     engines: { node: ">=22" }, files: ["bin", "dist", "LICENSE", "README.md", "NOTICE.md"], v8Release: { version: VERSION, sourceCommit: COMMIT } };
 }
 
@@ -259,7 +259,7 @@ test("real npm pack rebuilds committed source instead of stale dist and installs
   const npmCli = [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"), path.resolve(path.dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js")].find(fs.existsSync);
   const prefix = path.join(f.root, "installed");
   execFileSync(process.execPath, [npmCli, "install", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", file], { encoding: "utf8" });
-  assert.equal(execFileSync(process.execPath, [path.join(prefix, "node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs")], { encoding: "utf8" }).trim(), "current inline command menu");
+  assert.equal(execFileSync(process.execPath, [path.join(prefix, "node_modules/@v8-agent-os/v8-agent-os/bin/v8os-tui.mjs")], { encoding: "utf8" }).trim(), "current inline command menu");
   assert.doesNotMatch(execFileSync("tar", ["-tzf", file], { encoding: "utf8" }), /orphan\.js|node_modules/);
   assert.match(fs.readFileSync(path.join(source, "dist/main.js"), "utf8"), /stale fullscreen menu/, "pack must not rewrite the caller's build output");
   assert.match(fs.readFileSync(path.join(source, "node_modules/keep.txt"), "utf8"), /installed toolchain/);

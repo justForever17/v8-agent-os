@@ -8,9 +8,10 @@ import { clip, dimensions, editor, editorLayout, InputDecoder, safeText, wrap, t
 import { messageText, readerMessageUpdate, statusLabel, PausedTranscriptUpdates } from './presentation.js';
 import { TranscriptLayout } from './transcript-layout.js';
 import { suggestionRows } from './command-suggestions.js';
+import { localize, normalizeLocale } from './locale.js';
 export { messageText } from './presentation.js';
 
-const Pad = ({ lines, height, width, selected = -1, titled = false }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => <Text key={i} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(lines[i] || ' ', width)}</Text>)}</Box>;
+const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN' }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US' }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => <Text key={i} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localize(lines[i] || ' ', locale), width)}</Text>)}</Box>;
 
 function App({ client, surface, dispatch }: { client: Client; surface: Surface; dispatch: (event: Input) => void }) {
   useSyncExternalStore(client.subscribe, client.getRevision);
@@ -24,8 +25,10 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const columns = process.stdout.columns || 80, rows = process.stdout.rows || 24;
   const size = dimensions(columns, rows, client.view.sidebar, client.view.detail);
   const menu = surface.suggestions;
-  const editing = menu ? { ...menu.query, text: '/' + menu.query.text, cursor: menu.query.cursor + 1 } : surface.page?.fields ? surface.formEditor : surface.input;
-  const showComposer = !surface.page || Boolean(surface.page.fields);
+  const locale = client.view.locale || 'zh-CN';
+  const operationMenu = surface.page?.title === '操作菜单';
+  const editing = menu ? { ...menu.query, text: '/' + menu.query.text, cursor: menu.query.cursor + 1 } : operationMenu ? { ...surface.paletteEditor, text: '/' + surface.paletteEditor.text, cursor: surface.paletteEditor.cursor + 1 } : surface.page?.fields ? surface.formEditor : surface.input;
+  const showComposer = !surface.page || Boolean(surface.page?.fields) || operationMenu;
   const field = surface.page?.fields?.[surface.page.fieldIndex || 0];
   const secret = Boolean(field?.secret);
   surface.editorWidth = Math.max(1, columns - 2);
@@ -37,7 +40,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const historyHeight = availableHistoryHeight - suggestions.lines.length;
   const inputOffset = Math.max(0, inputLayout.cursor.row + 1 - inputHeight);
   useEffect(() => {
-    if (surface.page && !surface.page.fields) { setCursorPosition(undefined); return; }
+    if (surface.page && !surface.page.fields && !operationMenu) { setCursorPosition(undefined); return; }
     setCursorPosition({ x: Math.min(columns - 1, 2 + inputLayout.cursor.column), y: 5 + historyHeight + suggestions.lines.length + inputLayout.cursor.row - inputOffset });
   });
   let body: string[] = [];
@@ -69,23 +72,26 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   surface.unread = pausedUpdates.update(client.messages, surface.following);
   const hint = menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
-    <Text bold>{clip(label, columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
+    <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>
-      {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${statusLabel(s.status)}`)]} /></Box>}
-      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} />
-      {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行'}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} /></Box>}
+      {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${statusLabel(s.status)}`)]} locale={locale} /></Box>}
+      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} locale={locale} />
+      {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行'}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} locale={locale} /></Box>}
     </Box>
-    <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, columns)}</Text>
-    {showComposer && <Text>{clip(page?.fields ? `编辑：${field!.label}` : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, columns)}</Text>}
+    <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>
+    {showComposer && <Text>{clip(localize(page?.fields ? `编辑：${field!.label}` : operationMenu ? '操作菜单 · 输入筛选' : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, locale), columns)}</Text>}
     {showComposer && <Text dimColor>{'─'.repeat(columns)}</Text>}
-    {menu && <Pad width={columns} height={suggestions.lines.length} lines={suggestions.lines} selected={suggestions.selectedRow} />}
+    {menu && <Pad width={columns} height={suggestions.lines.length} lines={suggestions.lines} selected={suggestions.selectedRow} locale={locale} />}
     <Pad width={columns} height={inputHeight} lines={inputLines.slice(inputOffset, inputOffset + inputHeight).map((l, i) => `${i === 0 ? '> ' : '  '}${l}`)} />
-    <Text dimColor>{clip(hint, columns)}</Text>
+    <Text dimColor>{clip(localize(hint, locale), columns)}</Text>
   </Box>;
 }
 
 export async function start(args: string[]) {
   const client = new Client();
+  const langIndex = args.indexOf('--lang');
+  const requestedLocale = langIndex >= 0 && args[langIndex + 1] ? normalizeLocale(args[langIndex + 1]) : undefined;
+  if (requestedLocale) client.view.locale = requestedLocale;
   const requested = args.indexOf('--session'); const requestedSession = requested >= 0 ? args[requested + 1] || '' : '';
   const surface = new Surface(client);
   const reader = args.includes('--screen-reader') || process.env.INK_SCREEN_READER === 'true';
@@ -95,14 +101,15 @@ export async function start(args: string[]) {
   const exited = new Promise<void>(resolve => { resolveExit = resolve; });
   const echo = () => {
     if (!reader) return;
+    const t = (value: unknown) => localize(value, client.view.locale || 'zh-CN');
     const page = surface.page;
     if (surface.suggestions) {
       const menu = surface.suggestions, rows = suggestionRows(surface.commands(), menu.query.text, menu.selected, 120, 8);
-      process.stdout.write('\n' + safeText(rows.lines.join('\n')) + '\n↑↓选择，Tab补全，Enter执行，Esc返回原草稿 > /' + safeText(menu.query.text));
+      process.stdout.write('\n' + safeText(rows.lines.map(t).join('\n')) + '\n' + t('↑↓选择，Tab补全，Enter执行，Esc返回原草稿') + ' > /' + safeText(menu.query.text));
     } else if (page) {
-      process.stdout.write('\n' + safeText([page.title, ...page.lines, ...(page.fields || []).map(f => `${f.label}：${f.secret ? '隐藏输入' : f.value}`), ...page.actions.map((a, i) => `${i + 1}. ${a.label}${a.disabled ? '（不可用）' : ''}`)].join('\n')) + '\n');
-      process.stdout.write(page.fields ? `${page.fields[page.fieldIndex || 0].label} > ` : '选择编号，Enter确认；Esc返回 > ');
-    } else process.stdout.write(`\n${safeText(client.notice)}\n输入 > `);
+      process.stdout.write('\n' + safeText([page.title, ...page.lines, ...(page.fields || []).map(f => `${f.label}：${f.secret ? '隐藏输入' : f.value}`), ...page.actions.map((a, i) => `${i + 1}. ${a.label}${a.disabled ? '（不可用）' : ''}`)].map(t).join('\n')) + '\n');
+      process.stdout.write(page.fields ? `${t(page.fields[page.fieldIndex || 0].label)} > ` : t('选择编号，Enter确认；Esc返回') + ' > ');
+    } else process.stdout.write(`\n${safeText(t(client.notice))}\n${t('输入')} > `);
   };
   let number = '';
   let numberPage: Surface['page'] = null;
@@ -197,6 +204,7 @@ export async function start(args: string[]) {
   }) : () => {};
   try {
     await client.initialize();
+    if (requestedLocale && client.view.locale !== requestedLocale) { client.view.locale = requestedLocale; client.save(true); client.changed(); }
     if (requestedSession && client.instance.instanceId) await client.attach(requestedSession);
     if (client.instance.initialized === false) await surface.execute(() => surface.phones());
     echo();

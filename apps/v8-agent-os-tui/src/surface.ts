@@ -5,6 +5,7 @@ import { featurePacks, plugins } from './extension-pages.js';
 import { createPeerInvitation, consumePeerInvitation } from './peer-pages.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { commandMatches, type CommandEntry } from './command-suggestions.js';
+import { type Locale } from './locale.js';
 
 export type Action = CommandEntry & { run: () => void | Promise<void>; navigation?: boolean };
 export type Field = { key: string; label: string; value: string; secret?: boolean };
@@ -58,6 +59,7 @@ export class Surface {
   scrollDelta = 0; editorWidth = 78;
   busy = false; paletteQuery = ''; formEditor = editor(); private pageSerial = 0; private ticketId = '';
   suggestions: { query: Editor; selected: number; sessionId: string } | null = null;
+  paletteEditor: Editor = editor();
   private commandReturnGuard = false;
   private navigation = 0; private pendingOperations = new Map<symbol, { navigation: number; mutable: boolean }>(); private operation = new AsyncLocalStorage<number>();
   onExit: () => void = () => {}; onChange: () => void = () => {};
@@ -88,10 +90,11 @@ export class Surface {
     this.suggestions = { query: editor(), selected: 0, sessionId: this.client.view.sessionId };
     this.changed();
   }
+  setLocale(locale: Locale) { this.client.view.locale = locale; this.client.save(true); this.client.notice = locale === 'en-US' ? 'Language: English' : '界面语言：简体中文'; this.changed(); }
   private async suggestionInput(event: Input): Promise<boolean> {
     const menu = this.suggestions!;
     const matches = commandMatches(this.commands(), menu.query.text);
-    if (event.key === 'escape' || event.key === 'ctrl-c') { this.suggestions = null; this.changed(); return true; }
+    if (event.key === 'escape' || event.key === 'ctrl-c' || event.key === 'backspace' && !menu.query.text) { this.suggestions = null; this.changed(); return true; }
     if (event.key === 'ctrl-p') { this.suggestions = null; this.palette(menu.query.text); return true; }
     if (event.key === 'enter') {
       const action = matches[menu.selected];
@@ -108,7 +111,7 @@ export class Surface {
     } else if (event.key === 'tab') {
       const action = matches[menu.selected];
       if (action) { menu.query = editor(action.command); menu.selected = 0; }
-    } else if (['text', 'backspace', 'delete', 'left', 'right', 'home', 'end'].includes(event.key)) {
+    } else if (['text', 'backspace', 'delete', 'left', 'right', 'home', 'end', 'ctrl-u', 'ctrl-k', 'ctrl-w'].includes(event.key)) {
       menu.query = edit(menu.query, event.key === 'text' ? 'insert' : event.key, event.text || '', this.editorWidth);
       if (['text', 'backspace', 'delete'].includes(event.key)) menu.selected = 0;
     } else {
@@ -171,7 +174,7 @@ export class Surface {
       this.checkPage();
     }
     if (this.page?.fields) for (const f of this.page.fields) if (f.secret) f.value = '';
-    this.formEditor = editor(); this.page = null; this.pageSerial++; this.changed();
+    this.formEditor = editor(); this.paletteEditor = editor(); this.page = null; this.pageSerial++; this.changed();
   }
   form(title: string, fields: Field[], save: (values: Record<string, string>) => Promise<void>, lines: string[] = []) {
     this.open(title, lines);
@@ -270,6 +273,11 @@ export class Surface {
       { label: '实例 / 诊断', run: () => this.readPage('实例', '/v1/client-identity/instance') },
       { label: '手机网关设置', run: () => this.brokerSettings('client-gateway') },
       { label: '组网设置', run: () => this.brokerSettings('network') },
+      { label: '语言 / Language', run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
+        { label: '中文（简体）', run: () => { this.setLocale('zh-CN'); this.page = null; } },
+        { label: 'English', run: () => { this.setLocale('en-US'); this.page = null; } },
+        { label: '返回设置', run: () => this.settings() },
+      ]) },
     ]);
   }
   async readPage(title: string, route: string) { const data = await this.client.api(route); this.open(title, describe(data), [{ label: '返回', run: () => this.close(true) }, { label: '刷新', run: () => this.readPage(title, route) }]); }
@@ -453,11 +461,11 @@ export class Surface {
       'Enter 发送；F8 多行开关；F9 发送；Alt+Enter 换行。',
       'Ctrl+B 会话；Ctrl+T 任务；Ctrl+N 新会话；F2 待处理；F3 设置；F4 连接。',
       'PageUp 暂停跟随 / 读历史；PageDown 向下；菜单“回到底部”恢复。',
-      'Ctrl+C 关闭页面或清空输入；Ctrl+Z 撤销清空；Ctrl+D 空输入退出。',
+      'Ctrl+C 关闭页面或清空输入；Ctrl+X 使用外部编辑器；Ctrl+U/K/W 删除行首/行尾/前一个词；Ctrl+Z 撤销清空；Ctrl+D 空输入退出。',
       '退出终端不停止 Engine / Phone / Peer；停止任务须选菜单“停止当前任务”。',
       '粘贴不会执行命令；大段粘贴使用 F9 或菜单明确发送。',
       '多行输入支持 ↑↓ 按显示列移动；操作菜单可搜索。外部编辑器使用 VISUAL / EDITOR（如 nano 或 code --wait），返回后须明确发送。',
-      'NO_COLOR / --no-color 无色；--screen-reader 线性阅读与编号菜单。',
+      'NO_COLOR / --no-color 无色；--screen-reader 线性阅读与编号菜单；Ctrl+P → language 切换语言。',
       'Node.js 22+。安装：npm install -g，后接下载的 .tgz 文件路径。',
       '没有 Engine：从官方 Release 下载 server 包并解压，执行 ./install.sh；不需要 Admin。',
       '已有 Engine：v8os service start。进入 F3 设置连接模型并选择工作区。',
@@ -481,10 +489,17 @@ export class Surface {
     { command: 'bottom', description: '恢复跟随最新输出', label: '回到底部', navigation: true, run: () => { this.following = true; this.unread = 0; this.page = null; } },
     { command: 'sidebar', description: '显示或隐藏会话概览', label: '切换会话侧栏', navigation: true, run: () => { this.client.view.sidebar = !this.client.view.sidebar; this.client.save(); this.page = null; } },
     { command: 'details', description: '显示或隐藏任务概览', label: '切换任务侧栏', navigation: true, run: () => { this.client.view.detail = !this.client.view.detail; this.client.save(); this.page = null; } },
-    { command: 'exit', description: '退出界面，后台任务继续', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } }, { command: 'help', description: '快捷键与首次安装指导', label: '帮助', navigation: true, run: () => this.help() },
+    { command: 'exit', description: '退出界面，后台任务继续', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } },
+    { command: 'language', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
+      { label: '中文（简体）', run: () => { this.setLocale('zh-CN'); this.page = null; } },
+      { label: 'English', run: () => { this.setLocale('en-US'); this.page = null; } },
+      { label: '返回对话', run: () => this.close(true) },
+    ]) },
+    { command: 'help', description: '快捷键与首次安装指导', label: '帮助', navigation: true, run: () => this.help() },
   ]; }
-  palette(query = '') {
+  palette(query = '', preserveEditor = false) {
     this.paletteQuery = query;
+    if (!preserveEditor) this.paletteEditor = editor(query);
     const all = this.commands(), matches = all.filter(x => `${x.command || ''} ${x.label}`.toLowerCase().includes(query.toLowerCase()));
     this.open('操作菜单', [`搜索：${query || '（输入关键词）'}`, `匹配 ${matches.length} / ${all.length}`, matches.length ? '输入搜索 · 上下选择 · Enter 执行 · Esc 返回' : '没有匹配的操作；退格修改关键词，或 Esc 返回。'], matches);
   }
@@ -511,7 +526,14 @@ export class Surface {
         }
         this.changed(); return;
       }
-      if (page.title === '操作菜单' && ['text', 'backspace'].includes(key)) { this.palette(key === 'backspace' ? graphemes(this.paletteQuery).slice(0, -1).join('') : this.paletteQuery + text); return; }
+      if (page.title === '操作菜单' && ['text', 'paste', 'backspace', 'delete', 'left', 'right', 'home', 'end', 'ctrl-u', 'ctrl-k', 'ctrl-w'].includes(key)) {
+        if (key === 'backspace' && !this.paletteEditor.text) { await this.close(); return; }
+        const action = key === 'text' || key === 'paste' ? 'insert' : key;
+        this.paletteEditor = edit(this.paletteEditor, action, key === 'text' || key === 'paste' ? text : '', this.editorWidth);
+        this.paletteQuery = this.paletteEditor.text;
+        this.palette(this.paletteQuery, true);
+        return;
+      }
       if (key === 'up' || key === 'backtab') page.selected = Math.max(0, page.selected - 1);
       else if (key === 'down' || key === 'tab') page.selected = Math.max(0, Math.min(page.actions.length - 1, page.selected + 1));
       else if (key === 'pageup') page.offset = Math.max(0, page.offset - 6);
@@ -528,6 +550,7 @@ export class Surface {
     else if (key === 'f8') this.multiline = !this.multiline;
     else if (key === 'f9') await this.submit();
     else if (key === 'ctrl-c') { if (this.input.text) { this.undo = this.input.text; this.input = editor(); this.client.setDraft(''); this.client.notice = '输入已清空；Ctrl+Z 撤销。'; } else this.client.notice = 'Ctrl+D 退出终端；停止任务请选择菜单中的停止动作。'; }
+    else if (key === 'ctrl-x') await this.externalEditor();
     else if (key === 'ctrl-z') { if (this.undo) { this.input = editor(this.undo); this.undo = ''; this.client.setDraft(this.input.text); } }
     else if (key === 'ctrl-d' && !this.input.text) this.onExit();
     else if (key === 'pageup') { this.following = false; this.scrollDelta -= 6; }

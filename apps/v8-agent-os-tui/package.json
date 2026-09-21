@@ -1,11 +1,19 @@
 {
-  "name": "@v8/agent-os-tui",
+  "name": "@v8-agent-os/v8-agent-os",
   "version": "2026.9.20-1",
-  "description": "Conversation-first terminal client for the V8 Agent OS Engine",
+  "description": "Conversation-first terminal client for the V8 Agent OS",
   "license": "MIT",
   "type": "module",
   "bin": {
     "v8os-tui": "bin/v8os-tui.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/justForever17/v8-agent-os.git",
+    "directory": "apps/v8-agent-os-tui"
   },
   "files": [
     "bin",

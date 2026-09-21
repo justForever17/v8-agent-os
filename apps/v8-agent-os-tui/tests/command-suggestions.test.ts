@@ -162,3 +162,55 @@ test('complete menu and existing shortcuts remain discoverable; query has no aut
   assert.equal(ui.page!.title, '帮助 / 首次安装'); assert.equal(ui.suggestions, null);
   assert.match(ui.page!.lines.join(''), /Tab 补全/);
 });
+
+test('full command palette owns its editor, including Delete and readline controls', async t => {
+  const { ui } = make(t);
+  ui.palette('hel');
+  assert.equal(ui.page?.title, '操作菜单');
+  assert.equal(ui.paletteEditor.text, 'hel');
+  ui.paletteEditor.cursor = 2;
+  await ui.dispatch({ key: 'delete' });
+  assert.equal(ui.paletteEditor.text, 'he');
+  assert.equal(ui.page?.title, '操作菜单');
+  await ui.dispatch({ key: 'ctrl-u' });
+  assert.equal(ui.paletteEditor.text, '');
+  await ui.dispatch({ key: 'text', text: 'help' });
+  await ui.dispatch({ key: 'escape' });
+  assert.equal(ui.page, null);
+  assert.equal(ui.input.text, '');
+});
+
+test('language preference is persisted without entering Engine configuration', t => {
+  const { client, ui } = make(t);
+  ui.setLocale('en-US');
+  assert.equal(client.view.locale, 'en-US');
+  assert.equal(JSON.parse(readFileSync(client.store.file, 'utf8')).locale, 'en-US');
+});
+
+test('Ctrl-X delegates the active draft to the existing external editor owner', async t => {
+  const { ui } = make(t);
+  let opened = 0;
+  ui.externalEditor = async () => { opened++; };
+  await ui.dispatch({ key: 'text', text: 'draft' });
+  await ui.dispatch({ key: 'ctrl-x' });
+  assert.equal(opened, 1);
+});
+
+test('Backspace on an empty command query returns to the untouched draft', async t => {
+  const { client, ui } = make(t);
+  client.setDraft('keep this draft'); ui.input = editor(client.draft.text);
+  await ui.dispatch({ key: 'ctrl-p' });
+  assert.ok(ui.suggestions);
+  await ui.dispatch({ key: 'backspace' });
+  assert.equal(ui.suggestions, null);
+  assert.equal(ui.input.text, 'keep this draft');
+});
+
+test('Backspace on an empty full palette returns to the draft instead of trapping focus', async t => {
+  const { client, ui } = make(t);
+  client.setDraft('keep this draft'); ui.input = editor(client.draft.text);
+  ui.palette();
+  await ui.dispatch({ key: 'backspace' });
+  assert.equal(ui.page, null);
+  assert.equal(ui.input.text, 'keep this draft');
+});

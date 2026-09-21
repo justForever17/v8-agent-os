@@ -8,11 +8,16 @@ export async function commandTui(args) {
   const local = fileURLToPath(new URL("../../v8-agent-os-tui/bin/v8os-tui.mjs", import.meta.url));
   let entry = existsSync(local) ? local : "";
   if (!entry) {
-    try { entry = createRequire(import.meta.url).resolve("@v8/agent-os-tui/bin/v8os-tui.mjs"); } catch { /* separate global prefix below */ }
+    for (const pkgName of ["@v8-agent-os/v8-agent-os", "@v8/agent-os-tui"]) {
+      try { entry = createRequire(import.meta.url).resolve(`${pkgName}/bin/v8os-tui.mjs`); break; } catch { /* next */ }
+    }
   }
   if (!entry && process.platform === "win32") {
     entry = (process.env.PATH || "").split(path.delimiter)
-      .map(dir => path.join(dir, "node_modules", "@v8", "agent-os-tui", "bin", "v8os-tui.mjs"))
+      .flatMap(dir => [
+        path.join(dir, "node_modules", "@v8-agent-os", "v8-agent-os", "bin", "v8os-tui.mjs"),
+        path.join(dir, "node_modules", "@v8", "agent-os-tui", "bin", "v8os-tui.mjs"),
+      ])
       .find(candidate => existsSync(candidate)) || "";
   }
   const child = spawn(entry ? process.execPath : "v8os-tui", entry ? [entry, ...args] : args, { stdio: "inherit", shell: false });

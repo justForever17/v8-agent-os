@@ -172,7 +172,7 @@ export function validateTuiTgzIntegrity(repoRoot = ROOT) {
   const appRoot = resolve(repoRoot, "apps/v8-agent-os-tui");
   const pkg = readJson(resolve(appRoot, "package.json"));
   const lock = readJson(resolve(appRoot, "package-lock.json"));
-  if (pkg.name !== "@v8/agent-os-tui" || typeof pkg.version !== "string"
+  if (pkg.name !== "@v8-agent-os/v8-agent-os" || typeof pkg.version !== "string"
       || typeof lock.version !== "string" || typeof lock.packages?.[""]?.version !== "string") {
     throw new Error("TUI package.json and package-lock.json require a package identity and both lock version projections before preparation");
   }

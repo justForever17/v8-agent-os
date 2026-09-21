@@ -52,8 +52,16 @@ jobs:
           set -euo pipefail
           archives=(out/tui/V8OS-TUI-*.tgz)
           [[ ${#archives[@]} == 1 && -f "${archives[0]}" ]]
+          node - "${archives[0]}" <<'NODE'
+          const cp = require('node:child_process');
+          const archive = process.argv[2];
+          const pkg = JSON.parse(cp.execFileSync('tar', ['-xzf', archive, '-O', 'package/package.json'], { encoding: 'utf8' }));
+          if (pkg.name !== '@v8-agent-os/v8-agent-os') throw new Error(`unexpected TUI package: ${pkg.name}`);
+          if (pkg.bin?.v8os) throw new Error('TUI package must not replace the server CLI v8os command');
+          if (pkg.bin?.v8os-tui !== 'bin/v8os-tui.mjs') throw new Error('missing v8os-tui entrypoint');
+          NODE
           npm install --global --prefix "$RUNNER_TEMP/tui-prefix" --ignore-scripts --no-audit --no-fund "${archives[0]}"
-          installed="$RUNNER_TEMP/tui-prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs"
+          installed=$(find "$RUNNER_TEMP/tui-prefix/lib/node_modules" -name "v8os-tui.mjs" | head -n 1)
           node "$installed" --help
           python apps/v8-agent-os-tui/tests/terminal_pty.py --node "$(command -v node)" --bin "$installed" --state "$RUNNER_TEMP/tui-state"
           python -m pip install pyte==0.8.2 wcwidth==0.8.3
@@ -66,7 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           node apps/v8-agent-os-cli/bin/v8os.mjs --help
-          python apps/v8-agent-os-tui/tests/terminal_pty.py --node "$(command -v node)" --bin "$RUNNER_TEMP/tui-prefix/lib/node_modules/@v8/agent-os-tui/bin/v8os-tui.mjs" --state "$RUNNER_TEMP/tui-node20-state" --expect-unsupported-node
+          installed=$(find "$RUNNER_TEMP/tui-prefix/lib/node_modules" -name "v8os-tui.mjs" | head -n 1)
+          python apps/v8-agent-os-tui/tests/terminal_pty.py --node "$(command -v node)" --bin "$installed" --state "$RUNNER_TEMP/tui-node20-state" --expect-unsupported-node
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: v8os-tui-npm

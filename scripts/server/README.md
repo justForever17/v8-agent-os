@@ -32,7 +32,7 @@ An administrator must enable lingering for this account (`loginctl enable-linger
 
 Engine listens on loopback. Phone remote access uses the existing Engine client gateway and its configured transport; do not publish the bare Engine control port. Use `./v8os config phone` for owner initialization, pairing tickets, device listing and revocation, and `./v8os config network` for trusted peer configuration. Configuration changes use Engine transactions. See `./v8os --help` for current command arguments.
 
-For interactive chat and configuration, install the matching `V8OS-TUI-<release-version>.tgz` asset with `npm install -g ./V8OS-TUI-2026.09.17.1.tgz`, then run `v8os-tui` under the same service account and state root. Public npm registry installation is not enabled yet. The TUI attaches to the existing Engine; it does not start another Engine, own credentials, or stop the service when the terminal closes.
+For interactive chat and configuration, install the matching `V8OS-TUI-<release-version>.tgz` asset with `npm install -g ./V8OS-TUI-2026.09.20.1.tgz`, or install `@v8-agent-os/v8-agent-os` from npm, then run `v8os-tui` under the same service account and state root. The TUI attaches to the existing Engine; it does not start another Engine, own credentials, or stop the service when the terminal closes. The server bundle's `v8os` CLI remains the owner of `v8os chat`, `v8os service` and JSON automation commands.
 
 ## Manage and upgrade
 

@@ -11,7 +11,7 @@ import { suggestionRows } from './command-suggestions.js';
 import { localize, normalizeLocale } from './locale.js';
 export { messageText } from './presentation.js';
 
-const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN' }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US' }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => <Text key={i} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localize(lines[i] || ' ', locale), width)}</Text>)}</Box>;
+const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN', localizeLines = false }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US'; localizeLines?: boolean }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => <Text key={i} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localizeLines ? localize(lines[i] || ' ', locale) : (lines[i] || ' '), width)}</Text>)}</Box>;
 
 function App({ client, surface, dispatch }: { client: Client; surface: Surface; dispatch: (event: Input) => void }) {
   useSyncExternalStore(client.subscribe, client.getRevision);
@@ -74,14 +74,14 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   return <Box flexDirection="column" width={columns} height={rows}>
     <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>
-      {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${statusLabel(s.status)}`)]} locale={locale} /></Box>}
-      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} locale={locale} />
-      {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行'}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} locale={locale} /></Box>}
+      {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${localize(statusLabel(s.status), locale)}`)]} locale={locale} localizeLines={true} /></Box>}
+      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page)} />
+      {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} /></Box>}
     </Box>
     <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>
     {showComposer && <Text>{clip(localize(page?.fields ? `编辑：${field!.label}` : operationMenu ? '操作菜单 · 输入筛选' : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, locale), columns)}</Text>}
     {showComposer && <Text dimColor>{'─'.repeat(columns)}</Text>}
-    {menu && <Pad width={columns} height={suggestions.lines.length} lines={suggestions.lines} selected={suggestions.selectedRow} locale={locale} />}
+    {menu && <Pad width={columns} height={suggestions.lines.length} lines={suggestions.lines} selected={suggestions.selectedRow} locale={locale} localizeLines={true} />}
     <Pad width={columns} height={inputHeight} lines={inputLines.slice(inputOffset, inputOffset + inputHeight).map((l, i) => `${i === 0 ? '> ' : '  '}${l}`)} />
     <Text dimColor>{clip(localize(hint, locale), columns)}</Text>
   </Box>;

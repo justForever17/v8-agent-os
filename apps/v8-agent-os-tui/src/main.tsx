@@ -75,7 +75,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>
       {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${localize(statusLabel(s.status), locale)}`)]} locale={locale} localizeLines={true} /></Box>}
-      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page)} />
+      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} />
       {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} /></Box>}
     </Box>
     <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>
@@ -107,7 +107,7 @@ export async function start(args: string[]) {
       const menu = surface.suggestions, rows = suggestionRows(surface.commands(), menu.query.text, menu.selected, 120, 8);
       process.stdout.write('\n' + safeText(rows.lines.map(t).join('\n')) + '\n' + t('↑↓选择，Tab补全，Enter执行，Esc返回原草稿') + ' > /' + safeText(menu.query.text));
     } else if (page) {
-      process.stdout.write('\n' + safeText([page.title, ...page.lines, ...(page.fields || []).map(f => `${f.label}：${f.secret ? '隐藏输入' : f.value}`), ...page.actions.map((a, i) => `${i + 1}. ${a.label}${a.disabled ? '（不可用）' : ''}`)].map(t).join('\n')) + '\n');
+      process.stdout.write('\n' + safeText([page.title, ...page.lines, ...(page.fields || []).map(f => `${f.label}：${f.secret ? '隐藏输入' : f.value}`), ...page.actions.map((a, i) => `${i + 1}. ${a.label}${a.disabled ? '（不可用）' : ''}`)].map(line => page.localizeLines === false ? line : t(line)).join('\n')) + '\n');
       process.stdout.write(page.fields ? `${t(page.fields[page.fieldIndex || 0].label)} > ` : t('选择编号，Enter确认；Esc返回') + ' > ');
     } else process.stdout.write(`\n${safeText(t(client.notice))}\n${t('输入')} > `);
   };

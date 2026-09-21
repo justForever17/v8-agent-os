@@ -9,10 +9,11 @@ import { type Locale } from './locale.js';
 import { parseAtReferences, workspaceReferencePath } from './mentions.js';
 import { stat } from 'node:fs/promises';
 import { buildQuestionAnswer, createQuestionDraft, normalizeQuestions, optionDetail, optionKey, optionLabel, questionAnswered, questionDetail, questionKey, questionTitle, requestSummary, type QuestionDraft } from './inbox.js';
+import { isSpecApproval, readSpecReview, specReviewMatches, type SpecReviewDocument } from './spec-review.js';
 
 export type Action = CommandEntry & { run: () => void | Promise<void>; navigation?: boolean };
 export type Field = { key: string; label: string; value: string; secret?: boolean };
-export type Page = { title: string; lines: string[]; actions: Action[]; selected: number; offset: number; fields?: Field[]; fieldIndex?: number; onSave?: (fields: Record<string, string>) => Promise<void>; sensitive?: boolean };
+export type Page = { title: string; lines: string[]; actions: Action[]; selected: number; offset: number; fields?: Field[]; fieldIndex?: number; onSave?: (fields: Record<string, string>) => Promise<void>; sensitive?: boolean; localizeLines?: boolean };
 const listOf = (data: any): any[] => Array.isArray(data) ? data : data.items || data.devices || data.peers || data.links || data.packs || data.models || [];
 export const secretField = (key: string) => /(?:apikey|accesstoken|refreshtoken|idtoken|bearertoken|authtoken|sessiontoken|apitoken|csrftoken|pairingcode|privatekey|signingkey|secret|password)$|^(?:token|authorization|cookie|credentials?)$/i.test(key.replace(/[-_]/g, ''));
 export function containsSecretField(value: unknown): boolean {
@@ -326,7 +327,7 @@ export class Surface {
       { label: '返回对话', run: () => this.close(true) },
       ...items.map((item: any) => ({ label: `${item.kind === 'question' ? '提问' : '审批'} · ${item.title || item.question || item.request?.question || item.summary || idOf(item)}`, run: async () => {
         if (item.sessionId && item.sessionId !== this.client.view.sessionId) { await this.client.attach(item.sessionId); this.input = editor(this.client.draft.text); }
-        this.inboxItem(item);
+        await this.inboxItem(item);
       } })),
       { label: '其他会话', run: () => this.sessions() },
     ]);
@@ -394,11 +395,40 @@ export class Surface {
       this.questionPage(item);
       return;
     }
+    if (isSpecApproval(item)) return this.specApproval(item);
     this.open('审批详情', [...approvalLines(item), ...(approvalTransparent(item) ? [] : ['请求缺少可核对的动作目标；无法批准，请拒绝或返回。'])], [
       { label: '返回', run: () => this.inbox() },
       { label: '拒绝', run: async () => { await this.client.decide(item, 'reject'); await this.inbox(); } },
       { label: '批准本次', disabled: !approvalTransparent(item), run: async () => { await this.client.decide(item, 'approve'); await this.inbox(); } },
     ]);
+  }
+  async specApproval(item: any) {
+    let document: SpecReviewDocument;
+    try { document = await readSpecReview(this.client, item); }
+    catch (error: any) {
+      if (error.staleView || error.stalePage) throw error;
+      this.open('Spec 文档未能读取', [safeText(error.message), '尚未确认完整文档，不会批准；可重读、拒绝或返回。'], [
+        { label: '返回待处理', run: () => this.inbox() },
+        { label: '重新读取文档', run: () => this.specApproval(item) },
+        { label: '拒绝此审批', run: async () => { await this.client.decide(item, 'reject'); await this.inbox(); } },
+      ]);
+      return;
+    }
+    const matches = specReviewMatches(item, document);
+    this.open('Spec 文档审批', [
+      `文档：${document.documentPath}`, `SHA-256：${document.documentSha256}`,
+      matches ? '请阅读下方完整文档；批准只针对该版本。' : '文档版本已变化；阅读后先刷新审批，再确认批准。',
+      'PgUp / PgDn 阅读；终端控制字符按普通内容显示。', '', safeText(document.content),
+    ], [
+      { label: '返回待处理', run: () => this.inbox() },
+      { label: '重新读取文档', run: () => this.specApproval(item) },
+      { label: '拒绝此审批', run: async () => { await this.client.decide(item, 'reject'); await this.inbox(); } },
+      ...(matches ? [{ label: '已阅读并批准此版本', run: async () => { await this.client.decide(item, 'approve', '', document); await this.inbox(); } }]
+        : [{ label: '为已读取版本刷新审批（尚不批准）', run: async () => { const replacement = await this.client.refreshSpecApproval(item, document); await this.specApproval(replacement); } }]),
+    ]);
+    // The reviewed prose is user content. UI translation must not change the
+    // text whose bytes were checked against the Engine's document version.
+    this.page!.localizeLines = false;
   }
   async settings() {
     this.open('设置', ['修改通过 Engine 校验并回读；密钥只在隐藏字段输入。'], [

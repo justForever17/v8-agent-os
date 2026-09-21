@@ -9,6 +9,7 @@ import { isActiveRunStatus } from '../../../packages/session-realtime/src/run-st
 import { buildSessionOutputProjection } from '../../../packages/session-realtime/src/session-output-projection.js';
 import { readTranscriptIdentity, isStaleTranscript, conversationEventDisposition } from '../../../packages/session-realtime/src/conversation-recovery.js';
 import { ViewStore, type ViewState, type Draft } from './persistence.js';
+import { isSpecApproval, specReviewMatches, validatedSpecReplacement, verifiedSpecDocument, type SpecReviewDocument } from './spec-review.js';
 
 export type Api = (route: string, options?: any) => Promise<any>;
 // Interaction and approval projections use different aliases. Prefer their
@@ -314,16 +315,32 @@ export class Client {
     }
     this.changed();
   }
-  async decide(item: any, action: 'approve' | 'reject' | 'answer', answer = '') {
+  async refreshSpecApproval(item: any, document: SpecReviewDocument) {
+    await this.refreshSnapshot();
+    const current = this.inbox.find(x => idOf(x) === idOf(item) && x.kind === 'approval');
+    if (!current || !isSpecApproval(current)) throw new Error('Spec 审批已变化，请重新打开待处理事项。');
+    const verified = verifiedSpecDocument(document);
+    const result = await this.api(`/v1/approvals/${encodeURIComponent(idOf(current))}/refresh-spec-review`, {
+      method: 'POST', body: { response: { documentSha256: verified.documentSha256 } },
+    });
+    const next = validatedSpecReplacement(result, current, verified);
+    await this.refreshSnapshot();
+    return next;
+  }
+  async decide(item: any, action: 'approve' | 'reject' | 'answer', answer = '', review?: SpecReviewDocument) {
     const identity = idOf(item), sessionId = this.view.sessionId;
     if (!identity) throw new Error('待处理事项缺少 Engine 交互标识，未发送决定。');
     if (action === 'answer' && !answer.trim()) throw new Error('回答不能为空，未发送决定。');
     await this.refreshSnapshot();
     if (sessionId !== this.view.sessionId || String(item.sessionId || item.session_id || sessionId) !== String(this.view.sessionId || sessionId) || !this.inbox.some(x => idOf(x) === identity && x.kind === item.kind && pending(x))) throw new Error('待处理事项已过期或已处理；已重新读取当前会话，请重新打开待处理列表。');
+    const current = this.inbox.find(x => idOf(x) === identity && x.kind === item.kind);
+    const spec = action === 'approve' && isSpecApproval(current);
+    if (spec && (!review || !specReviewMatches(current, verifiedSpecDocument(review)))) throw new Error('请先读取完整 Spec 文档并确认当前审批版本；文档变化时需刷新审批。');
     const route = action === 'answer' ? `/v1/ask-user/${encodeURIComponent(identity)}/respond` : `/v1/approvals/${encodeURIComponent(identity)}/${action}`;
     // RunCommandPayload owns response/payload. A top-level `answer` is ignored
     // by the Engine parser and would resume the run with an empty answer.
-    await this.api(route, { method: 'POST', body: action === 'answer' ? { response: { answer } } : {} });
+    const result = await this.api(route, { method: 'POST', body: action === 'answer' ? { response: { answer } } : spec ? { response: { documentSha256: review!.documentSha256 } } : {} });
+    if (spec && (result.spec_stage_approval?.ok !== true || result.approval?.status !== 'approved')) throw new Error('Engine 尚未确认 Spec 审批成功，请刷新文档与待处理状态。');
     await this.refreshSnapshot();
     if (this.inbox.some(x => idOf(x) === identity)) this.notice = '决定已送达，等待 Engine 状态更新。'; else this.notice = 'Engine 已确认处理结果。';
   }

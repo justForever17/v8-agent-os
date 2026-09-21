@@ -59,6 +59,35 @@ def test_card_binds_actual_document_bytes_at_creation(database, tmp_path):
     assert request["documentPath"].endswith("/requirements.md")
 
 
+@pytest.mark.parametrize("scheduler_fails", [False, True])
+def test_durable_approval_returns_document_apply_receipt_independent_of_scheduling(
+    database, tmp_path, monkeypatch, scheduler_fails,
+):
+    card, path, spec_id = review_card(database, tmp_path)
+    router, scheduled = router_for_review(monkeypatch, tmp_path, spec_id)
+    if scheduler_fails:
+        def fail_schedule(*_args, **_kwargs):
+            raise RuntimeError("synthetic scheduler failure")
+        router.configure(schedule_chat_run=fail_schedule)
+    result = router.dispatch_approval_command(RuntimeCommand(
+        topic="approval.approve", approval_id=card["approval_id"],
+        response={"documentSha256": hashlib.sha256(path.read_bytes()).hexdigest()},
+    ))
+    assert result["approvalDeliveryRecorded"] is True
+    assert result["decisionApplied"] is True
+    assert result["approval"]["status"] == "approved"
+    assert result["spec_stage_approval"]["ok"] is True
+    assert result["spec_stage_approval"]["specId"] == spec_id
+    assert result["spec_stage_approval"]["stage"] == "requirements"
+    assert spec_service.build_brief(workspace_path=str(tmp_path), spec_id=spec_id)["approvalState"]["requirements"] is True
+    assert result["resume_scheduled"] is not scheduler_fails
+    if scheduler_fails:
+        assert result["resume_error"] == "approval_resume_scheduler_failed:RuntimeError"
+        assert not scheduled
+    else:
+        assert len(scheduled) == 1
+
+
 def test_missing_version_card_requires_refresh_and_repeated_refresh_reuses_identity(database, tmp_path, monkeypatch):
     card, path, spec_id = review_card(database, tmp_path)
     old_id = card["approval_id"]

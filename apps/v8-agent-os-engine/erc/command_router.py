@@ -1393,9 +1393,11 @@ class RuntimeCommandRouter:
             return {"resume_scheduled": False, "resume_error": claim.get("reason")}
         approval, delivery = claim["approval"], claim["delivery"]
         approval["_resumeDelivery"] = delivery
+        spec_approval_result = None
         try:
             if self._approval_kind(approval) == "spec_stage_approval":
                 applied = self._apply_spec_stage_approval(approval, approval.get("response") or {})
+                spec_approval_result = applied
                 if applied.get("ok") is False:
                     db.transition_approval_resume(approval_id, run_id=approval["run_id"], generation=delivery["generation"],
                         attempt=delivery["attempt"], expected_state="scheduled", state="blocked", error="spec_stage_approval_apply_failed")
@@ -1409,6 +1411,10 @@ class RuntimeCommandRouter:
             result = self._resume_from_approval(approval, approval.get("response") or {}) or {"resume_scheduled": False}
         except Exception as exc:
             result = {"resume_scheduled": False, "resume_error": f"approval_resume_scheduler_failed:{type(exc).__name__}"}
+        if spec_approval_result is not None:
+            # The document mutation and scheduling are separate outcomes. Keep
+            # the authoritative apply receipt even when continuation is delayed.
+            result["spec_stage_approval"] = spec_approval_result
         if not result.get("resume_scheduled"):
             db.transition_approval_resume(approval_id, run_id=approval["run_id"], generation=delivery["generation"],
                 attempt=delivery["attempt"], expected_state="scheduled", state="pending", error=str(result.get("resume_error") or "resume_not_scheduled"))

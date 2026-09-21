@@ -11,7 +11,10 @@ import { readTranscriptIdentity, isStaleTranscript, conversationEventDisposition
 import { ViewStore, type ViewState, type Draft } from './persistence.js';
 
 export type Api = (route: string, options?: any) => Promise<any>;
-export const idOf = (item: any) => String(item?.id || item?.sessionId || item?.session_id || item?.runId || item?.run_id || '');
+// Interaction and approval projections use different aliases. Prefer their
+// own identity fields before session/run fallbacks so a missing `id` can never
+// accidentally target the enclosing session when deciding an inbox item.
+export const idOf = (item: any) => String(item?.id || item?.interactionId || item?.interaction_id || item?.approvalId || item?.approval_id || item?.sessionId || item?.session_id || item?.runId || item?.run_id || '');
 export const pending = (item: any) => ['pending', 'waiting', 'open', 'requested'].includes(String(item?.status || 'pending'));
 export class Client {
   view: ViewState; messages: any[] = []; snapshot: any = {}; instance: any = {};
@@ -66,12 +69,18 @@ export class Client {
   get outputs() { return buildSessionOutputProjection(this.messages, this.snapshot.snapshot?.artifacts || [], { sessionId: this.view.sessionId }); }
   async listInbox() {
     const approvals = await this.api('/v1/approvals?status=pending');
-    const items = (approvals.approvals || []).map((item: any) => ({ ...item, kind: 'approval', sessionId: item.sessionId || item.session_id }));
+    const items = (approvals.approvals || []).map((item: any) => ({ ...item,
+      id: item.id || item.approvalId || item.approval_id,
+      kind: 'approval', sessionId: item.sessionId || item.session_id,
+    }));
     const sessions = this.sessions.length ? this.sessions : (await this.listSessions(), this.sessions);
     for (let i = 0; i < sessions.length; i += 3) {
       const results = await Promise.all(sessions.slice(i, i + 3).map(async session => {
         const snapshot = idOf(session) === this.view.sessionId ? this.snapshot : await this.api(`/v1/sessions/${encodeURIComponent(idOf(session))}/snapshot?compact=1`);
-        return (snapshot.askUserInteractions || []).filter(pending).map((item: any) => ({ ...item, kind: 'question', sessionId: idOf(session), sessionTitle: session.title }));
+        return (snapshot.askUserInteractions || []).filter(pending).map((item: any) => ({ ...item,
+          id: item.id || item.interactionId || item.interaction_id,
+          kind: 'question', sessionId: item.sessionId || item.session_id || idOf(session), sessionTitle: session.title,
+        }));
       }));
       items.push(...results.flat());
     }
@@ -307,10 +316,14 @@ export class Client {
   }
   async decide(item: any, action: 'approve' | 'reject' | 'answer', answer = '') {
     const identity = idOf(item), sessionId = this.view.sessionId;
+    if (!identity) throw new Error('待处理事项缺少 Engine 交互标识，未发送决定。');
+    if (action === 'answer' && !answer.trim()) throw new Error('回答不能为空，未发送决定。');
     await this.refreshSnapshot();
-    if (sessionId !== this.view.sessionId || !this.inbox.some(x => idOf(x) === identity && x.kind === item.kind)) throw new Error('待处理事项已过期或已处理。');
+    if (sessionId !== this.view.sessionId || String(item.sessionId || item.session_id || sessionId) !== String(this.view.sessionId || sessionId) || !this.inbox.some(x => idOf(x) === identity && x.kind === item.kind && pending(x))) throw new Error('待处理事项已过期或已处理；已重新读取当前会话，请重新打开待处理列表。');
     const route = action === 'answer' ? `/v1/ask-user/${encodeURIComponent(identity)}/respond` : `/v1/approvals/${encodeURIComponent(identity)}/${action}`;
-    await this.api(route, { method: 'POST', body: action === 'answer' ? { answer } : {} });
+    // RunCommandPayload owns response/payload. A top-level `answer` is ignored
+    // by the Engine parser and would resume the run with an empty answer.
+    await this.api(route, { method: 'POST', body: action === 'answer' ? { response: { answer } } : {} });
     await this.refreshSnapshot();
     if (this.inbox.some(x => idOf(x) === identity)) this.notice = '决定已送达，等待 Engine 状态更新。'; else this.notice = 'Engine 已确认处理结果。';
   }

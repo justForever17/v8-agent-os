@@ -8,6 +8,7 @@ import { commandMatches, type CommandEntry } from './command-suggestions.js';
 import { type Locale } from './locale.js';
 import { parseAtReferences, workspaceReferencePath } from './mentions.js';
 import { stat } from 'node:fs/promises';
+import { buildQuestionAnswer, createQuestionDraft, normalizeQuestions, optionDetail, optionKey, optionLabel, questionAnswered, questionDetail, questionKey, questionTitle, requestSummary, type QuestionDraft } from './inbox.js';
 
 export type Action = CommandEntry & { run: () => void | Promise<void>; navigation?: boolean };
 export type Field = { key: string; label: string; value: string; secret?: boolean };
@@ -62,6 +63,7 @@ export class Surface {
   busy = false; paletteQuery = ''; formEditor = editor(); private pageSerial = 0; private ticketId = '';
   suggestions: { query: Editor; selected: number; sessionId: string } | null = null;
   paletteEditor: Editor = editor();
+  private questionDrafts = new Map<string, QuestionDraft>();
   private commandReturnGuard = false;
   private navigation = 0; private pendingOperations = new Map<symbol, { navigation: number; mutable: boolean }>(); private operation = new AsyncLocalStorage<number>();
   onExit: () => void = () => {}; onChange: () => void = () => {};
@@ -306,9 +308,67 @@ export class Surface {
       { label: '其他会话', run: () => this.sessions() },
     ]);
   }
+  private questionDraft(item: any) {
+    const identity = idOf(item);
+    let draft = this.questionDrafts.get(identity);
+    if (!draft) { draft = createQuestionDraft(); this.questionDrafts.set(identity, draft); }
+    return draft;
+  }
+  private questionPage(item: any, index = 0) {
+    const questions = normalizeQuestions(item), draft = this.questionDraft(item);
+    const currentIndex = Math.max(0, Math.min(index, questions.length - 1));
+    const question = questions[currentIndex], qid = questionKey(question, currentIndex), multi = Boolean(question.multiSelect || question.multiple);
+    const selected = draft.selected[qid] || [], summary = requestSummary(item);
+    const lines = [summary.title, ...(summary.details ? [summary.details] : []), `问题 ${currentIndex + 1}/${questions.length}：${questionTitle(question, currentIndex)}`,
+      ...(questionDetail(question) ? [questionDetail(question)] : []), safeText(question.question || ''),
+      ...(question.options?.length ? question.options.map((option, optionIndex) => `${selected.includes(optionKey(option, optionIndex)) ? '✓' : '·'} ${optionLabel(option, optionIndex)}${optionDetail(option) ? ` — ${optionDetail(option)}` : ''}`) : ['当前问题需要文字回答。']),
+      ...(draft.custom[qid] ? [`自定义回答：${safeText(draft.custom[qid])}`] : []),
+      multi ? '多选：Enter 切换选项；完成后选择下一题或提交。' : '单选：选择后可继续下一题；也可输入自定义回答。'];
+    const actions: Action[] = [
+      { label: '返回待处理（保留选择）', run: () => this.inbox() },
+    ];
+    for (const [optionIndex, option] of (question.options || []).entries()) {
+      const key = optionKey(option, optionIndex), label = `${selected.includes(key) ? '✓ ' : ''}${optionLabel(option, optionIndex)}`;
+      actions.push({ label, run: () => {
+        if (multi) {
+          const next = selected.includes(key) ? selected.filter(value => value !== key) : [...selected, key];
+          draft.selected[qid] = next; delete draft.custom[qid];
+          this.questionPage(item, currentIndex);
+        } else {
+          draft.selected[qid] = [key]; delete draft.custom[qid];
+          this.questionPage(item, currentIndex < questions.length - 1 ? currentIndex + 1 : currentIndex);
+        }
+      } });
+    }
+    actions.push({ label: draft.custom[qid] ? '修改自定义回答' : '输入自定义回答', run: () => this.form('自定义回答', [{ key: 'answer', label: safeText(question.question || questionTitle(question, currentIndex)), value: draft.custom[qid] || '' }], async values => {
+      const answer = String(values.answer || '').trim();
+      if (!answer) throw new Error('回答不能为空；已保留当前选择。');
+      draft.custom[qid] = answer; draft.selected[qid] = [];
+      this.questionPage(item, currentIndex < questions.length - 1 ? currentIndex + 1 : currentIndex);
+    }, ['Esc 返回问题，不会撤销已选内容；F9 保存这条自定义回答。']) });
+    if (currentIndex > 0) actions.push({ label: '上一题', run: () => this.questionPage(item, currentIndex - 1) });
+    if (currentIndex < questions.length - 1) actions.push({ label: '下一题', disabled: !questionAnswered(question, currentIndex, draft), run: () => this.questionPage(item, currentIndex + 1) });
+    const complete = questions.every((candidate, questionIndex) => questionAnswered(candidate, questionIndex, draft));
+    actions.push({ label: '提交全部回答', disabled: !complete, run: async () => {
+      const answer = buildQuestionAnswer(questions, draft);
+      if (!answer) throw new Error('尚未完成回答；已保留当前选择。');
+      try {
+        await this.client.decide(item, 'answer', answer);
+        this.questionDrafts.delete(idOf(item));
+        await this.inbox();
+      } catch (error: any) {
+        // A stale interaction remains visible in the inbox and its local
+        // choices stay available for review; the client has re-read Engine
+        // state before deciding and never retries a side effect.
+        this.client.notice = error?.message || '问题已过期；请重新打开待处理列表。';
+        throw error;
+      }
+    } });
+    this.open('回答提问', lines, actions);
+  }
   inboxItem(item: any) {
     if (item.kind === 'question') {
-      this.form('回复提问', [{ key: 'answer', label: item.question || item.request?.question || '你的回答', value: '' }], async v => { await this.client.decide(item, 'answer', v.answer); await this.inbox(); }, describe(item.request || item));
+      this.questionPage(item);
       return;
     }
     this.open('审批详情', [...approvalLines(item), ...(approvalTransparent(item) ? [] : ['请求缺少可核对的动作目标；无法批准，请拒绝或返回。'])], [

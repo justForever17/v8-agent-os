@@ -44,6 +44,9 @@ class SupervisorAgentRunner:
         self._graph_cache: dict[str, object] = {}
         self._thread_lock = threading.Lock()
         self._graph_cache_locks: dict[int, asyncio.Lock] = {}
+        self._last_graph_signatures: dict[int, str] = {}
+        self._prewarm_task: asyncio.Task | None = None
+        self._prewarm_status: dict[str, Any] = {"state": "not_started"}
 
     def _graph_signature(self, config: EngineConfig) -> str:
         payload = config.model_dump(mode="json", by_alias=True)
@@ -58,10 +61,79 @@ class SupervisorAgentRunner:
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
+    def register_prewarm_task(self, task: asyncio.Task) -> None:
+        """Register the one Engine-owned graph warmup task for request visibility."""
+        self._prewarm_task = task
+        self._prewarm_status = {"state": "warming"}
+
+        def _finish(done: asyncio.Task) -> None:
+            try:
+                result = done.result()
+            except asyncio.CancelledError:
+                self._prewarm_status = {"state": "cancelled"}
+                return
+            except Exception as exc:  # pragma: no cover - defensive task boundary
+                self._prewarm_status = {"state": "failed", "errorType": type(exc).__name__}
+                return
+            if isinstance(result, dict) and result.get("ok"):
+                self._prewarm_status = {
+                    "state": "ready",
+                    "graphCacheHit": bool(result.get("graphCacheHit")),
+                    "graphBuildMs": float(result.get("graphBuildMs") or 0),
+                    "inventoryFollowupAttempted": bool(result.get("inventoryFollowupAttempted")),
+                    "inventoryFollowupCacheHit": bool(result.get("inventoryFollowupCacheHit")),
+                    "inventoryFollowupBuildMs": float(result.get("inventoryFollowupBuildMs") or 0),
+                }
+            else:
+                self._prewarm_status = {
+                    "state": "failed",
+                    "errorType": str((result or {}).get("errorType") or "unknown"),
+                }
+
+        task.add_done_callback(_finish)
+
+    def prewarm_status(self) -> dict[str, Any]:
+        status = dict(self._prewarm_status)
+        task = self._prewarm_task
+        status["taskDone"] = bool(task is None or task.done())
+        return status
+
+    async def wait_for_prewarm(self, *, timeout_seconds: float = 60.0) -> dict[str, Any]:
+        """Wait for an active warmup before the first request builds a cold graph."""
+        task = self._prewarm_task
+        if task is None or task.done():
+            return {"waited": False, **self.prewarm_status()}
+        try:
+            current_loop = asyncio.get_running_loop()
+            if task.get_loop() is not current_loop:
+                return {"waited": False, "state": "warming_other_loop"}
+        except RuntimeError:
+            return {"waited": False, "state": "warming_unknown_loop"}
+        started_at = asyncio.get_running_loop().time()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=max(0.1, float(timeout_seconds)))
+        except asyncio.TimeoutError:
+            return {
+                "waited": True,
+                "waitMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2),
+                "state": "warming_timeout",
+                "warmup": self.prewarm_status(),
+            }
+        except Exception as exc:  # prewarm captures normal failures; keep request self-healing
+            return {
+                "waited": True,
+                "waitMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2),
+                "state": "warmup_failed",
+                "errorType": type(exc).__name__,
+            }
+        return {
+            "waited": True,
+            "waitMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2),
+            "warmup": self.prewarm_status(),
+        }
+
     async def build_graph(self, config: EngineConfig):
-        signature = self._graph_signature(config)
         loop_id = id(asyncio.get_running_loop())
-        cache_key = f"{loop_id}:{signature}"
         started_at = asyncio.get_running_loop().time()
         with self._thread_lock:
             graph_lock = self._graph_cache_locks.get(loop_id)
@@ -69,9 +141,17 @@ class SupervisorAgentRunner:
                 graph_lock = asyncio.Lock()
                 self._graph_cache_locks[loop_id] = graph_lock
         async with graph_lock:
+            # Inventory may finish warming while this request waits for another
+            # compilation. Sample under the lock so a waiter cannot reuse the
+            # pre-warm signature after the tool/agent inventory has changed.
+            lock_wait_ms = round((asyncio.get_running_loop().time() - started_at) * 1000, 2)
+            signature = self._graph_signature(config)
+            cache_key = f"{loop_id}:{signature}"
             cached = self._graph_cache.get(cache_key)
             if cached is not None:
-                return cached, {"graphCacheHit": True, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
+                return cached, {"graphCacheHit": True, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2), "graphLockWaitMs": lock_wait_ms}
+            previous_signature = self._last_graph_signatures.get(loop_id)
+            miss_reasons = self._graph_cache_miss_reasons(previous_signature, signature)
             checkpointer = await checkpoint_store.get_async_sqlite_saver()
             graph = await asyncio.to_thread(
                 create_supervisor_graph,
@@ -79,7 +159,27 @@ class SupervisorAgentRunner:
                 checkpointer=checkpointer,
             )
             self._graph_cache[cache_key] = graph
-            return graph, {"graphCacheHit": False, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
+            self._last_graph_signatures[loop_id] = signature
+            return graph, {"graphCacheHit": False, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2), "graphLockWaitMs": lock_wait_ms, "graphCacheMissReasons": miss_reasons}
+
+    @staticmethod
+    def _graph_cache_miss_reasons(previous: str | None, current: str) -> list[str]:
+        if previous is None:
+            return ["cold"]
+        try:
+            old, new = json.loads(previous), json.loads(current)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return ["signature_changed"]
+        old_inventory = old.pop("_runtimeInventory", {})
+        new_inventory = new.pop("_runtimeInventory", {})
+        # Only fixed category names leave this layer. Signatures contain
+        # provider credentials and must never enter events, logs or health.
+        reasons = ["config"] if old != new else []
+        if old_inventory.get("subagentsHash") != new_inventory.get("subagentsHash"):
+            reasons.append("subagents")
+        if old_inventory.get("mcpRevision") != new_inventory.get("mcpRevision"):
+            reasons.append("mcp_inventory")
+        return reasons
 
     def runtime_metadata(self) -> dict[str, str | bool]:
         return {
@@ -260,7 +360,9 @@ class SupervisorAgentRunner:
             messages = rebuild_effective_messages(db, session_id, list(messages or []))
         current_route_context = {**(current_route_context or {}),
                                  "contextEpoch": graph_config["configurable"]["context_epoch"]}
+        warmup_wait = await self.wait_for_prewarm()
         graph, diagnostics = await self.build_graph(config)
+        diagnostics = {**dict(diagnostics or {}), "graphWarmupWait": warmup_wait}
         reconciled_messages, reconciliation = await self._reconcile_persistent_input(
             graph=graph,
             graph_config=graph_config,
@@ -294,7 +396,9 @@ class SupervisorAgentRunner:
             db.assert_chat_run_epoch(session_id, run_id)
         elif db.get_chat_transcript_state(session_id)["context_epoch"]:
             raise ValueError("conversation_resume_run_required")
+        warmup_wait = await self.wait_for_prewarm()
         graph, diagnostics = await self.build_graph(config)
+        diagnostics = {**dict(diagnostics or {}), "graphWarmupWait": warmup_wait}
         return SupervisorExecutionBundle(
             graph=graph,
             payload=self.build_resume_input(resume_value),

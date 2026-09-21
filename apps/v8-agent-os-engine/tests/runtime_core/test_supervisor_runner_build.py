@@ -96,3 +96,47 @@ def test_graph_build_keeps_event_loop_responsive_and_caches_once(monkeypatch) ->
         assert len(build_threads) == 2
 
     asyncio.run(exercise())
+
+
+def test_request_waits_for_registered_graph_prewarm_and_exposes_safe_status() -> None:
+    async def exercise() -> None:
+        runner = SupervisorAgentRunner()
+        release = asyncio.Event()
+
+        async def prewarm() -> dict[str, object]:
+            await release.wait()
+            return {"ok": True, "graphCacheHit": False, "graphBuildMs": 42.5}
+
+        task = asyncio.create_task(prewarm())
+        runner.register_prewarm_task(task)
+        assert runner.prewarm_status()["state"] == "warming"
+
+        waiter = asyncio.create_task(runner.wait_for_prewarm(timeout_seconds=1))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        release.set()
+        result = await waiter
+        assert result["waited"] is True
+        assert result["warmup"]["state"] == "ready"
+        assert result["warmup"]["graphBuildMs"] == 42.5
+        assert runner.prewarm_status() == {
+            "state": "ready",
+            "graphCacheHit": False,
+            "graphBuildMs": 42.5,
+            "inventoryFollowupAttempted": False,
+            "inventoryFollowupCacheHit": False,
+            "inventoryFollowupBuildMs": 0.0,
+            "taskDone": True,
+        }
+
+    asyncio.run(exercise())
+
+
+def test_graph_cache_miss_reasons_are_category_only() -> None:
+    previous = '{"api_key":"opaque-a","model":"m","_runtimeInventory":{"subagentsHash":"a","mcpRevision":"one"}}'
+    current = '{"api_key":"opaque-b","model":"m","_runtimeInventory":{"subagentsHash":"b","mcpRevision":"two"}}'
+    assert SupervisorAgentRunner._graph_cache_miss_reasons(previous, current) == [
+        "config",
+        "subagents",
+        "mcp_inventory",
+    ]

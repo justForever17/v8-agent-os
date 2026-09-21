@@ -990,24 +990,33 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
             (time.perf_counter() - extensions_start_started_at) * 1000,
             2,
         )
+    supervisor_graph_prewarm_task = asyncio.create_task(
+        _prewarm_supervisor_graph(
+            provider_prewarm_task,
+            tuple(
+                task
+                for task in (
+                    getattr(app.state, "skills_refresh_task", None),
+                    getattr(app.state, "mcp_init_task", None),
+                )
+                if isinstance(task, asyncio.Task)
+            ),
+        )
+    )
     _track_lifespan_task(
         app,
         state,
         "supervisor_graph_prewarm_task",
-        asyncio.create_task(
-            _prewarm_supervisor_graph(
-                provider_prewarm_task,
-                tuple(
-                    task
-                    for task in (
-                        getattr(app.state, "skills_refresh_task", None),
-                        getattr(app.state, "mcp_init_task", None),
-                    )
-                    if isinstance(task, asyncio.Task)
-                ),
-            )
-        ),
+        supervisor_graph_prewarm_task,
     )
+    try:
+        runner = _import_module("agents.runners.supervisor_runner").supervisor_runner
+        register_prewarm_task = getattr(runner, "register_prewarm_task", None)
+        if callable(register_prewarm_task):
+            register_prewarm_task(supervisor_graph_prewarm_task)
+    except Exception as exc:
+        # Warmup remains non-fatal; the runner can still build on demand.
+        print(f"[Engine] Supervisor graph warmup status registration failed (non-fatal): {type(exc).__name__}")
     if service_flags["cron"]:
         cron_start_started_at = time.perf_counter()
         _mark_lifespan_service_starting(state, "cron")
@@ -1169,6 +1178,13 @@ async def readiness_check(response: Response):
     ready = bool(runner_status.get("ready") and chat_scheduler_status.get("ready"))
     if not ready:
         response.status_code = 503
+    try:
+        supervisor_graph_warmup = dict(
+            getattr(_import_module("agents.runners.supervisor_runner").supervisor_runner, "prewarm_status", lambda: {})()
+            or {}
+        )
+    except Exception:
+        supervisor_graph_warmup = {"state": "unknown"}
     return {
         "status": "ok" if ready else "degraded",
         "service": "v8-agent-os-engine",
@@ -1178,6 +1194,7 @@ async def readiness_check(response: Response):
         "configBrokerRecovery": dict(getattr(app.state, "config_broker_recovery", {}) or {}),
         "runtimeEpisodeRunner": runner_status,
         "chatRunScheduler": chat_scheduler_status,
+        "supervisorGraphWarmup": supervisor_graph_warmup,
     }
 
 
@@ -1197,6 +1214,13 @@ async def health_check():
     inspect_memory_backend = _get_memory_backend_health()
     runner_status = _get_runtime_episode_runner().readiness_status()
     chat_scheduler_status = _get_chat_run_scheduler().readiness_status()
+    try:
+        supervisor_graph_warmup = dict(
+            getattr(_import_module("agents.runners.supervisor_runner").supervisor_runner, "prewarm_status", lambda: {})()
+            or {}
+        )
+    except Exception:
+        supervisor_graph_warmup = {"state": "unknown"}
     return {
         "status": "ok",
         "service": "v8-agent-os-engine",
@@ -1221,6 +1245,7 @@ async def health_check():
         "configBrokerRecovery": dict(getattr(app.state, "config_broker_recovery", {}) or {}),
         "runtimeEpisodeRunner": runner_status,
         "chatRunScheduler": chat_scheduler_status,
+        "supervisorGraphWarmup": supervisor_graph_warmup,
         "memory": inspect_memory_backend(),
         "identity": storage.get_system_identity(),
     }

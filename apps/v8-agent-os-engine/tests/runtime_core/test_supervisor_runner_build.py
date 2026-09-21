@@ -98,43 +98,74 @@ def test_graph_build_keeps_event_loop_responsive_and_caches_once(monkeypatch) ->
     asyncio.run(exercise())
 
 
-def test_request_waits_for_registered_graph_prewarm_and_exposes_safe_status() -> None:
+def test_http_prewarm_and_scheduler_requests_share_compile_and_cancel_independently(monkeypatch) -> None:
+    import main
+    from core.chat_run_scheduler import ChatRunScheduler
+
     async def exercise() -> None:
         runner = SupervisorAgentRunner()
-        release = asyncio.Event()
+        scheduler = ChatRunScheduler()
+        entered = threading.Event()
+        release = threading.Event()
+        inventory_release = asyncio.Event()
+        graph = object()
+        builds = []
+        config = object()
 
-        async def prewarm() -> dict[str, object]:
-            await release.wait()
-            return {
-                "ok": True,
-                "graphCacheHit": False,
-                "graphBuildMs": 42.5,
-                "providerPrewarmErrorType": "RuntimeError",
-            }
+        async def get_checkpointer():
+            return object()
 
-        task = asyncio.create_task(prewarm())
-        runner.register_prewarm_task(task)
-        assert runner.prewarm_status()["state"] == "warming"
+        def compile_graph(_config, *, checkpointer):
+            builds.append(threading.get_ident())
+            entered.set()
+            assert release.wait(5)
+            return graph
 
-        waiter = asyncio.create_task(runner.wait_for_prewarm(timeout_seconds=1))
-        await asyncio.sleep(0)
-        assert not waiter.done()
-        release.set()
-        result = await waiter
-        assert result["waited"] is True
-        assert result["warmup"]["state"] == "ready"
-        assert result["warmup"]["graphBuildMs"] == 42.5
-        assert result["warmup"]["providerPrewarmErrorType"] == "RuntimeError"
-        assert runner.prewarm_status() == {
-            "state": "ready",
-            "graphCacheHit": False,
-            "graphBuildMs": 42.5,
-            "inventoryFollowupAttempted": False,
-            "inventoryFollowupCacheHit": False,
-            "inventoryFollowupBuildMs": 0.0,
-            "providerPrewarmErrorType": "RuntimeError",
-            "taskDone": True,
-        }
+        class Resolver:
+            resolve_engine_config_for_role = staticmethod(lambda _role: {})
+            require_engine_config = staticmethod(lambda _resolved, *, role: config)
+
+        monkeypatch.setattr(runner, "_graph_signature", lambda _config: "same")
+        monkeypatch.setattr(runner_module.checkpoint_store, "get_async_sqlite_saver", get_checkpointer)
+        monkeypatch.setattr(runner_module, "create_supervisor_graph", compile_graph)
+        monkeypatch.setattr(main, "_import_module", lambda name: Resolver if name == "core.engine_config_resolver" else SimpleNamespace(supervisor_runner=runner))
+        monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: scheduler)
+        monkeypatch.setattr(main, "_SUPERVISOR_GRAPH_PREWARM_PREREQUISITE_TIMEOUT_SECONDS", 0.001)
+        await scheduler.start()
+        inventory_task = asyncio.create_task(inventory_release.wait())
+        warmup = asyncio.create_task(main._prewarm_supervisor_graph(None, (inventory_task,)))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            request_started = threading.Event()
+
+            async def request():
+                request_started.set()
+                return await runner.build_graph(config)
+
+            cancelled = asyncio.wrap_future(scheduler.submit(request(), task_name="cancelled-request"))
+            assert await asyncio.to_thread(request_started.wait, 2)
+            cancelled.cancel()
+            await asyncio.gather(cancelled, return_exceptions=True)
+            assert not warmup.done()
+            live_request = asyncio.wrap_future(scheduler.submit(request(), task_name="live-request"))
+            release.set()
+            request_graph, diagnostics = await asyncio.wait_for(live_request, 2)
+            assert request_graph is graph
+            assert diagnostics["graphCacheHit"] is True
+            assert len(builds) == 1
+            # The optional inventory refresh still owns the HTTP warmup task.
+            # A ready graph must allow the real request to proceed regardless.
+            assert not inventory_task.done()
+            assert not warmup.done()
+            inventory_release.set()
+            assert (await asyncio.wait_for(warmup, 2))["ok"] is True
+            assert len(builds) == 1
+        finally:
+            release.set()
+            inventory_release.set()
+            warmup.cancel()
+            await asyncio.gather(warmup, inventory_task, return_exceptions=True)
+            await scheduler.stop()
 
     asyncio.run(exercise())
 

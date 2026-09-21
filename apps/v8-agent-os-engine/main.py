@@ -179,20 +179,10 @@ async def _prewarm_supervisor_graph(
 
     try:
         pending_prerequisite_tasks: set[asyncio.Task] = set()
-        provider_prewarm_error_type: str | None = None
         if provider_prewarm_task is not None:
-            try:
-                await provider_prewarm_task
-            except Exception as exc:
-                # Provider capability probing is optional for graph assembly. A
-                # rejected probe must not prevent the graph from warming up;
-                # the first request can still use the configured provider and
-                # receives the diagnostic below.
-                provider_prewarm_error_type = type(exc).__name__
-                print(
-                    "[Engine] Provider prewarm failed; continuing Supervisor graph prewarm:",
-                    provider_prewarm_error_type,
-                )
+            # This installs local compatibility patches, not a provider probe.
+            # Its owner already catches and reports installation failures.
+            await provider_prewarm_task
         if extension_prerequisite_tasks:
             _completed, pending_prerequisite_tasks = await asyncio.wait(
                 extension_prerequisite_tasks,
@@ -213,14 +203,11 @@ async def _prewarm_supervisor_graph(
                 runner.build_graph(config),
                 task_name=task_name,
             )
-            result = {
+            return {
                 "ok": True,
                 "graphCacheHit": bool((diagnostics or {}).get("graphCacheHit")),
                 "graphBuildMs": float((diagnostics or {}).get("graphBuildMs") or 0),
             }
-            if provider_prewarm_error_type:
-                result["providerPrewarmErrorType"] = provider_prewarm_error_type
-            return result
 
         safe_diagnostics = await _build_once(task_name="supervisor-graph-prewarm")
         print("[Engine] Supervisor graph prewarm completed:", safe_diagnostics)
@@ -244,6 +231,36 @@ async def _prewarm_supervisor_graph(
         result = {"ok": False, "errorType": type(exc).__name__}
         print(f"[Engine] Supervisor graph prewarm failed (non-fatal): {type(exc).__name__}")
         return result
+
+
+def _supervisor_graph_warmup_status(application) -> dict[str, object]:
+    """Project the lifespan-owned task without importing the cold graph runner."""
+    task = getattr(application.state, "supervisor_graph_prewarm_task", None)
+    if task is None:
+        return {"state": "not_started", "taskDone": True}
+    if not task.done():
+        return {"state": "warming", "taskDone": False}
+    if task.cancelled():
+        return {"state": "cancelled", "taskDone": True}
+    try:
+        result = task.result()
+    except Exception as exc:
+        return {"state": "failed", "taskDone": True, "errorType": type(exc).__name__}
+    if not isinstance(result, dict) or not result.get("ok"):
+        return {
+            "state": "failed",
+            "taskDone": True,
+            "errorType": str(result.get("errorType") or "unknown") if isinstance(result, dict) else "unknown",
+        }
+    return {
+        "state": "ready",
+        "taskDone": True,
+        "graphCacheHit": bool(result.get("graphCacheHit")),
+        "graphBuildMs": float(result.get("graphBuildMs") or 0),
+        "inventoryFollowupAttempted": bool(result.get("inventoryFollowupAttempted")),
+        "inventoryFollowupCacheHit": bool(result.get("inventoryFollowupCacheHit")),
+        "inventoryFollowupBuildMs": float(result.get("inventoryFollowupBuildMs") or 0),
+    }
 
 
 def _ensure_default_workflow_memories() -> None:
@@ -1024,14 +1041,6 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
         "supervisor_graph_prewarm_task",
         supervisor_graph_prewarm_task,
     )
-    try:
-        runner = _import_module("agents.runners.supervisor_runner").supervisor_runner
-        register_prewarm_task = getattr(runner, "register_prewarm_task", None)
-        if callable(register_prewarm_task):
-            register_prewarm_task(supervisor_graph_prewarm_task)
-    except Exception as exc:
-        # Warmup remains non-fatal; the runner can still build on demand.
-        print(f"[Engine] Supervisor graph warmup status registration failed (non-fatal): {type(exc).__name__}")
     if service_flags["cron"]:
         cron_start_started_at = time.perf_counter()
         _mark_lifespan_service_starting(state, "cron")
@@ -1193,13 +1202,7 @@ async def readiness_check(response: Response):
     ready = bool(runner_status.get("ready") and chat_scheduler_status.get("ready"))
     if not ready:
         response.status_code = 503
-    try:
-        supervisor_graph_warmup = dict(
-            getattr(_import_module("agents.runners.supervisor_runner").supervisor_runner, "prewarm_status", lambda: {})()
-            or {}
-        )
-    except Exception:
-        supervisor_graph_warmup = {"state": "unknown"}
+    supervisor_graph_warmup = _supervisor_graph_warmup_status(app)
     return {
         "status": "ok" if ready else "degraded",
         "service": "v8-agent-os-engine",
@@ -1229,13 +1232,7 @@ async def health_check():
     inspect_memory_backend = _get_memory_backend_health()
     runner_status = _get_runtime_episode_runner().readiness_status()
     chat_scheduler_status = _get_chat_run_scheduler().readiness_status()
-    try:
-        supervisor_graph_warmup = dict(
-            getattr(_import_module("agents.runners.supervisor_runner").supervisor_runner, "prewarm_status", lambda: {})()
-            or {}
-        )
-    except Exception:
-        supervisor_graph_warmup = {"state": "unknown"}
+    supervisor_graph_warmup = _supervisor_graph_warmup_status(app)
     return {
         "status": "ok",
         "service": "v8-agent-os-engine",

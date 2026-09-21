@@ -406,7 +406,19 @@ def test_real_startup_sequence_rolls_back_when_network_relay_start_fails(
     import main
 
     async def exercise() -> None:
+        import threading
+
         events: list[str] = []
+        http_thread = threading.get_ident()
+        cold_import_threads: list[int] = []
+        original_import = main._import_module
+
+        def record_import(name):
+            if name == "agents.runners.supervisor_runner":
+                cold_import_threads.append(threading.get_ident())
+            return original_import(name)
+
+        monkeypatch.setattr(main, "_import_module", record_import)
 
         class Storage:
             def migrate_legacy_local_config(self):
@@ -567,6 +579,7 @@ def test_real_startup_sequence_rolls_back_when_network_relay_start_fails(
         assert app.state.mcp_init_task is None
         assert app.state.storage_pressure_monitor_task is None
         assert app.state.knowledge_projection_recovery_task is None
+        assert http_thread not in cold_import_threads
 
     asyncio.run(exercise())
 
@@ -680,16 +693,18 @@ def test_supervisor_graph_prewarm_failure_is_non_fatal(monkeypatch: pytest.Monke
     assert result == {"ok": False, "errorType": "RuntimeError"}
 
 
-def test_provider_prewarm_failure_does_not_skip_graph_compile(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_provider_patch_install_failure_does_not_skip_graph_compile(monkeypatch: pytest.MonkeyPatch) -> None:
     import main
 
     async def exercise():
         events: list[str] = []
         configured = object()
 
-        async def provider_prewarm():
-            events.append("provider:start")
-            raise RuntimeError("provider probe rejected request")
+        class ProviderCompatibility:
+            @staticmethod
+            def install_provider_compatibility_patches():
+                events.append("provider:install")
+                raise RuntimeError("local patch installation failed")
 
         class Resolver:
             resolve_engine_config_for_role = staticmethod(lambda _role: {"resolution": {}})
@@ -707,6 +722,8 @@ def test_provider_prewarm_failure_does_not_skip_graph_compile(monkeypatch: pytes
                 return await coroutine
 
         def fake_import(name: str):
+            if name == "core.provider_compatibility":
+                return ProviderCompatibility
             if name == "core.engine_config_resolver":
                 return Resolver
             if name == "agents.runners.supervisor_runner":
@@ -715,16 +732,60 @@ def test_provider_prewarm_failure_does_not_skip_graph_compile(monkeypatch: pytes
 
         monkeypatch.setattr(main, "_import_module", fake_import)
         monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: Scheduler())
-        provider_task = asyncio.create_task(provider_prewarm())
+        provider_task = asyncio.create_task(main._prewarm_provider_compatibility())
         result = await main._prewarm_supervisor_graph(provider_task)
 
-        assert events == ["provider:start", "graph:build"]
+        assert events == ["provider:install", "graph:build"]
         assert result == {
             "ok": True,
             "graphCacheHit": False,
             "graphBuildMs": 7.5,
-            "providerPrewarmErrorType": "RuntimeError",
         }
+
+    asyncio.run(exercise())
+
+
+def test_warmup_status_reads_lifespan_task_without_cold_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    import main
+
+    def forbidden_import(name):
+        raise AssertionError(f"status must not import {name}")
+
+    monkeypatch.setattr(main, "_import_module", forbidden_import)
+
+    async def exercise():
+        application = _app()
+        status = lambda: main._supervisor_graph_warmup_status(application)
+        assert status() == {"state": "not_started", "taskDone": True}
+        gate = asyncio.Event()
+
+        async def warmup():
+            await gate.wait()
+            return {"ok": True, "graphBuildMs": 3.5, "private": "must not leak"}
+
+        task = asyncio.create_task(warmup())
+        application.state.supervisor_graph_prewarm_task = task
+        assert status() == {"state": "warming", "taskDone": False}
+        gate.set()
+        await task
+        assert status() == {
+            "state": "ready", "taskDone": True, "graphCacheHit": False,
+            "graphBuildMs": 3.5, "inventoryFollowupAttempted": False,
+            "inventoryFollowupCacheHit": False, "inventoryFollowupBuildMs": 0.0,
+        }
+
+        async def failed():
+            raise RuntimeError("secret failure detail")
+
+        task = asyncio.create_task(failed())
+        application.state.supervisor_graph_prewarm_task = task
+        await asyncio.gather(task, return_exceptions=True)
+        assert status() == {"state": "failed", "taskDone": True, "errorType": "RuntimeError"}
+        task = asyncio.create_task(asyncio.sleep(60))
+        application.state.supervisor_graph_prewarm_task = task
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert status() == {"state": "cancelled", "taskDone": True}
 
     asyncio.run(exercise())
 
@@ -758,12 +819,19 @@ def test_cold_prewarm_imports_cannot_block_http_loop(monkeypatch: pytest.MonkeyP
 
         monkeypatch.setattr(main, '_import_module', load)
         monkeypatch.setattr(main, '_get_chat_run_scheduler', lambda: scheduler)
+        monkeypatch.setattr(main, '_get_runtime_episode_runner', lambda: SimpleNamespace(readiness_status=lambda: {"ready": True}))
+        application = _app()
+        monkeypatch.setattr(main, 'app', application)
         task = asyncio.create_task(main._prewarm_supervisor_graph())
+        application.state.supervisor_graph_prewarm_task = task
         try:
             assert await asyncio.to_thread(imported.wait, 2)
             # This callback models a newly accepted HTTP request while imports
             # are still blocked. Waiting for warmup cannot produce this proof.
             assert not task.done()
+            ready = await main.readiness_check(main.Response())
+            assert ready['ready'] is True
+            assert ready['supervisorGraphWarmup'] == {'state': 'warming', 'taskDone': False}
             release_import.set()
             assert (await task)['ok'] is True
         finally:

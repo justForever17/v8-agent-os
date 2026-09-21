@@ -277,6 +277,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Node.js for trusted npm publishing
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+
       - name: Download Server build artifact
         if: needs.plan.outputs.server_enabled == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -373,11 +378,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tarball=$(find release-assets -maxdepth 1 -name "V8OS-TUI-*.tgz" | head -n 1)
-          if [[ -z "$tarball" || ! -f "$tarball" ]]; then
-            echo "::warning::No TUI package archive found in release-assets; skipping npm publish"
-            exit 0
+          archives=(release-assets/V8OS-TUI-*.tgz)
+          if [[ ${#archives[@]} != 1 || ! -f "${archives[0]}" ]]; then
+            echo "::error::Expected exactly one verified TUI package archive for npm publication"
+            exit 1
           fi
+          tarball="${archives[0]}"
           pkg_name=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).name);")
           pkg_ver=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).version);")
           echo "Verifying $pkg_name@$pkg_ver against npm registry..."

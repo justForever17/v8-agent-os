@@ -330,3 +330,18 @@ test("workflows wire required TUI output and both clean Server OS legs without a
   assert.match(terminal, /if-no-files-found: error/);
   assert.doesNotMatch(terminal, /continue-on-error|\|\| true/);
 });
+
+test("the workflow executes its package identity check for the actual hyphenated bin", t => {
+  const terminal = fs.readFileSync(path.join(ROOT, ".github/workflows/tui-build.yml"), "utf8");
+  const script = terminal.match(/node - "\$\{archives\[0\]\}" <<'NODE'\r?\n([\s\S]*?)\r?\n\s+NODE/)[1];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8-tui-workflow-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const archive = path.join(root, "package.tgz");
+  const run = () => execFileSync(process.execPath, ["-", archive], { input: script, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+  tarFixture(root, archive, tuiEntries());
+  assert.doesNotThrow(run);
+  tarFixture(root, archive, tuiEntries({ ...tuiPackage(), bin: { v8os: "bin/v8os-tui.mjs" } }));
+  assert.throws(run, /must not replace/);
+  tarFixture(root, archive, tuiEntries({ ...tuiPackage(), bin: {} }));
+  assert.throws(run, /missing v8os-tui/);
+});

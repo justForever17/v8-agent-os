@@ -58,7 +58,7 @@ jobs:
           const pkg = JSON.parse(cp.execFileSync('tar', ['-xzf', archive, '-O', 'package/package.json'], { encoding: 'utf8' }));
           if (pkg.name !== '@v8-agent-os/v8-agent-os') throw new Error(`unexpected TUI package: ${pkg.name}`);
           if (pkg.bin?.v8os) throw new Error('TUI package must not replace the server CLI v8os command');
-          if (pkg.bin?.v8os-tui !== 'bin/v8os-tui.mjs') throw new Error('missing v8os-tui entrypoint');
+          if (pkg.bin?.['v8os-tui'] !== 'bin/v8os-tui.mjs') throw new Error('missing v8os-tui entrypoint');
           NODE
           npm install --global --prefix "$RUNNER_TEMP/tui-prefix" --ignore-scripts --no-audit --no-fund "${archives[0]}"
           installed=$(find "$RUNNER_TEMP/tui-prefix/lib/node_modules" -name "v8os-tui.mjs" | head -n 1)

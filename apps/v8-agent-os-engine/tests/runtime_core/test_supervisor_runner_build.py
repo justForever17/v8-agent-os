@@ -105,7 +105,12 @@ def test_request_waits_for_registered_graph_prewarm_and_exposes_safe_status() ->
 
         async def prewarm() -> dict[str, object]:
             await release.wait()
-            return {"ok": True, "graphCacheHit": False, "graphBuildMs": 42.5}
+            return {
+                "ok": True,
+                "graphCacheHit": False,
+                "graphBuildMs": 42.5,
+                "providerPrewarmErrorType": "RuntimeError",
+            }
 
         task = asyncio.create_task(prewarm())
         runner.register_prewarm_task(task)
@@ -119,6 +124,7 @@ def test_request_waits_for_registered_graph_prewarm_and_exposes_safe_status() ->
         assert result["waited"] is True
         assert result["warmup"]["state"] == "ready"
         assert result["warmup"]["graphBuildMs"] == 42.5
+        assert result["warmup"]["providerPrewarmErrorType"] == "RuntimeError"
         assert runner.prewarm_status() == {
             "state": "ready",
             "graphCacheHit": False,
@@ -126,6 +132,7 @@ def test_request_waits_for_registered_graph_prewarm_and_exposes_safe_status() ->
             "inventoryFollowupAttempted": False,
             "inventoryFollowupCacheHit": False,
             "inventoryFollowupBuildMs": 0.0,
+            "providerPrewarmErrorType": "RuntimeError",
             "taskDone": True,
         }
 

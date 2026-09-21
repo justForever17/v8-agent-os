@@ -84,6 +84,9 @@ class SupervisorAgentRunner:
                     "inventoryFollowupCacheHit": bool(result.get("inventoryFollowupCacheHit")),
                     "inventoryFollowupBuildMs": float(result.get("inventoryFollowupBuildMs") or 0),
                 }
+                provider_error_type = str(result.get("providerPrewarmErrorType") or "").strip()
+                if provider_error_type:
+                    self._prewarm_status["providerPrewarmErrorType"] = provider_error_type
             else:
                 self._prewarm_status = {
                     "state": "failed",

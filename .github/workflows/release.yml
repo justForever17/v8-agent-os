@@ -378,7 +378,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archives=(release-assets/V8OS-TUI-*.tgz)
+          archives=(./release-assets/V8OS-TUI-*.tgz)
           if [[ ${#archives[@]} != 1 || ! -f "${archives[0]}" ]]; then
             echo "::error::Expected exactly one verified TUI package archive for npm publication"
             exit 1
@@ -394,4 +394,4 @@ jobs:
             exit 1
           fi
           echo "Publishing $tarball to npm via OIDC Trusted Publishing with SLSA Provenance..."
-          npm publish "$tarball" --access public --tag latest --provenance
+          npm publish "./${tarball#./}" --access public --tag latest --provenance

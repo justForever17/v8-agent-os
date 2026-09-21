@@ -422,7 +422,7 @@ export class Surface {
   async models() {
     const [roles, controlPlane] = await Promise.all([
       this.client.api('/v1/config-broker/roles'),
-      this.client.api('/v1/models/control-plane'),
+      this.client.api('/v1/models/control-plane').catch(() => ({})),
     ]);
     const modelRows = Array.isArray(controlPlane?.models) ? controlPlane.models : [];
     const modelLines = modelRows.slice(0, 12).flatMap((model: any) => {

@@ -111,6 +111,17 @@ test('reasoning effort is session scoped and only advertises Engine supplied lev
   assert.match(ui.page?.lines.join('\n') || '', /high/);
 });
 
+test('model settings remain navigable when optional control-plane inventory is unavailable', async t => {
+  const { ui } = make(t, async (route: string) => {
+    if (route === '/v1/config-broker/roles') return { roles: [{ role: 'supervisor', status: 'ready' }] };
+    if (route === '/v1/models/control-plane') throw new Error('control plane warming up');
+    return {};
+  });
+  await ui.models();
+  assert.equal(ui.page?.title, '模型 / Provider / 预算');
+  assert.match(ui.page?.lines.join('\n') || '', /模型目录暂无可用条目/);
+});
+
 test('attach uses actual session binding while new drafts retain selected workspace', async t => {
   const { client } = make(t, async route => route.endsWith('/scope') ? { binding: { workspace_path: '/bound/session' } } : { messages: [] });
   client.view.workspace = '/new/default'; client.notice = '新建对话'; await client.attach('s');

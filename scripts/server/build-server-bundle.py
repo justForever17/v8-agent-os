@@ -17,7 +17,11 @@ SUPPORTED_TARGETS = {"linux-x64"}
 ENGINE = "apps/v8-agent-os-engine"
 CLI = "apps/v8-agent-os-cli"
 ADMIN_SOURCE = "apps/v8-agent-os-web/src/admin"
-SOURCE_PATHS = (ENGINE, CLI, "scripts/server", ADMIN_SOURCE, "release-manifest.json", "LICENSE", "VERSION")
+# The feature-pack installer is owned by Admin but its runtime config imports
+# this tiny Web-owned origin helper. Keep that dependency explicit instead of
+# copying the Web/Next application into the headless server archive.
+WEB_PRODUCT_ORIGIN = "apps/v8-agent-os-web/src/lib/server/product-origin.ts"
+SOURCE_PATHS = (ENGINE, CLI, "scripts/server", ADMIN_SOURCE, WEB_PRODUCT_ORIGIN, "release-manifest.json", "LICENSE", "VERSION")
 # These are inert contracts still imported by the shared native-tool registry.
 # No desktop driver, executor, capture server or RPA runtime enters this package.
 DESKTOP_CONTRACTS = {
@@ -51,7 +55,12 @@ def validate_targets(manifest: dict, target: str) -> None:
 
 
 def _build_input(relative: str) -> bool:
-    return include(relative) or relative.startswith(("scripts/server/", f"{ADMIN_SOURCE}/")) or relative == "release-manifest.json"
+    return (
+        include(relative)
+        or relative.startswith(("scripts/server/", f"{ADMIN_SOURCE}/"))
+        or relative == WEB_PRODUCT_ORIGIN
+        or relative == "release-manifest.json"
+    )
 
 
 def build(output: Path, *, target: str = "linux-x64", allow_dirty: bool = False) -> dict:

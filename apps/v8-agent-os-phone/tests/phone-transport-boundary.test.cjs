@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
-const ts = require('../../v8-agent-os-web/node_modules/typescript');
+const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function loadProduction(mocks = {}) {

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const ts = require('../../v8-agent-os-web/node_modules/typescript');
+const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
 function compile(file, mocks = {}) {

@@ -39,8 +39,9 @@ class BundleTests(unittest.TestCase):
             "scripts/server/v8os": "#!/bin/bash\necho fixture\n",
             "scripts/server/verify_server.py": "print('fixture')\n",
             "scripts/server/README.md": "synthetic README\n",
-            "scripts/server/build-feature-packs.mjs": "import fs from 'node:fs'; fs.writeFileSync(process.argv[2], '// fixture compiled from tracked inputs\\n');\n",
+            "scripts/server/build-feature-packs.mjs": "import fs from 'node:fs'; if (!fs.existsSync('apps/v8-agent-os-web/src/lib/server/product-origin.ts')) throw new Error('missing Web product-origin compiler dependency'); fs.writeFileSync(process.argv[2], '// fixture compiled from tracked inputs\\n');\n",
             "apps/v8-agent-os-web/src/admin/lib/server/tracked.ts": "export const tracked = true;\n",
+            "apps/v8-agent-os-web/src/lib/server/product-origin.ts": "export const resolveProductOrigin = () => 'http://127.0.0.1:9527';\n",
         }
         for name, text in self.files.items():
             destination = self.repo / name

@@ -29,6 +29,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:pty": "python3 tests/terminal_pty.py",
     "test:live": "node --import tsx tests/live.mts --live",

@@ -281,15 +281,22 @@ export async function stopEngine() {
   return (await core.stopCoreComponents(['engine']))[0];
 }
 
-export async function runEngineCli(args) {
-  let root = (await serviceReceipt())?.bundleRoot || recordedRoot();
+export async function runEngineCli(args, options = {}) {
+  const service = await serviceReceipt();
+  let root = service?.bundleRoot || recordedRoot();
   if (!root) { try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; } }
-  if (root) configureRuntime(root);
   const cliArgs = [...args];
-  if (cliArgs[0] === 'service' && ['install', 'upgrade'].includes(cliArgs[1]) && !cliArgs.includes('--bundle')) {
-    const bundle = cliArgs[1] === 'upgrade' ? installedRuntime() : root;
-    if (!bundle) throw new Error('Run v8os install before installing or upgrading the persistent service');
+  const serviceMutation = cliArgs[0] === 'service' && !cliArgs.includes('--help') && !cliArgs.includes('-h');
+  if (serviceMutation && ['install', 'upgrade'].includes(cliArgs[1]) && !cliArgs.includes('--bundle')) {
+    const bundle = (await installEngine(options)).root;
     cliArgs.push('--bundle', bundle);
+    root = bundle;
+  }
+  if (root) configureRuntime(root);
+  if (serviceMutation && cliArgs[1] === 'install' && !service
+      && process.env.V8_AGENT_OS_CREDENTIAL_KEY_FILE && !fs.existsSync(process.env.V8_AGENT_OS_CREDENTIAL_KEY_FILE)) {
+    const core = await localControl(root);
+    core.initializeServerCredentials();
   }
   const { main } = await import(`../dist/cli.mjs?runtime=${encodeURIComponent(root || '')}`);
   await main(cliArgs);

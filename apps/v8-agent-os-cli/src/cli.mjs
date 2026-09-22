@@ -96,7 +96,7 @@ Usage:
   v8os status [--json]
   v8os service install|upgrade --bundle <server-package-root> [--key-file <absolute-path>] [--port 9530] [--json]
   v8os service start|stop|restart|status|rollback|uninstall [--json]
-  v8os packs list|install|uninstall ...
+  v8os packs list|install <pack-id> [--dry-run]
   v8os chat "message" [--session id] [--workspace path] [--safety-approval manual|reduced|minimal] [--interactive]
   v8os tui [--session id] [--screen-reader] [--no-color]
   v8os acp
@@ -357,6 +357,10 @@ function commandLogs() {
 }
 
 async function commandFeaturePacks(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: v8os packs list | install <pack-id> [--dry-run]');
+    return;
+  }
   const entry = path.join(REPO_ROOT, "scripts", "server", "feature-packs.mjs");
   if (!existsSync(entry)) throw new Error("This Engine bundle does not contain the feature-pack manager");
   const child = spawn(process.execPath, [entry, ...args], { stdio: "inherit", windowsHide: true, shell: false });

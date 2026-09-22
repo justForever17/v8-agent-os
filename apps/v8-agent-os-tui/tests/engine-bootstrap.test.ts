@@ -136,3 +136,29 @@ test('unified command rejects non-TTY before downloads and help does not import 
   assert.match(run(['--help', '--lang', 'en']).stdout, /Unified CLI/);
   assert.deepEqual(fs.readdirSync(dir), []);
 });
+
+test('explicit service upgrade installs the matching archive before handing off to the service owner', async t => {
+  const f = await fixture(t);
+  const packageDir = path.join(f.dir, 'npm');
+  const boot = path.join(packageDir, 'bin/engine-bootstrap.mjs');
+  put(boot, fs.readFileSync(path.resolve('bin/engine-bootstrap.mjs'), 'utf8'));
+  put(path.join(packageDir, 'package.json'), JSON.stringify({ type: 'module', version: '2026.9.22-1', v8Release: { version: VERSION, sourceCommit: COMMIT } }));
+  fs.symlinkSync(path.resolve('node_modules'), path.join(packageDir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+  // The real installer runs; only the external systemd owner is represented by
+  // a recorder so this contract cannot alter the host's actual user service.
+  put(path.join(packageDir, 'dist/core-control.mjs'), 'export const discoverServerServiceReceipt = () => null;');
+  put(path.join(packageDir, 'dist/cli.mjs'), `import fs from 'node:fs'; import path from 'node:path';
+    export async function main(args) {
+      const root = args[args.indexOf('--bundle') + 1];
+      const receipt = JSON.parse(fs.readFileSync(path.join(root, '.installed-receipt.json')));
+      console.log(JSON.stringify({args, version:receipt.version, runtime: process.env.V8_ENGINE_PYTHON}));
+    }`);
+  const script = `import {runEngineCli} from ${JSON.stringify(pathToFileURL(boot).href)};
+    await runEngineCli(['service','upgrade','--json'], {version:${JSON.stringify(VERSION)},target:${JSON.stringify(TARGET)}});`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: process.env });
+  assert.equal(result.status, 0, result.stderr);
+  const receipt = JSON.parse(result.stdout);
+  assert.deepEqual(receipt.args, ['service', 'upgrade', '--json', '--bundle', f.destination]);
+  assert.equal(receipt.version, VERSION);
+  assert.equal(receipt.runtime, path.join(f.destination, manifest().python));
+});

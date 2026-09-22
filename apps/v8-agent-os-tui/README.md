@@ -34,7 +34,7 @@ v8os
 也可以安装 Release 中的已校验 tarball。首次运行 `v8os` 会按 Release
 manifest 下载并校验 Linux x64 便携 Engine；不需要系统 Python，不会再安装
 第二套 CLI，也不会在 `postinstall` 阶段启动服务或执行特权操作。离线或国内
-网络环境可以在运行前设置 `V8OS_ENGINE_ARCHIVE`，或将已验证运行时放到
+网络环境可以设置 `V8OS_ENGINE_MANIFEST_URL=file:///...json` 与 `V8OS_ENGINE_ARCHIVE=/...tar.gz`，或将已验证运行时放到
 `V8OS_ENGINE_RUNTIME_DIR`。
 
 `v8os` 也负责 Engine 控制面和非交互命令：
@@ -46,12 +46,21 @@ v8os chat "hello" --json
 v8os sessions list --json
 ```
 
-The npm portable Core Base currently supports Linux x64 only. Windows, macOS,
+The npm portable Core Base supports Linux x64 with glibc 2.35+ (tested Ubuntu 22.04/24.04). Windows, macOS,
 Linux ARM64, and the full desktop flow remain separate release products; do not
 force the Linux x64 Engine archive onto another platform. For a server package
 with a manually managed service, use the matching Server release and its
 `./install.sh`; that is an alternative deployment path, not a second CLI to
 install alongside npm.
+
+For a persistent systemd user service, run `v8os stop` followed by `v8os service install`.
+The service command checks the user manager and linger setting before installation.
+After updating the npm package, use `v8os restart` for a regular daemon or `v8os service upgrade`
+for an installed service; the latter installs the matching Engine before the governed upgrade.
+Old runtime directories and user data are preserved. A database schema migration can block
+rollback to an older Engine; the service reports this rather than overwriting user data.
+Chromium is bundled, but its OS libraries still depend on the host. `v8os doctor` lists
+missing libraries and a repair command without silently requesting elevated privileges.
 
 The TUI settings (F3) select a provider, model and workspace. Phone pairing and
 Engine identity remain owned by Engine; no Admin page is required for local

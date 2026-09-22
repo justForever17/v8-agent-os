@@ -108,7 +108,7 @@ async function main() {
   const options = { install: !args.includes('--no-install'), signal: controller.signal, progress };
   if (command === 'status' || command === 'doctor') {
     const status = await statusEngine();
-    if (command === 'doctor' && status.runtimeRoot) return runEngineCli(args);
+    if (command === 'doctor' && status.runtimeRoot) return runEngineCli(args, options);
     print(command === 'doctor' ? { node: process.versions.node, ...status } : status); return 0;
   }
   if (command === 'stop' || command === 'restart') {
@@ -128,8 +128,9 @@ async function main() {
     await (await import('../dist/main.js')).start(tuiArgs); return 0;
   }
   // Service installation owns its lifecycle; help must never boot a daemon.
-  if (!helpRequested && ['chat', 'acp', 'sessions', 'inbox', 'workspace', 'config'].includes(command)) await startEngine(options);
-  return runEngineCli(args);
+  if (!helpRequested && ['chat', 'acp', 'sessions', 'inbox', 'workspace', 'config'].includes(command)
+      && !(command === 'config' && args[1] === 'credentials')) await startEngine(options);
+  return runEngineCli(args, options);
 }
 
 process.on('SIGINT', abort); process.on('SIGTERM', abort);

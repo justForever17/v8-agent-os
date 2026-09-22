@@ -52,8 +52,12 @@ test('Admin session probe accepts only an authenticated administrator', () => {
   assert.equal(validateAdminSessionResponse({
     ok: true,
     status: 200,
-    body: JSON.stringify({ user: { role: 'ADMIN' } }),
+    body: JSON.stringify({ user: { role: 'ADMIN', adminAuthenticated: true } }),
   }), true);
+  for (const user of [{ role: 'ADMIN' }, { role: 'ADMIN', adminAuthenticated: false }, { role: 'USER', adminAuthenticated: true }]) {
+    assert.equal(validateAdminSessionResponse({ ok: true, status: 200, body: JSON.stringify({ user }) }), false,
+      'The local chat session and an unprivileged account cannot unlock Admin');
+  }
   assert.equal(validateAdminSessionResponse({ ok: true, status: 200, body: '{}' }), false);
   assert.equal(validateAdminSessionResponse({ ok: true, status: 200, body: '{invalid' }), false);
   assert.equal(validateAdminSessionResponse({ ok: false, status: 500, body: '{}' }), false);

@@ -31,8 +31,6 @@ import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { DEFAULT_PORTS } from "../src/paths.mjs";
 import {
-  cleanupFailedRuntimeHandoff,
-  DESKTOP_PET_TERMINATION_TIMEOUT_MS,
   MANAGED_SHELL_RESTART_ARG,
   MANAGED_SHELL_RESTART_TIMEOUT_MS,
   MANAGED_SHELL_SHUTDOWN_ARG,
@@ -51,7 +49,6 @@ import {
   SHELL_TERMINATION_TIMEOUT_MS,
   spawnManagedChild,
   stopComponents,
-  waitForRuntimeComponentHandoff,
   verifiedComponentPortOwner,
   verifiedManagedComponentPid,
   verifiedRuntimeComponentPid,
@@ -127,17 +124,17 @@ test("default start components exclude CyberCore", () => {
 });
 
 test("--with adds optional components without replacing defaults", () => {
-  assert.deepEqual(parseComponentSelection(["--with", "cybercore"]), ["engine", "web", "cybercore"]);
+  assert.deepEqual(parseComponentSelection(["--with", "shell"]), ["engine", "web", "shell"]);
 });
 
 test("--only narrows component set", () => {
-  assert.deepEqual(parseComponentSelection(["--only", "engine,admin"]), ["engine", "admin"]);
+  assert.deepEqual(parseComponentSelection(["--only", "engine,admin"]), ["engine", "web"]);
 });
 
 test("--all returns all components", () => {
   assert.deepEqual(parseComponentSelection(["--all"]), ALL_COMPONENTS);
   assert.ok(ALL_COMPONENTS.includes("shell"));
-  assert.ok(ALL_COMPONENTS.includes("desktop-pet"));
+  assert.equal(ALL_COMPONENTS.includes("desktop-pet"), false);
 });
 
 test("desktop pet capability is fail-closed only on Linux", () => {
@@ -158,22 +155,6 @@ test("desktop pet capability is fail-closed only on Linux", () => {
     assert.equal(availability.reasonCode, null, platform);
   }
   assert.deepEqual(shellDesktopPetAvailability("linux"), linux);
-});
-
-test("Linux desktop pet selection remains explicit for --only, --with, and --all", () => {
-  const selections = [
-    parseComponentSelection(["--only", "desktop-pet"]),
-    parseComponentSelection(["--with", "desktop-pet"]),
-    parseComponentSelection(["--all"]),
-  ];
-  for (const selected of selections) {
-    assert.ok(selected.includes("desktop-pet"));
-    assert.equal(commandResultsHaveFailures("start", [{
-      id: "desktop-pet",
-      ...desktopPetAvailability("linux"),
-    }]), true);
-  }
-  assert.equal(parseComponentSelection([]).includes("desktop-pet"), false);
 });
 
 test("Linux desktop pet human output explains that core interfaces are unaffected", () => {
@@ -288,72 +269,6 @@ test("CLI prints structured start failures before exiting nonzero", (t) => {
   assert.equal(JSON.parse(child.stdout)[0].status, "startup_exit");
 });
 
-test("Linux explicit desktop pet starts return unavailable and exit nonzero", (t) => {
-  const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-linux-pet-repo-"));
-  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-linux-pet-state-"));
-  t.after(() => {
-    fs.rmSync(fakeRepo, { recursive: true, force: true });
-    fs.rmSync(stateRoot, { recursive: true, force: true });
-  });
-  const cliUrl = new URL("../src/cli.mjs", import.meta.url).href;
-  const cases = [
-    ["--only", "desktop-pet"],
-    ["--with", "desktop-pet"],
-    ["--all"],
-  ];
-  for (const args of cases) {
-    const child = spawnSync(process.execPath, [
-      "--input-type=module",
-      "-e",
-      `Object.defineProperty(process, "platform", { value: "linux" }); const { main } = await import(${JSON.stringify(cliUrl)}); await main(${JSON.stringify(["start", ...args, "--mode", "start", "--json"])});`,
-    ], {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        V8_REPO_ROOT: fakeRepo,
-        V8_AGENT_OS_HOME: stateRoot,
-      },
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 10_000,
-    });
-    assert.equal(child.status, 1, `${args.join(" ")}: ${child.stderr}`);
-    const desktopPet = JSON.parse(child.stdout).find((item) => item.id === "desktop-pet");
-    assert.ok(desktopPet, args.join(" "));
-    assert.equal(desktopPet.componentId, "desktop-pet");
-    assert.equal(desktopPet.status, "unavailable");
-    assert.equal(desktopPet.available, false);
-    assert.equal(desktopPet.reasonCode, LINUX_DESKTOP_PET_UNAVAILABLE_REASON);
-    assert.equal(desktopPet.pid, undefined);
-  }
-});
-
-test("Linux desktop pet status reports capability while stop remains available", async () => {
-  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-linux-pet-lifecycle-"));
-  const processManagerUrl = new URL("../src/process_manager.mjs", import.meta.url).href;
-  const script = [
-    `Object.defineProperty(process, "platform", { value: "linux" });`,
-    `const { statusComponents, stopComponents } = await import(${JSON.stringify(processManagerUrl)});`,
-    `const status = await statusComponents(["desktop-pet"]);`,
-    `const stop = await stopComponents(["desktop-pet"]);`,
-    `process.stdout.write(JSON.stringify({ status, stop }));`,
-  ].join("\n");
-  try {
-    const payload = JSON.parse(await runIsolatedModuleScript(script, {
-      V8_AGENT_OS_HOME: stateRoot,
-      V8_REPO_ROOT: repoRoot,
-    }));
-    assert.equal(payload.status[0].state, "stopped");
-    assert.equal(payload.status[0].pidAlive, false);
-    assert.equal(payload.status[0].available, false);
-    assert.equal(payload.status[0].status, "unavailable");
-    assert.equal(payload.status[0].reasonCode, LINUX_DESKTOP_PET_UNAVAILABLE_REASON);
-    assert.deepEqual(payload.stop, [{ id: "desktop-pet", status: "not_managed" }]);
-  } finally {
-    fs.rmSync(stateRoot, { recursive: true, force: true });
-  }
-});
-
 test("Windows process ownership probes pass the governed cold-start timeout to the runner", async () => {
   assert.ok(WINDOWS_PROCESS_PROBE_TIMEOUT_MS >= 10_000);
   const calls = [];
@@ -372,7 +287,7 @@ test("Windows process ownership probes pass the governed cold-start timeout to t
 
 test("Admin capability installer uses the same Python environment as its Engine", () => {
   const engine = COMPONENTS.engine.command({ mode: "start" });
-  const admin = COMPONENTS.admin.command({ mode: "start" });
+  const admin = COMPONENTS.web.command({ mode: "start" });
   const expected = path.basename(engine.command).toLowerCase() === "pythonw.exe"
     ? path.join(path.dirname(engine.command), "python.exe") : engine.command;
   assert.equal(admin.env.V8_ENGINE_PYTHON, expected);
@@ -380,7 +295,7 @@ test("Admin capability installer uses the same Python environment as its Engine"
 });
 
 test("managed process identity rejects reused PIDs for every preview component", () => {
-  const components = ["engine", "admin", "web", "shell", "desktop-pet"];
+  const components = ["engine", "web", "shell"];
   for (const [index, id] of components.entries()) {
     const pid = 41000 + index;
     const spec = COMPONENTS[id].command({ mode: "start" });
@@ -478,7 +393,6 @@ test("Shell shutdown stops the verified Electron browser before its launcher", (
 });
 
 test("POSIX component restart force-stops only the verified Shell process group", () => {
-  assert.equal(DESKTOP_PET_TERMINATION_TIMEOUT_MS, 10_000);
   assert.deepEqual(managedStopOptions("shell", "linux"), {
     tree: false,
     timeoutMs: SHELL_TERMINATION_TIMEOUT_MS,
@@ -498,16 +412,6 @@ test("POSIX component restart force-stops only the verified Shell process group"
     tree: true,
     timeoutMs: undefined,
     signal: "SIGTERM",
-  });
-  assert.deepEqual(managedStopOptions("desktop-pet", "linux"), {
-    tree: true,
-    timeoutMs: DESKTOP_PET_TERMINATION_TIMEOUT_MS,
-    signal: "SIGTERM",
-  });
-  assert.deepEqual(managedStopOptions("desktop-pet", "linux", { force: true }), {
-    tree: true,
-    timeoutMs: undefined,
-    signal: "SIGKILL",
   });
 });
 
@@ -678,103 +582,6 @@ test("managed spawn failures retain structured stage and log references", async 
   assert.equal(fs.existsSync(logs.err), true);
 });
 
-test("desktop pet declares its intentional detached launcher handoff", () => {
-  assert.equal(COMPONENTS["desktop-pet"].detachedHandoff, true);
-  assert.equal(COMPONENTS.shell.detachedHandoff, undefined);
-});
-
-test("desktop pet startup waits for a verified runtime handoff instead of recording the launcher", async (t) => {
-  // This checks receipt ordering, not host timer latency. Real 1ms timers can
-  // exceed the 50ms fixture deadline while other package tests are running.
-  let now = 1_000;
-  t.mock.method(Date, "now", () => now);
-  const sleep = async (delayMs) => { now += delayMs; };
-  const pid = 43123;
-  const child = new EventEmitter();
-  child.exitCode = 0;
-  child.signalCode = null;
-  let reads = 0;
-  const mainEntry = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs");
-  const receiptContract = { componentId: "desktop-pet", nonce: "delayed-unit", filePath: "ignored" };
-  let receiptReads = 0;
-  const result = await waitForRuntimeComponentHandoff("desktop-pet", child, {
-    timeoutMs: 50,
-    pollMs: 1,
-    sleep,
-    readRuntimeDescriptor: () => (++reads < 2 ? null : { pid, managedByShell: true, descriptorId: "pet-unit" }),
-    readProcessDescriptor: async () => ({
-      pid,
-      executablePath: process.execPath,
-      commandLine: `${process.execPath} ${mainEntry}`,
-    }),
-    pidIsAlive: () => true,
-    receiptContract,
-    readReceipt: () => (++receiptReads < 3 ? null : { pid }),
-  });
-  assert.equal(result.ok, true);
-  assert.equal(result.pid, pid);
-  assert.ok(receiptReads >= 3, "descriptor may arrive before the nonce receipt");
-
-  const failed = await waitForRuntimeComponentHandoff("desktop-pet", {
-    exitCode: 1,
-    signalCode: null,
-  }, {
-    timeoutMs: 20,
-    pollMs: 1,
-    sleep,
-    readRuntimeDescriptor: () => null,
-  });
-  assert.deepEqual(failed, {
-    ok: false,
-    reason: "launcher_exited",
-    exitCode: 1,
-    signal: null,
-  });
-});
-
-test("desktop pet launcher writes a nonce-bound runtime handoff receipt", () => {
-  const launcherSource = fs.readFileSync(path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "electron-launcher.mjs"), "utf8");
-  const managerSource = fs.readFileSync(path.join(cliRoot, "src", "process_manager.mjs"), "utf8");
-  assert.match(launcherSource, /V8OS_RUNTIME_HANDOFF_PATH/);
-  assert.match(launcherSource, /V8OS_RUNTIME_HANDOFF_NONCE/);
-  assert.match(launcherSource, /desktop-pet-\$\{nonce\}\.json/);
-  assert.match(managerSource, /runtime_handoff_receipt_mismatch/);
-  assert.match(managerSource, /cleanupFailedRuntimeHandoff/);
-});
-
-test("failed desktop pet handoff terminates verified runtime and launcher PIDs", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-pet-handoff-cleanup-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const contract = { componentId: "desktop-pet", nonce: "unit-nonce", filePath: path.join(root, "receipt.json") };
-  fs.writeFileSync(contract.filePath, "{}", "utf8");
-  const killed = [];
-  const removed = [];
-
-  await cleanupFailedRuntimeHandoff("desktop-pet", {
-    pid: 44002,
-    exitCode: null,
-    signalCode: null,
-  }, contract, {
-    readReceipt: () => null,
-    candidatePid: 44001,
-    pidIsAlive: () => true,
-    readProcessDescriptor: async (pid) => ({ pid }),
-    verifyRuntimePid: (_componentId, descriptor) => descriptor.pid,
-    killPid: async (pid, options) => {
-      killed.push({ pid, options });
-      return { ok: true };
-    },
-    removeRuntimeDescriptor: (componentId, pid) => removed.push({ componentId, pid }),
-  });
-
-  assert.deepEqual(killed, [
-    { pid: 44001, options: { tree: true } },
-    { pid: 44002, options: { tree: true } },
-  ]);
-  assert.deepEqual(removed, [{ componentId: "desktop-pet", pid: 44001 }]);
-  assert.equal(fs.existsSync(contract.filePath), false);
-});
-
 test("independent CLI hosts serialize scoped process-state mutations", async () => {
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-process-race-"));
   const statePath = path.join(stateRoot, "runtime", "cli", "processes.json");
@@ -784,7 +591,6 @@ test("independent CLI hosts serialize scoped process-state mutations", async () 
     admin: { pid: 544, launchId: "admin-live" },
     web: { pid: 38544, launchId: "web-live" },
     shell: { pid: 37040, launchId: "shell-old" },
-    "desktop-pet": { pid: 25248, launchId: "pet-old" },
   };
   fs.writeFileSync(statePath, `${JSON.stringify({ version: 1, repoRoot, processes: initialProcesses }, null, 2)}\n`, "utf8");
   const processManagerUrl = new URL("../src/process_manager.mjs", import.meta.url).href;
@@ -818,12 +624,11 @@ test("independent CLI hosts serialize scoped process-state mutations", async () 
   });
 
   try {
-    await Promise.all([runMutation("shell"), runMutation("desktop-pet")]);
+    await Promise.all([runMutation("shell"), runMutation("web")]);
     const finalState = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.deepEqual(finalState.processes, {
       engine: initialProcesses.engine,
       admin: initialProcesses.admin,
-      web: initialProcesses.web,
     });
     const leaseRoot = path.join(path.dirname(statePath), "leases");
     for (const entry of fs.readdirSync(leaseRoot, { withFileTypes: true })) {
@@ -1051,11 +856,11 @@ test("status confirms and CAS-removes a stale record once", async () => {
   fs.writeFileSync(statePath, JSON.stringify({
     version: 1,
     processes: {
-      "desktop-pet": {
+      "shell": {
         pid: 2147483647,
         launchId: "dead-pet-launch",
         command: process.execPath,
-        args: ["apps/v8-agent-os-shell/scripts/launch-desktop-pet.mjs"],
+        args: ["apps/v8-agent-os-shell/scripts/launch-shell.mjs"],
         cwd: repoRoot,
       },
     },
@@ -1066,10 +871,10 @@ test("status confirms and CAS-removes a stale record once", async () => {
     `const fs = await import("node:fs");`,
     `const path = await import("node:path");`,
     `let timerTicked = false; setTimeout(() => { timerTicked = true; }, 10);`,
-    `const first = await statusComponents(["desktop-pet"]);`,
+    `const first = await statusComponents(["shell"]);`,
     `const statePath = path.join(process.env.V8_AGENT_OS_HOME, "runtime", "cli", "processes.json");`,
     `const afterFirst = JSON.parse(fs.readFileSync(statePath, "utf8"));`,
-    `const second = await statusComponents(["desktop-pet"]);`,
+    `const second = await statusComponents(["shell"]);`,
     `process.stdout.write(JSON.stringify({ first, second, afterFirst, timerTicked }));`,
   ].join("\n");
 
@@ -1081,26 +886,24 @@ test("status confirms and CAS-removes a stale record once", async () => {
     assert.equal(payload.first[0].managed, false);
     assert.equal(payload.first[0].state, "stopped");
     assert.equal(payload.timerTicked, true, "status process probing must yield to the Electron event loop");
-    assert.equal(payload.afterFirst.processes["desktop-pet"], undefined);
+    assert.equal(payload.afterFirst.processes["shell"], undefined);
     assert.equal(payload.second[0].pid, null);
   } finally {
     fs.rmSync(stateRoot, { recursive: true, force: true });
   }
 });
 
-test("Shell uses immediate event refresh plus low-frequency process reconciliation", () => {
+test("Shell reads companion state from its owned window without polling another PID", () => {
   const source = fs.readFileSync(path.join(repoRoot, "apps", "v8-agent-os-shell", "electron", "main.cjs"), "utf8");
-  assert.match(source, /setInterval\(\(\) => \{ void refreshStatus\(\); \}, 10_000\)/);
-  assert.match(source, /if \(statusRefreshPromise\) return statusRefreshPromise/);
-  assert.match(source, /statusRefreshPromise = refreshStatusOnce\(\)\.finally/);
-  assert.match(source, /await shellStop\(\['desktop-pet'\]\)/);
-  assert.match(source, /await removeShellProcessRecord\(shellProcessRecordIdentity\)/);
+  assert.ok(source.includes("const status = companion?.status()"));
+  assert.ok(source.includes("await companion.stop"));
+  assert.equal(source.includes("shellStatus(['desktop-pet'])"), false);
 });
 
 test("Windows Next launcher state and standalone listener resolve as one managed chain", () => {
   const launcherPid = 46692;
   const standalonePid = 25764;
-  const spec = COMPONENTS.admin.command({ mode: "start" });
+  const spec = COMPONENTS.web.command({ mode: "start" });
   const launcherCommandLine = `${spec.command} ${spec.args.join(" ")}`;
   const launcherRecord = {
     pid: launcherPid,
@@ -1117,13 +920,13 @@ test("Windows Next launcher state and standalone listener resolve as one managed
     pid: standalonePid,
     parentPid: launcherPid,
     executablePath: spec.command,
-    commandLine: `${spec.command} ${path.join(repoRoot, "apps", "v8-agent-os-admin", ".next", "standalone", "server.js")}`,
+    commandLine: `${spec.command} ${path.join(repoRoot, "apps", "v8-agent-os-web", ".next", "standalone", "server.js")}`,
     parentExecutablePath: spec.command,
     parentCommandLine: launcherCommandLine,
   };
 
-  assert.equal(verifiedManagedComponentPid("admin", launcherRecord, launcherDescriptor), launcherPid);
-  assert.deepEqual(verifiedComponentPortOwner("admin", standaloneDescriptor), {
+  assert.equal(verifiedManagedComponentPid("web", launcherRecord, launcherDescriptor), launcherPid);
+  assert.deepEqual(verifiedComponentPortOwner("web", standaloneDescriptor), {
     ownerPid: standalonePid,
     killPid: launcherPid,
     matchedBy: "verified_parent_runtime",
@@ -1131,16 +934,16 @@ test("Windows Next launcher state and standalone listener resolve as one managed
 });
 
 test("resident Electron host preserves Node-started Next launcher identity", () => {
-  const electronHost = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "node_modules", "electron", "dist", "electron.exe");
+  const electronHost = path.join(repoRoot, "apps", "v8-agent-os-shell", "node_modules", "electron", "dist", "electron.exe");
   const childScript = [
     `const nodeExecutable = ${JSON.stringify(process.execPath)};`,
     `process.execPath = ${JSON.stringify(electronHost)};`,
     `process.versions.electron = "test-electron";`,
     `const { verifiedManagedComponentPid } = await import(${JSON.stringify(new URL("../src/process_manager.mjs", import.meta.url).href)});`,
-    `const args = ["scripts/run-next-with-managed-auth.mjs", "--app", "admin", "--mode", "start", "--port", "9528"];`,
+    `const args = ["scripts/run-next-with-managed-auth.mjs", "--app", "web", "--mode", "start", "--port", "9527"];`,
     `const record = { pid: 46692, command: nodeExecutable, args, cwd: ${JSON.stringify(repoRoot)} };`,
     `const descriptor = { pid: 46692, executablePath: nodeExecutable, commandLine: [nodeExecutable, ...args].join(" ") };`,
-    `process.stdout.write(String(verifiedManagedComponentPid("admin", record, descriptor)));`,
+    `process.stdout.write(String(verifiedManagedComponentPid("web", record, descriptor)));`,
   ].join("\n");
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", childScript], {
     cwd: repoRoot,
@@ -1158,7 +961,7 @@ test("Node CLI recognizes only the project-controlled Electron Next launcher", (
   const controlledElectron = path.join(
     repoRoot,
     "apps",
-    "v8-agent-os-desktop-pet",
+    "v8-agent-os-shell",
     "node_modules",
     "electron",
     "dist",
@@ -1197,7 +1000,7 @@ test("Node CLI recognizes only the project-controlled Electron Next launcher", (
 
 test("managed process identity accepts tagged POSIX ps comm basename with full component proof", () => {
   const pid = 41991;
-  const spec = COMPONENTS.admin.command({ mode: "start" });
+  const spec = COMPONENTS.web.command({ mode: "start" });
   const record = {
     pid,
     command: spec.command,
@@ -1212,24 +1015,24 @@ test("managed process identity accepts tagged POSIX ps comm basename with full c
     cwd: spec.cwd,
   };
 
-  assert.equal(verifiedManagedComponentPid("admin", record, psCommDescriptor), pid);
+  assert.equal(verifiedManagedComponentPid("web", record, psCommDescriptor), pid);
   assert.equal(
-    verifiedManagedComponentPid("admin", record, { ...psCommDescriptor, executablePathKind: undefined }),
+    verifiedManagedComponentPid("web", record, { ...psCommDescriptor, executablePathKind: undefined }),
     null,
     "an untagged Windows/CIM-style basename must remain fail-closed",
   );
   assert.equal(
-    verifiedManagedComponentPid("admin", record, { ...psCommDescriptor, commandLine: "node unrelated.mjs" }),
+    verifiedManagedComponentPid("web", record, { ...psCommDescriptor, commandLine: "node unrelated.mjs" }),
     null,
     "the component command signature remains mandatory",
   );
   assert.equal(
-    verifiedManagedComponentPid("admin", record, { ...psCommDescriptor, cwd: path.join(os.tmpdir(), "other") }),
+    verifiedManagedComponentPid("web", record, { ...psCommDescriptor, cwd: path.join(os.tmpdir(), "other") }),
     null,
     "the component cwd remains mandatory when the OS exposes it",
   );
   assert.equal(
-    verifiedManagedComponentPid("admin", record, { ...psCommDescriptor, cwd: null }),
+    verifiedManagedComponentPid("web", record, { ...psCommDescriptor, cwd: null }),
     null,
     "a basename-only POSIX descriptor without cwd proof must remain fail-closed",
   );
@@ -1237,39 +1040,20 @@ test("managed process identity accepts tagged POSIX ps comm basename with full c
 
 test("POSIX process identity keeps repository path comparisons case-sensitive", { skip: process.platform === "win32" }, () => {
   const pid = 41993;
-  const spec = COMPONENTS.admin.command({ mode: "start" });
+  const spec = COMPONENTS.web.command({ mode: "start" });
   const record = { pid, command: spec.command, args: spec.args, cwd: spec.cwd };
-  const serverPath = path.join(repoRoot, "apps", "v8-agent-os-admin", ".next", "standalone", "server.js");
+  const serverPath = path.join(repoRoot, "apps", "v8-agent-os-web", ".next", "standalone", "server.js");
   const descriptor = {
     pid,
     executablePath: spec.command,
     commandLine: `${spec.command} ${serverPath}`,
     cwd: spec.cwd,
   };
-  assert.equal(verifiedManagedComponentPid("admin", record, descriptor), pid);
-  assert.equal(verifiedManagedComponentPid("admin", record, {
+  assert.equal(verifiedManagedComponentPid("web", record, descriptor), pid);
+  assert.equal(verifiedManagedComponentPid("web", record, {
     ...descriptor,
-    commandLine: `${spec.command} ${serverPath.replace("v8-agent-os-admin", "V8-AGENT-OS-ADMIN")}`,
+    commandLine: `${spec.command} ${serverPath.replace("v8-agent-os-web", "V8-AGENT-OS-WEB")}`,
   }), null);
-});
-
-test("managed process identity recognizes POSIX npm through its Node interpreter only with cwd proof", () => {
-  const pid = 41992;
-  const spec = COMPONENTS.cybercore.command({ mode: "dev" });
-  const record = { pid, command: spec.command, args: spec.args, cwd: spec.cwd };
-  const descriptor = {
-    pid,
-    processDescriptorSource: "posix_ps",
-    executablePath: "/usr/bin/node",
-    executablePathKind: "exact",
-    commandLine: "npm run dev",
-    cwd: spec.cwd,
-  };
-
-  assert.equal(verifiedManagedComponentPid("cybercore", record, descriptor), pid);
-  assert.equal(verifiedManagedComponentPid("cybercore", record, { ...descriptor, cwd: null }), null);
-  assert.equal(verifiedManagedComponentPid("cybercore", record, { ...descriptor, processDescriptorSource: undefined }), null);
-  assert.equal(verifiedManagedComponentPid("cybercore", record, { ...descriptor, commandLine: "node unrelated.mjs" }), null);
 });
 
 test("Engine identity uses the recorded interpreter after the launch override is removed", () => {
@@ -1319,7 +1103,7 @@ test("identity probing fails closed when a live PID cannot be described", () => 
 });
 
 test("Shell and desktop pet runtime descriptors require their Electron entry identity", () => {
-  const electron = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "node_modules", "electron", "dist", "electron.exe");
+  const electron = path.join(repoRoot, "apps", "v8-agent-os-shell", "node_modules", "electron", "dist", "electron.exe");
   const shellPid = 43000;
   const petPid = 43001;
   assert.equal(verifiedRuntimeComponentPid("shell", {
@@ -1330,8 +1114,8 @@ test("Shell and desktop pet runtime descriptors require their Electron entry ide
   assert.equal(verifiedRuntimeComponentPid("desktop-pet", {
     pid: petPid,
     executablePath: electron,
-    commandLine: `${electron} ${path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs")}`,
-  }), petPid);
+    commandLine: `${electron} ${path.join(repoRoot, "apps", "v8-agent-os-shell", "electron", "main.cjs")}`,
+  }), null);
   assert.equal(verifiedRuntimeComponentPid("desktop-pet", {
     pid: petPid,
     executablePath: electron,
@@ -1383,7 +1167,7 @@ test("packaged Shell and desktop pet descriptors bind the runtime to the governe
   };
   assert.equal(packagedRuntimeDescriptorMatches("desktop-pet", petCandidate, petDescriptor, {
     repoRoot: packagedRepoRoot,
-  }), true);
+  }), false);
   assert.equal(packagedRuntimeDescriptorMatches("shell", petCandidate, {
     ...shellDescriptor,
     pid: 45002,
@@ -1409,34 +1193,32 @@ test("json backup writes timestamped backup without changing source", () => {
 });
 
 test("admin and web commands use managed auth launcher", () => {
-  const admin = COMPONENTS.admin.command({ mode: "dev" });
+  const admin = COMPONENTS.web.command({ mode: "dev" });
   const web = COMPONENTS.web.command({ mode: "start" });
   assert.equal(admin.command, process.execPath);
   assert.equal(web.command, process.execPath);
   assert.ok(admin.args.some((part) => part.endsWith("run-next-with-managed-auth.mjs")));
   assert.ok(web.args.some((part) => part.endsWith("run-next-with-managed-auth.mjs")));
-  assert.ok(admin.args.includes("admin"));
+  assert.ok(admin.args.includes("web"));
   assert.ok(web.args.includes("web"));
-  assert.ok(admin.args.includes("9528"));
+  assert.ok(admin.args.includes("9527"));
   assert.ok(web.args.includes("9527"));
 });
 
 test("component commands project the selected Web fallback into every local surface", () => {
   try {
-    const runtimePorts = { engine: 9530, admin: 9528, web: 19527 };
+    const runtimePorts = { engine: 9530, admin: 9527, web: 19527 };
     configureComponentRuntimePorts(DEFAULT_PORTS);
     const web = COMPONENTS.web.command({ mode: "start", runtimePorts });
-    const admin = COMPONENTS.admin.command({ mode: "start", runtimePorts });
+    const admin = COMPONENTS.web.command({ mode: "start", runtimePorts });
     const engine = COMPONENTS.engine.command({ mode: "start", runtimePorts });
     const shell = COMPONENTS.shell.command({ mode: "start", runtimePorts });
-    const pet = COMPONENTS["desktop-pet"].command({ mode: "start", runtimePorts });
     assert.equal(COMPONENTS.web.port, DEFAULT_PORTS.web);
     assert.ok(web.args.includes("19527"));
     assert.equal(web.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
     assert.equal(admin.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
     assert.equal(engine.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
     assert.equal(shell.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
-    assert.equal(pet.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
     assert.deepEqual(componentRuntimePorts(), DEFAULT_PORTS);
   } finally {
     configureComponentRuntimePorts(DEFAULT_PORTS);
@@ -1476,23 +1258,12 @@ test("component start holds the governed port lease only through Web process rec
   assert.match(processState, /withRuntimePortsLease[\s\S]{0,180}timeoutMs: 30_000/);
 });
 
-test("preview shell and desktop pet are no-port managed components", () => {
+test("Shell is the only desktop process component", () => {
   assert.equal(COMPONENTS.shell.port, null);
-  assert.equal(COMPONENTS["desktop-pet"].port, null);
-  const shell = COMPONENTS.shell.command();
-  const pet = COMPONENTS["desktop-pet"].command();
-  assert.equal(shell.command, process.execPath);
-  assert.equal(pet.command, process.execPath);
-  assert.ok(shell.args.some((part) => part.endsWith("launch-shell.mjs")));
-  assert.ok(pet.args.some((part) => part.endsWith("launch-desktop-pet.mjs")));
-  assert.equal(pet.env.V8_DESKTOP_PET_MANAGED_BY_SHELL, "1");
-});
-
-test("desktop pet managed mode suppresses its own tray", () => {
-  const main = fs.readFileSync(path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs"), "utf8");
-  assert.match(main, /V8_DESKTOP_PET_MANAGED_BY_SHELL/);
-  assert.match(main, /MANAGED_BY_SHELL/);
-  assert.match(main, /if \(!MANAGED_BY_SHELL\) createTray\(\)/);
+  assert.equal(COMPONENTS["desktop-pet"], undefined);
+  assert.equal(COMPONENTS.cybercore, undefined);
+  assert.throws(() => parseComponentSelection(["--only", "desktop-pet"]), /managed by the Shell/);
+  assert.throws(() => parseComponentSelection(["--with", "unknown"]), /Unknown Core component/);
 });
 
 test("Windows browser and workspace openers never flash a command window", () => {
@@ -1514,33 +1285,7 @@ test("Windows diagnostic and Electron helper processes never flash a command win
   assert.match(doctor, /shell: true,\s+windowsHide: true,/);
   assert.match(ports, /spawnSync\("powershell\.exe"[\s\S]*?windowsHide: true,/);
   assert.match(electronLauncher, /spawnSync\(process\.execPath[\s\S]*?windowsHide: true,/);
-  assert.match(electronLauncher, /spawn\(process\.execPath[\s\S]*?windowsHide: true,/);
-});
-
-test("desktop pet survives Shell replacement through detached handoff and exact Shell termination", () => {
-  const launcher = fs.readFileSync(
-    path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "launch-desktop-pet.mjs"),
-    "utf8",
-  );
-  const interposer = fs.readFileSync(
-    path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "spawn-detached-electron.mjs"),
-    "utf8",
-  );
-  const processManager = fs.readFileSync(
-    path.join(repoRoot, "apps", "v8-agent-os-cli", "src", "process_manager.mjs"),
-    "utf8",
-  );
-  assert.match(launcher, /launchDetachedElectron/);
-  assert.match(interposer, /detached:\s*true/);
-  assert.match(interposer, /child\.unref\(\)/);
-  assert.match(processManager, /desktop-pet\.json/);
-  assert.match(processManager, /resolveLiveManagedIdentity/);
-  assert.match(processManager, /shell-control\.json/);
-  assert.equal(SHELL_TERMINATION_TIMEOUT_MS, 20_000);
-  assert.match(processManager, /killPid\(pid, managedStopOptions\(id, process\.platform,/);
-  assert.match(processManager, /stopped_during_kill/);
-  assert.match(processManager, /await runChildCommand\("taskkill", args, \{ timeoutMs: 5_000 \}\)/);
-  assert.doesNotMatch(processManager, /spawnSync/);
+  assert.match(electronLauncher, /spawn\(spec\.command[\s\S]*?windowsHide: true,/);
 });
 
 test("preview build check is based on Next BUILD_ID", () => {
@@ -1580,7 +1325,7 @@ test("preview waits for a fresh live Shell control descriptor", async () => {
   const descriptorPath = path.join(root, "shell-control.json");
   const nowMs = Date.now();
   const descriptor = {
-    version: 1,
+    version: 2,
     endpoint: "test-shell-control",
     pid: 4242,
     token: "a".repeat(64),
@@ -1661,10 +1406,10 @@ test("preview waits for a fresh live Shell control descriptor", async () => {
 });
 
 test("preview rebuild restarts shell and adopts verified Next/Engine port owners before verification", () => {
-  assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web", "engine"]);
+  assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "web", "engine"]);
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
   const previewSource = fs.readFileSync(path.join(cliRoot, "src", "preview_commands.mjs"), "utf8");
-  assert.match(previewSource, /stopVerifiedPortOwners:\s*\["admin", "web", "engine"\]/);
+  assert.match(previewSource, /stopVerifiedPortOwners:\s*\["web", "engine"\]/);
   assert.match(previewSource, /assertStarted\(serviceResults, \["engine", "web"\]/);
   assert.match(previewSource, /assertStarted\(shellResults, \["shell"\]/);
   assert.match(previewSource, /waitForShellControlDescriptor\(\{/);
@@ -1699,14 +1444,14 @@ test("preview rebuild adopts only a verified current-repo Engine port owner", ()
 });
 
 test("shutdown can reconcile only verified current-repo Admin and Web port owners", () => {
-  const adminDir = path.join(repoRoot, "apps", "v8-agent-os-admin");
-  const verifiedAdmin = verifiedComponentPortOwner("admin", {
+  const adminDir = path.join(repoRoot, "apps", "v8-agent-os-web");
+  const verifiedAdmin = verifiedComponentPortOwner("web", {
     pid: 43001,
     parentPid: 43000,
     executablePath: "D:\\Program Files\\node.exe",
     commandLine: `"D:\\Program Files\\node.exe" ${path.join(adminDir, ".next", "standalone", "server.js")}`,
     parentExecutablePath: "D:\\Program Files\\node.exe",
-    parentCommandLine: 'node scripts/run-next-with-managed-auth.mjs --app admin --mode start --port 9528',
+    parentCommandLine: 'node scripts/run-next-with-managed-auth.mjs --app web --mode start --port 9527',
   });
   const unrelated = verifiedComponentPortOwner("web", {
     pid: 44001,

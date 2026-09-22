@@ -1,0 +1,1259 @@
+"use client";
+import { AdminLoadState } from "@admin/components/admin-shell/AdminLoadState";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, GitBranch, Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
+
+import { AdminPageHeader } from "@admin/components/admin-shell/AdminPageHeader";
+import { AdminPageShell } from "@admin/components/admin-shell/AdminPageShell";
+import { ConfigCard } from "@admin/components/admin-shell/ConfigCard";
+import { InlineSaveState } from "@admin/components/admin-shell/InlineSaveState";
+import { SourceMetaRow } from "@admin/components/admin-shell/SourceMetaRow";
+import { useT } from "@admin/components/providers/LocaleProvider";
+import { Button } from "@admin/components/ui/button";
+import { Input } from "@admin/components/ui/input";
+import { Textarea } from "@admin/components/ui/textarea";
+import { useToast } from "@admin/components/ui/use-toast";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@admin/lib/config-registry";
+import { cn } from "@admin/lib/utils";
+
+type ProjectsData = {
+    defaultProjectId?: string | null;
+    projects?: ProjectRecord[];
+};
+
+type ProjectRecord = {
+    id: string;
+    name?: string;
+    workspaceId?: string;
+    workspacePath?: string;
+    workspaceTrustState?: "trusted" | "restricted";
+    workspaceTrustSource?: string;
+    defaultScope?: string;
+    active?: boolean;
+};
+
+type WorkspacePathStatus = {
+    exists?: boolean;
+    isAbsolute?: boolean;
+    writable?: boolean;
+    reason?: string;
+    isLegacyResidue?: boolean;
+    legacyReason?: string;
+    recommendedPath?: string;
+};
+
+type WorkspaceData = {
+    agent_workspace_path?: string;
+    pathStatus?: WorkspacePathStatus;
+};
+
+type EngineeringWorkspaceStatus = {
+    workspace?: { root?: string; role?: string };
+    repository?: {
+        state?: string;
+        role?: string;
+        initializedByV8OS?: boolean;
+        topology?: {
+            originalWorkspaceRoot?: string;
+            repositoryRoot?: string;
+            workspaceRelativePath?: string;
+        };
+    };
+    worktree?: { role?: string; root?: string | null };
+    sandbox?: {
+        role?: string;
+        capabilities?: {
+            platform?: string;
+            architecture?: string;
+            enforcement_level?: string;
+            reason?: string;
+        };
+    };
+    parallelIsolation?: {
+        optional?: boolean;
+        enabled?: boolean;
+        setupRequired?: boolean;
+        directExecutionAvailable?: boolean;
+        unavailableReason?: string;
+        setupEffects?: string[];
+    };
+    dependency?: { kind?: string; state?: string };
+};
+
+type WorkspaceRulesPayload = {
+    workspacePath: string;
+    path: string;
+    exists: boolean;
+    content: string;
+    suggestedContent?: string;
+    workspaceStatus?: WorkspacePathStatus;
+    budgetDiagnostics?: {
+        estimatedTokens?: number;
+        budgetTokens?: number;
+        truncated?: boolean;
+        saveRejected?: boolean;
+        omittedReason?: string;
+    } | null;
+};
+
+type ProjectEditorState = {
+    workspacePathDraft: string;
+    agentsContent: string;
+    agentsDirty: boolean;
+    savingProject: boolean;
+    deletingProject: boolean;
+    rulesLoading: boolean;
+    rulesSaving: boolean;
+    rules: WorkspaceRulesPayload | null;
+    loadedWorkspacePath: string;
+    engineeringStatus: EngineeringWorkspaceStatus | null;
+    engineeringStatusLoading: boolean;
+    engineeringIsolationEnabling: boolean;
+};
+
+const WORKSPACE_RULES_BUDGET_TOKENS = 10_000;
+const DEFAULT_AGENTS_TEMPLATE = [
+    "# Workspace Rules",
+    "",
+    "Add concise runtime instructions for this workspace here.",
+    "Keep this file under 10000 estimated tokens.",
+    "",
+].join("\n");
+
+function isAbsolutePath(value: string) {
+    const normalized = String(value || "").trim();
+    return /^[a-zA-Z]:[\\/]/.test(normalized) || normalized.startsWith("/") || normalized.startsWith("\\\\");
+}
+
+function deriveFolderName(value: string) {
+    const normalized = String(value || "").trim().replace(/[\\/]+$/, "");
+    if (!normalized) {
+        return "";
+    }
+    const parts = normalized.split(/[\\/]+/).filter(Boolean);
+    return parts.at(-1) || "";
+}
+
+function estimatePromptTokens(text: string) {
+    const raw = String(text || "");
+    if (!raw) {
+        return 0;
+    }
+    let cjkCount = 0;
+    let nonCjkVisible = 0;
+    for (const char of raw) {
+        const codepoint = char.codePointAt(0) || 0;
+        if (
+            (codepoint >= 0x4e00 && codepoint <= 0x9fff)
+            || (codepoint >= 0x3400 && codepoint <= 0x4dbf)
+            || (codepoint >= 0x3040 && codepoint <= 0x30ff)
+            || (codepoint >= 0xac00 && codepoint <= 0xd7af)
+        ) {
+            cjkCount += 1;
+        } else if (!/\s/.test(char)) {
+            nonCjkVisible += 1;
+        }
+    }
+    return cjkCount + Math.ceil(nonCjkVisible / 4);
+}
+
+function isWorkspaceTrustRequiredPayload(payload: Record<string, unknown>) {
+    const detail = payload.detail;
+    if (detail === "workspace_trust_required" || payload.error === "workspace_trust_required") {
+        return true;
+    }
+    if (detail && typeof detail === "object" && "error" in detail) {
+        return (detail as { error?: unknown }).error === "workspace_trust_required";
+    }
+    return false;
+}
+
+function payloadErrorMessage(payload: Record<string, unknown>, fallback: string) {
+    if (typeof payload.error === "string" && payload.error) {
+        return payload.error;
+    }
+    if (typeof payload.detail === "string" && payload.detail) {
+        return payload.detail;
+    }
+    const detail = payload.detail;
+    if (detail && typeof detail === "object" && "error" in detail && typeof (detail as { error?: unknown }).error === "string") {
+        return String((detail as { error?: unknown }).error);
+    }
+    return fallback;
+}
+
+function projectTrustState(project: ProjectRecord) {
+    return project.workspaceTrustState === "restricted" ? "restricted" : "trusted";
+}
+
+function getWorkspaceRulesInitialContent(payload: WorkspaceRulesPayload | null) {
+    if (!payload) {
+        return DEFAULT_AGENTS_TEMPLATE;
+    }
+    return payload.content || payload.suggestedContent || DEFAULT_AGENTS_TEMPLATE;
+}
+
+function buildProjectEditors(projects: ProjectRecord[], previous: Record<string, ProjectEditorState>) {
+    const next: Record<string, ProjectEditorState> = {};
+    projects.forEach((project) => {
+        const current = previous[project.id];
+        next[project.id] = {
+            workspacePathDraft: current?.workspacePathDraft ?? String(project.workspacePath || ""),
+            agentsContent: current?.agentsContent ?? DEFAULT_AGENTS_TEMPLATE,
+            agentsDirty: current?.agentsDirty ?? false,
+            savingProject: current?.savingProject ?? false,
+            deletingProject: current?.deletingProject ?? false,
+            rulesLoading: current?.rulesLoading ?? false,
+            rulesSaving: current?.rulesSaving ?? false,
+            rules: current?.rules ?? null,
+            loadedWorkspacePath: current?.loadedWorkspacePath ?? "",
+            engineeringStatus: current?.engineeringStatus ?? null,
+            engineeringStatusLoading: current?.engineeringStatusLoading ?? false,
+            engineeringIsolationEnabling: current?.engineeringIsolationEnabling ?? false,
+        };
+    });
+    return next;
+}
+
+function sortProjects(projects: ProjectRecord[]) {
+    return [...projects].sort((left, right) => {
+        const leftKey = `${left.name || deriveFolderName(left.workspacePath || "")}:${left.id || ""}`.toLowerCase();
+        const rightKey = `${right.name || deriveFolderName(right.workspacePath || "")}:${right.id || ""}`.toLowerCase();
+        return leftKey.localeCompare(rightKey);
+    });
+}
+
+export default function ProjectsWorkspacesPage() {
+    const t = useT();
+    const { toast } = useToast();
+
+    const [initialState] = useState(() => {
+        const cachedProjects = peekConfigDomain<ProjectsData>("projects") ?? null;
+        const workspace = peekConfigDomain<WorkspaceData>("workspace") ?? null;
+        const projects = cachedProjects ? {
+            ...cachedProjects,
+            data: {
+                ...cachedProjects.data,
+                projects: sortProjects(Array.isArray(cachedProjects.data.projects) ? cachedProjects.data.projects : []),
+            },
+        } : null;
+        return { projects, workspace };
+    });
+    const [projectsEnvelope, setProjectsEnvelope] = useState<ConfigRegistryEnvelope<ProjectsData> | null>(initialState.projects);
+    const [workspaceEnvelope, setWorkspaceEnvelope] = useState<ConfigRegistryEnvelope<WorkspaceData> | null>(initialState.workspace);
+
+    const [workspaceDraft, setWorkspaceDraft] = useState(() => String(initialState.workspace?.data.agent_workspace_path || ""));
+    const [workspaceSaving, setWorkspaceSaving] = useState(false);
+    const [workspaceSaved, setWorkspaceSaved] = useState(false);
+    const [defaultRules, setDefaultRules] = useState<WorkspaceRulesPayload | null>(null);
+    const [defaultRulesDraft, setDefaultRulesDraft] = useState(DEFAULT_AGENTS_TEMPLATE);
+    const [defaultRulesDirty, setDefaultRulesDirty] = useState(false);
+    const [defaultRulesLoading, setDefaultRulesLoading] = useState(false);
+    const [defaultRulesSaving, setDefaultRulesSaving] = useState(false);
+    const defaultRulesPathRef = useRef("");
+    const defaultRulesDirtyRef = useRef(false);
+    const defaultRulesAttemptedPathRef = useRef("");
+    const projectRulesAttemptedPathRef = useRef<Record<string, string>>({});
+
+    const [newProjectPath, setNewProjectPath] = useState("");
+    const [creatingProject, setCreatingProject] = useState(false);
+    const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+    const [projectEditors, setProjectEditors] = useState<Record<string, ProjectEditorState>>(() => (
+        buildProjectEditors(initialState.projects?.data.projects || [], {})
+    ));
+
+    const [loadError, setLoadError] = useState("");
+    const load = useCallback(async () => {
+        setLoadError("");
+        try {
+        const [projects, workspace] = await Promise.all([
+            fetchConfigDomain<ProjectsData>("projects"),
+            fetchConfigDomain<WorkspaceData>("workspace"),
+        ]);
+        const sortedProjects = sortProjects(Array.isArray(projects.data.projects) ? projects.data.projects : []);
+        setProjectsEnvelope({
+            ...projects,
+            data: {
+                ...projects.data,
+                projects: sortedProjects,
+            },
+        });
+        setWorkspaceEnvelope(workspace);
+        setWorkspaceDraft(String(workspace.data.agent_workspace_path || ""));
+        setProjectEditors((previous) => buildProjectEditors(sortedProjects, previous));
+
+        } catch (error) { setLoadError(String(error)); }
+    }, []);
+
+    useEffect(() => {
+        void load();
+    }, [load]);
+
+    useEffect(() => {
+        defaultRulesPathRef.current = defaultRules?.workspacePath || "";
+    }, [defaultRules]);
+
+    useEffect(() => {
+        defaultRulesDirtyRef.current = defaultRulesDirty;
+    }, [defaultRulesDirty]);
+
+    const loadWorkspaceRules = useCallback(async (workspacePath: string, target: "default" | { projectId: string }) => {
+        if (!workspacePath.trim() || !isAbsolutePath(workspacePath)) {
+            return;
+        }
+        const normalizedWorkspacePath = workspacePath.trim();
+        if (target === "default") {
+            if (defaultRulesAttemptedPathRef.current === normalizedWorkspacePath) {
+                return;
+            }
+            defaultRulesAttemptedPathRef.current = normalizedWorkspacePath;
+        } else {
+            if (projectRulesAttemptedPathRef.current[target.projectId] === normalizedWorkspacePath) {
+                return;
+            }
+            projectRulesAttemptedPathRef.current[target.projectId] = normalizedWorkspacePath;
+        }
+        if (target === "default") {
+            setDefaultRulesLoading(true);
+        } else {
+            setProjectEditors((previous) => ({
+                ...previous,
+                [target.projectId]: {
+                    ...previous[target.projectId],
+                    rulesLoading: true,
+                },
+            }));
+        }
+        try {
+            const response = await fetch(`/api/admin/workspace/agents-rules?workspacePath=${encodeURIComponent(normalizedWorkspacePath)}`, { cache: "no-store" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.rulesLoadFailed"));
+            }
+            if (target === "default") {
+                const previousWorkspacePath = defaultRulesPathRef.current;
+                const nextWorkspacePath = String(payload?.workspacePath || "");
+                const shouldResetContent = !defaultRulesDirtyRef.current || previousWorkspacePath !== nextWorkspacePath;
+                setDefaultRules(payload);
+                if (shouldResetContent) {
+                    setDefaultRulesDraft(getWorkspaceRulesInitialContent(payload));
+                }
+                if (previousWorkspacePath !== nextWorkspacePath) {
+                    setDefaultRulesDirty(false);
+                }
+            } else {
+                setProjectEditors((previous) => {
+                    const current = previous[target.projectId];
+                    const nextContent = getWorkspaceRulesInitialContent(payload);
+                    const shouldResetContent = !current?.agentsDirty || current?.loadedWorkspacePath !== payload.workspacePath;
+                    return {
+                        ...previous,
+                        [target.projectId]: {
+                            ...current,
+                            rules: payload,
+                            rulesLoading: false,
+                            loadedWorkspacePath: payload.workspacePath,
+                            agentsDirty: shouldResetContent ? false : current?.agentsDirty ?? false,
+                            agentsContent: shouldResetContent ? nextContent : current?.agentsContent ?? nextContent,
+                        },
+                    };
+                });
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.rulesLoadFailed");
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesLoadTitle"),
+                description: message,
+                variant: "destructive",
+            });
+            if (target !== "default") {
+                setProjectEditors((previous) => ({
+                    ...previous,
+                    [target.projectId]: {
+                        ...previous[target.projectId],
+                        rulesLoading: false,
+                    },
+                }));
+            }
+        } finally {
+            if (target === "default") {
+                setDefaultRulesLoading(false);
+            }
+        }
+    }, [t, toast]);
+
+    const normalizedDefaultWorkspacePath = workspaceDraft.trim();
+    useEffect(() => {
+        if (!normalizedDefaultWorkspacePath || !isAbsolutePath(normalizedDefaultWorkspacePath)) {
+            return;
+        }
+        if (defaultRulesAttemptedPathRef.current === normalizedDefaultWorkspacePath) {
+            return;
+        }
+        if (!defaultRulesLoading && String(defaultRules?.workspacePath || "").trim() === normalizedDefaultWorkspacePath) {
+            return;
+        }
+        const handle = window.setTimeout(() => {
+            void loadWorkspaceRules(normalizedDefaultWorkspacePath, "default");
+        }, 180);
+        return () => window.clearTimeout(handle);
+    }, [defaultRules?.workspacePath, defaultRulesLoading, loadWorkspaceRules, normalizedDefaultWorkspacePath]);
+
+    const expandedProjectEditor = expandedProjectId ? projectEditors[expandedProjectId] : null;
+    const expandedProjectPath = String(expandedProjectEditor?.workspacePathDraft || "").trim();
+    const expandedProjectLoadedPath = String(expandedProjectEditor?.loadedWorkspacePath || "").trim();
+    const expandedProjectRulesLoading = Boolean(expandedProjectEditor?.rulesLoading);
+    const expandedProjectHasRules = Boolean(expandedProjectEditor?.rules);
+    useEffect(() => {
+        if (!expandedProjectId || !expandedProjectPath.trim() || !isAbsolutePath(expandedProjectPath)) {
+            return;
+        }
+        if (projectRulesAttemptedPathRef.current[expandedProjectId] === expandedProjectPath) {
+            return;
+        }
+        if (expandedProjectRulesLoading || (expandedProjectHasRules && expandedProjectLoadedPath === expandedProjectPath)) {
+            return;
+        }
+        const handle = window.setTimeout(() => {
+            void loadWorkspaceRules(expandedProjectPath, { projectId: expandedProjectId });
+        }, 180);
+        return () => window.clearTimeout(handle);
+    }, [expandedProjectHasRules, expandedProjectId, expandedProjectLoadedPath, expandedProjectPath, expandedProjectRulesLoading, loadWorkspaceRules]);
+
+    const pickFolder = useCallback(async (initialPath: string) => {
+        const response = await fetch("/api/admin/workspace/folder-picker", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                initialPath,
+                title: t("app.admin.dashboard.projects.workspaces.page.folderPicker.title"),
+            }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.supported === false) {
+            throw new Error(payload?.error || t("app.admin.dashboard.projects.workspaces.page.folderPicker.unavailable"));
+        }
+        if (payload?.cancelled) {
+            return "";
+        }
+        return String(payload?.path || "").trim();
+    }, [t]);
+
+    const workspaceHasChanges = workspaceDraft.trim() !== String(workspaceEnvelope?.data.agent_workspace_path || "").trim();
+    const workspaceValidationError = useMemo(() => {
+        const normalized = workspaceDraft.trim();
+        if (!normalized) return t("app.admin.dashboard.projects.workspaces.page.validation.required");
+        if (!isAbsolutePath(normalized)) return t("app.admin.dashboard.projects.workspaces.page.validation.absolute");
+        return "";
+    }, [t, workspaceDraft]);
+
+    const defaultRulesEstimatedTokens = useMemo(() => estimatePromptTokens(defaultRulesDraft), [defaultRulesDraft]);
+    const defaultRulesOverBudget = defaultRulesEstimatedTokens > WORKSPACE_RULES_BUDGET_TOKENS;
+
+    const saveDefaultWorkspace = useCallback(async () => {
+        if (!workspaceEnvelope) return;
+        if (workspaceValidationError) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.saveTitle"),
+                description: workspaceValidationError,
+                variant: "destructive",
+            });
+            return;
+        }
+        setWorkspaceSaving(true);
+        try {
+            const next = await saveConfigDomain<WorkspaceData>("workspace", {
+                data: {
+                    agent_workspace_path: workspaceDraft.trim(),
+                },
+            });
+            const rulesResponse = await fetch("/api/admin/workspace/agents-rules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    workspacePath: workspaceDraft.trim(),
+                    ensureOnly: true,
+                }),
+            });
+            const rulesPayload = await rulesResponse.json().catch(() => ({}));
+            if (!rulesResponse.ok) {
+                throw new Error(rulesPayload?.error || t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveFailed"));
+            }
+            setWorkspaceEnvelope(next);
+            setWorkspaceDraft(String(next.data.agent_workspace_path || ""));
+            setDefaultRules(rulesPayload);
+            setDefaultRulesDraft(getWorkspaceRulesInitialContent(rulesPayload));
+            setDefaultRulesDirty(false);
+            defaultRulesAttemptedPathRef.current = String(rulesPayload?.workspacePath || workspaceDraft.trim()).trim();
+            setWorkspaceSaved(true);
+            window.setTimeout(() => setWorkspaceSaved(false), 1800);
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.toast.defaultWorkspaceSaved"),
+                description: workspaceDraft.trim(),
+            });
+        } catch (error) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.saveTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.saveFailed"),
+                variant: "destructive",
+            });
+        } finally {
+            setWorkspaceSaving(false);
+        }
+    }, [workspaceDraft, workspaceEnvelope, workspaceValidationError, t, toast]);
+
+    const saveDefaultRules = useCallback(async () => {
+        if (!workspaceDraft.trim() || !isAbsolutePath(workspaceDraft)) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.validation.absolute"),
+                variant: "destructive",
+            });
+            return;
+        }
+        if (defaultRulesOverBudget) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.error.rulesOverBudget", {
+                    estimated: defaultRulesEstimatedTokens,
+                    budget: WORKSPACE_RULES_BUDGET_TOKENS,
+                }),
+                variant: "destructive",
+            });
+            return;
+        }
+        setDefaultRulesSaving(true);
+        try {
+            const response = await fetch("/api/admin/workspace/agents-rules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    workspacePath: workspaceDraft.trim(),
+                    content: defaultRulesDraft,
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveFailed"));
+            }
+            setDefaultRules(payload);
+            setDefaultRulesDraft(getWorkspaceRulesInitialContent(payload));
+            setDefaultRulesDirty(false);
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.toast.rulesSaved"),
+                description: payload?.path || t("app.admin.dashboard.projects.workspaces.page.value.notSet"),
+            });
+        } catch (error) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveFailed"),
+                variant: "destructive",
+            });
+        } finally {
+            setDefaultRulesSaving(false);
+        }
+    }, [defaultRulesDraft, defaultRulesEstimatedTokens, defaultRulesOverBudget, t, toast, workspaceDraft]);
+
+    const handleCreateProject = useCallback(async () => {
+        const normalized = newProjectPath.trim();
+        if (!normalized || !isAbsolutePath(normalized)) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.projectCreateTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.validation.absolute"),
+                variant: "destructive",
+            });
+            return;
+        }
+        setCreatingProject(true);
+        try {
+            const submitProject = async (trusted: boolean) => {
+                const response = await fetch("/api/admin/projects", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        workspacePath: normalized,
+                        ...(trusted
+                            ? {
+                                workspaceTrustState: "trusted",
+                                workspaceTrustSource: "user_confirmed",
+                            }
+                            : {}),
+                    }),
+                });
+                const payload = await response.json().catch(() => ({}));
+                return { response, payload: payload as Record<string, unknown> };
+            };
+            let { response, payload } = await submitProject(false);
+            if (!response.ok && isWorkspaceTrustRequiredPayload(payload)) {
+                const confirmed = window.confirm(t("app.admin.dashboard.projects.workspaces.page.trust.confirmExternal", { path: normalized }));
+                if (!confirmed) {
+                    return;
+                }
+                ({ response, payload } = await submitProject(true));
+            }
+            if (!response.ok) {
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.error.projectCreateFailed")));
+            }
+            await load();
+            setExpandedProjectId(String(payload?.id || ""));
+            setNewProjectPath("");
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.toast.projectCreated"),
+                description: String(payload?.name || deriveFolderName(normalized) || payload?.id || ""),
+            });
+        } catch (error) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.projectCreateTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.projectCreateFailed"),
+                variant: "destructive",
+            });
+        } finally {
+            setCreatingProject(false);
+        }
+    }, [load, newProjectPath, t, toast]);
+
+    const patchProjectEditor = useCallback((projectId: string, updates: Partial<ProjectEditorState>) => {
+        setProjectEditors((previous) => ({
+            ...previous,
+            [projectId]: {
+                ...previous[projectId],
+                ...updates,
+            },
+        }));
+    }, []);
+
+    const loadEngineeringWorkspaceStatus = useCallback(async (projectId: string) => {
+        patchProjectEditor(projectId, { engineeringStatusLoading: true });
+        try {
+            const response = await fetch(`/api/admin/projects/${encodeURIComponent(projectId)}/engineering-workspace`, {
+                cache: "no-store",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.engineering.error.load")));
+            }
+            patchProjectEditor(projectId, {
+                engineeringStatus: payload as EngineeringWorkspaceStatus,
+                engineeringStatusLoading: false,
+            });
+        } catch (error) {
+            patchProjectEditor(projectId, { engineeringStatus: {}, engineeringStatusLoading: false });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.error.title"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.engineering.error.load"),
+                variant: "destructive",
+            });
+        }
+    }, [patchProjectEditor, t, toast]);
+
+    const enableGitParallelIsolation = useCallback(async (projectId: string) => {
+        patchProjectEditor(projectId, { engineeringIsolationEnabling: true });
+        try {
+            const response = await fetch(`/api/admin/projects/${encodeURIComponent(projectId)}/engineering-workspace`, {
+                method: "POST",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.engineering.error.adopt")));
+            }
+            patchProjectEditor(projectId, {
+                engineeringStatus: payload as EngineeringWorkspaceStatus,
+                engineeringIsolationEnabling: false,
+            });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.enabled"),
+                description: t("app.admin.dashboard.projects.workspaces.page.engineering.readyHint"),
+            });
+        } catch (error) {
+            patchProjectEditor(projectId, { engineeringIsolationEnabling: false });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.error.title"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.engineering.error.enable"),
+                variant: "destructive",
+            });
+        }
+    }, [patchProjectEditor, t, toast]);
+
+    useEffect(() => {
+        if (!expandedProjectId) return;
+        const editor = projectEditors[expandedProjectId];
+        if (editor?.engineeringStatus || editor?.engineeringStatusLoading) return;
+        void loadEngineeringWorkspaceStatus(expandedProjectId);
+    }, [expandedProjectId, loadEngineeringWorkspaceStatus, projectEditors]);
+
+    const handleSaveProject = useCallback(async (project: ProjectRecord) => {
+        const editor = projectEditors[project.id];
+        const normalized = String(editor?.workspacePathDraft || "").trim();
+        if (!normalized || !isAbsolutePath(normalized)) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.projectSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.validation.absolute"),
+                variant: "destructive",
+            });
+            return;
+        }
+        patchProjectEditor(project.id, { savingProject: true });
+        try {
+            const submitProject = async (trusted: boolean) => {
+                const response = await fetch(`/api/admin/projects/${project.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        workspacePath: normalized,
+                        name: deriveFolderName(normalized) || project.name || project.id,
+                        ...(trusted
+                            ? {
+                                workspaceTrustState: "trusted",
+                                workspaceTrustSource: "user_confirmed",
+                            }
+                            : {}),
+                    }),
+                });
+                const payload = await response.json().catch(() => ({}));
+                return { response, payload: payload as Record<string, unknown> };
+            };
+            let { response, payload } = await submitProject(false);
+            if (!response.ok && isWorkspaceTrustRequiredPayload(payload)) {
+                const confirmed = window.confirm(t("app.admin.dashboard.projects.workspaces.page.trust.confirmExternal", { path: normalized }));
+                if (!confirmed) {
+                    return;
+                }
+                ({ response, payload } = await submitProject(true));
+            }
+            if (!response.ok) {
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.error.projectSaveFailed")));
+            }
+            patchProjectEditor(project.id, { engineeringStatus: null });
+            await load();
+            setExpandedProjectId(project.id);
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.toast.projectSaved"),
+                description: String(payload?.name || project.name || project.id),
+            });
+        } catch (error) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.projectSaveTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.projectSaveFailed"),
+                variant: "destructive",
+            });
+        } finally {
+            patchProjectEditor(project.id, { savingProject: false });
+        }
+    }, [load, patchProjectEditor, projectEditors, t, toast]);
+
+    const handleDeleteProject = useCallback(async (project: ProjectRecord) => {
+        if (!window.confirm(t("app.admin.dashboard.projects.workspaces.page.project.deleteConfirm", { id: project.id }))) {
+            return;
+        }
+        patchProjectEditor(project.id, { deletingProject: true });
+        try {
+            const response = await fetch(`/api/admin/projects/${project.id}`, {
+                method: "DELETE",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.detail || payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.projectDeleteFailed"));
+            }
+            await load();
+            if (expandedProjectId === project.id) {
+                setExpandedProjectId(null);
+            }
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.toast.projectDeleted"),
+                description: project.id,
+            });
+        } catch (error) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.projectDeleteTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.projectDeleteFailed"),
+                variant: "destructive",
+            });
+        } finally {
+            patchProjectEditor(project.id, { deletingProject: false });
+        }
+    }, [expandedProjectId, load, patchProjectEditor, t, toast]);
+
+    const handleSaveProjectRules = useCallback(async (project: ProjectRecord) => {
+        if (projectTrustState(project) === "restricted") {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.trust.rulesBlocked"),
+                variant: "destructive",
+            });
+            return;
+        }
+        const editor = projectEditors[project.id];
+        const normalized = String(editor?.workspacePathDraft || "").trim();
+        if (!normalized || !isAbsolutePath(normalized)) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.validation.absolute"),
+                variant: "destructive",
+            });
+            return;
+        }
+        const estimatedTokens = estimatePromptTokens(editor?.agentsContent || "");
+        if (estimatedTokens > WORKSPACE_RULES_BUDGET_TOKENS) {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.error.rulesOverBudget", {
+                    estimated: estimatedTokens,
+                    budget: WORKSPACE_RULES_BUDGET_TOKENS,
+                }),
+                variant: "destructive",
+            });
+            return;
+        }
+        patchProjectEditor(project.id, { rulesSaving: true });
+        try {
+            const response = await fetch("/api/admin/workspace/agents-rules", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    workspacePath: normalized,
+                    content: editor?.agentsContent || DEFAULT_AGENTS_TEMPLATE,
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveFailed"));
+            }
+            patchProjectEditor(project.id, {
+                rulesSaving: false,
+                agentsDirty: false,
+                rules: payload,
+                loadedWorkspacePath: payload.workspacePath,
+                agentsContent: getWorkspaceRulesInitialContent(payload),
+            });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.toast.rulesSaved"),
+                description: payload?.path || t("app.admin.dashboard.projects.workspaces.page.value.notSet"),
+            });
+        } catch (error) {
+            patchProjectEditor(project.id, { rulesSaving: false });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveFailed"),
+                variant: "destructive",
+            });
+        }
+    }, [patchProjectEditor, projectEditors, t, toast]);
+
+    const projects = projectsEnvelope?.data.projects || [];
+    const defaultWorkspaceStatus = defaultRules?.workspaceStatus || workspaceEnvelope?.data.pathStatus || {};
+
+    if (!projectsEnvelope || !workspaceEnvelope) return <AdminLoadState title="app.admin.dashboard.projects.workspaces.page.k6dc301c9" error={loadError} onRetry={() => void load()}/>;
+
+    return (
+        <AdminPageShell>
+            <AdminPageHeader
+                title="app.admin.dashboard.projects.workspaces.page.k6dc301c9"
+                description="app.admin.dashboard.projects.workspaces.page.description"
+            />
+
+            <div className="grid items-stretch gap-4 xl:grid-cols-2">
+                <ConfigCard
+                    title="app.admin.dashboard.projects.workspaces.page.defaultCard.title"
+                    description="app.admin.dashboard.projects.workspaces.page.defaultCard.description"
+                    bodyHeight="clamp"
+                    bodyScroll="none"
+                    className="h-full"
+                    contentClassName="flex h-full flex-col gap-4"
+                >
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-foreground">
+                            {t("app.admin.dashboard.projects.workspaces.page.field.defaultWorkspace")}
+                        </label>
+                        <div className="flex flex-col gap-2 xl:flex-row">
+                            <Input
+                                value={workspaceDraft}
+                                onChange={(event) => setWorkspaceDraft(event.target.value)}
+                                placeholder={t("app.admin.dashboard.projects.workspaces.page.k63f45c6d")}
+                                className="flex-1"
+                            />
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={async () => {
+                                    try {
+                                        const selected = await pickFolder(workspaceDraft);
+                                        if (selected) {
+                                            setWorkspaceDraft(selected);
+                                        }
+                                    } catch (error) {
+                                        toast({
+                                            title: t("app.admin.dashboard.projects.workspaces.page.folderPicker.errorTitle"),
+                                            description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.folderPicker.unavailable"),
+                                            variant: "destructive",
+                                        });
+                                    }
+                                }}
+                            >
+                                <FolderOpen className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.projects.workspaces.page.folderPicker.choose")}
+                            </Button>
+                            <Button type="button" onClick={() => void saveDefaultWorkspace()} disabled={workspaceSaving || Boolean(workspaceValidationError) || !workspaceHasChanges}>
+                                {workspaceSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                {t("app.admin.dashboard.projects.workspaces.page.action.save")}
+                            </Button>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                            <span>{t("app.admin.dashboard.projects.workspaces.page.field.defaultWorkspaceHint")}</span>
+                            <InlineSaveState saving={workspaceSaving} saved={workspaceSaved && !workspaceHasChanges} label="app.admin.dashboard.projects.workspaces.page.defaultSavedLabel" />
+                        </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-3">
+                        <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.existsLabel")} ok={Boolean(defaultWorkspaceStatus.exists)} okText={t("app.admin.dashboard.projects.workspaces.page.status.exists")} badText={t("app.admin.dashboard.projects.workspaces.page.status.missing")} />
+                        <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.absoluteLabel")} ok={Boolean(defaultWorkspaceStatus.isAbsolute)} okText={t("app.admin.dashboard.projects.workspaces.page.status.absoluteOk")} badText={t("app.admin.dashboard.projects.workspaces.page.status.absoluteRequired")} />
+                        <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.writableLabel")} ok={Boolean(defaultWorkspaceStatus.writable)} okText={t("app.admin.dashboard.projects.workspaces.page.status.writable")} badText={t("app.admin.dashboard.projects.workspaces.page.status.pending")} />
+                    </div>
+
+                    {workspaceValidationError || defaultWorkspaceStatus.reason ? (
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-4 text-sm leading-6 text-muted-foreground">
+                            {workspaceValidationError || defaultWorkspaceStatus.reason}
+                        </div>
+                    ) : null}
+
+                    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-border bg-card">
+                        <div className="border-b border-border px-4 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.inlineTitle")}</div>
+                                <Button type="button" onClick={() => void saveDefaultRules()} disabled={defaultRulesSaving || defaultRulesLoading || defaultRulesOverBudget}>
+                                    {defaultRulesSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                    {t("app.admin.dashboard.projects.workspaces.page.agentsRules.save")}
+                                </Button>
+                            </div>
+                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <span className={cn("rounded-full border px-2 py-1", defaultRulesOverBudget ? "border-rose-200 bg-rose-50 text-rose-700" : "border-border bg-muted/50 text-muted-foreground")}>
+                                    {t("app.admin.dashboard.projects.workspaces.page.agentsRules.budget", {
+                                        estimated: defaultRulesEstimatedTokens,
+                                        budget: WORKSPACE_RULES_BUDGET_TOKENS,
+                                    })}
+                                </span>
+                                {defaultRules?.path ? <span className="truncate rounded-full border border-border bg-muted/50 px-2 py-1">{defaultRules.path}</span> : null}
+                            </div>
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                            {defaultRulesLoading ? (
+                                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    {t("app.admin.dashboard.projects.workspaces.page.agentsRules.loading")}
+                                </div>
+                            ) : (
+                                <Textarea
+                                    rows={18}
+                                    value={defaultRulesDraft}
+                                    onChange={(event) => {
+                                        setDefaultRulesDraft(event.target.value);
+                                        setDefaultRulesDirty(true);
+                                    }}
+                                    className="min-h-[320px] resize-none font-mono text-xs leading-6"
+                                />
+                            )}
+                        </div>
+                    </div>
+                </ConfigCard>
+
+                <ConfigCard
+                    title="app.admin.dashboard.projects.workspaces.page.projectsCard.title"
+                    description="app.admin.dashboard.projects.workspaces.page.projectsCard.description"
+                    bodyHeight="clamp"
+                    bodyScroll="none"
+                    className="h-full"
+                    contentClassName="flex h-full flex-col gap-4"
+                >
+                    <div className="space-y-2 rounded-2xl border border-border bg-muted/80 p-4">
+                        <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.projects.workspaces.page.projectsCard.createTitle")}</div>
+                        <div className="flex flex-col gap-2 xl:flex-row">
+                            <Input
+                                value={newProjectPath}
+                                onChange={(event) => setNewProjectPath(event.target.value)}
+                                placeholder={t("app.admin.dashboard.projects.workspaces.page.projectsCard.pathPlaceholder")}
+                                className="flex-1"
+                            />
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={async () => {
+                                    try {
+                                        const selected = await pickFolder(newProjectPath);
+                                        if (selected) {
+                                            setNewProjectPath(selected);
+                                        }
+                                    } catch (error) {
+                                        toast({
+                                            title: t("app.admin.dashboard.projects.workspaces.page.folderPicker.errorTitle"),
+                                            description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.folderPicker.unavailable"),
+                                            variant: "destructive",
+                                        });
+                                    }
+                                }}
+                            >
+                                <FolderOpen className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.projects.workspaces.page.folderPicker.choose")}
+                            </Button>
+                            <Button type="button" onClick={() => void handleCreateProject()} disabled={creatingProject || !newProjectPath.trim() || !isAbsolutePath(newProjectPath)}>
+                                {creatingProject ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                                {t("app.admin.dashboard.projects.workspaces.page.projectsCard.create")}
+                            </Button>
+                        </div>
+                        <div className="text-xs leading-5 text-muted-foreground">
+                            {t("app.admin.dashboard.projects.workspaces.page.projectsCard.derivedName", {
+                                name: deriveFolderName(newProjectPath) || t("app.admin.dashboard.projects.workspaces.page.value.notSet"),
+                            })}
+                        </div>
+                    </div>
+
+                    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                        {projects.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-input p-6 text-sm text-muted-foreground">
+                                {t("app.admin.dashboard.projects.workspaces.page.projectsCard.empty")}
+                            </div>
+                        ) : (
+                            projects.map((project) => {
+                                const expanded = expandedProjectId === project.id;
+                                const editor = projectEditors[project.id];
+                                const projectRulesEstimatedTokens = estimatePromptTokens(editor?.agentsContent || "");
+                                const projectRulesOverBudget = projectRulesEstimatedTokens > WORKSPACE_RULES_BUDGET_TOKENS;
+                                const projectStatus = editor?.rules?.workspaceStatus || {};
+                                const trustState = projectTrustState(project);
+                                const rulesBlockedByTrust = trustState === "restricted";
+                                const engineeringStatus = editor?.engineeringStatus;
+                                const repositoryState = String(engineeringStatus?.repository?.state || "unknown");
+                                const parallelIsolation = engineeringStatus?.parallelIsolation;
+                                const engineeringReady = Boolean(parallelIsolation?.enabled ?? repositoryState === "ready");
+                                const isolationSetupRequired = Boolean(parallelIsolation?.setupRequired);
+                                const gitRequired = String(parallelIsolation?.unavailableReason || "") === "git_not_installed"
+                                    || repositoryState === "git_required";
+                                const repositoryRoot = String(engineeringStatus?.repository?.topology?.repositoryRoot || "");
+                                const workspaceRelativePath = String(engineeringStatus?.repository?.topology?.workspaceRelativePath || ".");
+                                const sandboxCapabilities = engineeringStatus?.sandbox?.capabilities;
+                                return (
+                                    <div key={project.id} className="rounded-2xl border border-border bg-card">
+                                        <button
+                                            type="button"
+                                            onClick={() => setExpandedProjectId(expanded ? null : project.id)}
+                                            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+                                        >
+                                            <div className="min-w-0">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="font-medium text-foreground">{project.name || deriveFolderName(project.workspacePath || "") || project.id}</span>
+                                                    <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{project.id}</span>
+                                                    <span className={cn(
+                                                        "rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                                                        trustState === "trusted"
+                                                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                                            : "border-amber-200 bg-amber-50 text-amber-700",
+                                                    )}>
+                                                        {trustState === "trusted"
+                                                            ? t("app.admin.dashboard.projects.workspaces.page.trust.badgeTrusted")
+                                                            : t("app.admin.dashboard.projects.workspaces.page.trust.badgeRestricted")}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-1 text-xs text-muted-foreground">{project.workspacePath || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
+                                            </div>
+                                            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded ? "rotate-180" : "")} />
+                                        </button>
+
+                                        {expanded ? (
+                                            <div className="border-t border-border px-4 pb-4 pt-3">
+                                                <div className="space-y-4">
+                                                    <div className="flex flex-col gap-2 xl:flex-row">
+                                                        <Input
+                                                            value={editor?.workspacePathDraft || ""}
+                                                            onChange={(event) => patchProjectEditor(project.id, {
+                                                                workspacePathDraft: event.target.value,
+                                                            })}
+                                                            placeholder={t("app.admin.dashboard.projects.workspaces.page.projectsCard.pathPlaceholder")}
+                                                            className="flex-1"
+                                                        />
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            onClick={async () => {
+                                                                try {
+                                                                    const selected = await pickFolder(editor?.workspacePathDraft || "");
+                                                                    if (selected) {
+                                                                        patchProjectEditor(project.id, { workspacePathDraft: selected });
+                                                                    }
+                                                                } catch (error) {
+                                                                    toast({
+                                                                        title: t("app.admin.dashboard.projects.workspaces.page.folderPicker.errorTitle"),
+                                                                        description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.folderPicker.unavailable"),
+                                                                        variant: "destructive",
+                                                                    });
+                                                                }
+                                                            }}
+                                                        >
+                                                            <FolderOpen className="mr-2 h-4 w-4" />
+                                                            {t("app.admin.dashboard.projects.workspaces.page.folderPicker.choose")}
+                                                        </Button>
+                                                        <Button type="button" onClick={() => void handleSaveProject(project)} disabled={editor?.savingProject}>
+                                                            {editor?.savingProject ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                                            {t("app.admin.dashboard.projects.workspaces.page.projectsCard.saveProject")}
+                                                        </Button>
+                                                        <Button type="button" variant="destructive" onClick={() => void handleDeleteProject(project)} disabled={editor?.deletingProject}>
+                                                            {editor?.deletingProject ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                                                            {t("app.admin.dashboard.projects.workspaces.page.projectsCard.deleteProject")}
+                                                        </Button>
+                                                    </div>
+
+                                                    <div className="grid gap-3 sm:grid-cols-3">
+                                                        <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.existsLabel")} ok={Boolean(projectStatus.exists)} okText={t("app.admin.dashboard.projects.workspaces.page.status.exists")} badText={t("app.admin.dashboard.projects.workspaces.page.status.missing")} />
+                                                        <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.absoluteLabel")} ok={Boolean(projectStatus.isAbsolute)} okText={t("app.admin.dashboard.projects.workspaces.page.status.absoluteOk")} badText={t("app.admin.dashboard.projects.workspaces.page.status.absoluteRequired")} />
+                                                        <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.writableLabel")} ok={Boolean(projectStatus.writable)} okText={t("app.admin.dashboard.projects.workspaces.page.status.writable")} badText={t("app.admin.dashboard.projects.workspaces.page.status.pending")} />
+                                                    </div>
+
+                                                    <div className="rounded-2xl border border-border bg-muted/35 px-4 py-4">
+                                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                                                                    <GitBranch className="h-4 w-4 text-primary" />
+                                                                    {t("app.admin.dashboard.projects.workspaces.page.engineering.title")}
+                                                                    {editor?.engineeringStatusLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                                                                </div>
+                                                                <div className="mt-2 grid gap-1 text-xs leading-5 text-muted-foreground">
+                                                                    <span>{t("app.admin.dashboard.projects.workspaces.page.engineering.workspaceRole")}</span>
+                                                                    <span>
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.repositoryRole")}
+                                                                        {repositoryRoot ? ` · ${repositoryRoot}` : ""}
+                                                                        {workspaceRelativePath !== "." ? ` · ${workspaceRelativePath}` : ""}
+                                                                    </span>
+                                                                    <span>{t("app.admin.dashboard.projects.workspaces.page.engineering.worktreeRole")}</span>
+                                                                    <span className="flex items-center gap-1.5">
+                                                                        <ShieldCheck className="h-3.5 w-3.5" />
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.sandboxRole")}
+                                                                        {sandboxCapabilities?.platform ? ` · ${sandboxCapabilities.platform}/${sandboxCapabilities.architecture || "?"}` : ""}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex shrink-0 items-center gap-2">
+                                                                <span className={cn(
+                                                                    "rounded-full border px-2.5 py-1 text-xs font-medium",
+                                                                    engineeringReady
+                                                                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                                                        : gitRequired
+                                                                            ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300"
+                                                                            : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300",
+                                                                )}>
+                                                                    {engineeringReady
+                                                                        ? t("app.admin.dashboard.projects.workspaces.page.engineering.ready")
+                                                                        : gitRequired
+                                                                            ? t("app.admin.dashboard.projects.workspaces.page.engineering.gitRequired")
+                                                                            : t("app.admin.dashboard.projects.workspaces.page.engineering.notEnabled")}
+                                                                </span>
+                                                                {isolationSetupRequired ? (
+                                                                    <Button
+                                                                        type="button"
+                                                                        size="sm"
+                                                                        onClick={() => void enableGitParallelIsolation(project.id)}
+                                                                        disabled={editor?.engineeringIsolationEnabling || trustState !== "trusted"}
+                                                                    >
+                                                                        {editor?.engineeringIsolationEnabling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GitBranch className="mr-2 h-4 w-4" />}
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.enable")}
+                                                                    </Button>
+                                                                ) : null}
+                                                            </div>
+                                                        </div>
+                                                        {sandboxCapabilities?.reason ? (
+                                                            <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                                                                {t("app.admin.dashboard.projects.workspaces.page.engineering.partialHint")}
+                                                            </div>
+                                                        ) : null}
+                                                        {gitRequired ? (
+                                                            <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                                                                {t("app.admin.dashboard.projects.workspaces.page.engineering.gitRequiredHint")}
+                                                            </div>
+                                                        ) : null}
+                                                        {isolationSetupRequired ? (
+                                                            <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                                                                {t("app.admin.dashboard.projects.workspaces.page.engineering.setupHint")}
+                                                            </div>
+                                                        ) : null}
+                                                    </div>
+
+                                                    <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-5 text-muted-foreground">
+                                                        {rulesBlockedByTrust
+                                                            ? t("app.admin.dashboard.projects.workspaces.page.trust.restrictedHint")
+                                                            : t("app.admin.dashboard.projects.workspaces.page.projectsCard.singleChoiceHint")}
+                                                    </div>
+
+                                                    <div className="rounded-2xl border border-border">
+                                                        <div className="border-b border-border px-4 py-3">
+                                                            <div className="flex items-center justify-between gap-3">
+                                                                <div>
+                                                                    <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.projectTitle")}</div>
+                                                                    <div className="mt-1 text-xs text-muted-foreground">{editor?.rules?.path || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
+                                                                </div>
+                                                                <Button type="button" onClick={() => void handleSaveProjectRules(project)} disabled={editor?.rulesSaving || editor?.rulesLoading || projectRulesOverBudget || rulesBlockedByTrust}>
+                                                                    {editor?.rulesSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                                                    {t("app.admin.dashboard.projects.workspaces.page.agentsRules.save")}
+                                                                </Button>
+                                                            </div>
+                                                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                                <span className={cn("rounded-full border px-2 py-1", projectRulesOverBudget ? "border-rose-200 bg-rose-50 text-rose-700" : "border-border bg-muted/50 text-muted-foreground")}>
+                                                                    {t("app.admin.dashboard.projects.workspaces.page.agentsRules.budget", {
+                                                                        estimated: projectRulesEstimatedTokens,
+                                                                        budget: WORKSPACE_RULES_BUDGET_TOKENS,
+                                                                    })}
+                                                                </span>
+                                                                {editor?.rulesLoading ? <span>{t("app.admin.dashboard.projects.workspaces.page.agentsRules.loading")}</span> : null}
+                                                            </div>
+                                                        </div>
+                                                        <div className="p-4">
+                                                            <Textarea
+                                                                rows={12}
+                                                                value={editor?.agentsContent || DEFAULT_AGENTS_TEMPLATE}
+                                                                onChange={(event) => patchProjectEditor(project.id, {
+                                                                    agentsContent: event.target.value,
+                                                                    agentsDirty: true,
+                                                                })}
+                                                                className="min-h-[260px] resize-none font-mono text-xs leading-6"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                </ConfigCard>
+            </div>
+
+            <SourceMetaRow source={workspaceEnvelope.source} savePath={workspaceEnvelope.savePath} reloadRequired={workspaceEnvelope.reloadRequired} />
+            <SourceMetaRow source={projectsEnvelope.source} savePath={projectsEnvelope.savePath} reloadRequired={projectsEnvelope.reloadRequired} />
+        </AdminPageShell>
+    );
+}
+
+function StatusChip({
+    label,
+    ok,
+    okText,
+    badText,
+}: {
+    label: string;
+    ok: boolean;
+    okText: string;
+    badText: string;
+}) {
+    return (
+        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3">
+            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+            <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-foreground">
+                {ok ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <AlertTriangle className="h-4 w-4 text-amber-600" />}
+                {ok ? okText : badText}
+            </div>
+        </div>
+    );
+}

@@ -24,8 +24,8 @@ test("Web and Phone expose /memory as a governed manual action", () => {
 });
 
 test("Admin mode switch and client proxy preserve the manual extraction contract", () => {
-  const panel = read("apps/v8-agent-os-admin/src/components/memory/MemoryConfigPanel.tsx");
-  const route = read("apps/v8-agent-os-admin/src/app/api/client/memory/session-extraction/route.ts");
+  const panel = read("apps/v8-agent-os-web/src/admin/components/memory/MemoryConfigPanel.tsx");
+  const route = read("apps/v8-agent-os-web/src/app/api/admin/client/memory/session-extraction/route.ts");
 
   assert.match(panel, /extraction_mode:\s*checked \? "manual" : "auto"/);
   assert.match(panel, /extraction_enabled:\s*!checked/);

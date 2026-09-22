@@ -26,7 +26,7 @@ DEFAULT_ACTIVE_DEFENSE_CONFIG: dict[str, Any] = {
     "highMemoryRssMb": 2048,
     "networkTunnelPolicy": "confirm_first",
     "knownNetworkTools": [],
-    "knownListeningPorts": ["tcp:9527", "tcp:9528", "tcp:9530"],
+    "knownListeningPorts": ["tcp:9527", "tcp:9530"],
 }
 
 _TUNNEL_KEYWORDS = (

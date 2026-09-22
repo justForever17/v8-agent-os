@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 ORIGIN = "http://127.0.0.1:22824"
-APP = "apps/v8-agent-os-admin"
+APP = "apps/v8-agent-os-web"
 
 
 def measure(page):
@@ -65,11 +65,11 @@ def main():
     fake_home = out / ("isolated-home-" + secrets.token_hex(5))
     state = fake_home / ".v8-agent-os"
     state.mkdir(parents=True)
-    fixture_config = {"bridge": {"engineBaseUrl": "http://127.0.0.1:9/v1", "engineWsBaseUrl": "ws://127.0.0.1:9/v1", "adminBaseUrl": ORIGIN + "/api", "desktopLiveBridgeBaseUrl": "http://127.0.0.1:9/v1"}, "systemBase": {"desktopLive": {"enabled": False}}, "appearance": {"theme": "light"}}
+    fixture_config = {"bridge": {"engineBaseUrl": "http://127.0.0.1:9/v1", "engineWsBaseUrl": "ws://127.0.0.1:9/v1", "adminBaseUrl": ORIGIN + "/api/admin", "desktopLiveBridgeBaseUrl": "http://127.0.0.1:9/v1"}, "systemBase": {"desktopLive": {"enabled": False}}, "appearance": {"theme": "light"}}
     (state / "config.json").write_text(json.dumps(fixture_config), encoding="utf-8")
     env = dict(os.environ)
     # Only this child receives these non-secret test paths. HOME/CODEX_HOME stay untouched.
-    env.update(V8_AGENT_OS_HOME=str(state), USERPROFILE=str(fake_home), V8_ADMIN_HOSTNAME="127.0.0.1", NEXT_TELEMETRY_DISABLED="1")
+    env.update(V8_AGENT_OS_HOME=str(state), USERPROFILE=str(fake_home), V8_WEB_HOSTNAME="127.0.0.1", NEXT_TELEMETRY_DISABLED="1")
     env.pop("V8_NEXT_BUILD", None)
     log = (out / "server.log").open("w", encoding="utf-8")
     proc = subprocess.Popen([shutil.which("node"), str(repo / "scripts/experience/9131/run-isolated-admin.mjs")], cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)

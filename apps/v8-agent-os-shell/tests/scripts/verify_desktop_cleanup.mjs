@@ -17,12 +17,12 @@ function governedPorts() {
     if (
       profile?.version === 1
       && profile?.policy === "web-fallback-v1"
-      && profile?.ports?.engine === 9530
-      && profile?.ports?.admin === 9528
+      && Number.isInteger(profile?.ports?.engine)
+      && profile?.ports?.admin === profile?.ports?.web
       && Number.isInteger(profile?.ports?.web)
-    ) return [profile.ports.engine, profile.ports.admin, profile.ports.web].join(",");
+    ) return [profile.ports.engine, profile.ports.web].join(",");
   } catch {}
-  return "9530,9528,9527";
+  return "9530,9527";
 }
 const ports = governedPorts()
   .split(",")
@@ -78,7 +78,7 @@ do {
   }
   liveDescriptors = [
     ...liveDescriptorPids(["runtime", "shell-control.json"], ["pid"]),
-    ...liveDescriptorPids(["runtime", "desktop-pet.json"], ["pid", "serverPid"]),
+    ...liveDescriptorPids(["runtime", "companion-window.json"], ["pid", "serverPid"]),
   ].filter((item) => item.alive);
   if (!openPorts.length && !liveDescriptors.length) break;
   await sleep(250);

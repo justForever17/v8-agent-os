@@ -9,8 +9,8 @@ const read = (relativePath) => fs.readFileSync(path.join(repoRoot, relativePath)
 test("all four editable avatar surfaces use a user-positioned crop", () => {
   const sharedCropper = read("packages/product-ui/src/SquareImageCropper.tsx");
   const webSettings = read("apps/v8-agent-os-web/src/components/settings/SettingsDialog.tsx");
-  const supervisor = read("apps/v8-agent-os-admin/src/app/admin/(dashboard)/supervisor/page.tsx");
-  const subagents = read("apps/v8-agent-os-admin/src/app/admin/(dashboard)/subagents/page.tsx");
+  const supervisor = read("apps/v8-agent-os-web/src/app/admin/(dashboard)/supervisor/page.tsx");
+  const subagents = read("apps/v8-agent-os-web/src/app/admin/(dashboard)/subagents/page.tsx");
   const phoneProfile = read("apps/v8-agent-os-phone/src/components/chat/ProfileMenuOverlay.tsx");
   const phoneSettings = read("apps/v8-agent-os-phone/src/screens/SettingsScreen.tsx");
   const phoneCropper = read("apps/v8-agent-os-phone/src/components/ui/AvatarCropModal.tsx");

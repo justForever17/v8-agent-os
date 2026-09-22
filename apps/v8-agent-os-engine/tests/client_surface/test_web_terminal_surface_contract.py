@@ -40,8 +40,8 @@ def test_web_terminal_panel_consumes_agent_process_tabs() -> None:
 
 def test_terminal_proxy_routes_are_service_bound() -> None:
     web_route = _read("apps/v8-agent-os-web/src/app/api/client/terminal/[[...segments]]/route.ts")
-    admin_service_route = _read("apps/v8-agent-os-admin/src/app/api/terminal/[[...segments]]/route.ts")
-    admin_client_route = _read("apps/v8-agent-os-admin/src/app/api/client/terminal/[[...segments]]/route.ts")
+    admin_service_route = _read("apps/v8-agent-os-web/src/app/api/admin/terminal/[[...segments]]/route.ts")
+    admin_client_route = _read("apps/v8-agent-os-web/src/app/api/admin/client/terminal/[[...segments]]/route.ts")
 
     assert "getClientProxyConfig" in web_route
     assert "${clientApiBaseUrl}/terminal" in web_route

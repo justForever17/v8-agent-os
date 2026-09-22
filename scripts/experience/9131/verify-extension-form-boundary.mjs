@@ -1,3 +1,4 @@
+// Historical 9.13.1 Git object paths below are deliberately frozen; only the current test runtime comes from Product Web.
 // Independent roundtrip fixtures executed through frozen production functions.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +11,7 @@ const args=process.argv.slice(2);
 const commit=args.includes('--candidate')?args[args.indexOf('--candidate')+1]:'09dfcc3cd231d1717d3e712ad2270750c4c1fe31';
 const sourcePath='apps/v8-agent-os-admin/src/app/admin/(dashboard)/extensions/page.tsx';
 const source=execFileSync('git',['-C',repo,'show',`${commit}:${sourcePath}`],{encoding:'utf8'});
-const require=createRequire(path.join(repo,'apps/v8-agent-os-admin/package.json'));
+const require=createRequire(path.join(repo,'apps/v8-agent-os-web/package.json'));
 const ts=require('typescript');
 const ast=ts.createSourceFile(sourcePath,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
 const names=['normalizeMcpTransportType','parseMcpArgs','parseMcpKeyValueLines','formatMcpArgsText','formatMcpKeyValueText','mcpFormFromServerConfig','buildMcpFormPayload','validateMcpJsonInput'];

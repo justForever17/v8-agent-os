@@ -40,7 +40,7 @@ class BundleTests(unittest.TestCase):
             "scripts/server/verify_server.py": "print('fixture')\n",
             "scripts/server/README.md": "synthetic README\n",
             "scripts/server/build-feature-packs.mjs": "import fs from 'node:fs'; fs.writeFileSync(process.argv[2], '// fixture compiled from tracked inputs\\n');\n",
-            "apps/v8-agent-os-admin/src/lib/server/tracked.ts": "export const tracked = true;\n",
+            "apps/v8-agent-os-web/src/admin/lib/server/tracked.ts": "export const tracked = true;\n",
         }
         for name, text in self.files.items():
             destination = self.repo / name

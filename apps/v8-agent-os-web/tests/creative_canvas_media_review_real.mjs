@@ -14,7 +14,7 @@ const webRoot = path.resolve(testDir, "..");
 const repoRoot = path.resolve(webRoot, "../..");
 const webpack = require(path.join(webRoot, "node_modules/next/dist/compiled/webpack/webpack")).webpack;
 const { loadBindings } = require(path.join(webRoot, "node_modules/next/dist/build/swc"));
-const { chromium } = require(path.join(repoRoot, "apps/v8-agent-os-admin/node_modules/playwright"));
+const { chromium } = require(path.join(repoRoot, "apps/v8-agent-os-web/node_modules/playwright"));
 const ffmpeg = process.env.V8_FFMPEG_PATH || "ffmpeg";
 
 function compileFixture(tempRoot) {

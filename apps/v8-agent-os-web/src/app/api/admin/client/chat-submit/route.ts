@@ -1,0 +1,38 @@
+import { NextRequest, NextResponse } from "next/server";
+
+import { buildEngineChatRequestPayload } from "@admin/lib/realtime/engine-chat-request";
+import {
+    serializeSupervisorRuntimeModeValidationError,
+    SupervisorRuntimeModeValidationError,
+} from "@admin/lib/realtime/supervisor-runtime-mode";
+import { fetchClientEngine } from "@admin/lib/server/client-proxy";
+import { resolveClientUserEmail, unauthorizedClientJson } from "@admin/lib/server/client-request-auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function POST(req: NextRequest) {
+    const userEmail = await resolveClientUserEmail(req);
+    if (!userEmail) {
+        return unauthorizedClientJson();
+    }
+
+    try {
+        const payload = await req.json();
+        const context = buildEngineChatRequestPayload(payload, userEmail);
+        const response = await fetchClientEngine(req, "/chat/submit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(context.pythonPayload),
+        });
+
+        const json = await response.json().catch(() => ({}));
+        return NextResponse.json(json, { status: response.status });
+    } catch (error: unknown) {
+        if (error instanceof SupervisorRuntimeModeValidationError) {
+            return NextResponse.json(serializeSupervisorRuntimeModeValidationError(error), { status: 400 });
+        }
+        console.error("[ClientChatSubmitAPI] Fatal Error:", error);
+        return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
+}

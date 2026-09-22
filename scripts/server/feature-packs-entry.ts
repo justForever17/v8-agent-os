@@ -1,5 +1,5 @@
 // Compile the existing installer owner. No Next process or second transaction implementation.
-import { getRuntimeFeaturePackState, triggerFeaturePackInstall } from "../../apps/v8-agent-os-admin/src/lib/server/runtime-feature-packs";
+import { getRuntimeFeaturePackState, triggerFeaturePackInstall } from "../../apps/v8-agent-os-web/src/admin/lib/server/runtime-feature-packs";
 const [action = "list", packId, ...flags] = process.argv.slice(2);
 try {
     if (action === "list") {

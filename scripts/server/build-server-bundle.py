@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_TARGETS = {"linux-x64"}
 ENGINE = "apps/v8-agent-os-engine"
 CLI = "apps/v8-agent-os-cli"
-SOURCE_PATHS = (ENGINE, CLI, "scripts/server", "apps/v8-agent-os-admin/src", "release-manifest.json", "LICENSE", "VERSION")
+ADMIN_SOURCE = "apps/v8-agent-os-web/src/admin"
+SOURCE_PATHS = (ENGINE, CLI, "scripts/server", ADMIN_SOURCE, "release-manifest.json", "LICENSE", "VERSION")
 # These are inert contracts still imported by the shared native-tool registry.
 # No desktop driver, executor, capture server or RPA runtime enters this package.
 DESKTOP_CONTRACTS = {
@@ -50,7 +51,7 @@ def validate_targets(manifest: dict, target: str) -> None:
 
 
 def _build_input(relative: str) -> bool:
-    return include(relative) or relative.startswith(("scripts/server/", "apps/v8-agent-os-admin/src/")) or relative == "release-manifest.json"
+    return include(relative) or relative.startswith(("scripts/server/", f"{ADMIN_SOURCE}/")) or relative == "release-manifest.json"
 
 
 def build(output: Path, *, target: str = "linux-x64", allow_dirty: bool = False) -> dict:

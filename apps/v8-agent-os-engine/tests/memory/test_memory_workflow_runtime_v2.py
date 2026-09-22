@@ -436,8 +436,8 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
             "mode": "auto",
             "patchIntent": "Fix the admin workflow panel and keep proof evidence clean",
             "verificationStatus": verification_status,
-            "changedFiles": ["apps/v8-agent-os-admin/src/components/memory/MemoryWorkflowsPanel.tsx"],
-            "writeSet": ["apps/v8-agent-os-admin/src/components/memory/"],
+            "changedFiles": ["apps/v8-agent-os-web/src/admin/components/memory/MemoryWorkflowsPanel.tsx"],
+            "writeSet": ["apps/v8-agent-os-web/src/admin/components/memory/"],
             "commands": [
                 {
                     "tool": "run_system_command",

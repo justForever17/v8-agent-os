@@ -7,7 +7,7 @@
 | 层 | 默认地址 | 面向对象 | 角色 |
 | --- | --- | --- | --- |
 | Engine | `http://127.0.0.1:9530` | 本机客户端、CLI、Admin；远程 Phone 经网关 | `/v1` 控制面、`/api/client` 客户端 API、Owner/配对/设备凭据与执行状态 |
-| Admin（按需） | `http://127.0.0.1:9528/api` | 控制台页面 | 配置、治理和诊断，代理相应 Engine 管理 API |
+| Admin（可选页面） | `http://127.0.0.1:9527/api/admin` | 控制台页面 | 与 Web 共用一个宿主；配置、治理和诊断代理相应 Engine 管理 API |
 | Web | 默认 `http://127.0.0.1:9527/api`，冲突时使用运行时 profile 的 `19527-19546` | Web 页面自身 | 同源代理到 Engine，不创造第二套真相 |
 
 固定规则：
@@ -177,7 +177,7 @@ Registry domain 使用 kebab-case API 名。页面不应直接修改 `~/.v8-agen
 
 ### 6.3 Plugin Manager
 
-Admin 的 `/api/plugins/*` 提供插件管理，代理到 Engine `/v1/api/plugins/*`，包括 catalog、installed、readiness、configuration requirements、OAuth、install jobs、Doctor、uninstall 和 grants。Web/Phone 的 Engine 客户端接口提供 `GET /api/client/plugins/catalog` 与 `GET /api/client/plugins/mentions`，不等于开放全部管理接口。
+Admin 的 `/api/admin/plugins/*` 提供插件管理，代理到 Engine `/v1/api/plugins/*`，包括 catalog、installed、readiness、configuration requirements、OAuth、install jobs、Doctor、uninstall 和 grants。Web/Phone 的 Engine 客户端接口提供 `GET /api/client/plugins/catalog` 与 `GET /api/client/plugins/mentions`，不等于开放全部管理接口。
 
 关键授权规则：
 

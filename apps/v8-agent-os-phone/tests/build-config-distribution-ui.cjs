@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const phone = path.resolve(__dirname, '..');
 const output = path.resolve(process.argv[2]);
-const admin = path.resolve(process.argv[3] || path.join(phone, '../v8-agent-os-admin'));
+const admin = path.resolve(process.argv[3] || path.join(phone, '../v8-agent-os-web'));
 const mutant = process.argv[4] === 'stale-confirmation';
 const live = process.argv[4] === 'live';
 const webpack = require(path.join(admin, 'node_modules/next/dist/compiled/webpack/webpack.js')).webpack;

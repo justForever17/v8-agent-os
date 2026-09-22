@@ -1,3 +1,4 @@
+import { resolveProductOrigin } from "./product-origin";
 import { readCanonicalBridge } from "@/lib/server/bridge-config";
 
 type BridgeConfig = {
@@ -12,7 +13,6 @@ type BridgeConfig = {
 };
 
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
-const DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9528/api";
 export const ADMIN_CONNECTION_COOKIE = "v8-agent-os_admin_connection";
 
 function normalizeUrl(value: unknown, fallback: string) {
@@ -68,37 +68,15 @@ export async function resolveEngineWsBaseUrl() {
 }
 
 export async function resolveAdminApiBaseUrl() {
-    const bridge = await getResolvedBridge();
-    const runtimeAdmin = String(process.env.V8_ADMIN_BASE_URL || "").trim().replace(/\/+$/, "");
-    if (runtimeAdmin) return runtimeAdmin.endsWith("/api") ? runtimeAdmin : `${runtimeAdmin}/api`;
-    const explicitApiBase = String(bridge.adminApiBaseUrl || "").trim();
-    if (explicitApiBase) {
-        return normalizeUrl(explicitApiBase, DEFAULT_ADMIN_BASE_URL);
-    }
-
-    const adminBase = String(bridge.adminBaseUrl || "").trim();
-    if (adminBase) {
-        const normalized = adminBase.endsWith("/api") ? adminBase : `${adminBase}/api`;
-        return normalizeUrl(normalized, DEFAULT_ADMIN_BASE_URL);
-    }
-
-    return DEFAULT_ADMIN_BASE_URL;
+    return `${resolveProductOrigin()}/api/admin`;
 }
 
 export async function resolveAdminRootUrl() {
-    const adminApiBaseUrl = await resolveAdminApiBaseUrl();
-    try {
-        const url = new URL(adminApiBaseUrl);
-        const normalizedPath = url.pathname.replace(/\/+$/, "").replace(/\/api$/, "");
-        return normalizedPath ? `${url.origin}${normalizedPath}` : url.origin;
-    } catch {
-        return adminApiBaseUrl.replace(/\/+$/, "").replace(/\/api$/, "");
-    }
+    return resolveProductOrigin();
 }
 
 export function resolveLocalAdminRootUrl() {
-    const bridge = getBridge();
-    return normalizeUrl(process.env.V8_ADMIN_BASE_URL || bridge.adminBaseUrl || bridge.adminApiBaseUrl, DEFAULT_ADMIN_BASE_URL).replace(/\/api$/, "");
+    return resolveProductOrigin();
 }
 
 export async function resolveInternalSecret() {

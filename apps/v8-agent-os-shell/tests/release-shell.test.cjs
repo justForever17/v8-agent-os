@@ -150,8 +150,9 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /mode: "unavailable"/);
   assert.match(installSmokeSource, /mode = "running"/);
   assert.match(installSmokeSource, /LINUX_DESKTOP_PET_UNAVAILABLE_REASON/);
-  assert.match(installSmokeSource, /\["status", "--json"\]/);
-  assert.match(installSmokeSource, /statusItem\?\.pid == null && statusItem\?\.pidAlive === false/);
+  assert.match(installSmokeSource, /descriptor\.status\?\.desktopPetAvailable === false/);
+  assert.match(installSmokeSource, /descriptor\.runtimeKind === "companion-window"/);
+  assert.match(installSmokeSource, /pid === Number\(shellDescriptor\.pid\)/);
   assert.match(installSmokeSource, /fs\.existsSync\(desktopPetDescriptorPath\)/);
   const publicPayloadSource = installSmokeSource.slice(installSmokeSource.indexOf('const payload = {'));
   assert.doesNotMatch(publicPayloadSource, /ownerCredentials|accessToken|password/);
@@ -252,123 +253,25 @@ test('desktop traffic lights follow Windows action order and reflect maximize st
   assert.match(mainSource, /notification\.on\('failed'/);
 });
 
-test('packaged desktop pet reuses the Shell Electron runtime without packaged pet node_modules', async () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(shellRoot, 'package.json'), 'utf8'));
-  const bootstrapSource = fs.readFileSync(path.join(shellRoot, 'electron', 'bootstrap.cjs'), 'utf8');
-  const launcherSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'electron-launcher.mjs'), 'utf8');
-  const detachedSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'spawn-detached-electron.mjs'), 'utf8');
-  const petLaunchSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'launch-desktop-pet.mjs'), 'utf8');
-  const petMainSource = fs.readFileSync(
-    path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs'),
-    'utf8',
-  );
-
-  assert.equal(pkg.main, 'electron/bootstrap.cjs');
-  assert.match(bootstrapSource, /V8OS_DESKTOP_RUNTIME_MODE/);
-  assert.match(bootstrapSource, /app\.commandLine\.hasSwitch\('no-sandbox'\)/);
-  assert.match(bootstrapSource, /app\.setName\('V8 Agent OS Desktop Pet'\)/);
-  assert.match(bootstrapSource, /app\.setPath\('userData', desktopPetUserData\)/);
-  assert.match(bootstrapSource, /fs\.mkdirSync\(desktopPetSessionData, \{ recursive: true, mode: 0o700 \}\)/);
-  assert.match(bootstrapSource, /app\.setPath\('sessionData', desktopPetSessionData\)/);
-  assert.match(bootstrapSource, /require\(desktopPetMain\)/);
-  const isolatedProfileIndex = bootstrapSource.indexOf('const isolatedRoot = isolatedUserDataRoot();');
-  assert.ok(isolatedProfileIndex >= 0);
-  assert.ok(isolatedProfileIndex < bootstrapSource.indexOf("require('./main.cjs')"));
-  assert.match(bootstrapSource, /runtimeMode === DESKTOP_PET_RUNTIME_MODE \? 'desktop-pet' : 'shell'/);
-  assert.match(bootstrapSource, /Isolated Electron user data must stay inside V8_AGENT_OS_HOME/);
-  assert.match(bootstrapSource, /app\.setPath\('sessionData', sessionDataDir\)/);
-  assert.match(launcherSource, /delete env\.ELECTRON_RUN_AS_NODE/);
-  assert.match(launcherSource, /V8OS_SHELL_EXECUTABLE/);
-  assert.match(launcherSource, /V8OS_DESKTOP_RUNTIME_MODE = "desktop-pet"/);
-  assert.match(launcherSource, /V8_DESKTOP_NODE_IS_ELECTRON = "1"/);
-  assert.doesNotMatch(detachedSource, /electronCliPath/);
-  assert.match(detachedSource, /desktopRuntimeSpawnSpec\(target\)/);
-  assert.match(petMainSource, /serverRuntimeIsElectron/);
-  assert.match(petMainSource, /serverEnv\.ELECTRON_RUN_AS_NODE = '1'/);
-  assert.match(launcherSource, /windowsHide:\s*true/);
-
-  const mainGateIndex = petMainSource.indexOf('const platformAvailability = desktopPetAvailability();');
-  assert.ok(mainGateIndex >= 0);
-  assert.ok(mainGateIndex < petMainSource.indexOf('registerStableRendererScheme(protocol)'));
-  assert.ok(mainGateIndex < petMainSource.indexOf('new BrowserWindow('));
-  assert.match(petMainSource.slice(mainGateIndex, petMainSource.indexOf("const { app,")), /throw error/);
-  const launcherGateIndex = petLaunchSource.indexOf('const platformAvailability = desktopPetAvailability();');
-  assert.ok(launcherGateIndex >= 0);
-  assert.ok(launcherGateIndex < petLaunchSource.indexOf('const serverBundle ='));
-  assert.ok(launcherGateIndex < petLaunchSource.indexOf('await launchDetachedElectron('));
-  assert.match(petLaunchSource, /LINUX_DESKTOP_PET_UNAVAILABLE_REASON/);
-
-  const createWindowSource = petMainSource.slice(
-    petMainSource.indexOf('async function createMainWindowInternal()'),
-    petMainSource.indexOf('function resizeForPanel'),
-  );
-  const initialWindowsShapeIndex = createWindowSource.indexOf(
-    'mainWindow.setShape(initialSafeShape({ width, height }));',
-  );
-  const initialMacClickThroughIndex = createWindowSource.indexOf(
-    'mainWindow.setIgnoreMouseEvents(true, { forward: true });',
-  );
-  const initiallyHiddenIndex = createWindowSource.indexOf('show: false,');
-  assert.ok(initiallyHiddenIndex >= 0);
-  assert.ok(initialWindowsShapeIndex >= 0);
-  assert.ok(initialMacClickThroughIndex >= 0);
-  assert.ok(initiallyHiddenIndex < initialWindowsShapeIndex);
-  assert.ok(initiallyHiddenIndex < initialMacClickThroughIndex);
-  assert.match(petMainSource, /ipcMain\.on\('v8-desktop:set-interaction-regions'/);
-  assert.match(petMainSource, /event\.sender !== mainWindow\.webContents/);
-  assert.match(petMainSource, /renderer did not publish a bounded Windows interaction region/);
-  assert.match(petMainSource, /process\.platform === 'win32'[\s\S]{0,160}return false/);
-  assert.match(petMainSource, /mainWindow\.setIgnoreMouseEvents\(true, \{ forward: false \}\)/);
-  const didFinishLoadSource = createWindowSource.slice(
-    createWindowSource.indexOf("mainWindow.webContents.on('did-finish-load'"),
-    createWindowSource.indexOf("mainWindow.once('ready-to-show'"),
-  );
-  assert.doesNotMatch(didFinishLoadSource, /\.show\(/);
-  const readyToShowSource = createWindowSource.slice(
-    createWindowSource.indexOf("mainWindow.once('ready-to-show'"),
-    createWindowSource.indexOf("mainWindow.on('close'"),
-  );
-  assert.match(readyToShowSource, /maybeShowMainWindow\(\)/);
-  assert.doesNotMatch(readyToShowSource, /mainWindow\?\.show\(\)/);
-
-  const launcher = await import(`${pathToFileURL(path.join(shellRoot, 'scripts', 'electron-launcher.mjs')).href}?test=${Date.now()}`);
-  const target = path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs');
-  const spec = launcher.desktopRuntimeSpawnSpec(target, {
-    ELECTRON_RUN_AS_NODE: '1',
-    V8OS_SHELL_PACKAGED: '1',
-    V8OS_SHELL_EXECUTABLE: process.execPath,
+test('packaged companion is a Shell window without another Electron entry or launcher', async () => {
+  const bootstrap = fs.readFileSync(path.join(shellRoot, 'electron', 'bootstrap.cjs'), 'utf8');
+  const main = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  const pet = fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'companion-window.cjs'), 'utf8');
+  assert.match(bootstrap, /require\('\.\/main\.cjs'\)/);
+  assert.doesNotMatch(bootstrap, /DESKTOP_PET_RUNTIME_MODE/);
+  assert.match(main, /companionHost\(\)\.start\(\)/);
+  assert.doesNotMatch(pet, /app\.(quit|exit|requestSingleInstanceLock|relaunch)\(/);
+  assert.match(pet, /companionSession = session.fromPartition/);
+  assert.match(pet, /event.senderFrame === mainWindow.webContents.mainFrame/);
+  assert.match(pet, /mainWindow.setShape\(normalized\)/);
+  assert.equal(fs.existsSync(path.join(shellRoot, 'scripts', 'launch-desktop-pet.mjs')), false);
+  const launcher = await import(pathToFileURL(path.join(shellRoot, 'scripts', 'electron-launcher.mjs')).href);
+  const spec = launcher.shellRuntimeSpawnSpec(shellRoot, {
+    ELECTRON_RUN_AS_NODE: '1', V8OS_SHELL_PACKAGED: '1', V8OS_SHELL_EXECUTABLE: process.execPath,
   });
   assert.equal(spec.command, process.execPath);
-  assert.deepEqual(spec.args, [target]);
+  assert.deepEqual(spec.args, []);
   assert.equal(spec.env.ELECTRON_RUN_AS_NODE, undefined);
-  assert.equal(spec.env.V8OS_DESKTOP_RUNTIME_MODE, 'desktop-pet');
-  assert.equal(spec.env.V8_DESKTOP_NODE, process.execPath);
-  assert.equal(spec.env.V8_DESKTOP_NODE_IS_ELECTRON, '1');
-
-  const noSandboxPetSpec = launcher.desktopRuntimeSpawnSpec(target, {
-    V8OS_SHELL_PACKAGED: '1',
-    V8OS_SHELL_EXECUTABLE: process.execPath,
-    V8OS_ELECTRON_NO_SANDBOX: '1',
-  });
-  assert.deepEqual(noSandboxPetSpec.args, ['--no-sandbox', target]);
-
-  const shellSpec = launcher.shellRuntimeSpawnSpec(shellRoot, {
-    ELECTRON_RUN_AS_NODE: '1',
-    V8OS_DESKTOP_RUNTIME_MODE: 'desktop-pet',
-    V8OS_SHELL_PACKAGED: '1',
-    V8OS_SHELL_EXECUTABLE: process.execPath,
-  });
-  assert.equal(shellSpec.command, process.execPath);
-  assert.deepEqual(shellSpec.args, []);
-  assert.equal(shellSpec.env.ELECTRON_RUN_AS_NODE, undefined);
-  assert.equal(shellSpec.env.V8OS_DESKTOP_RUNTIME_MODE, undefined);
-
-  const noSandboxShellSpec = launcher.shellRuntimeSpawnSpec(shellRoot, {
-    V8OS_SHELL_PACKAGED: '1',
-    V8OS_SHELL_EXECUTABLE: process.execPath,
-    V8OS_ELECTRON_NO_SANDBOX: '1',
-  });
-  assert.deepEqual(noSandboxShellSpec.args, ['--no-sandbox']);
 });
 
 test('desktop release scripts build native installers for every supported desktop target', () => {
@@ -481,9 +384,9 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /electron-launcher\.mjs/);
   assert.match(config, /command_runtime_probe\.py/);
   assert.match(config, /feature_pack_runtime_probe\.py/);
-  assert.match(config, /launch-desktop-pet\.mjs/);
+  assert.doesNotMatch(config, /launch-desktop-pet\.mjs/);
   assert.match(config, /launch-shell\.mjs/);
-  assert.match(config, /spawn-detached-electron\.mjs/);
+  assert.doesNotMatch(config, /spawn-detached-electron\.mjs/);
   assert.match(
     config,
     /from: \.\.\/\.\.\/apps\/v8-agent-os-shell\/scripts[\s\S]*?feature_pack_runtime_probe\.py/,
@@ -627,9 +530,9 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(workflow, /NPM_CONFIG_FETCH_TIMEOUT: "300000"/);
   assert.equal(
     (workflow.match(/scripts\/desktop\/npm-ci-with-retry\.mjs/g) || []).length,
-    6,
+    5,
   );
-  assert.equal((workflow.match(/timeout-minutes: 15/g) || []).length >= 6, true);
+  assert.equal((workflow.match(/timeout-minutes: 15/g) || []).length >= 5, true);
   assert.doesNotMatch(workflow, /^\s+npm ci --include=dev --workspaces=false\s*$/m);
   assert.match(workflow, /Reject unsigned stable desktop releases/);
   assert.match(workflow, /this workflow is unsigned preview only/);
@@ -832,7 +735,7 @@ test('root release gates new builds and recovery reuses their verified products'
   assert.match(desktop, /-Architecture "\$\{\{ matrix\.pythonArch \}\}"/);
   assert.ok(
     desktop.indexOf('Prepare embedded Engine Python runtime on Windows') <
-      desktop.indexOf('Install Admin dependencies'),
+      desktop.indexOf('Install Web dependencies'),
     'platform Python runtime validation must run before expensive product dependency installs',
   );
   assert.doesNotMatch(workflow, /RUNTIME_PROBE-\*\.json|PACKAGE_LAYOUT-\*\.json/);
@@ -1066,9 +969,9 @@ test('desktop preview uses a slim portable Python release profile', () => {
     'utf8',
   );
   assert.match(packageLayoutScript, /THIRD_PARTY_NOTICES", "pyatspi2-COPYING/);
-  assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "launch-desktop-pet\.mjs/);
+  assert.match(packageLayoutScript, /v8-agent-os-desktop-pet", "electron", "companion-window\.cjs/);
   assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "launch-shell\.mjs/);
-  assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "spawn-detached-electron\.mjs/);
+  assert.doesNotMatch(packageLayoutScript, /spawn-detached-electron/);
   assert.match(packageLayoutScript, /verifyShellBootstrap\(appAsar, expectedPackageVersion\)/);
   assert.match(packageLayoutScript, /packagedManifest\.version === expectedVersion/);
   assert.match(packageLayoutScript, /toSemver\(expectedReleaseVersion\)/);
@@ -1087,8 +990,8 @@ test('desktop pet production server bundles runtime dependencies and keeps Vite 
   assert.match(serverSource, /process\.env\.NODE_ENV !== "production"[\s\S]{0,180}await import\("vite"\)/);
 });
 
-test('Admin and Web release builds use Next standalone servers', () => {
-  for (const app of ['admin', 'web']) {
+test('Product Web releases one Next standalone server', () => {
+  for (const app of ['web']) {
     const config = fs.readFileSync(
       path.join(repoRoot, 'apps', `v8-agent-os-${app}`, 'next.config.ts'),
       'utf8',
@@ -1101,15 +1004,14 @@ test('Admin and Web release builds use Next standalone servers', () => {
   assert.match(runner, /\.next["'], "standalone"/);
   assert.match(runner, /\.next["'], "static"/);
   assert.match(runner, /path\.join\(appDir, "public"\)/);
-  assert.match(runner, /fs\.cpSync\(source, target, \{ recursive: true \}\)/);
+  assert.match(runner, /fs\.cpSync\(source, target, \{ recursive: true, filter:/);
   assert.match(runner, /assertStandaloneAssetsReady/);
   assert.match(runner, /stageStandaloneAssets\(appDir, builtStandaloneServer\)/);
   assert.doesNotMatch(runner, /stageStandaloneAssets\(appDir, standaloneServer\)/);
   assert.match(runner, /windowsHide:\s*true/);
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
-  assert.match(runner, /V8_ADMIN_HOSTNAME/);
-    assert.match(runner, /\|\| "127\.0\.0\.1"/);
+  assert.doesNotMatch(runner, /V8_ADMIN_HOSTNAME/);
   assert.match(runner, /return "127\.0\.0\.1"/);
   assert.match(runner, /HOSTNAME:\s*runtimeHostname/);
   assert.match(runner, /PORT:\s*port/);
@@ -1142,9 +1044,9 @@ test('packaged startup evidence records Next child lineage and a bounded stabili
   assert.doesNotMatch(startupBudgetSource, /&& shellSurface\.ok/);
 });
 
-test('Phone pairing exposes Admin on LAN without advertising wildcard bind hosts', () => {
+test('Product Web pairing helpers reject wildcard addresses', () => {
   const runtimeConfig = fs.readFileSync(
-    path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'src', 'lib', 'server', 'runtime-config.ts'),
+    path.join(repoRoot, 'apps', 'v8-agent-os-web', 'src', 'admin', 'lib', 'server', 'runtime-config.ts'),
     'utf8',
   );
   assert.match(runtimeConfig, /const NON_ROUTABLE_CLIENT_HOSTS = new Set\(\[/);
@@ -1224,18 +1126,15 @@ test('Electron runtime acquisition verifies the pinned package and official chec
     path.join(repoRoot, 'scripts', 'desktop', 'ensure-electron-runtime.mjs'),
     'utf8',
   );
-  const petEnsure = fs.readFileSync(
-    path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'scripts', 'ensure-electron.cjs'),
-    'utf8',
-  );
+  const launcher = fs.readFileSync(path.join(shellRoot, 'scripts', 'electron-launcher.mjs'), 'utf8');
   assert.match(acquisition, /checksums\.json/);
   assert.match(acquisition, /Electron archive checksum mismatch/);
   assert.match(acquisition, /must pin Electron to an exact version/);
   assert.match(acquisition, /\["--version"\]/);
   assert.match(acquisition, /Shell and Desktop Pet must use the same Electron version/);
   assert.doesNotMatch(acquisition, /npmmirror/);
-  assert.doesNotMatch(petEnsure, /npmmirror/);
-  assert.match(petEnsure, /ensure-electron-runtime\.mjs/);
+  assert.doesNotMatch(launcher, /npmmirror/);
+  assert.match(launcher, /ensure-electron-runtime\.mjs/);
 });
 
 test('desktop pet consumes packaged realtime contract instead of rebuilding workspace package', () => {
@@ -1246,10 +1145,10 @@ test('desktop pet consumes packaged realtime contract instead of rebuilding work
   const pkg = JSON.parse(
     fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'package.json'), 'utf8'),
   );
-  assert.equal(pkg.devDependencies.electron, '43.4.1');
+  assert.equal(pkg.devDependencies.electron, undefined);
   assert.equal(pkg.engines?.node, '>=22.12.0');
   const desktopPetMain = fs.readFileSync(
-    path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs'),
+    path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'companion-window.cjs'),
     'utf8',
   );
   assert.match(desktopPetMain, /frame: false,[\s\S]{0,80}roundedCorners: false/);
@@ -1424,7 +1323,8 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
     'utf8',
   );
   assert.match(runtimeProbe, /standaloneServerFor/);
-  assert.match(runtimeProbe, /admin\.standaloneServer/);
+  assert.doesNotMatch(runtimeProbe, /admin\.standaloneServer/);
+  assert.match(runtimeProbe, /desktopPet\.ownedWindow/);
   assert.match(runtimeProbe, /web\.standaloneServer/);
   assert.match(runtimeProbe, /installedSystemBrowser/);
   assert.match(runtimeProbe, /agentBrowser\.compatibleBrowser/);
@@ -1661,7 +1561,7 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(installSmoke, /waitForManagedCleanup/);
   assert.match(installSmoke, /surfaceReady/);
   assert.match(installSmoke, /isPidAlive/);
-  assert.match(installSmoke, /desktop-pet\.json/);
+  assert.match(installSmoke, /companion-window\.json/);
   assert.match(installSmoke, /\/api\/pet\/health/);
   assert.match(installSmoke, /controlConnected/);
   assert.match(installSmoke, /desktopPetProcessRunning/);
@@ -1707,7 +1607,7 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
 
 test('memory knowledge graph stays visible without advanced mode', () => {
   const navSource = fs.readFileSync(
-    path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'src', 'components', 'memory', 'MemorySectionNav.tsx'),
+    path.join(repoRoot, 'apps', 'v8-agent-os-web', 'src', 'admin', 'components', 'memory', 'MemorySectionNav.tsx'),
     'utf8',
   );
   // Structural sentinel only: the complete memory menu is now available without

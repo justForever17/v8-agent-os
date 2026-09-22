@@ -1,3 +1,4 @@
+// Historical 9.13.1 Git object paths below are deliberately frozen; only the current test runtime comes from Product Web.
 // Independent UI oracles. Reuse only the author's frozen public network fixture shape.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -32,7 +33,7 @@ assert.equal(git('rev-parse', candidate), candidate);
 const fixtureFile = path.join(out, 'frozen-author-network-fixture.mjs');
 fs.writeFileSync(fixtureFile, git('show', candidate + ':apps/v8-agent-os-admin/scripts/admin-experience-fixture.mjs'));
 const { adminExperienceFixture, sampleClusters } = await import(pathToFileURL(fixtureFile).href);
-const require = createRequire(path.join(repo, 'apps/v8-agent-os-admin/package.json'));
+const require = createRequire(path.join(repo, 'apps/v8-agent-os-web/package.json'));
 const { chromium } = require('playwright');
 const browserExecutable = value('--browser-executable', process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined);
 const browser = await chromium.launch({ headless: true, executablePath: browserExecutable });

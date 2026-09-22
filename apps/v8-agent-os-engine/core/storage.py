@@ -61,7 +61,9 @@ def _derive_ws_base_url(http_base_url: str) -> str:
 
 
 def _normalize_admin_public_base_url(value: Any) -> str:
-    normalized = _normalize_http_base_url(value, "http://127.0.0.1:9528/api")
+    normalized = _normalize_http_base_url(value, "http://127.0.0.1:9527/api/admin")
+    if normalized.endswith("/api/admin"):
+        return normalized[:-10]
     if normalized.endswith("/api"):
         return normalized[:-4]
     return normalized
@@ -96,8 +98,10 @@ LEGACY_LOCAL_ENGINE_WS_BASES = {
 }
 
 LEGACY_LOCAL_ADMIN_BASES = {
-    "http://127.0.0.1:5001/api": "http://127.0.0.1:9528/api",
-    "http://localhost:5001/api": "http://127.0.0.1:9528/api",
+    "http://127.0.0.1:5001/api": "http://127.0.0.1:9527/api/admin",
+    "http://localhost:5001/api": "http://127.0.0.1:9527/api/admin",
+    "http://127.0.0.1:9528/api": "http://127.0.0.1:9527/api/admin",
+    "http://localhost:9528/api": "http://127.0.0.1:9527/api/admin",
 }
 
 LEGACY_NETWORK_BASES = {
@@ -228,7 +232,7 @@ def _maybe_migrate_legacy_local_config(payload: Dict[str, Any]) -> Dict[str, Any
     if avatar:
         for legacy_origin in LEGACY_ADMIN_ORIGINS:
             if avatar.startswith(f"{legacy_origin}/Avatar/"):
-                profile["avatar"] = avatar.replace(legacy_origin, "http://127.0.0.1:9528", 1)
+                profile["avatar"] = avatar.replace(legacy_origin, "http://127.0.0.1:9527", 1)
                 changed = True
                 break
 
@@ -888,7 +892,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "highMemoryRssMb": 2048,
             "networkTunnelPolicy": "confirm_first",
             "knownNetworkTools": [],
-            "knownListeningPorts": ["tcp:9527", "tcp:9528", "tcp:9530"],
+            "knownListeningPorts": ["tcp:9527", "tcp:9530"],
         },
     },
     "projects": {
@@ -1155,7 +1159,7 @@ class StorageManager:
         )
         admin_base_url = _normalize_http_base_url(
             os.getenv("NEXT_PUBLIC_API_BASE_URL"),
-            "http://127.0.0.1:9528/api",
+            "http://127.0.0.1:9527/api/admin",
         )
         cache_dir = str(self.base_dir / "web_fetch")
         source_router_defaults = get_source_router_defaults()
@@ -2747,7 +2751,7 @@ class StorageManager:
             bridge.get("engineWsBaseUrl"),
             _derive_ws_base_url(bridge["engineBaseUrl"]),
         )
-        bridge["adminBaseUrl"] = _normalize_http_base_url(bridge.get("adminBaseUrl"), "http://127.0.0.1:9528/api")
+        bridge["adminBaseUrl"] = _normalize_http_base_url(bridge.get("adminBaseUrl"), "http://127.0.0.1:9527/api/admin")
         bridge["internalSecret"] = str(bridge.get("internalSecret") or _BOOTSTRAP_INTERNAL_SECRET)
         bridge["allowedOrigins"] = _normalize_allowed_origins(bridge.get("allowedOrigins"))
         normalized.pop("skills", None)

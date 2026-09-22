@@ -1,0 +1,461 @@
+"use client";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@admin/components/ui/card";
+import { Button } from "@admin/components/ui/button";
+import { useMemo } from "react";
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
+import { Activity, Loader2, RefreshCw } from "lucide-react";
+import { Badge } from "@admin/components/ui/badge";
+import { useAdminJsonResource } from "@admin/lib/use-admin-json-resource";
+import { formatLocalDateTime } from "@admin/lib/time";
+import { useT } from "@admin/components/providers/LocaleProvider";
+import { RuntimeDashboardCards } from "@admin/components/runtime/RuntimeDashboardCards";
+import { AdminHoverInfo } from "@admin/components/admin-shell/AdminHoverInfo";
+import { useDebugMode } from "@admin/lib/useDebugMode";
+import { ModelCacheUsage, ModelCacheWindowSummary, type ModelCacheUsageData, type ProviderCacheWindow } from "@admin/components/models/ModelCacheUsage";
+
+const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#7C3AED", "#F43F5E", "#14B8A6", "#F97316"];
+const DASHBOARD_WINDOW_DAYS = 7;
+
+type PromptCacheInvocationSummary = {
+    profileId?: string;
+    responseCacheDecision?: string;
+    skipReason?: string;
+    providerPatchKind?: string;
+    staticPrefixKeyShort?: string;
+    staticPrefixReused?: boolean;
+    staticPrefixUseCount?: number;
+    providerCachedTokensReported?: boolean;
+    providerCachedInputTokens?: number | null;
+    cachedInputTokenRate?: number | null;
+    segments?: {
+        staticTokens?: number;
+        dynamicTokens?: number;
+        unsafeTokens?: number;
+        totalTokens?: number;
+    };
+};
+
+type PromptCacheDashboardStats = {
+    providerUsage?: ProviderCacheWindow;
+    rates?: {
+        providerPatchRate?: number | null;
+        staticPrefixReuseRate?: number | null;
+        v8ExactResponseHitRate?: number | null;
+        responseCacheSkipRate?: number | null;
+    };
+    totals?: {
+        events?: number;
+        providerPatchEvents?: number;
+        responseHits?: number;
+        responseMisses?: number;
+        responseSkipped?: number;
+    };
+};
+
+type DashboardData = {
+    stats: {
+        totalSessions: number;
+        totalMessages: number;
+        totalRuns: number;
+        totalInvocations: number;
+        pendingApprovals: number;
+        activeRuns: number;
+        recentWindowDays?: number;
+        recentWindowInvocations?: number;
+        recentWindowTokens: number;
+        recentWindowEstimatedCost: number;
+    };
+    charts: {
+        dailyActivity: Array<{
+            date: string;
+            messages: number;
+            runs: number;
+            invocations: number;
+            tokens: number;
+        }>;
+        modelUsage: Array<{
+            name: string;
+            provider: string;
+            value: number;
+            tokens: number;
+            cost: number;
+        }>;
+        providerHealth: Array<{
+            providerId: string;
+            providerName: string;
+            events: number;
+            successCount: number;
+            errorCount: number;
+            avgLatencyMs: number;
+            lastSeenAt?: string;
+        }>;
+    };
+    recentInvocations: Array<{
+        id: string;
+        model_id: string;
+        provider_name?: string;
+        status: string;
+        total_tokens: number;
+        latency_ms: number;
+        started_at?: string;
+        role?: string;
+        promptCache?: PromptCacheInvocationSummary;
+        cacheUsage?: ModelCacheUsageData;
+    }>;
+    promptCache?: PromptCacheDashboardStats;
+};
+
+const EMPTY_DATA: DashboardData = {
+    stats: {
+        totalSessions: 0,
+        totalMessages: 0,
+        totalRuns: 0,
+        totalInvocations: 0,
+        pendingApprovals: 0,
+        activeRuns: 0,
+        recentWindowTokens: 0,
+        recentWindowEstimatedCost: 0,
+    },
+    charts: {
+        dailyActivity: [],
+        modelUsage: [],
+        providerHealth: [],
+    },
+    recentInvocations: [],
+    promptCache: { rates: {}, totals: {} },
+};
+
+function formatWhen(value: string | undefined, fallback: string) {
+    return formatLocalDateTime(value, { includeYear: false, includeSeconds: true, fallback });
+}
+
+function formatPercent(value: number | null | undefined) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return "n/a";
+    }
+    return `${Math.round(Number(value) * 1000) / 10}%`;
+}
+
+function normalizeDashboardData(payload: unknown): { data: DashboardData; error?: string } {
+    if (!payload || typeof payload !== "object") {
+        return { data: EMPTY_DATA, error: "empty_payload" };
+    }
+    const record = payload as Partial<DashboardData> & { error?: unknown; detail?: unknown };
+    if (!record.stats || typeof record.stats !== "object") {
+        return {
+            data: EMPTY_DATA,
+            error: String(record.error || record.detail || "missing_stats"),
+        };
+    }
+    const stats = record.stats as Partial<DashboardData["stats"]>;
+    const charts = record.charts && typeof record.charts === "object" ? record.charts as Partial<DashboardData["charts"]> : {};
+    return {
+        data: {
+            stats: {
+                ...EMPTY_DATA.stats,
+                ...stats,
+                totalSessions: Number(stats.totalSessions || 0),
+                totalMessages: Number(stats.totalMessages || 0),
+                totalRuns: Number(stats.totalRuns || 0),
+                totalInvocations: Number(stats.totalInvocations || 0),
+                pendingApprovals: Number(stats.pendingApprovals || 0),
+                activeRuns: Number(stats.activeRuns || 0),
+                recentWindowTokens: Number(stats.recentWindowTokens || 0),
+                recentWindowEstimatedCost: Number(stats.recentWindowEstimatedCost || 0),
+            },
+            charts: {
+                dailyActivity: Array.isArray(charts.dailyActivity) ? charts.dailyActivity : [],
+                modelUsage: Array.isArray(charts.modelUsage) ? charts.modelUsage : [],
+                providerHealth: Array.isArray(charts.providerHealth) ? charts.providerHealth : [],
+            },
+            recentInvocations: Array.isArray(record.recentInvocations) ? record.recentInvocations : [],
+            promptCache: record.promptCache && typeof record.promptCache === "object" ? record.promptCache : EMPTY_DATA.promptCache,
+        },
+        error: typeof record.error === "string" ? record.error : undefined,
+    };
+}
+
+function promptCacheHoverLines(
+    t: (key: string, params?: Record<string, string | number>) => string,
+    item: DashboardData["recentInvocations"][number],
+    dashboardPromptCache?: PromptCacheDashboardStats,
+) {
+    const cache = item.promptCache;
+    if (!cache) {
+        return [t("app.admin.dashboard.page.promptCache.noDiagnostics")];
+    }
+    const segments = cache.segments || {};
+    const cachedLine = cache.providerCachedTokensReported
+        ? t("app.admin.dashboard.page.promptCache.providerCached", {
+            tokens: cache.providerCachedInputTokens ?? 0,
+            rate: formatPercent(cache.cachedInputTokenRate),
+        })
+        : t("app.admin.dashboard.page.promptCache.providerCachedUnavailable");
+    return [
+        t("app.admin.dashboard.page.promptCache.profile", { value: cache.profileId || "n/a" }),
+        t("app.admin.dashboard.page.promptCache.decision", { value: cache.responseCacheDecision || "n/a" }),
+        cache.skipReason ? t("app.admin.dashboard.page.promptCache.skip", { value: cache.skipReason }) : "",
+        t("app.admin.dashboard.page.promptCache.patch", { value: cache.providerPatchKind || "none" }),
+        t("app.admin.dashboard.page.promptCache.prefix", {
+            value: cache.staticPrefixReused
+                ? t("app.admin.dashboard.page.promptCache.prefixReused", { count: cache.staticPrefixUseCount || 0 })
+                : t("app.admin.dashboard.page.promptCache.prefixNotReused"),
+        }),
+        t("app.admin.dashboard.page.promptCache.tokens", {
+            staticTokens: segments.staticTokens || 0,
+            dynamicTokens: segments.dynamicTokens || 0,
+        }),
+        cachedLine,
+        t("app.admin.dashboard.page.promptCache.windowRates", {
+            providerPatchRate: formatPercent(dashboardPromptCache?.rates?.providerPatchRate),
+            exactHitRate: formatPercent(dashboardPromptCache?.rates?.v8ExactResponseHitRate),
+        }),
+    ].filter(Boolean);
+}
+
+export default function DashboardPage() {
+    const t = useT();
+    const [debugMode] = useDebugMode();
+    const statsResource = useAdminJsonResource<unknown>(
+        `/api/admin/stats?days=${DASHBOARD_WINDOW_DAYS}`,
+        { ttlMs: 10_000, timeoutMs: 12_000 },
+    );
+    const normalized = useMemo(
+        () => statsResource.data === undefined
+            ? { data: EMPTY_DATA }
+            : normalizeDashboardData(statsResource.data),
+        [statsResource.data],
+    );
+    const data = normalized.data;
+    const telemetryError = statsResource.error || normalized.error || "";
+
+    if (statsResource.isLoading) {
+        return <div className="flex h-96 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>;
+    }
+
+    return (
+        <div className="space-y-8">
+            <div>
+                <h1 className="text-3xl font-bold">{t("app.admin.dashboard.page.kfe1bd304")}</h1>
+                <p className="mt-2 text-sm text-muted-foreground">
+                    {t("app.admin.dashboard.page.k77dba2de")}
+                </p>
+            </div>
+
+            <RuntimeDashboardCards />
+
+            {telemetryError ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    <span>{t("app.admin.dashboard.page.telemetryUnavailable")}</span>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={statsResource.isFetching}
+                        onClick={() => void statsResource.refresh().catch(() => undefined)}
+                    >
+                        <RefreshCw className={`mr-2 h-4 w-4 ${statsResource.isFetching ? "animate-spin" : ""}`} />
+                        {t("app.admin.dashboard.page.telemetryRetry")}
+                    </Button>
+                </div>
+            ) : null}
+
+            {!telemetryError ? (
+                <>
+            {/* Key Metrics */}
+            <div data-v8-context-menu-ignore className="grid select-none grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.kedf0b1c7")}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <p className="text-4xl font-bold">{data.stats.totalSessions}</p>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.kfb7fb55f")}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <p className="text-4xl font-bold">{data.stats.totalRuns}</p>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.kebfd23a5")}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <p className="text-4xl font-bold">{data.stats.totalInvocations}</p>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.k3a0aaa55")}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                        <p className="text-4xl font-bold">{data.stats.pendingApprovals}</p>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Activity className="h-4 w-4" />
+                            {t("app.admin.dashboard.page.ka8ff6de1")}: {data.stats.activeRuns}
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            {/* Charts */}
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <Card className="col-span-1 flex h-[420px] min-h-0 flex-col">
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.kad5f5f05")}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={data.charts.dailyActivity}>
+                                <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                                <XAxis dataKey="date" />
+                                <YAxis />
+                                <Tooltip
+                                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.8)', border: 'none', borderRadius: '8px', color: '#fff' }}
+                                />
+                                <Line type="monotone" dataKey="messages" name={t("app.admin.dashboard.page.kc199335d")} stroke="#8884d8" strokeWidth={2} />
+                                <Line type="monotone" dataKey="runs" name={t("app.admin.dashboard.page.k3f539477")} stroke="#82ca9d" strokeWidth={2} />
+                                <Line type="monotone" dataKey="invocations" name={t("app.admin.dashboard.page.k1a3ec470")} stroke="#f59e0b" strokeWidth={2} />
+                            </LineChart>
+                        </ResponsiveContainer>
+                    </CardContent>
+                </Card>
+
+                <Card className="col-span-1 flex h-[420px] min-h-0 flex-col">
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.kd35fe722")}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex min-h-0 flex-1 flex-col">
+                        <div className="min-h-0 flex-1">
+                            {data.charts.modelUsage.length === 0 ? (
+                                <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 text-sm text-muted-foreground">
+                                    {t("app.admin.dashboard.page.k393204db")}
+                                </div>
+                            ) : (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={data.charts.modelUsage}
+                                            cx="50%"
+                                            cy="50%"
+                                            innerRadius={60}
+                                            outerRadius={80}
+                                            paddingAngle={5}
+                                            dataKey="value"
+                                        >
+                                            {data.charts.modelUsage.map((entry, index) => (
+                                                <Cell key={`${entry.provider}:${entry.name}:${index}`} fill={COLORS[index % COLORS.length]} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_1fr]">
+                <Card className="flex h-[520px] min-h-0 flex-col">
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.k5ba34231")}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 space-y-3 overflow-y-auto pr-1">
+                        {data.charts.providerHealth.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
+                                {t("app.admin.dashboard.page.ka9ef675b")}
+                            </div>
+                        ) : data.charts.providerHealth.map((item) => (
+                            <div key={item.providerId} className="rounded-2xl border border-border/70 bg-background/70 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <div className="text-sm font-medium">{item.providerName}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            {t("app.admin.dashboard.page.k2b47c0b8")} {item.events} · {t("app.admin.dashboard.page.kb475dfb9")} {item.avgLatencyMs} ms
+                                        </div>
+                                    </div>
+                                    <Badge variant={item.errorCount > 0 ? "secondary" : "default"}>
+                                        {item.errorCount > 0
+                                            ? `${t("app.admin.dashboard.page.kdf52ae72")} ${item.errorCount}`
+                                            : `${t("app.admin.dashboard.page.k0cbafd78")} ${item.successCount}`}
+                                    </Badge>
+                                </div>
+                            </div>
+                        ))}
+                    </CardContent>
+                </Card>
+
+                <Card className="flex h-[520px] min-h-0 flex-col">
+                    <CardHeader>
+                        <CardTitle>{t("app.admin.dashboard.page.kc83084c3")}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex flex-1 min-h-0 flex-col space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+                                <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">{t("app.admin.dashboard.page.recentWindowTokens24h")}</div>
+                                <div className="mt-2 text-2xl font-semibold">{data.stats.recentWindowTokens}</div>
+                            </div>
+                            <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+                                <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">{t("app.admin.dashboard.page.recentWindowCost24h")}</div>
+                                <div className="mt-2 text-2xl font-semibold">{data.stats.recentWindowEstimatedCost.toFixed(4)}</div>
+                            </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.page.cacheUsage.costEstimate")}</p>
+                        <ModelCacheWindowSummary usage={data.promptCache?.providerUsage} t={t} />
+                        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                            {data.recentInvocations.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
+                                    {t("app.admin.dashboard.page.k393204db")}
+                                </div>
+                            ) : data.recentInvocations.map((item) => (
+                                <div key={item.id} className="rounded-2xl border border-border/70 bg-background/70 p-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <div className="text-sm font-medium">{item.model_id}</div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                                {item.provider_name || t("app.admin.dashboard.page.k83399ef1")} · {item.role || t("app.admin.dashboard.page.kcdbb6b46")} · {formatWhen(item.started_at, t("app.admin.dashboard.page.kba48e747"))}
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            {debugMode ? (
+                                                <AdminHoverInfo
+                                                    lines={promptCacheHoverLines(t, item, data.promptCache)}
+                                                    align="right"
+                                                    panelClassName="text-xs leading-5"
+                                                >
+                                                    <Badge variant={item.status === "completed" ? "default" : "secondary"}>
+                                                        {item.status}
+                                                    </Badge>
+                                                </AdminHoverInfo>
+                                            ) : (
+                                                <Badge variant={item.status === "completed" ? "default" : "secondary"}>
+                                                    {item.status}
+                                                </Badge>
+                                            )}
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                                {item.total_tokens} Tokens · {Math.round(item.latency_ms)} ms
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <ModelCacheUsage usage={item.cacheUsage} t={t} />
+                                </div>
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+                </>
+            ) : null}
+
+        </div>
+    );
+}

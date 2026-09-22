@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $ProfileMode = "minimal"
-$ServicesMode = "engine+admin"
+$ServicesMode = "engine+web"
 $PlatformMode = "auto"
 
 for ($i = 0; $i -lt $args.Count; $i++) {
@@ -31,11 +31,11 @@ if ($ProfileMode -eq "standard") {
 if ($ProfileMode -notin @("minimal", "desktop")) {
     throw "Unsupported --profile value: $ProfileMode"
 }
-if ($ServicesMode -notin @("engine", "engine+admin", "engine+admin+web")) {
+if ($ServicesMode -in @("engine+admin", "engine+admin+web")) { $ServicesMode = "engine+web" }
+if ($ServicesMode -notin @("engine", "engine+web")) {
     throw "Unsupported --services value: $ServicesMode"
 }
-$StartAdmin = $ServicesMode -in @("engine+admin", "engine+admin+web")
-$StartWeb = $ServicesMode -eq "engine+admin+web"
+$StartWeb = $ServicesMode -eq "engine+web"
 
 function Resolve-Platform([string]$Requested) {
     if ($Requested -and $Requested -ne "auto") {
@@ -56,7 +56,6 @@ $ScriptRoot = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { $null }
 $UsingCurrentCheckout =
     $ScriptRoot -and
     (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-engine")) -and
-    (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-admin")) -and
     ((-not $StartWeb) -or (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-web")))
 $Workspace =
     if ($UsingCurrentCheckout) {
@@ -91,14 +90,6 @@ function Sync-Repo([string]$RepoUrl, [string]$TargetDir) {
     }
 
     git -C $TargetDir pull --ff-only | Out-Host
-}
-
-function Ensure-AdminAuthSecret([string]$TargetDir) {
-    $SecretScript = Join-Path $RepoDir "scripts\ensure-admin-auth-secret.mjs"
-    if (-not (Test-Path $SecretScript)) {
-        throw "Admin auth secret helper not found: $SecretScript"
-    }
-    node $SecretScript --admin-dir $TargetDir | Out-Host
 }
 
 function Get-RequirementsForProfile([string]$EngineDir) {
@@ -143,21 +134,6 @@ storage.save_runtime_registry_config(payload)
 "@ | & $PythonExe -
     } finally {
         Pop-Location
-    }
-}
-
-function Stop-ExistingEngine([int]$Port) {
-    try {
-        $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
-    } catch {
-        $connections = @()
-    }
-    foreach ($pid in @($connections)) {
-        if (-not $pid) { continue }
-        try {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
-        } catch {
-        }
     }
 }
 
@@ -208,33 +184,6 @@ function Ensure-RpaNativeInspector([string]$EngineDir, [string]$PythonExe) {
     & $PythonExe $EnsureScript | Out-Host
 }
 
-function Start-Detached([string]$WorkingDir, [string]$FilePath, [string[]]$ArgumentList, [string]$LogName, [hashtable]$Environment = @{}) {
-    $StdOut = Join-Path $LogDir "$LogName.stdout.log"
-    $StdErr = Join-Path $LogDir "$LogName.stderr.log"
-    $PreviousEnvironment = @{}
-    foreach ($entry in $Environment.GetEnumerator()) {
-        $PreviousEnvironment[$entry.Key] = [Environment]::GetEnvironmentVariable($entry.Key, "Process")
-        [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, "Process")
-    }
-    try {
-        $Process = Start-Process `
-            -FilePath $FilePath `
-            -ArgumentList $ArgumentList `
-            -WorkingDirectory $WorkingDir `
-            -RedirectStandardOutput $StdOut `
-            -RedirectStandardError $StdErr `
-            -PassThru
-    } finally {
-        foreach ($entry in $PreviousEnvironment.GetEnumerator()) {
-            [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Process")
-        }
-    }
-    if (-not $Process) {
-        throw "Failed to start process '$FilePath'."
-    }
-    Write-Host ("Started {0} (PID {1})" -f $LogName, $Process.Id)
-}
-
 New-Item -ItemType Directory -Force -Path $Workspace, $LogDir | Out-Null
 
 Write-Step "Checking prerequisites"
@@ -242,7 +191,8 @@ if (-not $UsingCurrentCheckout) {
     Ensure-Command git "Install Git first: https://git-scm.com/downloads"
 }
 Ensure-Command python "Install Python 3.11+ first."
-if ($StartAdmin -or $StartWeb) {
+Ensure-Command node "Install Node.js 22+ first."
+if ($StartWeb) {
     Ensure-Command npm "Install Node.js 20+ first."
 }
 
@@ -254,7 +204,6 @@ if ($UsingCurrentCheckout) {
 }
 
 $EngineDir = Join-Path $RepoDir "apps\v8-agent-os-engine"
-$AdminDir = Join-Path $RepoDir "apps\v8-agent-os-admin"
 $WebDir = Join-Path $RepoDir "apps\v8-agent-os-web"
 
 if ($env:V8_AGENT_OS_BOOTSTRAP_DRY_RUN -eq "1") {
@@ -281,7 +230,7 @@ Write-Step "Preparing engine"
 if (-not (Test-Path (Join-Path $EngineDir ".venv"))) {
     python -m venv (Join-Path $EngineDir ".venv")
 }
-$PythonExe = Join-Path $EngineDir ".venv\Scripts\python.exe"
+$PythonExe = if ($PlatformMode -eq "windows") { Join-Path $EngineDir ".venv\Scripts\python.exe" } else { Join-Path $EngineDir ".venv/bin/python" }
 & $PythonExe -m pip install --upgrade pip | Out-Host
 foreach ($RequirementFile in Get-RequirementsForProfile $EngineDir) {
     if (Test-Path $RequirementFile) {
@@ -292,11 +241,6 @@ Ensure-RpaNativeInspector $EngineDir $PythonExe
 $BootstrapManagedMode = $env:V8_AGENT_OS_BOOTSTRAP_MANAGED -ne "0"
 Sync-RuntimeRegistry $EngineDir $PythonExe $ProfileMode $PlatformMode $BootstrapManagedMode
 
-if ($StartAdmin) {
-    Write-Step "Preparing admin"
-    npm --prefix $AdminDir install | Out-Host
-    Ensure-AdminAuthSecret $AdminDir
-}
 if ($StartWeb) {
     Write-Step "Preparing web"
     npm --prefix $WebDir install | Out-Host
@@ -308,35 +252,17 @@ if ($env:V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY -eq "1") {
     Write-Host "Install-only mode complete. Please start the selected services manually." -ForegroundColor Yellow
     exit 0
 }
+$CoreCli = Join-Path $RepoDir "apps/v8-agent-os-cli/bin/v8os.mjs"
+$env:V8_REPO_ROOT = $RepoDir
+$env:V8_ENGINE_PYTHON = $PythonExe
+$env:ENGINE_STARTUP_PROFILE = $ProfileMode
+$env:ENGINE_INSTALL_PROFILE = $ProfileMode
+$env:ENGINE_INSTALL_PLATFORM = $PlatformMode
 if ($env:V8_AGENT_OS_BOOTSTRAP_RESTART_ENGINE -eq "1") {
-    Stop-ExistingEngine 9530
+    node $CoreCli stop --only engine | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Core could not stop the owned Engine" }
 }
-Start-Detached $EngineDir $PythonExe @("main.py") "engine" @{
-    ENGINE_STARTUP_PROFILE = $ProfileMode
-    ENGINE_INSTALL_PROFILE = $ProfileMode
-    ENGINE_INSTALL_PLATFORM = $PlatformMode
-}
-if ($StartAdmin) {
-    Start-Detached $AdminDir "npm.cmd" @("run", "dev") "admin"
-}
-if ($StartWeb) {
-    Start-Detached $WebDir "npm.cmd" @("run", "dev") "web"
-}
-
-Write-Host ""
-Write-Host "V8 Agent OS is starting." -ForegroundColor Green
-Write-Host "Source  : $RepoSource"
-Write-Host "Profile : $ProfileMode"
-Write-Host "Platform: $PlatformMode"
-Write-Host "Engine  : http://127.0.0.1:9530"
-if ($StartAdmin) {
-    Write-Host "Admin   : http://127.0.0.1:9528"
-} else {
-    Write-Host "Admin   : skipped"
-}
-if ($StartWeb) {
-    Write-Host "Web     : http://127.0.0.1:9527"
-} else {
-    Write-Host "Web     : skipped (use --services engine+admin+web for local os-web regression)"
-}
-Write-Host "Logs    : $LogDir"
+$Components = if ($StartWeb) { "engine,web" } else { "engine" }
+node $CoreCli dev --only $Components | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "Core startup failed; inspect v8os status and logs" }
+Write-Host "Product Web includes /chat and /admin. Inspect actual ports with v8os status."

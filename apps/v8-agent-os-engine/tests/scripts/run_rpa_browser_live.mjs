@@ -9,7 +9,7 @@ const outputIndex = process.argv.indexOf('--output');
 const output = path.resolve(process.argv[outputIndex + 1] || '');
 if (outputIndex < 0 || fs.existsSync(output)) throw new Error('A fresh --output directory is required');
 fs.mkdirSync(output, { recursive: true });
-const require = createRequire(new URL('../../../v8-agent-os-admin/package.json', import.meta.url));
+const require = createRequire(new URL('../../../v8-agent-os-web/package.json', import.meta.url));
 const { chromium } = require('playwright');
 const browser = await chromium.launch({ channel: 'msedge', headless: true });
 try {

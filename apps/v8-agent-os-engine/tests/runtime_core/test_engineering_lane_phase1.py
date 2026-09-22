@@ -274,15 +274,15 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
             {
                 "taskBriefId": "task-1",
                 "goal": "Implement admin page",
-                "writeSet": ["apps/v8-agent-os-admin/src/page.tsx"],
-                "expectedOutputs": ["apps/v8-agent-os-admin/src/page.tsx"],
+                "writeSet": ["apps/v8-agent-os-web/src/admin/page.tsx"],
+                "expectedOutputs": ["apps/v8-agent-os-web/src/admin/page.tsx"],
                 "acceptanceContract": "The admin page renders.",
             },
             {
                 "taskBriefId": "task-2",
                 "goal": "Refactor same admin page",
-                "writeSet": ["apps/v8-agent-os-admin/src/page.tsx"],
-                "expectedOutputs": ["apps/v8-agent-os-admin/src/page.tsx"],
+                "writeSet": ["apps/v8-agent-os-web/src/admin/page.tsx"],
+                "expectedOutputs": ["apps/v8-agent-os-web/src/admin/page.tsx"],
                 "acceptanceContract": "The refactored page renders.",
             },
         ]

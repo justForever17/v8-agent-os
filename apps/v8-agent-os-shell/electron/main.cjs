@@ -3,8 +3,12 @@ const path = require('path');
 const fs = require('fs');
 const { readLocalEngineSecret, ensureLocalEngineIdentity } = require('../lib/engine-identity.cjs');
 const { pathToFileURL } = require('node:url');
-const { createDesktopPetShutdownCoordinator } = require('../lib/desktop-pet-shutdown.cjs');
-const { createShellControlServer, isValidSessionId } = require('../lib/shell-control.cjs');
+const { createCompanionWindow, registerStableRendererScheme } = require(path.join(
+  process.env.V8_DESKTOP_PET_DIR || path.join(process.env.V8_REPO_ROOT || (app.isPackaged
+    ? path.join(process.resourcesPath, 'v8os') : path.resolve(__dirname, '../../..')),
+  'apps', 'v8-agent-os-desktop-pet'), 'electron', 'companion-window.cjs'));
+registerStableRendererScheme(require('electron').protocol);
+const { createShellState, isValidSessionId } = require('../lib/shell-control.cjs');
 const { parseShellDeepLink } = require('../lib/shell-route.cjs');
 const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { hasServiceEvidence, waitForServiceHandoff } = require('../lib/service-liveness.cjs');
@@ -44,7 +48,7 @@ process.env.V8_REPO_ROOT = repoRoot;
 const desktopPetDir = process.env.V8_DESKTOP_PET_DIR || path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet');
 process.env.V8_DESKTOP_PET_DIR = desktopPetDir;
 let webBaseUrl = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
-let adminBaseUrl = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
+let adminBaseUrl = webBaseUrl;
 let engineBaseUrl = process.env.V8_ENGINE_BASE_URL || 'http://127.0.0.1:9530';
 const cliApiUrl = pathToFileURL(path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'core_control.mjs')).href;
 const releaseManifestPath = path.join(repoRoot, 'release-manifest.json');
@@ -95,18 +99,39 @@ let notifiedUpdateTag = null;
 let gpuRecoveryRelaunchArgs = null;
 const SURFACE_RECOVERY_WINDOW_MS = 60_000;
 const MAX_SURFACE_RECOVERY_ATTEMPTS = 2;
-const desktopPetShutdown = createDesktopPetShutdownCoordinator();
+let companion = null;
+function companionHost() {
+  if (!companion) companion = createCompanionWindow({
+    onStatus({ state, activeSessionId: sessionId }) {
+      desktopPetActiveSessionId = isValidSessionId(sessionId) ? sessionId : null;
+      desktopPetProcessRunning = state !== 'stopped';
+      setDesktopPetState(state);
+    },
+    onOpenSettings: () => { void openDesktopPetSettings(); },
+    onOpenSession: sessionId => {
+      if (!isValidSessionId(sessionId)) return false;
+      void openWebSession(sessionId);
+      return true;
+    },
+    onClosed() {
+      desktopPetProcessRunning = Boolean(companion?.status().running);
+      if (!desktopPetProcessRunning) setDesktopPetState('stopped');
+    },
+  });
+  companion.setActiveSession(activeSessionId);
+  return companion;
+}
 
 function currentDesktopPetStatus() {
   return {
     state: desktopPetPlatformAvailability.available ? desktopPetState : 'unavailable',
     processRunning: desktopPetProcessRunning,
-    controlConnected: Boolean(shellControl?.hasAuthenticatedClient()),
+    controlConnected: Boolean(companion?.status().running),
     activeSessionId: desktopPetActiveSessionId,
     available: desktopPetPlatformAvailability.available,
     reasonCode: desktopPetPlatformAvailability.reasonCode || null,
     enabled: desktopPetProcessRunning
-      || Boolean(shellControl?.hasAuthenticatedClient())
+      || Boolean(companion?.status().running)
       || ['starting', 'waiting_v8os', 'connected', 'stopping'].includes(desktopPetState),
   };
 }
@@ -154,8 +179,8 @@ function applyRuntimePortProfile(profile) {
   }
   const previousWebBaseUrl = webBaseUrl;
   engineBaseUrl = `http://127.0.0.1:${ports.engine}`;
-  adminBaseUrl = `http://127.0.0.1:${ports.admin}`;
   webBaseUrl = `http://127.0.0.1:${ports.web}`;
+  adminBaseUrl = webBaseUrl;
   process.env.V8_ENGINE_BASE_URL = engineBaseUrl;
   process.env.V8_ADMIN_BASE_URL = adminBaseUrl;
   process.env.V8_WEB_BASE_URL = webBaseUrl;
@@ -260,7 +285,7 @@ async function openDesktopPetSettings() {
 }
 
 async function ensureAdminServiceStarted() {
-  const { profile, results } = await startDesktopServices(['admin']);
+  const { profile, results } = await startDesktopServices(['web']);
   applyRuntimePortProfile(profile);
   const failures = results.filter(item => !['started', 'already_running'].includes(item.status));
   if (failures.length) throw coreServiceStartupError(failures);
@@ -280,6 +305,13 @@ async function openWebSession(sessionId) {
 function handleShellDeepLink(rawUrl) {
   const route = parseShellDeepLink(rawUrl);
   if (!route) return false;
+  if (route.surface === 'companion') {
+    void ensureCoreServicesStarted().then(() => setDesktopPetEnabled(true)).catch(error => {
+      console.warn('[V8OS Shell] Companion could not open', { reason: error?.message || 'startup_failed' });
+      setDesktopPetState('error');
+    });
+    return true;
+  }
   if (route.surface === 'admin' && route.path === '/admin/desktop-pet') {
     void openDesktopPetSettings();
     return true;
@@ -566,7 +598,7 @@ function shellAssetPath(name) {
 function productMarkPath() {
   const candidates = [
     path.join(repoRoot, 'apps', 'v8-agent-os-web', 'public', 'product-mark.png'),
-    path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'public', 'product-mark.png'),
+    path.join(repoRoot, 'apps', 'v8-agent-os-web', 'public', 'product-mark.png'),
     shellAssetPath('icon.png'),
   ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate)) || '';
@@ -577,7 +609,7 @@ function taskbarIconPath() {
     shellAssetPath(process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     shellAssetPath('icon.png'),
     path.join(repoRoot, 'apps', 'v8-agent-os-web', 'public', 'icon.png'),
-    path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'public', 'icon.png'),
+    path.join(repoRoot, 'apps', 'v8-agent-os-web', 'public', 'icon.png'),
   ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate)) || '';
 }
@@ -837,50 +869,17 @@ function loadInitialSurface() {
 }
 
 async function startShellControl() {
-  shellControl = createShellControlServer({
+  shellControl = createShellState({
     packaged: app.isPackaged,
     executablePath: process.execPath,
     repoRoot,
     softwareRendering: process.env.V8OS_SOFTWARE_RENDERING === '1',
-    onAuthenticated() {
-      if (desktopPetState !== 'stopping') setDesktopPetState('waiting_v8os');
-      publishShellControlStatus();
-      shellControl?.send('active-session', { sessionId: activeSessionId });
-    },
-    onDisconnect() {
-      if (desktopPetState === 'stopping') {
-        publishShellControlStatus();
-        return;
-      }
-      setDesktopPetState(desktopPetProcessRunning ? 'error' : 'stopped');
-      publishShellControlStatus();
-    },
-    onMessage(message) {
-      if (message.type === 'pet-status') {
-        desktopPetActiveSessionId = isValidSessionId(message.activeSessionId)
-          ? String(message.activeSessionId).trim()
-          : null;
-        setDesktopPetState(message.state);
-        publishShellControlStatus();
-        return;
-      }
-      if (message.type === 'open-settings') {
-        void openDesktopPetSettings();
-        return;
-      }
-      if (message.type === 'open-session') {
-        void openWebSession(message.sessionId);
-        return;
-      }
-      if (message.type === 'shutdown-ready') {
-        desktopPetShutdown.acknowledge(message.requestId);
-      }
-    },
+
   });
   const restored = await shellControl.start();
   if (!activeSessionId && isValidSessionId(restored?.previousActiveSessionId)) {
     activeSessionId = String(restored.previousActiveSessionId).trim();
-    shellControl.send('active-session', { sessionId: activeSessionId });
+    companion?.setActiveSession(activeSessionId);
   }
   publishShellControlStatus();
 }
@@ -889,38 +888,15 @@ function reportActiveSession(sessionId) {
   const normalized = isValidSessionId(sessionId) ? String(sessionId).trim() : null;
   activeSessionId = normalized;
   shellControl?.setActiveSession(normalized);
-  shellControl?.send('active-session', { sessionId: normalized });
+  companion?.setActiveSession(normalized);
 }
 
 async function refreshStatusOnce() {
-  try {
-    const { desktopPetAvailability: shellDesktopPetAvailability, statusCoreComponents: shellStatus } = await cliApi();
-    desktopPetPlatformAvailability = shellDesktopPetAvailability();
-    const statuses = await shellStatus(['desktop-pet']);
-    desktopPetProcessRunning = statuses.some((item) => (
-      item.id === 'desktop-pet' && (item.state === 'managed_running' || item.pidAlive === true)
-    ));
-  } catch {
-    if (desktopPetProcessRunning) setDesktopPetState('error');
-    updateTrayMenu();
-    return;
-  }
-
-  if (shellControl?.hasAuthenticatedClient()) {
-    if (desktopPetState === 'stopped' || desktopPetState === 'starting' || desktopPetState === 'error') {
-      setDesktopPetState('waiting_v8os');
-    }
-  } else if (!desktopPetProcessRunning) {
-    setDesktopPetState('stopped');
-  } else if (desktopPetState === 'stopped') {
-    setDesktopPetState('starting');
-  } else if (desktopPetState === 'starting' && Date.now() - desktopPetStateChangedAt > 10000) {
-    setDesktopPetState('error');
-  } else if (desktopPetState === 'stopping' && Date.now() - desktopPetStateChangedAt > 3000) {
-    setDesktopPetState('error');
-  } else if (desktopPetState === 'waiting_v8os' || desktopPetState === 'connected') {
-    setDesktopPetState('error');
-  }
+  const { desktopPetAvailability } = await cliApi();
+  desktopPetPlatformAvailability = desktopPetAvailability();
+  const status = companion?.status();
+  desktopPetProcessRunning = Boolean(status?.running);
+  if (status && !['starting', 'stopping'].includes(desktopPetState)) setDesktopPetState(status.state);
   publishShellControlStatus();
   updateTrayMenu();
 }
@@ -1103,7 +1079,7 @@ async function showServiceStatus() {
       desktopPet: {
         state: desktopPetState,
         processRunning: desktopPetProcessRunning,
-        controlConnected: Boolean(shellControl?.hasAuthenticatedClient()),
+        controlConnected: Boolean(companion?.status().running),
         activeSessionId,
         desktopPetActiveSessionId,
       },
@@ -1122,26 +1098,18 @@ async function showServiceStatus() {
 }
 
 async function stopDesktopPetGracefully() {
-  if (!desktopPetProcessRunning && !shellControl?.hasAuthenticatedClient()) {
+  if (!companion?.status().running) {
     setDesktopPetState('stopped');
-    return { acked: true, reason: 'already_stopped' };
+    return { acked: true, stopped: true, reason: 'already_stopped' };
   }
   setDesktopPetState('stopping');
-  const result = await desktopPetShutdown.request(
-    (requestId) => (shellControl?.send('shutdown', { requestId }) || 0) > 0,
-    1500,
-  );
-  if (!result.acked) {
-    console.warn('[V8OS Shell] Desktop pet graceful shutdown failed; using CLI fallback', { reason: result.reason });
-    const { stopCoreComponents: shellStop } = await cliApi();
-    await shellStop(['desktop-pet']);
-  }
-  setTimeout(() => { void refreshStatus(); }, result.acked ? 300 : 0).unref?.();
+  const result = await companion.stop({ source: 'shell' });
+  await refreshStatus();
   return result;
 }
 
 async function setDesktopPetEnabled(enabled) {
-  const shouldStop = desktopPetProcessRunning || shellControl?.hasAuthenticatedClient();
+  const shouldStop = desktopPetProcessRunning || companion?.status().running;
   if (desktopPetState === 'stopping') return currentDesktopPetStatus();
   if (desktopPetState === 'starting' && (desktopPetPlatformAvailability.available || enabled || !shouldStop)) {
     return currentDesktopPetStatus();
@@ -1151,10 +1119,7 @@ async function setDesktopPetEnabled(enabled) {
       await stopDesktopPetGracefully();
     } else if (enabled && !shouldStop && desktopPetPlatformAvailability.available) {
       setDesktopPetState('starting');
-      const { startCoreComponents: shellStart } = await cliApi();
-      const results = await shellStart(['desktop-pet'], { mode: 'start' });
-      const accepted = results.some((item) => item.status === 'started' || item.status === 'already_running');
-      if (!accepted) setDesktopPetState('error');
+      await companionHost().start();
     }
   } catch (error) {
     console.warn('[V8OS Shell] Desktop pet toggle failed', { reason: error?.message || 'unknown_error' });
@@ -1166,7 +1131,7 @@ async function setDesktopPetEnabled(enabled) {
 }
 
 async function toggleDesktopPet() {
-  const shouldStop = desktopPetProcessRunning || shellControl?.hasAuthenticatedClient();
+  const shouldStop = desktopPetProcessRunning || companion?.status().running;
   return setDesktopPetEnabled(!shouldStop);
 }
 
@@ -1300,17 +1265,24 @@ async function quitV8OS() {
     // The desktop owns only its startup receipts. Daemons and replacements
     // remain running when this surface closes; process_manager checks again
     // under the stop lease before any signal is sent.
-    const shellStop = (ids, options) => stopCoreComponents(ids, {
-      ...options, expectedIdentities: ids.includes('desktop-pet') ? undefined : desktopCoreIdentities,
-    });
+    // Companion is a window of this process, never a PID to terminate.
+    const shellStop = async (ids, options) => {
+      if (ids.includes('desktop-pet')) await stopDesktopPetGracefully();
+      return stopCoreComponents(ids.filter(id => id !== 'desktop-pet'), {
+        ...options, expectedIdentities: desktopCoreIdentities,
+      });
+    };
     const shellStatus = async ids => {
-      const statuses = await statusCoreComponents(ids, { expectedIdentities: desktopCoreIdentities });
-      return statuses.map(item => item.id === 'desktop-pet' ? { ...item, ownership: undefined } : item);
+      const statuses = await statusCoreComponents(ids.filter(id => id !== 'desktop-pet'), { expectedIdentities: desktopCoreIdentities });
+      if (ids.includes('desktop-pet')) statuses.push({ id: 'desktop-pet',
+        pidAlive: Boolean(companion?.status().running), portOpen: false,
+        state: companion?.status().state || 'stopped' });
+      return statuses;
     };
     const result = await runManagedV8OSShutdown({
-      coreIds: [...CORE_SERVICE_IDS, 'admin'],
+      coreIds: [...CORE_SERVICE_IDS],
       desktopPetId: 'desktop-pet',
-      shouldStopDesktopPet: desktopPetProcessRunning || Boolean(shellControl?.hasAuthenticatedClient()),
+      shouldStopDesktopPet: desktopPetProcessRunning || Boolean(companion?.status().running),
       stopDesktopPetGracefully,
       shellStop,
       shellStatus,
@@ -1363,6 +1335,11 @@ async function quitShellForRestart() {
   if (quitting) return;
   quitting = true;
   app.emit('v8os-governed-shutdown-started');
+  const companionStopped = await stopDesktopPetGracefully();
+  if (companionStopped.stopped === false) {
+    quitting = false;
+    return showShutdownFailure({ remaining: [{ id: 'desktop-pet' }] });
+  }
   try {
     const { removeShellProcessRecord } = await cliApi();
     await removeShellProcessRecord(shellProcessRecordIdentity);
@@ -1414,7 +1391,7 @@ function updateTrayMenu() {
   if (!tray) return;
   const model = buildTrayMenuModel({
     desktopPetState,
-    desktopPetProcessRunning: desktopPetProcessRunning || Boolean(shellControl?.hasAuthenticatedClient()),
+    desktopPetProcessRunning: desktopPetProcessRunning || Boolean(companion?.status().running),
     desktopPetAvailability: desktopPetPlatformAvailability,
     updateStatus,
   });
@@ -1826,7 +1803,6 @@ if (!hasSingleInstanceLock) {
     const initialDeepLink = deepLinkFromArgv();
     if (initialDeepLink) handleShellDeepLink(initialDeepLink);
     void refreshStatus();
-    setInterval(() => { void refreshStatus(); }, 10_000).unref?.();
   });
 
   app.on('activate', () => {
@@ -1843,7 +1819,7 @@ app.on('open-url', (event, url) => {
 app.on('will-quit', () => {
   residentSurfaces?.dispose();
   if (automaticUpdateCheckTimer) clearTimeout(automaticUpdateCheckTimer);
-  desktopPetShutdown.cancelAll();
+  void companion?.dispose();
   void shellControl?.stop();
 });
 

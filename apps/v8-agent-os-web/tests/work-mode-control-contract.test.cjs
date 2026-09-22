@@ -16,8 +16,8 @@ test("Web and Phone keep a session-scoped Supervisor runtime mode and snapshot i
   const phone = readText("apps/v8-agent-os-phone/src/screens/ChatScreen.tsx");
   const phoneComposer = readText("apps/v8-agent-os-phone/src/components/chat/Composer.tsx");
   const phoneApi = readText("apps/v8-agent-os-phone/src/lib/phone-api.ts");
-  const localSessionProxy = readText("apps/v8-agent-os-admin/src/app/api/conversations/[id]/route.ts");
-  const clientSessionProxy = readText("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/route.ts");
+  const localSessionProxy = readText("apps/v8-agent-os-web/src/app/api/admin/conversations/[id]/route.ts");
+  const clientSessionProxy = readText("apps/v8-agent-os-web/src/app/api/admin/client/conversations/[id]/route.ts");
   const sharedContract = readText("packages/session-realtime/src/contract.ts");
   const zh = JSON.parse(readText("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json"));
   const en = JSON.parse(readText("apps/v8-agent-os-web/src/i18n/locales/en.json"));
@@ -97,7 +97,7 @@ test("Web and Phone keep a session-scoped Supervisor runtime mode and snapshot i
 });
 
 test("Engineering console exposes useful controls instead of the retired route test", () => {
-  const page = readText("apps/v8-agent-os-admin/src/app/admin/(dashboard)/engineering-lane/page.tsx");
+  const page = readText("apps/v8-agent-os-web/src/app/admin/(dashboard)/engineering-lane/page.tsx");
 
   assert.doesNotMatch(page, /\/api\/engineering-lane\/dry-run/);
   assert.doesNotMatch(page, /dryRunDiagnosticTitle|recentRiskTitle|filterRouteTest/);

@@ -214,11 +214,11 @@ class SystemDoctorService:
         return checks
 
     def _check_ports(self) -> list[dict[str, Any]]:
-        port_labels = {9530: "Engine", 9528: "Admin", governed_web_port(): "Web"}
+        port_labels = {9530: "Engine", governed_web_port(): "Product Web"}
         checks: list[dict[str, Any]] = []
         for port, label in port_labels.items():
             result = _connect_port(port)
-            expected = port in {9530, 9528}
+            expected = port == 9530
             status = "ok" if result["open"] else ("warning" if expected else "info")
             checks.append(
                 _check(

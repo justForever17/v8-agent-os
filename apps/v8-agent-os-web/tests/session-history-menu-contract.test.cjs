@@ -113,7 +113,7 @@ test("session history action labels are localized", () => {
 test("workspace and task presentation changes use durable shared routes", () => {
   const engineRoutes = readText("apps/v8-agent-os-engine/api/session_workflow_routes.py");
   const knowledgeRoutes = readText("apps/v8-agent-os-engine/api/knowledge_routes.py");
-  const adminConversationRoute = readText("apps/v8-agent-os-admin/src/app/api/conversations/[id]/route.ts");
+  const adminConversationRoute = readText("apps/v8-agent-os-web/src/app/api/admin/conversations/[id]/route.ts");
   const historyContract = readText("packages/session-realtime/src/history.ts");
   const pet = readText("apps/v8-agent-os-desktop-pet/src/components/CyberPet.tsx");
 
@@ -152,10 +152,10 @@ test("web and phone preserve contextSessionRefs through the first submitted user
 
 test("human session surfaces compact oversized live-session payloads before Web or Phone parsing", () => {
   const engineRoutes = readText("apps/v8-agent-os-engine/api/session_workflow_routes.py");
-  const adminResource = readText("apps/v8-agent-os-admin/src/lib/server/session-realtime-resource.ts");
-  const adminDetail = readText("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/route.ts");
-  const adminSync = readText("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/sync/route.ts");
-  const adminTurns = readText("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/turns/route.ts");
+  const adminResource = readText("apps/v8-agent-os-web/src/admin/lib/server/session-realtime-resource.ts");
+  const adminDetail = readText("apps/v8-agent-os-web/src/app/api/admin/client/conversations/[id]/route.ts");
+  const adminSync = readText("apps/v8-agent-os-web/src/app/api/admin/client/conversations/[id]/sync/route.ts");
+  const adminTurns = readText("apps/v8-agent-os-web/src/app/api/admin/client/conversations/[id]/turns/route.ts");
   const phoneApi = readText("apps/v8-agent-os-phone/src/lib/phone-api.ts");
   const phoneDb = readText("apps/v8-agent-os-phone/src/services/LocalDatabaseService.ts");
   const webClient = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");

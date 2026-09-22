@@ -20,7 +20,7 @@ def normalize_transport_kind(value: Any) -> str:
 
 def strip_api_suffix(value: Any) -> str:
     raw = str(value or "").strip().rstrip("/")
-    for suffix in ("/api", "/v1"):
+    for suffix in ("/api/admin", "/api", "/v1"):
         if raw.lower().endswith(suffix):
             return raw[: -len(suffix)].rstrip("/")
     return raw
@@ -420,7 +420,7 @@ def build_mesh_provider_status(*, admin_base_url: str = "", engine_base_url: str
     preferred_host = next((item for item in preferred_hosts if item), "")
     if preferred_host:
         tailscale["recommendedUrls"] = {
-            "adminBaseUrl": _url_for_host(admin_base, preferred_host, 9528),
+            "adminBaseUrl": _url_for_host(admin_base, preferred_host, 9527),
             "engineBaseUrl": _url_for_host(engine_base, preferred_host, 9530),
             "peerBaseUrl": _url_for_host(engine_base, preferred_host, 9530),
         }
@@ -568,7 +568,7 @@ def _build_connection_endpoints(
                 "kind": kind,
                 "scope": "local",
                 "priority": 11 if kind == "lan_ipv6" else 10,
-                "baseUrl": _url_for_host(admin_base_url, address, 9528),
+                "baseUrl": _url_for_host(admin_base_url, address, 9527),
             }
         )
 

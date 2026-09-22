@@ -7,5 +7,8 @@ await build({
   entryPoints: [path.join(root, "scripts/server/feature-packs-entry.ts")],
   outfile: path.resolve(process.argv[2]),
   bundle: true, platform: "node", format: "esm", target: "node20",
-  alias: { "@": path.join(root, "apps/v8-agent-os-admin/src") },
+  alias: {
+    "@": path.join(root, "apps/v8-agent-os-web/src"),
+    "@admin": path.join(root, "apps/v8-agent-os-web/src/admin"),
+  },
 });

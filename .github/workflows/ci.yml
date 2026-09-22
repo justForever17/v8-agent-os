@@ -128,9 +128,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - client: admin
-            directory: apps/v8-agent-os-admin
-            lockfile: apps/v8-agent-os-admin/package-lock.json
           - client: web
             directory: apps/v8-agent-os-web
             lockfile: apps/v8-agent-os-web/package-lock.json
@@ -157,19 +154,15 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ matrix.client }}" in
-            admin)
-              npm --prefix apps/v8-agent-os-admin run lint
-              npm --prefix apps/v8-agent-os-admin exec -- tsc --noEmit --project apps/v8-agent-os-admin/tsconfig.json
-              node --test \
-                apps/v8-agent-os-admin/tests/*.test.cjs \
-                apps/v8-agent-os-admin/tests/*.test.mjs
-              ;;
             web)
               npm --prefix apps/v8-agent-os-web run typecheck
               npm --prefix apps/v8-agent-os-web run validate:i18n
+              npm --prefix apps/v8-agent-os-web run lint:admin
               node --test \
                 apps/v8-agent-os-web/tests/*.test.cjs \
-                apps/v8-agent-os-web/tests/*.test.mjs
+                apps/v8-agent-os-web/tests/*.test.mjs \
+                apps/v8-agent-os-web/tests/admin/*.test.cjs \
+                apps/v8-agent-os-web/tests/admin/*.test.mjs
               ;;
             phone)
               npm --prefix apps/v8-agent-os-phone run lint

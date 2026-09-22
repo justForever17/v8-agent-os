@@ -91,7 +91,7 @@ test("Web turn navigator lives in the outer gutter and expands the hovered tick"
 
 test("Web realtime keeps rich runtime detail while Phone hydration stays compact", () => {
   const webRoute = readText("apps/v8-agent-os-web/src/app/api/realtime/sessions/[id]/stream/route.ts");
-  const adminRoute = readText("apps/v8-agent-os-admin/src/app/api/realtime/sessions/[id]/stream/route.ts");
+  const adminRoute = readText("apps/v8-agent-os-web/src/app/api/admin/realtime/sessions/[id]/stream/route.ts");
 
   assert.match(webRoute, /stream\?surface=web`/);
   assert.doesNotMatch(webRoute, /surface=web&compact=1/);

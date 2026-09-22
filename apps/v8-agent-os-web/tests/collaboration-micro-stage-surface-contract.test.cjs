@@ -317,7 +317,7 @@ test("Local clients consume the packed message-bound execution exports with matc
   for (const lockPath of [
     "apps/v8-agent-os-web/package-lock.json",
     "apps/v8-agent-os-phone/package-lock.json",
-    "apps/v8-agent-os-admin/package-lock.json",
+    "apps/v8-agent-os-web/package-lock.json",
   ]) {
     const lock = JSON.parse(readText(lockPath));
     const lockEntry = lock.packages?.["node_modules/@v8/session-realtime"];

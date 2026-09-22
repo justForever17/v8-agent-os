@@ -10,12 +10,16 @@ declare module "next-auth" {
             image?: string | null;
             login?: string;
             role?: string;
+            mustChangePassword?: boolean;
+            adminAuthenticated?: boolean;
         };
     }
 
     interface User {
         login?: string;
         role?: string;
+        mustChangePassword?: boolean;
+        adminAuthenticated?: boolean;
     }
 }
 
@@ -24,5 +28,7 @@ declare module "next-auth/jwt" {
         id?: string;
         login?: string;
         role?: string;
+        mustChangePassword?: boolean;
+        adminAuthenticated?: boolean;
     }
 }

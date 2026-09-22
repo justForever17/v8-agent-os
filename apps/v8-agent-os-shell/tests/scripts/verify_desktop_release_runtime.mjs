@@ -233,7 +233,6 @@ function pythonEngineImportCheck(pythonExe, engineRoot) {
 }
 
 const engineRoot = path.join(repoRoot, "apps", "v8-agent-os-engine");
-const adminRoot = path.join(repoRoot, "apps", "v8-agent-os-admin");
 const webRoot = path.join(repoRoot, "apps", "v8-agent-os-web");
 const petRoot = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet");
 const portablePythonRoot = path.join(engineRoot, ".python");
@@ -252,9 +251,7 @@ const builderConfigPath = path.join(shellRoot, "electron-builder.yml");
 const builderConfig = fs.readFileSync(builderConfigPath, "utf8");
 const engineResourceBlock = extraResourceBlock(builderConfig, "../../apps/v8-agent-os-engine");
 const browserRoot = path.join(engineRoot, ".playwright-browsers");
-const adminStandaloneExpected = path.join(adminRoot, ".next", "standalone", "apps", "v8-agent-os-admin", "server.js");
 const webStandaloneExpected = path.join(webRoot, ".next", "standalone", "apps", "v8-agent-os-web", "server.js");
-const adminStandaloneServer = standaloneServerFor(adminRoot, "admin");
 const webStandaloneServer = standaloneServerFor(webRoot, "web");
 const macosHelper = process.platform === "darwin"
   ? path.join(engineRoot, "runtimes", "computer_use", "drivers", "bin", `macos-${process.arch === "arm64" ? "arm64" : "x64"}`, "mac_ax_helper")
@@ -266,11 +263,10 @@ const degraded = [];
 const requiredFiles = [
   ["engine.portablePython", pythonExe],
   ["engine.sandboxHost", path.join(engineRoot, "bin", process.platform === "win32" ? "v8-sandbox-host.exe" : "v8-sandbox-host")],
-  ["admin.productionBuild", path.join(adminRoot, ".next", "BUILD_ID")],
-  ["admin.standaloneServer", adminStandaloneServer || adminStandaloneExpected],
   ["web.productionBuild", path.join(webRoot, ".next", "BUILD_ID")],
   ["web.standaloneServer", webStandaloneServer || webStandaloneExpected],
   ["shell.main", path.join(shellRoot, "electron", "main.cjs")],
+  ["desktopPet.ownedWindow", path.join(petRoot, "electron", "companion-window.cjs")],
   ["shell.builderConfig", path.join(shellRoot, "electron-builder.yml")],
   ["desktopPet.serverBundle", path.join(petRoot, "dist", "server.cjs")],
 ];

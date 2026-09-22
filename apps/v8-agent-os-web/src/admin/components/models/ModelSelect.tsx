@@ -1,0 +1,218 @@
+"use client";
+
+import Image from "next/image";
+import { AlertTriangle } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@admin/components/ui/select";
+import { useT } from "@admin/components/providers/LocaleProvider";
+import { ti } from "@admin/i18n/admin-legacy";
+import { resolveModelIcon } from "@admin/lib/models/model-assets";
+export type AdminModelSelectOption = {
+  id?: string;
+  modelRef?: string;
+  providerId?: string;
+  modelId?: string;
+  name?: string;
+  logoAsset?: string | null;
+  type?: string;
+  capabilityClass?: string | null;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
+  outputTokenMode?: "auto" | "fixed";
+  capabilities?: Record<string, boolean> | string[] | null;
+  eligibility?: {
+    status?: string;
+    selectable?: boolean;
+    shortLabel?: string;
+    reasons?: Array<{ code?: string; message?: string }>;
+  } | null;
+  provider?: {
+    id?: string;
+    name?: string | null;
+  } | null;
+  providerName?: string | null;
+  warningReason?: string | null;
+};
+const NON_TEXT_TYPES = new Set(["IMAGE", "VIDEO", "VOICE", "MUSIC", "MODEL3D", "WORKFLOW", "EMBEDDING", "RERANK", "VECTOR"]);
+const NON_TEXT_CAPABILITY_CLASSES = new Set(["media_generation", "embedding", "reranker", "rerank", "workflow", "model3d"]);
+function hasCapability(model: AdminModelSelectOption, key: string): boolean {
+  const caps = model.capabilities;
+  if (Array.isArray(caps)) return caps.map(item => String(item).toLowerCase()).includes(key.toLowerCase());
+  if (caps && typeof caps === "object") return Boolean(caps[key]);
+  return false;
+}
+function isTextGenerationOption(model: AdminModelSelectOption): boolean {
+  const type = String(model.type || "").toUpperCase();
+  if (NON_TEXT_TYPES.has(type)) return false;
+  const capabilityClass = String(model.capabilityClass || "").toLowerCase();
+  if (NON_TEXT_CAPABILITY_CLASSES.has(capabilityClass)) return false;
+  const nonTextCaps = ["image", "video", "voice", "music", "embedding", "rerank", "workflow", "model3d"];
+  const textCaps = ["chat", "text", "reasoning", "toolCalling", "vision", "multimodal"];
+  if (nonTextCaps.some(key => hasCapability(model, key)) && !textCaps.some(key => hasCapability(model, key))) {
+    return false;
+  }
+  return true;
+}
+function contextWindowInvalidReason(model: AdminModelSelectOption): string {
+  if (model.eligibility && model.eligibility.selectable === false) {
+    return String(model.eligibility.shortLabel || model.eligibility.reasons?.[0]?.message || "Model configuration is incomplete");
+  }
+  if (!isTextGenerationOption(model)) return "";
+  const contextWindow = typeof model.contextWindow === "number" ? model.contextWindow : null;
+  if (!contextWindow) return "Context window is not configured; this model cannot be used for long-context text roles";
+  if (model.outputTokenMode === "fixed" && !model.maxTokens) return "Fixed output budget is not configured";
+  return "";
+}
+function modelOptionIcon(model: AdminModelSelectOption): string | null {
+  return resolveModelIcon({
+    modelId: model.modelId || model.name || model.id,
+    providerId: model.providerId || model.provider?.id,
+    providerName: model.providerName || model.provider?.name,
+    explicitAsset: model.logoAsset || null
+  });
+}
+function modelOptionProviderMark(model: AdminModelSelectOption): string {
+  const label = String(model.provider?.name || model.providerName || model.providerId || model.modelId || model.name || "M").trim();
+  return (label.charAt(0) || "M").toUpperCase();
+}
+function ModelSelectOptionRow({
+  model,
+  label,
+  invalidReason
+}: {
+  model: AdminModelSelectOption;
+  label: string;
+  invalidReason?: string;
+}) {
+  const icon = modelOptionIcon(model);
+  return <span className="flex min-w-0 items-center gap-2">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground">
+            {icon ? <Image src={icon} alt="" width={16} height={16} className="h-4 w-4 rounded object-contain" unoptimized /> : modelOptionProviderMark(model)}
+        </span>
+        <span className="min-w-0 truncate">{label}</span>
+        {model.warningReason ? (
+          <span title={model.warningReason} aria-label={model.warningReason} className="shrink-0">
+            <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
+          </span>
+        ) : null}
+        {invalidReason ? <span className="shrink-0 text-xs text-amber-600">({invalidReason})</span> : null}
+    </span>;
+}
+type ResolvedModelValue = {
+  selectValue: string;
+  status: "empty" | "exact" | "legacy_unique" | "legacy_ambiguous" | "stale";
+  message: string;
+};
+export function modelOptionValue(model: AdminModelSelectOption): string {
+  const direct = String(model.modelRef || model.id || "").trim();
+  if (direct) return direct;
+  const providerId = String(model.providerId || model.provider?.id || model.providerName || "").trim();
+  const modelId = String(model.modelId || "").trim();
+  if (providerId && modelId) return `${providerId}::${encodeURIComponent(modelId)}`;
+  return modelId;
+}
+export function modelOptionLabel(model: AdminModelSelectOption): string {
+  const modelId = String(model.modelId || model.name || model.id || "").trim();
+  const providerName = String(model.provider?.name || model.providerName || model.providerId || "").trim();
+  return providerName ? `${modelId} (${providerName})` : modelId;
+}
+export function resolveModelSelectValue(value: string | null | undefined, models: AdminModelSelectOption[], emptyValue: string): ResolvedModelValue {
+  const raw = String(value || "").trim();
+  if (!raw || raw === emptyValue) {
+    return {
+      selectValue: emptyValue,
+      status: "empty",
+      message: ""
+    };
+  }
+  const exact = models.find(model => modelOptionValue(model) === raw);
+  if (exact) {
+    return {
+      selectValue: raw,
+      status: "exact",
+      message: ""
+    };
+  }
+  const legacyMatches = models.filter(model => String(model.modelId || "").trim() === raw);
+  if (legacyMatches.length === 1) {
+    return {
+      selectValue: modelOptionValue(legacyMatches[0]),
+      status: "legacy_unique",
+      message: `Current config uses legacy model name ${raw}; it matched one provider. Saving again will write a provider-qualified modelRef.`
+    };
+  }
+  if (legacyMatches.length > 1) {
+    return {
+      selectValue: emptyValue,
+      status: "legacy_ambiguous",
+      message: `Current config uses legacy model name ${raw}, but ${legacyMatches.length} models share that name. Select the provider-qualified model again.`
+    };
+  }
+  return {
+    selectValue: raw,
+    status: "stale",
+    message: `Configured model ${raw} is not in the model catalog. Confirm it still exists or select another model.`
+  };
+}
+export function ModelSelect({
+  models,
+  value,
+  onValueChange,
+  placeholder,
+  emptyValue = "__empty__",
+  emptyLabel,
+  emptyOutputValue = "",
+  showCompatibilityHint = true,
+  enforceTextContextWindow = true,
+  className
+}: {
+  models: AdminModelSelectOption[];
+  value?: string | null;
+  onValueChange: (value: string) => void;
+  placeholder?: string;
+  emptyValue?: string;
+  emptyLabel?: string;
+  emptyOutputValue?: string;
+  showCompatibilityHint?: boolean;
+  enforceTextContextWindow?: boolean;
+  minimumContextWindow?: number;
+  className?: string;
+}) {
+  const t = useT();
+  const resolved = resolveModelSelectValue(value, models, emptyValue);
+  const seen = new Set<string>();
+  const resolvedPlaceholder = placeholder || ti(t, "k4e769dd289");
+  const options = models.map(model => ({
+    model,
+    value: modelOptionValue(model),
+    label: modelOptionLabel(model),
+    invalidReason: enforceTextContextWindow ? contextWindowInvalidReason(model) : ""
+  })).filter(item => {
+    if (!item.value || seen.has(item.value)) return false;
+    seen.add(item.value);
+    return true;
+  });
+  const hasStaleItem = resolved.status === "stale" && resolved.selectValue && !seen.has(resolved.selectValue);
+  const resolvedModel = options.find(item => item.value === resolved.selectValue);
+  const resolvedInvalidReason = resolvedModel?.invalidReason || "";
+  return <div className={className || "space-y-2"}>
+            <Select value={resolved.selectValue} onValueChange={next => onValueChange(next === emptyValue ? emptyOutputValue : next)}>
+
+                <SelectTrigger className="w-full">
+                    <SelectValue placeholder={resolvedPlaceholder} />
+                </SelectTrigger>
+                <SelectContent>
+                    {emptyLabel ? <SelectItem value={emptyValue}>{emptyLabel}</SelectItem> : null}
+                    {hasStaleItem ? <SelectItem value={resolved.selectValue} disabled>
+                            {ti(t, "k5f8877b2d7")}{resolved.selectValue}
+                        </SelectItem> : null}
+                    {options.map(item => <SelectItem key={item.value} value={item.value} disabled={Boolean(item.invalidReason)}>
+                            <ModelSelectOptionRow model={item.model} label={item.label} invalidReason={item.invalidReason} />
+                        </SelectItem>)}
+                </SelectContent>
+            </Select>
+            {resolvedInvalidReason ? <p className="text-xs leading-5 text-amber-700">
+                    {ti(t, "ka0af8f7df5")} {resolved.selectValue} {resolvedInvalidReason}
+                </p> : null}
+            {showCompatibilityHint && resolved.message ? <p className="text-xs leading-5 text-amber-700">{resolved.message}</p> : null}
+        </div>;
+}

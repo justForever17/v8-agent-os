@@ -1,0 +1,221 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+const ts = require("typescript");
+
+const adminRoot = path.resolve(__dirname, "../..");
+
+function loadTypeScriptModule(relativePath, options = {}) {
+  const source = fs.readFileSync(path.join(adminRoot, relativePath), "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: relativePath,
+  }).outputText;
+  const moduleRecord = { exports: {} };
+  const localRequire = (specifier) => {
+    if (Object.hasOwn(options.requireOverrides || {}, specifier)) {
+      return options.requireOverrides[specifier];
+    }
+    return require(specifier);
+  };
+  const execute = new Function("require", "module", "exports", "fetch", "window", output);
+  execute(localRequire, moduleRecord, moduleRecord.exports, options.fetchImpl || global.fetch, options.browser);
+  return moduleRecord.exports;
+}
+
+function response(data) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => data,
+  };
+}
+
+test("structured server failures stay readable and retain cached data for retry", async () => {
+  const cases = [
+    [{ detail: { message: "Source is temporarily offline" } }, "Source is temporarily offline"],
+    [{ detail: "Retry this source" }, "Retry this source"],
+    [{ error: { message: "Installation interrupted" } }, "Installation interrupted"],
+    [{ detail: { code: "offline" }, error: "Try again" }, "Try again"],
+    [{ detail: [{ type: "validation" }] }, "HTTP 502"],
+  ];
+  for (const [payload, expected] of cases) {
+    let failed = true;
+    const cache = loadTypeScriptModule("src/admin/lib/admin-client-cache.ts", {
+      fetchImpl: async () => Response.json(failed ? payload : { items: ["recovered"] }, { status: failed ? 502 : 200 }),
+    });
+    const url = "/api/admin/extensions/store/skills?provider=modelscope";
+    cache.primeAdminJsonCache(url, { items: ["retained"] });
+    await assert.rejects(cache.fetchAdminJson(url, { force: true }), { message: expected });
+    assert.equal(cache.getAdminJsonSnapshot(url).error, expected);
+    assert.deepEqual(cache.peekAdminJsonCache(url), { items: ["retained"] });
+    failed = false;
+    assert.deepEqual(await cache.fetchAdminJson(url, { force: true }), { items: ["recovered"] });
+    assert.equal(cache.getAdminJsonSnapshot(url).error, null);
+  }
+});
+
+function systemBaseEnvelope(engineBaseUrl) {
+  return {
+    domain: "system-base",
+    title: "System Base",
+    summary: "",
+    data: { bridge: { engineBaseUrl } },
+    source: "config",
+    savePath: "config.json",
+    reloadRequired: false,
+    warnings: [],
+    advancedFields: [],
+  };
+}
+
+function fakeBrowser() {
+  const events = [];
+  let reloads = 0;
+  return {
+    browser: {
+      dispatchEvent(event) {
+        events.push(event.type);
+        return true;
+      },
+      location: {
+        reload() {
+          reloads += 1;
+        },
+      },
+    },
+    events,
+    reloads: () => reloads,
+  };
+}
+
+test("a normalized same-origin System Base save preserves the Admin cache and does not reload", async () => {
+  const host = fakeBrowser();
+  const nextEnvelope = systemBaseEnvelope("http://127.0.0.1:9530/v1");
+  const cache = loadTypeScriptModule("src/admin/lib/admin-client-cache.ts", { browser: host.browser });
+  const config = loadTypeScriptModule("src/admin/lib/config-registry.ts", {
+    browser: host.browser,
+    fetchImpl: async () => response(nextEnvelope),
+    requireOverrides: {
+      "@admin/i18n/admin-legacy": { ik: (key) => key },
+      "@admin/lib/admin-client-cache": cache,
+      "@admin/lib/locale": { translateCurrentClient: (value) => value },
+    },
+  });
+
+  cache.primeAdminJsonCache("/api/admin/config-registry/system-base", systemBaseEnvelope(" HTTP://127.0.0.1:9530/v1/ "));
+  cache.primeAdminJsonCache("/api/admin/models", { provider: "engine-a" });
+
+  await config.saveConfigDomain("system-base", { data: nextEnvelope.data });
+
+  assert.deepEqual(cache.peekAdminJsonCache("/api/admin/models"), { provider: "engine-a" });
+  assert.equal(cache.peekAdminJsonCache("/api/admin/config-registry/system-base").data.bridge.engineBaseUrl, "http://127.0.0.1:9530/v1");
+  assert.equal(host.reloads(), 0);
+  assert.deepEqual(host.events, []);
+});
+
+test("a real Engine origin change clears all data, notifies subscribers, and reloads once", async () => {
+  const host = fakeBrowser();
+  const nextEnvelope = systemBaseEnvelope("http://127.0.0.1:19530/v1");
+  const cache = loadTypeScriptModule("src/admin/lib/admin-client-cache.ts", { browser: host.browser });
+  const config = loadTypeScriptModule("src/admin/lib/config-registry.ts", {
+    browser: host.browser,
+    fetchImpl: async () => response(nextEnvelope),
+    requireOverrides: {
+      "@admin/i18n/admin-legacy": { ik: (key) => key },
+      "@admin/lib/admin-client-cache": cache,
+      "@admin/lib/locale": { translateCurrentClient: (value) => value },
+    },
+  });
+  let notifications = 0;
+  cache.primeAdminJsonCache("/api/admin/config-registry/system-base", systemBaseEnvelope("http://127.0.0.1:9530/v1"));
+  cache.primeAdminJsonCache("/api/admin/models", { provider: "engine-a" });
+  cache.subscribeAdminJsonCache("/api/admin/models", () => { notifications += 1; });
+
+  await config.saveConfigDomain("system-base", { data: nextEnvelope.data });
+
+  assert.equal(cache.peekAdminJsonCache("/api/admin/models"), undefined);
+  assert.equal(cache.peekAdminJsonCache("/api/admin/config-registry/system-base"), undefined);
+  assert.equal(notifications, 1);
+  assert.deepEqual(host.events, [cache.ADMIN_ENGINE_ORIGIN_CHANGED_EVENT]);
+  assert.equal(host.reloads(), 1);
+
+  assert.equal(cache.applyAdminEngineOriginChange(
+    "http://127.0.0.1:9530/v1",
+    "http://127.0.0.1:19530/v1",
+    { browser: host.browser, reload: true },
+  ), false);
+  assert.deepEqual(host.events, [cache.ADMIN_ENGINE_ORIGIN_CHANGED_EVENT]);
+  assert.equal(host.reloads(), 1);
+});
+
+test("an Engine origin change aborts and rejects an old deferred request without refilling the cache", async () => {
+  let resolveFetch;
+  let requestSignal;
+  const cache = loadTypeScriptModule("src/admin/lib/admin-client-cache.ts", {
+    fetchImpl: (_url, init) => {
+      requestSignal = init.signal;
+      return new Promise((resolve) => { resolveFetch = resolve; });
+    },
+  });
+
+  const pending = cache.fetchAdminJson("/api/admin/models");
+  assert.equal(cache.getAdminJsonSnapshot("/api/admin/models").isFetching, true);
+
+  cache.applyAdminEngineOriginChange(
+    "http://127.0.0.1:9530/v1",
+    "http://127.0.0.1:19530/v1",
+  );
+  assert.equal(requestSignal.aborted, true);
+  resolveFetch(response({ provider: "engine-a" }));
+
+  await assert.rejects(pending, (error) => error?.code === "admin_engine_origin_changed");
+  assert.equal(cache.peekAdminJsonCache("/api/admin/models"), undefined);
+  assert.equal(cache.getAdminJsonSnapshot("/api/admin/models").isFetching, false);
+});
+
+test("the Engine origin boundary is SSR-safe even when reload is requested", () => {
+  const cache = loadTypeScriptModule("src/admin/lib/admin-client-cache.ts");
+  cache.primeAdminJsonCache("/api/admin/models", { provider: "engine-a" });
+
+  assert.equal(cache.applyAdminEngineOriginChange(
+    "http://127.0.0.1:9530/v1",
+    "http://127.0.0.1:19530/v1",
+    { reload: true },
+  ), true);
+  assert.equal(cache.peekAdminJsonCache("/api/admin/models"), undefined);
+});
+
+test("an Admin JSON request times out into a settled retryable snapshot", async () => {
+  let requestSignal;
+  const cache = loadTypeScriptModule("src/admin/lib/admin-client-cache.ts", {
+    fetchImpl: (_url, init) => {
+      requestSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    },
+  });
+
+  await assert.rejects(
+    cache.fetchAdminJson("/api/admin/stats?days=7", { timeoutMs: 5 }),
+    /admin_request_timeout/,
+  );
+
+  assert.equal(requestSignal.aborted, true);
+  assert.deepEqual(cache.getAdminJsonSnapshot("/api/admin/stats?days=7"), {
+    data: undefined,
+    expiresAt: 0,
+    updatedAt: 0,
+    isFetching: false,
+    error: "admin_request_timeout",
+  });
+});

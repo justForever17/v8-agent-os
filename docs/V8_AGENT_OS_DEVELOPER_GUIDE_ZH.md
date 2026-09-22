@@ -26,11 +26,10 @@ V8OS 当前主线是：
 `v8-agent-os` 包含：
 
 - `apps/v8-agent-os-engine`：权威运行核心；
-- `apps/v8-agent-os-admin`：按需配置、治理与诊断控制台；
-- `apps/v8-agent-os-web`：桌面主聊天/工作区；
+- `apps/v8-agent-os-web`：统一网页宿主，包含聊天、工作区及 `/admin` 配置页；管理模块位于 `src/admin`，管理 API 位于 `/api/admin`；
 - `apps/v8-agent-os-phone`：配对后的远程交互面；
 - `apps/v8-agent-os-shell`：Electron 桌面壳、托盘和本机控制；
-- `apps/v8-agent-os-desktop-pet`：受 Shell 管理的桌宠；
+- `apps/v8-agent-os-desktop-pet`：Shell 管理的 companion 窗口与可替换视觉层；不包含独立 Electron 主程序；
 - `apps/v8-agent-os-cli`：本机服务、预览、诊断和会话 CLI；
 - `packages/session-realtime`：共享实时/历史契约。
 
@@ -285,9 +284,9 @@ Storage Retention：
 
 本机命令：
 
-- `v8os start`：默认 Engine + Web 服务，不打开 Shell；Admin 通过指定组件或桌面配置入口按需启动；
+- `v8os start`：默认 Engine + Product Web 服务，不打开 Shell；Admin 是同一宿主的可选配置页；
 - `v8os preview`：构建缺失产物并启动完整桌面预览；
-- `v8os preview --rebuild`：停止当前源码树拥有的 Shell/Admin/Web/Engine 后重建并重启；
+- `v8os preview --rebuild`：停止当前源码树拥有的 Shell/Web/Engine 后重建并重启；
 - 裸 bootstrap：依赖准备与服务启动，不是桌面安装包。
 
 ## 14. 排查顺序

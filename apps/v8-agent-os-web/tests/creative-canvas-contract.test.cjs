@@ -938,7 +938,7 @@ test("canvas source catalog includes unsent uploads and projects Admin preview U
   const serialization = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/serialization.ts");
   const uploadRoute = read("apps/v8-agent-os-web/src/app/api/upload/route.ts");
   const webSources = read("apps/v8-agent-os-web/src/app/api/sources/route.ts");
-  const adminSources = read("apps/v8-agent-os-admin/src/app/api/client/sources/route.ts");
+  const adminSources = read("apps/v8-agent-os-web/src/app/api/admin/client/sources/route.ts");
   const engineSources = read("apps/v8-agent-os-engine/api/session_workflow_routes.py");
 
   assert.match(canvas, /params\.set\("includeUnbound", "true"\)/);

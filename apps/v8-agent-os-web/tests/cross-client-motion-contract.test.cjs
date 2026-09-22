@@ -44,7 +44,7 @@ test("Phone drawers defer Modal unmount until their symmetric exit completes", (
 });
 
 test("Admin sidebar removes collapsed navigation from focus and pointer targeting", () => {
-  const sidebar = readText("apps/v8-agent-os-admin/src/components/layout/Sidebar.tsx");
+  const sidebar = readText("apps/v8-agent-os-web/src/admin/components/layout/Sidebar.tsx");
 
   // The compact sidebar no longer retains an animated hidden subtree.
   // Unmounting is the interaction boundary; an opacity-only replacement fails.

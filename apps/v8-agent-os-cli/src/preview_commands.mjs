@@ -4,20 +4,14 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
-import { ADMIN_DIR, DEFAULT_PORTS, LOG_DIR, REPO_ROOT, STATE_ROOT, WEB_DIR } from "./paths.mjs";
+import { DEFAULT_PORTS, LOG_DIR, REPO_ROOT, STATE_ROOT, WEB_DIR } from "./paths.mjs";
 import { startCoreComponents as startComponents, stopCoreComponents as stopComponents } from "./core_control.mjs";
 import { isPidAlive } from "./process_state.mjs";
 
-export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "admin", "web", "engine"];
+export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "web", "engine"];
 export const SHELL_RESTART_LEASE_PATH = path.join(STATE_ROOT, "runtime", "shell-restart.json");
 
 export const PREVIEW_NEXT_APPS = {
-  admin: {
-    app: "admin",
-    label: "Admin",
-    dir: ADMIN_DIR,
-    port: DEFAULT_PORTS.admin,
-  },
   web: {
     app: "web",
     label: "Web",
@@ -110,11 +104,9 @@ export function validateShellControlDescriptor(descriptor, options = {}) {
   const notBeforeMs = Number(options.notBeforeMs) || 0;
   const pidIsAlive = options.pidIsAlive || isPidAlive;
   const readySurfaceKinds = new Set(["web", "admin", "admin-login"]);
-  return descriptor?.version === 1
+  return descriptor?.version === 2
     && Number.isInteger(pid)
     && pid > 0
-    && typeof descriptor?.endpoint === "string"
-    && descriptor.endpoint.length > 0
     && typeof descriptor?.token === "string"
     && descriptor.token.length >= 32
     && Number.isFinite(createdAtMs)
@@ -217,7 +209,7 @@ export async function commandPreview(args = {}) {
   const startedByThisAttempt = [];
   try {
     const rebuildStopResults = rebuildStopComponentIds.length > 0
-      ? await stopComponents(rebuildStopComponentIds, { stopVerifiedPortOwners: ["admin", "web", "engine"] })
+      ? await stopComponents(rebuildStopComponentIds, { stopVerifiedPortOwners: ["web", "engine"] })
       : [];
     const stopFailures = rebuildStopResults.filter((item) => item.status === "stop_failed");
     if (stopFailures.length > 0) {

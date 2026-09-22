@@ -27,7 +27,9 @@ function createResidentSurfaces({ baseContents, createAdminView, attachView, get
   }
   async function open(url, { resume = false, sessionId } = {}) {
     const target = new URL(url);
-    const kind = target.origin === webOrigin() ? 'web' : target.origin === adminOrigin() ? 'admin' : null;
+    const adminRoute = target.pathname === '/login' || target.pathname === '/admin' || target.pathname.startsWith('/admin/');
+    const kind = adminRoute && target.origin === adminOrigin() ? 'admin'
+      : target.origin === webOrigin() ? 'web' : null;
     if (!kind || target.username || target.password) throw new Error('untrusted_surface_url');
     const entry = get(kind);
     if (sessionId) entry.pendingSession = sessionId;

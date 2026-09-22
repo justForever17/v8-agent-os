@@ -1,6 +1,7 @@
 "use client";
 
 import { type ReactNode, useSyncExternalStore } from "react";
+import { usePathname } from "next/navigation";
 import {
     ProductShellTopbar,
     ProductSurfaceSwitcher,
@@ -73,4 +74,8 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
     );
 }
 
-export const Topbar = WebTopbar;
+export function Topbar() {
+    const pathname = usePathname();
+    if (pathname === "/login" || pathname === "/admin" || pathname?.startsWith("/admin/")) return null;
+    return <WebTopbar />;
+}

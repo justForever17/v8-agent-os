@@ -31,14 +31,14 @@ if [[ "$packaged_node_version" != "$node_version" ]]; then
   echo "Packaged Electron embeds Node $packaged_node_version, but the legacy CPU harness is pinned to $node_version" >&2
   exit 1
 fi
-admin_root="$resource_root/apps/v8-agent-os-admin"
+admin_root="$resource_root/apps/v8-agent-os-web"
 engine_root="$resource_root/apps/v8-agent-os-engine"
 engine_python="$resource_root/apps/v8-agent-os-engine/.python/bin/python3"
 test -x "$engine_python"
 standalone_root="$admin_root/.next/standalone"
 server_path=""
 for candidate in \
-  "$standalone_root/apps/v8-agent-os-admin/server.js" \
+  "$standalone_root/apps/v8-agent-os-web/server.js" \
   "$standalone_root/server.js"; do
   if [[ -f "$candidate" ]]; then
     server_path="$candidate"

@@ -51,21 +51,6 @@ extraResources:
     to: v8os/apps/v8-agent-os-engine/.plugin-node-runtime/npm/node_modules
     filter:
       - "**/*"
-  - from: ../../apps/v8-agent-os-admin
-    to: v8os/apps/v8-agent-os-admin
-    filter:
-      - "**/*"
-      - "!.next/dev/**"
-      - "!.next/cache/**"
-      - "!.next/diagnostics/**"
-      - "!logs/**"
-      - "!cache/**"
-      - "!node_modules/.cache/**"
-      - "!node_modules/**/.cache/**"
-      - "!**/public/user/**"
-      - "!**/public/Avatar/**/*"
-      - "**/public/Avatar/default-supervisor.svg"
-      - "!*.log"
   - from: ../../apps/v8-agent-os-web
     to: v8os/apps/v8-agent-os-web
     filter:
@@ -81,6 +66,8 @@ extraResources:
       - "!tests/MOTION_TEST_MATRIX.md"
       - "!tests/UI_PATCH_PROJECT_TEST_MATRIX.md"
       - "!tests/CREATIVE_CANVAS_TEST_MATRIX.md"
+      - "!public/user/**"
+      - "!public/Avatar/avatar-*"
   - from: ../../apps/v8-agent-os-desktop-pet
     to: v8os/apps/v8-agent-os-desktop-pet
     filter:
@@ -97,9 +84,7 @@ extraResources:
       - electron-launcher.mjs
       - command_runtime_probe.py
       - feature_pack_runtime_probe.py
-      - launch-desktop-pet.mjs
       - launch-shell.mjs
-      - spawn-detached-electron.mjs
   - from: ../../packages
     to: v8os/packages
     filter:

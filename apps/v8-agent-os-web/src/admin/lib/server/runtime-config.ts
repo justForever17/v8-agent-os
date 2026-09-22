@@ -1,0 +1,607 @@
+import { resolveProductOrigin } from "@/lib/server/product-origin";
+import crypto from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import {
+    readCanonicalAdminRuntimeConfig,
+    readCanonicalBridge,
+    type CanonicalConfig,
+} from "@admin/lib/server/bridge-config";
+
+type DesktopLiveConfig = {
+    enabled?: boolean;
+    maxWidth?: number;
+    maxHeight?: number;
+    targetFps?: number;
+    idleReleaseSeconds?: number;
+    keepWarmStandby?: boolean;
+    autoWarmOnStatus?: boolean;
+    captureDisplay?: string;
+    singleViewerOnly?: boolean;
+    audioEnabled?: boolean;
+    audioSource?: string;
+    audioSampleRate?: number;
+    audioChannels?: number;
+    iceServers?: Array<{
+        urls?: string | string[];
+        username?: string;
+        credential?: string;
+    }>;
+};
+
+type SystemBaseConfig = {
+    bridge?: {
+        engineBaseUrl?: string;
+        engineWsBaseUrl?: string;
+        adminBaseUrl?: string;
+        desktopLiveBridgeBaseUrl?: string;
+        internalSecret?: string;
+    };
+    channels?: {
+        enginePython?: string;
+    };
+    desktopLive?: DesktopLiveConfig;
+    remoteLink?: RemoteLinkConfig;
+};
+
+type RemoteLinkProfile = {
+    id?: string;
+    kind?: string;
+    label?: string;
+    enabled?: boolean;
+    adminBaseUrl?: string;
+    engineBaseUrl?: string;
+    peerBaseUrl?: string;
+    phoneBaseUrl?: string;
+};
+
+type ClientConnectionEndpoint = {
+    id: string;
+    kind: "lan" | "lan_ipv6" | "wireguard" | "tailscale" | "headscale" | "cloudflare_tunnel" | "custom_vpn" | "manual_url";
+    baseUrl: string;
+    scope: "local" | "remote";
+    priority: number;
+    enabled: boolean;
+};
+
+type RemoteLinkConfig = {
+    enabled?: boolean;
+    activeProfileId?: string;
+    phoneGateway?: { enabled?: boolean; port?: number; publicBaseUrl?: string };
+    transportProfiles?: RemoteLinkProfile[];
+    meshProviders?: Array<{
+        id?: string;
+        kind?: string;
+        enabled?: boolean;
+        mode?: string;
+        controlUrl?: string;
+        namespace?: string;
+        allowRouteMutation?: boolean;
+    }>;
+};
+
+const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
+const DEFAULT_DESKTOP_LIVE_BRIDGE_BASE_URL = "http://127.0.0.1:8011/v1";
+const CREATIVE_MEDIA_GOVERNANCE_SECRET_FILE = "creative-media-admin-governance-secret";
+const NON_ROUTABLE_CLIENT_HOSTS = new Set([
+    "0.0.0.0",
+    "127.0.0.1",
+    "localhost",
+    "[::]",
+    "::",
+    "[::1]",
+    "::1",
+]);
+
+function inferEnginePythonPath() {
+    const repoRoots = [
+        path.resolve(process.cwd(), "..", "v8-agent-os-engine"),
+        path.resolve(process.cwd(), "..", "engine"),
+    ];
+    const candidates = repoRoots.flatMap((repoRoot) => (
+        process.platform === "win32"
+            ? [
+                path.join(repoRoot, ".venv", "Scripts", "python.exe"),
+                path.join(repoRoot, "venv", "Scripts", "python.exe"),
+            ]
+            : [
+                path.join(repoRoot, ".venv", "bin", "python"),
+                path.join(repoRoot, "venv", "bin", "python"),
+            ]
+    ));
+
+    const detected = candidates.find((candidate) => fs.existsSync(candidate));
+    return detected || "";
+}
+
+export function resolveConfigDomain<T>(domain: keyof CanonicalConfig, fallback: T): T {
+    const config = readCanonicalAdminRuntimeConfig();
+    const payload = config[domain];
+    if (payload && typeof payload === "object") {
+        return payload as T;
+    }
+    return fallback;
+}
+
+function normalizeUrl(value: unknown, fallback: string) {
+    const normalized = String(value || "").trim() || fallback;
+    return normalized.replace(/\/$/, "");
+}
+
+function getBridge() {
+    return readCanonicalBridge();
+}
+
+export function resolveEngineBaseUrl() {
+    const value = normalizeUrl(process.env.V8_ENGINE_BASE_URL || getBridge().engineBaseUrl, DEFAULT_ENGINE_BASE_URL);
+    const url = new URL(value);
+    if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+        || url.username || url.password || url.search || url.hash || !["", "/", "/v1"].includes(url.pathname)) {
+        throw new Error("Local Engine URL must be a loopback origin");
+    }
+    return `${url.origin}/v1`;
+}
+
+export function resolveEngineOrigin() {
+    return resolveEngineBaseUrl().replace(/\/v1$/, "");
+}
+
+export function resolveEngineWsBaseUrl() {
+    const explicit = String(getBridge().engineWsBaseUrl || "").trim();
+    if (explicit) {
+        return explicit.replace(/\/$/, "");
+    }
+    const engineBase = resolveEngineBaseUrl();
+    if (engineBase.startsWith("https://")) return engineBase.replace(/^https:\/\//, "wss://");
+    if (engineBase.startsWith("http://")) return engineBase.replace(/^http:\/\//, "ws://");
+    return engineBase;
+}
+
+export function resolveAdminApiBaseUrl() {
+    return `${resolveProductOrigin()}/api/admin`;
+}
+
+export function resolveDesktopLiveBridgeBaseUrl() {
+    return normalizeUrl(getBridge().desktopLiveBridgeBaseUrl, DEFAULT_DESKTOP_LIVE_BRIDGE_BASE_URL);
+}
+
+export function resolveAdminPublicBaseUrl() {
+    return resolveProductOrigin();
+}
+
+function stripApiSuffix(value: unknown) {
+    const raw = String(value || "").trim().replace(/\/$/, "");
+    if (raw.endsWith("/api/admin")) return raw.slice(0, -10);
+    if (raw.endsWith("/api")) return raw.slice(0, -4);
+    if (raw.endsWith("/v1")) return raw.slice(0, -3);
+    return raw;
+}
+
+function withApiSuffix(value: unknown, suffix: string) {
+    const base = stripApiSuffix(value);
+    return base ? `${base}/${suffix.replace(/^\/+/, "")}` : "";
+}
+
+function normalizeTransportKind(value: unknown) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+    return ["manual_url", "lan", "wireguard", "tailscale", "headscale", "cloudflare_tunnel", "custom_vpn"].includes(normalized)
+        ? normalized
+        : "manual_url";
+}
+
+function isStableCloudflareOrigin(value: unknown) {
+    const normalized = stripApiSuffix(value);
+    if (!normalized) return false;
+    try {
+        const parsed = new URL(normalized);
+        const hostname = parsed.hostname.toLowerCase();
+        return parsed.protocol === "https:"
+            && Boolean(hostname)
+            && hostname !== "trycloudflare.com"
+            && !hostname.endsWith(".trycloudflare.com");
+    } catch {
+        return false;
+    }
+}
+
+function buildRemoteLinkContext(requestOrigin?: string) {
+    const config = readCanonicalAdminRuntimeConfig();
+    const systemBase = (config.systemBase || {}) as SystemBaseConfig;
+    const remoteLink = systemBase.remoteLink || {};
+    const adminBaseUrl = stripApiSuffix(requestOrigin || resolveAdminApiBaseUrl());
+    const engineBaseUrl = stripApiSuffix(resolveEngineBaseUrl());
+    const defaultProfiles: RemoteLinkProfile[] = [
+        { id: "manual-local", kind: "manual_url", label: "Manual / Local", enabled: true, adminBaseUrl, engineBaseUrl, peerBaseUrl: engineBaseUrl },
+        { id: "lan", kind: "lan", label: "LAN", enabled: true },
+        { id: "wireguard", kind: "wireguard", label: "WireGuard", enabled: true },
+        { id: "tailscale", kind: "tailscale", label: "Tailscale", enabled: true },
+        { id: "headscale", kind: "headscale", label: "Headscale", enabled: true },
+        { id: "cloudflare-tunnel", kind: "cloudflare_tunnel", label: "Cloudflare Tunnel", enabled: true },
+        { id: "custom-vpn", kind: "custom_vpn", label: "Custom VPN", enabled: true },
+    ];
+    const profilesById = new Map<string, RemoteLinkProfile>();
+    defaultProfiles.forEach((profile) => profile.id && profilesById.set(profile.id, profile));
+    (remoteLink.transportProfiles || []).forEach((profile) => {
+        const id = String(profile?.id || "").trim();
+        if (!id) return;
+        const merged = { ...(profilesById.get(id) || {}), ...profile };
+        merged.kind = normalizeTransportKind(merged.kind);
+        merged.adminBaseUrl = stripApiSuffix(merged.adminBaseUrl || "");
+        merged.engineBaseUrl = stripApiSuffix(merged.engineBaseUrl || "");
+        merged.peerBaseUrl = stripApiSuffix(merged.peerBaseUrl || "");
+        profilesById.set(id, merged);
+    });
+    const profiles = Array.from(profilesById.values());
+    const activeProfileId = String(remoteLink.activeProfileId || "manual-local");
+    const activeProfile = profiles.find((profile) => profile.id === activeProfileId) || profiles[0] || {};
+    const transportKind = normalizeTransportKind(activeProfile.kind);
+    return {
+        requestAdminBaseUrl: adminBaseUrl,
+        engineBaseUrl,
+        profiles,
+        activeProfile,
+        activeProfileId,
+        transportKind,
+        remoteLink,
+    };
+}
+
+function isTailscaleIpv4(address: string) {
+    return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address);
+}
+
+function formatUrlHost(address: string) {
+    const normalized = String(address || "").trim().replace(/^\[/, "").replace(/\]$/, "");
+    return normalized.includes(":") ? `[${normalized}]` : normalized;
+}
+
+function isUsableLocalAddress(entry: os.NetworkInterfaceInfo) {
+    const address = String(entry.address || "").trim();
+    if (!address || entry.internal) return false;
+    if (entry.family === "IPv4") return !address.startsWith("169.254.");
+    if (entry.family === "IPv6") {
+        const normalized = address.toLowerCase().split("%")[0] || "";
+        return Boolean(normalized && normalized !== "::" && normalized !== "::1" && !normalized.startsWith("fe80:"));
+    }
+    return false;
+}
+
+function resolveAdminOriginForAddress(address: string, requestOrigin?: string) {
+    let protocol = "http:";
+    let port = new URL(resolveProductOrigin()).port || "80";
+    try {
+        const parsed = new URL(String(requestOrigin || resolveAdminPublicBaseUrl() || ""));
+        protocol = parsed.protocol || protocol;
+        port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    } catch {
+        // Keep defaults.
+    }
+    const suffix = port && !["80", "443"].includes(port) ? `:${port}` : "";
+    return `${protocol}//${formatUrlHost(address)}${suffix}`;
+}
+
+function buildClientConnectionEndpoints(requestOrigin: string | undefined, profiles: RemoteLinkProfile[]) {
+    const endpoints: ClientConnectionEndpoint[] = [];
+    const seen = new Set<string>();
+    const push = (endpoint: ClientConnectionEndpoint) => {
+        const baseUrl = stripApiSuffix(endpoint.baseUrl);
+        if (!baseUrl || seen.has(baseUrl)) return;
+        seen.add(baseUrl);
+        endpoints.push({ ...endpoint, baseUrl });
+    };
+
+    Object.values(os.networkInterfaces())
+        .flat()
+        .filter((entry): entry is os.NetworkInterfaceInfo => Boolean(entry && isUsableLocalAddress(entry)))
+        .forEach((entry) => {
+            const kind = entry.family === "IPv6" ? "lan_ipv6" : "lan";
+            push({
+                id: `${kind}:${entry.address}`,
+                kind,
+                baseUrl: resolveAdminOriginForAddress(entry.address, requestOrigin),
+                scope: "local",
+                priority: kind === "lan" ? 10 : 11,
+                enabled: true,
+            });
+        });
+
+    profiles.forEach((profile, index) => {
+        if (profile.enabled === false) return;
+        const baseUrl = stripApiSuffix(profile.adminBaseUrl || "");
+        if (!baseUrl) return;
+        const kind = normalizeTransportKind(profile.kind) as ClientConnectionEndpoint["kind"];
+        if (kind === "cloudflare_tunnel" && !isStableCloudflareOrigin(baseUrl)) return;
+        push({
+            id: String(profile.id || `${kind}:${index}`),
+            kind,
+            baseUrl,
+            scope: kind === "lan" ? "local" : "remote",
+            priority: kind === "wireguard" ? 20
+                : kind === "tailscale" || kind === "headscale" ? 30
+                    : kind === "cloudflare_tunnel" ? 40
+                        : kind === "custom_vpn" ? 50 : 60,
+            enabled: true,
+        });
+    });
+
+    return endpoints.sort((left, right) => left.priority - right.priority);
+}
+
+function resolveActiveRemoteLinkAdminBaseUrl(requestOrigin?: string) {
+    const context = buildRemoteLinkContext(requestOrigin);
+    const activeProfile = context.activeProfile || {};
+    if (activeProfile.enabled === false) {
+        return "";
+    }
+    const configured = resolveReachableClientSurfaceOrigin(stripApiSuffix(activeProfile.adminBaseUrl || ""));
+    const kind = normalizeTransportKind(activeProfile.kind);
+    if (configured && (kind !== "cloudflare_tunnel" || isStableCloudflareOrigin(configured))) {
+        return configured;
+    }
+    if (kind === "lan" || kind === "wireguard" || kind === "tailscale" || kind === "headscale" || kind === "custom_vpn") {
+        return resolveLocalNetworkAdminOrigin(requestOrigin, kind);
+    }
+    return "";
+}
+
+export type ClientLinkManifest = {
+    ok: boolean; kind: string; version: string; instanceId: string; serverId: string;
+    ownerMode: string; clientGateway: string; transportKind: string; activeProfileId: string;
+    admin: { baseUrl: string; apiBaseUrl: string };
+    phoneGateway?: { enabled: boolean; port: number; publicBaseUrl: string };
+    pairing?: { available: boolean; baseUrl: string; reason: string; reachability: "not_verified" };
+    profiles: Array<{ id: string; kind: string; label: string; enabled: boolean; adminBaseUrl: string; phoneBaseUrl?: string; migrationRequired?: boolean }>;
+    endpoints: ClientConnectionEndpoint[];
+    capabilities: Record<string, boolean>; warnings: string[];
+    diagnostics: { readOnly: boolean; warnings: string[] };
+};
+
+export async function buildAdminLinkManifest(requestOrigin?: string): Promise<ClientLinkManifest> {
+    // The display keeps historical wire field names, while Engine owns identity
+    // and the explicit Phone endpoint catalog.
+    const { engineIdentity } = await import("@admin/lib/server/engine-identity");
+    return engineIdentity<ClientLinkManifest>("/link-manifest");
+}
+
+export async function buildClientLinkManifest(requestOrigin?: string) {
+    return buildAdminLinkManifest(requestOrigin);
+}
+
+export function isReachableClientSurfaceOrigin(baseUrl: string) {
+    const normalized = String(baseUrl || "").trim();
+    if (!normalized) {
+        return false;
+    }
+    try {
+        const parsed = new URL(normalized);
+        return !NON_ROUTABLE_CLIENT_HOSTS.has(parsed.hostname || "");
+    } catch {
+        return false;
+    }
+}
+
+export function resolveReachableClientSurfaceOrigin(candidate: string) {
+    const normalized = String(candidate || "").trim().replace(/\/$/, "");
+    return isReachableClientSurfaceOrigin(normalized) ? normalized : "";
+}
+
+function pickForwardedHeaderValue(value: string | null | undefined) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return "";
+    }
+    return normalized.split(",")[0]?.trim() || "";
+}
+
+export function resolveRequestOrigin(request: { headers?: Headers | HeadersInit | null; url?: string | null }) {
+    const requestUrl = String(request?.url || "").trim();
+    const fallback = (() => {
+        try {
+            return new URL(requestUrl).origin;
+        } catch {
+            return "";
+        }
+    })();
+    const headers = new Headers(request?.headers || undefined);
+    const forwardedHost = pickForwardedHeaderValue(headers.get("x-forwarded-host"));
+    const host = forwardedHost || pickForwardedHeaderValue(headers.get("host"));
+    if (!host) return fallback;
+    const fallbackProtocol = fallback.startsWith("https://") ? "https" : "http";
+    const protocol = normalizeForwardedProtocol(headers.get("x-forwarded-proto"), fallbackProtocol);
+    return `${protocol}://${host}`;
+}
+
+function normalizeForwardedProtocol(value: string | null | undefined, fallback = "http") {
+    const normalized = pickForwardedHeaderValue(value).toLowerCase();
+    if (normalized === "https" || normalized === "http") {
+        return normalized;
+    }
+    return fallback;
+}
+
+export function resolveReachableClientSurfaceOriginFromRequest(requestUrl: string) {
+    try {
+        return resolveReachableClientSurfaceOrigin(new URL(String(requestUrl || "")).origin);
+    } catch {
+        return "";
+    }
+}
+
+export function resolveClientSurfaceOriginFromRequest(
+    request:
+        | {
+            headers?: Headers | HeadersInit | null;
+            url?: string | null;
+        }
+        | string,
+    options?: {
+        allowTrustedHeader?: boolean;
+    },
+) {
+    const requestUrl = typeof request === "string"
+        ? request
+        : String(request?.url || "").trim();
+    const fallbackProtocol = (() => {
+        try {
+            const parsed = new URL(String(requestUrl || ""));
+            return parsed.protocol === "https:" ? "https" : "http";
+        } catch {
+            return "http";
+        }
+    })();
+
+    const requestHeaders = typeof request === "string"
+        ? null
+        : new Headers(request?.headers || undefined);
+
+    if (requestHeaders) {
+        if (options?.allowTrustedHeader !== false) {
+            const trustedOrigin = resolveReachableClientSurfaceOrigin(
+                pickForwardedHeaderValue(requestHeaders.get("x-v8-client-surface-origin")),
+            );
+            if (trustedOrigin) {
+                return trustedOrigin;
+            }
+        }
+
+        const forwardedHost = pickForwardedHeaderValue(requestHeaders.get("x-forwarded-host"));
+        if (forwardedHost) {
+            const forwardedProtocol = normalizeForwardedProtocol(
+                requestHeaders.get("x-forwarded-proto"),
+                fallbackProtocol,
+            );
+            const forwardedOrigin = resolveReachableClientSurfaceOrigin(`${forwardedProtocol}://${forwardedHost}`);
+            if (forwardedOrigin) {
+                return forwardedOrigin;
+            }
+        }
+
+        const host = pickForwardedHeaderValue(requestHeaders.get("host"));
+        if (host) {
+            const hostProtocol = normalizeForwardedProtocol(
+                requestHeaders.get("x-forwarded-proto"),
+                fallbackProtocol,
+            );
+            const hostOrigin = resolveReachableClientSurfaceOrigin(`${hostProtocol}://${host}`);
+            if (hostOrigin) {
+                return hostOrigin;
+            }
+        }
+    }
+
+    return resolveReachableClientSurfaceOriginFromRequest(requestUrl);
+}
+
+export function resolveReachableAdminPublicBaseUrl() {
+    const publicBase = resolveAdminPublicBaseUrl();
+    return resolveReachableClientSurfaceOrigin(publicBase);
+}
+
+function isPrivateIpv4(address: string) {
+    if (/^10\./.test(address) || /^192\.168\./.test(address)) {
+        return true;
+    }
+    const match = address.match(/^172\.(\d+)\./);
+    if (match) {
+        const second = Number(match[1]);
+        return second >= 16 && second <= 31;
+    }
+    return false;
+}
+
+function scoreLocalIpv4(address: string, preferredKind?: string) {
+    const normalizedKind = normalizeTransportKind(preferredKind);
+    if ((normalizedKind === "tailscale" || normalizedKind === "headscale") && isTailscaleIpv4(address)) {
+        return 200;
+    }
+    if (normalizedKind === "lan" && isPrivateIpv4(address)) {
+        return 200;
+    }
+    if (isPrivateIpv4(address)) return 100;
+    if (isTailscaleIpv4(address)) return 80;
+    if (/^198\.(1[89])\./.test(address)) return 20;
+    return 50;
+}
+
+function scoreLocalAddress(entry: os.NetworkInterfaceInfo, preferredKind?: string) {
+    if (entry.family === "IPv4") return scoreLocalIpv4(entry.address, preferredKind);
+    if (entry.family === "IPv6") {
+        const kind = normalizeTransportKind(preferredKind);
+        return kind === "lan" ? 95 : 75;
+    }
+    return 0;
+}
+
+function resolveLocalNetworkAdminOrigin(requestOrigin?: string, preferredKind?: string) {
+    let protocol = "http:";
+    let port = new URL(resolveProductOrigin()).port || "80";
+    try {
+        const parsed = new URL(String(requestOrigin || resolveAdminPublicBaseUrl() || ""));
+        protocol = parsed.protocol || protocol;
+        port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    } catch {
+        // Keep defaults.
+    }
+
+    const candidates = Object.values(os.networkInterfaces())
+        .flat()
+        .filter((entry): entry is os.NetworkInterfaceInfo => Boolean(entry))
+        .filter(isUsableLocalAddress)
+        .sort((left, right) => scoreLocalAddress(right, preferredKind) - scoreLocalAddress(left, preferredKind));
+
+    const selected = candidates[0];
+    if (!selected) {
+        return "";
+    }
+    const suffix = port && !["80", "443"].includes(port) ? `:${port}` : "";
+    return `${protocol}//${formatUrlHost(selected.address)}${suffix}`;
+}
+
+export function resolveInternalSecret() {
+    return String(getBridge().internalSecret || "").trim();
+}
+
+export function resolveCreativeMediaGovernanceSecret() {
+    const stateRoot = path.resolve(
+        String(process.env.V8_AGENT_OS_HOME || "").trim()
+        || path.join(os.homedir(), ".v8-agent-os"),
+    );
+    const secretsDir = path.join(stateRoot, "secrets");
+    const secretFile = path.join(secretsDir, CREATIVE_MEDIA_GOVERNANCE_SECRET_FILE);
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+
+    let secret = fs.existsSync(secretFile) ? fs.readFileSync(secretFile, "utf8").trim() : "";
+    if (!secret) {
+        const candidate = crypto.randomBytes(48).toString("base64url");
+        try {
+            fs.writeFileSync(secretFile, `${candidate}\n`, {
+                encoding: "utf8",
+                flag: "wx",
+                mode: 0o600,
+            });
+            secret = candidate;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            secret = fs.readFileSync(secretFile, "utf8").trim();
+        }
+    }
+    if (secret.length < 32) {
+        throw new Error("Creative Media Admin governance capability is unavailable");
+    }
+    if (process.platform !== "win32") {
+        fs.chmodSync(secretFile, 0o600);
+    }
+    return secret;
+}
+
+export function resolveEnginePythonPath() {
+    const config = readCanonicalAdminRuntimeConfig();
+    const explicit = String(config.systemBase?.channels?.enginePython || "").trim();
+    return explicit || inferEnginePythonPath();
+}
+
+export function resolveDesktopLiveConfig(): DesktopLiveConfig {
+    const config = readCanonicalAdminRuntimeConfig();
+    return config.systemBase?.desktopLive || {};
+}

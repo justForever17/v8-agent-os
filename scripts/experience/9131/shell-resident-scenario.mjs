@@ -44,10 +44,11 @@ export async function verifyResidentRoundTrips({web,admin,app,out,baseline,admin
       contents:webContents.getAllWebContents().map(w=>({id:w.id,origin:w.getURL().startsWith('http')?new URL(w.getURL()).origin:'startup',destroyed:w.isDestroyed()})),
       windows:BrowserWindow.getAllWindows().length,
     }));
-    assert.equal(sizes.windows,1);assert.equal(sizes.contents.filter(x=>['http://127.0.0.1:9527','http://127.0.0.1:9528'].includes(x.origin)).length,2);
+    const productOrigins = new Set([new URL(web.url()).origin, new URL(admin.url()).origin]);
+    assert.equal(sizes.windows,1);assert.equal(sizes.contents.filter(x=>productOrigins.has(x.origin)).length,2);
     const sorted=observations.map(x=>x.buttonToTwoFramesMs).sort((a,b)=>a-b);
     const result={status:'PASS',rounds:observations.length,documentDraftSelectionScrollPreserved:true,sizes,
-      buttonToTwoFrames:{medianMs:(sorted[14]+sorted[15])/2,p95Ms:sorted[Math.ceil(sorted.length*.95)-1],samples:sorted},
+      buttonToTwoFrames:{medianMs:(sorted[Math.floor((sorted.length-1)/2)]+sorted[Math.floor(sorted.length/2)])/2,p95Ms:sorted[Math.ceil(sorted.length*.95)-1],samples:sorted},
       qualification:'Actual Electron buttons → IPC surface activation → two destination animation frames. Includes test synchronization; no baseline/INP/model performance claim.',observations};
     fs.writeFileSync(filename,JSON.stringify(result,null,2));
     await web.screenshot({path:path.join(out,'resident-rounds-web.png')});

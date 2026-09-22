@@ -8,16 +8,11 @@ const {
   softwareRenderingRequested,
 } = require('../lib/gpu-recovery.cjs');
 
-const DESKTOP_PET_RUNTIME_MODE = 'desktop-pet';
-const runtimeMode = String(process.env.V8OS_DESKTOP_RUNTIME_MODE || '').trim();
 const softwareRendering = softwareRenderingRequested(process.argv, process.env);
 const repoRoot = process.env.V8_REPO_ROOT || (app.isPackaged
   ? path.join(process.resourcesPath, 'v8os')
   : path.resolve(__dirname, '..', '..', '..'));
 
-if (runtimeMode && runtimeMode !== DESKTOP_PET_RUNTIME_MODE) {
-  throw new Error(`Unsupported V8OS desktop runtime mode: ${runtimeMode}`);
-}
 
 function isolatedUserDataRoot() {
   const configured = String(process.env.V8OS_DESKTOP_ISOLATED_USER_DATA_ROOT || '').trim();
@@ -36,12 +31,8 @@ function isolatedUserDataRoot() {
 }
 
 const isolatedRoot = isolatedUserDataRoot();
-if (runtimeMode === DESKTOP_PET_RUNTIME_MODE) app.setName('V8 Agent OS Desktop Pet');
 if (isolatedRoot) {
-  const modeDir = path.join(
-    isolatedRoot,
-    runtimeMode === DESKTOP_PET_RUNTIME_MODE ? 'desktop-pet' : 'shell',
-  );
+  const modeDir = path.join(isolatedRoot, 'shell');
   const sessionDataDir = path.join(modeDir, 'Session Data');
   fs.mkdirSync(sessionDataDir, { recursive: true, mode: 0o700 });
   app.setPath('userData', modeDir);
@@ -85,20 +76,4 @@ app.on('child-process-gone', (_event, details) => {
 app.on('before-quit', () => gpuRecovery.disable());
 app.on('v8os-governed-shutdown-started', () => gpuRecovery.disable());
 
-if (runtimeMode === DESKTOP_PET_RUNTIME_MODE) {
-  const desktopPetDir = process.env.V8_DESKTOP_PET_DIR
-    || path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet');
-  const desktopPetMain = path.join(desktopPetDir, 'electron', 'main.cjs');
-
-  process.env.V8_DESKTOP_PET_DIR = desktopPetDir;
-  if (!isolatedRoot) {
-    const desktopPetUserData = path.join(app.getPath('appData'), 'V8 Agent OS Desktop Pet');
-    const desktopPetSessionData = path.join(desktopPetUserData, 'Session Data');
-    fs.mkdirSync(desktopPetSessionData, { recursive: true, mode: 0o700 });
-    app.setPath('userData', desktopPetUserData);
-    app.setPath('sessionData', desktopPetSessionData);
-  }
-  require(desktopPetMain);
-} else {
-  require('./main.cjs');
-}
+require('./main.cjs');

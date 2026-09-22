@@ -2,6 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Admin surface tokens and interaction rules live in the unified Web host. */
+.admin-app {
+    --admin-motion-fast: var(--v8-product-motion-fast, 100ms);
+    --admin-motion-control: var(--v8-product-motion-control, 140ms);
+    --admin-motion-panel: var(--v8-product-motion-panel, 180ms);
+    --admin-ease-out: var(--v8-product-ease-out, cubic-bezier(.22, 1, .36, 1));
+    --v8-product-topbar-height: 48px;
+    --v8-product-topbar-content-height: 36px;
+    font-size: 14px;
+}
+.admin-content { max-width: 1408px; width: 100%; margin-inline: auto; }
+.admin-app [data-v8-panel], .admin-dialog [data-v8-panel] { border-radius: var(--v8-product-panel-radius, 12px); }
+.admin-button { border-radius: var(--v8-product-control-radius, 8px); }
+.admin-app input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]):not([type=file]), .admin-dialog input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]):not([type=file]), .admin-app [role=combobox], .admin-dialog [role=combobox] { border-radius: var(--v8-product-control-radius, 8px); min-height: 36px; }
+.admin-content .text-sm { font-size: 14px; line-height: 22px; }
+.admin-content .text-xs { font-size: 12px; line-height: 18px; }
+.admin-page-header { position: sticky; top: -20px; z-index: 20; padding-block: 12px; background: hsl(var(--background)); }
+.admin-save-bar { min-height: 60px; padding: 12px 24px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid hsl(var(--border)); background: hsl(var(--card)); }
+.admin-entity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.admin-route-tabs { position: sticky; top: -20px; z-index: 25; display: flex; flex-wrap: wrap; gap: 4px; padding-block: 8px; background: hsl(var(--background)); }
+.admin-route-tabs a { padding: 8px 14px; border-radius: 8px; color: hsl(var(--muted-foreground)); }
+.admin-route-tabs a[aria-current=page] { color: hsl(var(--primary)); background: hsl(var(--accent)); }
+.admin-help-panel { animation: admin-panel-enter 100ms ease-out; }
+.admin-help-panel :is(.text-slate-200, .text-slate-300) { color: inherit; }
+.admin-app .transition-all { transition-property: background-color, border-color, color, opacity, transform; transition-duration: var(--admin-motion-control); }
+.admin-dialog, .admin-dialog-overlay { animation-duration: 160ms; }
+.admin-dialog[data-state=closed], .admin-dialog-overlay[data-state=closed] { animation-duration: 100ms; }
+.admin-editor-modal { display: flex; flex-direction: column; height: min(820px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); overflow: hidden; }
+.admin-editor-form { display: grid; grid-template-rows: minmax(0,1fr) auto; min-height: 0; flex: 1; }
+.admin-editor-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 4px 4px 16px; scroll-padding: 16px; }
+.admin-editor-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 12px; border-top: 1px solid hsl(var(--border)); background: hsl(var(--background)); }
+@keyframes admin-panel-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@media (hover: hover) and (pointer: fine) { .admin-setting-row:hover { background: hsl(var(--muted) / .35); } }
+@media (pointer: coarse) { .admin-app button, .admin-app [role=combobox], .admin-app .admin-route-tabs a { min-height: 44px; } .admin-help-trigger { min-height: 32px; min-width: 32px; } }
+@media (prefers-reduced-motion: reduce) { .admin-app *, .admin-help-panel, .admin-dialog, .admin-dialog *, .admin-dialog-overlay, .admin-node-menu *, [data-radix-popper-content-wrapper] * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
+
 @media (prefers-reduced-motion: reduce) {
     html:focus-within {
         scroll-behavior: auto;

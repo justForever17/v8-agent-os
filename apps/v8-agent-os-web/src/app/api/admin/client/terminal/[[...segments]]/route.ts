@@ -1,0 +1,55 @@
+import { engineFetch } from "@admin/lib/server/engine-fetch";
+import { NextRequest, NextResponse } from "next/server";
+
+import { resolveClientUser, unauthorizedClientJson } from "@admin/lib/server/client-request-auth";
+import { resolveEngineBaseUrl, resolveInternalSecret } from "@admin/lib/server/runtime-config";
+
+
+function buildTarget(req: NextRequest, segments?: string[]) {
+    const suffix = (segments || []).map((item) => encodeURIComponent(item)).join("/");
+    const search = req.nextUrl.searchParams.toString();
+    return `${resolveEngineBaseUrl()}/terminal${suffix ? `/${suffix}` : ""}${search ? `?${search}` : ""}`;
+}
+
+async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST") {
+    const user = await resolveClientUser(req);
+    if (!user) {
+        return unauthorizedClientJson();
+    }
+    const internalSecret = resolveInternalSecret();
+    if (!internalSecret) {
+        return NextResponse.json({ error: "Configuration Error" }, { status: 500 });
+    }
+
+    try {
+        const { segments } = await context.params;
+        const init: RequestInit = {
+            method,
+            headers: {
+                "Content-Type": "application/json",
+                "x-v8-agent-os-secret": internalSecret,
+                "x-v8-agent-os-user-email": user.email || user.login,
+                "x-v8-agent-os-user-id": user.id,
+            },
+            cache: "no-store",
+            signal: req.signal,
+        };
+        if (method === "POST") {
+            init.body = JSON.stringify(await req.json().catch(() => ({})));
+        }
+        const response = await engineFetch(buildTarget(req, segments), init);
+        const data = await response.json().catch(() => ({}));
+        return NextResponse.json(data, { status: response.status });
+    } catch (error) {
+        console.error("[Client Terminal Proxy] failed:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}
+
+export async function GET(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }) {
+    return proxy(req, context, "GET");
+}
+
+export async function POST(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }) {
+    return proxy(req, context, "POST");
+}

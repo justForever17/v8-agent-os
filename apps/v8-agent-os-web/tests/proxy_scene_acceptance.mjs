@@ -7,7 +7,7 @@ const require=createRequire(import.meta.url);
 if(process.argv[2]!=='--live') throw new Error('Explicit --live required');
 const out=path.resolve(process.argv[3]);fs.mkdirSync(out,{recursive:true});
 const sharp=require('sharp');
-const {chromium}=require('../../v8-agent-os-admin/node_modules/playwright');
+const {chromium}=require('../node_modules/playwright');
 const base=process.argv[4]||'http://127.0.0.1:19527';
 const sourceFiles=[];
 for(const [name,body] of [

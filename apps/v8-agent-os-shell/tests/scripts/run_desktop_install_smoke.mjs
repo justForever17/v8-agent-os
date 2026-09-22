@@ -96,7 +96,7 @@ async function waitForRuntimePorts(profilePath, timeoutMs = 15_000) {
         profile?.version === 1
         && profile?.policy === "web-fallback-v1"
         && ports?.engine === 9530
-        && ports?.admin === 9528
+        && ports?.admin === ports?.web
         && Number.isInteger(ports?.web)
         && ports.web > 0
         && ports.web <= 65_535
@@ -356,6 +356,9 @@ async function waitForDesktopPet(descriptorPath, shellDescriptorPath, timeoutMs)
       const instanceId = String(descriptor?.instanceId || "");
       const localUrl = new URL(localBaseUrl);
       const identityValid = descriptor?.managedByShell === true
+        && descriptor.runtimeKind === "companion-window"
+        && pid === Number(shellDescriptor.pid)
+        && Number.isInteger(descriptor.windowId) && descriptor.windowId > 0
         && Number.isInteger(pid) && pid > 0 && isPidAlive(pid)
         && Number.isInteger(serverPid) && serverPid > 0 && isPidAlive(serverPid)
         && Number.isInteger(localPort) && localPort > 0
@@ -938,7 +941,7 @@ function featurePackById(payload, key, packId) {
 async function installDocumentFeaturePack({ headers, ports, timeoutMs }) {
   const startedAt = Date.now();
   if (!headers) return { ok: false, error: "internal_secret_missing", durationMs: 0 };
-  const installRequest = await fetchJson(`http://127.0.0.1:${ports.admin}/api/runtime-feature-packs`, {
+  const installRequest = await fetchJson(`http://127.0.0.1:${ports.web}/api/admin/runtime-feature-packs`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify({ packId: "document_ingestion", locale: "zh-CN" }),
@@ -968,7 +971,7 @@ async function installDocumentFeaturePack({ headers, ports, timeoutMs }) {
         headers,
         timeoutMs: 3_000,
       }),
-      fetchJson(`http://127.0.0.1:${ports.admin}/api/runtime-feature-packs?refresh=1`, {
+      fetchJson(`http://127.0.0.1:${ports.web}/api/admin/runtime-feature-packs?refresh=1`, {
         headers,
         timeoutMs: 3_000,
       }),
@@ -1098,7 +1101,7 @@ if (!shellExe || !fs.existsSync(shellExe)) {
 const startedAt = new Date().toISOString();
 const startedAtMs = Date.now();
 const shellControlPath = path.join(stateRoot, "runtime", "shell-control.json");
-const desktopPetDescriptorPath = path.join(stateRoot, "runtime", "desktop-pet.json");
+const desktopPetDescriptorPath = path.join(stateRoot, "runtime", "companion-window.json");
 const runtimePortsPath = path.join(stateRoot, "runtime", "cli", "ports.json");
 const resourceRoot = explicitResourceRoot
   ? path.resolve(explicitResourceRoot)
@@ -1145,7 +1148,7 @@ const shellArgs = [
 const defaultWebPortBlocker = occupyDefaultWebPort ? await occupyLoopbackPort(9527) : null;
 let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
 const runtimePortProfile = await waitForRuntimePorts(runtimePortsPath, Math.min(serviceTimeoutMs, 15_000));
-const runtimePorts = runtimePortProfile?.ports || { engine: 9530, admin: 9528, web: 9527 };
+const runtimePorts = runtimePortProfile?.ports || { engine: 9530, admin: 9527, web: 9527 };
 
 const [engine, web, initialShellSurface] = await Promise.all([
   waitForReadiness("engine", `http://127.0.0.1:${runtimePorts.engine}/readyz`, serviceTimeoutMs),
@@ -1287,74 +1290,28 @@ const serviceChecks = { engine, admin, web };
 const desktopPetStartedAtMs = Date.now();
 const coreSurfaceReady = Object.values(serviceChecks).every((item) => item.ok) && shellSurface.ok;
 const expectedDesktopPetAvailability = desktopPetAvailability();
-const desktopPetLaunch = coreSurfaceReady
-  ? await runPackagedCli(
-    shellExe,
-    resourceRoot,
-    ["start", "--only", "desktop-pet", "--mode", "start", "--json"],
-    runtimeEnvironment,
-  )
-  : { ok: false, error: "core_surface_not_ready" };
+// Exercise the same narrow deep link as the installed Shell; companion has no
+// standalone CLI process component or second Electron application entry.
+const desktopPetLaunch = coreSurfaceReady ? await new Promise(resolve => {
+  const env = { ...process.env, ...runtimeEnvironment };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const launcher = spawn(shellExe, ["v8os://open/companion"], {
+    cwd: resourceRoot, env, windowsHide: true, stdio: "ignore",
+  });
+  const timer = setTimeout(() => { try { launcher.kill(); } catch {} resolve({ ok: false, error: "companion_request_timeout" }); }, 10000);
+  launcher.once("error", () => { clearTimeout(timer); resolve({ ok: false, error: "companion_request_failed" }); });
+  launcher.once("exit", code => { clearTimeout(timer); resolve({ ok: code === 0, error: code ? "companion_request_failed" : "" }); });
+}) : { ok: false, error: "core_surface_not_ready" };
 let desktopPet;
 if (!expectedDesktopPetAvailability.available) {
-  const desktopPetStatus = coreSurfaceReady
-    ? await runPackagedCli(
-      shellExe,
-      resourceRoot,
-      ["status", "--json"],
-      runtimeEnvironment,
-    )
-    : { ok: false, error: "core_surface_not_ready" };
-  const launchItem = packagedCliItem(desktopPetLaunch, "desktop-pet");
-  const statusItem = packagedCliItem(desktopPetStatus, "desktop-pet");
-  const launchRejected = desktopPetLaunch.ok === false
-    && Number.isInteger(desktopPetLaunch.exitCode)
-    && desktopPetLaunch.exitCode !== 0;
-  const launchUnavailable = launchItem?.componentId === "desktop-pet"
-    && launchItem?.available === false
-    && launchItem?.status === "unavailable"
-    && launchItem?.reasonCode === LINUX_DESKTOP_PET_UNAVAILABLE_REASON
-    && launchItem?.pid == null;
-  const statusUnavailable = desktopPetStatus.ok
-    && statusItem?.componentId === "desktop-pet"
-    && statusItem?.available === false
-    && statusItem?.status === "unavailable"
-    && statusItem?.reasonCode === LINUX_DESKTOP_PET_UNAVAILABLE_REASON;
-  const processRunning = statusItem?.pidAlive === true;
-  const processAbsent = statusItem?.pid == null && statusItem?.pidAlive === false;
+  const descriptor = JSON.parse(fs.readFileSync(shellControlPath, "utf8"));
   const descriptorCreated = fs.existsSync(desktopPetDescriptorPath);
-  const ok = Boolean(
-    coreSurfaceReady
-    && launchRejected
-    && launchUnavailable
-    && statusUnavailable
-    && processAbsent
-    && !descriptorCreated
-  );
   desktopPet = {
-    ok,
-    mode: "unavailable",
-    available: false,
+    ok: Boolean(desktopPetLaunch.ok && !descriptorCreated
+      && descriptor.status?.desktopPetAvailable === false
+      && descriptor.status?.desktopPetUnavailableReasonCode === LINUX_DESKTOP_PET_UNAVAILABLE_REASON),
+    mode: "unavailable", available: false, descriptorCreated,
     reasonCode: LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
-    launchRejected,
-    launchUnavailable: Boolean(launchUnavailable),
-    statusUnavailable: Boolean(statusUnavailable),
-    processRunning,
-    descriptorCreated,
-    launchExitCode: desktopPetLaunch.exitCode ?? null,
-    error: ok
-      ? ""
-      : !coreSurfaceReady
-        ? "core_surface_not_ready"
-        : !launchRejected
-          ? "desktop_pet_linux_start_not_rejected"
-          : !launchUnavailable
-            ? "desktop_pet_linux_start_contract_invalid"
-            : !statusUnavailable
-              ? "desktop_pet_linux_status_contract_invalid"
-              : !processAbsent
-                ? "desktop_pet_linux_process_detected"
-                : "desktop_pet_linux_descriptor_created",
   };
 } else {
   desktopPet = desktopPetLaunch.ok
@@ -1382,7 +1339,7 @@ const featurePackEngineStatus = {
     : safeErrorCode(rawFeaturePackEngineStatus.error, "feature_pack_engine_status_unavailable"),
 };
 const rawFeaturePackApi = serviceChecks.admin.ok && headers
-  ? await fetchJson("http://127.0.0.1:9528/api/runtime-feature-packs", { headers, timeoutMs: 3_000 })
+  ? await fetchJson(`http://127.0.0.1:${runtimePorts.web}/api/admin/runtime-feature-packs`, { headers, timeoutMs: 3_000 })
   : { ok: false, error: headers ? "admin_not_ready" : "internal_secret_missing" };
 const featurePackSchemaValid = rawFeaturePackApi.ok
   && hasFeaturePackPayloadSchema(rawFeaturePackApi.payload);
@@ -1441,7 +1398,20 @@ const cleanupProof = await waitForManagedCleanup(
 const defaultWebPortStillOccupied = occupyDefaultWebPort
   ? await loopbackPortOpen(9527)
   : true;
+// Preserve the structured stop reasons: process/port cleanup alone cannot
+// explain why CLI rejected the shutdown. Never copy raw stdout or arguments.
+let componentStops = [];
+try {
+  const results = JSON.parse(stopAll.stdout);
+  if (Array.isArray(results)) componentStops = results.map(item => ({
+    id: safeErrorCode(item.id, "unknown"),
+    status: safeErrorCode(item.status, "unknown"),
+    reason: safeErrorCode(item.reason, "details_omitted"),
+    pid: Number.isInteger(item.pid) ? item.pid : null,
+  }));
+} catch { componentStops = [{ reason: "stop_result_unparseable" }]; }
 const packagedCleanup = {
+  componentStops,
   ok: Boolean(stopAll.ok && cleanupProof.ok && defaultWebPortStillOccupied),
   cliStopped: Boolean(stopAll.ok),
   cliExitCode: stopAll.exitCode,

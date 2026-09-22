@@ -89,10 +89,10 @@ function help() {
 
 Usage:
   v8os [start]
-  v8os start [--with cybercore|--all|--only engine,admin] [--mode dev|start]
+  v8os start [--all|--only engine,web] [--mode dev|start]
   v8os preview [--rebuild|--no-build]
-  v8os stop [--only engine,admin]
-  v8os restart [--only engine,admin]
+  v8os stop [--only engine,web]
+  v8os restart [--only engine,web]
   v8os status [--json]
   v8os service install|upgrade --bundle <server-package-root> [--key-file <absolute-path>] [--port 9530] [--json]
   v8os service start|stop|restart|status|rollback|uninstall [--json]

@@ -22,7 +22,8 @@ test('Admin and tray runtime controls share the graceful desktop pet shutdown pa
   const gracefulStart = mainSource.indexOf('async function stopDesktopPetGracefully');
   const gracefulEnd = mainSource.indexOf('async function setDesktopPetEnabled', gracefulStart);
   const gracefulSource = mainSource.slice(gracefulStart, gracefulEnd);
-  assert.ok(gracefulSource.indexOf('if (!result.acked)') < gracefulSource.indexOf("shellStop(['desktop-pet'])"));
+  assert.match(gracefulSource, /await companion.stop/);
+  assert.doesNotMatch(gracefulSource, /shellStop/);
 
   const shutdownStart = mainSource.indexOf('async function runManagedV8OSShutdown');
   const shutdownEnd = mainSource.indexOf('function shutdownServiceLabel', shutdownStart);
@@ -61,8 +62,8 @@ test('Linux desktop pet availability blocks starts but preserves residual shutdo
 
   assert.match(toggleSource, /if \(!enabled && shouldStop\)[\s\S]*await stopDesktopPetGracefully\(\)/);
   assert.match(toggleSource, /enabled && !shouldStop && desktopPetPlatformAvailability\.available/);
-  assert.ok(toggleSource.indexOf('await stopDesktopPetGracefully()') < toggleSource.indexOf("shellStart(['desktop-pet']"));
-  assert.match(mainSource, /item\.state === 'managed_running' \|\| item\.pidAlive === true/);
-  assert.match(mainSource, /desktopPetProcessRunning: desktopPetProcessRunning \|\| Boolean\(shellControl\?\.hasAuthenticatedClient\(\)\)/);
+  assert.ok(toggleSource.indexOf('await stopDesktopPetGracefully()') < toggleSource.indexOf("companionHost().start()"));
+  assert.match(mainSource, /desktopPetProcessRunning = Boolean\(status\?\.running\)/);
+  assert.match(mainSource, /desktopPetProcessRunning: desktopPetProcessRunning \|\| Boolean\(companion\?\.status\(\)\.running\)/);
   assert.match(mainSource, /desktopPetAvailability: desktopPetPlatformAvailability/);
 });

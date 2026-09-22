@@ -44,6 +44,7 @@ export interface SystemMetric {
 }
 
 export interface PetSettings {
+  skinId?: string;
   lang: 'zh' | 'en';
   gender: 'robotic_male' | 'robotic_female' | 'autonomous_ai' | 'charming';
   pitch: number; // 0.5 to 2.0

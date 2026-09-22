@@ -388,7 +388,7 @@ def workflow_learning_case() -> dict[str, Any]:
                         "diagnostics": {
                             "worksetCorrelation": {
                                 "risk": "outside_write_set",
-                                "outsideWriteSetFiles": ["apps/v8-agent-os-admin/src/app/page.tsx"],
+                                "outsideWriteSetFiles": ["apps/v8-agent-os-web/src/app/page.tsx"],
                                 "manualOverride": {"present": True},
                             }
                         },

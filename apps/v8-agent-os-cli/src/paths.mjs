@@ -19,17 +19,14 @@ export const CONFIG_PATH = path.join(STATE_ROOT, "config.json");
 export const MCP_CONFIG_PATH = path.join(STATE_ROOT, "mcp.json");
 
 export const ENGINE_DIR = path.resolve(process.env.V8_ENGINE_DIR || path.join(REPO_ROOT, "apps", "v8-agent-os-engine"));
-export const ADMIN_DIR = path.resolve(process.env.V8_ADMIN_DIR || path.join(REPO_ROOT, "apps", "v8-agent-os-admin"));
 export const WEB_DIR = path.resolve(process.env.V8_WEB_DIR || path.join(REPO_ROOT, "apps", "v8-agent-os-web"));
 export const DESKTOP_PET_DIR = path.resolve(process.env.V8_DESKTOP_PET_DIR || path.join(REPO_ROOT, "apps", "v8-agent-os-desktop-pet"));
 export const SHELL_DIR = path.resolve(process.env.V8_SHELL_DIR || path.join(REPO_ROOT, "apps", "v8-agent-os-shell"));
-export const CYBERCORE_DIR = path.resolve(REPO_ROOT, "..", "out", "CyberCore");
 
 export const DEFAULT_PORTS = {
   engine: 9530,
-  admin: 9528,
+  admin: 9527,
   web: 9527,
-  cybercore: 8787,
 };
 
 export function timestampForFile(date = new Date()) {

@@ -12,7 +12,7 @@ const repoRoot = path.resolve(webRoot, "../..");
 const webpackModule = require(path.join(webRoot, "node_modules/next/dist/compiled/webpack/webpack"));
 const webpack = webpackModule.webpack;
 const { loadBindings } = require(path.join(webRoot, "node_modules/next/dist/build/swc"));
-const { chromium } = require(path.join(repoRoot, "apps/v8-agent-os-admin/node_modules/playwright"));
+const { chromium } = require(path.join(repoRoot, "apps/v8-agent-os-web/node_modules/playwright"));
 const sharp = require(path.join(webRoot, "node_modules/sharp"));
 
 const reportDir = path.resolve(

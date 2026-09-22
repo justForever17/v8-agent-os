@@ -18,7 +18,7 @@ def _read_repo_file(relative_path: str) -> str:
 def test_phone_pairing_uses_manifest_and_ordered_server_profiles() -> None:
     phone_api = _read_repo_file("apps/v8-agent-os-phone/src/lib/phone-api.ts")
     profiles = _read_repo_file("apps/v8-agent-os-phone/src/lib/admin-connection-profiles.ts")
-    admin_ticket_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/pairing/tickets/route.ts")
+    admin_ticket_route = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/client/pairing/tickets/route.ts")
 
     assert "v8_device_pairing_manifest" in admin_ticket_route
     assert "adminUrls" in admin_ticket_route
@@ -39,8 +39,8 @@ def test_phone_pairing_uses_manifest_and_ordered_server_profiles() -> None:
 
 
 def test_cloudflare_phone_remote_link_is_verified_and_separate_from_network_supervisor() -> None:
-    verify_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/link/verify-cloudflare/route.ts")
-    pairing_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/pairing/tickets/route.ts")
+    verify_route = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/client/link/verify-cloudflare/route.ts")
+    pairing_route = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/client/pairing/tickets/route.ts")
     phone_api = _read_repo_file("apps/v8-agent-os-phone/src/lib/phone-api.ts")
     phone_profiles = _read_repo_file("apps/v8-agent-os-phone/src/lib/admin-connection-profiles.ts")
     phone_session = _read_repo_file("apps/v8-agent-os-phone/src/providers/app-session.tsx")
@@ -104,9 +104,9 @@ def test_local_trusted_client_boundary_is_documented() -> None:
 def test_web_history_load_uses_server_turn_paging_not_local_message_cache() -> None:
     chat_client = _read_repo_file("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx")
     cache = _read_repo_file("apps/v8-agent-os-web/src/lib/web-conversation-cache.ts")
-    detail_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/route.ts")
-    turns_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/turns/route.ts")
-    conversations_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/conversations/route.ts")
+    detail_route = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/client/conversations/[id]/route.ts")
+    turns_route = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/client/conversations/[id]/turns/route.ts")
+    conversations_route = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/conversations/route.ts")
     engine_routes = _read_repo_file("apps/v8-agent-os-engine/api/session_workflow_routes.py")
 
     # Normal entry still pages turns; explicit transcript replacement after a

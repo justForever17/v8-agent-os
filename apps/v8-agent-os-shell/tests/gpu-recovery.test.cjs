@@ -13,7 +13,7 @@ const {
 const bootstrapSource = fs.readFileSync(path.join(__dirname, '..', 'electron', 'bootstrap.cjs'), 'utf8');
 const shellMainSource = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
 const desktopPetMainSource = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs'),
+  path.join(__dirname, '..', '..', 'v8-agent-os-desktop-pet', 'electron', 'companion-window.cjs'),
   'utf8',
 );
 
@@ -23,9 +23,9 @@ test('GPU recovery delegates relaunch to governed Shell and desktop pet shutdown
   assert.match(shellMainSource, /recoverShellAfterGpuFailure[\s\S]{0,1500}app\.relaunch\([\s\S]{0,120}app\.quit\(\)/);
   assert.match(shellMainSource, /recoverShellAfterGpuFailure[\s\S]{0,550}removeShellProcessRecord/);
   assert.match(shellMainSource, /recoverShellAfterGpuFailure[\s\S]{0,550}stopDesktopPetGracefully/);
-  assert.match(desktopPetMainSource, /function finalizeShutdown[\s\S]{0,700}app\.relaunch\([\s\S]{0,120}app\.exit\(0\)/);
+  assert.doesNotMatch(desktopPetMainSource, /app\.(relaunch|exit|quit)\(/);
   assert.match(shellMainSource, /app\.emit\('v8os-governed-shutdown-started'\)/);
-  assert.match(desktopPetMainSource, /app\.emit\('v8os-governed-shutdown-started'\)/);
+  assert.match(desktopPetMainSource, /render-process-gone/);
 });
 
 test('software rendering can be requested without unsafe sandbox flags', () => {

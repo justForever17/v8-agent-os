@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { PetEmotion, PetSettings } from '../types';
+import CompanionVisual from './CompanionVisual';
+import { skinManifest } from '../lib/companion-skins';
 import { 
   Sliders, 
   Settings, 
@@ -506,8 +508,14 @@ export default function CyberPet({
           petRef.current,
           ...Array.from(document.querySelectorAll<HTMLElement>('[data-menu-panel="true"][data-motion-state="open"]')),
         ].filter((node): node is HTMLElement => Boolean(node));
-        const regions = nodes.map((node) => {
+        const regions = nodes.flatMap((node) => {
           const rect = node.getBoundingClientRect();
+          if (node === petRef.current) return skinManifest(settings.skinId).interactionRegions.map(region => ({
+            x: rect.x + region.x * rect.width / 192,
+            y: rect.y + region.y * rect.height / 192,
+            width: region.width * rect.width / 192,
+            height: region.height * rect.height / 192,
+          }));
           return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
         });
         const fingerprint = JSON.stringify(regions.map((region) => [
@@ -525,7 +533,7 @@ export default function CyberPet({
     };
     animationFrameId = requestAnimationFrame(sample);
     return () => cancelAnimationFrame(animationFrameId);
-  }, []);
+  }, [settings.skinId]);
 
   // Close menu when the window loses focus (blur)
   useEffect(() => {
@@ -1193,202 +1201,10 @@ Always output your response as valid JSON matching the following schema structur
         onPetClick();
       }}
     >
-      {/* 3D Atmospheric Depth Rings Layering */}
-      <div className={`relative w-48 h-48 select-none flex items-center justify-center ${isExiting ? 'crt-exit' : 'crt-enter'} ${emotion === 'worried' ? 'animate-jitter' : ''}`}>
-        
-        {/* Orbital Halo Flare outer boundary */}
-        <div
-          className={`absolute inset-4 rounded-full bg-transparent ${theme.bgGlow} pointer-events-none transition-all duration-300`}
-          style={{
-            opacity: glowIntensity,
-            boxShadow: `0 0 ${18 + glowIntensity * 34}px ${colorWithAlpha(theme.accentRing, 0.28 + glowIntensity * 0.52)}`,
-          }}
-        />
-
-        {/* Ambient Ring Waveform and stats text indicator */}
-        <div className="absolute inset-0 border border-slate-900/60 rounded-full flex items-center justify-center pointer-events-none">
-          <svg className="w-full h-full absolute scale-[1.05] overflow-visible" viewBox="0 0 200 200">
-            {/* Fine outer radar graduation */}
-            <circle cx="100" cy="100" r="95" fill="none" stroke="#1e293b" strokeWidth="0.8" strokeDasharray="2, 4" className="opacity-80" />
-            
-            {/* Interactive speech volumetric outer rings */}
-            {isTalking && (
-              <circle 
-                cx="100" 
-                cy="100" 
-                r={86 + (audioVolume / 6.5)} 
-                fill="none" 
-                stroke={theme.accentRing} 
-                strokeWidth="1.2" 
-                strokeOpacity="0.5" 
-                className="transition-all duration-75"
-              />
-            )}
-          </svg>
-        </div>
-
-        {/* High-Tech Vector Canvas SVG representing Core-01 eye mechanism */}
-        <svg id="orbital-eye-lens" className="w-[176px] h-[176px] drop-shadow-[0_10px_15px_rgba(0,0,0,0.8)]" viewBox="0 0 200 200">
-          
-          {/* Outermost dark metallic core frame */}
-          <circle cx="100" cy="100" r="90" fill="#020617" stroke="#1e293b" strokeWidth="4.5" />
-          
-          {/* Atmospheric Tech ticks around grid inside bezel */}
-          <circle cx="100" cy="100" r="82" fill="none" stroke="#334155" strokeWidth="1" strokeDasharray="1, 8" />
-          
-          {/* Fairy (ZZZ AI) fine coordinates and tracking crosshairs */}
-          <line x1="25" y1="100" x2="175" y2="100" stroke={theme.accentRing} strokeWidth="0.8" strokeOpacity="0.4" strokeDasharray="6, 4" />
-          <line x1="100" y1="25" x2="100" y2="175" stroke={theme.accentRing} strokeWidth="0.8" strokeOpacity="0.4" strokeDasharray="6, 4" />
-
-          {/* Real electronic corner tracking brackets */}
-          <path d="M 64 48 L 48 48 L 48 64" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
-          <path d="M 136 48 L 152 48 L 152 64" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
-          <path d="M 64 152 L 48 152 L 48 136" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
-          <path d="M 136 152 L 152 152 L 152 136" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
-
-          {/* Deep reflective glass base glow sphere */}
-          <circle
-            cx="100"
-            cy="100"
-            r="78"
-            fill="radial-gradient(circle, #0f172a 35%, #020617 100%) animate-[pulse_3s_infinite]"
-            stroke={theme.glow}
-            strokeWidth="3.5"
-            strokeOpacity="0.9"
-            style={{
-              filter: `drop-shadow(0px 0px 8px ${theme.glow})`
-            }}
-          />
-
-          {/* Concentric rotating indicators */}
-          <circle
-            cx="100"
-            cy="100"
-            r="70"
-            fill="none"
-            stroke={theme.accentRing}
-            strokeWidth="3.5"
-            strokeDasharray="14, 5, 2, 5"
-            className={`origin-center ${
-              emotion === 'scanning'
-                ? 'animate-[spin_1.5s_linear_infinite_reverse]'
-                : emotion === 'talking'
-                ? 'animate-[spin_2s_linear_infinite]'
-                : emotion === 'tool_calling'
-                ? 'animate-[spin_1s_linear_infinite]'
-                : emotion === 'thinking'
-                ? 'animate-[pulse_1s_infinite]'
-                : 'animate-[spin_18s_linear_infinite]'
-            }`}
-          />
-
-          {/* Animated blinking inner core - outer structure kept stable to avoid scaling artifacts */}
-          <g>
-            <circle cx="100" cy="100" r="60" fill="none" stroke={theme.outerRing} strokeWidth="8" />
-            <circle cx="100" cy="100" r="50" fill="none" stroke="#cbd5e1" strokeWidth="8" />
-            <circle cx="100" cy="100" r="42" fill="none" stroke={theme.pupil} strokeWidth="13" />
-
-            {/* Interactive lens Pupil & reflections */}
-            <g>
-              <circle
-                cx={100 + mouseOffset.x}
-                cy={100 + mouseOffset.y}
-                r={pupilRadius}
-                fill="#06122d"
-                stroke={theme.accentRing}
-                strokeWidth="2.5"
-                className="transition-all duration-300"
-                style={{
-                  transform: `scale(${syncScalar})`,
-                  transformOrigin: `${100 + mouseOffset.x}px ${100 + mouseOffset.y}px`
-                }}
-              />
-
-              {isWebcamActive && (
-                <foreignObject
-                  x={100 + mouseOffset.x - pupilRadius}
-                  y={100 + mouseOffset.y - pupilRadius}
-                  width={pupilRadius * 2}
-                  height={pupilRadius * 2}
-                  className="pointer-events-none"
-                  style={{
-                    transform: `scale(${syncScalar})`,
-                    transformOrigin: `${100 + mouseOffset.x}px ${100 + mouseOffset.y}px`
-                  }}
-                >
-                  <canvas
-                    ref={pupilCanvasRef}
-                    className="w-full h-full object-cover scale-x-[-1] pointer-events-none"
-                    style={{
-                      borderRadius: '50%',
-                      opacity: 0.15,
-                      mixBlendMode: 'screen',
-                      filter: 'grayscale(1) brightness(1.8) contrast(1.5) sepia(0.3) hue-rotate(140deg)'
-                    }}
-                  />
-                </foreignObject>
-              )}
-
-              {/* Simulated specular glare reflection */}
-              <circle
-                cx={112 + mouseOffset.x * 1.25}
-                cy={112 + mouseOffset.y * 1.25}
-                r="7.5"
-                fill="#ffffff"
-                fillOpacity="0.95"
-                className="transition-all duration-300"
-                style={{
-                  filter: 'drop-shadow(0px 0px 4px rgba(255,255,255,0.95))'
-                }}
-              />
-
-              {/* Ocular accent circle */}
-              <circle
-                cx={90 + mouseOffset.x}
-                cy={90 + mouseOffset.y}
-                r="3"
-                fill="#e2e8f0"
-                fillOpacity="0.4"
-              />
-            </g>
-          </g>
-
-          {/* Ocular Eyelid Overlay for clean electronic blinking without color-distortion line artifacts */}
-          <circle
-            cx="100"
-            cy="100"
-            r="76"
-            fill="#020617"
-            className="pointer-events-none"
-            style={{
-              transform: `scaleY(${isBlinking ? 1 : 0})`,
-              transformOrigin: '100px 100px',
-              transition: 'transform 80ms cubic-bezier(0.25, 1, 0.5, 1)',
-              opacity: isBlinking ? 1 : 0
-            }}
-          />
-
-          {/* Active Visor Laser swept lines */}
-          {emotion === 'scanning' && (
-            <g>
-              <line
-                x1="40"
-                y1="100"
-                x2="160"
-                y2="100"
-                stroke="#ef4444"
-                strokeWidth="2.5"
-                className="animate-[bounce_2s_infinite]"
-                style={{
-                  filter: 'drop-shadow(0px 0px 5px #ef4444)'
-                }}
-              />
-              <circle cx="100" cy="100" r="35" fill="none" stroke="#ef4444" strokeWidth="1" strokeDasharray="4 4" className="animate-ping" />
-            </g>
-          )}
-        </svg>
-
-      </div>
+      <CompanionVisual skinId={settings.skinId} isExiting={isExiting} emotion={emotion}
+        isTalking={isTalking} audioVolume={audioVolume} glowIntensity={glowIntensity}
+        theme={theme} mouseOffset={mouseOffset} pupilRadius={pupilRadius} syncScalar={syncScalar}
+        isWebcamActive={isWebcamActive} pupilCanvasRef={pupilCanvasRef} isBlinking={isBlinking} />
 
       {/* Lightweight right-click menu. Keep the desktop pet body untouched. */}
       {menuMounted && createPortal(

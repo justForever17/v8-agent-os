@@ -17,7 +17,7 @@ const value = name => process.argv[process.argv.indexOf(name) + 1];
 assert.ok(process.argv.includes('--live') && process.argv.includes('--video'), 'Explicit --live and --video required');
 const videoPath = path.resolve(value('--video'));
 assert.ok(fs.statSync(videoPath).isFile() && /\.mp4$/i.test(videoPath));
-const { chromium } = require(path.join(repoRoot, 'apps/v8-agent-os-admin/node_modules/playwright'));
+const { chromium } = require(path.join(repoRoot, 'apps/v8-agent-os-web/node_modules/playwright'));
 const { ensureManagedAuthSecret } = await import(pathToFileURL(path.join(repoRoot, 'scripts/ensure-admin-auth-secret.mjs')).href);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'v8-personalization-upload-'));
 const children = [];

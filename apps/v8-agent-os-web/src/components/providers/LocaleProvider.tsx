@@ -27,6 +27,16 @@ export function LocaleProvider({
     children: React.ReactNode;
 }) {
     const [locale, setLocaleState] = React.useState<Locale>(initialLocale);
+    const localeChannel = React.useRef<BroadcastChannel | null>(null);
+
+    React.useEffect(() => {
+        const channel = new BroadcastChannel("v8-product-locale");
+        localeChannel.current = channel;
+        channel.onmessage = ({ data }) => {
+            if (data?.locale === "zh-CN" || data?.locale === "en") setLocaleState(data.locale);
+        };
+        return () => { localeChannel.current = null; channel.close(); };
+    }, []);
 
     React.useEffect(() => {
         document.documentElement.lang = locale;
@@ -35,6 +45,7 @@ export function LocaleProvider({
 
     const setLocale = React.useCallback((nextLocale: Locale) => {
         setLocaleState(nextLocale);
+        localeChannel.current?.postMessage({ locale: nextLocale });
     }, []);
 
     const t = React.useCallback(

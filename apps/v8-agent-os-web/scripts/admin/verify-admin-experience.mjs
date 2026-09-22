@@ -1,0 +1,195 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { adminExperienceFixture, sampleClusters } from './admin-experience-fixture.mjs';
+
+const base = process.env.V8_ADMIN_EXPERIENCE_URL || 'http://127.0.0.1:9527';
+const out = path.resolve(process.env.V8_ADMIN_EXPERIENCE_OUT || '../../../.codex-tmp/admin-experience');
+fs.mkdirSync(out, { recursive: true });
+const browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' } : {}) });
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'zh-CN' });
+const page = await context.newPage();
+const errors = [], writes = [], evidence = [];
+page.on('pageerror', error => errors.push(error.message));
+try {
+    // Public fixture password is used only against the isolated test state root.
+    await page.goto(base + '/login', { waitUntil: 'networkidle' });
+    await page.locator('#login').fill('admin-experience-fixture');
+    if (await page.locator('#name').count()) {
+        await page.locator('#name').fill('Admin fixture');
+        await page.locator('#confirmPassword').fill('public-admin-experience-fixture');
+    }
+    await page.locator('#password').fill('public-admin-experience-fixture');
+    await page.locator('button[type=submit]').click();
+    await page.waitForURL(/\/admin$/, { timeout: 60000 });
+    let failWrites = false;
+    let holdGraph = false;
+    let releaseGraph;
+    let failSafetyConfig = true;
+    let failSafetyDiagnostics = true;
+    const savedDomains = new Map();
+    await page.route('**/api/**', async route => {
+        const request = route.request(), url = new URL(request.url());
+        if (url.pathname.startsWith('/api/auth/')) return route.continue();
+        if (url.pathname === '/api/admin/config-registry/safety' && failSafetyConfig) return route.fulfill({ status: 503, json: { error: 'fixture_safety_unavailable' } });
+        if (url.pathname === '/api/admin/safety/dashboard') return route.fulfill(failSafetyDiagnostics ? { status: 503, json: { error: 'fixture_diagnostics_unavailable' } } : { json: { summary: {}, incidents: [], allowlist: [], approvals: [] } });
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
+            writes.push({ path: url.pathname, method: request.method(), body: request.postDataJSON() });
+            if (failWrites) return route.fulfill({ status: 500, json: { error: 'fixture_failure' } });
+            if (url.pathname === '/api/admin/memory/graph') {
+                if (holdGraph) await new Promise(resolve => { releaseGraph = resolve; });
+                const body = request.postDataJSON();
+                const cluster = sampleClusters.find(item => item.workspaceKey === body.workspaceKey);
+                if (body.action === 'add_relation') cluster.links.push({ relationId: `${cluster.clusterId}-${cluster.links.length}`, source: body.subject, target: body.object, label: body.predicate, scope: `workspace:${body.workspaceKey}`, confidence: 1 });
+                if (body.action === 'delete_relation') cluster.links = cluster.links.filter(edge => !(edge.source === body.subject && edge.target === body.object && edge.label === body.predicate && edge.scope === body.scope));
+                if (body.action === 'delete_entity') { cluster.links = cluster.links.filter(edge => edge.source !== body.name && edge.target !== body.name); cluster.nodes = cluster.nodes.filter(node => node.id !== body.name); }
+                cluster.meta.totalRelations = cluster.links.length;
+                return route.fulfill({ json: { created: true, deleted: true } });
+            }
+            if (url.pathname.startsWith('/api/admin/config-registry/')) {
+                const saved = { ...adminExperienceFixture(request.url()), data: request.postDataJSON().data };
+                savedDomains.set(url.pathname, saved);
+                return route.fulfill({ json: saved });
+            }
+            return route.fulfill({ json: adminExperienceFixture(request.url()) || { ok: true } });
+        }
+        const fixture = savedDomains.get(url.pathname) || adminExperienceFixture(request.url());
+        return route.fulfill(fixture === undefined ? { status: 503, json: { error: 'fixture_service_unavailable' } } : { json: fixture });
+    });
+    const visit = async route => { await page.goto(base + route, { waitUntil: 'networkidle' }); await page.waitForTimeout(250); };
+    await visit('/admin/system-base');
+    await page.evaluate(() => { window.__adminRightClickPrevented = false; document.addEventListener('contextmenu', event => { window.__adminRightClickPrevented = event.defaultPrevented; }, { once: true }); });
+    await page.locator('aside nav a').first().click({ button: 'right' });
+    assert.equal(await page.evaluate(() => window.__adminRightClickPrevented), true);
+    for (const label of ['概览', '模型', '智能体', '扩展', '记忆与资料', '任务', '设备', '设置']) assert.equal(await page.locator('aside nav').getByRole('link', { name: label, exact: true }).isVisible(), true);
+    const collapse = page.locator('aside > button');
+    await collapse.click();
+    assert.equal(await page.locator('aside nav').count(), 0);
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement?.closest('aside nav') !== null), false);
+    await collapse.click();
+    evidence.push({ route: '/admin/system-base', navigationRightClickSuppressed: true, eightPrimaryGroupsVisible: true, collapsedNavigationAbsent: true });
+    for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        const save = page.locator('#admin-save-actions button').first();
+        await save.waitFor();
+        const box = await save.boundingBox();
+        assert.ok(box && box.y >= 0 && box.y + box.height <= 900 && box.x + box.width <= width, 'save must be visible before scrolling');
+        if (width < 1024) { await page.getByRole('button', { name: '导航', exact: true }).click(); await page.getByRole('dialog').waitFor(); assert.ok(await page.getByRole('dialog').getByRole('link', { name: '模型', exact: true }).isVisible()); await page.keyboard.press('Escape'); }
+        const help = page.locator('.admin-help-trigger').first(); await help.focus(); await page.getByRole('tooltip').waitFor(); await page.keyboard.press('Escape'); await page.getByRole('tooltip').waitFor({ state: 'detached' });
+        await page.screenshot({ path: path.join(out, `system-${width}.png`) });
+        evidence.push({ route: '/admin/system-base', width, saveVisible: true, helpFocusEscape: true });
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('summary').filter({ hasText: '服务联通' }).click();
+    const address = page.getByPlaceholder('http://127.0.0.1:9530/v1', { exact: true });
+    await address.fill('http://127.0.0.1:22111/v1');
+    failWrites = true;
+    await page.locator('#admin-save-actions button').click();
+    await page.getByRole('alert').filter({ hasText: '保存未确认' }).waitFor();
+    assert.equal(await address.inputValue(), 'http://127.0.0.1:22111/v1');
+    assert.deepEqual(writes.at(-1).body.data.customOpaqueFixture, { empty: [], zero: 0, flag: false, nested: { future: true } });
+    assert.equal(writes.at(-1).body.data.bridge.internalSecret, '***');
+    failWrites = false;
+    await page.locator('#admin-save-actions button').click();
+    await page.getByRole('alert').filter({ hasText: '保存未确认' }).waitFor({ state: 'detached' });
+    await visit('/admin/system-base');
+    await page.locator('summary').filter({ hasText: '服务联通' }).click();
+    assert.equal(await address.inputValue(), 'http://127.0.0.1:22111/v1');
+    evidence.push({ route: '/admin/system-base', failedSaveRetainsDraft: true, unknownAndSecretPlaceholderRoundtrip: true, reloadReadback: true });
+    await visit('/admin/model-hub');
+    await page.screenshot({ path: path.join(out, 'models.png') });
+    await page.getByRole('button', { name: 'sample-chat', exact: true }).click();
+    await page.getByRole('dialog').waitFor();
+    assert.ok((await page.getByRole('dialog').innerText()).includes('fixture-provider::sample-chat'));
+    await page.keyboard.press('Escape');
+    const manage = page.getByRole('button', { name: '管理', exact: true }).first();
+    assert.equal(await manage.evaluate(element => getComputedStyle(element).borderRadius), '8px');
+    assert.equal(await manage.evaluate(element => getComputedStyle(element.closest('[data-v8-panel]')).borderRadius), '12px');
+    await page.getByRole('button', { name: '调整', exact: true }).first().click();
+    await page.locator('#model-model-id').fill('unsaved-independent-model');
+    let confirmCount = 0;
+    const rejectDiscard = async dialog => { confirmCount++; await dialog.dismiss(); };
+    page.on('dialog', rejectDiscard);
+    await page.keyboard.press('Escape');
+    assert.equal(confirmCount, 1);
+    assert.equal(await page.locator('#model-model-id').inputValue(), 'unsaved-independent-model');
+    page.off('dialog', rejectDiscard);
+    page.once('dialog', dialog => dialog.accept());
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog').waitFor({ state: 'detached' });
+    evidence.push({ route: '/admin/model-hub', explicitDiscard: true, rejectDiscardRetainsDraft: true, panelRadius: 12, controlRadius: 8 });
+    await visit('/admin/chat-runtime?tab=subagents');
+    assert.ok((await page.locator('h1').allTextContents()).some(text => text.includes('代理')));
+    await page.screenshot({ path: path.join(out, 'agents.png') });
+    await visit('/admin/memory?tab=graph');
+    await page.getByRole('button', { name: /Workspace A.*12/ }).click();
+    await page.getByRole('button', { name: 'shared', exact: true }).click();
+    await page.getByRole('region', { name: '节点管理' }).waitFor();
+    await page.getByRole('button', { name: '新建连接', exact: true }).click();
+    await page.getByLabel('目标实体', { exact: true }).fill('new-target');
+    failWrites = true;
+    await page.getByRole('button', { name: '新建连接', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: 'fixture_failure' }).waitFor();
+    assert.equal(await page.getByLabel('目标实体', { exact: true }).inputValue(), 'new-target');
+    assert.equal(writes.at(-1).body.workspaceKey, 'a'); assert.equal(writes.at(-1).body.subject, 'shared');
+    failWrites = false;
+    holdGraph = true;
+    await page.getByRole('button', { name: '新建连接', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('#galaxy-target')?.disabled === true);
+    assert.equal(await page.getByLabel('目标实体', { exact: true }).isDisabled(), true);
+    assert.equal(await page.getByLabel('关系名称', { exact: true }).isDisabled(), true);
+    while (!releaseGraph) await new Promise(resolve => setTimeout(resolve, 20));
+    releaseGraph(); holdGraph = false;
+    await page.getByRole('button', { name: '断开关系', exact: true }).first().waitFor();
+    const menu = page.getByRole('region', { name: '节点管理' });
+    const menuBox = await menu.boundingBox();
+    assert.ok(menuBox.y >= 0 && menuBox.y + menuBox.height <= 900, 'node menu including its footer must fit the viewport');
+    await page.getByRole('button', { name: '断开关系', exact: true }).first().click();
+    await page.waitForTimeout(200);
+    assert.equal(writes.at(-1).body.scope, 'workspace:a');
+    await page.getByRole('button', { name: '管理全部关系', exact: true }).focus();
+    await page.keyboard.press('Escape');
+    await menu.waitFor({ state: 'detached' });
+    assert.ok((await page.evaluate(() => document.activeElement?.textContent || '')).includes('Workspace A'));
+    await page.getByRole('button', { name: /全局记忆.*12/ }).click();
+    await page.getByRole('button', { name: 'shared', exact: true }).click();
+    assert.equal(await page.getByRole('region', { name: '节点管理' }).getByRole('button', { name: '新建连接', exact: true }).count(), 0);
+    const globalBefore = JSON.stringify(sampleClusters[0].links);
+    await page.getByRole('button', { name: '在工作区新建连接', exact: true }).click();
+    await page.getByLabel('目标实体', { exact: true }).fill('global-to-workspace');
+    assert.equal(await page.getByRole('button', { name: '新建连接', exact: true }).isDisabled(), true);
+    await page.getByLabel('选择写入工作区', { exact: true }).selectOption('b');
+    await page.getByRole('button', { name: '新建连接', exact: true }).click();
+    await page.getByRole('button', { name: '断开关系', exact: true }).first().waitFor();
+    assert.equal(writes.at(-1).body.workspaceKey, 'b');
+    assert.equal(JSON.stringify(sampleClusters[0].links), globalBefore);
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('region', { name: '节点管理' }).getByRole('button', { name: '删除', exact: true }).click();
+    await menu.waitFor({ state: 'detached' });
+    assert.ok((await page.evaluate(() => document.activeElement?.textContent || '')).includes('Workspace B'));
+    await page.screenshot({ path: path.join(out, 'galaxy.png') });
+    evidence.push({ route: '/admin/memory?tab=graph', globalCount: sampleClusters.filter(item => item.clusterId === 'global').length, writeFailureRetainsTarget: true, capturedWorkspace: 'a', pendingFieldsLocked: true, menuEscape: true, menuBox, globalPreserved: true, explicitGlobalDestination: 'b', escapeFocus: 'Workspace A', deletedNodeFocus: 'Workspace B' });
+    await visit('/admin/safety-control');
+    assert.equal(await page.locator('h1').count(), 1);
+    await page.getByRole('alert').filter({ hasText: 'fixture_safety_unavailable' }).waitFor();
+    assert.equal(await page.locator('main .animate-spin').count(), 0);
+    failSafetyConfig = false;
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await page.locator('#admin-save-actions button').last().waitFor();
+    await page.getByRole('alert').filter({ hasText: 'fixture_diagnostics_unavailable' }).waitFor();
+    assert.equal(await page.locator('#admin-save-actions button').last().isEnabled(), true);
+    failSafetyDiagnostics = false;
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: 'fixture_diagnostics_unavailable' }).waitFor({ state: 'detached' });
+    evidence.push({ route: '/admin/safety-control', failedLoadHasHeadingAndRetry: true, noStuckSpinner: true, partialConfigurationRemainsEditable: true, diagnosticsRetry: true });
+    await visit('/admin/runtime-governance');
+    assert.equal(await page.locator('h1').count(), 1);
+    assert.equal((await page.locator('body').innerText()).includes('components.runtime.RuntimeGovernanceWorkbench.'), false);
+    evidence.push({ route: '/admin/runtime-governance', singleHeading: true, errorToastLocalized: true });
+    assert.deepEqual(errors, []);
+    fs.writeFileSync(path.join(out, 'interaction-evidence.json'), JSON.stringify({ evidence, writes, errors }, null, 2));
+    console.log(JSON.stringify({ ok: true, evidence, writes: writes.length, output: out }));
+} catch (error) { await page.screenshot({ path: path.join(out, 'failure.png') }); console.error(JSON.stringify({ error: String(error), pageErrors: errors, body: (await page.locator('body').innerText()).slice(-5000) })); process.exitCode = 1; }
+finally { await browser.close(); }

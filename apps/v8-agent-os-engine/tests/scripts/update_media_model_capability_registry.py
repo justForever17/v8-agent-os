@@ -15,7 +15,7 @@ OVERRIDES_PATH = ENGINE_ROOT / "runtimes" / "creative_media" / "assets" / "media
 MULTIMEDIA_DOC_PATH = V8OS_ROOT / "docs" / "creative-runtime" / "多媒体.md"
 OUTPUT_PATH = ENGINE_ROOT / "core" / "model_catalog" / "media_model_capability_registry.json"
 REPORT_PATH = ENGINE_ROOT / "core" / "model_catalog" / "media_model_capability_registry_unresolved_report.json"
-ADMIN_PUBLIC_PATH = V8OS_ROOT / "apps" / "v8-agent-os-admin" / "public"
+ADMIN_PUBLIC_PATH = V8OS_ROOT / "apps" / "v8-agent-os-web" / "public"
 
 
 LOGO_FALLBACKS = {

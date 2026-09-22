@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { ADMIN_DIR, CYBERCORE_DIR, DEFAULT_PORTS, DESKTOP_PET_DIR, ENGINE_DIR, LOG_DIR, REPO_ROOT, SHELL_DIR, WEB_DIR } from "./paths.mjs";
+import { DEFAULT_PORTS, DESKTOP_PET_DIR, ENGINE_DIR, LOG_DIR, REPO_ROOT, SHELL_DIR, WEB_DIR } from "./paths.mjs";
 
 let runtimePorts = { ...DEFAULT_PORTS };
 
@@ -9,7 +9,7 @@ function normalizedRuntimePorts(ports = {}) {
   return {
     ...DEFAULT_PORTS,
     engine: Number(ports.engine) || DEFAULT_PORTS.engine,
-    admin: Number(ports.admin) || DEFAULT_PORTS.admin,
+    admin: Number(ports.web) || DEFAULT_PORTS.web,
     web: Number(ports.web) || DEFAULT_PORTS.web,
   };
 }
@@ -88,31 +88,6 @@ export const COMPONENTS = {
       };
     },
   },
-  admin: {
-    id: "admin",
-    label: "Admin",
-    get port() { return runtimePorts.admin; },
-    cwd: REPO_ROOT,
-    get healthUrl() { return `http://127.0.0.1:${runtimePorts.admin}/admin`; },
-    command(options = {}) {
-      const mode = options.mode || "dev";
-      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
-      const runtime = nodeRuntime();
-      return {
-        command: runtime.command,
-        args: ["scripts/run-next-with-managed-auth.mjs", "--app", "admin", "--mode", mode, "--port", String(ports.admin)],
-        cwd: REPO_ROOT,
-        env: {
-          ...runtime.env,
-          V8_ENGINE_PYTHON: engineInstallerPython(),
-          V8_ENGINE_DIR: ENGINE_DIR,
-          V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
-          V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
-          V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
-        },
-      };
-    },
-  },
   web: {
     id: "web",
     label: "Web",
@@ -129,59 +104,12 @@ export const COMPONENTS = {
         cwd: REPO_ROOT,
         env: {
           ...runtime.env,
+          V8_ENGINE_PYTHON: engineInstallerPython(),
+          V8_ENGINE_DIR: ENGINE_DIR,
           V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
-          V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
+          V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.web}`,
           V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
         },
-      };
-    },
-  },
-  cybercore: {
-    id: "cybercore",
-    label: "CyberCore",
-    port: DEFAULT_PORTS.cybercore,
-    cwd: CYBERCORE_DIR,
-    healthUrl: `http://127.0.0.1:${DEFAULT_PORTS.cybercore}/health`,
-    command(options = {}) {
-      const mode = options.mode || "dev";
-      const script = mode === "start" ? "start" : "dev";
-      if (process.platform === "win32") {
-        return {
-          command: "cmd",
-          args: ["/c", "npm", "run", script],
-          cwd: CYBERCORE_DIR,
-          env: {},
-        };
-      }
-      return {
-        command: "npm",
-        args: ["run", script],
-        cwd: CYBERCORE_DIR,
-        env: {},
-      };
-    },
-  },
-  "desktop-pet": {
-    id: "desktop-pet",
-    label: "Desktop Pet",
-    port: null,
-    detachedHandoff: true,
-    cwd: REPO_ROOT,
-    command(options = {}) {
-      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
-      const runtime = nodeRuntime({
-        V8_DESKTOP_PET_MANAGED_BY_SHELL: "1",
-        V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
-        V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
-        V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
-        V8_REPO_ROOT: REPO_ROOT,
-        V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
-      });
-      return {
-        command: runtime.command,
-        args: ["apps/v8-agent-os-shell/scripts/launch-desktop-pet.mjs"],
-        cwd: REPO_ROOT,
-        env: runtime.env,
       };
     },
   },
@@ -193,7 +121,7 @@ export const COMPONENTS = {
     command(options = {}) {
       const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
       const runtime = nodeRuntime({
-        V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
+        V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.web}`,
         V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
         V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
         V8_REPO_ROOT: REPO_ROOT,
@@ -210,22 +138,30 @@ export const COMPONENTS = {
 };
 
 export const DEFAULT_START_COMPONENTS = ["engine", "web"];
-export const ALL_COMPONENTS = ["engine", "admin", "web", "cybercore", "desktop-pet", "shell"];
+export const ALL_COMPONENTS = ["engine", "web", "shell"];
 
 export function parseComponentSelection(args) {
+  const normalize = value => {
+    const id = value.trim() === "admin" ? "web" : value.trim();
+    if (!id) return null;
+    if (!COMPONENTS[id]) throw new Error(id === "desktop-pet"
+      ? "Desktop companion is managed by the Shell. Open it from the tray or /admin/desktop-pet."
+      : `Unknown Core component: ${id}. Available: engine, web, shell.`);
+    return id;
+  };
   if (args.includes("--all")) return ALL_COMPONENTS;
   const withIndex = args.indexOf("--with");
   if (withIndex >= 0) {
     const raw = String(args[withIndex + 1] || "");
-    const extras = raw.split(",").map((item) => item.trim()).filter(Boolean);
+    const extras = raw.split(",").map(normalize).filter(Boolean);
     return [...new Set([...DEFAULT_START_COMPONENTS, ...extras])].filter((id) => COMPONENTS[id]);
   }
   const onlyIndex = args.indexOf("--only");
   if (onlyIndex >= 0) {
-    return String(args[onlyIndex + 1] || "")
+    return [...new Set(String(args[onlyIndex + 1] || "")
       .split(",")
-      .map((item) => item.trim())
-      .filter((id) => COMPONENTS[id]);
+      .map(normalize)
+      .filter((id) => COMPONENTS[id]))];
   }
   return DEFAULT_START_COMPONENTS;
 }

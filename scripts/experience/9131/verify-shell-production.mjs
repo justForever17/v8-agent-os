@@ -1,3 +1,5 @@
+// HISTORICAL: frozen 9.13.1 checkout/state reproduction, not a current release gate.
+// Current single-host acceptance: apps/v8-agent-os-shell/tests/scripts/product_surface_native.mjs.
 // Real production Electron + Web/Admin/Engine. No API routes are mocked.
 // Uses only the explicitly handed-off state and API-created synthetic sessions.
 import assert from 'node:assert/strict';

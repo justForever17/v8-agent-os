@@ -128,7 +128,6 @@ function validatePhoneTgzIntegrity() {
 
 function validateDesktopTgzIntegrity() {
   const appRoots = [
-    resolve(ROOT, "apps/v8-agent-os-admin"),
     resolve(ROOT, "apps/v8-agent-os-web"),
     resolve(ROOT, "apps/v8-agent-os-desktop-pet"),
   ];

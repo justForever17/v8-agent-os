@@ -1,0 +1,26 @@
+"use client";
+
+import * as React from "react";
+
+import { Card } from "@admin/components/ui/card";
+import { cn } from "@admin/lib/utils";
+
+type AdminSurfaceCardProps = React.ComponentPropsWithoutRef<typeof Card> & {
+    surface?: "panel" | "nested";
+};
+
+const surfaceClassNameByVariant: Record<NonNullable<AdminSurfaceCardProps["surface"]>, string> = {
+    panel: "rounded-xl border-border bg-card text-card-foreground shadow-none",
+    nested: "rounded-lg border-transparent bg-muted/40 text-card-foreground shadow-none",
+};
+
+export const AdminSurfaceCard = React.forwardRef<HTMLDivElement, AdminSurfaceCardProps>(
+    ({ className, surface = "panel", ...props }, ref) => (
+        <Card
+            ref={ref}
+            className={cn(surfaceClassNameByVariant[surface], className)}
+            {...props}
+        />
+    ),
+);
+AdminSurfaceCard.displayName = "AdminSurfaceCard";

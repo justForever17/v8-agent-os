@@ -50,11 +50,11 @@ test('409 version failures and HTTP 200 semantic failures retain readable errors
 test('Web and Admin refresh preserve the shown hash and old id, with auth checked before forwarding', async () => {
     const requests = []; let webAuthorized = false; let adminAuthorized = false;
     const json = (payload, init) => Response.json(payload, init);
-    const admin = load('apps/v8-agent-os-admin/src/app/api/approvals/[id]/refresh-spec-review/route.ts', {
+    const admin = load('apps/v8-agent-os-web/src/app/api/admin/approvals/[id]/refresh-spec-review/route.ts', {
         'next/server': {},
-        '@/lib/server/runtime-config': {resolveInternalSecret: () => 'synthetic-secret'},
-        '@/lib/server/request-auth': {resolveAuthorizedUserEmail: async () => adminAuthorized ? 'test@example.invalid' : null, unauthorizedJson: () => json({error: 'Unauthorized'}, {status: 401})},
-        '@/lib/server/engine-command-proxy': {proxyEngineCommand: async (req, url, target, headers) => {
+        '@admin/lib/server/runtime-config': {resolveInternalSecret: () => 'synthetic-secret'},
+        '@admin/lib/server/request-auth': {resolveAuthorizedUserEmail: async () => adminAuthorized ? 'test@example.invalid' : null, unauthorizedJson: () => json({error: 'Unauthorized'}, {status: 401})},
+        '@admin/lib/server/engine-command-proxy': {proxyEngineCommand: async (req, url, target, headers) => {
             requests.push({url, target, headers, body: await req.json()});
             return json({approval: approval('new', 'B'), replacesApprovalId: 'old'});
         }},

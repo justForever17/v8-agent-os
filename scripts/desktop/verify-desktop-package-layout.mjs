@@ -330,11 +330,9 @@ try {
     ...nextStandaloneRequired(resourceRoot, "web"),
     desktopPetServerBundle,
     desktopPetIndex,
-    path.join(resourceRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs"),
+    path.join(resourceRoot, "apps", "v8-agent-os-desktop-pet", "electron", "companion-window.cjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "electron-launcher.mjs"),
-    path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "launch-desktop-pet.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "launch-shell.mjs"),
-    path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "spawn-detached-electron.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "command_runtime_probe.py"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "feature_pack_runtime_probe.py"),
     path.join(featurePackRequirements, "rpa-automation.txt"),
@@ -365,7 +363,6 @@ try {
     );
   }
   const checks = required.map((filePath) => ({ path: filePath, ok: fs.existsSync(filePath) }));
-  checks.push(...verifyNextStandaloneAssets(resourceRoot, "admin"));
   checks.push(...verifyNextStandaloneAssets(resourceRoot, "web"));
   checks.push(verifyShellBootstrap(appAsar, expectedPackageVersion));
   checks.push(verifyDesktopPetServerBundle(desktopPetServerBundle));

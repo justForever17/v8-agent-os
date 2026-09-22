@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const defaultPackageRoots = [
   path.join(repoRoot, "apps", "v8-agent-os-shell"),
-  path.join(repoRoot, "apps", "v8-agent-os-desktop-pet"),
 ];
 const verifiedArchiveDigests = new Map();
 

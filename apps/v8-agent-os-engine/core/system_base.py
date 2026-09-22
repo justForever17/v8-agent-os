@@ -13,7 +13,7 @@ from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 
 DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1"
-DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9528/api"
+DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9527/api/admin"
 DEFAULT_DESKTOP_LIVE_CONFIG = {
     "enabled": True,
     "maxWidth": 960,

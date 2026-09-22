@@ -7,7 +7,7 @@ import { readProfilePage } from '../../scripts/browser_profile_read.mjs';
 
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('../../../v8-agent-os-admin/node_modules/playwright')); } catch {}
+try { ({ chromium } = require('../../../v8-agent-os-web/node_modules/playwright')); } catch {}
 const executablePath = process.env.V8_BROWSER_TEST_EXECUTABLE ||
   (process.platform === 'win32' ? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' : '');
 const available = chromium && executablePath && fs.existsSync(executablePath);

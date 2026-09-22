@@ -27,7 +27,7 @@ function loadFunction(name) {
 }
 
 const runManagedV8OSShutdown = loadFunction('runManagedV8OSShutdown');
-const coreIds = ['engine', 'admin', 'web'];
+const coreIds = ['engine', 'web'];
 
 test('shutdown stops accepting starts and waits until their ownership receipts exist', async () => {
   const source = mainSource.match(/function startDesktopServices\(componentIds\) \{[\s\S]*?\n\}/)[0];
@@ -53,9 +53,10 @@ test('shutdown stops accepting starts and waits until their ownership receipts e
   assert.match(mainSource, /await Promise.allSettled\(\[\.\.\.pendingDesktopStarts\]\)/);
 });
 
-test('optional Admin is included in whole-product shutdown without becoming a startup dependency', () => {
+test('whole-product shutdown uses one Product Web service for chat and Admin', () => {
   assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'web'\]/);
-  assert.match(mainSource, /coreIds: \[\.\.\.CORE_SERVICE_IDS, 'admin'\]/);
+  assert.match(mainSource, /coreIds: \[\.\.\.CORE_SERVICE_IDS\]/);
+  assert.doesNotMatch(mainSource, /startDesktopServices\(\['admin'\]\)/);
 });
 
 function statuses(serviceIds, runningId = null) {
@@ -98,7 +99,7 @@ test('managed V8OS shutdown commits only after core services and desktop pet are
   assert.deepEqual(result, { ok: true, reason: 'stopped' });
   assert.deepEqual(calls, [
     'pet:graceful',
-    'stop:engine,admin,web',
+    'stop:engine,web',
     'record:remove',
     'control:stop',
     'app:quit',
@@ -130,7 +131,7 @@ test('managed V8OS shutdown may commit after the second verified core stop succe
   const result = await runManagedV8OSShutdown(dependencies);
 
   assert.equal(result.ok, true);
-  assert.equal(calls.filter((item) => item === 'stop:engine,admin,web').length, 2);
+  assert.equal(calls.filter((item) => item === 'stop:engine,web').length, 2);
   assert.equal(calls.filter((item) => item === 'core:retry').length, 1);
   assert.deepEqual(calls.slice(-3), ['record:remove', 'control:stop', 'app:quit']);
 });
@@ -145,7 +146,7 @@ test('managed V8OS shutdown keeps Shell ownership when a core service remains al
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'core_services_still_running');
   assert.deepEqual(result.remaining.map((item) => item.id), ['engine']);
-  assert.equal(calls.filter((item) => item === 'stop:engine,admin,web').length, 2);
+  assert.equal(calls.filter((item) => item === 'stop:engine,web').length, 2);
   assert.equal(calls.includes('record:remove'), false);
   assert.equal(calls.includes('control:stop'), false);
   assert.equal(calls.includes('app:quit'), false);

@@ -8,7 +8,7 @@ const petRoot = path.resolve(__dirname, '..');
 test('desktop pet auto-connects with bounded retries and loopback-only local server', () => {
   const appSource = fs.readFileSync(path.join(petRoot, 'src', 'App.tsx'), 'utf8');
   const serverSource = fs.readFileSync(path.join(petRoot, 'server.ts'), 'utf8');
-  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
+  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'companion-window.cjs'), 'utf8');
   const voiceSmokeSource = fs.readFileSync(path.join(petRoot, 'test', 'v8os_voice_live_smoke.ts'), 'utf8');
 
   assert.match(appSource, /ensureLocalSession/);
@@ -27,7 +27,7 @@ test('desktop pet auto-connects with bounded retries and loopback-only local ser
   assert.match(mainSource, /installStableRendererProtocol/);
   assert.match(mainSource, /writeDesktopPetProcessDescriptor\(transport\)/);
   assert.match(mainSource, /descriptor\.serverPid = transport\.serverPid/);
-  assert.match(mainSource, /runtimeKind: 'desktop-pet'/);
+  assert.match(mainSource, /runtimeKind: 'companion-window'/);
   assert.match(mainSource, /executablePath: path\.resolve\(process\.execPath\)/);
   assert.match(mainSource, /repoRoot: path\.resolve/);
   assert.match(mainSource, /current\?\.descriptorId === DESKTOP_PET_DESCRIPTOR_ID/);
@@ -36,10 +36,10 @@ test('desktop pet auto-connects with bounded retries and loopback-only local ser
   assert.doesNotMatch(voiceSmokeSource, /127\.0\.0\.1:3000/);
   assert.match(voiceSmokeSource, /V8_CYBERCORE_USE_PROXY=1 requires V8_CYBERCORE_PROXY_BASE/);
   assert.match(mainSource, /stdio: \['ignore', 'pipe', 'pipe', 'ipc'\]/);
-  assert.match(mainSource, /process\.env\.V8_DESKTOP_NODE_IS_ELECTRON === '1'/);
+  assert.match(mainSource, /Boolean\(process.versions.electron\)/);
   assert.match(mainSource, /serverEnv\.ELECTRON_RUN_AS_NODE = '1'/);
   assert.match(mainSource, /delete serverEnv\.ELECTRON_RUN_AS_NODE/);
-  assert.match(mainSource, /app\.on\('before-quit',[\s\S]{0,180}if \(shuttingDown\) return;[\s\S]{0,180}safeShutdown\(\{ source: 'application_quit' \}\)/);
+  assert.doesNotMatch(mainSource, /app\.(quit|exit|requestSingleInstanceLock)/);
   assert.match(mainSource, /verifyBundledServer/);
   assert.match(mainSource, /isTrustedRendererUrl\(rendererUrl, DEVELOPMENT_TRANSPORT\)/);
   assert.doesNotMatch(mainSource, /url\.startsWith\('http:\/\/localhost:/);
@@ -61,31 +61,18 @@ test('desktop pet window exposes the V8 product title', () => {
   assert.match(transportSource, /object-src 'none'/);
 });
 
-test('managed desktop pet follows unexpected Shell process loss but tolerates preview restart leases', () => {
-  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
-  const watchdogSource = fs.readFileSync(path.join(petRoot, 'lib', 'shell-lifecycle-watchdog.cjs'), 'utf8');
-
-  assert.match(mainSource, /createShellLifecycleWatchdog/);
-  assert.match(mainSource, /safeShutdown\(\{ source: event\.reason \}\)/);
-  assert.match(mainSource, /function finalizeShutdown[\s\S]*removeOwnedDesktopPetProcessDescriptor\(\)[\s\S]*app\.exit\(0\)/);
-  assert.match(watchdogSource, /shell-restart\.json/);
-  assert.match(watchdogSource, /preview_rebuild/);
-  assert.match(watchdogSource, /shell_process_exited/);
-});
-
 test('desktop pet settings and shutdown use the Shell control contract', () => {
-  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
+  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'companion-window.cjs'), 'utf8');
   const preloadSource = fs.readFileSync(path.join(petRoot, 'electron', 'preload.cjs'), 'utf8');
 
-  assert.match(mainSource, /SHELL_SETTINGS_DEEP_LINK = 'v8os:\/\/open\/admin\/desktop-pet'/);
-  assert.match(mainSource, /shellControlClient\?\.send\('open-settings'\)/);
+  assert.match(mainSource, /options.onOpenSettings/);
   assert.doesNotMatch(mainSource, /v8-desktop:open-admin'[\s\S]{0,180}shell\.openExternal\(url\)/);
   assert.match(preloadSource, /shutdownReady/);
   assert.match(preloadSource, /onActiveSession/);
 });
 
 test('desktop pet hot-applies canonical config changes through the Admin BFF', () => {
-  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
+  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'companion-window.cjs'), 'utf8');
   const preloadSource = fs.readFileSync(path.join(petRoot, 'electron', 'preload.cjs'), 'utf8');
   const appSource = fs.readFileSync(path.join(petRoot, 'src', 'App.tsx'), 'utf8');
   const petSource = fs.readFileSync(path.join(petRoot, 'src', 'components', 'CyberPet.tsx'), 'utf8');

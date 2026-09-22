@@ -1119,6 +1119,7 @@ class WorkflowMemoryService:
             for marker, bucket in (
                 ("apps/v8-agent-os-engine", "engine"),
                 ("apps/v8-agent-os-admin", "admin"),
+                ("apps/v8-agent-os-web/src/admin", "admin"),
                 ("apps/v8-agent-os-phone", "phone"),
                 ("apps/v8-agent-os-web", "web"),
                 ("packages/", "shared_package"),

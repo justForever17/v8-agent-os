@@ -11,7 +11,7 @@ const state = path.resolve(process.env.V8_AGENT_OS_HOME || '');
 const allowed = path.join(repo, 'tmp') + path.sep;
 if (!state.startsWith(allowed)) throw new Error('isolated state under checkout/tmp is required');
 if (path.resolve(os.homedir()) !== path.dirname(state)) throw new Error('os.homedir and V8_AGENT_OS_HOME must share the isolated home');
-const app = path.join(repo, 'apps/v8-agent-os-admin');
+const app = path.join(repo, 'apps/v8-agent-os-web');
 for (const name of ['.env', '.env.local', '.env.development.local']) {
   if (fs.existsSync(path.join(app, name))) throw new Error('test checkout must not contain local environment files');
 }

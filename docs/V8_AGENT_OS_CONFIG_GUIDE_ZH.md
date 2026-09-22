@@ -127,7 +127,7 @@ Checkpoint 只使用 strict msgpack 和加密存储；不要恢复 pickle、任�
 
 ### 内部服务密钥与设备身份
 
-`systemBase.bridge.internalSecret` 用于同一 V8OS 实例的内部服务认证，以及部分 WebSocket 票据签名。Engine 控制面仍校验 `x-v8-agent-os-secret`；Admin 按需启动并不意味着此字段可以删除。通常应保留系统自动生成的值，不手动复制到命令行、截图或问题反馈。
+`systemBase.bridge.internalSecret` 用于同一 V8OS 实例的内部服务认证，以及部分 WebSocket 票据签名。Engine 控制面仍校验 `x-v8-agent-os-secret`；Admin 合并为配置页面并不意味着此字段可以删除。通常应保留系统自动生成的值，不手动复制到命令行、截图或问题反馈。
 
 它不是 Phone 配对密码，也不是多设备组网的统一密码。Phone identity 的签名和 refresh 凭据由 Engine Client Identity 管理；Network Supervisor 的 peer token 与 Ed25519 身份有独立管理入口，不能用此字段替代。
 

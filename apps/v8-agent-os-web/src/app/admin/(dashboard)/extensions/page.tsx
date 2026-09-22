@@ -1,0 +1,1511 @@
+"use client";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
+import { CheckCircle2, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Store, Terminal, Trash2, Upload, Wrench } from "lucide-react";
+import { AdminPageHeader } from "@admin/components/admin-shell/AdminPageHeader";
+import { AdminPageShell } from "@admin/components/admin-shell/AdminPageShell";
+import { ConfigCard } from "@admin/components/admin-shell/ConfigCard";
+import { DomainSummaryStrip } from "@admin/components/admin-shell/DomainSummaryStrip";
+import { EmptyState } from "@admin/components/admin-shell/EmptyState";
+import { InlineSaveState } from "@admin/components/admin-shell/InlineSaveState";
+import { StatusNotice } from "@admin/components/admin-shell/StatusNotice";
+import { ModelSelect } from "@admin/components/models/ModelSelect";
+import { Badge } from "@admin/components/ui/badge";
+import { Button } from "@admin/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@admin/components/ui/dialog";
+import { Input } from "@admin/components/ui/input";
+import { Label } from "@admin/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@admin/components/ui/select";
+import { Slider } from "@admin/components/ui/slider";
+import { SettingToggleCard } from "@admin/components/admin-shell/SettingToggleCard";
+import { Textarea } from "@admin/components/ui/textarea";
+import { useToast } from "@admin/components/ui/use-toast";
+import { useT } from "@admin/components/providers/LocaleProvider";
+import { fetchAdminJson, peekAdminJsonCache } from "@admin/lib/admin-client-cache";
+import {
+  fetchConfigDomain,
+  peekConfigDomain,
+  saveConfigDomain,
+  type ConfigRegistryEnvelope,
+} from "@admin/lib/config-registry";
+import { tg } from "@admin/i18n/admin-legacy";
+type ExtensionCatalogResponse = {
+  startupState?: "cold" | "refreshing" | "ready" | "error";
+  snapshotFreshness?: "cold" | "cached" | "live";
+  lastRefreshAt?: string | null;
+  lastRefreshError?: string | null;
+  fingerprint?: string | null;
+  visibleRootSignature?: string | null;
+  catalogScope?: {
+    mode?: string;
+    workspacePath?: string;
+    workspaceId?: string;
+    projectId?: string;
+  };
+  changedAt?: string | null;
+  lastSkillInventoryChange?: {
+    reason?: string | null;
+    changedAt?: string | null;
+    fingerprint?: string | null;
+    addedSkills?: string[];
+    removedSkills?: string[];
+    updatedSkills?: string[];
+  } | null;
+  skillsStartupState?: string | null;
+  mcpStartupState?: string | null;
+  runtime?: {
+    startupState?: string | null;
+    snapshotFreshness?: string | null;
+    lastRefreshAt?: string | null;
+    lastRefreshError?: string | null;
+    skillsStartupState?: string | null;
+    mcpStartupState?: string | null;
+  };
+  summary: {
+    skillCount: number;
+    mcpServerCount: number;
+    connectedMcpServerCount: number;
+    mcpToolCount: number;
+  };
+  skillDependencyPolicy?: {
+    mode?: string;
+    pythonTarget?: string;
+    systemWideInstallAllowed?: boolean;
+    nodeGlobalInstallAllowed?: boolean;
+  };
+  skills?: {
+    root: string;
+    roots?: string[];
+    rootDescriptors?: Array<{
+      rootPath: string;
+      sourceType?: "global" | "main_workspace" | "scoped_workspace" | string;
+      visibility?: "global" | "scoped" | string;
+      workspacePath?: string;
+      workspaceId?: string | null;
+      projectId?: string | null;
+    }>;
+    fingerprint?: string | null;
+    changedAt?: string | null;
+    visibleRootSignature?: string | null;
+    discoveryRevision?: string | null;
+    changedRoots?: string[];
+    scopedRefreshMode?: string | null;
+    items: Array<{
+      skillId?: string;
+      name: string;
+      description: string;
+      path: string;
+      skillRoot?: string;
+      instructionPath?: string;
+      sourceType?: "global" | "main_workspace" | "scoped_workspace" | string;
+      visibility?: "global" | "scoped" | string;
+      workspacePath?: string;
+      workspaceId?: string | null;
+      projectId?: string | null;
+      rootPath?: string;
+    }>;
+  };
+  mcp: {
+    servers: Array<{
+      name: string;
+      status: "connected" | "disabled" | "error";
+      toolCount: number;
+      tools: Array<{
+        name: string;
+        description: string;
+      }>;
+      transport: string;
+      target: string;
+      appsSupported?: boolean;
+      appToolCount?: number;
+      uiResourceCount?: number;
+      lastAppsError?: string | null;
+    }>;
+  };
+};
+type ExtensionHealthResponse = {
+  startupState?: "cold" | "refreshing" | "ready" | "error";
+  snapshotFreshness?: "cold" | "cached" | "live";
+  lastRefreshAt?: string | null;
+  lastRefreshError?: string | null;
+  skillsStartupState?: string | null;
+  mcpStartupState?: string | null;
+  runtime?: {
+    startupState?: string | null;
+    snapshotFreshness?: string | null;
+    lastRefreshAt?: string | null;
+    lastRefreshError?: string | null;
+    skillsStartupState?: string | null;
+    mcpStartupState?: string | null;
+    silk?: {
+      available?: boolean;
+      version?: string | null;
+      toolRoot?: string;
+    };
+  };
+  summary: ExtensionCatalogResponse["summary"];
+  skillDependencyPolicy?: ExtensionCatalogResponse["skillDependencyPolicy"];
+  mcp: {
+    statusBreakdown: Record<string, number>;
+  };
+  silk?: {
+    available?: boolean;
+    version?: string | null;
+    toolRoot?: string;
+  };
+};
+type ExtensionSkillItem = NonNullable<ExtensionCatalogResponse["skills"]>["items"][number];
+type SkillInstallResult = {
+  source: string;
+  targetRoot: string;
+  installed: Array<{
+    name: string;
+    path: string;
+  }>;
+  conflicts: Array<{
+    name?: string;
+    path?: string;
+    reason?: string;
+  }>;
+  warnings: string[];
+};
+type SkillSafetyReview = {
+  id: string;
+  skill_id?: string | null;
+  skill_name?: string | null;
+  skill_path?: string | null;
+  instruction_path?: string | null;
+  content_hash?: string | null;
+  static_verdict?: string | null;
+  effective_verdict?: string | null;
+  user_override?: string | null;
+  disabled?: boolean;
+  reasons?: string[];
+  flaggedFiles?: Array<{
+    path?: string;
+    severity?: string;
+    findings?: Array<{id?: string;label?: string;}>;
+  }>;
+  findingCategories?: string[];
+  updated_at?: string | null;
+  reviewed_at?: string | null;
+};
+type SysModel = {
+  id: string;
+  modelRef?: string;
+  providerId?: string;
+  modelId: string;
+  name: string;
+  type: string;
+  provider?: {
+    id?: string;
+    name?: string;
+  };
+  providerName?: string;
+};
+type ExtensionsConfigData = {
+  prefilterPolicy?: {
+    enabled?: boolean;
+    mode?: string;
+    skills?: {
+      stage1Enabled?: boolean;
+      stage1TopK?: number;
+      llmEnabled?: boolean;
+      stage2TopK?: number;
+      llmTimeoutSeconds?: number;
+    };
+    mcp?: {
+      stage1Enabled?: boolean;
+      stage1TopK?: number;
+      llmEnabled?: boolean;
+      stage2TopK?: number;
+      llmTimeoutSeconds?: number;
+    };
+  };
+  modelBindings?: {
+    prefilterModel?: string;
+  };
+};
+type StructuredValidationPayload = {
+  code?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+};
+type McpTransportType = "stdio" | "http" | "sse";
+type McpInstallFormState = {
+  name: string;
+  type: McpTransportType;
+  command: string;
+  url: string;
+  argsText: string;
+  envText: string;
+  headersText: string;
+  baseConfig?: Record<string, unknown>;
+  clearedCredentials?: string[];
+};
+type McpFormMode = "create" | "edit";
+type TranslateFn = (value: string, params?: Record<string, string | number>) => string;
+const DEFAULT_MCP_INSTALL_FORM: McpInstallFormState = {
+  name: "",
+  type: "stdio",
+  command: "",
+  url: "",
+  argsText: "",
+  envText: "",
+  headersText: ""
+};
+function statusLabel(status: string, t: TranslateFn) {
+  if (status === "connected")
+  return t("app.admin.dashboard.extensions.page.kf2ef9263");
+  if (status === "disabled")
+  return t("app.admin.dashboard.extensions.page.k369f3547");
+  return t("app.admin.dashboard.extensions.page.k5797988b");
+}
+function StatPill({ label, value
+
+
+}: {label: string;value: string | number;}) {
+  return <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 dark:border-border dark:bg-card">
+            <div className="text-xs text-muted-foreground dark:text-muted-foreground">{label}</div>
+            <div className="mt-2 text-2xl font-semibold text-foreground dark:text-slate-100">{value}</div>
+        </div>;
+}
+function PolicyToggleCard({ title, description, checked, onCheckedChange, children
+
+
+
+
+
+}: {title: string;description?: string;checked: boolean;onCheckedChange: (checked: boolean) => void;children?: ReactNode;}) {
+  return <div className="space-y-4 rounded-2xl border border-border bg-muted/80 p-4 dark:border-border dark:bg-muted/40">
+            <SettingToggleCard
+                title={title}
+                description={description}
+                checked={checked}
+                onCheckedChange={onCheckedChange}
+                className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-4 items-start"
+            />
+            {children}
+        </div>;
+}
+function SliderField({ label, value, min, max, step = 1, disabled, onValueChange, formatter, hint
+
+
+
+
+
+
+
+
+
+}: {label: string;value: number;min: number;max: number;step?: number;disabled?: boolean;onValueChange: (value: number) => void;formatter?: (value: number) => string;hint?: string;}) {
+  return <div className={`space-y-3 ${disabled ? "opacity-50" : ""}`}>
+            <div className="flex items-center justify-between gap-3">
+                <Label>{label}</Label>
+                <span className="rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-foreground dark:border-border dark:bg-card dark:text-slate-100">
+                    {formatter ? formatter(value) : value}
+                </span>
+            </div>
+            <Slider value={[value]} min={min} max={max} step={step} disabled={disabled} onValueChange={([next]) => {
+      if (typeof next === "number" && Number.isFinite(next)) {
+        onValueChange(next);
+      }
+    }} />
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground/80 dark:text-muted-foreground">
+                <span>{min}</span>
+                <span>{max}</span>
+            </div>
+            {hint ? <div className="text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{hint}</div> : null}
+        </div>;
+}
+function skillSourceBadgeLabel(sourceType: string | undefined, t: TranslateFn) {
+  if (sourceType === "main_workspace")
+  return t("app.admin.dashboard.extensions.page.k61ce835a");
+  if (sourceType === "scoped_workspace")
+  return t("app.admin.dashboard.extensions.page.kf0786585");
+  return t("app.admin.dashboard.extensions.page.k2cdad9c0");
+}
+function extractValidationPayload(payload: unknown): StructuredValidationPayload | null {
+  if (!payload || typeof payload !== "object")
+  return null;
+  const record = payload as Record<string, unknown>;
+  const detail = record.detail;
+  if (detail && typeof detail === "object") {
+    return detail as StructuredValidationPayload;
+  }
+  if (typeof record.error === "string") {
+    return { message: record.error };
+  }
+  if (typeof detail === "string") {
+    return { message: detail };
+  }
+  return null;
+}
+function localizeSkillZipValidationPayload(payload: StructuredValidationPayload | null, t: TranslateFn): string | null {
+  if (!payload)
+  return null;
+  const details = payload.details || {};
+  switch (payload.code) {
+    case "invalid_file_type":
+      return t("app.admin.dashboard.extensions.page.k39d87bf6");
+    case "empty_archive":
+      return t("app.admin.dashboard.extensions.page.k2cb65945");
+    case "invalid_root_structure":{
+        const rootFiles = Array.isArray(details.rootFiles) ? details.rootFiles.filter((item): item is string => typeof item === "string") : [];
+        return rootFiles.length > 0 ?
+        t("app.admin.dashboard.extensions.page.k077d3c19", {
+          rootFiles_join: rootFiles.join("、")
+        }) : t("app.admin.dashboard.extensions.page.kc65ffcd3");
+      }
+    case "multiple_root_directories":{
+        const rootEntries = Array.isArray(details.rootEntries) ? details.rootEntries.filter((item): item is string => typeof item === "string") : [];
+        return rootEntries.length > 0 ?
+        t("app.admin.dashboard.extensions.page.k9407c8ed", {
+          rootEntries_join: rootEntries.join("、")
+        }) : t("app.admin.dashboard.extensions.page.k3c857a6f");
+      }
+    case "missing_skill_manifest":
+      return t("app.admin.dashboard.extensions.page.k7cdffc4a");
+    case "invalid_zip":
+      return t("app.admin.dashboard.extensions.page.k727a7d38");
+    default:
+      return typeof payload.message === "string" && payload.message.trim() ? payload.message : null;
+  }
+}
+function localizeMcpValidationPayload(payload: StructuredValidationPayload | null, t: TranslateFn): string | null {
+  if (!payload)
+  return null;
+  switch (payload.code) {
+    case "invalid_payload":
+      return t("app.admin.dashboard.extensions.page.kf9af03ce");
+    case "invalid_server_map":
+      return t("app.admin.dashboard.extensions.page.k669b692b");
+    case "empty_server_map":
+      return t("app.admin.dashboard.extensions.page.kaa32b9ff");
+    case "empty_server_name":
+      return t("app.admin.dashboard.extensions.page.k2f871867");
+    case "invalid_server_payload":
+      return t("app.admin.dashboard.extensions.page.kb30b8c40");
+    case "invalid_command":
+      return t("app.admin.dashboard.extensions.page.k0275c14d");
+    case "invalid_url":
+      return t("app.admin.dashboard.extensions.page.k0b9ee333");
+    case "invalid_args":
+      return t("app.admin.dashboard.extensions.page.k452944be");
+    case "invalid_env":
+      return t("app.admin.dashboard.extensions.page.k97645b49");
+    case "invalid_headers":
+      return t("app.admin.dashboard.extensions.page.k251f00b3");
+    case "missing_or_invalid_type":
+      return t("app.admin.dashboard.extensions.page.mcpTypeRequired");
+    case "missing_command":
+      return t("app.admin.dashboard.extensions.page.mcpCommandRequired");
+    case "missing_url":
+      return t("app.admin.dashboard.extensions.page.mcpUrlRequired");
+    case "missing_target":
+      return t("app.admin.dashboard.extensions.page.k8f18a1e4");
+    default:
+      return typeof payload.message === "string" && payload.message.trim() ? payload.message : null;
+  }
+}
+function normalizeMcpTransportType(value: unknown): McpTransportType | "" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "stdio")
+  return "stdio";
+  if (normalized === "http" || normalized === "streamable_http" || normalized === "streamable-http")
+  return "http";
+  if (normalized === "sse")
+  return "sse";
+  return "";
+}
+function parseMcpArgs(value: string, t: TranslateFn): string[] {
+  if (value.trimStart().startsWith("[")) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); }
+    catch { throw new Error(t("extensions.store.invalidArgsArray")); }
+    if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string")) {
+      throw new Error(t("extensions.store.invalidArgsArray"));
+    }
+    return parsed;
+  }
+  return value === "" ? [] : value.split(/\r?\n/);
+}
+function parseMcpKeyValueLines(value: string, label: string, t: TranslateFn): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of value.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed)
+    continue;
+    const equalIndex = trimmed.indexOf("=");
+    if (equalIndex <= 0) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpKeyValueFormat", { label }));
+    }
+    const key = trimmed.slice(0, equalIndex).trim();
+    const nextValue = trimmed.slice(equalIndex + 1).trim();
+    if (!key) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpKeyValueFormat", { label }));
+    }
+    result[key] = nextValue;
+  }
+  return result;
+}
+function formatMcpArgsText(value: unknown): string {
+  // JSON represents empty/whitespace arguments and embedded newlines exactly.
+  return Array.isArray(value) ? JSON.stringify(value, null, 2) : "";
+}
+function formatMcpKeyValueText(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+  return Object.entries(value as Record<string, unknown>).
+  map(([key, item]) => `${key}=${String(item ?? "")}`).
+  join("\n");
+}
+function mcpFormFromServerConfig(name: string, server: Record<string, unknown>): McpInstallFormState {
+  const type = normalizeMcpTransportType(server.type ?? server.transport) || (server.url ? "http" : "stdio");
+  return {
+    name,
+    type,
+    baseConfig: structuredClone(server),
+    clearedCredentials: [],
+    command: typeof server.command === "string" ? server.command : "",
+    url: typeof server.url === "string" ? server.url : "",
+    argsText: formatMcpArgsText(server.args),
+    envText: formatMcpKeyValueText(server.env),
+    headersText: formatMcpKeyValueText(server.headers)
+  };
+}
+function buildMcpFormPayload(form: McpInstallFormState, t: TranslateFn): Record<string, unknown> {
+  const name = form.name.trim();
+  if (!name) {
+    throw new Error(t("app.admin.dashboard.extensions.page.k2f871867"));
+  }
+  const type = normalizeMcpTransportType(form.type);
+  if (!type) {
+    throw new Error(t("app.admin.dashboard.extensions.page.mcpTypeRequired"));
+  }
+  const server: Record<string, unknown> = { ...structuredClone(form.baseConfig || {}), type };
+  const refs = { ...(server["x-v8-credential-refs"] as Record<string, unknown> || {}) };
+  for (const key of form.clearedCredentials || []) {
+    if (key === "endpointRef") { delete server.endpointRef; delete server.endpointHost; }
+    else delete refs[key];
+  }
+  server["x-v8-credential-refs"] = refs;
+  if (form.baseConfig) server["x-v8-edit-base"] = form.baseConfig;
+  if (type === "stdio") {
+    const command = form.command.trim();
+    if (!command) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpCommandRequired"));
+    }
+    server.command = command;
+    const args = parseMcpArgs(form.argsText, t);
+    server.args = args;
+    const env = parseMcpKeyValueLines(form.envText, t("app.admin.dashboard.extensions.page.mcpEnv"), t);
+    server.env = env;
+  } else {
+    const url = form.url.trim();
+    if (!url && !server.endpointRef) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpUrlRequired"));
+    }
+    if (url) server.url = url;
+    const headers = parseMcpKeyValueLines(form.headersText, t("app.admin.dashboard.extensions.page.mcpHeaders"), t);
+    server.headers = headers;
+  }
+  return { mcpServers: { [name]: server } };
+}
+function validateMcpJsonInput(raw: string, t: TranslateFn): {
+  parsed: Record<string, unknown>;
+  serverCount: number;
+} {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(t("app.admin.dashboard.extensions.page.kf9af03ce"));
+  }
+  const serverMap = ("mcpServers" in parsed ? parsed.mcpServers : parsed) as Record<string, unknown>;
+  if (!serverMap || typeof serverMap !== "object" || Array.isArray(serverMap)) {
+    throw new Error(t("app.admin.dashboard.extensions.page.k669b692b"));
+  }
+  const entries = Object.entries(serverMap);
+  if (entries.length === 0) {
+    throw new Error(t("app.admin.dashboard.extensions.page.kaa32b9ff"));
+  }
+  for (const [name, rawServer] of entries) {
+    if (!String(name || "").trim()) {
+      throw new Error(t("app.admin.dashboard.extensions.page.k2f871867"));
+    }
+    if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) {
+      throw new Error(t("app.admin.dashboard.extensions.page.kaf580ce9", {
+        name: name
+      }));
+    }
+    const server = rawServer as Record<string, unknown>;
+    const type = normalizeMcpTransportType(server.type ?? server.transport);
+    if (!type) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpTypeRequired"));
+    }
+    const disabled = Boolean(server.disabled);
+    const command = typeof server.command === "string" ? server.command.trim() : "";
+    const url = typeof server.url === "string" ? server.url.trim() : "";
+    if (!disabled && type === "stdio" && !command) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpCommandRequired"));
+    }
+    if (!disabled && (type === "http" || type === "sse") && !url && !server.endpointRef) {
+      throw new Error(t("app.admin.dashboard.extensions.page.mcpUrlRequired"));
+    }
+    if (!disabled && !command && !url && !server.endpointRef) {
+      throw new Error(t("app.admin.dashboard.extensions.page.ke81bbcc1", {
+        name: name
+      }));
+    }
+    if ("args" in server && !Array.isArray(server.args)) {
+      throw new Error(t("app.admin.dashboard.extensions.page.kbaa986a0", {
+        name: name
+      }));
+    }
+    if ("env" in server && (!server.env || typeof server.env !== "object" || Array.isArray(server.env))) {
+      throw new Error(t("app.admin.dashboard.extensions.page.kc1c54333", {
+        name: name
+      }));
+    }
+    if ("headers" in server && (!server.headers || typeof server.headers !== "object" || Array.isArray(server.headers))) {
+      throw new Error(t("app.admin.dashboard.extensions.page.kf12b6e45", {
+        name: name
+      }));
+    }
+  }
+  return { parsed, serverCount: entries.length };
+}
+export default function ExtensionsPage() {
+  const t = useT();
+  const [initialState] = useState(() => {
+    const models = peekAdminJsonCache<SysModel[]>("/api/admin/models");
+    const skillSafetyPayload = peekAdminJsonCache<{ items?: SkillSafetyReview[] }>("/api/admin/skills/safety/reviews?limit=100");
+    return {
+      catalog: peekAdminJsonCache<ExtensionCatalogResponse>("/api/admin/extensions/catalog") ?? null,
+      health: peekAdminJsonCache<ExtensionHealthResponse>("/api/admin/extensions/health") ?? null,
+      configEnvelope: peekConfigDomain<ExtensionsConfigData>("extensions") ?? null,
+      models: Array.isArray(models) ? models : [],
+      skillSafetyReviews: Array.isArray(skillSafetyPayload?.items) ? skillSafetyPayload.items : [],
+    };
+  });
+  const [catalogSnapshot, setCatalog] = useState<ExtensionCatalogResponse | null>(initialState.catalog);
+  const catalog = useMemo<ExtensionCatalogResponse>(() => catalogSnapshot || { summary: { skillCount: 0, mcpServerCount: 0, connectedMcpServerCount: 0, mcpToolCount: 0 }, mcp: { servers: [] } }, [catalogSnapshot]);
+  const [health, setHealth] = useState<ExtensionHealthResponse | null>(initialState.health);
+  const [configSnapshot, setConfigSnapshot] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(initialState.configEnvelope);
+  const [configDraft, setConfigDraft] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(null);
+  const configEnvelope = configDraft ?? configSnapshot;
+  const [models, setModels] = useState<SysModel[]>(initialState.models);
+  const [skillSafetyReviews, setSkillSafetyReviews] = useState<SkillSafetyReview[]>(initialState.skillSafetyReviews);
+  const [loading, setLoading] = useState(!initialState.catalog || !initialState.health || !initialState.configEnvelope);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [installingCommand, setInstallingCommand] = useState(false);
+  const [uploadingZip, setUploadingZip] = useState(false);
+  const [savingMcp, setSavingMcp] = useState(false);
+  const mcpSavePending = useRef(false);
+  const mcpEditorRevision = useRef(0);
+  const [deletingMcpServer, setDeletingMcpServer] = useState("");
+  const [deletingSkillId, setDeletingSkillId] = useState("");
+  const [commandInput, setCommandInput] = useState("");
+  const [mcpConfigInput, setMcpConfigInput] = useState("");
+  const [installResult, setInstallResult] = useState<SkillInstallResult | null>(null);
+  const [mcpFormDialogOpen, setMcpFormDialogOpen] = useState(false);
+  const [mcpInstallForm, setMcpInstallForm] = useState<McpInstallFormState>(DEFAULT_MCP_INSTALL_FORM);
+  const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
+  const [zipFileLabel, setZipFileLabel] = useState("");
+  const [zipValidationError, setZipValidationError] = useState("");
+  const [mcpValidationError, setMcpValidationError] = useState("");
+  const [mcpValidationSummary, setMcpValidationSummary] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+  const [mcpFormMode, setMcpFormMode] = useState<McpFormMode>("create");
+  const [sectionLoadError, setSectionLoadError] = useState(false);
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const updateMcpForm = (update: (previous: McpInstallFormState) => McpInstallFormState) => {
+    mcpEditorRevision.current += 1;
+    setMcpInstallForm(update);
+    setMcpValidationError("");
+  };
+  const setMcpEditorOpen = (editor: "json" | "form", open: boolean) => {
+    // Closing/reopening is a new editing session even when its text is identical.
+    mcpEditorRevision.current += 1;
+    if (editor === "form") {
+      setMcpFormDialogOpen(open);
+      if (!open) setMcpFormMode("create");
+    } else {
+      setMcpDialogOpen(open);
+    }
+    setMcpValidationError("");
+    setMcpValidationSummary("");
+  };
+  useEffect(() => {
+    if (policyOpen) void fetchAdminJson<SysModel[]>("/api/admin/models").then(setModels).catch(() => setSectionLoadError(true));
+  }, [policyOpen]);
+  const loadData = useCallback(async (force = false) => {
+    try {
+      const outcomes = await Promise.allSettled([
+        fetchAdminJson<ExtensionHealthResponse>("/api/admin/extensions/health", { force }).then(setHealth),
+        fetchConfigDomain<ExtensionsConfigData>("extensions", { force }).then(setConfigSnapshot),
+        fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/admin/skills/safety/reviews?limit=100", { force }).then(data => setSkillSafetyReviews(data.items || [])),
+        fetchAdminJson<ExtensionCatalogResponse>("/api/admin/extensions/catalog", { force }).then(data => { setCatalog(data); setLoading(false); }),
+      ]);
+      setSectionLoadError(outcomes.some(outcome => outcome.status === "rejected"));
+    } finally
+    {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+  const prefilterModels = useMemo(() => models.filter((model) => !["EMBEDDING", "RERANK", "RERANKER"].includes((model.type || "").toUpperCase())), [models]);
+  const summaryItems = useMemo(() => [
+  { label: "app.admin.dashboard.extensions.page.ke431abc9", value: catalog?.summary.skillCount ?? 0, description: "app.admin.dashboard.extensions.page.kfe05ff1c" },
+  { label: "app.admin.dashboard.extensions.page.k1b083815", value: catalog?.summary.mcpServerCount ?? 0, description: "app.admin.dashboard.extensions.page.k8f8a9a70" },
+  { label: "app.admin.dashboard.extensions.page.k80047162", value: catalog?.summary.connectedMcpServerCount ?? 0, description: "app.admin.dashboard.extensions.page.kc0f82f02" },
+  { label: "app.admin.dashboard.extensions.page.k1521f304", value: catalog?.summary.mcpToolCount ?? 0, description: "app.admin.dashboard.extensions.page.k0e799947" }],
+  [catalog]);
+  const prefilterPolicy = (configEnvelope?.data?.prefilterPolicy || {}) as NonNullable<ExtensionsConfigData["prefilterPolicy"]>;
+  const skillsPrefilter = (prefilterPolicy.skills || {}) as NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>["skills"]>;
+  const mcpPrefilter = (prefilterPolicy.mcp || {}) as NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>["mcp"]>;
+  const mergeStageConfig = (
+  current: NonNullable<ExtensionsConfigData["prefilterPolicy"]>,
+  stageKey: "skills" | "mcp",
+  patch: NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>[typeof stageKey]>) => (
+  {
+    ...current,
+    [stageKey]: { ...(current[stageKey] || {}), ...patch }
+  });
+  const updateConfig = (patch: Partial<ExtensionsConfigData>) => {
+    if (!configEnvelope)
+    return;
+    setSaved(false);
+    setConfigDraft({
+      ...configEnvelope,
+      data: {
+        ...configEnvelope.data,
+        ...patch,
+        prefilterPolicy: { ...(configEnvelope.data?.prefilterPolicy || {}), ...(patch.prefilterPolicy || {}) },
+        modelBindings: { ...(configEnvelope.data?.modelBindings || {}), ...(patch.modelBindings || {}) }
+      }
+    });
+  };
+  const handleSaveConfig = async () => {
+    if (!configEnvelope)
+    return;
+    const submittedDraft = configDraft;
+    setSaving(true);
+    try {
+      const next = await saveConfigDomain<ExtensionsConfigData>("extensions", {
+        data: {
+          ...configEnvelope.data,
+          prefilterPolicy: {
+            ...configEnvelope.data?.prefilterPolicy,
+            enabled: Boolean(configEnvelope.data?.prefilterPolicy?.enabled),
+            mode: "two_stage",
+            skills: {
+              ...configEnvelope.data?.prefilterPolicy?.skills,
+              stage1Enabled: Boolean(configEnvelope.data?.prefilterPolicy?.skills?.stage1Enabled ?? true),
+              stage1TopK: Number(configEnvelope.data?.prefilterPolicy?.skills?.stage1TopK || 20),
+              llmEnabled: Boolean(configEnvelope.data?.prefilterPolicy?.skills?.llmEnabled ?? true),
+              stage2TopK: Number(configEnvelope.data?.prefilterPolicy?.skills?.stage2TopK || 5),
+              llmTimeoutSeconds: Number(configEnvelope.data?.prefilterPolicy?.skills?.llmTimeoutSeconds || 5)
+            },
+            mcp: {
+              ...configEnvelope.data?.prefilterPolicy?.mcp,
+              stage1Enabled: Boolean(configEnvelope.data?.prefilterPolicy?.mcp?.stage1Enabled ?? true),
+              stage1TopK: Number(configEnvelope.data?.prefilterPolicy?.mcp?.stage1TopK || 20),
+              llmEnabled: Boolean(configEnvelope.data?.prefilterPolicy?.mcp?.llmEnabled ?? true),
+              stage2TopK: Number(configEnvelope.data?.prefilterPolicy?.mcp?.stage2TopK || 2),
+              llmTimeoutSeconds: Number(configEnvelope.data?.prefilterPolicy?.mcp?.llmTimeoutSeconds || 5)
+            }
+          },
+          modelBindings: { ...configEnvelope.data?.modelBindings, prefilterModel: String(configEnvelope.data?.modelBindings?.prefilterModel || "").trim() }
+        }
+      });
+      setConfigSnapshot(next);
+      setConfigDraft(current => current === submittedDraft ? null : current);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1800);
+      toast({ title: t("app.admin.dashboard.extensions.page.k0498cb65") });
+    }
+    catch (error) {
+      toast({
+        title: t("app.admin.dashboard.extensions.page.k12769ce1"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.ke0d2c647"),
+        variant: "destructive"
+      });
+    } finally
+    {
+      setSaving(false);
+    }
+  };
+  const handleReloadSystem = async () => {
+    setReloading(true);
+    try {
+      const res = await fetch("/api/admin/extensions/reload", { method: "POST" });
+      if (!res.ok)
+      throw new Error(t("app.admin.dashboard.extensions.page.k812655ea"));
+      await res.json();
+      await loadData(true);
+      toast({ title: t("app.admin.dashboard.extensions.page.kcfa8ac90") });
+    }
+    catch {
+      toast({ title: t("app.admin.dashboard.extensions.page.k22aa01cb"), description: t("app.admin.dashboard.extensions.page.ke0d2c647"), variant: "destructive" });
+    } finally
+    {
+      setReloading(false);
+    }
+  };
+  const handleCommandInstall = async () => {
+    if (!commandInput.trim())
+    return;
+    setInstallingCommand(true);
+    setInstallResult(null);
+    try {
+      const res = await fetch("/api/admin/skills/install/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: commandInput })
+      });
+      const data = await res.json();
+      if (!res.ok)
+      throw new Error(String(data?.detail || data?.error || t("app.admin.dashboard.extensions.page.k08260d4c")));
+      setInstallResult(data);
+      setCommandInput("");
+      toast({ title: t("app.admin.dashboard.extensions.page.k4877c2e6"), description: t("app.admin.dashboard.extensions.page.kc33ca4fe", {
+          data_installed_length_0: data.installed?.length ?? 0
+        }) });
+      await loadData(true);
+    }
+    catch (error) {
+      toast({
+        title: t("app.admin.dashboard.extensions.page.k77e8b0ea"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k037fd762"),
+        variant: "destructive"
+      });
+    } finally
+    {
+      setInstallingCommand(false);
+    }
+  };
+  const handleZipUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file)
+    return;
+    setUploadingZip(true);
+    setZipValidationError("");
+    try {
+      if (!String(file.name || "").toLowerCase().endsWith(".zip")) {
+        throw new Error(t("app.admin.dashboard.extensions.page.k39d87bf6"));
+      }
+      if (file.size <= 0) {
+        throw new Error(t("app.admin.dashboard.extensions.page.kefbf07b6"));
+      }
+      setZipFileLabel(`${file.name} · ${Math.max(1, Math.round(file.size / 1024))} KB`);
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/admin/skills/install/zip", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) {
+        const validation = extractValidationPayload(data);
+        throw new Error(localizeSkillZipValidationPayload(validation, t) || String(data?.detail || data?.error || t("app.admin.dashboard.extensions.page.k28d7f856")));
+      }
+      setInstallResult(data);
+      toast({ title: t("app.admin.dashboard.extensions.page.k98312139") });
+      await loadData(true);
+    }
+    catch (error) {
+      setZipValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k61c03dc2"));
+      toast({
+        title: t("app.admin.dashboard.extensions.page.k0dc966ec"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k61c03dc2"),
+        variant: "destructive"
+      });
+    } finally
+    {
+      setUploadingZip(false);
+      if (fileInputRef.current)
+      fileInputRef.current.value = "";
+    }
+  };
+  const saveMcpConfig = async (editor: "json" | "form") => {
+    if (mcpSavePending.current || (editor === "json" && !mcpConfigInput.trim())) return;
+    mcpSavePending.current = true;
+    const submittedRevision = mcpEditorRevision.current;
+    setSavingMcp(true);
+    setMcpValidationError("");
+    try {
+      let body: string;
+      if (editor === "json") {
+        const validation = validateMcpJsonInput(mcpConfigInput, t);
+        setMcpValidationSummary(t("app.admin.dashboard.extensions.page.k26d037a0", {
+          validation_serverCount: validation.serverCount
+        }));
+        body = mcpConfigInput;
+      } else {
+        body = JSON.stringify(buildMcpFormPayload(mcpInstallForm, t));
+      }
+      const res = await fetch("/api/admin/mcp/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const validationError = extractValidationPayload(data);
+        throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.k6e203323"));
+      }
+      if (mcpEditorRevision.current === submittedRevision) {
+        setMcpEditorOpen(editor, false);
+        if (editor === "json") {
+          setMcpConfigInput("");
+        } else {
+          setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
+        }
+      }
+      toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
+      await loadData(true);
+    }
+    catch (error) {
+      if (mcpEditorRevision.current === submittedRevision) {
+        setMcpValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"));
+      }
+      toast({
+        title: t("app.admin.dashboard.extensions.page.ka7539197"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"),
+        variant: "destructive"
+      });
+    } finally
+    {
+      mcpSavePending.current = false;
+      setSavingMcp(false);
+    }
+  };
+  const openMcpCreateForm = () => {
+    setMcpFormMode("create");
+    setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
+    setMcpEditorOpen("form", true);
+  };
+  const openMcpEditForm = async (serverName: string) => {
+    const normalizedName = String(serverName || "").trim();
+    if (!normalizedName)
+    return;
+    const editRevision = ++mcpEditorRevision.current;
+    setMcpFormMode("edit");
+    setMcpValidationError("");
+    try {
+      const res = await fetch("/api/admin/mcp/config", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (mcpEditorRevision.current !== editRevision) return;
+      if (!res.ok) {
+        const validationError = extractValidationPayload(data);
+        throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"));
+      }
+      const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const serverMap = record.mcpServers && typeof record.mcpServers === "object" && !Array.isArray(record.mcpServers) ?
+      record.mcpServers as Record<string, unknown> :
+      record;
+      const server = serverMap[normalizedName];
+      if (!server || typeof server !== "object" || Array.isArray(server)) {
+        throw new Error(t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"));
+      }
+      setMcpInstallForm(mcpFormFromServerConfig(normalizedName, server as Record<string, unknown>));
+      setMcpFormDialogOpen(true);
+    }
+    catch (error) {
+      if (mcpEditorRevision.current !== editRevision) return;
+      setMcpFormMode("create");
+      toast({
+        title: t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"),
+        variant: "destructive"
+      });
+    }
+  };
+  const deleteMcpServer = async (serverName: string) => {
+    const normalizedName = String(serverName || "").trim();
+    if (!normalizedName)
+    return;
+    const confirmed = window.confirm(tg(t, "731f1b28", { value1:
+      normalizedName }));
+    if (!confirmed)
+    return;
+    setDeletingMcpServer(normalizedName);
+    try {
+      const res = await fetch(`/api/admin/mcp/config/${encodeURIComponent(normalizedName)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const validationError = extractValidationPayload(data);
+        throw new Error(localizeMcpValidationPayload(validationError, t) || String(data?.detail || data?.error || tg(t, "f6f40de6")));
+      }
+      setCatalog((previous) => previous ? {
+        ...previous,
+        mcp: {
+          ...previous.mcp,
+          servers: (previous.mcp?.servers || []).filter((server) => server.name !== normalizedName)
+        }
+      } : previous);
+      toast({
+        title: data?.alreadyRemovedFromConfig ? tg(t, "93607b46") : tg(t, "92b60366"),
+
+
+        description: tg(t, "2ec10ec7")
+      });
+      await loadData(true);
+    }
+    catch (error) {
+      toast({
+        title: tg(t, "8cc73e26"),
+        description: error instanceof Error ? error.message : tg(t, "2fb13dfc"),
+        variant: "destructive"
+      });
+    } finally
+    {
+      setDeletingMcpServer("");
+    }
+  };
+  const deleteSkill = async (skill: ExtensionSkillItem) => {
+    const skillId = String(skill.skillId || "").trim();
+    if (!skillId)
+    return;
+    const skillName = String(skill.name || skillId);
+    const isGlobal = String(skill.visibility || "global") !== "scoped";
+    const confirmed = window.confirm(tg(t, "1cea8488", { value1:
+      skillName, value2: tg(t, "20494ad9") }));
+    if (!confirmed)
+    return;
+    setDeletingSkillId(skillId);
+    try {
+      const params = new URLSearchParams();
+      params.set("scope", isGlobal ? "global" : "workspace");
+      if (skill.workspaceId)
+      params.set("workspaceId", skill.workspaceId);
+      if (skill.workspacePath)
+      params.set("workspacePath", skill.workspacePath);
+      if (skill.projectId)
+      params.set("projectId", skill.projectId);
+      const res = await fetch(`/api/admin/extensions/skills/${encodeURIComponent(skillId)}?${params.toString()}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(String(data?.detail || data?.error || tg(t, "e83e6c41")));
+      }
+      toast({
+        title: tg(t, "e95e338d"),
+        description: tg(t, "955629d4")
+      });
+      await loadData(true);
+    }
+    catch (error) {
+      toast({
+        title: tg(t, "a4e79e03"),
+        description: error instanceof Error ? error.message : tg(t, "2fb13dfc"),
+        variant: "destructive"
+      });
+    } finally
+    {
+      setDeletingSkillId("");
+    }
+  };
+  if (loading && !catalogSnapshot) {
+    return <div className="flex min-h-[320px] items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
+            </div>;
+  }
+  const clampRange = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
+  const prefilterEnabled = Boolean(prefilterPolicy?.enabled);
+  const prefilterModel = String(configEnvelope?.data?.modelBindings?.prefilterModel || "").trim();
+  const skillsStage1Enabled = Boolean(skillsPrefilter.stage1Enabled ?? true);
+  const skillsStage1TopK = Number(skillsPrefilter.stage1TopK || 20);
+  const skillsLlmEnabled = Boolean(skillsPrefilter.llmEnabled ?? true);
+  const skillsStage2TopK = Number(skillsPrefilter.stage2TopK || 5);
+  const skillsLlmTimeoutSeconds = Number(skillsPrefilter.llmTimeoutSeconds || 5);
+  const mcpStage1Enabled = Boolean(mcpPrefilter.stage1Enabled ?? true);
+  const mcpStage1TopK = Number(mcpPrefilter.stage1TopK || 20);
+  const mcpLlmEnabled = Boolean(mcpPrefilter.llmEnabled ?? true);
+  const mcpStage2TopK = Number(mcpPrefilter.stage2TopK || 2);
+  const mcpLlmTimeoutSeconds = Number(mcpPrefilter.llmTimeoutSeconds || 5);
+  const skillSafetyDisabledCount = skillSafetyReviews.filter((item) => item.disabled).length;
+  const skillSafetyReviewCount = skillSafetyReviews.filter((item) => String(item.effective_verdict || "").toLowerCase() === "review" && !item.disabled).length;
+  const skillSafetyApprovedCount = skillSafetyReviews.filter((item) => String(item.user_override || "").toLowerCase() === "approved" && !item.disabled).length;
+  const runtimeStartupState = String(health?.runtime?.startupState || catalog.startupState || "cold").trim().toLowerCase();
+  const snapshotFreshness = String(health?.runtime?.snapshotFreshness || catalog.snapshotFreshness || "cold").trim().toLowerCase();
+  const skillsPolicyBadge = skillsStage1Enabled ?
+  skillsLlmEnabled ? `${skillsStage1TopK} → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : `${skillsStage1TopK}` :
+  skillsLlmEnabled ? `full → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : t("admin.pages.extensions.prefilter.fullInventory");
+  const mcpPolicyBadge = mcpStage1Enabled ?
+  mcpLlmEnabled ? `${mcpStage1TopK} → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : `${mcpStage1TopK}` :
+  mcpLlmEnabled ? `full → ${mcpStage2TopK} / ${mcpLlmTimeoutSeconds}s` : t("admin.pages.extensions.prefilter.fullInventory");
+  return <AdminPageShell className="max-w-[var(--v8-product-settings-width,1040px)] gap-4">
+            {sectionLoadError && <p role="alert" className="text-sm text-destructive">{t("extensions.store.sectionFailed")}</p>}
+            <AdminPageHeader title={"app.admin.dashboard.extensions.page.k5b035c36"} description={"app.admin.dashboard.extensions.page.k042a5a79"} actions={<div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+                        <div className="shrink-0 whitespace-nowrap"><InlineSaveState saving={saving} saved={saved && !configDraft} dirty={Boolean(configDraft)} label={t("app.admin.dashboard.extensions.page.kcc06e009")} /></div>
+                        <Button variant="outline" asChild>
+                            <Link href="/admin/extensions/store">
+                                <Store className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.extensions.page.storeEntry")}
+                            </Link>
+                        </Button>
+                        <Button onClick={() => void handleSaveConfig()} disabled={saving || !configEnvelope}>
+                            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            {t("app.admin.dashboard.extensions.page.k6010e1ed")}
+                        </Button>
+                        <Button variant="outline" onClick={() => void loadData(true)} disabled={reloading || saving}>
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            {t("app.admin.dashboard.extensions.page.k286cb634")}
+                        </Button>
+                        <Button onClick={() => void handleReloadSystem()} disabled={reloading || saving}>
+                            {reloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                            {t("app.admin.dashboard.extensions.page.ke25fea31")}
+                        </Button>
+                    </div>} />
+
+            <DomainSummaryStrip items={summaryItems} />
+            {runtimeStartupState === "refreshing" ? <StatusNotice title={"app.admin.dashboard.extensions.page.ke3fbd37c"} description={t("app.admin.dashboard.extensions.page.k575262a6", {
+      snapshotFreshness_live_live_snapshotFreshness_cached: snapshotFreshness === "live" ? "live" : "cached"
+    })} tone="info" /> : null}
+            {runtimeStartupState === "error" ? <StatusNotice title={"app.admin.dashboard.extensions.page.kc3221dca"} description={health?.lastRefreshError || catalog.lastRefreshError || t("app.admin.dashboard.extensions.page.ka1c8eb51")} tone="warning" /> : null}
+
+            <details className="rounded-xl border p-3" open={policyOpen} onToggle={event => setPolicyOpen(event.currentTarget.open)}>
+            <summary className="cursor-pointer text-sm font-medium">{t("app.admin.dashboard.extensions.page.kcc06e009")}</summary>
+            {policyOpen && <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"} footer={<Button onClick={() => void handleSaveConfig()} disabled={saving || !configEnvelope}>{t("app.admin.dashboard.extensions.page.k6010e1ed")}</Button>}>
+                <div className="space-y-5">
+                    <div className="space-y-5">
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.extensions.page.k74dc7104")}
+                            checked={prefilterEnabled}
+                            onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "two_stage" } })}
+                            className="border-border bg-muted/80 px-4 py-3 rounded-2xl"
+                        />
+
+                        <div className="space-y-2">
+                            <Label>{t("app.admin.dashboard.extensions.page.k4c4359c1")}</Label>
+                            <ModelSelect
+              models={prefilterModels}
+              value={prefilterModel || "__empty__"}
+              emptyLabel={t("app.admin.dashboard.extensions.page.kccd8e176")}
+              placeholder={t("app.admin.dashboard.extensions.page.kccd8e176")}
+              onValueChange={(value) => updateConfig({ modelBindings: { prefilterModel: value } })} />
+                        </div>
+
+                        <div className="grid gap-4 xl:grid-cols-2">
+                            <div className="space-y-4 rounded-2xl border border-border bg-card p-4 dark:border-border dark:bg-card">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-foreground dark:text-slate-100">{tg(t, "79736210")}</div>
+                                    <Badge variant="outline">{skillsPolicyBadge}</Badge>
+                                </div>
+                                <PolicyToggleCard title={tg(t, "49bc8921")} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { stage1Enabled: checked })
+              })}>
+                                    <SliderField label={tg(t, "ca97d660")} value={skillsStage1TopK} min={1} max={100} disabled={!skillsStage1Enabled} onValueChange={(value) => updateConfig({
+                  prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
+                    stage1TopK: clampRange(value, 1, 100)
+                  })
+                })} />
+                                </PolicyToggleCard>
+                                <PolicyToggleCard title={tg(t, "ab537e9f")} checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
+                prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { llmEnabled: checked })
+              })}>
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <SliderField label={tg(t, "bbcb0c2a")} value={skillsStage2TopK} min={1} max={50} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
+                    prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
+                      stage2TopK: clampRange(value, 1, 50)
+                    })
+                  })} />
+                                        <SliderField label={tg(t, "8cb99dde")} value={skillsLlmTimeoutSeconds} min={5} max={10} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
+                    prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
+                      llmTimeoutSeconds: clampRange(value, 5, 10)
+                    })
+                  })} />
+                                    </div>
+                                </PolicyToggleCard>
+                            </div>
+
+                            <div className="space-y-4 rounded-2xl border border-border bg-card p-4 dark:border-border dark:bg-card">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-foreground dark:text-slate-100">{tg(t, "48ba093e")}</div>
+                                    <Badge variant="outline">{mcpPolicyBadge}</Badge>
+                                </div>
+                                <PolicyToggleCard title={tg(t, "49bc8921")} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { stage1Enabled: checked })
+              })}>
+                                    <SliderField label={tg(t, "ca97d660")} value={mcpStage1TopK} min={1} max={100} disabled={!mcpStage1Enabled} onValueChange={(value) => updateConfig({
+                  prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
+                    stage1TopK: clampRange(value, 1, 100)
+                  })
+                })} />
+                                </PolicyToggleCard>
+                                <PolicyToggleCard title={tg(t, "ab537e9f")} checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
+                prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { llmEnabled: checked })
+              })}>
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <SliderField label={tg(t, "bbcb0c2a")} value={mcpStage2TopK} min={1} max={50} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
+                    prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
+                      stage2TopK: clampRange(value, 1, 50)
+                    })
+                  })} />
+                                        <SliderField label={tg(t, "8cb99dde")} value={mcpLlmTimeoutSeconds} min={5} max={10} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
+                    prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
+                      llmTimeoutSeconds: clampRange(value, 5, 10)
+                    })
+                  })} />
+                                    </div>
+                                </PolicyToggleCard>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </ConfigCard>}
+            </details>
+
+            <ConfigCard title={tg(t, "75497cb2")} description={tg(t, "ee842ada")} variant="list">
+                <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <StatPill label={t("app.admin.dashboard.rpa.page.kc6ff9900")} value={skillSafetyDisabledCount} />
+                        <StatPill label={tg(t, "eaae1132")} value={skillSafetyReviewCount} />
+                        <StatPill label={tg(t, "65c814f7")} value={skillSafetyApprovedCount} />
+                    </div>
+                    <div className="rounded-2xl border border-dashed border-border bg-muted/70 px-4 py-5 text-sm leading-6 text-muted-foreground">
+                        {skillSafetyReviews.length === 0 ? tg(t, "c38e628d") : tg(t, "f2b2b3a6")
+
+          }
+                    </div>
+                    <div className="flex justify-end">
+                        <Button asChild variant="outline">
+                            <a href="/admin/safety-control">{tg(t, "fc2a86a8")}</a>
+                        </Button>
+                    </div>
+                </div>
+            </ConfigCard>
+
+            <div className="grid auto-rows-fr gap-4 xl:grid-cols-2">
+                <ConfigCard title={"app.admin.dashboard.extensions.page.kec74feaf"} description={"app.admin.dashboard.extensions.page.kcc79174f"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">
+                    <div className="space-y-3">
+                        <details className="space-y-3 rounded-xl border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                            <summary className="cursor-pointer">{t("extensions.store.inventoryDetails")}</summary>
+                            <div>
+                                {t("app.admin.dashboard.extensions.page.k99bf9749")}
+                                <span className="font-medium break-all text-foreground">{catalog.skills?.root || "—"}</span>
+                            </div>
+                            <div className="grid gap-2 md:grid-cols-2">
+                                <div className="rounded-xl border border-border bg-card px-3 py-2">
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tg(t, "7279ecd4")}</div>
+                                    <div className="mt-1 text-xs text-foreground">{String(catalog.catalogScope?.mode || "default")}</div>
+                                    {catalog.catalogScope?.projectId ? <div className="mt-1 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{catalog.catalogScope.projectId}</div> : null}
+                                    {catalog.catalogScope?.workspacePath ? <div className="mt-1 break-all text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.kd723b49c")}{catalog.catalogScope.workspacePath}</div> : null}
+                                </div>
+                                <div className="rounded-xl border border-border bg-card px-3 py-2">
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tg(t, "161c82a4")}</div>
+                                    <div className="mt-1 break-all text-xs text-foreground">{catalog.skills?.visibleRootSignature || catalog.visibleRootSignature || "—"}</div>
+                                    <div className="mt-1 text-[11px] text-muted-foreground">{tg(t, "b23c239c")}{String(catalog.skills?.discoveryRevision || "—")}</div>
+                                    <div className="mt-1 text-[11px] text-muted-foreground">{tg(t, "1a5ed9ee")}{String(catalog.skills?.scopedRefreshMode || "base")}</div>
+                                </div>
+                            </div>
+                            <div className="rounded-xl border border-border bg-card px-3 py-2">
+                                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tg(t, "88063e8d")}</div>
+                                <div className="mt-2">
+                                    {(catalog.skills?.changedRoots || []).length ?
+                <div className="space-y-1">
+                                            {(catalog.skills?.changedRoots || []).map((root) =>
+                  <div key={String(root)} className="break-all rounded-lg bg-muted/50 px-2 py-1 text-[11px] text-muted-foreground">
+                                                    {String(root)}
+                                                </div>
+                  )}
+                                        </div> :
+
+                <div className="text-xs text-muted-foreground">{tg(t, "0c294602")}</div>
+                }
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.extensions.page.kcc6ff432")}</div>
+                                {(catalog.skills?.rootDescriptors || []).length === 0 ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.extensions.page.k5a1c552a")}</div> : (catalog.skills?.rootDescriptors || []).map((root) => <div key={root.rootPath} className="rounded-xl border border-border bg-card px-3 py-3">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge variant="secondary">{skillSourceBadgeLabel(root.sourceType, t)}</Badge>
+                                                {root.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k3d11f197")}</Badge> : null}
+                                            </div>
+                                            <div className="mt-2 break-all text-xs text-muted-foreground">{root.rootPath}</div>
+                                            {root.workspacePath ? <div className="mt-1 break-all text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.kd723b49c")}{root.workspacePath}</div> : null}
+                                            {root.projectId ? <div className="mt-1 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{root.projectId}</div> : null}
+                                        </div>)}
+                            </div>
+                        </details>
+                        {(catalog.skills?.items || []).length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.k8f2a9946")} description={t("app.admin.dashboard.extensions.page.kd9677b98")} /> : (catalog.skills?.items || []).map((skill) => <div key={skill.skillId || `${skill.name}:${skill.path}`} className="rounded-xl border border-border bg-card p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0 space-y-2">
+                                            <div className="flex items-center gap-2">
+                                                <PackageCheck className="h-4 w-4 text-emerald-600" />
+                                                <div className="text-sm font-semibold text-foreground">{skill.name}</div>
+                                                <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
+                                                {skill.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k43e1d513")}</Badge> : null}
+                                            </div>
+                                            <div className="line-clamp-2 text-sm leading-6 text-muted-foreground">{skill.description}</div>
+                                            {skill.skillId ? <div className="break-all rounded-xl bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">id: {skill.skillId}</div> : null}
+                                            {skill.workspacePath ? <div className="break-all rounded-xl bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.kd723b49c")}{skill.workspacePath}</div> : null}
+                                            {skill.projectId ? <div className="rounded-xl bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
+                                            <div className="break-all rounded-xl bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{skill.path}</div>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                  title={tg(t, "8d0a9426")}
+                  onClick={() => void deleteSkill(skill)}
+                  disabled={!skill.skillId || deletingSkillId === skill.skillId}>
+
+                                                {deletingSkillId === skill.skillId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                            </Button>
+                                            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
+                                        </div>
+                                    </div>
+                                </div>)}
+                    </div>
+                </ConfigCard>
+
+                <ConfigCard title={"app.admin.dashboard.extensions.page.kdbd9cf57"} description={"app.admin.dashboard.extensions.page.kcc7340fc"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">
+                    <div className="space-y-3">
+                        {catalog.mcp.servers.length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.kf3616847")} description={t("app.admin.dashboard.extensions.page.k9baa8ec6")} /> : catalog.mcp.servers.map((server) => <div key={server.name} className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0 space-y-2">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <div className="text-sm font-semibold text-foreground">{server.name}</div>
+                                                <Badge variant={server.status === "connected" ? "default" : server.status === "disabled" ? "secondary" : "destructive"}>{statusLabel(server.status, t)}</Badge>
+                                                <Badge variant="outline">{server.transport}</Badge>
+                                            </div>
+                                            <div className="break-all text-xs text-muted-foreground">{server.target || t("app.admin.dashboard.extensions.page.k2af0f4dc")}</div>
+                                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.extensions.page.k43da15a1")}{server.toolCount}</div>
+                                            {server.appsSupported ? (
+                                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                    <Badge variant="secondary">{t("app.admin.dashboard.extensions.page.mcpAppsSupported")}</Badge>
+                                                    <span>{t("app.admin.dashboard.extensions.page.mcpAppTools")}{server.appToolCount ?? 0}</span>
+                                                    <span>{t("app.admin.dashboard.extensions.page.mcpUiResources")}{server.uiResourceCount ?? 0}</span>
+                                                </div>
+                                            ) : null}
+                                            {server.lastAppsError ? (
+                                                <div className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                                                    {t("app.admin.dashboard.extensions.page.mcpAppsError")}{server.lastAppsError}
+                                                </div>
+                                            ) : null}
+                                            <div className="flex flex-wrap gap-2">
+                                                {server.tools.slice(0, 6).map((tool) => <Badge key={tool.name} variant="secondary">{tool.name}</Badge>)}
+                                                {server.tools.length > 6 ? <Badge variant="secondary">+{server.tools.length - 6}</Badge> : null}
+                                            </div>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-sky-600 hover:bg-sky-50 hover:text-sky-700"
+                  title={t("app.admin.dashboard.extensions.page.mcpEditServer")}
+                  onClick={() => void openMcpEditForm(server.name)}>
+
+                                                <Wrench className="h-4 w-4" />
+                                            </Button>
+                                            <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                  title={tg(t, "3d2ba7c9")}
+                  onClick={() => void deleteMcpServer(server.name)}
+                  disabled={deletingMcpServer === server.name}>
+
+                                                {deletingMcpServer === server.name ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                            </Button>
+                                            <Server className="mt-0.5 h-5 w-5 text-sky-600" />
+                                        </div>
+                                    </div>
+                                </div>)}
+                    </div>
+                </ConfigCard>
+            </div>
+
+            <div className="grid auto-rows-fr gap-4 xl:grid-cols-2">
+                <ConfigCard title={"app.admin.dashboard.extensions.page.kf6bbc138"} description={"app.admin.dashboard.extensions.page.kde458108"} variant="editor" bodyHeight="clamp" bodyScroll="auto" className="h-full">
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <Label>{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
+                            <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx --yes skills add https://github.com/vercel-labs/skills -g --skill find-skills" />
+                        </div>
+                        {installResult ? <div className="space-y-3 rounded-2xl border border-border bg-muted/80 p-4 text-sm text-foreground">
+                                <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{t("app.admin.dashboard.extensions.page.ke7139376")}</Badge><span className="break-all">{installResult.source}</span></div>
+                                <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{t("app.admin.dashboard.extensions.page.ke1a0bb35")}</Badge><span className="break-all">{installResult.targetRoot}</span></div>
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <StatPill label={t("app.admin.dashboard.extensions.page.kbea3beaa")} value={installResult.installed.length} />
+                                    <StatPill label={t("app.admin.dashboard.extensions.page.k83af8057")} value={installResult.conflicts.length} />
+                                    <StatPill label={t("app.admin.dashboard.extensions.page.k2cc2fe0c")} value={installResult.warnings.length} />
+                                </div>
+                            </div> : null}
+                        <div className="flex flex-wrap gap-3">
+                            <Button onClick={() => void handleCommandInstall()} disabled={installingCommand || !commandInput.trim()}>
+                                <Terminal className="mr-2 h-4 w-4" />
+                                {installingCommand ? t("app.admin.dashboard.extensions.page.kbdd8dbe7") : t("app.admin.dashboard.extensions.page.k4dcfc814")}
+                            </Button>
+                            <div className="flex min-w-0 flex-1 items-center gap-3">
+                                <Input ref={fileInputRef} type="file" accept=".zip" onChange={handleZipUpload} disabled={uploadingZip} className="hidden" />
+                                <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={uploadingZip}>
+                                    <Upload className="mr-2 h-4 w-4" />
+                                    {t("app.admin.dashboard.extensions.page.k424fe082")}
+                                </Button>
+                                <div className="min-w-0 flex-1 rounded-2xl border border-dashed border-border bg-muted/80 px-3 py-2 text-xs text-muted-foreground">
+                                    {zipFileLabel || t("app.admin.dashboard.extensions.page.k543b111a")}
+                                </div>
+                                {uploadingZip ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/80" /> : null}
+                            </div>
+                        </div>
+                        {zipValidationError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                                {zipValidationError}
+                            </div> : null}
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-6 text-muted-foreground">
+                            <div className="font-medium text-foreground">{t("app.admin.dashboard.extensions.page.k0122c8bd")}</div>
+                            <ul className="mt-2 space-y-1">
+                                <li>{t("app.admin.dashboard.extensions.page.k7b12f611")}</li>
+                                <li>{t("app.admin.dashboard.extensions.page.k1db7e693")}</li>
+                                <li>{t("app.admin.dashboard.extensions.page.k92a88923")}</li>
+                            </ul>
+                        </div>
+                    </div>
+                </ConfigCard>
+
+                <ConfigCard title={"app.admin.dashboard.extensions.page.k8a16c8db"} description={"app.admin.dashboard.extensions.page.kf25b7ed0"} variant="editor" bodyHeight="clamp" bodyScroll="auto" className="h-full">
+                    <div className="space-y-4">
+                        <div className="grid gap-3 md:grid-cols-3">
+                            <StatPill label={t("app.admin.dashboard.extensions.page.kb54e7c93")} value={health?.mcp?.statusBreakdown?.connected || 0} />
+                            <StatPill label={t("app.admin.dashboard.extensions.page.k68ea0239")} value={health?.mcp?.statusBreakdown?.disabled || 0} />
+                            <StatPill label={t("app.admin.dashboard.extensions.page.k51f11e87")} value={health?.mcp?.statusBreakdown?.error || 0} />
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                        <Dialog open={mcpFormDialogOpen} onOpenChange={(open) => setMcpEditorOpen("form", open)}>
+                            <Button type="button" onClick={openMcpCreateForm}>
+                                <Plus className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.extensions.page.mcpFormInstall")}
+                            </Button>
+                            <DialogContent className="grid max-h-[88dvh] max-w-3xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+                                <DialogHeader>
+                                    <DialogTitle>{mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpFormEdit") : t("app.admin.dashboard.extensions.page.mcpFormInstall")}</DialogTitle>
+                                    <DialogDescription>{mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpFormEditDescription") : t("app.admin.dashboard.extensions.page.mcpFormInstallDescription")}</DialogDescription>
+                                </DialogHeader>
+                                <div className="min-h-0 space-y-4 overflow-y-auto py-4">
+                                    {mcpInstallForm.baseConfig && <div className="space-y-2 rounded-lg border p-3 text-xs">
+                                      <p>{t("extensions.store.credentialsKept")}</p>
+                                      {[...(mcpInstallForm.baseConfig.endpointRef ? ["endpointRef"] : []), ...Object.keys(mcpInstallForm.baseConfig["x-v8-credential-refs"] as Record<string, unknown> || {})].map(key => <Label key={key} className="flex items-center gap-2"><input type="checkbox" checked={mcpInstallForm.clearedCredentials?.includes(key) || false} onChange={event => updateMcpForm(previous => ({ ...previous, clearedCredentials: event.target.checked ? [...(previous.clearedCredentials || []), key] : (previous.clearedCredentials || []).filter(value => value !== key) }))} />{t("extensions.store.clearCredential", { name: key })}</Label>)}
+                                    </div>}
+                                    <div className="space-y-2">
+                                        <Label>{t("app.admin.dashboard.extensions.page.mcpServerName")}</Label>
+                                        <Input value={mcpInstallForm.name} onChange={(event) => {
+                    updateMcpForm((previous) => ({ ...previous, name: event.target.value }));
+                  }} placeholder="context7" disabled={mcpFormMode === "edit"} />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>{t("app.admin.dashboard.extensions.page.mcpTransportType")}</Label>
+                                        <Select value={mcpInstallForm.type} onValueChange={(value) => {
+                    const next = normalizeMcpTransportType(value) || "stdio";
+                    updateMcpForm((previous) => ({ ...previous, type: next }));
+                  }}>
+                                            <SelectTrigger>
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="stdio">STDIO</SelectItem>
+                                                <SelectItem value="http">HTTP</SelectItem>
+                                                <SelectItem value="sse">SSE</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    {mcpInstallForm.type === "stdio" ? <>
+                                            <div className="space-y-2">
+                                                <Label>{t("app.admin.dashboard.extensions.page.mcpCommand")}</Label>
+                                                <Input value={mcpInstallForm.command} onChange={(event) => {
+                          updateMcpForm((previous) => ({ ...previous, command: event.target.value }));
+                        }} placeholder="npx -y @modelcontextprotocol/server-filesystem" />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>{t("app.admin.dashboard.extensions.page.mcpArgs")}</Label>
+                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.argsText} onChange={(event) => updateMcpForm((previous) => ({ ...previous, argsText: event.target.value }))} placeholder={"-y\n@example/server"} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>{t("app.admin.dashboard.extensions.page.mcpEnv")}</Label>
+                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.envText} onChange={(event) => updateMcpForm((previous) => ({ ...previous, envText: event.target.value }))} placeholder={"API_KEY=...\nDEBUG=false"} />
+                                            </div>
+                                        </> : <>
+                                            <div className="space-y-2">
+                                                <Label>{t("app.admin.dashboard.extensions.page.mcpUrl")}</Label>
+                                                <Input type="password" autoComplete="off" value={mcpInstallForm.url} onChange={(event) => {
+                          updateMcpForm((previous) => ({ ...previous, url: event.target.value }));
+                        }} placeholder={mcpInstallForm.type === "http" ? "https://example.com/mcp" : "https://example.com/sse"} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>{t("app.admin.dashboard.extensions.page.mcpHeaders")}</Label>
+                                                <Textarea className="h-24 font-mono text-sm" value={mcpInstallForm.headersText} onChange={(event) => updateMcpForm((previous) => ({ ...previous, headersText: event.target.value }))} placeholder={"Authorization=Bearer ...\nX-Client=V8OS"} />
+                                            </div>
+                                        </>}
+                                    {mcpValidationError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                                            {mcpValidationError}
+                                        </div> : null}
+                                </div>
+                                <DialogFooter>
+                                    <Button variant="outline" onClick={() => setMcpEditorOpen("form", false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
+                                    <Button onClick={() => void saveMcpConfig("form")} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpUpdateServer") : t("app.admin.dashboard.extensions.page.mcpSaveServer")}</Button>
+                                </DialogFooter>
+                            </DialogContent>
+                        </Dialog>
+                        <Dialog open={mcpDialogOpen} onOpenChange={(open) => setMcpEditorOpen("json", open)}>
+                            <DialogTrigger asChild>
+                                <Button variant="outline">
+                                    <Upload className="mr-2 h-4 w-4" />
+                                    {t("app.admin.dashboard.extensions.page.k62d9d2e5")}
+                                </Button>
+                            </DialogTrigger>
+                            <DialogContent className="max-w-2xl">
+                                <DialogHeader>
+                                    <DialogTitle>{t("app.admin.dashboard.extensions.page.k061b2335")}</DialogTitle>
+                                    <DialogDescription>{t("app.admin.dashboard.extensions.page.ka0ebb4b7")}</DialogDescription>
+                                </DialogHeader>
+                                <div className="space-y-3 py-4">
+                                    <Textarea className="h-[300px] bg-muted/50 font-mono text-sm" value={mcpConfigInput} onChange={(event) => {
+                  mcpEditorRevision.current += 1;
+                  setMcpConfigInput(event.target.value);
+                  if (mcpValidationError)
+                  setMcpValidationError("");
+                  if (mcpValidationSummary)
+                  setMcpValidationSummary("");
+                }} placeholder={'{\n  "mcpServers": {\n    "example": {\n      "type": "stdio",\n      "command": "npx",\n      "args": ["-y", "@example/server"]\n    }\n  }\n}'} />
+                                    {mcpValidationSummary ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                                            {mcpValidationSummary}
+                                        </div> : null}
+                                    {mcpValidationError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                                            {mcpValidationError}
+                                        </div> : null}
+                                </div>
+                                <DialogFooter>
+                                    <Button variant="outline" onClick={() => setMcpEditorOpen("json", false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
+                                    <Button onClick={() => void saveMcpConfig("json")} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : t("app.admin.dashboard.extensions.page.k836f3c8b")}</Button>
+                                </DialogFooter>
+                            </DialogContent>
+                        </Dialog>
+                        </div>
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-sm text-muted-foreground">
+                            <div className="flex items-start gap-2">
+                                <Wrench className="mt-0.5 h-4 w-4 text-sky-600" />
+                                <div>{t("app.admin.dashboard.extensions.page.kb69d2650")}</div>
+                            </div>
+                        </div>
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-6 text-muted-foreground">
+                            <div className="font-medium text-foreground">{t("app.admin.dashboard.extensions.page.k499b6163")}</div>
+                            <ul className="mt-2 space-y-1">
+                                <li>{t("app.admin.dashboard.extensions.page.ka8ca160e")}</li>
+                                <li>{t("app.admin.dashboard.extensions.page.k94876ec4")}</li>
+                                <li>{t("app.admin.dashboard.extensions.page.keeaf797e")}</li>
+                            </ul>
+                        </div>
+                    </div>
+                </ConfigCard>
+            </div>
+
+        </AdminPageShell>;
+}

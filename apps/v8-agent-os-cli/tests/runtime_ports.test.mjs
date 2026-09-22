@@ -37,7 +37,7 @@ test("runtime ports keep the governed defaults when Web 9527 is free", async (t)
   assert.deepEqual(readRuntimePortProfile(context).ports, profile.ports);
 });
 
-test("runtime ports avoid an externally occupied Web 9527 without moving Engine or Admin", async (t) => {
+test("Product Web fallback moves chat and Admin together without moving Engine", async (t) => {
   const context = testContext(t);
   const profile = await resolveRuntimePorts({
     ...context,
@@ -45,7 +45,7 @@ test("runtime ports avoid an externally occupied Web 9527 without moving Engine 
   });
   assert.deepEqual(profile.ports, {
     engine: DEFAULT_PORTS.engine,
-    admin: DEFAULT_PORTS.admin,
+    admin: WEB_FALLBACK_PORT_START,
     web: WEB_FALLBACK_PORT_START,
   });
   assert.equal(profile.reason, "default_conflict");

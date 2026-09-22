@@ -610,6 +610,8 @@ def _is_private_host(hostname: str) -> bool:
 
 def _admin_public_origin() -> str:
     configured = _text(get_admin_base_url()).rstrip("/")
+    if configured.endswith("/api/admin"):
+        configured = configured[:-10]
     if configured.endswith("/api"):
         configured = configured[:-4]
     parsed = urlparse(configured)
@@ -643,7 +645,7 @@ def _publish_voice_sample(filename: str, audio_bytes: bytes) -> str:
     token = token_hex(24)
     suffix = _audio_suffix(filename) or ".audio"
     (_VOICE_SAMPLE_DIR / f"{expires_at}-{token}{suffix}").write_bytes(audio_bytes)
-    return f"{public_origin}/api/audio/voice-samples/{token}"
+    return f"{public_origin}/api/admin/audio/voice-samples/{token}"
 
 
 def _flatten_minimax_voices(payload: Any) -> list[dict[str, Any]]:

@@ -6,6 +6,7 @@ function parseShellDeepLink(value) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'v8os:' || url.hostname !== 'open') return null;
+    if (url.pathname === '/companion' && !url.search && !url.hash) return { surface: 'companion', path: '/companion' };
     if (url.pathname.replace(/\/+$/, '') !== '/admin/desktop-pet') return null;
     if (url.search || url.hash) return null;
     return { surface: 'admin', path: '/admin/desktop-pet' };

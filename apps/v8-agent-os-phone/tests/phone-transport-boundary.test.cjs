@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
-const ts = require('typescript');
+const ts = require('../../v8-agent-os-web/node_modules/typescript');
 const root = path.resolve(__dirname, '..');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function loadProduction(mocks = {}) {
@@ -284,7 +284,7 @@ test('unmarked 401 mutation stays unknown without refreshing or replaying the si
 // Only storage/users/config/Next response scaffolding and Engine execution are
 // controlled. No user configuration, token store, server or provider is opened.
 function adminBoundary() {
-  const adminRoot = path.resolve(root, '../v8-agent-os-admin/src');
+  const adminRoot = path.resolve(root, '../v8-agent-os-web/src/admin');
   const modules = new Map(), store = new Map();
   const user = { id: 'owner', email: 'owner@fixture.invalid', login: 'owner', role: 'ADMIN' };
   class NextResponse extends Response {
@@ -292,15 +292,15 @@ function adminBoundary() {
   }
   const mocks = {
     'next/server': { NextRequest: Request, NextResponse },
-    '@/lib/auth': { auth: async () => null },
-    '@/lib/service-auth': { verifyServiceAuth: async () => null },
-    '@/lib/password': { verifyPassword: async () => false },
-    '@/lib/storage': { readJson: (key, fallback) => structuredClone(store.get(key) ?? fallback), writeJson: (key, value) => store.set(key, structuredClone(value)) },
-    '@/lib/users': { PERSONAL_OWNER_MODE: true, findUserById: id => id === user.id ? user : null,
+    '@admin/lib/auth': { auth: async () => null },
+    '@admin/lib/service-auth': { verifyServiceAuth: async () => null },
+    '@admin/lib/password': { verifyPassword: async () => false },
+    '@admin/lib/storage': { readJson: (key, fallback) => structuredClone(store.get(key) ?? fallback), writeJson: (key, value) => store.set(key, structuredClone(value)) },
+    '@admin/lib/users': { PERSONAL_OWNER_MODE: true, findUserById: id => id === user.id ? user : null,
       findUserByIdentifier: id => id === user.email || id === user.login ? user : null, getSessionIdentifier: value => value.email },
-    '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveEngineOrigin: () => 'http://engine.invalid', resolveAdminApiBaseUrl: () => 'http://admin.invalid/api',
+    '@admin/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveEngineOrigin: () => 'http://engine.invalid', resolveAdminApiBaseUrl: () => 'http://admin.invalid/api',
       resolveClientSurfaceOriginFromRequest: () => '', resolveInternalSecret: () => 'synthetic-internal-fixture' },
-    '@/lib/server/engine-identity': (() => {
+    '@admin/lib/server/engine-identity': (() => {
       class EngineIdentityError extends Error { constructor(code, status) { super(code); this.code = code; this.status = status; } }
       const pair = (accessToken, refreshToken) => ({ accessToken, accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(), refreshToken, refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), user, deviceId: 'synthetic-device' });
       return {
@@ -322,19 +322,21 @@ function adminBoundary() {
         },
       };
     })(),
-    '@/lib/server/client-perf-metrics': { jsonSizeBytes: () => 0, readEngineElapsedMs: () => 0, recordAdminApiMetric() {} },
+    '@admin/lib/server/client-perf-metrics': { jsonSizeBytes: () => 0, readEngineElapsedMs: () => 0, recordAdminApiMetric() {} },
   };
   function load(name, from = adminRoot) {
     if (Object.hasOwn(mocks, name)) return mocks[name];
-    if (!name.startsWith('@/') && !name.startsWith('.')) return require(name);
-    const file = (name.startsWith('@/') ? path.join(adminRoot, name.slice(2)) : path.resolve(from, name)) + '.ts';
+    if (!name.startsWith('@admin/') && !name.startsWith('.')) return require(name);
+    const file = name.startsWith('@admin/app/')
+      ? path.join(adminRoot, '..', name.slice(7)) + '.ts'
+      : (name.startsWith('@admin/') ? path.join(adminRoot, name.slice(7)) : path.resolve(from, name)) + '.ts';
     if (modules.has(file)) return modules.get(file);
     const module = { exports: {} };
     const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
     vm.runInThisContext(`(function(require,module,exports,console){${code}\n})`)((next) => load(next, path.dirname(file)), module, module.exports, { error() {}, warn() {} });
     modules.set(file, module.exports); return module.exports;
   }
-  const mobile = load('@/lib/mobile-auth');
+  const mobile = load('@admin/lib/mobile-auth');
   return {
     load,
     expired: { accessToken: 'expired-access', refreshToken: 'expired-refresh', accessTokenExpiresAt: new Date(Date.now() - 60_000).toISOString(), refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), user, deviceId: 'synthetic-device' },
@@ -345,9 +347,9 @@ function adminBoundary() {
 
 test('real BFF auth rejects before Engine and expired-token send plus approval recover with one refresh', async () => {
   const old = global.fetch, boundary = adminBoundary(), attempts = [], executed = [];
-  const chat = boundary.load('@/app/api/client/chat-submit/route');
-  const approval = boundary.load('@/app/api/client/approvals/[id]/approve/route');
-  const refresh = boundary.load('@/app/api/client/auth/refresh/route');
+  const chat = boundary.load('@admin/app/api/admin/client/chat-submit/route');
+  const approval = boundary.load('@admin/app/api/admin/client/approvals/[id]/approve/route');
+  const refresh = boundary.load('@admin/app/api/admin/client/auth/refresh/route');
   const context = { params: Promise.resolve({ id: 'approval-1' }) };
   const chatBody = JSON.stringify({ clientMessageId: 'intent-1', messages: [{ role: 'user', content: 'continue once' }], data: { conversationId: 'session-A', clientMessageId: 'intent-1' } });
   const approvalBody = JSON.stringify({ response: { answer: 'yes', approved: true } });
@@ -389,8 +391,8 @@ test('real BFF forwarding does not label downstream 401 or lost responses as pre
   const old = global.fetch, boundary = adminBoundary();
   const credentials = boundary.valid;
   let executed = 0, refreshes = 0, mode = '401';
-  const chat = boundary.load('@/app/api/client/chat-submit/route');
-  const approval = boundary.load('@/app/api/client/approvals/[id]/approve/route');
+  const chat = boundary.load('@admin/app/api/admin/client/chat-submit/route');
+  const approval = boundary.load('@admin/app/api/admin/client/approvals/[id]/approve/route');
   const transport = create({ endpoints: ['https://remote.invalid'], credentials });
   global.fetch = async (url, init) => {
     if (url.endsWith('/instance')) return Response.json({ instanceId: 'paired-instance' });

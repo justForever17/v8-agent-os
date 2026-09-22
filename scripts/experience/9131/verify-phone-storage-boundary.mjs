@@ -13,7 +13,7 @@ const args=process.argv.slice(2);
 const candidate=args[args.indexOf('--candidate')+1];
 assert(args.includes('--candidate') && /^[0-9a-f]{8,40}$/.test(candidate));
 const only=args.includes('--only')?args[args.indexOf('--only')+1].split(','):[];
-const require=createRequire(path.join(repo,'apps/v8-agent-os-admin/package.json'));
+const require=createRequire(path.join(repo,'apps/v8-agent-os-web/package.json'));
 const ts=require('typescript');
 const plain=value=>JSON.parse(JSON.stringify(value));
 const sources=new Map();

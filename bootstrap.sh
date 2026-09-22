@@ -8,7 +8,7 @@ if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
 fi
 
 PROFILE="minimal"
-SERVICES="engine+admin"
+SERVICES="engine+web"
 PLATFORM="auto"
 
 while [ $# -gt 0 ]; do
@@ -45,7 +45,8 @@ case "$PROFILE" in
 esac
 
 case "$SERVICES" in
-  engine|engine+admin) ;;
+  engine+admin|engine+admin+web) SERVICES="engine+web" ;;
+  engine|engine+web) ;;
   *)
     printf "Unsupported --services value: %s\n" "$SERVICES" >&2
     exit 1
@@ -73,7 +74,7 @@ case "$PLATFORM" in
     ;;
 esac
 
-if [ -n "$SCRIPT_ROOT" ] && [ -d "$SCRIPT_ROOT/apps/v8-agent-os-engine" ] && [ -d "$SCRIPT_ROOT/apps/v8-agent-os-admin" ]; then
+if [ -n "$SCRIPT_ROOT" ] && [ -d "$SCRIPT_ROOT/apps/v8-agent-os-engine" ] && [ -f "$SCRIPT_ROOT/apps/v8-agent-os-cli/bin/v8os.mjs" ]; then
   USE_CURRENT_CHECKOUT=1
   WORKSPACE_DIR="$SCRIPT_ROOT/.bootstrap-workspace"
   REPO_DIR="$SCRIPT_ROOT"
@@ -115,24 +116,6 @@ sync_repo() {
   fi
 }
 
-ensure_admin_env() {
-  local env_file="$1/.env.local"
-  if [ -f "$env_file" ]; then
-    return
-  fi
-
-  local secret
-  secret="$(python - <<'PY'
-import secrets
-print(secrets.token_hex(32))
-PY
-)"
-  cat >"$env_file" <<EOF
-NEXTAUTH_URL=http://127.0.0.1:9528
-NEXTAUTH_SECRET=$secret
-NEXT_PUBLIC_APP_VERSION=1.0.0
-EOF
-}
 
 requirements_for_profile() {
   local engine_dir="$1"
@@ -188,20 +171,6 @@ PY
   )
 }
 
-stop_existing_engine() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    local pids
-    pids="$(lsof -ti tcp:$port 2>/dev/null || true)"
-    if [ -n "$pids" ]; then
-      kill -9 $pids >/dev/null 2>&1 || true
-    fi
-    return
-  fi
-  if command -v fuser >/dev/null 2>&1; then
-    fuser -k "${port}/tcp" >/dev/null 2>&1 || true
-  fi
-}
 
 desktop_preflight() {
   if [ "$PROFILE" != "desktop" ]; then
@@ -268,7 +237,8 @@ if [ "$USE_CURRENT_CHECKOUT" -ne 1 ]; then
   ensure_command git "Install Git first."
 fi
 ensure_command python "Install Python 3.11+ first."
-if [ "$SERVICES" = "engine+admin" ]; then
+ensure_command node "Install Node.js 22+ first."
+if [ "$SERVICES" = "engine+web" ]; then
   ensure_command npm "Install Node.js 20+ first."
 fi
 
@@ -280,7 +250,7 @@ else
 fi
 
 ENGINE_DIR="$REPO_DIR/apps/v8-agent-os-engine"
-ADMIN_DIR="$REPO_DIR/apps/v8-agent-os-admin"
+WEB_DIR="$REPO_DIR/apps/v8-agent-os-web"
 
 if [ "${V8_AGENT_OS_BOOTSTRAP_DRY_RUN:-0}" = "1" ]; then
   printf "\nBootstrap dry run.\n"
@@ -315,10 +285,9 @@ else
   sync_runtime_registry "$ENGINE_DIR" "$ENGINE_DIR/.venv/bin/python" "$PROFILE" "$PLATFORM" "True"
 fi
 
-if [ "$SERVICES" = "engine+admin" ]; then
-  step "Preparing admin"
-  (cd "$ADMIN_DIR" && npm install)
-  ensure_admin_env "$ADMIN_DIR"
+if [ "$SERVICES" = "engine+web" ]; then
+  step "Preparing Product Web"
+  (cd "$WEB_DIR" && npm install)
 fi
 
 step "Starting services"
@@ -326,23 +295,13 @@ if [ "${V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY:-0}" = "1" ]; then
   printf "\nInstall-only mode complete. Please restart the engine manually.\n"
   exit 0
 fi
+CORE_CLI="$REPO_DIR/apps/v8-agent-os-cli/bin/v8os.mjs"
+export V8_REPO_ROOT="$REPO_DIR" V8_ENGINE_PYTHON="$ENGINE_DIR/.venv/bin/python"
+export ENGINE_STARTUP_PROFILE="$PROFILE" ENGINE_INSTALL_PROFILE="$PROFILE" ENGINE_INSTALL_PLATFORM="$PLATFORM"
 if [ "${V8_AGENT_OS_BOOTSTRAP_RESTART_ENGINE:-0}" = "1" ]; then
-  stop_existing_engine 9530
+  node "$CORE_CLI" stop --only engine
 fi
-nohup env ENGINE_STARTUP_PROFILE="$PROFILE" ENGINE_INSTALL_PROFILE="$PROFILE" ENGINE_INSTALL_PLATFORM="$PLATFORM" "$ENGINE_DIR/.venv/bin/python" "$ENGINE_DIR/main.py" >"$LOG_DIR/engine.stdout.log" 2>"$LOG_DIR/engine.stderr.log" &
-if [ "$SERVICES" = "engine+admin" ]; then
-  nohup npm --prefix "$ADMIN_DIR" run dev >"$LOG_DIR/admin.stdout.log" 2>"$LOG_DIR/admin.stderr.log" &
-fi
-
-printf "\nV8 Agent OS is starting.\n"
-printf "Source  : %s\n" "$REPO_SOURCE"
-printf "Profile : %s\n" "$PROFILE"
-printf "Platform: %s\n" "$PLATFORM"
-printf "Engine  : http://127.0.0.1:9530\n"
-if [ "$SERVICES" = "engine+admin" ]; then
-  printf "Admin   : http://127.0.0.1:9528\n"
-else
-  printf "Admin   : skipped\n"
-fi
-printf "Web     : install and package separately from apps/v8-agent-os-web\n"
-printf "Logs    : %s\n" "$LOG_DIR"
+COMPONENTS="engine"
+if [ "$SERVICES" = "engine+web" ]; then COMPONENTS="engine,web"; fi
+node "$CORE_CLI" dev --only "$COMPONENTS"
+printf "Product Web includes /chat and /admin. Inspect actual ports with v8os status.\n"

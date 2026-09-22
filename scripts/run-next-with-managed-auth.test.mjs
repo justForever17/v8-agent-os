@@ -15,7 +15,7 @@ import {
 
 function createStandaloneFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-next-assets-"));
-  const appDir = path.join(root, "apps", "v8-agent-os-admin");
+  const appDir = path.join(root, "apps", "v8-agent-os-web");
   const serverPath = path.join(appDir, ".next", "standalone", "server.js");
   fs.mkdirSync(path.dirname(serverPath), { recursive: true });
   fs.writeFileSync(serverPath, "// standalone server\n", "utf8");
@@ -30,7 +30,7 @@ test("standalone assets are staged during build and start validation is read-onl
   const fixture = createStandaloneFixture();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
 
-  assert.equal(findStandaloneServer(fixture.appDir, "admin"), fixture.serverPath);
+  assert.equal(findStandaloneServer(fixture.appDir, "web"), fixture.serverPath);
   stageStandaloneAssets(fixture.appDir, fixture.serverPath);
 
   const standaloneRoot = path.dirname(fixture.serverPath);
@@ -69,6 +69,24 @@ test("start validation fails before launch when staged assets are missing", (t) 
   );
 });
 
+test("standalone staging excludes local uploads and retires stale packaged copies", (t) => {
+  const fixture = createStandaloneFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const publicRoot = path.join(fixture.appDir, "public");
+  const staged = path.join(path.dirname(fixture.serverPath), "public");
+  for (const [file, text] of [["user/private.webp", "synthetic-private"], ["Avatar/upload.png", "synthetic-private"], ["Avatar/default-supervisor.svg", "public-avatar"]]) {
+    fs.mkdirSync(path.dirname(path.join(publicRoot, file)), { recursive: true });
+    fs.writeFileSync(path.join(publicRoot, file), text);
+  }
+  fs.mkdirSync(path.join(staged, "user"), { recursive: true });
+  fs.writeFileSync(path.join(staged, "user/stale.webp"), "synthetic-stale");
+  stageStandaloneAssets(fixture.appDir, fixture.serverPath);
+  assert.equal(fs.existsSync(path.join(staged, "user")), false);
+  assert.equal(fs.existsSync(path.join(staged, "Avatar/upload.png")), false);
+  assert.equal(fs.readFileSync(path.join(staged, "Avatar/default-supervisor.svg"), "utf8"), "public-avatar");
+  assert.ok(fs.existsSync(path.join(publicRoot, "user/private.webp")), "Local source uploads are retained");
+});
+
 test("start validation fails before launch when the standalone server is missing", () => {
   assert.throws(
     () => assertStandaloneAssetsReady("unused", ""),
@@ -78,7 +96,7 @@ test("start validation fails before launch when the standalone server is missing
 
 test("Admin binds an IPv4-compatible default while Web remains loopback-only", () => {
   assert.equal(runtimeHostnameForApp("admin", {}), "127.0.0.1");
-  assert.equal(runtimeHostnameForApp("admin", { V8_ADMIN_HOSTNAME: "::" }), "::");
+  assert.equal(runtimeHostnameForApp("admin", { V8_ADMIN_HOSTNAME: "::" }), "127.0.0.1");
   assert.equal(runtimeHostnameForApp("web", {}), "127.0.0.1");
 });
 

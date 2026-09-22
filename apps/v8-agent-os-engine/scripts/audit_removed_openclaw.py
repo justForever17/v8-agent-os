@@ -23,7 +23,7 @@ ACTIVE_TARGETS = (
     "apps/v8-agent-os-engine/erc",
     "apps/v8-agent-os-engine/graph",
     "apps/v8-agent-os-engine/runtimes",
-    "apps/v8-agent-os-admin/src",
+    "apps/v8-agent-os-web/src/admin",
     "apps/v8-agent-os-web/src",
     "apps/v8-agent-os-phone/src",
     "packages/session-realtime/src",

@@ -161,7 +161,6 @@ jobs:
           cache-dependency-path: |
             packages/product-ui/package-lock.json
             packages/session-realtime/package-lock.json
-            apps/v8-agent-os-admin/package-lock.json
             apps/v8-agent-os-web/package-lock.json
             apps/v8-agent-os-desktop-pet/package-lock.json
             apps/v8-agent-os-shell/package-lock.json
@@ -235,11 +234,6 @@ jobs:
           npm exec -- tsc --version
           npm run build
 
-      - name: Install Admin dependencies
-        working-directory: apps/v8-agent-os-admin
-        timeout-minutes: 15
-        run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
-
       - name: Install Web dependencies
         working-directory: apps/v8-agent-os-web
         timeout-minutes: 15
@@ -291,15 +285,14 @@ jobs:
           & "$nativeRoot/v8-session-unlock/build/${{ matrix.arch }}/provider-tests.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Credential Provider behavior tests failed' }
 
-      - name: Build Admin and Web production bundles
+      - name: Build Product Web production bundle
         timeout-minutes: 25
         run: |
-          node scripts/run-next-with-managed-auth.mjs --app admin --mode build --port 9528
           node scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527
 
       - name: Verify Admin first-run mouse interaction and stale Owner recovery
         if: matrix.id == 'windows-x64'
-        working-directory: apps/v8-agent-os-admin
+        working-directory: apps/v8-agent-os-web
         timeout-minutes: 5
         run: npm run verify:admin-login-interaction
 

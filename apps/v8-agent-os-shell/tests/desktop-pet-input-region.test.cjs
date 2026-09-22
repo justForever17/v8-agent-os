@@ -37,7 +37,7 @@ test('desktop pet interaction regions are padded, clamped, and bounded', () => {
 });
 
 test('renderer reports only the visible pet and open menu while Windows main owns the OS shape', () => {
-  const main = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
+  const main = fs.readFileSync(path.join(petRoot, 'electron', 'companion-window.cjs'), 'utf8');
   const preload = fs.readFileSync(path.join(petRoot, 'electron', 'preload.cjs'), 'utf8');
   const renderer = fs.readFileSync(path.join(petRoot, 'src', 'components', 'CyberPet.tsx'), 'utf8');
 

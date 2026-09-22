@@ -5,7 +5,7 @@ const test = require("node:test");
 
 const repoRoot = path.resolve(__dirname, "..", "..", "..");
 const webRoot = path.join(repoRoot, "apps", "v8-agent-os-web");
-const adminRoot = path.join(repoRoot, "apps", "v8-agent-os-admin");
+const adminRoot = webRoot;
 
 function read(...segments) {
   return fs.readFileSync(path.join(...segments), "utf8");
@@ -29,7 +29,7 @@ test("web message headers follow the current supervisor profile instead of store
 });
 
 test("client supervisor endpoint exposes profile fields only", () => {
-  const adminRoute = read(adminRoot, "src", "app", "api", "client", "supervisor-profile", "route.ts");
+  const adminRoute = read(adminRoot, "src", "app", "api", "admin", "client", "supervisor-profile", "route.ts");
   const webRoute = read(webRoot, "src", "app", "api", "supervisor-profile", "route.ts");
 
   assert.match(adminRoute, /fetchClientEngine\(req, "\/config-registry\/supervisor"\)/);

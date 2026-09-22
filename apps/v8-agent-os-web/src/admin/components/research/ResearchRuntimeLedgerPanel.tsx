@@ -1,0 +1,582 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Archive, GitBranch, RefreshCw, RotateCcw, Search, Trash2 } from "lucide-react";
+
+import { AdminHoverInfo } from "@admin/components/admin-shell/AdminHoverInfo";
+import { useT } from "@admin/components/providers/LocaleProvider";
+import { Badge } from "@admin/components/ui/badge";
+import { Button } from "@admin/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@admin/components/ui/card";
+import { Checkbox } from "@admin/components/ui/checkbox";
+import { Input } from "@admin/components/ui/input";
+import { fetchAdminJson, peekAdminJsonCache } from "@admin/lib/admin-client-cache";
+
+type EvidenceBundle = {
+    evidenceBundleId?: string;
+    question?: string;
+    confidence?: string;
+    authorityScore?: number;
+    createdAt?: string;
+    promotable?: boolean;
+    deliveryReady?: boolean;
+    reviewDecision?: string;
+    reviewReasons?: string[];
+    qualityTier?: string;
+    sourceMatrix?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
+};
+
+type ResearchAnswerPack = {
+    answer?: string;
+    sources?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number; relevance?: number | string; freshness?: string }>;
+    score?: { label?: string; confidence?: string; authorityScore?: number; qualityStatus?: string; reuseDecision?: string };
+    limitations?: string[];
+    missingOrStaleReasons?: string[];
+};
+
+type ExperiencePack = {
+    experiencePackId?: string;
+    title?: string;
+    query?: string;
+    summary?: string;
+    resultPreview?: string;
+    researchResult?: string;
+    answer?: string;
+    findings?: string;
+    applicability?: string;
+    status?: string;
+    confidence?: string;
+    authorityScore?: number;
+    usageCount?: number;
+    lastUsedAt?: string | null;
+    freshnessState?: "current" | "aging" | "stale" | "expired";
+    ageDays?: number;
+    maxAgeDays?: number;
+    staleAt?: string;
+    expiresAt?: string;
+    archivedAt?: string | null;
+    qualityStatus?: string;
+    invalidationReason?: string;
+    researchAnswerPack?: ResearchAnswerPack;
+    missingEvidence?: string[];
+    limitations?: string[];
+    sourceUrls?: string[];
+    claimDigest?: Array<{ claim?: string }>;
+    sourceMatrixDigest?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
+    createdFromBundleId?: string;
+};
+
+function ledgerUrl(includeArchived: boolean) {
+    const params = new URLSearchParams({ view: "ledger", scope: "global", limit: "30" });
+    if (includeArchived) params.set("includeArchived", "true");
+    return `/api/admin/research-runtime?${params.toString()}`;
+}
+
+type LedgerPayload = {
+    ok?: boolean;
+    counts?: { evidenceBundles?: number; experiencePacks?: number };
+    evidenceBundles?: EvidenceBundle[];
+    experiencePacks?: ExperiencePack[];
+    confidenceTimeline?: Array<{ at?: string; question?: string; confidence?: string; authorityScore?: number; evidenceBundleId?: string }>;
+};
+
+function confidenceTone(confidence?: string) {
+    if (confidence === "high") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    if (confidence === "medium") return "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+    return "border-border bg-muted/40 text-muted-foreground";
+}
+
+function packStateTone(state: "searchable" | "review" | "refresh" | "archived" | "unknown") {
+    if (state === "searchable") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    if (state === "review") return "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    if (state === "refresh") return "border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    return "border-border bg-muted/40 text-muted-foreground";
+}
+
+function normalizeStatus(value?: string) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "active" || normalized === "draft" || normalized === "archived") return normalized;
+    return "unknown";
+}
+
+function normalizeErrorCode(value?: string) {
+    const normalized = String(value || "").trim();
+    const lowered = normalized.toLowerCase();
+    if (!normalized) return "unknown";
+    if (lowered.includes("experience pack not found")) return "experience_pack_not_found";
+    if (
+        lowered.includes("evidence bundle not found")
+        || lowered.includes("evidence_bundle_not_found")
+    ) return "evidence_bundle_not_found";
+    if (lowered.includes("evidence_bundle_not_promotable")) return "evidence_bundle_not_promotable";
+    if (
+        [
+            "research_runtime_load_failed",
+            "research_runtime_search_failed",
+            "research_runtime_promote_failed",
+            "research_runtime_archive_failed",
+            "research_runtime_restore_failed",
+            "research_runtime_delete_failed",
+        ].includes(lowered)
+    ) {
+        return lowered;
+    }
+    return "unknown";
+}
+
+function resolvePackState(item: ExperiencePack, t: ReturnType<typeof useT>) {
+    const status = normalizeStatus(item.status);
+    const qualityStatus = String(item.qualityStatus || "").trim();
+    const invalidationReason = String(item.invalidationReason || "").trim();
+    const answerPack = item.researchAnswerPack || {};
+    const hasAnswer = Boolean(String(answerPack.answer || item.researchResult || item.answer || "").trim());
+    const hasClaims = Array.isArray(item.claimDigest) && item.claimDigest.length > 0;
+    const isRefreshNeeded = qualityStatus === "low_quality_pack" || qualityStatus === "refresh_required" || Boolean(invalidationReason);
+    if (status === "archived") {
+        return { key: "archived" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.archived") };
+    }
+    if (isRefreshNeeded) {
+        return { key: "refresh" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.refresh") };
+    }
+    if (item.freshnessState === "stale" || item.freshnessState === "expired") {
+        return { key: "refresh" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.expired") };
+    }
+    if (item.freshnessState === "aging") {
+        return { key: "review" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.aging") };
+    }
+    if (status === "draft" || (!hasAnswer && !hasClaims)) {
+        return { key: "review" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.review") };
+    }
+    if (status === "active") {
+        return { key: "searchable" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.searchable") };
+    }
+    return { key: "unknown" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.unknown") };
+}
+
+function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeof useT>) {
+    const lines: string[] = [];
+    const qualityStatus = String(item.qualityStatus || "").trim();
+    const invalidationReason = String(item.invalidationReason || "").trim();
+    const isArchived = normalizeStatus(item.status) === "archived";
+    const answerPack = item.researchAnswerPack || {};
+    const answer = String(answerPack.answer || item.researchResult || "").trim();
+    const score = answerPack.score || {};
+    const isLowQuality = qualityStatus === "low_quality_pack" || Boolean(invalidationReason);
+    const applicability = String(item.applicability || "").trim();
+    const stateLabel = isArchived
+        ? t("app.admin.dashboard.research.runtime.ledger.hover.stateArchived")
+        : isLowQuality
+          ? t("app.admin.dashboard.research.runtime.ledger.hover.stateRefresh")
+          : answer || (Array.isArray(item.claimDigest) && item.claimDigest.length)
+            ? t("app.admin.dashboard.research.runtime.ledger.hover.stateReusable")
+            : t("app.admin.dashboard.research.runtime.ledger.hover.stateLowQuality");
+    lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.state")}: ${stateLabel}`);
+    if (answer) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.answer")}: ${answer.length > 1200 ? `${answer.slice(0, 1200)}…` : answer}`);
+    for (const itemClaim of (!answer && Array.isArray(item.claimDigest) ? item.claimDigest : []).slice(0, 3)) {
+        const claim = String(itemClaim?.claim || "").trim();
+        if (claim) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.answer")}: ${claim.length > 420 ? `${claim.slice(0, 420)}…` : claim}`);
+    }
+    const missing = Array.isArray(item.missingEvidence) ? item.missingEvidence : [];
+    const limitations = Array.isArray(item.limitations) ? item.limitations : [];
+    if (score.label || score.confidence || score.authorityScore !== undefined || score.qualityStatus) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.score")}: ${score.label || `${score.confidence || "unknown"} / authority=${score.authorityScore ?? "n/a"} / ${score.qualityStatus || stateLabel}`}`);
+    } else if (item.confidence || item.authorityScore !== undefined) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.score")}: ${item.confidence || "unknown"} / authority=${item.authorityScore ?? "n/a"}`);
+    }
+    if (!answer && !(Array.isArray(item.claimDigest) && item.claimDigest.length)) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.missingEvidence")}: ${missing[0] || invalidationReason || t("app.admin.dashboard.research.runtime.ledger.hover.refreshRequired")}`);
+    }
+    for (const reason of missing.slice(0, 2)) {
+        const text = String(reason || "").trim();
+        if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.missingEvidence")}: ${text.length > 320 ? `${text.slice(0, 320)}…` : text}`);
+    }
+    for (const reason of limitations.slice(0, 2)) {
+        const text = String(reason || "").trim();
+        if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.limitations")}: ${text.length > 320 ? `${text.slice(0, 320)}…` : text}`);
+    }
+    if (applicability) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.applicability")}: ${applicability}`);
+    const sources = Array.isArray(answerPack.sources) && answerPack.sources.length ? answerPack.sources : (Array.isArray(item.sourceMatrixDigest) ? item.sourceMatrixDigest : []);
+    for (const source of sources.slice(0, 4)) {
+        const title = String(source.title || source.host || source.url || "").trim();
+        if (!title) continue;
+        const host = String(source.host || "").trim();
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.source")}: ${title}${host && host !== title ? ` · ${host}` : ""}`);
+    }
+    for (const url of (Array.isArray(item.sourceUrls) ? item.sourceUrls : []).slice(0, Math.max(0, 4 - sources.length))) {
+        const text = String(url || "").trim();
+        if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.source")}: ${text}`);
+    }
+    if (!lines.length && item.experiencePackId) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.experiencePack")}: ${item.experiencePackId}`);
+    }
+    return lines;
+}
+
+export function ResearchRuntimeLedgerPanel() {
+    const t = useT();
+    const initialLedgerUrl = ledgerUrl(false);
+    const initialLedger = peekAdminJsonCache<LedgerPayload>(initialLedgerUrl);
+    const [data, setData] = useState<LedgerPayload | null>(initialLedger ?? null);
+    const [query, setQuery] = useState("");
+    const [packs, setPacks] = useState<ExperiencePack[]>([]);
+    const [searchApplied, setSearchApplied] = useState(false);
+    const [includeArchived, setIncludeArchived] = useState(false);
+    const [loading, setLoading] = useState(initialLedger === undefined);
+    const [error, setError] = useState("");
+    const [selectedPackIds, setSelectedPackIds] = useState<Set<string>>(() => new Set());
+
+    const evidence = useMemo(() => data?.evidenceBundles || [], [data]);
+    const timeline = useMemo(() => data?.confidenceTimeline || [], [data]);
+    const visiblePacks = searchApplied ? packs : data?.experiencePacks || [];
+
+    const refresh = useCallback(async (force = false) => {
+        const url = ledgerUrl(includeArchived);
+        if (peekAdminJsonCache<LedgerPayload>(url) === undefined) setLoading(true);
+        setError("");
+        try {
+            const payload = await fetchAdminJson<LedgerPayload>(url, { force });
+            setData(payload);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "research_runtime_load_failed");
+        } finally {
+            setLoading(false);
+        }
+    }, [includeArchived]);
+
+    const searchPacks = useCallback(async () => {
+        setLoading(true);
+        setError("");
+        try {
+            const params = new URLSearchParams({ view: "experience", scope: "global", limit: "30" });
+            if (query.trim()) params.set("query", query.trim());
+            if (includeArchived) params.set("includeArchived", "true");
+            const response = await fetch(`/api/admin/research-runtime?${params.toString()}`, { cache: "no-store" });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_search_failed");
+            setPacks(Array.isArray(payload.items) ? payload.items : []);
+            setSearchApplied(true);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "research_runtime_search_failed");
+        } finally {
+            setLoading(false);
+        }
+    }, [includeArchived, query]);
+
+    const promote = useCallback(
+        async (bundleId?: string) => {
+            if (!bundleId) return;
+            setLoading(true);
+            setError("");
+            try {
+                const response = await fetch("/api/admin/research-runtime", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ evidenceBundleId: bundleId }),
+                });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_promote_failed");
+                await refresh(true);
+                await searchPacks();
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "research_runtime_promote_failed");
+            } finally {
+                setLoading(false);
+            }
+        },
+        [refresh, searchPacks],
+    );
+
+    const mutatePack = useCallback(
+        async (action: "archive" | "restore", packId?: string) => {
+            if (!packId) return;
+            setLoading(true);
+            setError("");
+            try {
+                const response = await fetch("/api/admin/research-runtime", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ action, experiencePackId: packId, initiatedBy: "admin_research_runtime" }),
+                });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload?.detail || payload?.error || `research_runtime_${action}_failed`);
+                await refresh(true);
+                await searchPacks();
+            } catch (err) {
+                setError(err instanceof Error ? err.message : `research_runtime_${action}_failed`);
+            } finally {
+                setLoading(false);
+            }
+        },
+        [refresh, searchPacks],
+    );
+
+    const mutateSelectedPacks = useCallback(async (action: "archive" | "restore") => {
+        const experiencePackIds = Array.from(selectedPackIds);
+        if (!experiencePackIds.length) return;
+        setLoading(true);
+        setError("");
+        try {
+            const response = await fetch("/api/admin/research-runtime", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    action: action === "archive" ? "bulk_archive" : "bulk_restore",
+                    experiencePackIds,
+                    initiatedBy: "admin_research_runtime",
+                    reason: "bulk_governance",
+                }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.detail || payload?.error || `research_runtime_bulk_${action}_failed`);
+            setSelectedPackIds(new Set());
+            await refresh(true);
+            await searchPacks();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : `research_runtime_bulk_${action}_failed`);
+        } finally {
+            setLoading(false);
+        }
+    }, [refresh, searchPacks, selectedPackIds]);
+
+    const hardDeletePack = useCallback(
+        async (pack: ExperiencePack) => {
+            const packId = String(pack.experiencePackId || "").trim();
+            if (!packId) return;
+            const label = pack.title || packId;
+            if (!window.confirm(t("app.admin.dashboard.research.runtime.ledger.deleteConfirm", { label }))) return;
+            setLoading(true);
+            setError("");
+            try {
+                const params = new URLSearchParams({ experiencePackId: packId, confirm: "true" });
+                const response = await fetch(`/api/admin/research-runtime?${params.toString()}`, { method: "DELETE" });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_delete_failed");
+                await refresh(true);
+                await searchPacks();
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "research_runtime_delete_failed");
+            } finally {
+                setLoading(false);
+            }
+        },
+        [refresh, searchPacks, t],
+    );
+
+    useEffect(() => {
+        void refresh();
+    }, [refresh]);
+
+    return (
+        <Card className="rounded-3xl border-border bg-card/95 shadow-sm">
+            <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+                <div>
+                    <CardTitle className="text-lg font-semibold text-foreground">
+                        {t("app.admin.dashboard.research.runtime.ledger.title")}
+                    </CardTitle>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                        {t("app.admin.dashboard.research.runtime.ledger.description")}
+                    </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => void refresh(true)} disabled={loading}>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    {t("app.admin.dashboard.research.runtime.ledger.refresh")}
+                </Button>
+            </CardHeader>
+            <CardContent className="space-y-5">
+                {error ? (
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
+                        {t(`app.admin.dashboard.research.runtime.ledger.errors.${normalizeErrorCode(error)}`)}
+                        {normalizeErrorCode(error) === "unknown" ? <div className="mt-1 font-mono text-xs text-rose-600 dark:text-rose-200">{error}</div> : null}
+                    </div>
+                ) : null}
+                <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.evidenceCount")}</div>
+                        <div className="mt-2 text-2xl font-semibold text-foreground">{data?.counts?.evidenceBundles ?? evidence.length}</div>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.packCount")}</div>
+                        <div className="mt-2 text-2xl font-semibold text-foreground">{data?.counts?.experiencePacks ?? visiblePacks.length}</div>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.timelineCount")}</div>
+                        <div className="mt-2 text-2xl font-semibold text-foreground">{timeline.length}</div>
+                    </div>
+                </div>
+
+                <section className="space-y-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.experiencePacks")}</h3>
+                        <div className="flex gap-2">
+                            {selectedPackIds.size ? (
+                                <>
+                                    <Button type="button" variant="outline" size="sm" onClick={() => void mutateSelectedPacks("archive")} disabled={loading}>
+                                        <Archive className="mr-2 h-4 w-4" />
+                                        {t("app.admin.dashboard.research.runtime.ledger.bulkArchive", { count: selectedPackIds.size })}
+                                    </Button>
+                                    {includeArchived ? (
+                                        <Button type="button" variant="outline" size="sm" onClick={() => void mutateSelectedPacks("restore")} disabled={loading}>
+                                            <RotateCcw className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.bulkRestore", { count: selectedPackIds.size })}
+                                        </Button>
+                                    ) : null}
+                                </>
+                            ) : null}
+                            <label className="flex items-center gap-2 rounded-xl border border-border px-3 text-xs text-muted-foreground">
+                                <Checkbox checked={includeArchived} onCheckedChange={(value) => {
+                                    setIncludeArchived(Boolean(value));
+                                    setPacks([]);
+                                    setSearchApplied(false);
+                                }} />
+                                {t("app.admin.dashboard.research.runtime.ledger.includeArchived")}
+                            </label>
+                            <Input
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                                placeholder={t("app.admin.dashboard.research.runtime.ledger.searchPlaceholder")}
+                                className="h-9 w-full md:w-72"
+                            />
+                            <Button type="button" size="sm" onClick={searchPacks} disabled={loading}>
+                                <Search className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.research.runtime.ledger.search")}
+                            </Button>
+                        </div>
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                        {visiblePacks.slice(0, 8).map((item) => {
+                            const packState = resolvePackState(item, t);
+                            return (
+                                <div key={item.experiencePackId} className="rounded-2xl border border-border bg-background/55 p-4">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="flex min-w-0 items-start gap-3">
+                                            <Checkbox
+                                                checked={Boolean(item.experiencePackId && selectedPackIds.has(item.experiencePackId))}
+                                                aria-label={t("app.admin.dashboard.research.runtime.ledger.selectPack")}
+                                                onCheckedChange={(value) => {
+                                                    const packId = String(item.experiencePackId || "").trim();
+                                                    if (!packId) return;
+                                                    setSelectedPackIds((current) => {
+                                                        const next = new Set(current);
+                                                        if (value) next.add(packId); else next.delete(packId);
+                                                        return next;
+                                                    });
+                                                }}
+                                            />
+                                            <div className="min-w-0">
+                                            <AdminHoverInfo
+                                                content={(
+                                                    <div className="space-y-1">
+                                                        {buildExperiencePackHoverLines(item, t).map((line, index) => (
+                                                            <div key={index} className="whitespace-normal break-words">{line}</div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                panelClassName="w-[32rem] max-w-[calc(100vw-2rem)] whitespace-normal text-xs leading-5"
+                                            >
+                                                <div className="font-medium text-foreground underline decoration-border decoration-dotted underline-offset-4">
+                                                    {item.title || item.experiencePackId}
+                                                </div>
+                                            </AdminHoverInfo>
+                                            <div className="mt-1 text-xs text-muted-foreground">{item.experiencePackId}</div>
+                                            {item.freshnessState && item.freshnessState !== "current" ? (
+                                                <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                                                    {t("app.admin.dashboard.research.runtime.ledger.freshnessAge", {
+                                                        age: item.ageDays ?? 0,
+                                                        limit: item.maxAgeDays ?? 0,
+                                                    })}
+                                                </div>
+                                            ) : null}
+                                            </div>
+                                        </div>
+                                        <Badge variant="outline" className={packStateTone(packState.key)}>
+                                            {packState.label}
+                                        </Badge>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                        <span>{t("app.admin.dashboard.research.runtime.ledger.authority")}: {item.authorityScore ?? 0}</span>
+                                        <span>{t("app.admin.dashboard.research.runtime.ledger.usage")}: {item.usageCount ?? 0}</span>
+                                        <span>{t("app.admin.dashboard.research.runtime.ledger.confidence")}: {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}</span>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                        {normalizeStatus(item.status) === "archived" ? (
+                                            <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("restore", item.experiencePackId)} disabled={loading}>
+                                                <RotateCcw className="mr-2 h-4 w-4" />
+                                                {t("app.admin.dashboard.research.runtime.ledger.restore")}
+                                            </Button>
+                                        ) : (
+                                            <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("archive", item.experiencePackId)} disabled={loading}>
+                                                <Archive className="mr-2 h-4 w-4" />
+                                                {t("app.admin.dashboard.research.runtime.ledger.archive")}
+                                            </Button>
+                                        )}
+                                        <Button type="button" variant="outline" size="sm" className="border-rose-200 text-rose-700 hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-300 dark:hover:bg-rose-500/10" onClick={() => hardDeletePack(item)} disabled={loading}>
+                                            <Trash2 className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.hardDelete")}
+                                        </Button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </section>
+
+                <section className="space-y-3">
+                    <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.evidenceBundles")}</h3>
+                    <div className="space-y-3">
+                        {evidence.slice(0, 8).map((item) => {
+                            const promotable = item.promotable === true;
+                            const promotionStatus = promotable
+                                ? t("app.admin.dashboard.research.runtime.ledger.promotion.ready")
+                                : t("app.admin.dashboard.research.runtime.ledger.promotion.blocked");
+                            return (
+                            <div key={item.evidenceBundleId} className="rounded-2xl border border-border bg-background/55 p-4">
+                                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                    <div>
+                                        <div className="font-medium text-foreground">{item.question || item.evidenceBundleId}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{item.evidenceBundleId}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{promotionStatus}</div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Badge variant="outline" className={confidenceTone(item.confidence)}>
+                                            {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}
+                                        </Badge>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => promote(item.evidenceBundleId)}
+                                            disabled={loading || !promotable}
+                                            title={promotionStatus}
+                                        >
+                                            <Archive className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.promote")}
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
+                            );
+                        })}
+                    </div>
+                </section>
+
+                <section className="space-y-3">
+                    <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.confidenceTimeline")}</h3>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="space-y-3">
+                            {timeline.slice(0, 10).map((item) => (
+                                <div key={`${item.evidenceBundleId}-${item.at}`} className="flex items-start gap-3 text-sm">
+                                    <GitBranch className="mt-0.5 h-4 w-4 text-sky-600" />
+                                    <div className="min-w-0">
+                                        <div className="truncate font-medium text-foreground">{item.question || item.evidenceBundleId}</div>
+                                        <div className="text-xs text-muted-foreground">{item.at} · {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")} · {item.authorityScore ?? 0}</div>
+                                    </div>
+                                </div>
+                            ))}
+                            {!timeline.length ? <div className="text-sm text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.emptyTimeline")}</div> : null}
+                        </div>
+                    </div>
+                </section>
+            </CardContent>
+        </Card>
+    );
+}

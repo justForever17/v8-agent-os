@@ -126,7 +126,6 @@ try {
   }
 
   const dependency = `file:../../packages/product-ui/${archiveName}`;
-  verifyConsumer("apps/v8-agent-os-admin", dependency, version, integrity);
   verifyConsumer("apps/v8-agent-os-web", dependency, version, integrity);
   if (verifyBuild) verifyBuiltContents(entries);
 

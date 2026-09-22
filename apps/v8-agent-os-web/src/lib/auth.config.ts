@@ -2,11 +2,16 @@ import type { NextAuthConfig } from "next-auth";
 
 export const authConfig = {
     pages: {
-        signIn: "/",
+        signIn: "/login",
+        verifyRequest: "/admin/verify",
     },
     callbacks: {
-        authorized() {
-            // Allow all pages, control at component level
+        authorized({ auth, request: { nextUrl } }) {
+            const pathname = nextUrl.pathname;
+            if (pathname === "/login" || pathname === "/admin/verify") return true;
+            if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+                return auth?.user?.role === "ADMIN" && auth.user.adminAuthenticated === true;
+            }
             return true;
         },
         async jwt({ token, user }) {

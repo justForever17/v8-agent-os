@@ -23,7 +23,7 @@ test("web realtime keeps the full detail stream and refreshes durable resources 
     "utf8",
   );
   const adminStream = fs.readFileSync(
-    path.resolve(webRoot, "..", "v8-agent-os-admin", "src", "app", "api", "realtime", "sessions", "[id]", "stream", "route.ts"),
+    path.join(webRoot, "src", "app", "api", "admin", "realtime", "sessions", "[id]", "stream", "route.ts"),
     "utf8",
   );
 

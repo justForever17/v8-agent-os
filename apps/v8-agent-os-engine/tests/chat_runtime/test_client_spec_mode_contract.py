@@ -5,7 +5,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_admin_bff_preserves_spec_mode_without_planner_fields():
-    source = (REPO_ROOT / "apps/v8-agent-os-admin/src/lib/realtime/engine-chat-request.ts").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "apps/v8-agent-os-web/src/admin/lib/realtime/engine-chat-request.ts").read_text(encoding="utf-8")
 
     assert "const specMode = data.specMode === true" in source
     assert 'specMode,' in source

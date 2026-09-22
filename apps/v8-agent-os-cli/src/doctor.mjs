@@ -2,20 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
-  ADMIN_DIR,
   CONFIG_PATH,
-  CYBERCORE_DIR,
-  DEFAULT_PORTS,
   DESKTOP_PET_DIR,
   ENGINE_DIR,
   MCP_CONFIG_PATH,
   REPO_ROOT,
+  SHELL_DIR,
   STATE_ROOT,
   WEB_DIR,
 } from "./paths.mjs";
 import { engineResponse, engineTargetOrigin } from "./engine_client.mjs";
 import { getPortOwners, isPortOpen } from "./ports.mjs";
 import { readJsonFile } from "./json_file.mjs";
+import { readRuntimePorts } from "./runtime_ports.mjs";
 
 function commandVersion(command, args = ["--version"]) {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 2500, windowsHide: true });
@@ -220,14 +219,12 @@ export async function runDoctor({ preferEngine = true, profile } = {}) {
   checks.push(checkJsonFile(MCP_CONFIG_PATH, "mcp.json"));
   checks.push(checkPathExists("engine_dir", "Engine 源码目录", ENGINE_DIR));
   if (!server) {
-    checks.push(checkPathExists("admin_dir", "Admin 源码目录", ADMIN_DIR));
     checks.push(checkPathExists("web_dir", "Web 源码目录", WEB_DIR));
     checks.push(checkPathExists("desktop_pet_dir", "桌宠源码目录", DESKTOP_PET_DIR, "warning"));
-    checks.push(checkPathExists("cybercore_dir", "CyberCore 源码目录", CYBERCORE_DIR, "warning"));
   }
 
   const enginePort = Number(new URL(engineTargetOrigin()).port || 80);
-  for (const [id, port] of Object.entries(server ? { engine: enginePort } : { ...DEFAULT_PORTS, engine: enginePort })) {
+  for (const [id, port] of Object.entries(server ? { engine: enginePort } : { engine: enginePort, web: readRuntimePorts().web })) {
     const open = await isPortOpen(port);
     checks.push({
       id: `${id}_port`,
@@ -259,11 +256,9 @@ export async function runDoctor({ preferEngine = true, profile } = {}) {
   checks.push(checkEngineVenv());
   if (server) checks.push(checkServerBrowser());
   else {
-    checks.push(checkNodeAppDependencies("admin_dependencies", "Admin", ADMIN_DIR, ["node_modules/next/dist/bin/next"]));
     checks.push(checkNodeAppDependencies("web_dependencies", "Web", WEB_DIR, ["node_modules/next/dist/bin/next"]));
     checks.push(checkNodeAppDependencies("desktop_pet_dependencies", "桌宠", DESKTOP_PET_DIR));
-    checks.push(checkElectronInstall("desktop_pet_electron", "桌宠", DESKTOP_PET_DIR));
-    checks.push(checkNodeAppDependencies("cybercore_dependencies", "CyberCore", CYBERCORE_DIR));
+    checks.push(checkElectronInstall("shell_electron", "桌面宿主", SHELL_DIR));
     checks.push(checkAdminAuthSecret());
   }
   checks.push(checkModelRoles());

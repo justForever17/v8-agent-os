@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import desktopPetPlatform from "./desktop_pet_platform.cjs";
 import { ensureDir } from "./json_file.mjs";
 import { COMPONENTS, componentRuntimePorts, configureComponentRuntimePorts, logPathsFor } from "./components.mjs";
 import { LOG_DIR, REPO_ROOT, STATE_ROOT } from "./paths.mjs";
@@ -18,29 +17,25 @@ import {
   withRuntimePortsLease,
 } from "./process_state.mjs";
 
-const { desktopPetAvailability } = desktopPetPlatform;
 
 export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
 export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
-export const DESKTOP_PET_TERMINATION_TIMEOUT_MS = 10_000;
 export const MANAGED_SHELL_SHUTDOWN_ARG = "--v8os-managed-shutdown";
 export const MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS = 30_000;
 export const MANAGED_SHELL_RESTART_ARG = "--v8os-managed-restart";
 export const MANAGED_SHELL_RESTART_TIMEOUT_MS = 15_000;
-const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
 
-export function managedStopOptions(componentId, platform = process.platform, options = {}) {
-  const forceDesktopPet = componentId === "desktop-pet" && options.force === true;
+export function managedStopOptions(componentId, platform = process.platform) {
   return {
     tree: componentId !== "shell",
     timeoutMs: componentId === "shell"
       ? SHELL_TERMINATION_TIMEOUT_MS
-      : componentId === "desktop-pet" && !forceDesktopPet ? DESKTOP_PET_TERMINATION_TIMEOUT_MS : undefined,
+      : undefined,
     // CLI `stop --only shell` is a component restart primitive, not the user-facing
     // V8OS quit flow. On POSIX, SIGTERM enters Electron's governed global shutdown
     // and can wait for an interactive retry dialog. A verified Shell process group
     // must therefore use the same force-stop semantics as Windows taskkill /F.
-    signal: platform !== "win32" && (componentId === "shell" || forceDesktopPet) ? "SIGKILL" : "SIGTERM",
+    signal: platform !== "win32" && componentId === "shell" ? "SIGKILL" : "SIGTERM",
   };
 }
 
@@ -183,113 +178,6 @@ export function observeEarlyProcessExit(child, timeoutMs = 350) {
   });
 }
 
-export async function waitForRuntimeComponentHandoff(componentId, child, options = {}) {
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : 20_000;
-  const pollMs = Number.isFinite(options.pollMs) ? Math.max(1, options.pollMs) : 50;
-  const readRuntime = options.readRuntimeDescriptor || runtimeProcessDescriptor;
-  const readDescriptor = options.readProcessDescriptor || readProcessDescriptor;
-  const pidAlive = options.pidIsAlive || isPidAlive;
-  const receiptContract = options.receiptContract || null;
-  const readReceipt = options.readReceipt || readRuntimeHandoffReceipt;
-  const sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
-  const deadline = Date.now() + timeoutMs;
-  let lastReason = "runtime_descriptor_missing";
-  let candidatePid = null;
-  while (Date.now() < deadline) {
-    const runtimeDescriptor = readRuntime(componentId);
-    const runtimePid = positivePid(runtimeDescriptor?.pid);
-    if (runtimePid) {
-      const descriptorContractValid = componentId !== "desktop-pet"
-        || (runtimeDescriptor?.managedByShell === true
-          && typeof runtimeDescriptor?.descriptorId === "string"
-          && runtimeDescriptor.descriptorId.length > 0);
-      const processDescriptor = await readDescriptor(runtimePid);
-      if (descriptorContractValid
-        && pidAlive(runtimePid)
-        && verifiedRuntimeComponentPid(componentId, processDescriptor, runtimeDescriptor) === runtimePid) {
-        candidatePid = runtimePid;
-        const receipt = receiptContract ? readReceipt(receiptContract) : null;
-        if (!receiptContract || receipt?.pid === runtimePid) {
-          return { ok: true, pid: runtimePid, runtimeDescriptor, processDescriptor };
-        }
-        lastReason = receipt ? "runtime_handoff_receipt_mismatch" : "runtime_handoff_receipt_missing";
-      } else {
-        lastReason = !descriptorContractValid
-          ? "runtime_descriptor_invalid"
-          : processDescriptor ? "runtime_identity_mismatch" : "runtime_identity_unavailable";
-      }
-    }
-    if (child?.signalCode) {
-      return { ok: false, reason: "launcher_signalled", exitCode: null, signal: child.signalCode };
-    }
-    if (child?.exitCode !== null && child?.exitCode !== undefined && child.exitCode !== 0) {
-      return { ok: false, reason: "launcher_exited", exitCode: child.exitCode, signal: null };
-    }
-    await sleep(pollMs);
-  }
-  return {
-    ok: false,
-    reason: lastReason === "runtime_descriptor_missing" ? "runtime_handoff_timeout" : lastReason,
-    exitCode: Number.isInteger(child?.exitCode) ? child.exitCode : null,
-    signal: child?.signalCode || null,
-    candidatePid,
-  };
-}
-
-function createRuntimeHandoffReceipt(componentId) {
-  if (componentId !== "desktop-pet") return null;
-  const nonce = crypto.randomUUID();
-  ensureDir(RUNTIME_HANDOFF_DIR);
-  const filePath = path.join(RUNTIME_HANDOFF_DIR, `${componentId}-${nonce}.json`);
-  fs.rmSync(filePath, { force: true });
-  return { componentId, nonce, filePath };
-}
-
-function readRuntimeHandoffReceipt(contract) {
-  if (!contract?.filePath || !fs.existsSync(contract.filePath)) return null;
-  try {
-    if (fs.statSync(contract.filePath).size > 1_024) return null;
-    const payload = JSON.parse(fs.readFileSync(contract.filePath, "utf8"));
-    const pid = positivePid(payload?.pid);
-    if (payload?.version !== 1
-      || payload?.componentId !== contract.componentId
-      || payload?.nonce !== contract.nonce
-      || !pid) return null;
-    return { ...payload, pid };
-  } catch {
-    return null;
-  }
-}
-
-export async function cleanupFailedRuntimeHandoff(componentId, child, contract, options = {}) {
-  const readReceipt = options.readReceipt || readRuntimeHandoffReceipt;
-  const pidAlive = options.pidIsAlive || isPidAlive;
-  const describe = options.readProcessDescriptor || readProcessDescriptor;
-  const verify = options.verifyRuntimePid || verifiedRuntimeComponentPid;
-  const terminate = options.killPid || killPid;
-  const removeDescriptor = options.removeRuntimeDescriptor || removeRuntimeDescriptor;
-  const runtimeDescriptor = options.runtimeDescriptor || runtimeProcessDescriptor(componentId);
-  try {
-    const receipt = readReceipt(contract);
-    const runtimePids = [...new Set([receipt?.pid, positivePid(options.candidatePid)].filter(Boolean))];
-    for (const runtimePid of runtimePids) {
-      if (pidAlive(runtimePid)) {
-        const descriptor = await describe(runtimePid);
-        if (verify(componentId, descriptor, runtimeDescriptor) === runtimePid) {
-          await terminate(runtimePid, { tree: true });
-          removeDescriptor(componentId, runtimePid);
-        }
-      }
-    }
-    const launcherPid = positivePid(child?.pid);
-    if (launcherPid && child?.exitCode === null && !child?.signalCode && pidAlive(launcherPid)) {
-      await terminate(launcherPid, { tree: true });
-    }
-  } finally {
-    if (contract?.filePath) fs.rmSync(contract.filePath, { force: true });
-  }
-}
-
 async function waitForPidExit(pid, timeoutMs = 2_500) {
   const deadline = Date.now() + timeoutMs;
   while (isPidAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
@@ -337,7 +225,7 @@ function processCandidateMatchesJavaScriptRuntime(candidate, expectedCommand) {
   const controlledElectronRoot = normalizeResolvedProcessPath(path.join(
     REPO_ROOT,
     "apps",
-    "v8-agent-os-desktop-pet",
+    "v8-agent-os-shell",
     "node_modules",
     "electron",
   ));
@@ -358,7 +246,7 @@ function processCandidateMatchesEngine(candidate, commandSpec) {
 }
 
 function processCandidateMatchesNextApp(componentId, candidate, expectedPort = COMPONENTS[componentId]?.port) {
-  if (!candidate || typeof candidate !== "object" || !["admin", "web"].includes(componentId)) return false;
+  if (!candidate || typeof candidate !== "object" || componentId !== "web") return false;
   const commandLine = normalizeProcessText(candidate.commandLine);
   const appDir = normalizeProcessText(path.join(REPO_ROOT, "apps", `v8-agent-os-${componentId}`));
   const port = Number(expectedPort);
@@ -384,7 +272,7 @@ function packagedRepoRootForExecutable(executablePath, platform = process.platfo
 export function packagedRuntimeDescriptorMatches(componentId, candidate, runtimeDescriptor, options = {}) {
   const governedRepoRoot = path.resolve(options.repoRoot || REPO_ROOT);
   const platform = options.platform || process.platform;
-  if (!candidate || !runtimeDescriptor || !["shell", "desktop-pet"].includes(componentId)) return false;
+  if (!candidate || !runtimeDescriptor || componentId !== "shell") return false;
   if (runtimeDescriptor.packaged !== true || runtimeDescriptor.runtimeKind !== componentId) return false;
   if (!positivePid(candidate.pid) || positivePid(runtimeDescriptor.pid) !== positivePid(candidate.pid)) return false;
   if (!path.isAbsolute(String(candidate.executablePath || ""))
@@ -410,9 +298,7 @@ export function packagedRuntimeDescriptorMatches(componentId, candidate, runtime
     normalizeProcessText(path.join(governedRepoRoot, "apps", "v8-agent-os-cli", "src", "cli.mjs")),
     normalizeProcessText(path.join(governedRepoRoot, "scripts", "run-next-with-managed-auth.mjs")),
   ];
-  const roleMatches = componentId === "desktop-pet"
-    ? commandLine.includes(desktopPetMain)
-    : !packagedNodeEntries.some((entry) => commandLine.includes(entry))
+  const roleMatches = !packagedNodeEntries.some((entry) => commandLine.includes(entry))
       && !/(?:^|\s)--type=(?:renderer|gpu-process|utility)(?:\s|$)/i.test(commandLine);
   return candidateExecutable === declaredExecutable
     && declaredRepoRoot === normalizeResolvedProcessPath(governedRepoRoot)
@@ -428,47 +314,20 @@ function processCandidateMatchesShell(candidate, runtimeDescriptor = null) {
   const commandSpec = COMPONENTS.shell.command({ mode: "start" });
   const launcherSignature = commandLine.includes("apps\\v8-agent-os-shell\\scripts\\launch-shell.mjs")
     && processExecutableMatchesCommand(candidate, commandSpec.command);
-  const electronRoot = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-desktop-pet", "node_modules", "electron"));
+  const electronRoot = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-shell", "node_modules", "electron"));
   const shellDir = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-shell"));
   const electronSignature = executable.startsWith(`${electronRoot}\\`)
     && commandLine.includes(shellDir);
   return launcherSignature || electronSignature;
 }
 
-function processCandidateMatchesDesktopPet(candidate, runtimeDescriptor = null) {
-  if (!candidate || typeof candidate !== "object") return false;
-  if (packagedRuntimeDescriptorMatches("desktop-pet", candidate, runtimeDescriptor)) return true;
-  const commandLine = normalizeProcessText(candidate.commandLine);
-  const executable = normalizeProcessText(candidate.executablePath);
-  const commandSpec = COMPONENTS["desktop-pet"].command({ mode: "start" });
-  const launcherSignature = commandLine.includes("apps\\v8-agent-os-shell\\scripts\\launch-desktop-pet.mjs")
-    && processExecutableMatchesCommand(candidate, commandSpec.command);
-  const petDir = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-desktop-pet"));
-  const electronRoot = `${petDir}\\node_modules\\electron`;
-  const mainEntry = `${petDir}\\electron\\main.cjs`;
-  const electronSignature = commandLine.includes(mainEntry)
-    && (executable.startsWith(`${electronRoot}\\`) || processExecutableMatchesCommand(candidate, commandSpec.command));
-  return launcherSignature || electronSignature;
-}
-
-function processCandidateMatchesCybercore(candidate) {
-  if (!candidate || typeof candidate !== "object") return false;
-  const commandLine = normalizeProcessText(candidate.commandLine);
-  const commandSpec = COMPONENTS.cybercore.command({ mode: commandLine.includes("npm run start") ? "start" : "dev" });
-  const executableName = path.win32.basename(normalizeProcessText(candidate.executablePath)).replace(/\.exe$/i, "");
-  const posixNpmInterpreter = candidate.processDescriptorSource === "posix_ps" && executableName === "node";
-  return (processExecutableMatchesCommand(candidate, commandSpec.command) || posixNpmInterpreter)
-    && /(?:^|\s)npm\s+run\s+(?:start|dev)(?:\s|$)/i.test(commandLine);
-}
-
 function processCandidateMatchesComponent(componentId, candidate, runtimeDescriptor = null, expectedPort = null) {
+  if (!COMPONENTS[componentId]) return false;
   if (componentId === "engine") return processCandidateMatchesEngine(candidate, COMPONENTS.engine.command({ mode: "start" }));
   if (componentId === "admin" || componentId === "web") {
     return processCandidateMatchesNextApp(componentId, candidate, expectedPort || COMPONENTS[componentId]?.port);
   }
   if (componentId === "shell") return processCandidateMatchesShell(candidate, runtimeDescriptor);
-  if (componentId === "desktop-pet") return processCandidateMatchesDesktopPet(candidate, runtimeDescriptor);
-  if (componentId === "cybercore") return processCandidateMatchesCybercore(candidate);
   return false;
 }
 
@@ -512,10 +371,7 @@ export function verifiedManagedComponentPid(componentId, record, descriptor) {
   const descriptorMatchesComponent = candidateMatchesRecordedComponent(componentId, record, descriptor);
   if (!descriptorMatchesComponent) return null;
   const executableMatches = processExecutableMatchesCommand(descriptor, record.command);
-  const verifiedPosixNpmInterpreter = componentId === "cybercore"
-    && descriptor.processDescriptorSource === "posix_ps"
-    && Boolean(descriptor.cwd);
-  if (!executableMatches && !verifiedPosixNpmInterpreter) return null;
+  if (!executableMatches) return null;
   if (record.processStartToken && descriptor.processStartToken !== record.processStartToken) return null;
   if (descriptor.executablePathKind === "posix_comm" && !descriptor.cwd) return null;
   if (descriptor.cwd
@@ -713,19 +569,7 @@ async function readProcessDescriptors(pids) {
   }
 }
 
-const DESKTOP_PET_PROCESS_PATH = path.join(STATE_ROOT, "runtime", "desktop-pet.json");
 const SHELL_CONTROL_PATH = path.join(STATE_ROOT, "runtime", "shell-control.json");
-
-function readDesktopPetProcessDescriptor() {
-  try {
-    const descriptor = JSON.parse(fs.readFileSync(DESKTOP_PET_PROCESS_PATH, "utf8"));
-    const pid = Number(descriptor?.pid);
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    return { ...descriptor, pid };
-  } catch {
-    return null;
-  }
-}
 
 function readShellControlDescriptor() {
   try {
@@ -739,7 +583,6 @@ function readShellControlDescriptor() {
 }
 
 function runtimeProcessDescriptor(componentId) {
-  if (componentId === "desktop-pet") return readDesktopPetProcessDescriptor();
   if (componentId === "shell") return readShellControlDescriptor();
   return null;
 }
@@ -763,9 +606,7 @@ function resolveLiveManagedIdentity(componentId, record, snapshot) {
 }
 
 function removeRuntimeDescriptor(componentId, expectedPid) {
-  const filePath = componentId === "desktop-pet"
-    ? DESKTOP_PET_PROCESS_PATH
-    : componentId === "shell" ? SHELL_CONTROL_PATH : null;
+  const filePath = componentId === "shell" ? SHELL_CONTROL_PATH : null;
   if (!filePath) return;
   const current = runtimeProcessDescriptor(componentId);
   if (!current || current.pid === expectedPid) fs.rmSync(filePath, { force: true });
@@ -826,7 +667,6 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
     const pidAlive = Boolean(identity.effectivePid || identity.unverifiedPids.length);
     const hasPort = componentHasPort(component);
     const portOpen = hasPort ? await isPortOpen(component.port) : false;
-    const availability = id === "desktop-pet" ? desktopPetAvailability() : null;
     statuses.push({
       id,
       label: component.label,
@@ -844,7 +684,6 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
       lifecycle: record?.lifecycle || null,
       logOut: record?.logOut || null,
       logErr: record?.logErr || null,
-      ...(availability && !availability.available ? availability : {}),
     });
   }
   await Promise.all(staleCleanups);
@@ -881,51 +720,9 @@ async function startComponent(id, options) {
     if (!fs.existsSync(commandSpec.cwd)) {
       return { id, status: "missing_cwd", cwd: commandSpec.cwd };
     }
-    const handoffReceipt = component.detachedHandoff ? createRuntimeHandoffReceipt(id) : null;
-    if (handoffReceipt) {
-      commandSpec.env = {
-        ...commandSpec.env,
-        V8OS_RUNTIME_HANDOFF_PATH: handoffReceipt.filePath,
-        V8OS_RUNTIME_HANDOFF_NONCE: handoffReceipt.nonce,
-      };
-    }
     const logs = logPathsFor(id);
     const { child, failure } = await spawnManagedChild(id, commandSpec, logs);
-    if (failure) {
-      if (handoffReceipt?.filePath) fs.rmSync(handoffReceipt.filePath, { force: true });
-      return failure;
-    }
-    if (component.detachedHandoff) {
-      const handoff = await waitForRuntimeComponentHandoff(id, child, {
-        receiptContract: handoffReceipt,
-      });
-      child.unref();
-      if (!handoff.ok) {
-        await cleanupFailedRuntimeHandoff(id, child, handoffReceipt, {
-          candidatePid: handoff.candidatePid,
-        });
-        return {
-          id,
-          status: "startup_exit",
-          stage: "runtime_handoff",
-          reason: handoff.reason,
-          exitCode: handoff.exitCode ?? null,
-          signal: handoff.signal || null,
-          port: null,
-          logOut: logs.out,
-          logErr: logs.err,
-        };
-      }
-      fs.rmSync(handoffReceipt.filePath, { force: true });
-      return {
-        id,
-        status: "started",
-        pid: handoff.pid,
-        port: null,
-        logOut: logs.out,
-        logErr: logs.err,
-      };
-    }
+    if (failure) return failure;
     const earlyExit = await observeEarlyProcessExit(child);
     if (earlyExit.exited) {
       child.unref();
@@ -987,9 +784,6 @@ async function startComponent(id, options) {
 export async function startComponentsWithRuntimePorts(componentIds, options = {}) {
   ensureDir(LOG_DIR);
   const selected = componentIds.filter((id) => COMPONENTS[id]);
-  const desktopPetStartBlock = selected.includes("desktop-pet")
-    ? desktopPetAvailability()
-    : null;
   let webResult = null;
   const profile = await withRuntimePortsLease(async () => {
     const state = readProcessState();
@@ -1011,9 +805,6 @@ export async function startComponentsWithRuntimePorts(componentIds, options = {}
   });
   configureComponentRuntimePorts(profile.ports);
   const results = await Promise.all(selected.map((id) => {
-    if (id === "desktop-pet" && desktopPetStartBlock && !desktopPetStartBlock.available) {
-      return { id, ...desktopPetStartBlock };
-    }
     return id === "web"
       ? webResult
       : startComponent(id, { ...options, runtimePorts: profile.ports });
@@ -1103,7 +894,7 @@ export function orderedManagedStopPids(componentId, identity, verifiedPortOwner 
   ].filter(Boolean))];
 }
 
-const WHOLE_V8OS_SHUTDOWN_COMPONENTS = ["engine", "admin", "web", "desktop-pet", "shell"];
+const WHOLE_V8OS_SHUTDOWN_COMPONENTS = ["engine", "web", "shell"];
 
 export function requestsManagedShellShutdown(componentIds) {
   const selected = new Set(Array.isArray(componentIds) ? componentIds : []);
@@ -1241,9 +1032,7 @@ async function stopComponent(id, options) {
       }
       killResults.push({
         pid,
-        ...await killPid(pid, managedStopOptions(id, process.platform, {
-          force: options.forceDesktopPet === true,
-        })),
+        ...await killPid(pid, managedStopOptions(id, process.platform)),
       });
     }
     const failed = killResults.find((item) => !item.ok);
@@ -1276,9 +1065,7 @@ export async function stopComponents(componentIds = Object.keys(COMPONENTS), opt
   const governedRestart = options.skipManagedShellShutdown === true || governedShutdown.attempted
     ? { attempted: false, stopped: false, reason: "disabled" }
     : await requestPackagedShellRestart(selected, options.managedShellRestart || {});
-  const stopOptions = governedShutdown.attempted && !governedShutdown.stopped
-    ? { ...options, forceDesktopPet: true }
-    : options;
+  const stopOptions = options;
   return Promise.all(selected.map((id) => id === "shell" && governedRestart.stopped
     ? {
       id,

@@ -35,9 +35,9 @@ function runBootstrap(ps, extraArgs) {
 }
 
 const ps = findPowerShell();
-const webMode = runBootstrap(ps, ["--profile", "minimal", "--services", "engine+admin+web"]);
+const webMode = runBootstrap(ps, ["--profile", "minimal", "--services", "engine+web"]);
 assert.equal(webMode.status, 0, webMode.stderr || webMode.stdout);
-assert.match(webMode.stdout, /Services\s+:\s+engine\+admin\+web/);
+assert.match(webMode.stdout, /Services\s+:\s+engine\+web/);
 assert.match(webMode.stdout, /Web dir\s+:/);
 assert.ok(
     webMode.stdout.includes(path.join(repoRoot, "apps", "v8-agent-os-web"))
@@ -46,16 +46,19 @@ assert.ok(
     "dry-run output should include the os-web app directory",
 );
 
-const unsupported = runBootstrap(ps, ["--profile", "minimal", "--services", "engine+web"]);
-assert.notEqual(unsupported.status, 0, "bootstrap must not silently accept unsupported web-only service mode");
-assert.match(`${unsupported.stdout}\n${unsupported.stderr}`, /Unsupported --services value: engine\+web/);
+const legacyMode = runBootstrap(ps, ["--profile", "minimal", "--services", "engine+admin+web"]);
+assert.equal(legacyMode.status, 0);
+assert.match(legacyMode.stdout, /Services\s+:\s+engine\+web/);
+const unsupported = runBootstrap(ps, ["--profile", "minimal", "--services", "invalid"]);
+assert.notEqual(unsupported.status, 0);
+assert.match(`${unsupported.stdout}\n${unsupported.stderr}`, /Unsupported --services value: invalid/);
 
 console.log(JSON.stringify({
     ok: true,
     powerShell: ps,
     checks: [
-        "engine_admin_web_service_mode_accepted",
+        "single_product_web_service_mode_accepted",
         "web_app_directory_reported_in_dry_run",
-        "unsupported_engine_web_mode_rejected",
+        "legacy_alias_normalized_without_second_host",
     ],
 }, null, 2));

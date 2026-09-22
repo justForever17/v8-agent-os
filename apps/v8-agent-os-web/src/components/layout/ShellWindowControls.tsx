@@ -4,12 +4,10 @@ import { useEffect, useState } from "react";
 import { ProductTrafficLightWindowControls } from "@v8/product-ui";
 import { useT } from "@/components/providers/LocaleProvider";
 
-type ShellWindowApi = {
+export type ShellWindowApi = {
     isShell: true;
     onSurfaceVisibilityChange?: (callback: (state: { visible: boolean }) => void) => () => void;
     onNavigateSession?: (callback: (state: { sessionId: string }) => void) => () => void;
-    onAdminSessionLockChange?: (callback: (state: { locked: boolean }) => void) => () => void;
-    getAdminSessionLock?: () => Promise<{ locked: boolean }>;
     minimize: () => void;
     toggleMaximize: () => void;
     getWindowState: () => Promise<{ isMaximized?: boolean }>;
@@ -20,6 +18,17 @@ type ShellWindowApi = {
     openWorkspaceFolder: (workspacePath: string) => Promise<{ ok?: boolean; error?: string }>;
     revealWorkspaceFile: (workspaceRelativePath: string, workspacePath: string) => Promise<{ ok?: boolean; error?: string }>;
     reportActiveSession: (sessionId: string | null) => void;
+    getAdminSessionLock: () => Promise<{ locked: boolean; loginUrl: string }>;
+    lockAdminSession: () => Promise<{ locked: boolean; loginUrl: string }>;
+    onAdminSessionLockChange: (callback: (state: { locked: boolean; loginUrl: string }) => void) => () => void;
+    getUpdateStatus?: () => Promise<any>;
+    checkForUpdates?: () => Promise<any>;
+    openUpdateRelease?: () => Promise<boolean>;
+    selectGodotExecutable: () => Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
+    selectGodotProjectDirectory: () => Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
+    getDesktopPetState: () => Promise<any>;
+    setDesktopPetEnabled: (enabled: boolean) => Promise<any>;
+    onDesktopPetStateChange: (callback: (state: any) => void) => () => void;
 };
 
 declare global {

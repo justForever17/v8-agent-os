@@ -75,7 +75,12 @@ export function stageStandaloneAssets(appDir, serverPath) {
     if (!fs.existsSync(source)) throw new Error(`Standalone asset source is missing: ${source}`);
     fs.rmSync(target, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.cpSync(source, target, { recursive: true });
+    fs.cpSync(source, target, { recursive: true, filter: candidate => {
+      if (path.basename(source) !== "public") return true;
+      const relative = path.relative(source, candidate).replaceAll("\\", "/");
+      if (relative === "user" || relative.startsWith("user/")) return false;
+      return !relative.startsWith("Avatar/") || relative === "Avatar/default-supervisor.svg" || relative === "Avatar/.gitkeep";
+    } });
   }
 }
 
@@ -89,11 +94,8 @@ export function assertStandaloneAssetsReady(appDir, serverPath) {
   }
 }
 
-export function runtimeHostnameForApp(app, environment = process.env) {
-  if (app === "admin") {
-    // Remote clients use Engine's narrow gateway. The configuration page is local.
-    return String(environment?.V8_ADMIN_HOSTNAME || "").trim() || "127.0.0.1";
-  }
+export function runtimeHostnameForApp() {
+  // Remote clients use Engine's narrow gateway; Product Web stays local.
   return "127.0.0.1";
 }
 
@@ -138,9 +140,9 @@ function currentLinuxX64InstructionSet() {
 function main(args = process.argv.slice(2)) {
   const app = argumentValue(args, "--app");
   const mode = argumentValue(args, "--mode");
-  const port = argumentValue(args, "--port", app === "admin" ? "9528" : "9527");
-  if (!['admin', 'web'].includes(app) || !['dev', 'build', 'start'].includes(mode)) {
-    throw new Error("Usage: --app admin|web --mode dev|build|start [--port 9528]");
+  const port = argumentValue(args, "--port", "9527");
+  if (!['web'].includes(app) || !['dev', 'build', 'start'].includes(mode)) {
+    throw new Error("Usage: --app web --mode dev|build|start [--port 9527]");
   }
   // Phone reaches Engine's dedicated gateway. Web and Admin remain local surfaces.
   const runtimeHostname = runtimeHostnameForApp(app);
@@ -172,6 +174,8 @@ function main(args = process.argv.slice(2)) {
   }
 
   const managed = ensureManagedAuthSecret({
+    // Read-only migration of a real checkout's legacy secret; a missing old
+    // directory is normal. New secrets are owned by the selected state root.
     adminDir: path.join(repoRoot, "apps", "v8-agent-os-admin"),
   });
   const childArgs = standaloneServer ? [standaloneServer] : [nextBin, mode];

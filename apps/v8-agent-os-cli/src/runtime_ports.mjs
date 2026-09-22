@@ -26,7 +26,7 @@ function validWebPort(value) {
 function configuredCorePorts() {
   const bridge = readJsonFile(CONFIG_PATH, {})?.systemBase?.bridge || {};
   const ports = { engine: DEFAULT_PORTS.engine, admin: DEFAULT_PORTS.admin };
-  for (const id of ["engine", "admin"]) {
+  for (const id of ["engine"]) {
     if (!bridge[`${id}BaseUrl`]) continue;
     const origin = new URL(bridge[`${id}BaseUrl`]);
     if (origin.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(origin.hostname)
@@ -43,15 +43,14 @@ function normalizedProfile(payload) {
   if (!payload || payload.version !== 1 || payload.policy !== "web-fallback-v1") return null;
   const core = configuredCorePorts();
   const web = validWebPort(payload.ports?.web);
-  if (!web
-    || Number(payload.ports?.engine) !== core.engine
-    || Number(payload.ports?.admin) !== core.admin) return null;
+  if (!web || Number(payload.ports?.engine) !== core.engine) return null;
   return {
     version: 1,
     policy: "web-fallback-v1",
     ports: {
       ...core,
       web,
+      admin: web,
     },
     selectedAt: typeof payload.selectedAt === "string" ? payload.selectedAt : null,
     reservationExpiresAt: typeof payload.reservationExpiresAt === "string" ? payload.reservationExpiresAt : null,
@@ -138,6 +137,7 @@ export async function resolveRuntimePorts(options = {}) {
       ports: {
         ...configuredCorePorts(),
         web: selectedWebPort,
+        admin: selectedWebPort,
       },
       selectedAt: new Date().toISOString(),
       reservationExpiresAt: null,

@@ -933,6 +933,7 @@ If the user uploaded an image representation (which represents what you 'see' th
       const voiceRules = normalizeDesktopPetVoiceRules(config, voiceEnabled);
       const attachmentCapture = normalizeAttachmentCapture(config.attachmentCapture);
       const nextAppearance = {
+        skinId: typeof appearance.skinId === 'string' ? appearance.skinId : 'core-eye',
         petScale: clampFiniteNumber(appearance.petScale, settingsRef.current.petScale || 0.7, 0.4, 3),
         floatAmplitude: clampFiniteNumber(appearance.floatAmplitude, settingsRef.current.floatAmplitude ?? 8, 0, 40),
         floatSpeed: clampFiniteNumber(appearance.floatSpeed, settingsRef.current.floatSpeed || 1, 0.1, 8),

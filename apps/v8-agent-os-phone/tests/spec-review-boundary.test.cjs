@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const ts = require('typescript');
+const ts = require('../../v8-agent-os-web/node_modules/typescript');
 const root = path.resolve(__dirname, '..');
 
 function compile(file, mocks = {}) {
@@ -47,14 +47,14 @@ test('Mobile refresh BFF authenticates before body/Engine and preserves immutabl
   class NextResponse extends Response {
     static json(value, init) { return new NextResponse(JSON.stringify(value), init); }
   }
-  const route = compile(path.resolve(root, '../v8-agent-os-admin/src/app/api/client/approvals/[id]/refresh-spec-review/route.ts'), {
+  const route = compile(path.resolve(root, '../v8-agent-os-web/src/app/api/admin/client/approvals/[id]/refresh-spec-review/route.ts'), {
     'next/server': { NextResponse },
-    '@/lib/server/client-request-auth': {
+    '@admin/lib/server/client-request-auth': {
       resolveClientUserEmail: async () => authenticated ? 'fixture@invalid' : null,
       unauthorizedClientJson: () => NextResponse.json({ code: 'auth_pre_execution' }, { status: 401, headers: { 'X-V8-Auth-Stage': 'pre_execution' } }),
     },
-    '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveInternalSecret: () => 'synthetic-internal' },
-    '@/lib/server/engine-fetch': { engineFetch: (url, init) => global.fetch(url, init) },
+    '@admin/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid', resolveInternalSecret: () => 'synthetic-internal' },
+    '@admin/lib/server/engine-fetch': { engineFetch: (url, init) => global.fetch(url, init) },
   });
   try {
     global.fetch = async (url, init) => { calls.push({ url, init }); return Response.json({ detail: { code: 'spec_approval_document_changed' } }, { status: 409 }); };
@@ -94,11 +94,11 @@ test('Phone and existing mobile detail BFF request and forward full Spec content
   assert.equal(new URL(requested, 'http://fixture.invalid').searchParams.get('full_content'), 'true');
   const oldFetch = global.fetch;
   class NextResponse extends Response { static json(data, init) { return new NextResponse(JSON.stringify(data), init); } }
-  const route = compile(path.resolve(root, '../v8-agent-os-admin/src/app/api/client/specs/[id]/route.ts'), {
+  const route = compile(path.resolve(root, '../v8-agent-os-web/src/app/api/admin/client/specs/[id]/route.ts'), {
     'next/server': { NextResponse },
-    '@/lib/server/client-request-auth': { resolveClientUserEmail: async () => 'fixture@invalid' },
-    '@/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid' },
-    '@/lib/server/engine-fetch': { engineFetch: (url, init) => global.fetch(url, init) },
+    '@admin/lib/server/client-request-auth': { resolveClientUserEmail: async () => 'fixture@invalid' },
+    '@admin/lib/server/runtime-config': { resolveEngineBaseUrl: () => 'http://engine.invalid' },
+    '@admin/lib/server/engine-fetch': { engineFetch: (url, init) => global.fetch(url, init) },
   });
   try {
     let forwarded;

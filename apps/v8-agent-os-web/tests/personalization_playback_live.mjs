@@ -14,7 +14,7 @@ const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(webRoot, '../..');
 const { webpack } = require(path.join(webRoot, 'node_modules/next/dist/compiled/webpack/webpack'));
 const { loadBindings } = require(path.join(webRoot, 'node_modules/next/dist/build/swc'));
-const { chromium } = require(path.join(repoRoot, 'apps/v8-agent-os-admin/node_modules/playwright'));
+const { chromium } = require(path.join(repoRoot, 'apps/v8-agent-os-web/node_modules/playwright'));
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v8-wallpaper-fixture-'));
 let browser;
 let server;

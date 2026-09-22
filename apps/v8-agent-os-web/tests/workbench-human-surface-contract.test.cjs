@@ -250,7 +250,7 @@ test("Web and Phone summaries hide engineering counters and raw payload bodies",
   const phoneOverview = readText("apps/v8-agent-os-phone/src/components/chat/SessionOverviewPanel.tsx");
   const phoneApi = readText("apps/v8-agent-os-phone/src/lib/phone-api.ts");
   const phoneChat = readText("apps/v8-agent-os-phone/src/screens/ChatScreen.tsx");
-  const phoneProxy = readText("apps/v8-agent-os-admin/src/app/api/client/sessions/[id]/workbench/files/read/route.ts");
+  const phoneProxy = readText("apps/v8-agent-os-web/src/app/api/admin/client/sessions/[id]/workbench/files/read/route.ts");
   assert.doesNotMatch(webSummary, /本会话已参与/);
   assert.doesNotMatch(webSummary, /commandPreview/);
   assert.doesNotMatch(phoneDock, /eventCount > 0/);

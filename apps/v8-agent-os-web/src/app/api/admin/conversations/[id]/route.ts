@@ -1,0 +1,141 @@
+import { engineFetch } from "@admin/lib/server/engine-fetch";
+import { NextRequest, NextResponse } from "next/server";
+import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
+import { isSupervisorRuntimeMode } from "@admin/lib/realtime/supervisor-runtime-mode";
+import { resolveEngineBaseUrl } from "@admin/lib/server/runtime-config";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@admin/lib/server/request-auth";
+import { normalizeSnapshotForRealtimeSurface } from "@admin/lib/server/session-realtime-resource";
+import { applyCanonicalSourceGroup } from "@admin/lib/server/source-group";
+
+const ENGINE_URL = resolveEngineBaseUrl();
+const ENGINE_NOW_HEADER = "x-v8-engine-now";
+
+function asRecord(value: unknown) {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+export async function GET(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> }
+) {
+    const userEmail = await resolveAuthorizedUserEmail(req);
+
+    if (!userEmail) {
+        return unauthorizedJson();
+    }
+
+    const { id } = await params;
+
+    try {
+        const snapshotRes = await engineFetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store'
+        });
+
+        if (!snapshotRes.ok) {
+            console.error("Failed to fetch session snapshot from Python engine:", await snapshotRes.text());
+            return NextResponse.json({ error: "Failed to fetch from engine" }, { status: 500 });
+        }
+
+        const snapshotData = normalizeSnapshotForRealtimeSurface(await snapshotRes.json().catch(() => ({}))) as Record<string, unknown>;
+        const snapshotMessages = Array.isArray(asRecord(snapshotData.snapshot).messages)
+            ? asRecord(snapshotData.snapshot).messages
+            : Array.isArray(snapshotData.messages)
+                ? snapshotData.messages
+                : [];
+
+        const engineNow = snapshotRes.headers.get(ENGINE_NOW_HEADER);
+
+        return NextResponse.json(applyCanonicalSourceGroup({
+            id,
+            messages: snapshotMessages,
+            latestSeq: snapshotData.latestSeq || 0,
+            source: snapshotData.source || "runtime_snapshot",
+            todos: snapshotData.todos || null,
+            currentRun: snapshotData.currentRun || null,
+            runtimeStatus: snapshotData.runtimeStatus || null,
+            workflow: snapshotData.workflow || null,
+            workflowProjection: snapshotData.workflowProjection || null,
+            approvals: Array.isArray(snapshotData.approvals) ? snapshotData.approvals : [],
+            askUserInteractions: Array.isArray(snapshotData.askUserInteractions) ? snapshotData.askUserInteractions : [],
+            controls: snapshotData.controls || null,
+            recoverable: snapshotData.recoverable || null,
+            summary: snapshotData.summary || null,
+            projection: snapshotData,
+        }), {
+            headers: engineNow ? { [ENGINE_NOW_HEADER]: engineNow } : undefined,
+        });
+    } catch (error) {
+        console.error("Error communicating with Python engine:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}
+
+export async function DELETE(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> }
+) {
+    const userEmail = await resolveAuthorizedUserEmail(req);
+
+    if (!userEmail) {
+        return unauthorizedJson();
+    }
+
+    const { id } = await params;
+
+    try {
+        const res = await engineFetch(`${ENGINE_URL}/sessions/${id}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!res.ok) {
+            console.error("Failed to delete session in Python engine:", await res.text());
+            return NextResponse.json({ error: "Failed to delete" }, { status: 500 });
+        }
+
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        console.error("Error communicating with Python engine:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}
+
+export async function PATCH(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> },
+) {
+    const userEmail = await resolveAuthorizedUserEmail(req);
+    if (!userEmail) {
+        return unauthorizedJson();
+    }
+
+    const { id } = await params;
+    const body = await req.json().catch(() => ({}));
+    try {
+        const response = await engineFetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...(typeof body?.title === "string" ? { title: body.title } : {}),
+                ...(typeof body?.pinned === "boolean" ? { pinned: body.pinned } : {}),
+                ...(body?.supervisorWorkMode === "daily" || body?.supervisorWorkMode === "engineering"
+                    ? { supervisorWorkMode: body.supervisorWorkMode }
+                    : {}),
+                ...(isSupervisorRuntimeMode(body?.supervisorRuntimeMode)
+                    ? { supervisorRuntimeMode: body.supervisorRuntimeMode }
+                    : {}),
+                userId: userEmail,
+            }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return NextResponse.json(
+            response.ok ? normalizeAuthoritativeSessionHistoryRecord(payload) : payload,
+            { status: response.status },
+        );
+    } catch (error) {
+        console.error("Error updating session presentation in Python engine:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}

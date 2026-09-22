@@ -99,7 +99,7 @@ function validateAdminSessionResponse(response) {
   if (!response?.ok || response.status < 200 || response.status >= 300) return false;
   try {
     const payload = JSON.parse(String(response.body || '{}'));
-    return payload?.user?.role === 'ADMIN';
+    return payload?.user?.role === 'ADMIN' && payload?.user?.adminAuthenticated === true;
   } catch {
     return false;
   }

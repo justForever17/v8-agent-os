@@ -10,11 +10,11 @@ const args = process.argv.slice(2);
 const arg = k => args[args.indexOf(k) + 1];
 if (!args.includes('--repo') || !args.includes('--out')) throw new Error('--repo and --out required');
 const repo = path.resolve(arg('--repo'));
-const require = createRequire(path.join(repo, 'apps/v8-agent-os-admin/package.json'));
+const require = createRequire(path.join(repo, 'apps/v8-agent-os-web/package.json'));
 const ts = require('typescript');
 const evidence = [];
 const phone = 'apps/v8-agent-os-phone/src/screens/ChatScreen.tsx';
-const store = 'apps/v8-agent-os-admin/src/app/admin/(dashboard)/extensions/store/page.tsx';
+const store = 'apps/v8-agent-os-web/src/app/admin/(dashboard)/extensions/store/page.tsx';
 function extract(file, name) {
   const text = fs.readFileSync(path.join(repo, file), 'utf8');
   const ast = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);

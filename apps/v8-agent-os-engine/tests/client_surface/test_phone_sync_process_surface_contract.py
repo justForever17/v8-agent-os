@@ -22,7 +22,7 @@ def test_phone_desktop_live_stale_poll_does_not_clear_existing_process_surface()
 
 
 def test_admin_process_surface_timeout_returns_stale_cache_payload() -> None:
-    source = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/sessions/[id]/processes/route.ts")
+    source = _read_repo_file("apps/v8-agent-os-web/src/app/api/admin/client/sessions/[id]/processes/route.ts")
 
     assert "const processSurfaceCache = new Map" in source
     assert "function staleProcessSurface" in source

@@ -1,6 +1,6 @@
 # Signed brand assets must keep the bytes used by the catalog on Windows too.
 apps/v8-agent-os-engine/runtimes/plugin_manager/resources/logos/*.svg text eol=lf
-apps/v8-agent-os-admin/public/model-assets/providers/*.svg text eol=lf
+apps/v8-agent-os-web/public/model-assets/providers/*.svg text eol=lf
 
 # Keep local documentation and generated acceptance records out of source archives.
 /docs/V8OS export-ignore
@@ -23,3 +23,8 @@ apps/v8-agent-os-admin/public/model-assets/providers/*.svg text eol=lf
 /apps/v8-agent-os-admin/public/Avatar/* export-ignore
 /apps/v8-agent-os-admin/public/Avatar/default-supervisor.svg -export-ignore
 /apps/v8-agent-os-admin/public/Avatar/.gitkeep -export-ignore
+/apps/v8-agent-os-web/public/user/* export-ignore
+/apps/v8-agent-os-web/public/user/.gitkeep -export-ignore
+/apps/v8-agent-os-web/public/Avatar/* export-ignore
+/apps/v8-agent-os-web/public/Avatar/default-supervisor.svg -export-ignore
+/apps/v8-agent-os-web/public/Avatar/.gitkeep -export-ignore

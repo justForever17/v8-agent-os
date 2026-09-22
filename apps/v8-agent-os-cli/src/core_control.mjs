@@ -90,7 +90,7 @@ export async function stopCoreComponents(componentIds = ALL_COMPONENTS, options 
   const shutdown = service && !options.expectedIdentities && options.skipManagedShellShutdown !== true
     ? await requestPackagedShellShutdown(componentIds, options.managedShellShutdown || {}) : null;
   const stopOptions = shutdown?.attempted
-    ? { ...options, skipManagedShellShutdown: true, forceDesktopPet: !shutdown.stopped } : options;
+    ? { ...options, skipManagedShellShutdown: true } : options;
   const results = await stopComponents(service ? componentIds.filter(id => id !== "engine") : componentIds, stopOptions);
   if (service) {
     const result = options.expectedIdentities ? { status: "not_owned", reason: "daemon_retained" }

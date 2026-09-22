@@ -37,7 +37,7 @@ Remove-Item Env:V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY
 .\v8os.cmd preview --rebuild
 ```
 
-此命令会停止当前源码树拥有的旧预览进程，构建原生 sandbox helper、Admin 与 Web，然后启动 Engine、Web 和 Electron Shell。打开控制台时才启动 Admin。它会重启本仓服务，不是安装器或自动更新命令。
+此命令会停止当前源码树拥有的旧预览进程，构建原生 sandbox helper 和统一 Product Web，然后启动 Engine、Web 和 Electron Shell。控制台位于同一宿主的 `/admin`，桌宠是 Shell 内可开关的窗口。它会重启本仓服务，不是安装器或自动更新命令。
 
 只需要浏览器和服务时，使用：
 
@@ -52,9 +52,9 @@ Remove-Item Env:V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY
 | --- | --- |
 | Engine | `http://127.0.0.1:9530` |
 | Web | `http://127.0.0.1:9527`；冲突时在 `19527-19546` 中选择端口 |
-| Admin（按需） | `http://127.0.0.1:9528` |
+| Admin（可选页面） | `http://127.0.0.1:9527/admin` |
 
-使用 `v8os status --json` 或 `v8os open web` 获取当前 Web 入口，不要在外部脚本中写死回退端口。Engine 和 Admin 的固定端口冲突会明确报错。
+使用 `v8os status --json` 或 `v8os open web` 获取当前 Web 入口，不要在外部脚本中写死回退端口。聊天与控制台共用同一个回退端口；Engine 端口冲突会明确报错。
 
 裸 `bootstrap.ps1` / `bootstrap.sh` 用于依赖准备和服务启动，不等于完整桌面 Shell。它们默认启动 Engine + Admin；Windows 可显式选择 `--services engine+admin+web`，Linux/macOS bootstrap 当前支持 Engine 或 Engine + Admin。
 

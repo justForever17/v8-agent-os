@@ -31,6 +31,6 @@ def test_system_doctor_checks_the_governed_web_fallback(monkeypatch):
     monkeypatch.setattr(system_doctor, "governed_web_port", lambda: 19527)
     monkeypatch.setattr(system_doctor, "_connect_port", fake_connect)
     checks = system_doctor.SystemDoctorService()._check_ports()
-    assert probed_ports == [9530, 9528, 19527]
+    assert probed_ports == [9530, 19527]
     assert checks[-1]["id"] == "ports.19527"
-    assert checks[-1]["title"] == "Web port 19527"
+    assert checks[-1]["title"] == "Product Web port 19527"

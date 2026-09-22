@@ -11,7 +11,7 @@ if(process.argv[2]!=='--live'||!process.argv[6])throw new Error('Use --live <out
 const out=path.resolve(process.argv[3]);const base=process.argv[4];
 const phone=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const web=path.resolve(phone,'../v8-agent-os-web');
-const {chromium}=require('../node_modules/../../v8-agent-os-admin/node_modules/playwright');
+const {chromium}=require('../../v8-agent-os-web/node_modules/playwright');
 const webpack=require(path.join(web,'node_modules/next/dist/compiled/webpack/webpack')).webpack;
 fs.mkdirSync(out,{recursive:true});
 const write=(file,text)=>fs.writeFileSync(path.join(out,file),text);

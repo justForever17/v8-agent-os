@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const http = require('node:http');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 
@@ -126,12 +128,16 @@ test('desktop pet server still honors an explicit fixed loopback port', { timeou
   }
 });
 
-test('desktop pet proxy aborts an upstream event stream when its renderer disconnects', { timeout: 10_000 }, async () => {
+test('desktop pet proxy aborts an upstream event stream when its renderer disconnects', { timeout: 10_000 }, async t => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v8-companion-stream-'));
+  t.after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
+  const credential = crypto.randomBytes(32).toString('hex');
   let resolveUpstreamClosed;
   const upstreamClosed = new Promise((resolve) => {
     resolveUpstreamClosed = resolve;
   });
   const upstream = http.createServer((req, res) => {
+    assert.equal(req.headers['x-v8-agent-os-secret'], credential);
     assert.equal(req.url, '/api/client/realtime/session-activity/stream');
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -142,6 +148,9 @@ test('desktop pet proxy aborts an upstream event stream when its renderer discon
     req.once('close', () => resolveUpstreamClosed());
   });
   const upstreamAddress = await listen(upstream);
+  fs.writeFileSync(path.join(stateRoot, 'config.json'), JSON.stringify({ systemBase: { bridge: {
+    engineBaseUrl: `http://127.0.0.1:${upstreamAddress.port}/v1`, internalSecret: credential,
+  } } }));
   const instanceId = crypto.randomUUID();
   const child = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
     cwd: petRoot,
@@ -149,6 +158,8 @@ test('desktop pet proxy aborts an upstream event stream when its renderer discon
       ...process.env,
       NODE_ENV: 'production',
       V8_DESKTOP_PORT: '0',
+      V8_AGENT_OS_HOME: stateRoot,
+      V8_ENGINE_BASE_URL: `http://127.0.0.1:${upstreamAddress.port}/v1`,
       V8_DESKTOP_SERVER_INSTANCE_ID: instanceId,
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -161,7 +172,7 @@ test('desktop pet proxy aborts an upstream event stream when its renderer discon
     const response = await fetch(
       `http://127.0.0.1:${ready.port}/api/v8/api/client/realtime/session-activity/stream`,
       {
-        headers: { 'x-v8-admin-base': `http://127.0.0.1:${upstreamAddress.port}` },
+        headers: { 'x-v8-admin-base': 'http://127.0.0.1:1' },
         signal: controller.signal,
       },
     );

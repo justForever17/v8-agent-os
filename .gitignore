@@ -50,6 +50,9 @@ apps/v8-agent-os-engine/runtimes/computer_use/drivers/bin/
 **/node_modules/
 **/.next/
 **/.next-*-stale/
+/apps/v8-agent-os-admin/.next-codex-validation/
+/apps/v8-agent-os-admin/next-env.d.ts
+/apps/v8-agent-os-admin/tsconfig.tsbuildinfo
 .next-v8os-home/
 **/dist/
 **/build/
@@ -79,10 +82,10 @@ apps/v8-agent-os-phone-tmp/
 
 # Temporary runtime output
 **/logs/
-!apps/v8-agent-os-admin/src/app/api/audit/logs/
-!apps/v8-agent-os-admin/src/app/api/audit/logs/route.ts
-!apps/v8-agent-os-admin/src/app/api/cron/logs/
-!apps/v8-agent-os-admin/src/app/api/cron/logs/route.ts
+!apps/v8-agent-os-web/src/app/api/admin/audit/logs/
+!apps/v8-agent-os-web/src/app/api/admin/audit/logs/route.ts
+!apps/v8-agent-os-web/src/app/api/admin/cron/logs/
+!apps/v8-agent-os-web/src/app/api/admin/cron/logs/route.ts
 **/tmp/
 **/temp/
 apps/v8-agent-os-engine/.plugin-release-assets/
@@ -123,6 +126,11 @@ docs/software-copyright
 /apps/v8-agent-os-admin/public/Avatar/*
 !/apps/v8-agent-os-admin/public/Avatar/.gitkeep
 !/apps/v8-agent-os-admin/public/Avatar/default-supervisor.svg
+/apps/v8-agent-os-web/public/user/*
+!/apps/v8-agent-os-web/public/user/.gitkeep
+/apps/v8-agent-os-web/public/Avatar/*
+!/apps/v8-agent-os-web/public/Avatar/.gitkeep
+!/apps/v8-agent-os-web/public/Avatar/default-supervisor.svg
 
 # Exclude internal dev/admin scripts from source control, except committed smoke harnesses.
 apps/v8-agent-os-admin/scripts/*

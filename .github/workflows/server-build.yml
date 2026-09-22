@@ -8,7 +8,7 @@ on:
       - 'apps/v8-agent-os-engine/**'
       - 'apps/v8-agent-os-cli/**'
       - 'apps/v8-agent-os-tui/**'
-      - 'apps/v8-agent-os-admin/src/**'
+      - 'apps/v8-agent-os-web/src/admin/**'
       - 'scripts/desktop/prepare-posix-python-runtime.mjs'
       - 'release-manifest.json'
       - '.github/workflows/server-build.yml'

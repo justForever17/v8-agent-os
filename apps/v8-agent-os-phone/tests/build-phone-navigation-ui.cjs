@@ -8,7 +8,7 @@ const { execFileSync } = require("node:child_process");
 const phone = path.resolve(__dirname, "..");
 const repo = path.resolve(phone, "../..");
 const output = path.resolve(process.argv[2]);
-const admin = path.resolve(process.argv[3] || path.join(phone, "../v8-agent-os-admin"));
+const admin = path.resolve(process.argv[3] || path.join(phone, "../v8-agent-os-web"));
 const baseline = process.argv[4];
 const webpack = require(path.join(admin, "node_modules/next/dist/compiled/webpack/webpack.js")).webpack;
 fs.mkdirSync(output, { recursive: true });

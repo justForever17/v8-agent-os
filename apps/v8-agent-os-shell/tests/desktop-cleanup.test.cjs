@@ -41,7 +41,7 @@ test('packaged cleanup verifier rejects a live desktop pet server when its launc
   t.after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
   const runtimeRoot = path.join(stateRoot, 'runtime');
   fs.mkdirSync(runtimeRoot, { recursive: true });
-  fs.writeFileSync(path.join(runtimeRoot, 'desktop-pet.json'), JSON.stringify({
+  fs.writeFileSync(path.join(runtimeRoot, 'companion-window.json'), JSON.stringify({
     pid: 2_147_483_647,
     serverPid: process.pid,
   }), 'utf8');

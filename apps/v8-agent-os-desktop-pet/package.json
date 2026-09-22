@@ -8,8 +8,7 @@
   },
   "scripts": {
     "dev": "tsx server.ts",
-    "electron:dev": "npm run desktop:dev",
-    "desktop:dev": "npm run build && node scripts/ensure-electron.cjs && electron electron/main.cjs",
+    "desktop:dev": "npm run build && node ../v8-agent-os-shell/scripts/launch-shell.mjs",
     "build": "npm exec -- vite build && npm exec -- esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
@@ -30,7 +29,6 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/ws": "^8.18.1",
-    "electron": "43.4.1",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",

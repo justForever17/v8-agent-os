@@ -13,7 +13,7 @@ PROVIDER_CATALOG = REPO_ROOT / "apps" / "v8-agent-os-engine" / "core" / "model_c
 MEDIA_MATRIX = REPO_ROOT / "apps" / "v8-agent-os-engine" / "runtimes" / "creative_media" / "assets" / "media_provider_format_matrix.json"
 TRUSTED_NETWORK_CATALOG = REPO_ROOT / "apps" / "v8-agent-os-engine" / "erc" / "assets" / "trusted_network_catalog.json"
 RESEARCH_SOURCE_CATALOG = REPO_ROOT / "apps" / "v8-agent-os-engine" / "runtimes" / "research" / "assets" / "source_quality_catalog.json"
-ASSET_ROOT = REPO_ROOT / "apps" / "v8-agent-os-admin" / "public"
+ASSET_ROOT = REPO_ROOT / "apps" / "v8-agent-os-web" / "public"
 MANIFEST = ASSET_ROOT / "model-assets" / "manifest.json"
 SUPPORTED_CHAT_WIRE_PROTOCOLS = {
     "openai.chat_completions",

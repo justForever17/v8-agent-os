@@ -17,7 +17,7 @@ test("Web keeps session detail reads behind the authenticated Engine proxy", () 
   const turns = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/turns/route.ts");
   const turnIndex = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/turn-index/route.ts");
   const processes = readText("apps/v8-agent-os-web/src/app/api/sessions/[id]/processes/route.ts");
-  const clientAuth = readText("apps/v8-agent-os-admin/src/lib/server/client-request-auth.ts");
+  const clientAuth = readText("apps/v8-agent-os-web/src/admin/lib/server/client-request-auth.ts");
 
   for (const proxy of [detail, turns, turnIndex, processes]) {
     assert.match(proxy, /requireClientProxyContext/);
@@ -61,8 +61,8 @@ test("Web refreshes visible session activity without replaying the initial loadi
 });
 
 test("conversation proxies preserve a database degradation instead of returning a fake empty history", () => {
-  const adminRoute = readText("apps/v8-agent-os-admin/src/app/api/conversations/route.ts");
-  const clientRoute = readText("apps/v8-agent-os-admin/src/app/api/client/conversations/route.ts");
+  const adminRoute = readText("apps/v8-agent-os-web/src/app/api/admin/conversations/route.ts");
+  const clientRoute = readText("apps/v8-agent-os-web/src/app/api/admin/client/conversations/route.ts");
   const combined = `${adminRoute}\n${clientRoute}`;
 
   assert.match(combined, /state_database_unavailable/);

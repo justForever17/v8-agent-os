@@ -11,7 +11,7 @@ function read(relativePath) {
 
 test("large uploads stream through Web and Admin without reparsing multipart bodies", () => {
   const webRoute = read("apps/v8-agent-os-web/src/app/api/upload/route.ts");
-  const adminRoute = read("apps/v8-agent-os-admin/src/app/api/client/upload/route.ts");
+  const adminRoute = read("apps/v8-agent-os-web/src/app/api/admin/client/upload/route.ts");
 
   for (const source of [webRoute, adminRoute]) {
     assert.doesNotMatch(source, /req\.formData\(\)/);

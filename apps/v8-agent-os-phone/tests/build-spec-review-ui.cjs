@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const phone = path.resolve(__dirname, '..');
 const output = path.resolve(process.argv[2]);
-const webpack = require(path.resolve(phone, '../v8-agent-os-admin/node_modules/next/dist/compiled/webpack/webpack.js')).webpack;
+const webpack = require(path.resolve(phone, '../v8-agent-os-web/node_modules/next/dist/compiled/webpack/webpack.js')).webpack;
 fs.mkdirSync(output, { recursive: true });
 fs.writeFileSync(path.join(output, 'prefs.ts'), `
 import { getThemeColors } from ${JSON.stringify(path.join(phone, 'src/theme/tokens.ts'))};

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
 
@@ -27,6 +28,30 @@ function loadFunction(name) {
 
 const runManagedV8OSShutdown = loadFunction('runManagedV8OSShutdown');
 const coreIds = ['engine', 'admin', 'web'];
+
+test('shutdown stops accepting starts and waits until their ownership receipts exist', async () => {
+  const source = mainSource.match(/function startDesktopServices\(componentIds\) \{[\s\S]*?\n\}/)[0];
+  let release;
+  const started = new Promise(resolve => { release = resolve; });
+  const pending = new Set();
+  const context = vm.createContext({
+    quitting: false, pendingDesktopStarts: pending, desktopCoreIdentities: {},
+    cliApi: async () => ({ startCoreComponentsWithRuntimePorts: () => started,
+      desktopOwnedIdentities: results => ({ engine: results[0].recordIdentity }) }),
+  });
+  vm.runInContext(`${source}; globalThis.start = startDesktopServices;`, context);
+  const request = context.start(['engine']);
+  assert.equal(pending.size, 1);
+  context.quitting = true;
+  assert.throws(() => context.start(['admin']), /desktop_shutdown_in_progress/);
+  const identity = { pid: 12, launchId: 'pending-engine' };
+  release({ results: [{ recordIdentity: identity }] });
+  await Promise.allSettled([...pending]);
+  await request;
+  assert.equal(pending.size, 0);
+  assert.deepEqual(context.desktopCoreIdentities.engine, identity);
+  assert.match(mainSource, /await Promise.allSettled\(\[\.\.\.pendingDesktopStarts\]\)/);
+});
 
 test('optional Admin is included in whole-product shutdown without becoming a startup dependency', () => {
   assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'web'\]/);
@@ -78,6 +103,16 @@ test('managed V8OS shutdown commits only after core services and desktop pet are
     'control:stop',
     'app:quit',
   ]);
+});
+
+test('desktop exit detaches from a daemon or replacement without waiting for it to stop', async () => {
+  const { calls, dependencies } = createDependencies({
+    shellStatus: async (serviceIds) => statuses(serviceIds, 'engine').map(item =>
+      item.id === 'engine' ? { ...item, ownership: 'detached' } : item),
+  });
+  assert.deepEqual(await runManagedV8OSShutdown(dependencies), { ok: true, reason: 'stopped' });
+  assert.equal(calls.includes('core:retry'), false);
+  assert.deepEqual(calls.slice(-3), ['record:remove', 'control:stop', 'app:quit']);
 });
 
 test('managed V8OS shutdown may commit after the second verified core stop succeeds', async () => {

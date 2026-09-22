@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DEFAULT_PORTS, STATE_ROOT } from "./paths.mjs";
 import { withFileLease } from "./process_state.mjs";
+import { isPortOpen } from "./ports.mjs";
 
 const execFileAsync = promisify(execFile);
 export const SERVER_SERVICE_NAME = "v8os-server.service";
@@ -30,26 +31,39 @@ function quoteUnit(value, command = false) {
 
 export function inspectServerBundle(bundleRoot, { arch = process.arch } = {}) {
   const root = fs.realpathSync(absolutePath(bundleRoot, "--bundle"));
+  const portable = fs.existsSync(path.join(root, "engine-manifest.json"));
+  const manifestName = portable ? "engine-manifest.json" : "server-manifest.json";
   let manifest;
-  try { manifest = JSON.parse(fs.readFileSync(path.join(root, "server-manifest.json"), "utf8")); }
-  catch { throw new Error("--bundle must contain a valid server-manifest.json from the independent server distribution"); }
-  if (manifest.schema !== 1 || manifest.profile !== "server" || manifest.platform !== "linux"
-      || manifest.arch !== arch || !/^\d{4}\.\d{2}\.\d{2}\.\d+$/u.test(manifest.version || "")
-      || manifest.engine !== ENGINE_PATH || manifest.cli !== CLI_PATH) {
+  try { manifest = JSON.parse(fs.readFileSync(path.join(root, manifestName), "utf8")); }
+  catch { throw new Error(`--bundle must contain a valid ${manifestName} from the Engine distribution`); }
+  const validLayout = portable
+    ? manifest.profile === "engine" && manifest.target === `linux-${arch}`
+      && manifest.engineDir === ENGINE_PATH && manifest.python === `${ENGINE_PATH}/.python/bin/python3`
+    : manifest.profile === "server" && manifest.platform === "linux" && manifest.arch === arch && manifest.engine === ENGINE_PATH;
+  if (manifest.schema !== 1 || !validLayout || !/^\d{4}\.\d{2}\.\d{2}\.\d+$/u.test(manifest.version || "")
+      || manifest.cli !== CLI_PATH) {
     throw new Error(`Unsupported server bundle manifest (expected schema 1, server, linux/${arch})`);
   }
   const engineDir = path.join(root, ENGINE_PATH);
-  const python = path.join(engineDir, ".venv", "bin", "python3");
+  const runtimeDirectory = portable ? ".python" : ".venv";
+  const python = path.join(engineDir, runtimeDirectory, "bin", "python3");
   for (const entry of [path.join(engineDir, "main.py"), path.join(root, CLI_PATH), python]) {
     try { if (!fs.statSync(entry).isFile()) throw new Error(); }
     catch { throw new Error(`Server bundle is not installed: missing ${path.relative(root, entry)}. Run its install.sh first.`); }
   }
   fs.accessSync(python, fs.constants.X_OK);
-  return { bundleRoot: root, version: manifest.version, engineDir, python };
+  return { bundleRoot: root, version: manifest.version, engineDir, python, runtimeDirectory };
+}
+
+function serverRuntimeDirectory(record) {
+  const directory = record.runtimeDirectory || ".venv";
+  if (![".venv", ".python"].includes(directory)) throw new Error("Invalid service Python runtime directory");
+  return directory;
 }
 
 export function renderServerServiceUnit(record, { nodePath = process.execPath } = {}) {
   const engineDir = path.join(record.bundleRoot, ENGINE_PATH);
+  const runtimeDirectory = serverRuntimeDirectory(record);
   const environment = {
     V8_AGENT_OS_HOME: record.stateRoot,
     V8_REPO_ROOT: record.bundleRoot,
@@ -65,7 +79,7 @@ export function renderServerServiceUnit(record, { nodePath = process.execPath } 
     PYTHONIOENCODING: "utf-8",
     PYTHONUNBUFFERED: "1",
     PLAYWRIGHT_BROWSERS_PATH: path.join(engineDir, ".playwright-browsers"),
-    PATH: `${path.join(engineDir, ".venv", "bin")}:${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`,
+    PATH: `${path.join(engineDir, runtimeDirectory, "bin")}:${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`,
   };
   return [
     "# Managed by v8os service. Configuration and credentials remain owned by Engine.",
@@ -73,7 +87,7 @@ export function renderServerServiceUnit(record, { nodePath = process.execPath } 
     // WorkingDirectory is a single path, not an ExecStart-style quoted word list.
     "[Service]", "Type=exec", `WorkingDirectory=${engineDir.replaceAll("%", "%%")}`,
     // systemd does not expand environment variables in the executable word.
-    `ExecStart=${quoteUnit(path.join(engineDir, ".venv", "bin", "python3"))} -X utf8 ${quoteUnit(path.join(engineDir, "main.py"), true)}`,
+    `ExecStart=${quoteUnit(path.join(engineDir, runtimeDirectory, "bin", "python3"))} -X utf8 ${quoteUnit(path.join(engineDir, "main.py"), true)}`,
     ...Object.entries(environment).map(([key, value]) => `Environment=${quoteUnit(`${key}=${value}`)}`),
     "UnsetEnvironment=DISPLAY WAYLAND_DISPLAY ELECTRON_RUN_AS_NODE PYTHONPATH PYTHONHOME",
     "UMask=0077", "Restart=on-failure", "RestartSec=5", "TimeoutStopSec=45", "KillMode=control-group",
@@ -114,6 +128,17 @@ function readReceipt(filename) {
     for (const key of ["bundleRoot", "stateRoot", "keyFile"]) absolutePath(record[key], key);
   }
   return value;
+}
+
+// Discovery is a hint only; every action still goes through perform(), which
+// verifies the installed unit and receipt before contacting systemd.
+export function discoverServerServiceReceipt({ platform = process.platform, stateRoot = STATE_ROOT,
+  configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config") } = {}) {
+  if (platform !== "linux") return null;
+  const receipt = readReceipt(path.join(configHome, "v8-agent-os", "server-service.json"));
+  if (!receipt || path.resolve(receipt.current.stateRoot) !== path.resolve(stateRoot)) return null;
+  const { bundleRoot, version, port } = receipt.current;
+  return { bundleRoot, version, port, stateRoot: path.resolve(stateRoot), phase: receipt.phase };
 }
 
 function verifyKeyFile(keyFile, uid) {
@@ -168,7 +193,7 @@ print(json.dumps({"schema": schema, "supported": supported}))
 
 async function assertCompatibleSchema(record, run) {
   const engine = path.join(record.bundleRoot, ENGINE_PATH);
-  const result = await run(path.join(engine, ".venv", "bin", "python3"), [
+  const result = await run(path.join(engine, serverRuntimeDirectory(record), "bin", "python3"), [
     "-I", "-c", SCHEMA_PROBE, path.join(engine, "core", "database.py"), path.join(record.stateRoot, "state.db"),
   ]);
   let version;
@@ -221,6 +246,7 @@ export function createServerServiceManager(options = {}) {
   });
   const pause = options.pause || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const ownsPort = options.ownsPort || processOwnsListeningPort;
+  const probePort = options.probePort || isPortOpen;
   const now = options.now || Date.now;
   const timeoutMs = options.timeoutMs ?? 90_000;
   const ctl = async (...args) => {
@@ -283,7 +309,7 @@ export function createServerServiceManager(options = {}) {
         let health;
         try { health = await fetchHealth(record.port); } catch { /* Engine may still be importing or binding. */ }
         if (health?.status === "ok" && health.service === "v8-agent-os-engine" && health.startupProfile === "server"
-            && health.engineRuntime?.managedRuntimeRoot === path.join(record.bundleRoot, ENGINE_PATH, ".venv")
+            && health.engineRuntime?.managedRuntimeRoot === path.join(record.bundleRoot, ENGINE_PATH, serverRuntimeDirectory(record))
             && health.engineRuntime?.reload === false) {
           const settled = await inspectUnit();
           if (settled.ActiveState === "active" && settled.MainPID === state.MainPID
@@ -354,7 +380,7 @@ export function createServerServiceManager(options = {}) {
       if (receipt.phase !== "pending" || state.LoadState !== "not-found") verifyLoadedUnit(state);
       const linger = await run("loginctl", ["show-user", String(uid), "--property=Linger", "--value"]);
       return { status: receipt.phase === "pending" ? "recovery_required" : state.ActiveState,
-        version: receipt.current.version, bundleRoot: receipt.current.bundleRoot, stateRoot,
+        version: receipt.current.version, bundleRoot: receipt.current.bundleRoot, stateRoot, port: receipt.current.port,
         unit: SERVER_SERVICE_NAME, mainPid: Number(state.MainPID) || null, enabled: state.UnitFileState === "enabled",
         persistentAfterLogout: linger.code === 0 && String(linger.stdout).trim() === "yes", journal,
         ...await rollbackAvailability(receipt) };
@@ -382,7 +408,24 @@ export function createServerServiceManager(options = {}) {
         if (receipt && keyFile !== receipt.current.keyFile) throw new Error("Service upgrade cannot change the credential key; use the existing Engine credential owner for key changes");
         const port = input.port ?? receipt?.current.port ?? DEFAULT_PORTS.engine;
         if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer from 1 to 65535");
-        const current = { bundleRoot: bundle.bundleRoot, version: bundle.version, stateRoot, keyFile, port };
+        let configuredOrigin;
+        try {
+          const config = JSON.parse(fs.readFileSync(path.join(stateRoot, "config.json"), "utf8"));
+          configuredOrigin = config?.systemBase?.bridge?.engineBaseUrl;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw new Error("Unable to verify Engine connection configuration; repair config.json before service installation");
+        }
+        const connection = new URL(configuredOrigin || `http://127.0.0.1:${DEFAULT_PORTS.engine}`);
+        if (connection.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(connection.hostname)
+          || Number(connection.port || 80) !== port || connection.username || connection.password) {
+          throw new Error("Service port must match the local systemBase.bridge.engineBaseUrl; update the Engine connection configuration before installing the service");
+        }
+        if (!receipt && await probePort(port)) {
+          const error = new Error("Engine port is already in use. If this is your running V8OS daemon, run v8os stop and then retry v8os service install. An unrelated listener is never stopped or adopted by the installer.");
+          error.code = "server_port_in_use";
+          throw error;
+        }
+        const current = { bundleRoot: bundle.bundleRoot, version: bundle.version, runtimeDirectory: bundle.runtimeDirectory, stateRoot, keyFile, port };
         current.unit = renderServerServiceUnit(current, { nodePath: options.nodePath || process.execPath });
         current.unitSha256 = digest(current.unit);
         let previous = null;

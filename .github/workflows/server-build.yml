@@ -7,7 +7,9 @@ on:
       - 'scripts/server/**'
       - 'apps/v8-agent-os-engine/**'
       - 'apps/v8-agent-os-cli/**'
+      - 'apps/v8-agent-os-tui/**'
       - 'apps/v8-agent-os-admin/src/**'
+      - 'scripts/desktop/prepare-posix-python-runtime.mjs'
       - 'release-manifest.json'
       - '.github/workflows/server-build.yml'
 permissions:
@@ -15,7 +17,7 @@ permissions:
 jobs:
   linux-x64:
     runs-on: ${{ format('ubuntu-{0}', matrix.ubuntu) }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -31,11 +33,59 @@ jobs:
           python-version: '3.11'
       - run: npm ci --prefix scripts/server --ignore-scripts
       - name: Validate archive and interrupted installation contracts
-        run: python scripts/server/tests/test_distribution.py -q
+        run: |
+          python scripts/server/tests/test_distribution.py -q
+          python scripts/server/tests/test_portable_distribution.py -q
+          node --test scripts/server/tests/portable_runtime.test.mjs
       - name: Test the supported CLI runtime floor
         run: node --test apps/v8-agent-os-cli/tests/server_service.test.mjs apps/v8-agent-os-cli/tests/http_redirect.test.mjs apps/v8-agent-os-cli/tests/chat_completion.test.mjs
       - name: Build independent archive
         run: python scripts/server/build-server-bundle.py --output out/server
+      - name: Build portable Engine asset for npm Core Base
+        if: matrix.node == '22' && matrix.ubuntu == '24.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/engine-source"
+          tar xf out/server/V8OS-Server-*-linux-x64.tar.gz -C "$RUNNER_TEMP/engine-source"
+          bundle=("$RUNNER_TEMP"/engine-source/v8os-server-*-linux-x64)
+          [[ ${#bundle[@]} == 1 && -d "${bundle[0]}" ]]
+          V8_ENGINE_DIR="${bundle[0]}/apps/v8-agent-os-engine" \
+            node scripts/desktop/prepare-posix-python-runtime.mjs --target linux-x64 --server
+          python scripts/server/build-engine-bundle.py --bundle "${bundle[0]}" --output out/server
+      - name: Install exact npm and portable archives without host Python or runtime downloads
+        if: matrix.node == '22' && matrix.ubuntu == '24.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix apps/v8-agent-os-tui --ignore-scripts
+          node scripts/release/pack-tui-release.mjs --output "$RUNNER_TEMP/portable-npm" --source-commit "$GITHUB_SHA"
+          context="$RUNNER_TEMP/portable-container"
+          mkdir -p "$context/engine" "$context/assets" "$context/probes"
+          archives=(out/server/V8OS-Engine-*-linux-x64.tar.gz)
+          packages=("$RUNNER_TEMP"/portable-npm/V8OS-TUI-*.tgz)
+          [[ ${#archives[@]} == 1 && ${#packages[@]} == 1 ]]
+          tar xf "${archives[0]}" -C "$context/engine" --strip-components=1
+          cp "${archives[0]}" out/server/V8OS-Engine-*-linux-x64.json "$context/assets/"
+          cp "${packages[0]}" "$context/package.tgz"
+          cp scripts/server/tests/portable_smoke.mjs "$context/probes/"
+          cp -a "$(dirname "$(dirname "$(command -v node)")")" "$context/node"
+          curl --fail --location --retry 3 https://raw.githubusercontent.com/microsoft/playwright/v1.56.0/utils/docker/seccomp_profile.json -o "$RUNNER_TEMP/portable-seccomp.json"
+          printf '%s  %s\n' cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849 "$RUNNER_TEMP/portable-seccomp.json" | sha256sum --check
+          mkdir -p out/portable-evidence
+          for ubuntu_version in 22.04 24.04; do
+            docker build --build-arg "UBUNTU_VERSION=$ubuntu_version" \
+              -f scripts/server/tests/portable.Dockerfile -t "v8os-portable-acceptance:$ubuntu_version" "$context"
+            docker run --rm --init --network none --shm-size=1g \
+              --security-opt "seccomp=$RUNNER_TEMP/portable-seccomp.json" \
+              "v8os-portable-acceptance:$ubuntu_version" 2>&1 | tee "out/portable-evidence/ubuntu-$ubuntu_version.log"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && matrix.node == '22' && matrix.ubuntu == '24.04'
+        with:
+          name: v8os-portable-acceptance-evidence
+          path: out/portable-evidence/*.log
+          if-no-files-found: ignore
       - name: Install inside clean Ubuntu with the selected Node runtime
         shell: bash
         run: |
@@ -92,4 +142,5 @@ jobs:
           path: |
             out/server/*.tar.gz
             out/server/*.tar.gz.sha256
+            out/server/V8OS-Engine-*.json
           if-no-files-found: error

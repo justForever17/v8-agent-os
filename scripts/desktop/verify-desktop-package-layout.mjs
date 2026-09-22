@@ -323,7 +323,7 @@ try {
     resourceRoot,
     appAsar,
     releaseManifestPath,
-    path.join(resourceRoot, "apps", "v8-agent-os-cli", "src", "shell_api.mjs"),
+    path.join(resourceRoot, "apps", "v8-agent-os-cli", "src", "core_control.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-engine", "main.py"),
     path.join(engineRoot, ".plugin-node-runtime", "npm", "bin", "npm-cli.js"),
     ...nextStandaloneRequired(resourceRoot, "admin"),

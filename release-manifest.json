@@ -23,7 +23,11 @@
       "targets": {
         "linux-x64": {
           "enabled": true,
-          "required": true
+          "required": true,
+          "standalone": {
+            "enabled": true,
+            "required": true
+          }
         },
         "linux-arm64": {
           "enabled": false,

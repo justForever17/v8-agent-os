@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { DEFAULT_PORTS, RUNTIME_PORTS_PATH } from "./paths.mjs";
+import { CONFIG_PATH, DEFAULT_PORTS, RUNTIME_PORTS_PATH } from "./paths.mjs";
+import { readJsonFile } from "./json_file.mjs";
 import { isPortOpen } from "./ports.mjs";
 import { withRuntimePortsLease } from "./process_state.mjs";
 
@@ -22,18 +23,34 @@ function validWebPort(value) {
     : null;
 }
 
+function configuredCorePorts() {
+  const bridge = readJsonFile(CONFIG_PATH, {})?.systemBase?.bridge || {};
+  const ports = { engine: DEFAULT_PORTS.engine, admin: DEFAULT_PORTS.admin };
+  for (const id of ["engine", "admin"]) {
+    if (!bridge[`${id}BaseUrl`]) continue;
+    const origin = new URL(bridge[`${id}BaseUrl`]);
+    if (origin.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(origin.hostname)
+      || origin.username || origin.password || origin.search || origin.hash
+      || !["", "/", id === "engine" ? "/v1" : "/api"].includes(origin.pathname.replace(/\/$/u, ""))) {
+      throw new Error(`Core startup requires a local ${id}BaseUrl`);
+    }
+    ports[id] = validPort(origin.port || 80);
+  }
+  return ports;
+}
+
 function normalizedProfile(payload) {
   if (!payload || payload.version !== 1 || payload.policy !== "web-fallback-v1") return null;
+  const core = configuredCorePorts();
   const web = validWebPort(payload.ports?.web);
   if (!web
-    || Number(payload.ports?.engine) !== DEFAULT_PORTS.engine
-    || Number(payload.ports?.admin) !== DEFAULT_PORTS.admin) return null;
+    || Number(payload.ports?.engine) !== core.engine
+    || Number(payload.ports?.admin) !== core.admin) return null;
   return {
     version: 1,
     policy: "web-fallback-v1",
     ports: {
-      engine: DEFAULT_PORTS.engine,
-      admin: DEFAULT_PORTS.admin,
+      ...core,
       web,
     },
     selectedAt: typeof payload.selectedAt === "string" ? payload.selectedAt : null,
@@ -53,8 +70,7 @@ export function readRuntimePortProfile(options = {}) {
 
 export function readRuntimePorts(options = {}) {
   return readRuntimePortProfile(options)?.ports || {
-    engine: DEFAULT_PORTS.engine,
-    admin: DEFAULT_PORTS.admin,
+    ...configuredCorePorts(),
     web: DEFAULT_PORTS.web,
   };
 }
@@ -120,8 +136,7 @@ export async function resolveRuntimePorts(options = {}) {
       version: 1,
       policy: "web-fallback-v1",
       ports: {
-        engine: DEFAULT_PORTS.engine,
-        admin: DEFAULT_PORTS.admin,
+        ...configuredCorePorts(),
         web: selectedWebPort,
       },
       selectedAt: new Date().toISOString(),

@@ -854,7 +854,7 @@ export class Surface {
       'NO_COLOR / --no-color 无色；--screen-reader 线性阅读与编号菜单；Ctrl+P → language 切换语言。',
       'Node.js 22+。安装：npm install -g，后接下载的 .tgz 文件路径。',
       '没有 Engine：从官方 Release 下载 server 包并解压，执行 ./install.sh；不需要 Admin。',
-      '已有 Engine：v8os service start。进入 F3 设置连接模型并选择工作区。',
+      '首次运行 v8os 自动准备 Engine；v8os start 仅启动后台服务。F3 配置模型与工作区。',
       '无法响应时可重新连接 SSH 后运行 reset；SIGKILL/掉电无法执行终端恢复。',
     ], [{ label: '返回对话', run: () => this.close(true) }]);
   }

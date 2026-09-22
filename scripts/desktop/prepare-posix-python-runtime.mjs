@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
-const engineDir = path.join(repoRoot, "apps", "v8-agent-os-engine");
+const engineDir = path.resolve(process.env.V8_ENGINE_DIR || path.join(repoRoot, "apps", "v8-agent-os-engine"));
 const PYTHON_RELEASE = "20260805";
 const LINUX_PYATSPI_SOURCE = {
   // GNOME pyatspi2 2.58.2.  The previously pinned pre-Python-3 source used
@@ -100,6 +100,33 @@ function pythonExecutable(runtimeDir) {
     path.join(runtimeDir, "bin", "python"),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) || "";
+}
+
+export function relocatePythonConsoleScripts(python, runtimeDir) {
+  const bin = path.join(runtimeDir, "bin");
+  const interpreters = new Set([
+    python, fs.realpathSync(python),
+    ...["python", "python3", "python3.11"].map(name => path.join(bin, name)),
+  ]);
+  const trampoline = `#!/bin/sh\n'''exec' "$(dirname -- "$(realpath -- "$0")")/python3" "$0" "$@"\n' '''\n`;
+  const changed = [];
+  for (const entry of fs.readdirSync(bin, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const filename = path.join(bin, entry.name);
+    const fd = fs.openSync(filename, "r"), prefix = Buffer.alloc(4096);
+    let length;
+    try { length = fs.readSync(fd, prefix, 0, prefix.length, 0); }
+    finally { fs.closeSync(fd); }
+    const newline = prefix.subarray(0, length).indexOf(10);
+    if (newline < 0 || prefix[0] !== 35 || prefix[1] !== 33) continue;
+    // Only pip-created entrypoints tied to this exact interpreter are changed.
+    // Preserve upstream shell trampolines, foreign scripts and ELF binaries.
+    if (!interpreters.has(prefix.subarray(2, newline).toString("utf8").trim())) continue;
+    const content = fs.readFileSync(filename);
+    fs.writeFileSync(filename, Buffer.concat([Buffer.from(trampoline), content.subarray(newline + 1)]));
+    changed.push(entry.name);
+  }
+  return changed;
 }
 
 function isPathWithin(root, candidate) {
@@ -250,7 +277,12 @@ async function main() {
   if (!fs.existsSync(path.join(engineDir, "main.py"))) fail(`Engine directory is invalid: ${engineDir}`);
 
   const requirementsArg = argValue("--requirements-path");
-  const requirementsPath = requirementsArg ? path.resolve(requirementsArg) : path.join(engineDir, "requirements", "desktop-preview.txt");
+  const serverProfile = hasFlag("--server");
+  if (serverProfile && target !== "linux-x64") fail("Only linux-x64 has a validated server production dependency lock.");
+  if (serverProfile && hasFlag("--skip-playwright-browsers")) fail("The server portable runtime must include its headless Chromium binary.");
+  const requirementsPath = requirementsArg
+    ? path.resolve(requirementsArg)
+    : path.join(engineDir, "requirements", serverProfile ? "server-linux-x64.lock" : "desktop-preview.txt");
   if (!fs.existsSync(requirementsPath)) fail(`Requirements file not found: ${requirementsPath}`);
 
   const runtimeDir = path.join(engineDir, ".python");
@@ -291,18 +323,22 @@ async function main() {
     verifyPortablePythonLocation(python, runtimeDir);
 
     run(python, ["-m", "ensurepip", "--upgrade"]);
-    run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel"]);
-    run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", requirementsPath]);
-    run(python, [
+    if (!serverProfile) run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel"]);
+    run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", ...(serverProfile ? ["--require-hashes"] : []), "-r", requirementsPath]);
+    if (serverProfile) {
+      run(python, ["-m", "pip", "check"]);
+      relocatePythonConsoleScripts(python, runtimeDir);
+    }
+    if (!serverProfile) run(python, [
       "-X",
       "utf8",
       "-c",
       "import curl_cffi; from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher; print('V8OS_RESEARCH_FETCHERS_OK')",
     ]);
-    if (runtime.platform === "linux") {
+    if (runtime.platform === "linux" && !serverProfile) {
       await installLinuxPyatspi(python, runtimeDir, workDir);
       run(python, ["-m", "pip", "check"]);
-    } else if (runtime.platform === "darwin") {
+    } else if (runtime.platform === "darwin" && !serverProfile) {
       verifyMacosCheckpointSaverWithoutSqliteVec(python);
     }
 
@@ -314,7 +350,7 @@ async function main() {
         "utf8",
       );
     } else {
-      run(python, ["-m", "playwright", "install", "chromium"], { env: { PLAYWRIGHT_BROWSERS_PATH: browserDir } });
+      run(python, ["-m", "playwright", "install", ...(serverProfile ? ["--no-shell"] : []), "chromium"], { env: { PLAYWRIGHT_BROWSERS_PATH: browserDir } });
     }
 
     run(python, ["-X", "utf8", "-c", "import sys; print(sys.executable); assert 'hostedtoolcache' not in sys.executable.lower(); assert '/.venv/' not in sys.executable.replace('\\\\', '/').lower()"]);
@@ -322,15 +358,26 @@ async function main() {
     fs.mkdirSync(probeHome, { recursive: true });
     run(python, ["-X", "utf8", "-c", "import main; print('V8OS_ENGINE_IMPORT_OK')"], {
       cwd: engineDir,
-      env: { V8_AGENT_OS_HOME: probeHome, V8_AGENT_OS_DISABLE_BYTECODE: "1" },
+      env: {
+        V8_AGENT_OS_HOME: probeHome, V8_AGENT_OS_DISABLE_BYTECODE: "1", PYTHONDONTWRITEBYTECODE: "1",
+        ...(serverProfile ? { ENGINE_INSTALL_PROFILE: "server", ENGINE_STARTUP_PROFILE: "server" } : {}),
+      },
     });
+    fs.writeFileSync(path.join(runtimeDir, "v8os-runtime.json"), `${JSON.stringify({
+      schema: 1, profile: serverProfile ? "server" : "desktop", target,
+      pythonRelease: PYTHON_RELEASE, pythonAsset: runtime.asset, pythonSha256: runtime.sha256,
+      requirementsSha256: createHash("sha256").update(fs.readFileSync(requirementsPath)).digest("hex"),
+      browserIncluded: !hasFlag("--skip-playwright-browsers"),
+    }, null, 2)}\n`);
     console.log(`Portable Python runtime is ready for ${target}.`);
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+    process.exit(1);
+  });
+}

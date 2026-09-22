@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { commandAcp } from "./acp_commands.mjs";
 import { ALL_COMPONENTS, parseComponentSelection } from "./components.mjs";
 import { interactiveChat, sendChatMessage } from "./chat_commands.mjs";
@@ -38,7 +40,7 @@ import { initializeServerCredentials, serverCredentialStatus } from "./credentia
 import { commandPreview } from "./preview_commands.mjs";
 import { runRepair } from "./repair.mjs";
 import { LOG_DIR, REPO_ROOT } from "./paths.mjs";
-import { startComponents, statusComponents, stopComponents } from "./process_manager.mjs";
+import { startCoreComponents as startComponents, statusCoreComponents as statusComponents, stopCoreComponents as stopComponents } from "./core_control.mjs";
 import { commandSessions } from "./session_commands.mjs";
 import { commandServerService } from "./server_service.mjs";
 import { commandWorkspace } from "./workspace_commands.mjs";
@@ -94,6 +96,7 @@ Usage:
   v8os status [--json]
   v8os service install|upgrade --bundle <server-package-root> [--key-file <absolute-path>] [--port 9530] [--json]
   v8os service start|stop|restart|status|rollback|uninstall [--json]
+  v8os packs list|install|uninstall ...
   v8os chat "message" [--session id] [--workspace path] [--safety-approval manual|reduced|minimal] [--interactive]
   v8os tui [--session id] [--screen-reader] [--no-color]
   v8os acp
@@ -117,7 +120,7 @@ Usage:
 async function commandStart(args) {
   const mode = optionValue(args, "--mode", "dev");
   const selected = parseComponentSelection(args);
-  const results = await startComponents(selected, { mode });
+  const results = await startComponents(selected, { mode, lifecycle: selected.includes("shell") ? "desktop" : "daemon" });
   if (hasFlag(args, "--json")) printJson(results);
   else renderStartResults(results);
   return commitCommandResult("start", results);
@@ -353,6 +356,28 @@ function commandLogs() {
   console.log(LOG_DIR);
 }
 
+async function commandFeaturePacks(args) {
+  const entry = path.join(REPO_ROOT, "scripts", "server", "feature-packs.mjs");
+  if (!existsSync(entry)) throw new Error("This Engine bundle does not contain the feature-pack manager");
+  const child = spawn(process.execPath, [entry, ...args], { stdio: "inherit", windowsHide: true, shell: false });
+  const forwardInterrupt = () => child.kill("SIGINT");
+  const forwardTerminate = () => child.kill("SIGTERM");
+  process.on("SIGINT", forwardInterrupt);
+  process.on("SIGTERM", forwardTerminate);
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => {
+        process.exitCode = code ?? (signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 1);
+        resolve();
+      });
+    });
+  } finally {
+    process.removeListener("SIGINT", forwardInterrupt);
+    process.removeListener("SIGTERM", forwardTerminate);
+  }
+}
+
 function commandOpen(args) {
   const target = args[0] || "admin";
   const ports = readRuntimePorts();
@@ -371,6 +396,7 @@ export async function main(argv) {
     return;
   }
   if (command === "tui") return (await import("./tui_command.mjs")).commandTui(args);
+  if (command === "packs") return commandFeaturePacks(args);
   if (args.includes("-h") || args.includes("--help")) {
     help();
     return;

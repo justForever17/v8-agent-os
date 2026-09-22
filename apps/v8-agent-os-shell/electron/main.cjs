@@ -46,7 +46,7 @@ process.env.V8_DESKTOP_PET_DIR = desktopPetDir;
 let webBaseUrl = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
 let adminBaseUrl = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
 let engineBaseUrl = process.env.V8_ENGINE_BASE_URL || 'http://127.0.0.1:9530';
-const cliApiUrl = pathToFileURL(path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'shell_api.mjs')).href;
+const cliApiUrl = pathToFileURL(path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'core_control.mjs')).href;
 const releaseManifestPath = path.join(repoRoot, 'release-manifest.json');
 let productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
 const CORE_SERVICE_IDS = ['engine', 'web'];
@@ -72,6 +72,8 @@ let activeSessionId = null;
 let desktopPetActiveSessionId = null;
 let shellControl = null;
 let shellProcessRecordIdentity = null;
+let desktopCoreIdentities = {};
+const pendingDesktopStarts = new Set();
 let cliApiPromise = null;
 let coreServicesStartPromise = null;
 let initialSurfaceLoadPromise = null;
@@ -258,8 +260,7 @@ async function openDesktopPetSettings() {
 }
 
 async function ensureAdminServiceStarted() {
-  const { shellStartWithRuntimePorts } = await cliApi();
-  const { profile, results } = await shellStartWithRuntimePorts(['admin'], { mode: 'start' });
+  const { profile, results } = await startDesktopServices(['admin']);
   applyRuntimePortProfile(profile);
   const failures = results.filter(item => !['started', 'already_running'].includes(item.status));
   if (failures.length) throw coreServiceStartupError(failures);
@@ -430,7 +431,7 @@ async function monitorCoreServiceLiveness(startResults, isComplete) {
       continue;
     }
     try {
-      const { shellStatus } = await cliApi();
+      const { statusCoreComponents: shellStatus } = await cliApi();
       const handoff = await waitForServiceHandoff(exitedIds, {
         statusProvider: shellStatus,
       });
@@ -461,9 +462,12 @@ async function monitorCoreServiceLiveness(startResults, isComplete) {
 
 async function waitForServices(startResults) {
   let complete = false;
+  const controller = new AbortController();
+  const { waitForCoreReadiness } = await cliApi();
   const readiness = Promise.all([
-    waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'engine', isCancelled: () => complete })
-      .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'engine' })),
+    waitForCoreReadiness({ timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, signal: controller.signal })
+      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'engine' }))
+      .catch(error => { error.serviceId = 'engine'; throw error; }),
     // Admin is an optional configuration surface. Web and Engine readiness are
     // sufficient for the trusted local client startup path.
     waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, kind: 'web', isCancelled: () => complete })
@@ -478,7 +482,7 @@ async function waitForServices(startResults) {
     if (error?.userFacingMessage) throw error;
     let statuses = [];
     try {
-      const { shellStatus } = await cliApi();
+      const { statusCoreComponents: shellStatus } = await cliApi();
       statuses = await shellStatus(CORE_SERVICE_IDS);
     } catch {}
     const serviceId = error?.serviceId || 'unknown';
@@ -495,14 +499,25 @@ async function waitForServices(startResults) {
     }], 'readiness');
   } finally {
     complete = true;
+    controller.abort();
   }
+}
+
+function startDesktopServices(componentIds) {
+  if (quitting) throw new Error('desktop_shutdown_in_progress');
+  const operation = cliApi().then(async ({ startCoreComponentsWithRuntimePorts, desktopOwnedIdentities }) => {
+    const started = await startCoreComponentsWithRuntimePorts(componentIds, { mode: 'start', lifecycle: 'desktop' });
+    desktopCoreIdentities = desktopOwnedIdentities(started.results, desktopCoreIdentities);
+    return started;
+  });
+  pendingDesktopStarts.add(operation);
+  return operation.finally(() => pendingDesktopStarts.delete(operation));
 }
 
 async function ensureCoreServicesStarted() {
   if (!coreServicesStartPromise) {
-    coreServicesStartPromise = cliApi()
-      .then(async ({ shellStartWithRuntimePorts }) => {
-        const { profile, results } = await shellStartWithRuntimePorts(CORE_SERVICE_IDS, { mode: 'start' });
+    coreServicesStartPromise = startDesktopServices(CORE_SERVICE_IDS)
+      .then(({ profile, results }) => {
         applyRuntimePortProfile(profile);
         const failures = results.filter((item) => !['started', 'already_running'].includes(item.status));
         if (failures.length > 0) {
@@ -764,7 +779,7 @@ async function performInitialSurfaceLoad() {
     coreServicesStartPromise = null;
     lastStartupFailure = error?.userFacingMessage ? error : null;
     try {
-      const { shellStatus } = await cliApi();
+      const { statusCoreComponents: shellStatus } = await cliApi();
       await shellStatus(CORE_SERVICE_IDS);
     } catch {}
     reportSurfaceStage('startup_failed', { reason: error?.message || String(error) });
@@ -782,10 +797,11 @@ async function restartRetryableCoreServices(failure) {
       .filter((id) => CORE_SERVICE_IDS.includes(id)),
   )];
   if (serviceIds.length === 0) return;
-  const { shellStatus, shellStop } = await cliApi();
-  await shellStop(serviceIds, { stopVerifiedPortOwners: serviceIds });
+  const { statusCoreComponents, stopCoreComponents: shellStop } = await cliApi();
+  const shellStatus = ids => statusCoreComponents(ids, { expectedIdentities: desktopCoreIdentities });
+  await shellStop(serviceIds, { expectedIdentities: desktopCoreIdentities });
   const remaining = await waitForManagedServicesStopped(shellStatus, 25, serviceIds);
-  if (remaining.some((item) => item.pidAlive || item.portOpen)) {
+  if (remaining.some((item) => item.ownership !== 'detached' && (item.pidAlive || item.portOpen))) {
     throw coreServiceStartupError(remaining.map((item) => ({
       ...item,
       status: 'retry_stop_failed',
@@ -878,7 +894,7 @@ function reportActiveSession(sessionId) {
 
 async function refreshStatusOnce() {
   try {
-    const { shellDesktopPetAvailability, shellStatus } = await cliApi();
+    const { desktopPetAvailability: shellDesktopPetAvailability, statusCoreComponents: shellStatus } = await cliApi();
     desktopPetPlatformAvailability = shellDesktopPetAvailability();
     const statuses = await shellStatus(['desktop-pet']);
     desktopPetProcessRunning = statuses.some((item) => (
@@ -1082,7 +1098,7 @@ async function showServiceStatus() {
   let message = '无法读取服务状态。';
   let ok = false;
   try {
-    const { shellStatus } = await cliApi();
+    const { statusCoreComponents: shellStatus } = await cliApi();
     message = JSON.stringify({
       desktopPet: {
         state: desktopPetState,
@@ -1117,7 +1133,7 @@ async function stopDesktopPetGracefully() {
   );
   if (!result.acked) {
     console.warn('[V8OS Shell] Desktop pet graceful shutdown failed; using CLI fallback', { reason: result.reason });
-    const { shellStop } = await cliApi();
+    const { stopCoreComponents: shellStop } = await cliApi();
     await shellStop(['desktop-pet']);
   }
   setTimeout(() => { void refreshStatus(); }, result.acked ? 300 : 0).unref?.();
@@ -1135,7 +1151,7 @@ async function setDesktopPetEnabled(enabled) {
       await stopDesktopPetGracefully();
     } else if (enabled && !shouldStop && desktopPetPlatformAvailability.available) {
       setDesktopPetState('starting');
-      const { shellStart } = await cliApi();
+      const { startCoreComponents: shellStart } = await cliApi();
       const results = await shellStart(['desktop-pet'], { mode: 'start' });
       const accepted = results.some((item) => item.status === 'started' || item.status === 'already_running');
       if (!accepted) setDesktopPetState('error');
@@ -1162,7 +1178,7 @@ async function waitForManagedServicesStopped(shellStatus, attempts = 15, service
   let statuses = [];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     statuses = await shellStatus(serviceIds);
-    if (statuses.every((item) => !item.pidAlive && !item.portOpen)) return statuses;
+    if (statuses.every((item) => item.ownership === 'detached' || (!item.pidAlive && !item.portOpen))) return statuses;
     await wait(100);
   }
   return statuses;
@@ -1186,7 +1202,7 @@ async function runManagedV8OSShutdown({
   const blockersFor = (statuses, serviceIds) => serviceIds.flatMap((id) => {
     const status = Array.isArray(statuses) ? statuses.find((item) => item?.id === id) : null;
     if (!status) return [{ id, state: 'status_missing', pidAlive: null, portOpen: null }];
-    return status.pidAlive === false && status.portOpen === false ? [] : [status];
+    return status.ownership === 'detached' || (status.pidAlive === false && status.portOpen === false) ? [] : [status];
   });
   const stopOptions = { stopVerifiedPortOwners: coreIds };
 
@@ -1277,7 +1293,20 @@ async function quitV8OS() {
   app.emit('v8os-governed-shutdown-started');
   let failure = null;
   try {
-    const { removeShellProcessRecord, shellStatus, shellStop } = await cliApi();
+    // Complete in-flight Core starts before releasing their receipts. Otherwise
+    // closing during startup could leave a newly spawned Engine ownerless.
+    await Promise.allSettled([...pendingDesktopStarts]);
+    const { removeShellProcessRecord, statusCoreComponents, stopCoreComponents } = await cliApi();
+    // The desktop owns only its startup receipts. Daemons and replacements
+    // remain running when this surface closes; process_manager checks again
+    // under the stop lease before any signal is sent.
+    const shellStop = (ids, options) => stopCoreComponents(ids, {
+      ...options, expectedIdentities: ids.includes('desktop-pet') ? undefined : desktopCoreIdentities,
+    });
+    const shellStatus = async ids => {
+      const statuses = await statusCoreComponents(ids, { expectedIdentities: desktopCoreIdentities });
+      return statuses.map(item => item.id === 'desktop-pet' ? { ...item, ownership: undefined } : item);
+    };
     const result = await runManagedV8OSShutdown({
       coreIds: [...CORE_SERVICE_IDS, 'admin'],
       desktopPetId: 'desktop-pet',
@@ -1779,7 +1808,7 @@ if (!hasSingleInstanceLock) {
     app.setAppUserModelId('V8OS.LocalShell');
     registerShellProtocol();
     try {
-      const { getShellProcessRecordIdentity, shellDesktopPetAvailability } = await cliApi();
+      const { getShellProcessRecordIdentity, desktopPetAvailability: shellDesktopPetAvailability } = await cliApi();
       shellProcessRecordIdentity = getShellProcessRecordIdentity();
       desktopPetPlatformAvailability = shellDesktopPetAvailability();
     } catch (error) {

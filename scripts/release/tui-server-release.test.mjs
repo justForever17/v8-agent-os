@@ -8,7 +8,7 @@ import test from "node:test";
 import { evaluateReleaseGate, validateReleaseManifest, validateReleaseProjections, resolveReleasePlan, toSemver } from "./release-manifest.mjs";
 import { preparationManifest, resolvePreparationIdentity, resolvePreparationRequest, validateTuiTgzIntegrity, updateTuiVersion } from "./prepare-release.mjs";
 import { loadReleasePlan, writeGithubOutputs } from "./resolve-release-plan.mjs";
-import { prepareUnifiedReleaseAssets, verifyArchiveIdentity } from "./prepare-unified-release-assets.mjs";
+import { prepareUnifiedReleaseAssets, verifyArchiveIdentity, verifyEngineArchiveIdentity, verifyEngineReleaseAssets } from "./prepare-unified-release-assets.mjs";
 import { packTuiRelease } from "./pack-tui-release.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
@@ -36,7 +36,7 @@ function fixture(t) {
 }
 
 function tuiPackage() {
-  return { name: "@v8-agent-os/v8-agent-os", version: toSemver(VERSION), type: "module", bin: { "v8os-tui": "bin/v8os-tui.mjs" },
+  return { name: "@v8-agent-os/v8-agent-os", version: toSemver(VERSION), type: "module", bin: { v8os: "bin/v8os.mjs", "v8os-tui": "bin/v8os-tui.mjs" },
     engines: { node: ">=22" }, files: ["bin", "dist", "LICENSE", "README.md", "NOTICE.md"], v8Release: { version: VERSION, sourceCommit: COMMIT } };
 }
 
@@ -51,14 +51,37 @@ function tarFixture(root, filename, entries) {
   return filename;
 }
 
-const tuiEntries = (pkg = tuiPackage()) => ({ "package/package.json": JSON.stringify(pkg), "package/bin/v8os-tui.mjs": "#!/usr/bin/env node\nconsole.log('installed fixture')", "package/dist/main.js": "export const fixture=true", "package/LICENSE": "fixture license" });
+function engineTarFixture(root, filename, identity) {
+  const stage = fs.mkdtempSync(path.join(root, "engine-tar-"));
+  const prefix = `v8os-engine-${identity.version}-${identity.target}`;
+  const write = (relative, content) => {
+    const target = path.join(stage, prefix, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  };
+  write("engine-manifest.json", JSON.stringify(identity));
+  write("apps/v8-agent-os-engine/main.py", "# fixture");
+  write("apps/v8-agent-os-cli/bin/v8os.mjs", "#!/usr/bin/env node");
+  write("apps/v8-agent-os-engine/.python/bin/python3.11", "python fixture");
+  fs.symlinkSync("python3.11", path.join(stage, prefix, "apps/v8-agent-os-engine/.python/bin/python3"));
+  write("SHA256SUMS", "fixture\n");
+  fs.mkdirSync(path.dirname(filename), { recursive: true });
+  execFileSync("tar", ["-czf", filename, "-C", stage, prefix]);
+  return filename;
+}
+
+const tuiEntries = (pkg = tuiPackage()) => ({ "package/package.json": JSON.stringify(pkg), "package/bin/v8os.mjs": "#!/usr/bin/env node\nconsole.log('installed fixture')", "package/bin/v8os-tui.mjs": "#!/usr/bin/env node\nconsole.log('installed fixture')", "package/bin/engine-bootstrap.mjs": "export const fixture=true", "package/dist/main.js": "export const fixture=true", "package/dist/core-control.mjs": "export const fixture=true", "package/dist/cli.mjs": "export const fixture=true", "package/LICENSE": "fixture license" });
 
 function packableFixture(t, extraBuild = () => "") {
   const f = fixture(t), source = path.join(f.root, "apps/v8-agent-os-tui");
   const files = {
+    "bin/v8os.mjs": "#!/usr/bin/env node\nconsole.log('unified entrypoint');",
+    "bin/engine-bootstrap.mjs": "export const bootstrap = true;",
     "bin/v8os-tui.mjs": "#!/usr/bin/env node\nimport { ui } from '../dist/main.js'; console.log(ui);",
     "src/main.js": "export const ui = 'current inline command menu';",
-    "scripts/build.mjs": `import fs from 'node:fs';\nfs.mkdirSync('dist', { recursive: true });\nfs.copyFileSync('src/main.js', 'dist/main.js');\nfs.copyFileSync('../../LICENSE', 'LICENSE');\n${extraBuild(f.root)}`,
+    "src/core-control.mjs": "export const core = true;",
+    "src/cli.mjs": "export const cli = true;",
+    "scripts/build.mjs": `import fs from 'node:fs';\nfs.mkdirSync('dist', { recursive: true });\nfs.copyFileSync('src/main.js', 'dist/main.js');\nfs.copyFileSync('src/core-control.mjs', 'dist/core-control.mjs');\nfs.copyFileSync('src/cli.mjs', 'dist/cli.mjs');\nfs.copyFileSync('../../LICENSE', 'LICENSE');\n${extraBuild(f.root)}`,
     "README.md": "fixture", "NOTICE.md": "fixture",
   };
   for (const [name, content] of Object.entries(files)) {
@@ -75,6 +98,8 @@ function packableFixture(t, extraBuild = () => "") {
   const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: f.root, encoding: "utf8" }).trim();
   fs.mkdirSync(path.join(source, "dist")); fs.mkdirSync(path.join(source, "node_modules"));
   fs.writeFileSync(path.join(source, "dist/main.js"), "export const ui = 'stale fullscreen menu';");
+  fs.writeFileSync(path.join(source, "dist/core-control.mjs"), "export const core = 'stale';");
+  fs.writeFileSync(path.join(source, "dist/cli.mjs"), "export const cli = 'stale';");
   fs.writeFileSync(path.join(source, "dist/orphan.js"), "stale compiled file");
   fs.writeFileSync(path.join(source, "node_modules/keep.txt"), "installed toolchain remains intact");
   fs.copyFileSync(path.join(f.root, "LICENSE"), path.join(source, "LICENSE"));
@@ -250,6 +275,44 @@ test("server archive checks architecture, source identity, dirty state and paylo
   assert.throws(verify, /missing member/);
 });
 
+test("portable Engine fan-in verifies public JSON, internal identity, archive SHA and Python symlink", (t) => {
+  const f = fixture(t);
+  f.manifest.products.server.enabled = f.manifest.products.server.required = true;
+  f.manifest.products.server.targets["linux-x64"].enabled = f.manifest.products.server.targets["linux-x64"].required = true;
+  f.manifest.products.server.targets["linux-x64"].standalone = { enabled: true, required: true };
+  json(f.manifestPath, f.manifest);
+  const input = path.join(f.root, "input"), serverRoot = `v8os-server-${VERSION}-linux-x64`;
+  const serverIdentity = { schema: 1, profile: "server", version: VERSION, platform: "linux", arch: "x64", sourceCommit: COMMIT, sourceDirty: false };
+  tarFixture(f.root, path.join(input, "server", `V8OS-Server-${VERSION}-linux-x64.tar.gz`), {
+    [`${serverRoot}/server-manifest.json`]: JSON.stringify(serverIdentity), [`${serverRoot}/VERSION`]: toSemver(VERSION),
+    [`${serverRoot}/apps/v8-agent-os-engine/main.py`]: "# fixture", [`${serverRoot}/apps/v8-agent-os-cli/bin/v8os.mjs`]: "// fixture", [`${serverRoot}/SHA256SUMS`]: "fixture",
+  });
+  const engineIdentity = { schema: 1, profile: "engine", version: VERSION, target: "linux-x64", sourceCommit: COMMIT, sourceDirty: false,
+    engineDir: "apps/v8-agent-os-engine", python: "apps/v8-agent-os-engine/.python/bin/python3", cli: "apps/v8-agent-os-cli/bin/v8os.mjs" };
+  const engine = path.join(input, "server", `V8OS-Engine-${VERSION}-linux-x64.tar.gz`);
+  engineTarFixture(f.root, engine, engineIdentity);
+  const publicManifest = path.join(input, "server", `V8OS-Engine-${VERSION}-linux-x64.json`);
+  json(publicManifest, { schema: 1, profile: "engine", version: VERSION, target: "linux-x64", sourceCommit: COMMIT,
+    root: `v8os-engine-${VERSION}-linux-x64`, asset: path.basename(engine), sha256: createHash("sha256").update(fs.readFileSync(engine)).digest("hex") });
+  fs.mkdirSync(path.join(input, "desktop"), { recursive: true });
+  for (const suffix of ["win-x64-setup.exe", "win-arm64-setup.exe", "macos-x64.dmg", "macos-arm64.dmg", "linux-x64.AppImage", "linux-x64.deb", "linux-arm64.AppImage", "linux-arm64.deb"]) {
+    fs.writeFileSync(path.join(input, "desktop", `V8-Agent-OS-preview-${VERSION}-${suffix}`), "synthetic desktop asset");
+  }
+  fs.mkdirSync(path.join(input, "phone/android"), { recursive: true });
+  fs.writeFileSync(path.join(input, "phone/android/app-release.apk"), "synthetic android asset");
+  tarFixture(f.root, path.join(input, "tui", `V8OS-TUI-${VERSION}.tgz`), tuiEntries());
+  assert.doesNotThrow(() => verifyEngineArchiveIdentity(engine, { version: VERSION, target: "linux-x64", sourceCommit: COMMIT }));
+  assert.doesNotThrow(() => verifyEngineReleaseAssets({ archive: engine, manifest: publicManifest, version: VERSION, target: "linux-x64", sourceCommit: COMMIT }));
+  const result = prepareUnifiedReleaseAssets({ manifestPath: f.manifestPath, inputDir: input, outputDir: path.join(f.root, "out-engine"), sourceCommit: COMMIT });
+  assert.ok(result.assets.includes(`V8OS-Engine-${VERSION}-linux-x64.tar.gz`));
+  assert.ok(result.assets.includes(`V8OS-Engine-${VERSION}-linux-x64.json`));
+  const badManifest = path.join(f.root, "bad-engine.json");
+  json(badManifest, { ...JSON.parse(fs.readFileSync(publicManifest, "utf8")), sha256: "0".repeat(64) });
+  assert.throws(() => verifyEngineReleaseAssets({ archive: engine, manifest: badManifest, version: VERSION, target: "linux-x64", sourceCommit: COMMIT }), /public manifest/);
+  fs.rmSync(publicManifest);
+  assert.throws(() => prepareUnifiedReleaseAssets({ manifestPath: f.manifestPath, inputDir: input, outputDir: path.join(f.root, "out-missing-engine-json"), sourceCommit: COMMIT }), /asset and manifest must be published as a pair/);
+});
+
 test("real npm pack rebuilds committed source instead of stale dist and installs the matching UI", (t) => {
   const f = packableFixture(t), { source, sourceCommit } = f;
   const file = packTuiRelease({ repoRoot: f.root, outputDir: path.join(f.root, "packed"), sourceCommit });
@@ -260,6 +323,7 @@ test("real npm pack rebuilds committed source instead of stale dist and installs
   const prefix = path.join(f.root, "installed");
   execFileSync(process.execPath, [npmCli, "install", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", file], { encoding: "utf8" });
   assert.equal(execFileSync(process.execPath, [path.join(prefix, "node_modules/@v8-agent-os/v8-agent-os/bin/v8os-tui.mjs")], { encoding: "utf8" }).trim(), "current inline command menu");
+  assert.match(execFileSync(process.execPath, [path.join(prefix, "node_modules/@v8-agent-os/v8-agent-os/bin/v8os.mjs")], { encoding: "utf8" }), /unified entrypoint/);
   assert.doesNotMatch(execFileSync("tar", ["-tzf", file], { encoding: "utf8" }), /orphan\.js|node_modules/);
   assert.match(fs.readFileSync(path.join(source, "dist/main.js"), "utf8"), /stale fullscreen menu/, "pack must not rewrite the caller's build output");
   assert.match(fs.readFileSync(path.join(source, "node_modules/keep.txt"), "utf8"), /installed toolchain/);
@@ -321,6 +385,8 @@ test("workflows wire required TUI output and both clean Server OS legs without a
   assert.match(release, /name: v8os-tui-npm\s+path: release-input\/tui/);
   assert.match(release, /--source-commit "\$\{\{ github\.sha \}\}"/);
   assert.match(release, /V8OS-TUI-\*\.tgz/);
+  assert.match(release, /engine_archives=\(\.\/release-assets\/V8OS-Engine-\*\.tar\.gz\)/);
+  assert.match(release, /verifyEngineReleaseAssets\(\{ archive, manifest, version, target: 'linux-x64', sourceCommit \}\)/);
   assert.match(server, /ubuntu: \['22\.04', '24\.04'\]/);
   assert.match(server, /matrix\.node == '22' && matrix\.ubuntu == '24\.04'/);
   assert.match(server, /libssl3 libffi8/);
@@ -340,8 +406,8 @@ test("the workflow executes its package identity check for the actual hyphenated
   const run = () => execFileSync(process.execPath, ["-", archive], { input: script, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
   tarFixture(root, archive, tuiEntries());
   assert.doesNotThrow(run);
-  tarFixture(root, archive, tuiEntries({ ...tuiPackage(), bin: { v8os: "bin/v8os-tui.mjs" } }));
-  assert.throws(run, /must not replace/);
-  tarFixture(root, archive, tuiEntries({ ...tuiPackage(), bin: {} }));
+  tarFixture(root, archive, tuiEntries({ ...tuiPackage(), bin: { v8os: "bin/wrong.mjs", "v8os-tui": "bin/v8os-tui.mjs" } }));
+  assert.throws(run, /missing unified v8os/);
+  tarFixture(root, archive, tuiEntries({ ...tuiPackage(), bin: { v8os: "bin/v8os.mjs" } }));
   assert.throws(run, /missing v8os-tui/);
 });

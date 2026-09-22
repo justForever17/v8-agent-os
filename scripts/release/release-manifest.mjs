@@ -227,6 +227,18 @@ function validateTargets(product, entry, problems) {
     if (targetEntry.enabled === false && !String(targetEntry.reason || "").trim()) {
       problems.push(`${prefix}.reason is required when the target is disabled`);
     }
+    if (product === "server" && targetEntry.standalone !== undefined) {
+      const standalone = targetEntry.standalone;
+      if (!standalone || typeof standalone !== "object" || Array.isArray(standalone)) {
+        problems.push(`${prefix}.standalone must be an object`);
+      } else {
+        validateBoolean(standalone.enabled, `${prefix}.standalone.enabled`, problems);
+        validateBoolean(standalone.required, `${prefix}.standalone.required`, problems);
+        if (standalone.required === true && standalone.enabled !== true) {
+          problems.push(`${prefix}.standalone cannot be required when it is disabled`);
+        }
+      }
+    }
   }
 }
 

@@ -79,24 +79,93 @@ export function verifyArchiveIdentity(filename, { product, version, target, sour
         || !/^[a-f0-9]{40}$/.test(identity.sourceCommit || "")
         || (sourceCommit && identity.sourceCommit !== sourceCommit)) throw new Error("Server archive identity does not match release version, target or source commit");
     if (archiveMember(filename, `${root}/VERSION`).trim() !== toSemver(version)) throw new Error("Server archive VERSION projection mismatch");
-    archiveMember(filename, `${root}/apps/v8-agent-os-engine/main.py`);
-    archiveMember(filename, `${root}/apps/v8-agent-os-cli/bin/v8os.mjs`);
-    archiveMember(filename, `${root}/SHA256SUMS`);
+    archiveEntry(filename, `${root}/apps/v8-agent-os-engine/main.py`);
+    archiveEntry(filename, `${root}/apps/v8-agent-os-cli/bin/v8os.mjs`);
+    archiveEntry(filename, `${root}/SHA256SUMS`);
     return identity;
   }
   if (product !== "tui") throw new Error(`Unsupported archive product: ${product}`);
   const pkg = JSON.parse(archiveMember(filename, "package/package.json"));
   if (pkg.name !== "@v8-agent-os/v8-agent-os" || pkg.version !== toSemver(version)
-      || pkg.bin?.["v8os-tui"] !== "bin/v8os-tui.mjs" || pkg.engines?.node !== ">=22"
+      || pkg.bin?.v8os !== "bin/v8os.mjs" || pkg.bin?.["v8os-tui"] !== "bin/v8os-tui.mjs" || pkg.engines?.node !== ">=22"
       || pkg.v8Release?.version !== version || !/^[a-f0-9]{40}$/.test(pkg.v8Release?.sourceCommit || "")
       || (sourceCommit && pkg.v8Release.sourceCommit !== sourceCommit)) throw new Error("TUI archive identity does not match the release package, version, bin, runtime or source commit");
   for (const value of Object.values({ ...pkg.dependencies, ...pkg.optionalDependencies })) {
     if (/^(?:file:|link:|workspace:)/.test(value)) throw new Error("TUI published package contains a repository-local dependency");
   }
   archiveMember(filename, "package/bin/v8os-tui.mjs");
+  archiveMember(filename, "package/bin/v8os.mjs");
+  archiveMember(filename, "package/bin/engine-bootstrap.mjs");
   archiveMember(filename, "package/dist/main.js");
+  archiveMember(filename, "package/dist/core-control.mjs");
+  archiveMember(filename, "package/dist/cli.mjs");
   archiveMember(filename, "package/LICENSE");
   return pkg;
+}
+
+export function verifyEngineArchiveIdentity(filename, { version, target = "linux-x64", sourceCommit } = {}) {
+  const root = `v8os-engine-${version}-${target}`;
+  const identity = JSON.parse(archiveMember(filename, `${root}/engine-manifest.json`));
+  if (identity.schema !== 1 || identity.profile !== "engine" || identity.version !== version
+      || identity.target !== target || identity.sourceDirty !== false
+      || !/^[a-f0-9]{40}$/.test(identity.sourceCommit || "")
+      || identity.engineDir !== "apps/v8-agent-os-engine"
+      || identity.python !== "apps/v8-agent-os-engine/.python/bin/python3"
+      || identity.cli !== "apps/v8-agent-os-cli/bin/v8os.mjs"
+      || (sourceCommit && identity.sourceCommit !== sourceCommit)) {
+    throw new Error("Engine archive identity does not match release version, target or source commit");
+  }
+  archiveEntry(filename, `${root}/apps/v8-agent-os-engine/main.py`);
+  const pythonMember = `${root}/${identity.python}`;
+  const pythonEntry = archiveEntry(filename, pythonMember);
+  if (pythonEntry.kind === "directory") throw new Error("Engine archive Python entry is a directory");
+  if (pythonEntry.kind === "symlink") {
+    if (!pythonEntry.target || path.posix.isAbsolute(pythonEntry.target) || pythonEntry.target.split("/").includes("..")) {
+      throw new Error("Engine archive Python symlink is unsafe");
+    }
+    const targetMember = path.posix.normalize(path.posix.join(path.posix.dirname(pythonMember), pythonEntry.target));
+    const targetEntry = archiveEntry(filename, targetMember);
+    if (targetEntry.kind === "directory") throw new Error("Engine archive Python symlink targets a directory");
+  }
+  archiveEntry(filename, `${root}/${identity.cli}`);
+  archiveEntry(filename, `${root}/SHA256SUMS`);
+  return identity;
+}
+
+export function verifyEngineReleaseAssets({ archive, manifest, version, target = "linux-x64", sourceCommit } = {}) {
+  const publicManifest = JSON.parse(fs.readFileSync(manifest, "utf8"));
+  const expectedRoot = `v8os-engine-${version}-${target}`;
+  const expectedAsset = path.basename(archive);
+  const digest = sha256(archive);
+  if (publicManifest.schema !== 1 || publicManifest.profile !== "engine"
+      || publicManifest.version !== version || publicManifest.target !== target
+      || publicManifest.root !== expectedRoot || publicManifest.asset !== expectedAsset
+      || !/^[a-f0-9]{64}$/.test(publicManifest.sha256 || "") || publicManifest.sha256 !== digest
+      || !/^[a-f0-9]{40}$/.test(publicManifest.sourceCommit || "")
+      || (sourceCommit && publicManifest.sourceCommit !== sourceCommit)) {
+    throw new Error("Engine public manifest does not match release version, target, archive SHA-256 or source commit");
+  }
+  const internal = verifyEngineArchiveIdentity(archive, { version, target, sourceCommit });
+  if (publicManifest.sourceCommit !== internal.sourceCommit) {
+    throw new Error("Engine public manifest source commit differs from internal engine manifest");
+  }
+  return { publicManifest, internal };
+}
+
+function archiveEntry(filename, member) {
+  try {
+    const names = execFileSync("tar", ["-tzf", filename, member], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] })
+      .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    if (!names.includes(member)) throw new Error("missing member");
+    const detail = execFileSync("tar", ["-tvzf", filename, member], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] })
+      .split(/\r?\n/).map(value => value.trim()).find(Boolean);
+    if (!detail) throw new Error("missing listing");
+    const kind = detail[0] === "l" ? "symlink" : detail[0] === "d" ? "directory" : "file";
+    const arrow = detail.indexOf(" -> ");
+    return { kind, target: arrow >= 0 ? detail.slice(arrow + 4).trim() : "" };
+  } catch {
+    throw new Error(`Invalid release archive or missing member ${member}: ${path.basename(filename)}`);
+  }
 }
 
 function prepareOutputDirectory(inputDir, outputDir) {
@@ -141,6 +210,30 @@ export function prepareUnifiedReleaseAssets({ manifestPath, tag, inputDir, outpu
       const copied = copyAsset(path.join(resolvedInput, "server", fileName), resolvedOutput, fileName,
         { required: target.required, label: `Server ${targetName} asset` });
       if (copied) releaseFiles.push(copied);
+      const standalone = target.standalone;
+      if (standalone?.enabled) {
+        const engineName = `V8OS-Engine-${manifest.release.version}-${targetName}.tar.gz`;
+        const engineSource = path.join(resolvedInput, "server", engineName);
+        const manifestName = `V8OS-Engine-${manifest.release.version}-${targetName}.json`;
+        const manifestSource = path.join(resolvedInput, "server", manifestName);
+        const hasEngine = fs.existsSync(engineSource) && fs.statSync(engineSource).isFile();
+        const hasManifest = fs.existsSync(manifestSource) && fs.statSync(manifestSource).isFile();
+        if (hasEngine !== hasManifest) {
+          throw new Error(`Engine ${targetName} asset and manifest must be published as a pair`);
+        }
+        if (!hasEngine) {
+          if (standalone.required) throw new Error(`Required Engine ${targetName} asset is missing: ${engineSource}`);
+          console.warn(`Optional Engine ${targetName} asset is missing: ${engineSource}`);
+        } else {
+          verifyEngineReleaseAssets({ archive: engineSource, manifest: manifestSource, version: manifest.release.version, target: targetName, sourceCommit });
+          const engine = copyAsset(engineSource, resolvedOutput, engineName,
+            { required: true, label: `Engine ${targetName} asset` });
+          const manifestAsset = copyAsset(manifestSource, resolvedOutput, manifestName,
+            { required: true, label: `Engine ${targetName} manifest` });
+          if (engine) releaseFiles.push(engine);
+          if (manifestAsset) releaseFiles.push(manifestAsset);
+        }
+      }
     }
   }
 

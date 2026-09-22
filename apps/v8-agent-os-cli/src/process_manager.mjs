@@ -840,6 +840,8 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
         : identity.unverifiedPids.length ? "managed_identity_unverified"
           : hasPort && portOpen ? "external_port_in_use" : "stopped",
       startedAt: runtimeDescriptor?.startedAt || record?.startedAt || null,
+      recordIdentity,
+      lifecycle: record?.lifecycle || null,
       logOut: record?.logOut || null,
       logErr: record?.logErr || null,
       ...(availability && !availability.available ? availability : {}),
@@ -860,7 +862,8 @@ async function startComponent(id, options) {
     const state = readProcessState();
     const { record, runtimeDescriptor, identity } = await resolveCurrentManagedIdentity(id, state);
     if (identity.effectivePid) {
-      return { id, status: "already_running", pid: identity.effectivePid };
+      return { id, status: "already_running", pid: identity.effectivePid,
+        recordIdentity: processRecordIdentity(record), lifecycle: record?.lifecycle || null };
     }
     if (identity.unverifiedPids.length) {
       return { id, status: "identity_unavailable", pid: identity.unverifiedPids[0] };
@@ -946,6 +949,7 @@ async function startComponent(id, options) {
       managed: true,
       pid: child.pid,
       launchId: crypto.randomUUID(),
+      lifecycle: options.lifecycle || "daemon",
       command: commandSpec.command,
       args: commandSpec.args,
       cwd: commandSpec.cwd,
@@ -971,6 +975,8 @@ async function startComponent(id, options) {
       status: "started",
       pid: child.pid,
       launchId: recordToWrite.launchId,
+      recordIdentity: processRecordIdentity(recordToWrite),
+      lifecycle: recordToWrite.lifecycle,
       port: hasPort ? componentPort : null,
       logOut: logs.out,
       logErr: logs.err,
@@ -1189,6 +1195,12 @@ async function stopComponent(id, options) {
   const component = COMPONENTS[id];
   return withComponentProcessLease(id, async () => {
     const state = readProcessState();
+    // Compare under the stop lease so a replacement start cannot be killed by
+    // a stale desktop receipt. Explicit CLI stop without receipts stays global.
+    if (options.expectedIdentities && (!options.expectedIdentities[id]
+      || !processRecordMatchesIdentity(state.processes[id], options.expectedIdentities[id]))) {
+      return { id, status: "not_owned", reason: "lifecycle_changed" };
+    }
     const { record, runtimeDescriptor, identity } = await resolveCurrentManagedIdentity(id, state);
     const expectedIdentity = processRecordIdentity(record);
     if (identity.unverifiedPids.length) {

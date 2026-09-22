@@ -8,13 +8,13 @@ const test = require('node:test');
 const shellRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(shellRoot, '..', '..');
 
-test('shell main uses embedded CLI API instead of source-tree v8os wrappers', () => {
+test('shell main uses the canonical Core Base API instead of source-tree v8os wrappers', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.doesNotMatch(mainSource, /v8os\.cmd/);
   assert.doesNotMatch(mainSource, /spawnSync\(['"]cmd['"]/);
   assert.doesNotMatch(mainSource, /spawn\(['"]cmd['"]/);
   assert.match(mainSource, /require\(['"]node:url['"]\)/);
-  assert.match(mainSource, /shell_api\.mjs/);
+  assert.match(mainSource, /core_control\.mjs/);
 });
 
 test('packaged shell checks only governed unified releases without installing updates', () => {
@@ -65,17 +65,17 @@ test('packaged shell starts core services before waiting for them', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(mainSource, /ensureCoreServicesStarted/);
   assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'web'\]/);
-  assert.match(mainSource, /shellStartWithRuntimePorts\(CORE_SERVICE_IDS, \{ mode: 'start' \}\)/);
-  assert.match(mainSource, /const \{ profile, results \} = await shellStartWithRuntimePorts/);
+  assert.match(mainSource, /startCoreComponentsWithRuntimePorts\(componentIds, \{ mode: 'start', lifecycle: 'desktop' \}\)/);
+  assert.match(mainSource, /coreServicesStartPromise = startDesktopServices\(CORE_SERVICE_IDS\)/);
   assert.match(mainSource, /applyRuntimePortProfile\(profile\)/);
   assert.match(mainSource, /const startResults = await ensureCoreServicesStarted\(\);[\s\S]*await waitForServices\(startResults\);/);
   assert.match(mainSource, /Promise\.all\(\[/);
-  assert.match(mainSource, /\$\{engineBaseUrl\}\/readyz/);
+  assert.match(mainSource, /waitForCoreReadiness\(\{ timeoutMs: CORE_SERVICES_READINESS_TIMEOUT_MS, signal: controller.signal \}\)/);
   assert.doesNotMatch(mainSource, /\$\{engineBaseUrl\}\/health/);
   assert.match(mainSource, /fetchTextWithTimeout/);
   assert.match(mainSource, /credentials:\s*'omit'/);
   assert.match(mainSource, /validateReadinessResponse/);
-  assert.match(mainSource, /kind: 'engine'/);
+  assert.match(mainSource, /error.serviceId = 'engine'/);
   assert.match(mainSource, /kind: 'admin'/);
   assert.match(mainSource, /kind: 'web'/);
   assert.match(mainSource, /!\['started', 'already_running'\]\.includes\(item\.status\)/);

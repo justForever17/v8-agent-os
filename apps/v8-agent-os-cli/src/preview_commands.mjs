@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { ADMIN_DIR, DEFAULT_PORTS, LOG_DIR, REPO_ROOT, STATE_ROOT, WEB_DIR } from "./paths.mjs";
-import { startComponents, stopComponents } from "./process_manager.mjs";
+import { startCoreComponents as startComponents, stopCoreComponents as stopComponents } from "./core_control.mjs";
 import { isPidAlive } from "./process_state.mjs";
 
 export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "admin", "web", "engine"];
@@ -233,7 +233,7 @@ export async function commandPreview(args = {}) {
       const logs = runNextBuild(PREVIEW_NEXT_APPS[item.app]);
       buildResults.push({ ...item, status: "built", logOut: logs.out, logErr: logs.err });
     }
-    const serviceResults = await startComponents(["engine", "web"], { mode: "start" });
+    const serviceResults = await startComponents(["engine", "web"], { mode: "start", lifecycle: "desktop" });
     startedByThisAttempt.push(...serviceResults.filter((item) => item.status === "started").map((item) => item.id));
     assertStarted(serviceResults, ["engine", "web"], "Core service startup");
     const shellStartedAtMs = Date.now();

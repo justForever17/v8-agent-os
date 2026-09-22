@@ -12,12 +12,12 @@ V8OS 是桌面优先、本地优先的 Agent 工作空间。桌面 Web 用于聊
 | macOS 12.3 及以上，Intel / Apple Silicon | DMG |
 | Linux x64 / arm64 | AppImage 或 DEB |
 | Android | Phone APK |
-| Linux Server x64 | 独立Server tar.gz（Ubuntu22.04/24.04，Python3.11、Node.js20+） |
-| 终端TUI | npm安装的tgz（Node.js22+，连接已有Engine服务） |
+| Linux Server x64 | 独立 Server tar.gz（Ubuntu22.04/24.04，手工服务路径，Python3.11、Node.js20+） |
+| 终端 Core Base / TUI | npm 公共包 `@v8-agent-os/v8-agent-os`（Node.js22+，自动安装 Linux x64 便携 Engine） |
 
-可下载文件以该次Release资产列表为准，正在构建的Actions任务不等于已发布安装包。Server/TUI从9.17.1发布流程开始提供，TUI尚未上架公开npm registry。iOS仍未公开发行。Android远程执行器为默认关闭的实验功能；ESP32提供源码，尚无硬件实测。
+可下载文件以该次Release资产列表为准，正在构建的Actions任务不等于已发布安装包。npm Core Base 当前只支持 Linux x64；Windows、macOS、Linux ARM64 和完整桌面流程仍使用各自发行物。iOS仍未公开发行。Android远程执行器为默认关闭的实验功能；ESP32提供源码，尚无硬件实测。
 
-无图形Linux请先按 [Server安装说明](../scripts/server/README.md) 安装、初始化凭据并启动常驻服务，再运行 `npm install -g ./V8OS-TUI-2026.09.17.1.tgz` 与 `v8os-tui`。TUI用于对话和配置，关闭终端不会停止服务。Phone「连接」页可管理已信任设备的模型策略/角色分发，详见 [配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md#7-向已授权从设备分发配置)。
+无图形 Linux 推荐直接运行 `npm install -g @v8-agent-os/v8-agent-os` 后使用 `v8os`。首次启动会校验并安装同一 Release 的 Linux x64 便携 Engine，不需要系统 Python，也不需要重复安装另一套 CLI。离线部署可使用已校验的 `V8OS-TUI-<release-version>.tgz`，并按 TUI README 设置本地 Engine 资产。需要手工管理服务时，再按 [Server安装说明](../scripts/server/README.md) 使用独立 Server 包。TUI用于对话和配置，关闭终端不会停止服务。Phone「连接」页可管理已信任设备的模型策略/角色分发，详见 [配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md#7-向已授权从设备分发配置)。
 
 桌面版仍是 unsigned preview，首次启动可能需要操作系统确认。启动后会自动检查更新，也可从托盘手动检查；下载与安装由用户确认。Linux 凭据存储需要 Secret Service：DEB 声明 GNOME Keyring 依赖，AppImage 需要宿主提供兼容服务。
 

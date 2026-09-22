@@ -1,53 +1,61 @@
 # V8OS TUI / V8OS 终端界面
 
-`@v8-agent-os/v8-agent-os` is the conversation-first terminal client for a
-local V8OS Engine. It is intended for Linux servers, SSH and tmux. The TUI
-does not start Engine, own credentials, or stop the server when the terminal
-closes.
-
-`@v8-agent-os/v8-agent-os` publishes the `v8os-tui` command only. The
-administrative/automation CLI remains the separate `@v8/agent-os-cli` command
-(`v8os`). Keeping these commands separate prevents a global TUI install from
-silently replacing `v8os chat`, `v8os service` or JSON automation commands.
+`@v8-agent-os/v8-agent-os` is the conversation-first Linux server client for a
+local V8OS Engine. It is intended for SSH and tmux. The package publishes the
+unified `v8os` dispatcher and keeps `v8os-tui` as a direct interactive
+compatibility entry. The dispatcher installs the matching portable Engine on
+first use, so users do not need a system Python runtime or a second CLI
+installation.
 
 ## Install / 安装
 
-Requires Node.js 22 or newer. Install the public package:
+Requires Node.js 22 or newer. Install the public package and start the unified
+Core Base:
 
 ```sh
-npm install --global @v8-agent-os/v8-agent-os
-v8os-tui
+npm install -g @v8-agent-os/v8-agent-os
+v8os
 ```
 
 To install a verified release asset instead:
 
 ```sh
-npm install --global ./V8OS-TUI-<release-version>.tgz
-v8os-tui
+npm install -g ./V8OS-TUI-<release-version>.tgz
+v8os
 ```
 
 需要 Node.js 22+。公开 npm 包安装方式：
 
 ```sh
 npm install -g @v8-agent-os/v8-agent-os
-v8os-tui
+v8os
 ```
 
-也可以安装 Release 中的已校验 tarball。`v8os-tui` 只连接已有 Engine，
-不会在 `postinstall` 下载、启动 Engine 或执行特权操作。普通运维和非交互
-命令继续使用 server 包随附的 `v8os` CLI：
+也可以安装 Release 中的已校验 tarball。首次运行 `v8os` 会按 Release
+manifest 下载并校验 Linux x64 便携 Engine；不需要系统 Python，不会再安装
+第二套 CLI，也不会在 `postinstall` 阶段启动服务或执行特权操作。离线或国内
+网络环境可以在运行前设置 `V8OS_ENGINE_ARCHIVE`，或将已验证运行时放到
+`V8OS_ENGINE_RUNTIME_DIR`。
+
+`v8os` 也负责 Engine 控制面和非交互命令：
 
 ```sh
-v8os service start
+v8os start
+v8os status --json
 v8os chat "hello" --json
 v8os sessions list --json
 ```
 
-First install the matching V8OS server package on the host. Extract it, run
-`./install.sh`, initialize the server credentials, and start Engine with
-`v8os service install` / `v8os service start`. TUI settings (F3) then select a
-provider, model and workspace. Phone pairing and Engine identity remain owned
-by Engine; no Admin page is required for local chat.
+The npm portable Core Base currently supports Linux x64 only. Windows, macOS,
+Linux ARM64, and the full desktop flow remain separate release products; do not
+force the Linux x64 Engine archive onto another platform. For a server package
+with a manually managed service, use the matching Server release and its
+`./install.sh`; that is an alternative deployment path, not a second CLI to
+install alongside npm.
+
+The TUI settings (F3) select a provider, model and workspace. Phone pairing and
+Engine identity remain owned by Engine; no Admin page is required for local
+chat.
 
 On a fresh Engine, the TUI opens a non-blocking welcome surface. It shows the
 Engine, local identity, Supervisor model and workspace readiness separately;
@@ -56,8 +64,11 @@ the composer remains available and keeps its draft. Press `F3` or enter
 opens the Phone page, and the background poller does not repeatedly query
 sessions before that identity exists.
 
-先在服务器安装匹配版本的 V8OS server 包，解压后运行 `./install.sh`，再按
-server README 初始化凭据并执行 `v8os service install` / `v8os service start`。
+当前 npm 便携 Core Base 只支持 Linux x64。Windows、macOS、Linux ARM64 和
+完整桌面流程仍是独立发行物；不要把 Linux x64 Engine 资产强行用于其他平台。
+需要手工管理系统服务时，使用匹配版本的 Server Release 和其中的
+`./install.sh`，这是另一条部署路径，不是再安装一套 CLI。
+
 进入 TUI 后按 F3 配置 Provider、模型和工作区。Phone 配对和 Engine 身份仍由
 Engine 管理，本机对话不要求打开 Admin。
 
@@ -92,13 +103,15 @@ Enter 不会单独批准待处理动作，必须在待处理页或操作菜单�
 确认”，不会静默重试。
 
 `--screen-reader` selects the linear, numbered reader surface and works with
-`TERM=dumb`. `--no-color` or `NO_COLOR=1` disables styling. Non-TTY calls belong
-to the server CLI; `v8os-tui --json` only reports the clear `tty_required`
-diagnostic and never waits for hidden input.
+`TERM=dumb`. `--no-color` or `NO_COLOR=1` disables styling. Non-TTY calls use
+the unified `v8os` dispatcher (`v8os chat`, `v8os sessions`, and other Engine
+commands); `v8os-tui --json` only reports the clear `tty_required` diagnostic and
+never waits for hidden input.
 
 `--screen-reader` 使用线性编号输出并兼容 `TERM=dumb`；`--no-color` 或
-`NO_COLOR=1` 禁用颜色。非 TTY 命令应使用 server 包的 `v8os` CLI；
-`v8os-tui --json` 只返回明确的 `tty_required` 诊断，不会隐藏等待输入。
+`NO_COLOR=1` 禁用颜色。非 TTY 命令使用统一的 `v8os` 入口（例如
+`v8os chat`、`v8os sessions`）；`v8os-tui --json` 只返回明确的
+`tty_required` 诊断，不会隐藏等待输入。
 
 `--lang en` 或 `V8OS_LANG=en` 选择英文界面，也可从 Ctrl+P → language 持久化到
 本机 TUI 视图；该设置不会修改 Engine、Provider 或其他客户端。未知的 Engine

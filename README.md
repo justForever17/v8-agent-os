@@ -88,14 +88,14 @@ Use **Connect Phone** in the control-center top bar. Before pairing, configure a
 
 ### Linux Server and terminal UI
 
-The unified release includes a Linux x64 Server archive and a separate TUI package. Server needs Python 3.11 and Node.js 20+; the interactive TUI needs Node.js 22+. Follow the [Server installation guide](./scripts/server/README.md) to install and start the persistent Engine service, then install the TUI from npm:
+The unified release includes a Linux x64 Server archive and a public npm Core Base package. The npm route needs Node.js 22+ and automatically installs the matching portable Linux x64 Engine on first use; it does not need system Python or a second CLI installation. The alternative Server archive is manually managed and needs Python 3.11 and Node.js 20+; follow the [Server installation guide](./scripts/server/README.md) for that route.
 
 ```sh
 npm install -g @v8-agent-os/v8-agent-os
-v8os-tui
+v8os
 ```
 
-You can also install the matching `V8OS-TUI-<release-version>.tgz` asset with npm. The TUI provides `v8os-tui`; the server's `v8os` command remains available for service management and scripts. Closing TUI leaves Engine, Phone and trusted peer connections running. Server excludes desktop automation and installs media, voice, document and vector capabilities only when requested.
+You can also install the matching `V8OS-TUI-<release-version>.tgz` asset with npm. `v8os` is the unified Engine control and terminal entry; `v8os-tui` remains a direct interactive compatibility entry. The portable npm Core Base currently supports Linux x64 only. Windows, macOS, Linux ARM64, and the full desktop flow remain separate release products. Closing TUI leaves Engine, Phone and trusted peer connections running. Server excludes desktop automation and installs media, voice, document and vector capabilities only when requested.
 
 ## Current Status
 

@@ -8,6 +8,7 @@ const exact: Record<string, string> = {
   '输入消息，或按 / 查看操作。': 'Type a message, or press / for commands.',
   'V8OS · 开始对话': 'V8OS · Start a conversation', '小窗口模式': 'Compact terminal mode',
   '先按 F3 连接模型并选择工作区。': 'Press F3 to connect a model and choose a workspace.',
+  '首次运行 v8os 自动准备 Engine；v8os start 仅启动后台服务。F3 配置模型与工作区。': 'Run v8os to prepare Engine automatically; v8os start starts only the daemon. F3 configures models and workspace.',
   '会话概览 · Ctrl+B选择': 'Sessions · Ctrl+B to select', '任务概览 · Ctrl+T详情': 'Task · Ctrl+T for details',
   '连接': 'Connections', '返回': 'Back', '返回对话': 'Back to chat', '刷新': 'Refresh',
   '模型 / Provider / 预算': 'Models / providers / budgets', '工作区与信任': 'Workspace and trust',
@@ -42,6 +43,7 @@ const exact: Record<string, string> = {
 };
 
 const prefixes: Array<[string, string]> = [
+  ['Engine 未连接。运行 v8os start 启动；首次安装见 F1 帮助。', 'Engine is disconnected. Run v8os start; see F1 for first-run help. '],
   ['搜索：', 'Search: '], ['匹配 ', 'Matches '], ['已暂停跟随', 'Follow paused'], ['已连接', 'Connected'],
   ['连接中', 'Connecting'], ['未连接', 'Disconnected'], ['未选择工作区', 'No workspace selected'],
   ['工作区：', 'Workspace: '], ['状态：', 'Status: '], ['当前选择：', 'Current selection: '],

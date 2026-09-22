@@ -73,7 +73,7 @@ import {
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 import { commandResultsHaveFailures, main as runCli } from "../src/cli.mjs";
 import { renderStartResults, renderStatus } from "../src/render.mjs";
-import { shellDesktopPetAvailability } from "../src/shell_api.mjs";
+import { desktopPetAvailability as shellDesktopPetAvailability } from "../src/core_control.mjs";
 
 const {
   desktopPetAvailability,
@@ -423,7 +423,7 @@ test("process record CAS identity requires both PID and launchId", () => {
 });
 
 test("Shell exit uses exact process-state CAS instead of re-entering its component lease", () => {
-  const source = fs.readFileSync(path.join(cliRoot, "src", "shell_api.mjs"), "utf8");
+  const source = fs.readFileSync(path.join(cliRoot, "src", "core_control.mjs"), "utf8");
 
   assert.match(source, /compareAndSwapProcessRecord\("shell", expectedIdentity, null\)/);
   assert.doesNotMatch(source, /removeManagedComponentProcessRecord/);
@@ -441,7 +441,7 @@ test("Shell self-removal completes while an external stopper owns shell.lease", 
     processes: { shell: expectedIdentity },
   }, null, 2)}\n`, "utf8");
   const processStateUrl = new URL("../src/process_state.mjs", import.meta.url).href;
-  const shellApiUrl = new URL("../src/shell_api.mjs", import.meta.url).href;
+  const shellApiUrl = new URL("../src/core_control.mjs", import.meta.url).href;
   const script = [
     `const stateApi = await import(${JSON.stringify(processStateUrl)});`,
     `const shellApi = await import(${JSON.stringify(shellApiUrl)});`,

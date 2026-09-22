@@ -24,7 +24,7 @@ export async function localAssets(directory) {
     const match = /^([a-f0-9]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(line);
     if (!match || match[2] === 'SHA256SUMS.txt' || seen.has(match[2])) throw new Error('Invalid or duplicate checksum entry');
     const [, sha256, name] = match;
-    if (!/^(V8-Agent-OS-|V8OS-Phone-|V8OS-Server-|V8OS-TUI-)/.test(name)) throw new Error(`Unexpected public asset: ${name}`);
+    if (!/^(V8-Agent-OS-|V8OS-Phone-|V8OS-Server-|V8OS-Engine-|V8OS-TUI-)/.test(name)) throw new Error(`Unexpected public asset: ${name}`);
     seen.add(name);
     assets.push({ name, sha256 });
   }

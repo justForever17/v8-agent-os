@@ -6,9 +6,57 @@ import test from "node:test";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
-import { createServerServiceManager, inspectServerBundle, renderServerServiceUnit, SERVER_SERVICE_NAME } from "../src/server_service.mjs";
+import { createServerServiceManager, discoverServerServiceReceipt, inspectServerBundle, renderServerServiceUnit, SERVER_SERVICE_NAME } from "../src/server_service.mjs";
 
 const PYTHON = process.env.V8_SERVER_TEST_PYTHON || (process.platform === "win32" ? "python" : "python3");
+
+test("portable Engine service uses its bundled Python for install, schema admission and readiness", async t => {
+  const f = fixture(t);
+  const engineDir = path.join(f.first, "apps/v8-agent-os-engine");
+  fs.renameSync(path.join(engineDir, ".venv"), path.join(engineDir, ".python"));
+  fs.writeFileSync(path.join(f.first, "engine-manifest.json"), JSON.stringify({ schema: 1, profile: "engine", target: `linux-${process.arch}`,
+    version: "2026.09.16.3", engineDir: "apps/v8-agent-os-engine", python: "apps/v8-agent-os-engine/.python/bin/python3", cli: "apps/v8-agent-os-cli/bin/v8os.mjs" }));
+  const bundle = inspectServerBundle(f.first);
+  assert.equal(bundle.runtimeDirectory, ".python");
+  f.setHealth({ status: "ok", service: "v8-agent-os-engine", startupProfile: "server", engineRuntime: {
+    managedRuntimeRoot: path.join(engineDir, ".python"), reload: false,
+  } });
+  const result = await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  assert.equal(result.status, "installed");
+  const unit = fs.readFileSync(f.manager.unitPath, "utf8");
+  assert.ok(unit.includes(path.join(engineDir, ".python", "bin", "python3").replaceAll("\\", "\\\\")));
+  assert.equal(unit.includes(".venv"), false);
+  assert.ok(f.calls.some(call => call[0] === bundle.python && call.includes("-I")));
+  assert.equal((await f.manager.perform("restart")).status, "restarted");
+});
+
+test("service discovery returns only matching state and never exposes credential locations", async t => {
+  const f = fixture(t);
+  await f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile });
+  const options = { platform: "linux", stateRoot: f.stateRoot, configHome: f.configHome };
+  assert.deepEqual(discoverServerServiceReceipt(options), {
+    bundleRoot: f.first, version: "2026.09.16.3", port: 9530, stateRoot: f.stateRoot, phase: "ready",
+  });
+  assert.equal(discoverServerServiceReceipt({ ...options, stateRoot: path.join(f.root, "another-state") }), null);
+  assert.equal(discoverServerServiceReceipt({ ...options, platform: "win32" }), null);
+});
+
+test("service installation rejects a port different from its configured client endpoint before start", async t => {
+  const f = fixture(t);
+  await assert.rejects(f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile, port: 19530 }), /Service port must match/u);
+  assert.equal(f.calls.some(call => call[4] === SERVER_SERVICE_NAME && call[3] === "start"), false);
+  assert.equal(fs.existsSync(f.manager.receiptPath), false);
+});
+
+test("install over a running daemon gives a stop-and-retry path without writing or stopping services", async t => {
+  const f = fixture(t);
+  f.setPortOccupied(true);
+  await assert.rejects(f.manager.perform("install", { bundleRoot: f.first, keyFile: f.keyFile }), error =>
+    error.code === "server_port_in_use" && /v8os stop.*v8os service install/u.test(error.message));
+  assert.equal(f.calls.some(call => ["start", "stop", "restart", "enable", "daemon-reload"].includes(call[3])), false);
+  assert.equal(fs.existsSync(f.manager.receiptPath), false);
+  assert.equal(fs.existsSync(f.manager.unitPath), false);
+});
 
 function sqliteFixture(stateRoot, script) {
   const result = spawnSync(PYTHON, ["-I", "-c", `import sqlite3,sys\nconn=sqlite3.connect(sys.argv[1])\n${script}\nconn.commit()\nconn.close()`, path.join(stateRoot, "state.db")], { encoding: "utf8" });
@@ -49,6 +97,7 @@ function fixture(t) {
   let failure = null;
   let healthOverride;
   let ownSocket = true;
+  let portOccupied = false;
   let onStart;
   let tick = 0;
   const activeBundle = () => {
@@ -58,6 +107,7 @@ function fixture(t) {
   };
   const manager = createServerServiceManager({ configHome, stateRoot, platform: "linux", uid: process.getuid?.() || 1000,
     timeoutMs: 1000, now: () => tick, pause: async (ms) => { tick += ms; }, ownsPort: async () => ownSocket,
+    probePort: async () => portOccupied,
     fetchHealth: async () => healthOverride !== undefined ? healthOverride : ({ status: "ok", service: "v8-agent-os-engine", startupProfile: "server",
       engineRuntime: { managedRuntimeRoot: path.join(activeBundle(), "apps/v8-agent-os-engine/.venv"), reload: false } }),
     run: async (command, args) => {
@@ -90,6 +140,7 @@ function fixture(t) {
   return { root, stateRoot, configHome, keyFile, first, second, bundle, calls, manager, activeBundle,
     setLinger: (value) => { linger = value; }, setFailure: (value) => { failure = value; },
     setHealth: (value) => { healthOverride = value; }, setOwnSocket: (value) => { ownSocket = value; },
+    setPortOccupied: (value) => { portOccupied = value; },
     setOnStart: (value) => { onStart = value; },
     updateState: (value) => { state = { ...state, ...value }; }, state: () => state };
 }

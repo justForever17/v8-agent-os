@@ -335,7 +335,7 @@ jobs:
           test -f release-assets/SHA256SUMS.txt
           while IFS= read -r asset; do
             case "$asset" in
-              V8-Agent-OS-*|V8OS-Phone-*|V8OS-Server-*|V8OS-TUI-*.tgz|SHA256SUMS.txt) ;;
+              V8-Agent-OS-*|V8OS-Phone-*|V8OS-Server-*|V8OS-Engine-*|V8OS-TUI-*.tgz|SHA256SUMS.txt) ;;
               *) echo "Unexpected public release asset: $asset" >&2; exit 1 ;;
             esac
           done < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
@@ -383,9 +383,22 @@ jobs:
             echo "::error::Expected exactly one verified TUI package archive for npm publication"
             exit 1
           fi
+          engine_archives=(./release-assets/V8OS-Engine-*.tar.gz)
+          engine_manifests=(./release-assets/V8OS-Engine-*.json)
+          if [[ ${#engine_archives[@]} != 1 || ! -f "${engine_archives[0]}" || ${#engine_manifests[@]} != 1 || ! -f "${engine_manifests[0]}" ]]; then
+            echo "::error::Refusing npm publication without exactly one verified portable Engine archive and manifest"
+            exit 1
+          fi
           tarball="${archives[0]}"
+          engine_archive="${engine_archives[0]}"
+          engine_manifest="${engine_manifests[0]}"
           pkg_name=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).name);")
           pkg_ver=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).version);")
+          node --input-type=module - "$engine_archive" "$engine_manifest" "${{ needs.plan.outputs.version }}" "$GITHUB_SHA" <<'NODE'
+          import { verifyEngineReleaseAssets } from './scripts/release/prepare-unified-release-assets.mjs';
+          const [archive, manifest, version, sourceCommit] = process.argv.slice(2);
+          verifyEngineReleaseAssets({ archive, manifest, version, target: 'linux-x64', sourceCommit });
+          NODE
           echo "Verifying $pkg_name@$pkg_ver against npm registry..."
 
           published=$(npm view "$pkg_name@$pkg_ver" version 2>/dev/null || true)

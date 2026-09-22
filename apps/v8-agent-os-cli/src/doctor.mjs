@@ -9,10 +9,11 @@ import {
   DESKTOP_PET_DIR,
   ENGINE_DIR,
   MCP_CONFIG_PATH,
+  REPO_ROOT,
   STATE_ROOT,
   WEB_DIR,
 } from "./paths.mjs";
-import { fetchJson } from "./http.mjs";
+import { engineResponse, engineTargetOrigin } from "./engine_client.mjs";
 import { getPortOwners, isPortOpen } from "./ports.mjs";
 import { readJsonFile } from "./json_file.mjs";
 
@@ -173,10 +174,38 @@ function checkElectronInstall(id, label, appDir) {
   };
 }
 
-export async function runDoctor({ preferEngine = true } = {}) {
-  if (preferEngine) {
+export function checkServerBrowser({ engineDir = ENGINE_DIR, platform = process.platform, run = spawnSync } = {}) {
+  const python = path.join(engineDir, ".python", "bin", "python3");
+  const sourcePython = path.join(engineDir, ".venv", "bin", "python3");
+  const executable = fs.existsSync(python) ? python : sourcePython;
+  const result = { id: "engine_browser_libraries", status: "warning",
+    summary: "尚未确认无头浏览器运行条件", scope: "browser_only" };
+  if (platform !== "linux") return { ...result, summary: "服务器浏览器诊断仅支持 Linux" };
+  if (!fs.existsSync(executable)) return { ...result, summary: "Engine Python 缺失，无法检查浏览器" };
+  const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: path.join(engineDir, ".playwright-browsers"), PYTHONIOENCODING: "utf-8" };
+  const probe = run(executable, ["-c", "from playwright.sync_api import sync_playwright\nwith sync_playwright() as p: print(p.chromium.executable_path)"],
+    { env, encoding: "utf8", timeout: 5000, windowsHide: true });
+  const browser = String(probe.stdout || "").trim().split(/\r?\n/u).pop();
+  if (probe.status !== 0 || !browser || !fs.existsSync(browser)) {
+    return { ...result, summary: "包内 Chromium 或 Playwright 驱动不可用；请修复当前 Engine 安装包" };
+  }
+  const libraries = run("ldd", [browser], { encoding: "utf8", timeout: 5000, windowsHide: true });
+  const missing = [...new Set([...String(libraries.stdout || "").matchAll(/^\s*(\S+)\s+=>\s+not found\s*$/gmu)].map(match => match[1]))];
+  if (missing.length) {
+    const quotedPython = `'${executable.replaceAll("'", "'\\''")}'`;
+    return { ...result, summary: `浏览器缺少系统库: ${missing.join(", ")}。聊天可用；浏览器任务需管理员安装系统依赖。`,
+      missingLibraries: missing, repairCommand: `${quotedPython} -m playwright install-deps chromium` };
+  }
+  if (libraries.status !== 0) return { ...result, summary: "无法读取 Chromium 系统库依赖；请确认 ldd 可用" };
+  return { ...result, status: "ok", summary: "包内 Chromium 与系统动态库可用（未启动浏览器）", path: browser };
+}
+
+export async function runDoctor({ preferEngine = true, profile } = {}) {
+  const server = (profile || process.env.ENGINE_INSTALL_PROFILE) === "server"
+    || readJsonFile(path.join(REPO_ROOT, "engine-manifest.json"), {})?.profile === "engine";
+  if (preferEngine && !server) {
     try {
-      const response = await fetchJson(`http://127.0.0.1:${DEFAULT_PORTS.engine}/v1/system/doctor`, { timeoutMs: 3500 });
+      const response = await engineResponse("/v1/system/doctor", { timeoutMs: 3500 });
       if (response.ok && response.data) {
         return { source: "engine", ...response.data };
       }
@@ -190,12 +219,15 @@ export async function runDoctor({ preferEngine = true } = {}) {
   checks.push(checkJsonFile(CONFIG_PATH, "config.json"));
   checks.push(checkJsonFile(MCP_CONFIG_PATH, "mcp.json"));
   checks.push(checkPathExists("engine_dir", "Engine 源码目录", ENGINE_DIR));
-  checks.push(checkPathExists("admin_dir", "Admin 源码目录", ADMIN_DIR));
-  checks.push(checkPathExists("web_dir", "Web 源码目录", WEB_DIR));
-  checks.push(checkPathExists("desktop_pet_dir", "桌宠源码目录", DESKTOP_PET_DIR, "warning"));
-  checks.push(checkPathExists("cybercore_dir", "CyberCore 源码目录", CYBERCORE_DIR, "warning"));
+  if (!server) {
+    checks.push(checkPathExists("admin_dir", "Admin 源码目录", ADMIN_DIR));
+    checks.push(checkPathExists("web_dir", "Web 源码目录", WEB_DIR));
+    checks.push(checkPathExists("desktop_pet_dir", "桌宠源码目录", DESKTOP_PET_DIR, "warning"));
+    checks.push(checkPathExists("cybercore_dir", "CyberCore 源码目录", CYBERCORE_DIR, "warning"));
+  }
 
-  for (const [id, port] of Object.entries(DEFAULT_PORTS)) {
+  const enginePort = Number(new URL(engineTargetOrigin()).port || 80);
+  for (const [id, port] of Object.entries(server ? { engine: enginePort } : { ...DEFAULT_PORTS, engine: enginePort })) {
     const open = await isPortOpen(port);
     checks.push({
       id: `${id}_port`,
@@ -225,12 +257,15 @@ export async function runDoctor({ preferEngine = true } = {}) {
     : commandVersion(process.platform === "win32" ? "python" : "python3", ["--version"]);
   checks.push({ id: "python", status: python.ok ? "ok" : "warning", summary: `Python ${python.value || "不可用"}` });
   checks.push(checkEngineVenv());
-  checks.push(checkNodeAppDependencies("admin_dependencies", "Admin", ADMIN_DIR, ["node_modules/next/dist/bin/next"]));
-  checks.push(checkNodeAppDependencies("web_dependencies", "Web", WEB_DIR, ["node_modules/next/dist/bin/next"]));
-  checks.push(checkNodeAppDependencies("desktop_pet_dependencies", "桌宠", DESKTOP_PET_DIR));
-  checks.push(checkElectronInstall("desktop_pet_electron", "桌宠", DESKTOP_PET_DIR));
-  checks.push(checkNodeAppDependencies("cybercore_dependencies", "CyberCore", CYBERCORE_DIR));
-  checks.push(checkAdminAuthSecret());
+  if (server) checks.push(checkServerBrowser());
+  else {
+    checks.push(checkNodeAppDependencies("admin_dependencies", "Admin", ADMIN_DIR, ["node_modules/next/dist/bin/next"]));
+    checks.push(checkNodeAppDependencies("web_dependencies", "Web", WEB_DIR, ["node_modules/next/dist/bin/next"]));
+    checks.push(checkNodeAppDependencies("desktop_pet_dependencies", "桌宠", DESKTOP_PET_DIR));
+    checks.push(checkElectronInstall("desktop_pet_electron", "桌宠", DESKTOP_PET_DIR));
+    checks.push(checkNodeAppDependencies("cybercore_dependencies", "CyberCore", CYBERCORE_DIR));
+    checks.push(checkAdminAuthSecret());
+  }
   checks.push(checkModelRoles());
   checks.push(checkPhoneConnectionManifest());
 
@@ -244,6 +279,7 @@ export async function runDoctor({ preferEngine = true } = {}) {
   }
   return {
     source: "local_fallback",
+    profile: server ? "server" : "desktop",
     summary: { ok, warning, failed, total: checks.length },
     checks,
     repairPlan: buildLocalRepairPlan(checks),
@@ -273,6 +309,10 @@ export function buildLocalRepairPlan(checks) {
     }
     if (check.id?.endsWith("_electron") && check.status !== "ok") {
       actions.push({ id: `repair_${check.id}`, title: `修复 ${check.id.replace("_electron", "")} Electron 安装`, safe: false, path: check.path });
+    }
+    if (check.id === "engine_browser_libraries" && check.status !== "ok" && check.repairCommand) {
+      actions.push({ id: "install_browser_system_libraries", title: "为浏览器安装系统库（需管理员；诊断不会执行）",
+        safe: false, command: check.repairCommand });
     }
   }
   return { actions };

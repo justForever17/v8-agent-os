@@ -338,7 +338,10 @@ function optionalProductNotes(release) {
   if (release.products?.server?.enabled) {
     result.names.push("Server");
     for (const [target, value] of Object.entries(release.products.server.targets)) {
-      if (value.enabled) result.assets.push(`- \`V8OS-Server-${release.version}-${target}.tar.gz\`：无图形 Linux Server，独立 Engine 与 CLI。`);
+      if (value.enabled) {
+        result.assets.push(`- \`V8OS-Server-${release.version}-${target}.tar.gz\`：无图形 Linux Server 源分发包。`);
+        if (value.standalone?.enabled) result.assets.push(`- \`V8OS-Engine-${release.version}-${target}.tar.gz\` 与对应 \`.json\`：npm CLI 首次启动按 SHA-256 校验下载的便携 Engine 运行时。`);
+      }
     }
     result.installation.push("Server：在无图形 Ubuntu 22.04/24.04 glibc x64 上准备 Python 3.11、Node.js 20+ 与 Chromium 系统库，以普通用户解压到独立版本目录并运行 ./install.sh；安装过程联网下载依赖与 Chromium，不是离线包。配置凭据后使用 ./v8os service install，退出终端后 Engine、Phone 与受信组网服务继续运行。",
       "Server 升级请使用新包 CLI。会话修订使用数据库 schema 4，旧 schema 3 Engine 不能直接回读；不兼容回滚会阻断并保留新数据，故障时可重试当前版本或升级兼容修复包。服务回滚不会覆盖数据库或撤销数据迁移。");
@@ -346,7 +349,7 @@ function optionalProductNotes(release) {
   if (release.products?.tui?.enabled && release.products.tui.targets.npm.enabled) {
     result.names.push("TUI");
     result.assets.push(`- \`V8OS-TUI-${release.version}.tgz\`：可使用 npm 安装的独立终端客户端。`);
-    result.installation.push(`TUI：使用 Node.js 22+ 执行 \`npm install -g @v8-agent-os/v8-agent-os\`（或安装 \`V8OS-TUI-${release.version}.tgz\`），然后运行 \`v8os-tui\` 连接本机 Engine；该包不下载或启动 Engine。普通 v8os CLI 仍由 server 包提供并支持 Node.js 20。`);
+    result.installation.push(`终端版：使用 Node.js 22+ 执行 \`npm install -g @v8-agent-os/v8-agent-os\`（或安装 \`V8OS-TUI-${release.version}.tgz\`），然后运行唯一入口 \`v8os\`；首次启动会从同一 Release 下载并校验便携 Engine，\`v8os-tui\` 仅作为兼容的纯界面入口保留。离线部署可设置 \`V8OS_ENGINE_ARCHIVE\` 或 \`V8OS_ENGINE_RUNTIME_DIR\`。`);
   }
   return result;
 }

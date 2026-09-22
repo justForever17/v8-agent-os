@@ -123,7 +123,7 @@ export class Client {
       await this.listSessions();
       if (this.view.sessionId) await this.attach(this.view.sessionId);
       else this.notice = '新建对话 · F3 配置模型与工作区 · Ctrl+P 查看操作';
-    } catch (e: any) { if (e.staleView || initialization !== this.initialization) return; this.connection = '未连接'; this.notice = 'Engine 未连接。已有安装：v8os service start；首次安装见 F1 帮助。' + e.message; }
+    } catch (e: any) { if (e.staleView || initialization !== this.initialization) return; this.connection = '未连接'; this.notice = 'Engine 未连接。运行 v8os start 启动；首次安装见 F1 帮助。' + e.message; }
     this.changed();
   }
   async refreshModelReadiness() {

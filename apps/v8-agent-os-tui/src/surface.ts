@@ -108,6 +108,76 @@ export class Surface {
     });
   }
   changed() { this.onChange(); }
+  /**
+   * Keep first-run guidance in the transcript area so the composer remains
+   * usable.  Qwen/Claude both make the first screen a product surface rather
+   * than a blocking modal; actions are available through /setup and F3.
+   */
+  welcomeLines(locale: Locale = this.client.view.locale || 'zh-CN'): string[] {
+    const en = locale === 'en-US';
+    const status = (ready: boolean, zhReady: string, zhPending: string, enReady: string, enPending: string) => `${ready ? '●' : '○'} ${en ? (ready ? enReady : enPending) : (ready ? zhReady : zhPending)}`;
+    const engineReady = this.client.connection === '已连接';
+    const ownerReady = this.client.ownerReady;
+    const workspaceReady = Boolean(this.client.workspace);
+    const modelReady = Boolean(this.client.modelReady || this.client.snapshot?.modelReady);
+    if (en) return [
+      'V8 Agent OS',
+      'A conversation-first terminal for your local Engine.',
+      '',
+      status(engineReady, 'Engine 已连接', 'Engine 未连接', 'Engine connected', 'Engine unavailable'),
+      status(ownerReady, '本机身份已初始化', '本机身份待初始化', 'Local identity initialized', 'Local identity needs setup'),
+      status(modelReady, 'Supervisor 模型已就绪', 'Supervisor 模型待配置', 'Supervisor model ready', 'Supervisor model needs setup'),
+      status(workspaceReady, `工作区：${this.client.workspace || '未选择'}`, '工作区待选择', `Workspace: ${this.client.workspace || 'not selected'}`, 'Workspace needs setup'),
+      '',
+      ownerReady && workspaceReady && modelReady ? '输入消息并按 Enter 开始；按 / 查看操作。' : '按 F3 或输入 /setup 完成快速配置，草稿会保留。',
+      'F3 快速配置 · F4 连接 Phone / Peer · F1 帮助 · Ctrl+D 退出',
+    ];
+    return [
+      'V8 Agent OS',
+      '对话优先的本机终端，直接连接你的 V8OS Engine。',
+      '',
+      status(engineReady, 'Engine 已连接', 'Engine 未连接', 'Engine connected', 'Engine unavailable'),
+      status(ownerReady, '本机身份已初始化', '本机身份待初始化', 'Local identity initialized', 'Local identity needs setup'),
+      status(modelReady, 'Supervisor 模型已就绪', 'Supervisor 模型待配置', 'Supervisor model ready', 'Supervisor model needs setup'),
+      status(workspaceReady, `工作区：${this.client.workspace || '未选择'}`, '工作区待选择', `Workspace: ${this.client.workspace || 'not selected'}`, 'Workspace needs setup'),
+      '',
+      ownerReady && workspaceReady && modelReady ? '输入消息并按 Enter 开始；按 / 查看操作。' : '按 F3 或输入 /setup 完成快速配置，草稿会保留。',
+      'F3 快速配置 · F4 连接 Phone / Peer · F1 帮助 · Ctrl+D 退出',
+    ];
+  }
+
+  async setup() {
+    const owner = await this.client.api('/v1/client-identity/owner').catch(() => ({}));
+    const ownerReady = Boolean(owner.initialized && (owner.user?.sessionIdentifier || this.client.ownerReady));
+    const workspaceReady = Boolean(this.client.workspace);
+    let modelReady = false;
+    let modelDetail = '尚未读取模型状态';
+    try {
+      const controlPlane = await this.client.api('/v1/models/control-plane');
+      const models = Array.isArray(controlPlane?.models) ? controlPlane.models : [];
+      modelReady = models.some((model: any) => model?.eligibility?.eligible !== false && (model?.modelId || model?.model_id || model?.modelRef));
+      modelDetail = modelReady ? `可用模型：${models.length} 个` : '尚未绑定可用模型';
+    } catch (error: any) { modelDetail = `模型状态暂不可读：${error?.message || '请稍后重试'}`; }
+    this.client.modelReady = modelReady;
+    this.open('快速开始 / Quick setup', [
+      '按顺序完成本机身份、模型和工作区；每一步都由 Engine 保存并回读。',
+      `Engine：${this.client.connection}`, `本机身份：${ownerReady ? '已就绪' : '待初始化'}`,
+      `模型：${modelDetail}`, `工作区：${workspaceReady ? this.client.workspace : '未选择'}`,
+      '', '首屏输入框始终保留，Esc 返回不会清除草稿。',
+    ], [
+      { label: ownerReady ? `本机身份已就绪（${this.client.ownerName}）` : '初始化本机 owner', disabled: ownerReady, run: async () => {
+        await this.client.api('/v1/client-identity/bootstrap', { method: 'POST', body: { login: 'owner', name: 'Owner' } });
+        await this.client.initialize(); await this.setup();
+      } },
+      { label: '连接 Provider / Supervisor 模型', run: () => this.models() },
+      { label: workspaceReady ? `工作区已选择：${this.client.workspace}` : '选择并信任工作区', run: () => this.form('选择工作区', [{ key: 'path', label: '已有目录的绝对路径', value: this.client.view.workspace }], async v => {
+        await this.client.trustWorkspace(v.path); await this.setup();
+      }, ['只登记已有目录；Engine 会校验并回读 trusted 状态。']) },
+      { label: '连接 Phone / Peer（可选）', run: () => this.connections() },
+      { label: '高级设置', run: () => this.settings() },
+      { label: '返回聊天', run: () => this.close(true) },
+    ]);
+  }
   private updateBusy() { this.busy = [...this.pendingOperations.values()].some(operation => operation.mutable || operation.navigation === this.navigation); }
   private checkPage() {
     if (this.operation.getStore() !== undefined && this.operation.getStore() !== this.navigation) throw Object.assign(new Error('已离开此页面，旧响应不再更新界面。'), { stalePage: true });
@@ -774,7 +844,7 @@ export class Surface {
       'V8OS · 对话优先的本机终端', '对话中 Ctrl+P 或空输入 /：命令候选；↑↓ 选择、Tab 补全、Enter 执行、Esc 返回原草稿。',
       '候选中再次 Ctrl+P 打开完整操作菜单；页面内 Ctrl+P 仍打开完整菜单。',
       'Enter 发送；F8 多行开关；F9 发送；Alt+Enter 换行。',
-      'Ctrl+B 会话；Ctrl+T 任务；Ctrl+N 新会话；F2 待处理；F3 设置；F4 连接。',
+      'Ctrl+B 会话；Ctrl+T 任务；Ctrl+N 新会话；F2 待处理；F3 快速配置/设置；F4 连接。',
       'PageUp 暂停跟随 / 读历史；PageDown 向下；菜单“回到底部”恢复。',
       'Ctrl+C 关闭页面或清空输入；Ctrl+X 使用外部编辑器；Ctrl+U/K/W 删除行首/行尾/前一个词；Ctrl+Z 撤销清空；Ctrl+D 空输入退出。',
       '退出终端不停止 Engine / Phone / Peer；停止任务须选菜单“停止当前任务”。',
@@ -790,6 +860,7 @@ export class Surface {
   }
   commands(): Action[] { return [
     { label: '发送', run: () => this.submit() }, { command: 'multiline', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
+    { command: 'setup', description: '首次配置本机身份、模型与工作区', label: '快速配置 / Setup', navigation: true, run: () => this.setup() },
     { command: 'sessions', description: '搜索并恢复已有会话', label: '会话列表', navigation: true, run: () => this.sessions() }, { command: 'new', description: '保留当前草稿，进入新会话', label: '新建会话', run: () => this.newSession() },
     { command: 'task', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() }, { command: 'inbox', description: '查看审批与待回答问题', label: '待处理', navigation: true, run: () => this.inbox() },
     { command: 'attach', description: '管理附件和生成产物', label: '附件 / 产物', navigation: true, run: () => this.attachments() }, { command: 'settings', description: '模型、工作区与预算配置', label: '设置', navigation: true, run: () => this.settings() },
@@ -858,7 +929,7 @@ export class Surface {
       this.changed(); return;
     }
     if (key === 'f2') await this.inbox();
-    else if (key === 'f3') await this.settings();
+    else if (key === 'f3') await (this.client.ownerReady && this.client.workspace ? this.settings() : this.setup());
     else if (key === 'f4') await this.connections();
     else if (key === 'ctrl-b') await this.sessions();
     else if (key === 'ctrl-t') await this.details();

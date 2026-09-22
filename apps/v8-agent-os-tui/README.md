@@ -49,10 +49,22 @@ First install the matching V8OS server package on the host. Extract it, run
 provider, model and workspace. Phone pairing and Engine identity remain owned
 by Engine; no Admin page is required for local chat.
 
+On a fresh Engine, the TUI opens a non-blocking welcome surface. It shows the
+Engine, local identity, Supervisor model and workspace readiness separately;
+the composer remains available and keeps its draft. Press `F3` or enter
+`/setup` for the step-by-step page. Initializing the local owner no longer
+opens the Phone page, and the background poller does not repeatedly query
+sessions before that identity exists.
+
 先在服务器安装匹配版本的 V8OS server 包，解压后运行 `./install.sh`，再按
 server README 初始化凭据并执行 `v8os service install` / `v8os service start`。
 进入 TUI 后按 F3 配置 Provider、模型和工作区。Phone 配对和 Engine 身份仍由
 Engine 管理，本机对话不要求打开 Admin。
+
+首次连接尚未初始化 owner 时，TUI 会在聊天首屏分别展示 Engine、本机身份、
+Supervisor 模型和工作区状态；输入框仍可使用，草稿不会因为打开配置而丢失。
+按 `F3` 或输入 `/setup` 进入快速配置页。初始化本机 owner 不再跳转到 Phone
+页面，后台轮询也不会在 owner 存在前反复请求会话列表。
 
 ## Controls / 操作
 
@@ -62,7 +74,7 @@ Engine 管理，本机对话不要求打开 Admin。
 | F8 / Alt+Enter | Toggle or insert multiline mode | F8 / Alt+Enter | 切换或插入多行 |
 | Ctrl+P or `/` at empty input | Search commands | Ctrl+P 或空输入 `/` | 搜索操作 |
 | Ctrl+B / Ctrl+T / Ctrl+N | Sessions / task details / new session | Ctrl+B / Ctrl+T / Ctrl+N | 会话 / 任务详情 / 新会话 |
-| F2 / F3 / F4 / F1 | Inbox / settings / connections / help | F2 / F3 / F4 / F1 | 待处理 / 设置 / 连接 / 帮助 |
+| F2 / F3 / F4 / F1 | Inbox / quick setup or settings / connections / help | F2 / F3 / F4 / F1 | 待处理 / 快速配置或设置 / 连接 / 帮助 |
 | PageUp / PageDown | Pause or resume transcript follow | PageUp / PageDown | 暂停或恢复消息跟随 |
 | Tab / arrows / Esc | Move focus, select, return | Tab / 方向键 / Esc | 切换焦点、选择、返回 |
 | Ctrl+C / Ctrl+Z | Close page or clear / undo draft | Ctrl+C / Ctrl+Z | 关闭页面或清空 / 撤销草稿 |

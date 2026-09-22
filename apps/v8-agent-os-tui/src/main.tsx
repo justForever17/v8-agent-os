@@ -66,7 +66,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
       if (viewport.anchor) client.view.scroll[client.view.sessionId] = { ...viewport.anchor, following: viewport.following };
     }
     body = viewport.rows.map(row => row.text);
-    if (!body.length) body = [size.small ? '小窗口模式' : 'V8OS · 开始对话', '', client.workspace ? `工作区：${client.workspace}` : '先按 F3 连接模型并选择工作区。', '输入消息，或按 / 查看操作。'];
+    if (!body.length) body = size.small ? ['小窗口模式', '', ...surface.welcomeLines(locale).slice(0, 4), 'F3 快速配置 · /setup 打开配置页'] : surface.welcomeLines(locale);
   }
   const label = `${client.instance.name || 'V8OS'} · ${client.connection}${client.inbox.length ? ` · 待处理 ${client.inbox.length}` : ''} · ${client.workspace || '未选择工作区'}`;
   surface.unread = pausedUpdates.update(client.messages, surface.following);
@@ -206,7 +206,6 @@ export async function start(args: string[]) {
     await client.initialize();
     if (requestedLocale && client.view.locale !== requestedLocale) { client.view.locale = requestedLocale; client.save(true); client.changed(); }
     if (requestedSession && client.instance.instanceId) await client.attach(requestedSession);
-    if (client.instance.initialized === false) await surface.execute(() => surface.phones());
     echo();
     void client.runLoop();
     await exited;

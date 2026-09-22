@@ -21,6 +21,7 @@ export class Client {
   view: ViewState; messages: any[] = []; snapshot: any = {}; instance: any = {};
   sessions: any[] = []; sessionCursor = ''; page: any = {}; syncCursor = ''; seq = 0;
   sessionWorkspace = '';
+  modelReady = false;
   connection = '连接中'; notice = ''; busy = false; revision = 0; generation = 0;
   identity = { transcriptRevision: 0, contextEpoch: 0 };
   private stopped = false; private listeners = new Set<() => void>(); private saveTimer?: NodeJS.Timeout;
@@ -60,6 +61,11 @@ export class Client {
   }
   get draft(): Draft { return this.view.drafts[this.view.sessionId || 'new'] ||= { text: '', attachments: [] }; }
   setDraft(text: string) { this.draft.text = text; this.save(); }
+  /** The local owner is the only identity required before the TUI can create a session. */
+  // initialize() stores the Engine response's `user` object; the top-level
+  // `initialized` flag is intentionally not copied into that object.
+  get ownerReady() { return Boolean(this.owner?.sessionIdentifier); }
+  get ownerName() { return String(this.owner?.name || this.owner?.login || '本机 owner'); }
   get run() { return this.snapshot.currentRun || {}; }
   get workspace() { return this.view.sessionId ? this.sessionWorkspace : this.view.workspace; }
   get active() { return isActiveRunStatus(this.run.status || this.snapshot.runtimeStatus); }
@@ -100,7 +106,7 @@ export class Client {
         this.transportAbort.abort(); this.transportAbort = new AbortController();
         this.generation++; this.messages = []; this.snapshot = {}; this.sessions = []; this.sessionCursor = ''; this.syncCursor = ''; this.seq = 0; this.sessionWorkspace = '';
         this.owner = {}; this.page = {}; this.approvalMode = ''; this.query = ''; this.workspaceOnly = false;
-        this.identity = { transcriptRevision: 0, contextEpoch: 0 };
+        this.identity = { transcriptRevision: 0, contextEpoch: 0 }; this.modelReady = false;
         this.view = this.store.bind(instance.instanceId);
       }
       this.instance = instance;
@@ -109,14 +115,23 @@ export class Client {
       const owner = await this.api('/v1/client-identity/owner');
       this.owner = owner.user || {};
       if (!owner.initialized) {
-        this.connection = '已连接'; this.notice = '首次配置：F4 → 手机 → 初始化本机 owner，然后 F3 连接模型与工作区。';
+        this.connection = '已连接'; this.notice = '首次配置：按 F3 或输入 /setup 初始化本机 owner、连接模型并选择工作区。';
         this.changed(); return;
       }
       this.connection = '已连接';
+      void this.refreshModelReadiness();
       await this.listSessions();
       if (this.view.sessionId) await this.attach(this.view.sessionId);
       else this.notice = '新建对话 · F3 配置模型与工作区 · Ctrl+P 查看操作';
     } catch (e: any) { if (e.staleView || initialization !== this.initialization) return; this.connection = '未连接'; this.notice = 'Engine 未连接。已有安装：v8os service start；首次安装见 F1 帮助。' + e.message; }
+    this.changed();
+  }
+  async refreshModelReadiness() {
+    if (!this.ownerReady || !this.instance.instanceId) return;
+    const controlPlane = await this.api('/v1/models/control-plane').catch(() => null);
+    if (!controlPlane) return;
+    const models = Array.isArray(controlPlane.models) ? controlPlane.models : [];
+    this.modelReady = models.some((model: any) => model?.eligibility?.eligible !== false && (model?.modelId || model?.model_id || model?.modelRef));
     this.changed();
   }
   async listSessions(query = this.query, more = false, workspaceOnly = this.workspaceOnly) {
@@ -202,6 +217,10 @@ export class Client {
     const generation = this.generation, sessionId = this.view.sessionId;
     if (!sessionId) {
       if (this.connection !== '已连接') await this.initialize();
+      // An uninitialized Engine is a valid first-run state. Do not turn the
+      // reconnect loop into a stream of failed quick-index requests while the
+      // welcome/setup surface is waiting for the user.
+      else if (!this.ownerReady) return;
       else if (Date.now() - this.lastIndex > 8000) await this.listSessions();
       return;
     }

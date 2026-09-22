@@ -31,6 +31,37 @@ test('palette exposes query, match count and empty result; empty Enter is inert'
   assert.equal(ui.page!.selected, 0); assert.equal(writes, 0); assert.equal(client.draft.text, '保留草稿');
 });
 
+test('first-run welcome keeps the composer available and setup is an explicit page', async t => {
+  const { ui, client } = make(t, async (route: string) => {
+    if (route.endsWith('/owner')) return { initialized: false, user: {} };
+    if (route === '/v1/models/control-plane') return { models: [] };
+    return {};
+  });
+  client.connection = '已连接';
+  assert.match(ui.welcomeLines('zh-CN').join('\n'), /本机身份待初始化/);
+  assert.match(ui.welcomeLines('en-US').join('\n'), /Local identity initialized|Local identity/);
+  await ui.setup();
+  assert.equal(ui.page?.title, '快速开始 / Quick setup');
+  assert.ok(ui.page?.actions.some(action => action.label === '初始化本机 owner'));
+  await ui.close(true);
+  assert.equal(ui.page, null);
+});
+
+test('uninitialized owner does not make the background loop repeatedly query sessions', async t => {
+  let quickIndex = 0;
+  const client = new Client(new ViewStore(mkdtempSync(path.join(os.tmpdir(), 'v8-tui-first-run-')), 'first-run'), async (route: string) => {
+    if (route.endsWith('/instance')) return { instanceId: 'first-run' };
+    if (route.endsWith('/owner')) return { initialized: false, user: {} };
+    if (route.includes('/quick-index')) quickIndex++;
+    return {};
+  });
+  t.after(() => client.stop());
+  await client.initialize();
+  await client.tick();
+  assert.equal(client.ownerReady, false);
+  assert.equal(quickIndex, 0);
+});
+
 test('slow reads permit local navigation and detach; late pages cannot replace current page', async t => {
   let release: (value: any) => void = () => {}, posts = 0, exited = 0;
   const { ui } = make(t, async (_route: string, opts: any) => {

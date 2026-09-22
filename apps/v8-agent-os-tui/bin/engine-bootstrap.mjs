@@ -194,6 +194,21 @@ function recordedRoot({ aliveOnly = false } = {}) {
   return '';
 }
 
+export function rememberedDesktopRuntime() {
+  const records = optionalJson(path.join(stateRoot(), 'runtime', 'cli', 'processes.json'));
+  const root = records?.repoRoot;
+  // Stopping removes the process receipt, not the recorded desktop installation.
+  // Portable version roots deliberately do not use this fallback: npm upgrades
+  // must select the current exact version after the old daemon has stopped.
+  if (typeof root !== 'string' || !path.isAbsolute(root)
+      || fs.existsSync(path.join(root, 'engine-manifest.json'))
+      || fs.existsSync(path.join(root, 'server-manifest.json'))
+      || !fs.existsSync(path.join(root, ENGINE_DIR, 'main.py'))
+      || !fs.existsSync(path.join(root, CLI_FILE))
+      || !fs.existsSync(path.join(root, 'apps/v8-agent-os-web'))) return '';
+  return root;
+}
+
 function configureRuntime(root) {
   process.env.V8_REPO_ROOT = root;
   process.env.V8_AGENT_OS_REPO_ROOT = root;
@@ -236,7 +251,7 @@ export async function startEngine({ install = true, signal = new AbortController
       root = '';
     }
   }
-  if (!root) root = installedRuntime();
+  if (!root) root = rememberedDesktopRuntime() || installedRuntime();
   if (!root && install) root = (await installEngine({ signal, progress })).root;
   if (!root) throw new Error('Engine is not installed. Run v8os install or configure V8OS_ENGINE_RUNTIME_DIR.');
   const core = await localControl(root);
@@ -262,7 +277,7 @@ export async function startEngine({ install = true, signal = new AbortController
 }
 
 export async function statusEngine() {
-  let root = (await serviceReceipt())?.bundleRoot || recordedRoot();
+  let root = (await serviceReceipt())?.bundleRoot || recordedRoot() || rememberedDesktopRuntime();
   if (!root) {
     try { root = installedRuntime(); }
     catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; }
@@ -274,7 +289,7 @@ export async function statusEngine() {
 }
 
 export async function stopEngine() {
-  let root = (await serviceReceipt())?.bundleRoot || recordedRoot();
+  let root = (await serviceReceipt())?.bundleRoot || recordedRoot() || rememberedDesktopRuntime();
   if (!root) { try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; } }
   if (!root) return { id: 'engine', status: 'not_managed' };
   const core = await localControl(root);
@@ -283,7 +298,7 @@ export async function stopEngine() {
 
 export async function runEngineCli(args, options = {}) {
   const service = await serviceReceipt();
-  let root = service?.bundleRoot || recordedRoot();
+  let root = service?.bundleRoot || recordedRoot() || rememberedDesktopRuntime();
   if (!root) { try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; } }
   const cliArgs = [...args];
   const serviceMutation = cliArgs[0] === 'service' && !cliArgs.includes('--help') && !cliArgs.includes('-h');

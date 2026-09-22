@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import http from 'node:http';
 import { create, Header } from 'tar';
-import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform } from '../bin/engine-bootstrap.mjs';
+import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime } from '../bin/engine-bootstrap.mjs';
 
 const VERSION = '2026.09.22.1', TARGET = 'linux-x64', COMMIT = 'a'.repeat(40);
 const ROOT = `v8os-engine-${VERSION}-${TARGET}`;
@@ -63,6 +63,18 @@ test('actual tar extraction installs the complete immutable runtime once under p
   fs.writeFileSync(path.join(f.destination, 'kept'), 'immutable');
   assert.equal((await installEngine({ version: VERSION, target: TARGET })).installed, false);
   assert.equal(fs.readFileSync(path.join(f.destination, 'kept'), 'utf8'), 'immutable');
+});
+
+test('a stopped desktop remains discoverable while old portable versions cannot shadow npm upgrades', async t => {
+  const f = await fixture(t);
+  const desktop = path.join(f.dir, 'desktop');
+  put(path.join(desktop, 'apps/v8-agent-os-engine/main.py'), '# desktop engine');
+  put(path.join(desktop, 'apps/v8-agent-os-cli/bin/v8os.mjs'), '// cli');
+  fs.mkdirSync(path.join(desktop, 'apps/v8-agent-os-web'));
+  put(path.join(process.env.V8_AGENT_OS_HOME!, 'runtime/cli/processes.json'), JSON.stringify({ version: 1, repoRoot: desktop, processes: {} }));
+  assert.equal(rememberedDesktopRuntime(), desktop);
+  put(path.join(desktop, 'engine-manifest.json'), JSON.stringify(manifest()));
+  assert.equal(rememberedDesktopRuntime(), '');
 });
 
 test('hash mismatch, cancel and wrong internal commit leave no installed or partial runtime', async t => {

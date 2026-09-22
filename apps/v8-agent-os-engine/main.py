@@ -179,10 +179,21 @@ async def _prewarm_supervisor_graph(
 
     try:
         pending_prerequisite_tasks: set[asyncio.Task] = set()
+        provider_prewarm_error_type: str | None = None
         if provider_prewarm_task is not None:
             # This installs local compatibility patches, not a provider probe.
-            # Its owner already catches and reports installation failures.
-            await provider_prewarm_task
+            # Its owner normally catches and reports installation failures, but
+            # keep graph assembly independent from that task's failure contract.
+            # An optional prewarm rejection must never leave the first request
+            # to pay the full cold graph compilation cost.
+            try:
+                await provider_prewarm_task
+            except Exception as exc:
+                provider_prewarm_error_type = type(exc).__name__
+                print(
+                    "[Engine] Provider prewarm failed; continuing Supervisor graph prewarm:",
+                    provider_prewarm_error_type,
+                )
         if extension_prerequisite_tasks:
             _completed, pending_prerequisite_tasks = await asyncio.wait(
                 extension_prerequisite_tasks,
@@ -203,11 +214,14 @@ async def _prewarm_supervisor_graph(
                 runner.build_graph(config),
                 task_name=task_name,
             )
-            return {
+            result = {
                 "ok": True,
                 "graphCacheHit": bool((diagnostics or {}).get("graphCacheHit")),
                 "graphBuildMs": float((diagnostics or {}).get("graphBuildMs") or 0),
             }
+            if provider_prewarm_error_type:
+                result["providerPrewarmErrorType"] = provider_prewarm_error_type
+            return result
 
         safe_diagnostics = await _build_once(task_name="supervisor-graph-prewarm")
         print("[Engine] Supervisor graph prewarm completed:", safe_diagnostics)
@@ -252,7 +266,7 @@ def _supervisor_graph_warmup_status(application) -> dict[str, object]:
             "taskDone": True,
             "errorType": str(result.get("errorType") or "unknown") if isinstance(result, dict) else "unknown",
         }
-    return {
+    status = {
         "state": "ready",
         "taskDone": True,
         "graphCacheHit": bool(result.get("graphCacheHit")),
@@ -261,6 +275,9 @@ def _supervisor_graph_warmup_status(application) -> dict[str, object]:
         "inventoryFollowupCacheHit": bool(result.get("inventoryFollowupCacheHit")),
         "inventoryFollowupBuildMs": float(result.get("inventoryFollowupBuildMs") or 0),
     }
+    if result.get("providerPrewarmErrorType"):
+        status["providerPrewarmErrorType"] = str(result["providerPrewarmErrorType"])
+    return status
 
 
 def _ensure_default_workflow_memories() -> None:

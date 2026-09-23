@@ -135,6 +135,8 @@ def build(bundle: Path, output: Path, *, version: str | None = None, source_comm
         manifest = {
             "schema": 1,
             "profile": "engine",
+            "runtimeProfile": "server",
+            "startupProfile": "server",
             "version": version,
             "target": "linux-x64",
             "sourceCommit": source_commit,
@@ -166,6 +168,8 @@ def build(bundle: Path, output: Path, *, version: str | None = None, source_comm
     public_manifest = {
         "schema": 1,
         "profile": "engine",
+        "runtimeProfile": "server",
+        "startupProfile": "server",
         "version": version,
         "target": "linux-x64",
         "sourceCommit": source_commit,

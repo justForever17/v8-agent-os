@@ -332,6 +332,14 @@ jobs:
           else
             apps/v8-agent-os-engine/.python/bin/python3 -m playwright install chromium
           fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = Path('apps/v8-agent-os-engine/.python/v8os-runtime.json')
+          data = json.loads(receipt.read_text(encoding='utf-8-sig'))
+          data['browserIncluded'] = True
+          receipt.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+          PY
           python scripts/desktop/build-engine-portable.py \
             --target "${{ matrix.id }}" \
             --output "${{ runner.temp }}/v8os-engine-${{ matrix.id }}" \

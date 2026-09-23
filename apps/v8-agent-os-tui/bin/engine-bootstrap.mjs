@@ -62,10 +62,14 @@ export function validateManifest(manifest, { version, target, sourceCommit } = {
       || (version && manifest.version !== version) || (target && manifest.target !== target)
       || (sourceCommit && manifest.sourceCommit !== sourceCommit)) throw new Error('Engine manifest identity mismatch');
   if (downloaded) {
+    if (manifest.runtimeProfile !== undefined && !['server', 'desktop'].includes(manifest.runtimeProfile)) throw new Error('Unsupported Engine runtime profile');
+    if (manifest.startupProfile !== undefined && !['server', 'desktop'].includes(manifest.startupProfile)) throw new Error('Unsupported Engine startup profile');
     if (manifest.root !== `v8os-engine-${manifest.version}-${manifest.target}`
         || manifest.asset !== `V8OS-Engine-${manifest.version}-${manifest.target}.tar.gz`
         || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw new Error('Invalid Engine archive manifest');
-  } else if (manifest.sourceDirty !== false || manifest.engineDir !== ENGINE_DIR || manifest.cli !== CLI_FILE || manifest.python !== pythonPathForTarget(manifest.target)) {
+  } else if (manifest.sourceDirty !== false || manifest.engineDir !== ENGINE_DIR || manifest.cli !== CLI_FILE || manifest.python !== pythonPathForTarget(manifest.target)
+      || (manifest.runtimeProfile !== undefined && !['server', 'desktop'].includes(manifest.runtimeProfile))
+      || (manifest.startupProfile !== undefined && !['server', 'desktop'].includes(manifest.startupProfile))) {
     throw new Error('Invalid portable Engine entrypoints');
   }
   return manifest;
@@ -88,7 +92,7 @@ export function installedRuntime({ version = releaseVersion(), target } = {}) {
   if (!fs.existsSync(destination)) return '';
   const result = inspectRuntime(destination, { version, target });
   const receipt = readJson(path.join(destination, '.installed-receipt.json'));
-  if (receipt.version !== version || receipt.sourceCommit !== result.manifest.sourceCommit || !/^[a-f0-9]{64}$/.test(receipt.sha256 || '')) throw new Error('Engine installation receipt mismatch');
+  if (receipt.version !== version || receipt.target !== (target || targetForPlatform()) || receipt.sourceCommit !== result.manifest.sourceCommit || !/^[a-f0-9]{64}$/.test(receipt.sha256 || '')) throw new Error('Engine installation receipt mismatch');
   return destination;
 }
 
@@ -177,7 +181,9 @@ export async function installEngine({ version = releaseVersion(), target = targe
     await extractEngineArchive(archive, extracted, remote.root);
     signal.throwIfAborted();
     const candidate = contained(extracted, remote.root);
-    inspectRuntime(candidate, remote);
+    const inspected = inspectRuntime(candidate, remote);
+    if (remote.runtimeProfile !== undefined && inspected.manifest.runtimeProfile !== remote.runtimeProfile) throw new Error('Engine public/internal runtime profile mismatch');
+    if (remote.startupProfile !== undefined && inspected.manifest.startupProfile !== remote.startupProfile) throw new Error('Engine public/internal startup profile mismatch');
     fs.writeFileSync(path.join(candidate, '.installed-receipt.json'), JSON.stringify({ schema: 1, version, target, sha256: digest, sourceCommit: remote.sourceCommit }) + '\n', { flag: 'wx', mode: 0o600 });
     // Version directories are immutable. Concurrent first starts can stage in
     // parallel, but only one atomic rename can publish the complete directory.
@@ -264,7 +270,10 @@ export async function startEngine({ install = true, signal = new AbortController
       root = '';
     }
   }
-  if (!root) root = rememberedDesktopRuntime() || installedRuntime();
+  if (!root) {
+    try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; }
+  }
+  if (!root) root = rememberedDesktopRuntime();
   if (!root && install) root = (await installEngine({ signal, progress })).root;
   if (!root) throw new Error('Engine is not installed. Run v8os install or configure V8OS_ENGINE_RUNTIME_DIR.');
   const core = await localControl(root);
@@ -290,11 +299,12 @@ export async function startEngine({ install = true, signal = new AbortController
 }
 
 export async function statusEngine() {
-  let root = (await serviceReceipt())?.bundleRoot || recordedRoot() || rememberedDesktopRuntime();
+  let root = (await serviceReceipt())?.bundleRoot || recordedRoot();
   if (!root) {
     try { root = installedRuntime(); }
     catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; }
   }
+  if (!root) root = rememberedDesktopRuntime();
   if (!root) return { status: 'not_installed', platform: `${process.platform}-${process.arch}`, runtimeRoot: null };
   const core = await localControl(root);
   const result = (await core.statusCoreComponents(['engine']))[0];
@@ -302,8 +312,9 @@ export async function statusEngine() {
 }
 
 export async function stopEngine() {
-  let root = (await serviceReceipt())?.bundleRoot || recordedRoot() || rememberedDesktopRuntime();
+  let root = (await serviceReceipt())?.bundleRoot || recordedRoot();
   if (!root) { try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; } }
+  if (!root) root = rememberedDesktopRuntime();
   if (!root) return { id: 'engine', status: 'not_managed' };
   const core = await localControl(root);
   return (await core.stopCoreComponents(['engine']))[0];
@@ -311,8 +322,9 @@ export async function stopEngine() {
 
 export async function runEngineCli(args, options = {}) {
   const service = await serviceReceipt();
-  let root = service?.bundleRoot || recordedRoot() || rememberedDesktopRuntime();
+  let root = service?.bundleRoot || recordedRoot();
   if (!root) { try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; } }
+  if (!root) root = rememberedDesktopRuntime();
   const cliArgs = [...args];
   const serviceMutation = cliArgs[0] === 'service' && !cliArgs.includes('--help') && !cliArgs.includes('-h');
   if (serviceMutation && ['install', 'upgrade'].includes(cliArgs[1]) && !cliArgs.includes('--bundle')) {

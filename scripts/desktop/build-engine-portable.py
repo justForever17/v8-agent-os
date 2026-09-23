@@ -7,6 +7,7 @@ used by the Linux server Engine without copying the Web or Electron payload.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -25,6 +26,8 @@ TARGETS = {
     "macos-x64": ("macos", "x64", ENGINE / ".python" / "bin" / "python3"),
     "macos-arm64": ("macos", "arm64", ENGINE / ".python" / "bin" / "python3"),
 }
+IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".venv", ".git", ".tmp", "tmp", "reports", "workspace", "node_modules", ".plugin-release-assets", "logs"}
+IGNORED_FILES = {".env", ".env.local", ".env.production", "secret.db", "secrets.db"}
 
 
 def digest(path: Path) -> str:
@@ -38,9 +41,28 @@ def digest(path: Path) -> str:
 def copy_tree(source: Path, destination: Path) -> None:
     if not source.is_dir():
         raise FileNotFoundError(source)
-    shutil.copytree(source, destination, symlinks=True, ignore=shutil.ignore_patterns(
-        "__pycache__", "*.pyc", ".pytest_cache", "tests", "native",
-    ))
+    def ignored(_directory: str, names: list[str]) -> set[str]:
+        result = set()
+        for name in names:
+            if name in IGNORED_DIRS or name in IGNORED_FILES or name == "tests" or name == "native" or name.startswith("pytest-of-"):
+                result.add(name)
+            elif name.endswith((".pyc", ".pyo", ".db", ".log")) or name.startswith(".env"):
+                result.add(name)
+        return result
+    shutil.copytree(source, destination, symlinks=True, ignore=ignored)
+
+
+def assert_clean_source(source_commit: str) -> None:
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if source_commit != head:
+        raise ValueError(f"source commit {source_commit} is not the checked out HEAD {head}")
+    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", str(ENGINE), str(CLI)], cwd=ROOT)
+    if dirty.returncode != 0:
+        raise ValueError("Engine/CLI source is dirty; commit source changes before packaging")
+    untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "--", str(ENGINE), str(CLI)], cwd=ROOT, text=True)
+    unexpected = [line for line in untracked.splitlines() if line and not any(part in IGNORED_DIRS for part in Path(line).parts)]
+    if unexpected:
+        raise ValueError(f"Untracked Engine/CLI source would make provenance ambiguous: {unexpected[0]}")
 
 
 def metadata(member: tarfile.TarInfo) -> tarfile.TarInfo:
@@ -65,10 +87,27 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
     browser_root = engine_root / ".playwright-browsers"
     if not browser_root.is_dir() or (browser_root / "DEGRADED.txt").exists():
         raise ValueError("Standalone Engine requires an embedded Playwright Chromium runtime; desktop discovery-only payload is not publishable")
+    browser_files = [item for item in browser_root.rglob("*") if item.is_file()]
+    executable_names = {"chrome", "chrome.exe", "chromium", "chromium.exe"}
+    if not browser_files or not any(item.name.lower() in executable_names for item in browser_files):
+        raise ValueError("Standalone Engine browser payload does not contain a Chromium executable")
     if source_commit is None:
         source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     if not source_commit or len(source_commit) != 40:
         raise ValueError("source commit must be a full git SHA")
+    assert_clean_source(source_commit)
+    receipt_path = engine_root / ".python" / "v8os-runtime.json"
+    if not receipt_path.is_file():
+        raise ValueError("Prepared portable Python runtime receipt is missing")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+    expected_receipt_target = target
+    if receipt.get("schema") != 1 or receipt.get("profile") != "desktop" or receipt.get("target") != expected_receipt_target:
+        raise ValueError("Portable Python runtime receipt does not match target/profile")
+    requirements = engine_root / "requirements" / "desktop-preview.txt"
+    if not requirements.is_file() or receipt.get("requirementsSha256") != digest(requirements):
+        raise ValueError("Portable Python runtime receipt does not match desktop dependency closure")
+    if receipt.get("browserIncluded") is not True:
+        raise ValueError("Standalone Engine requires browserIncluded=true in the runtime receipt")
     release = json.loads((ROOT / "release-manifest.json").read_text(encoding="utf-8"))["release"]
     version = release["version"]
     root_name = f"v8os-engine-{version}-{target}"
@@ -82,11 +121,16 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
         staging.mkdir()
         copy_tree(engine_root, staging / ENGINE)
         copy_tree(cli_root, staging / CLI)
+        staged_receipt = dict(receipt)
+        staged_receipt["profile"] = "server"
+        (staging / python_relative).parent.joinpath("v8os-runtime.json").write_text(
+            json.dumps(staged_receipt, indent=2) + "\n", encoding="utf-8"
+        )
         manifest = {
             "schema": 1,
             "profile": "engine",
-            "runtimeProfile": "desktop",
-            "startupProfile": "desktop",
+            "runtimeProfile": "server",
+            "startupProfile": "server",
             "version": version,
             "target": target,
             "platform": platform_name,
@@ -101,19 +145,19 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
         }
         (staging / "engine-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         checksums = []
+        (staging / "README.md").write_text(
+            "# V8OS portable Engine\n\n"
+            "Managed by @v8-agent-os/v8-agent-os. Use `v8os start` to launch it.\n"
+            "The matching Node.js package owns lifecycle, state and credentials.\n"
+            "Host system libraries required by browser/desktop automation remain platform-specific.\n",
+            encoding="utf-8",
+        )
         for item in sorted(staging.rglob("*")):
             if item.is_file() and item.name != "SHA256SUMS":
                 checksums.append(f"{digest(item)}  {item.relative_to(staging).as_posix()}")
         (staging / "SHA256SUMS").write_text("\n".join(checksums) + "\n", encoding="utf-8")
-        readme = (
-            "# V8OS portable Engine\n\n"
-            "Managed by @v8-agent-os/v8-agent-os. Use `v8os start` to launch it.\n"
-            "The matching Node.js package owns lifecycle, state and credentials.\n"
-            "Host system libraries required by browser/desktop automation remain platform-specific.\n"
-        )
-        (staging / "README.md").write_text(readme, encoding="utf-8")
-        with archive.open("wb") as raw:
-            with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        with archive.open("wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as tar:
                 tar.add(staging, arcname=root_name, filter=metadata)
     archive_hash = digest(archive)
     public = {
@@ -125,7 +169,7 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
         "root": root_name,
         "asset": archive.name,
         "sha256": archive_hash,
-        "runtimeProfile": "desktop",
+        "runtimeProfile": "server",
     }
     public_manifest.write_text(json.dumps(public, indent=2) + "\n", encoding="utf-8")
     archive.with_suffix(archive.suffix + ".sha256").write_text(f"{archive_hash}  {archive.name}\n", encoding="utf-8")

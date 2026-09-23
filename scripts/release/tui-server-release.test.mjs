@@ -60,11 +60,18 @@ function engineTarFixture(root, filename, identity) {
     fs.writeFileSync(target, content);
   };
   write("engine-manifest.json", JSON.stringify(identity));
+  write("README.md", "portable engine\n");
   write("apps/v8-agent-os-engine/main.py", "# fixture");
   write("apps/v8-agent-os-cli/bin/v8os.mjs", "#!/usr/bin/env node");
   write("apps/v8-agent-os-engine/.python/bin/python3.11", "python fixture");
   fs.symlinkSync("python3.11", path.join(stage, prefix, "apps/v8-agent-os-engine/.python/bin/python3"));
-  write("SHA256SUMS", "fixture\n");
+  write("apps/v8-agent-os-engine/.python/v8os-runtime.json", JSON.stringify({ schema: 1, profile: "server", target: identity.target, browserIncluded: true }) + "\n");
+  const sums = [];
+  for (const file of fs.readdirSync(path.join(stage, prefix), { recursive: true })) {
+    const absolute = path.join(stage, prefix, file);
+    if (fs.statSync(absolute).isFile() && file !== "SHA256SUMS") sums.push(`${createHash("sha256").update(fs.readFileSync(absolute)).digest("hex")}  ${file.replaceAll(path.sep, "/")}`);
+  }
+  write("SHA256SUMS", `${sums.join("\n")}\n`);
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   execFileSync("tar", ["-czf", filename, "-C", stage, prefix]);
   return filename;
@@ -290,12 +297,12 @@ test("portable Engine fan-in verifies public JSON, internal identity, archive SH
     [`${serverRoot}/server-manifest.json`]: JSON.stringify(serverIdentity), [`${serverRoot}/VERSION`]: toSemver(VERSION),
     [`${serverRoot}/apps/v8-agent-os-engine/main.py`]: "# fixture", [`${serverRoot}/apps/v8-agent-os-cli/bin/v8os.mjs`]: "// fixture", [`${serverRoot}/SHA256SUMS`]: "fixture",
   });
-  const engineIdentity = { schema: 1, profile: "engine", version: VERSION, target: "linux-x64", sourceCommit: COMMIT, sourceDirty: false,
+  const engineIdentity = { schema: 1, profile: "engine", runtimeProfile: "server", startupProfile: "server", version: VERSION, target: "linux-x64", sourceCommit: COMMIT, sourceDirty: false,
     engineDir: "apps/v8-agent-os-engine", python: "apps/v8-agent-os-engine/.python/bin/python3", cli: "apps/v8-agent-os-cli/bin/v8os.mjs" };
   const engine = path.join(input, "server", `V8OS-Engine-${VERSION}-linux-x64.tar.gz`);
   engineTarFixture(f.root, engine, engineIdentity);
   const publicManifest = path.join(input, "server", `V8OS-Engine-${VERSION}-linux-x64.json`);
-  json(publicManifest, { schema: 1, profile: "engine", version: VERSION, target: "linux-x64", sourceCommit: COMMIT,
+  json(publicManifest, { schema: 1, profile: "engine", runtimeProfile: "server", startupProfile: "server", version: VERSION, target: "linux-x64", sourceCommit: COMMIT,
     root: `v8os-engine-${VERSION}-linux-x64`, asset: path.basename(engine), sha256: createHash("sha256").update(fs.readFileSync(engine)).digest("hex") });
   fs.mkdirSync(path.join(input, "desktop"), { recursive: true });
   for (const suffix of ["win-x64-setup.exe", "win-arm64-setup.exe", "macos-x64.dmg", "macos-arm64.dmg", "linux-x64.AppImage", "linux-x64.deb", "linux-arm64.AppImage", "linux-arm64.deb"]) {
@@ -306,6 +313,9 @@ test("portable Engine fan-in verifies public JSON, internal identity, archive SH
   tarFixture(f.root, path.join(input, "tui", `V8OS-TUI-${VERSION}.tgz`), tuiEntries());
   assert.doesNotThrow(() => verifyEngineArchiveIdentity(engine, { version: VERSION, target: "linux-x64", sourceCommit: COMMIT }));
   assert.doesNotThrow(() => verifyEngineReleaseAssets({ archive: engine, manifest: publicManifest, version: VERSION, target: "linux-x64", sourceCommit: COMMIT }));
+  const mismatchedPublic = path.join(input, "server", "mismatched-profile.json");
+  json(mismatchedPublic, { ...JSON.parse(fs.readFileSync(publicManifest, "utf8")), runtimeProfile: "desktop" });
+  assert.throws(() => verifyEngineReleaseAssets({ archive: engine, manifest: mismatchedPublic, version: VERSION, target: "linux-x64", sourceCommit: COMMIT }), /public manifest/);
   const result = prepareUnifiedReleaseAssets({ manifestPath: f.manifestPath, inputDir: input, outputDir: path.join(f.root, "out-engine"), sourceCommit: COMMIT });
   assert.ok(result.assets.includes(`V8OS-Engine-${VERSION}-linux-x64.tar.gz`));
   assert.ok(result.assets.includes(`V8OS-Engine-${VERSION}-linux-x64.json`));

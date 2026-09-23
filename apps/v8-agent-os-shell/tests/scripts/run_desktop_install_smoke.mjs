@@ -1147,7 +1147,11 @@ const shellArgs = [
 ];
 const defaultWebPortBlocker = occupyDefaultWebPort ? await occupyLoopbackPort(9527) : null;
 let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
-const runtimePortProfile = await waitForRuntimePorts(runtimePortsPath, Math.min(serviceTimeoutMs, 15_000));
+// The packaged first start may spend several seconds unpacking the embedded
+// Python/browser runtime before writing ports.json. Use the same bounded
+// startup budget as readiness instead of turning a slow but healthy launch
+// into a false "runtime_port_profile_missing" failure.
+const runtimePortProfile = await waitForRuntimePorts(runtimePortsPath, serviceTimeoutMs);
 const runtimePorts = runtimePortProfile?.ports || { engine: 9530, admin: 9527, web: 9527 };
 
 const [engine, web, initialShellSurface] = await Promise.all([

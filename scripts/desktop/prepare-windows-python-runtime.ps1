@@ -803,5 +803,17 @@ Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", "import mai
   V8_AGENT_OS_DISABLE_BYTECODE = "1"
 }
 
+$target = if ($Architecture -eq "arm64") { "windows-arm64" } else { "windows-x64" }
+$requirementsSha256 = (Get-FileHash -LiteralPath $requirementsFile -Algorithm SHA256).Hash.ToLowerInvariant()
+$runtimeReceipt = [ordered]@{
+  schema = 1
+  profile = "desktop"
+  target = $target
+  pythonRelease = $PythonVersion
+  requirementsSha256 = $requirementsSha256
+  browserIncluded = -not $SkipPlaywrightBrowsers
+}
+($runtimeReceipt | ConvertTo-Json -Depth 4) + "`n" | Set-Content -LiteralPath (Join-Path $runtimeDir "v8os-runtime.json") -Encoding utf8
+
 Remove-Item -LiteralPath $getPipPath -Force -ErrorAction SilentlyContinue
 Write-Host "Portable Python runtime is ready."

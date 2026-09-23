@@ -111,6 +111,7 @@ export function verifyEngineArchiveIdentity(filename, { version, target = "linux
   const identity = JSON.parse(archiveMember(filename, `${root}/engine-manifest.json`));
   if (identity.schema !== 1 || identity.profile !== "engine" || identity.version !== version
       || identity.target !== target || identity.sourceDirty !== false
+      || identity.runtimeProfile !== "server" || identity.startupProfile !== "server"
       || !/^[a-f0-9]{40}$/.test(identity.sourceCommit || "")
       || identity.engineDir !== "apps/v8-agent-os-engine"
       || identity.python !== expectedPython
@@ -131,8 +132,31 @@ export function verifyEngineArchiveIdentity(filename, { version, target = "linux
     if (targetEntry.kind === "directory") throw new Error("Engine archive Python symlink targets a directory");
   }
   archiveEntry(filename, `${root}/${identity.cli}`);
-  archiveEntry(filename, `${root}/SHA256SUMS`);
+  verifyEngineChecksums(filename, root, identity);
   return identity;
+}
+
+function verifyEngineChecksums(filename, root, identity) {
+  const raw = archiveMember(filename, `${root}/SHA256SUMS`);
+  const entries = new Map();
+  for (const line of raw.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
+    const match = /^([a-f0-9]{64})  ([^\\\x00-\x1f]+)$/.exec(line);
+    if (!match || path.posix.isAbsolute(match[2]) || match[2].split('/').includes('..') || entries.has(match[2])) {
+      throw new Error(`Invalid Engine checksum entry in ${path.basename(filename)}`);
+    }
+    entries.set(match[2], match[1]);
+  }
+  const pythonReceipt = `${identity.engineDir}/.python/v8os-runtime.json`;
+  const required = ["engine-manifest.json", "README.md", "apps/v8-agent-os-engine/main.py", identity.cli, pythonReceipt];
+  for (const member of required) {
+    if (!entries.has(member)) throw new Error(`Engine checksum manifest omits ${member}`);
+    const content = Buffer.from(archiveMember(filename, `${root}/${member}`));
+    if (sha256Buffer(content) !== entries.get(member)) throw new Error(`Engine checksum mismatch for ${member}`);
+  }
+  const receipt = JSON.parse(archiveMember(filename, `${root}/${pythonReceipt}`));
+  if (receipt.schema !== 1 || receipt.profile !== "server" || receipt.target !== identity.target || receipt.browserIncluded !== true) {
+    throw new Error("Engine runtime receipt does not match the server portable profile");
+  }
 }
 
 export function verifyEngineReleaseAssets({ archive, manifest, version, target = "linux-x64", sourceCommit } = {}) {
@@ -142,6 +166,8 @@ export function verifyEngineReleaseAssets({ archive, manifest, version, target =
   const digest = sha256(archive);
   if (publicManifest.schema !== 1 || publicManifest.profile !== "engine"
       || publicManifest.version !== version || publicManifest.target !== target
+      || publicManifest.runtimeProfile !== "server" || publicManifest.startupProfile !== "server"
+      || (publicManifest.runtimeProfile !== undefined && publicManifest.runtimeProfile !== "server")
       || publicManifest.root !== expectedRoot || publicManifest.asset !== expectedAsset
       || !/^[a-f0-9]{64}$/.test(publicManifest.sha256 || "") || publicManifest.sha256 !== digest
       || !/^[a-f0-9]{40}$/.test(publicManifest.sourceCommit || "")
@@ -153,6 +179,10 @@ export function verifyEngineReleaseAssets({ archive, manifest, version, target =
     throw new Error("Engine public manifest source commit differs from internal engine manifest");
   }
   return { publicManifest, internal };
+}
+
+function sha256Buffer(content) {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function archiveEntry(filename, member) {

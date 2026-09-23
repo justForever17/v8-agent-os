@@ -760,7 +760,12 @@ jobs:
         run: |
           set -euo pipefail
           export V8_CHECKPOINT_AES_KEY="$(openssl rand -hex 32)"
-          dmg_path="$(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*-${{ matrix.arch }}.dmg' -print -quit)"
+          dmg_path="$(python - <<'PY'
+          from pathlib import Path
+          matches = sorted(Path('apps/v8-agent-os-shell/dist/release').glob('*-${{ matrix.arch }}.dmg'))
+          print(matches[0] if matches else '')
+          PY
+          )"
           mount_point="$RUNNER_TEMP/v8os-dmg-${{ matrix.arch }}"
           test -n "$dmg_path"
           mkdir -p "$mount_point"

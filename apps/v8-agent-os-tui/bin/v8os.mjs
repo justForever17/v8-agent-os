@@ -77,7 +77,7 @@ function help() {
   v8os doctor [--json]          检查安装与进程状态
   v8os chat|sessions|config|inbox|workspace|service|logs ...
 
-Node.js 22+；便携 Engine 支持 Linux glibc x64。其它平台可连接已安装的桌面 Engine。
+  Node.js 22+；首次运行会按当前平台下载并校验便携 Engine（Linux glibc x64、Windows x64/arm64、macOS x64/arm64）。
 首次启动自动下载对应版本，不需要宿主 Python。退出终端保留后台 Engine。
 离线资产：V8OS_ENGINE_MANIFEST_URL=file:///...json 与 V8OS_ENGINE_ARCHIVE=/...tar.gz
 `, `V8OS terminal · Unified CLI + Engine
@@ -90,7 +90,7 @@ Usage:
   v8os doctor [--json]          Inspect installation and process state
   v8os chat|sessions|config|inbox|workspace|service|logs ...
 
-Requires Node.js 22+. Portable Engine: Linux glibc x64; other platforms can use an installed desktop Engine.
+  Requires Node.js 22+. The first run downloads and verifies a portable Engine for Linux glibc x64, Windows x64/arm64, or macOS x64/arm64.
 First start downloads the exact runtime; host Python is not required. Exiting TUI leaves Engine running.
 Offline: V8OS_ENGINE_MANIFEST_URL=file:///...json and V8OS_ENGINE_ARCHIVE=/...tar.gz
 `));

@@ -18,6 +18,7 @@ export const PRODUCT_TARGETS = Object.freeze({
   ]),
   phone: Object.freeze(["android", "ios"]),
 });
+export const STANDALONE_ENGINE_TARGETS = Object.freeze(["windows-x64", "windows-arm64", "macos-x64", "macos-arm64"]);
 
 export function toUnifiedTag(version) {
   return `v8-os-v${version}`;
@@ -242,6 +243,29 @@ function validateTargets(product, entry, problems) {
   }
 }
 
+function validateStandaloneTargets(entry, problems) {
+  const targets = entry?.standaloneTargets;
+  if (!targets || typeof targets !== "object" || Array.isArray(targets)) {
+    problems.push("products.server.standaloneTargets must be an object");
+    return;
+  }
+  for (const target of STANDALONE_ENGINE_TARGETS) {
+    const value = targets[target];
+    const prefix = `products.server.standaloneTargets.${target}`;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      problems.push(`${prefix} must be an object`);
+      continue;
+    }
+    validateBoolean(value.enabled, `${prefix}.enabled`, problems);
+    validateBoolean(value.required, `${prefix}.required`, problems);
+    if (value.required === true && value.enabled !== true) problems.push(`${prefix} cannot be required when disabled`);
+    if (value.enabled === false && !String(value.reason || "").trim()) problems.push(`${prefix}.reason is required when disabled`);
+  }
+  for (const target of Object.keys(targets)) {
+    if (!STANDALONE_ENGINE_TARGETS.includes(target)) problems.push(`products.server.standaloneTargets.${target} is not supported by schema 2`);
+  }
+}
+
 export function validateReleaseManifest(manifest) {
   const problems = [];
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
@@ -300,6 +324,7 @@ export function validateReleaseManifest(manifest) {
         }
       }
       validateTargets(product, entry, problems);
+      if (product === "server") validateStandaloneTargets(entry, problems);
       if (entry.required && !Object.values(entry.targets || {}).some((target) => target?.enabled && target?.required)) {
         problems.push(`products.${product} requires at least one enabled required target`);
       }

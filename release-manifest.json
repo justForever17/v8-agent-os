@@ -34,6 +34,12 @@
           "required": false,
           "reason": "ARM production dependency closure and physical acceptance are pending."
         }
+      },
+      "standaloneTargets": {
+        "windows-x64": { "enabled": true, "required": true },
+        "windows-arm64": { "enabled": true, "required": true },
+        "macos-x64": { "enabled": true, "required": true },
+        "macos-arm64": { "enabled": true, "required": true }
       }
     },
     "desktop": {

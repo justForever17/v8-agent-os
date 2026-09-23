@@ -316,6 +316,37 @@ jobs:
         timeout-minutes: 8
         run: node apps/v8-agent-os-shell/tests/scripts/verify_desktop_release_runtime.mjs
 
+      - name: Build portable Engine asset for npm Core Base
+        if: matrix.os == 'windows' || matrix.os == 'macos'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Package portable Engine asset
+        if: matrix.os == 'windows' || matrix.os == 'macos'
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          rm -f apps/v8-agent-os-engine/.playwright-browsers/DEGRADED.txt
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            apps/v8-agent-os-engine/.python/python.exe -m playwright install chromium
+          else
+            apps/v8-agent-os-engine/.python/bin/python3 -m playwright install chromium
+          fi
+          python scripts/desktop/build-engine-portable.py \
+            --target "${{ matrix.id }}" \
+            --output "${{ runner.temp }}/v8os-engine-${{ matrix.id }}" \
+            --source-commit "${{ github.sha }}"
+
+      - name: Upload portable Engine asset for npm Core Base
+        if: matrix.os == 'windows' || matrix.os == 'macos'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: v8os-engine-${{ matrix.id }}
+          path: ${{ runner.temp }}/v8os-engine-${{ matrix.id }}/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
       - name: Shell release contract tests
         timeout-minutes: 10
         run: npm --prefix apps/v8-agent-os-shell test

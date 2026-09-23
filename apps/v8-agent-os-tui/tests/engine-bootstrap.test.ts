@@ -46,10 +46,21 @@ test('release identity preserves zero-padded Release dates and rejects invalid t
   assert.equal(releaseVersion('2026.09.22.1'), VERSION);
   assert.throws(() => releaseVersion('2026.2.30-1'), /date/);
   assert.throws(() => releaseVersion('../../latest'), /version/);
-  assert.throws(() => targetForPlatform('linux', 'arm64'), /currently available/);
+  assert.equal(targetForPlatform('win32', 'x64'), 'windows-x64');
+  assert.equal(targetForPlatform('win32', 'arm64'), 'windows-arm64');
+  assert.equal(targetForPlatform('darwin', 'x64'), 'macos-x64');
+  assert.equal(targetForPlatform('darwin', 'arm64'), 'macos-arm64');
+  assert.throws(() => targetForPlatform('linux', 'arm64'), /unavailable/);
+  assert.throws(() => targetForPlatform('freebsd', 'x64'), /unavailable/);
   assert.throws(() => targetForPlatform('linux', 'x64', '2.17'), /glibc 2.35/);
   assert.equal(targetForPlatform('linux', 'x64', '2.35'), TARGET);
   assert.throws(() => validateManifest({ ...manifest(), python: '../python' }), /entrypoints/);
+});
+
+test('desktop Engine manifests use the platform Python entrypoint', () => {
+  assert.doesNotThrow(() => validateManifest({ ...manifest(), target: 'windows-x64', python: 'apps/v8-agent-os-engine/.python/python.exe' }, { version: VERSION, target: 'windows-x64', sourceCommit: COMMIT }));
+  assert.doesNotThrow(() => validateManifest({ ...manifest(), target: 'macos-arm64', python: 'apps/v8-agent-os-engine/.python/bin/python3' }, { version: VERSION, target: 'macos-arm64', sourceCommit: COMMIT }));
+  assert.throws(() => validateManifest({ ...manifest(), target: 'windows-x64' }, { version: VERSION, target: 'windows-x64', sourceCommit: COMMIT }), /entrypoints/);
 });
 
 test('actual tar extraction installs the complete immutable runtime once under parallel starts', async t => {

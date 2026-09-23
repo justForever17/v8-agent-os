@@ -1,7 +1,7 @@
 # V8OS TUI / V8OS 终端界面
 
-`@v8-agent-os/v8-agent-os` is the conversation-first Linux server client for a
-local V8OS Engine. It is intended for SSH and tmux. The package publishes the
+`@v8-agent-os/v8-agent-os` is the conversation-first terminal client for a
+local V8OS Engine. It works in SSH/tmux and on Windows/macOS terminals. The package publishes the
 unified `v8os` dispatcher and keeps `v8os-tui` as a direct interactive
 compatibility entry. The dispatcher installs the matching portable Engine on
 first use, so users do not need a system Python runtime or a second CLI
@@ -32,7 +32,7 @@ v8os
 ```
 
 也可以安装 Release 中的已校验 tarball。首次运行 `v8os` 会按 Release
-manifest 下载并校验 Linux x64 便携 Engine；不需要系统 Python，不会再安装
+manifest 下载并校验当前平台的便携 Engine；不需要系统 Python，不会再安装
 第二套 CLI，也不会在 `postinstall` 阶段启动服务或执行特权操作。离线或国内
 网络环境可以设置 `V8OS_ENGINE_MANIFEST_URL=file:///...json` 与 `V8OS_ENGINE_ARCHIVE=/...tar.gz`，或将已验证运行时放到
 `V8OS_ENGINE_RUNTIME_DIR`。
@@ -46,9 +46,9 @@ v8os chat "hello" --json
 v8os sessions list --json
 ```
 
-The npm portable Core Base supports Linux x64 with glibc 2.35+ (tested Ubuntu 22.04/24.04). Windows, macOS,
-Linux ARM64, and the full desktop flow remain separate release products; do not
-force the Linux x64 Engine archive onto another platform. For a server package
+The npm portable Core Base supports Linux x64 with glibc 2.35+ (tested Ubuntu 22.04/24.04),
+Windows x64/arm64 and macOS x64/arm64. Linux ARM64 and the full desktop flow remain
+separate release products; do not force an archive for another platform. For a server package
 with a manually managed service, use the matching Server release and its
 `./install.sh`; that is an alternative deployment path, not a second CLI to
 install alongside npm.
@@ -73,8 +73,8 @@ the composer remains available and keeps its draft. Press `F3` or enter
 opens the Phone page, and the background poller does not repeatedly query
 sessions before that identity exists.
 
-当前 npm 便携 Core Base 只支持 Linux x64。Windows、macOS、Linux ARM64 和
-完整桌面流程仍是独立发行物；不要把 Linux x64 Engine 资产强行用于其他平台。
+当前 npm 便携 Core Base 支持 Linux x64、Windows x64/arm64 和 macOS x64/arm64。
+Linux ARM64 与完整桌面流程仍是独立发行物；不要把其他平台 Engine 资产强行复用。
 需要手工管理系统服务时，使用匹配版本的 Server Release 和其中的
 `./install.sh`，这是另一条部署路径，不是再安装一套 CLI。
 

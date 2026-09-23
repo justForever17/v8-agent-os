@@ -278,6 +278,9 @@ test("server archive checks architecture, source identity, dirty state and paylo
 test("portable Engine fan-in verifies public JSON, internal identity, archive SHA and Python symlink", (t) => {
   const f = fixture(t);
   f.manifest.products.server.enabled = f.manifest.products.server.required = true;
+  for (const target of Object.values(f.manifest.products.server.standaloneTargets || {})) {
+    target.enabled = false; target.required = false; target.reason = "fixture only verifies linux Engine";
+  }
   f.manifest.products.server.targets["linux-x64"].enabled = f.manifest.products.server.targets["linux-x64"].required = true;
   f.manifest.products.server.targets["linux-x64"].standalone = { enabled: true, required: true };
   json(f.manifestPath, f.manifest);
@@ -385,8 +388,8 @@ test("workflows wire required TUI output and both clean Server OS legs without a
   assert.match(release, /name: v8os-tui-npm\s+path: release-input\/tui/);
   assert.match(release, /--source-commit "\$\{\{ github\.sha \}\}"/);
   assert.match(release, /V8OS-TUI-\*\.tgz/);
-  assert.match(release, /engine_archives=\(\.\/release-assets\/V8OS-Engine-\*\.tar\.gz\)/);
-  assert.match(release, /verifyEngineReleaseAssets\(\{ archive, manifest, version, target: 'linux-x64', sourceCommit \}\)/);
+  assert.match(release, /const targets = \['linux-x64', 'windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64'\]/);
+  assert.match(release, /verifyEngineReleaseAssets\(\{ archive, manifest, version, target, sourceCommit \}\)/);
   assert.match(server, /ubuntu: \['22\.04', '24\.04'\]/);
   assert.match(server, /matrix\.node == '22' && matrix\.ubuntu == '24\.04'/);
   assert.match(server, /libssl3 libffi8/);

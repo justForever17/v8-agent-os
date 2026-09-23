@@ -304,6 +304,14 @@ jobs:
           path: release-input/desktop
           merge-multiple: true
 
+      - name: Download portable Engine build artifacts
+        if: needs.plan.outputs.server_enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: v8os-engine-*
+          path: release-input/server
+          merge-multiple: true
+
       - name: Download Android build artifact
         if: needs.plan.outputs.android_enabled == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -383,21 +391,21 @@ jobs:
             echo "::error::Expected exactly one verified TUI package archive for npm publication"
             exit 1
           fi
-          engine_archives=(./release-assets/V8OS-Engine-*.tar.gz)
-          engine_manifests=(./release-assets/V8OS-Engine-*.json)
-          if [[ ${#engine_archives[@]} != 1 || ! -f "${engine_archives[0]}" || ${#engine_manifests[@]} != 1 || ! -f "${engine_manifests[0]}" ]]; then
-            echo "::error::Refusing npm publication without exactly one verified portable Engine archive and manifest"
-            exit 1
-          fi
           tarball="${archives[0]}"
-          engine_archive="${engine_archives[0]}"
-          engine_manifest="${engine_manifests[0]}"
           pkg_name=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).name);")
           pkg_ver=$(node -e "const cp=require('node:child_process'); const out=cp.execFileSync('tar',['-xzf','$tarball','-O','package/package.json'],{encoding:'utf8'}); console.log(JSON.parse(out).version);")
-          node --input-type=module - "$engine_archive" "$engine_manifest" "${{ needs.plan.outputs.version }}" "$GITHUB_SHA" <<'NODE'
+          node --input-type=module - "${{ needs.plan.outputs.version }}" "$GITHUB_SHA" <<'NODE'
           import { verifyEngineReleaseAssets } from './scripts/release/prepare-unified-release-assets.mjs';
-          const [archive, manifest, version, sourceCommit] = process.argv.slice(2);
-          verifyEngineReleaseAssets({ archive, manifest, version, target: 'linux-x64', sourceCommit });
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [version, sourceCommit] = process.argv.slice(2);
+          const targets = ['linux-x64', 'windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64'];
+          for (const target of targets) {
+            const archive = path.resolve(`release-assets/V8OS-Engine-${version}-${target}.tar.gz`);
+            const manifest = path.resolve(`release-assets/V8OS-Engine-${version}-${target}.json`);
+            if (!fs.existsSync(archive) || !fs.existsSync(manifest)) throw new Error(`Missing required portable Engine pair for ${target}`);
+            verifyEngineReleaseAssets({ archive, manifest, version, target, sourceCommit });
+          }
           NODE
           echo "Verifying $pkg_name@$pkg_ver against npm registry..."
 

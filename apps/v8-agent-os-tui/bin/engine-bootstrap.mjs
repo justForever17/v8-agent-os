@@ -11,7 +11,6 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
 const ENGINE_DIR = 'apps/v8-agent-os-engine';
 const CLI_FILE = 'apps/v8-agent-os-cli/bin/v8os.mjs';
-const PYTHON_FILE = `${ENGINE_DIR}/.python/bin/python3`;
 const MAX_ARCHIVE_BYTES = 2 * 1024 ** 3;
 const readJson = filename => JSON.parse(fs.readFileSync(filename, 'utf8').replace(/^\uFEFF/, ''));
 const optionalJson = filename => { try { return readJson(filename); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
@@ -34,7 +33,15 @@ export function targetForPlatform(platform = process.platform, arch = process.ar
     if (glibc && (Number(glibc.split('.')[0]) < 2 || (Number(glibc.split('.')[0]) === 2 && Number(glibc.split('.')[1]) < 35))) throw new Error('Portable Engine requires glibc 2.35+ (Ubuntu 22.04/24.04 x64)');
     return 'linux-x64';
   }
-  throw new Error(`Portable Engine is currently available for Linux glibc 2.35+ x64; detected ${platform}/${arch}. Use the installed desktop Engine on this platform.`);
+  if (platform === 'win32' && ['x64', 'arm64'].includes(arch)) return `windows-${arch}`;
+  if (platform === 'darwin' && ['x64', 'arm64'].includes(arch)) return `macos-${arch}`;
+  throw new Error(`Portable Engine is unavailable for ${platform}/${arch}; supported targets are Linux glibc 2.35+ x64, Windows x64/arm64 and macOS x64/arm64.`);
+}
+
+function pythonPathForTarget(target) {
+  return target.startsWith('windows-')
+    ? `${ENGINE_DIR}/.python/python.exe`
+    : `${ENGINE_DIR}/.python/bin/python3`;
 }
 
 function contained(root, relative) {
@@ -46,14 +53,15 @@ function contained(root, relative) {
 
 export function validateManifest(manifest, { version, target, sourceCommit } = {}, downloaded = false) {
   if (manifest?.schema !== 1 || manifest.profile !== 'engine' || manifest.version !== releaseVersion(manifest.version)
-      || manifest.target !== 'linux-x64' || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit || '')
+      || !['linux-x64', 'windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64'].includes(manifest.target)
+      || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit || '')
       || (version && manifest.version !== version) || (target && manifest.target !== target)
       || (sourceCommit && manifest.sourceCommit !== sourceCommit)) throw new Error('Engine manifest identity mismatch');
   if (downloaded) {
     if (manifest.root !== `v8os-engine-${manifest.version}-${manifest.target}`
         || manifest.asset !== `V8OS-Engine-${manifest.version}-${manifest.target}.tar.gz`
         || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw new Error('Invalid Engine archive manifest');
-  } else if (manifest.sourceDirty !== false || manifest.engineDir !== ENGINE_DIR || manifest.cli !== CLI_FILE || manifest.python !== PYTHON_FILE) {
+  } else if (manifest.sourceDirty !== false || manifest.engineDir !== ENGINE_DIR || manifest.cli !== CLI_FILE || manifest.python !== pythonPathForTarget(manifest.target)) {
     throw new Error('Invalid portable Engine entrypoints');
   }
   return manifest;
@@ -222,8 +230,8 @@ function configureRuntime(root) {
       .filter((entry, index, entries) => entry && entries.indexOf(entry) === index).join(path.delimiter);
     delete process.env.PYTHONHOME;
     delete process.env.PYTHONPATH;
-    process.env.ENGINE_INSTALL_PROFILE = 'server';
-    process.env.ENGINE_STARTUP_PROFILE = 'server';
+    process.env.ENGINE_INSTALL_PROFILE = manifest.runtimeProfile || 'desktop';
+    process.env.ENGINE_STARTUP_PROFILE = manifest.startupProfile || manifest.runtimeProfile || 'desktop';
     process.env.ENGINE_RELOAD = '0';
     if (!process.env.CREDENTIALS_DIRECTORY) process.env.V8_AGENT_OS_CREDENTIAL_KEY_FILE ||= path.join(stateRoot(), 'credentials', 'v8-agent-os-credential-key');
   }

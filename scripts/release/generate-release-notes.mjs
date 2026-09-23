@@ -343,6 +343,9 @@ function optionalProductNotes(release) {
         if (value.standalone?.enabled) result.assets.push(`- \`V8OS-Engine-${release.version}-${target}.tar.gz\` 与对应 \`.json\`：npm CLI 首次启动按 SHA-256 校验下载的便携 Engine 运行时。`);
       }
     }
+    for (const [target, value] of Object.entries(release.products.server.standaloneTargets || {})) {
+      if (value.enabled) result.assets.push(`- \`V8OS-Engine-${release.version}-${target}.tar.gz\` 与对应 \`.json\`：npm CLI 首次启动按 SHA-256 校验下载的便携 Engine 运行时。`);
+    }
     result.installation.push("Server：在无图形 Ubuntu 22.04/24.04 glibc x64 上准备 Python 3.11、Node.js 20+ 与 Chromium 系统库，以普通用户解压到独立版本目录并运行 ./install.sh；安装过程联网下载依赖与 Chromium，不是离线包。配置凭据后使用 ./v8os service install，退出终端后 Engine、Phone 与受信组网服务继续运行。",
       "Server 升级请使用新包 CLI。会话修订使用数据库 schema 4，旧 schema 3 Engine 不能直接回读；不兼容回滚会阻断并保留新数据，故障时可重试当前版本或升级兼容修复包。服务回滚不会覆盖数据库或撤销数据迁移。");
   }

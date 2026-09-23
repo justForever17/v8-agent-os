@@ -105,12 +105,15 @@ export function verifyArchiveIdentity(filename, { product, version, target, sour
 
 export function verifyEngineArchiveIdentity(filename, { version, target = "linux-x64", sourceCommit } = {}) {
   const root = `v8os-engine-${version}-${target}`;
+  const expectedPython = target.startsWith("windows-")
+    ? "apps/v8-agent-os-engine/.python/python.exe"
+    : "apps/v8-agent-os-engine/.python/bin/python3";
   const identity = JSON.parse(archiveMember(filename, `${root}/engine-manifest.json`));
   if (identity.schema !== 1 || identity.profile !== "engine" || identity.version !== version
       || identity.target !== target || identity.sourceDirty !== false
       || !/^[a-f0-9]{40}$/.test(identity.sourceCommit || "")
       || identity.engineDir !== "apps/v8-agent-os-engine"
-      || identity.python !== "apps/v8-agent-os-engine/.python/bin/python3"
+      || identity.python !== expectedPython
       || identity.cli !== "apps/v8-agent-os-cli/bin/v8os.mjs"
       || (sourceCommit && identity.sourceCommit !== sourceCommit)) {
     throw new Error("Engine archive identity does not match release version, target or source commit");
@@ -234,6 +237,26 @@ export function prepareUnifiedReleaseAssets({ manifestPath, tag, inputDir, outpu
           if (manifestAsset) releaseFiles.push(manifestAsset);
         }
       }
+    }
+    for (const [targetName, standalone] of Object.entries(manifest.products.server.standaloneTargets || {})) {
+      if (!standalone?.enabled) continue;
+      const engineName = `V8OS-Engine-${manifest.release.version}-${targetName}.tar.gz`;
+      const engineSource = path.join(resolvedInput, "server", engineName);
+      const manifestName = `V8OS-Engine-${manifest.release.version}-${targetName}.json`;
+      const manifestSource = path.join(resolvedInput, "server", manifestName);
+      const hasEngine = fs.existsSync(engineSource) && fs.statSync(engineSource).isFile();
+      const hasManifest = fs.existsSync(manifestSource) && fs.statSync(manifestSource).isFile();
+      if (hasEngine !== hasManifest) throw new Error(`Engine ${targetName} asset and manifest must be published as a pair`);
+      if (!hasEngine) {
+        if (standalone.required) throw new Error(`Required Engine ${targetName} asset is missing: ${engineSource}`);
+        console.warn(`Optional Engine ${targetName} asset is missing: ${engineSource}`);
+        continue;
+      }
+      verifyEngineReleaseAssets({ archive: engineSource, manifest: manifestSource, version: manifest.release.version, target: targetName, sourceCommit });
+      const engine = copyAsset(engineSource, resolvedOutput, engineName, { required: true, label: `Engine ${targetName} asset` });
+      const manifestAsset = copyAsset(manifestSource, resolvedOutput, manifestName, { required: true, label: `Engine ${targetName} manifest` });
+      if (engine) releaseFiles.push(engine);
+      if (manifestAsset) releaseFiles.push(manifestAsset);
     }
   }
 

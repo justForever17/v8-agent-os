@@ -245,6 +245,7 @@ function validateTargets(product, entry, problems) {
 
 function validateStandaloneTargets(entry, problems) {
   const targets = entry?.standaloneTargets;
+  if (targets === undefined) return;
   if (!targets || typeof targets !== "object" || Array.isArray(targets)) {
     problems.push("products.server.standaloneTargets must be an object");
     return;

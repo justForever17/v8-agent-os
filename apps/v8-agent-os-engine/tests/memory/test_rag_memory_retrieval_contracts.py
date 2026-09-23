@@ -330,6 +330,21 @@ def test_passive_query_condensation_does_not_match_it_inside_an_english_word() -
     assert diagnostics["rewrite_applied"] is False
 
 
+def test_passive_query_condensation_preserves_current_query_when_history_is_long() -> None:
+    prior_context = "之前讨论过 RFC-2026-017 的发布和回滚约束。" + (" 历史上下文" * 300)
+    current_query = "它后来怎么处理 RFC-2026-017 的回滚？"
+
+    query, diagnostics = condense_passive_memory_query(
+        [HumanMessage(content=prior_context), HumanMessage(content=current_query)],
+        current_query,
+    )
+
+    assert diagnostics["rewrite_applied"] is True
+    assert len(query) <= 900
+    assert query.endswith(f"当前问题：{current_query}")
+    assert "RFC-2026-017" in query
+
+
 def test_memory_usage_is_marked_only_after_memory_block_materialization(monkeypatch: pytest.MonkeyPatch) -> None:
     knowledge_db = _FakeKnowledgeDB(lambda _query, _scope, _limit: [])
     monkeypatch.setattr(knowledge_db_module, "knowledge_db", knowledge_db)

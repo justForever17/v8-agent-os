@@ -1751,13 +1751,20 @@ class MemoryStore:
                         if candidate_rank < existing_rank:
                             fts_by_id[fact_id] = dict(result)
                 fts_scope_order = [scope] + [item for item in scope_chain if item != scope]
+
+                def _fts_relevance_sort_value(item: Dict[str, Any]) -> float:
+                    try:
+                        return abs(float(item.get("relevance", 9999.0) or 9999.0))
+                    except (TypeError, ValueError):
+                        return 9999.0
+
                 fts_results = sorted(
                     fts_by_id.values(),
                     key=lambda item: (
                         fts_scope_order.index(str(item.get("scope") or "global"))
                         if str(item.get("scope") or "global") in fts_scope_order
                         else len(scope_chain),
-                        abs(float(item.get("relevance", 9999.0) or 9999.0)),
+                        _fts_relevance_sort_value(item),
                     ),
                 )
                 total_fts = len(fts_results)

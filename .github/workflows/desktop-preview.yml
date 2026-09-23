@@ -131,7 +131,7 @@ jobs:
       - name: Pin macOS native deployment target
         if: matrix.os == 'macos'
         shell: bash
-        run: echo 'MACOSX_DEPLOYMENT_TARGET=12.3' >>"$GITHUB_ENV"
+        run: echo 'MACOSX_DEPLOYMENT_TARGET=13.0' >>"$GITHUB_ENV"
 
       - name: Install Linux desktop runtime build dependencies
         if: matrix.os == 'linux'
@@ -309,7 +309,7 @@ jobs:
         shell: bash
         timeout-minutes: 5
         env:
-          MACOSX_DEPLOYMENT_TARGET: "12.3"
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: node scripts/desktop/build-macos-ax-helper.mjs
 
       - name: Verify desktop runtime payload
@@ -378,7 +378,7 @@ jobs:
         timeout-minutes: 35
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          MACOSX_DEPLOYMENT_TARGET: "12.3"
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: node scripts/desktop/build-macos-dmg-with-retry.mjs ${{ matrix.arch }}
 
       - name: Build unsigned Linux desktop preview
@@ -781,7 +781,7 @@ jobs:
           bash scripts/desktop/ci-macos-package-audit.sh \
             "$mount_point/V8 Agent OS.app" \
             "${{ matrix.arch }}" \
-            "12.3"
+            "13.0"
           cat >"$credential_probe" <<'PY'
           import secrets
 

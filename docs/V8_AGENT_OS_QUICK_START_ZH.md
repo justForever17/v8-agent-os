@@ -9,7 +9,7 @@ V8OS 是桌面优先、本地优先的 Agent 工作空间。桌面 Web 用于聊
 | 平台 | 下载形式 |
 | --- | --- |
 | Windows x64 / ARM64 | 桌面安装包 |
-| macOS 12.3 及以上，Intel / Apple Silicon | DMG |
+| macOS 13.0 及以上，Intel / Apple Silicon | DMG |
 | Linux x64 / arm64 | AppImage 或 DEB |
 | Android | Phone APK |
 | Linux Server x64 | 独立 Server tar.gz（Ubuntu22.04/24.04，手工服务路径，Python3.11、Node.js20+） |

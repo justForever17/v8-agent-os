@@ -46,6 +46,28 @@ def test_memory_broker_catalog_lists_domains_without_raw_ledgers() -> None:
     assert "raw" not in json.dumps(payload, ensure_ascii=False).lower()
 
 
+def test_memory_broker_recall_marks_tool_visible_usage_with_stable_event(monkeypatch) -> None:
+    class _VisibleMemoryRuntime(_FakeMemoryRuntime):
+        def __init__(self) -> None:
+            self.mark_calls = []
+
+        def mark_knowledge_injected(self, *, fact_ids, verified=False, event_id=None):
+            self.mark_calls.append(
+                {"fact_ids": list(fact_ids), "verified": verified, "event_id": event_id}
+            )
+            return len(fact_ids)
+
+    runtime = _VisibleMemoryRuntime()
+    monkeypatch.setattr("core.native_tools._get_memory_runtime", lambda: runtime)
+
+    with bind_runtime_context(run_id="run-memory-broker", tool_call_id="call-memory-recall"):
+        payload = json.loads(memory_broker.func(mode="recall", query="prior preference", limit=1))
+
+    assert payload["usageMarkedCount"] == 1
+    assert runtime.mark_calls[0]["fact_ids"] == ["mem-project-preference"]
+    assert runtime.mark_calls[0]["event_id"].startswith("memory-visible:")
+
+
 def test_memory_broker_route_returns_compact_evidence_pack(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("core.native_tools._get_memory_runtime", lambda: _FakeMemoryRuntime())
     monkeypatch.setenv("V8_RESEARCH_LEDGER_PATH", str(tmp_path / "research_ledger.json"))

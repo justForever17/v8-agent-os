@@ -258,6 +258,20 @@ class KnowledgeDB:
             """)
 
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_usage_events (
+                    event_id TEXT NOT NULL,
+                    fact_id TEXT NOT NULL,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (event_id, fact_id),
+                    FOREIGN KEY (fact_id) REFERENCES knowledge(id)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_usage_events_fact ON knowledge_usage_events(fact_id)"
+            )
+
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_resolution_candidates (
                     id TEXT PRIMARY KEY,
                     candidate_fact_id TEXT NOT NULL,
@@ -835,14 +849,48 @@ class KnowledgeDB:
             """
         )
 
-    def mark_knowledge_injected(self, fact_ids: List[str], *, verified: bool = False) -> int:
-        """Record materialized Agent-surface memory context, never preview/search inspection."""
+    def mark_knowledge_injected(
+        self,
+        fact_ids: List[str],
+        *,
+        verified: bool = False,
+        event_id: Optional[str] = None,
+    ) -> int:
+        """Record materialized Agent-surface memory context, optionally once per event."""
         normalized_ids = sorted({str(item or "").strip() for item in fact_ids if str(item or "").strip()})
         if not normalized_ids:
             return 0
+        normalized_event_id = str(event_id or "").strip()
         now = _utc_now_iso()
         placeholders = ",".join("?" for _ in normalized_ids)
         with self._conn() as conn:
+            if normalized_event_id:
+                eligible_rows = conn.execute(
+                    f"""
+                    SELECT id
+                    FROM knowledge
+                    WHERE id IN ({placeholders})
+                      AND status = 'active'
+                      AND COALESCE(lifecycle_state, 'active') = 'active'
+                    """,
+                    tuple(normalized_ids),
+                ).fetchall()
+                eligible_ids = [str(row["id"]) for row in eligible_rows]
+                new_ids: List[str] = []
+                for fact_id in eligible_ids:
+                    cursor = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO knowledge_usage_events (event_id, fact_id, verified, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (normalized_event_id, fact_id, 1 if verified else 0, now),
+                    )
+                    if int(cursor.rowcount or 0) > 0:
+                        new_ids.append(fact_id)
+                if not new_ids:
+                    return 0
+                normalized_ids = new_ids
+                placeholders = ",".join("?" for _ in normalized_ids)
             if verified:
                 cursor = conn.execute(
                     f"""

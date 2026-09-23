@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import inspect
 import re
 import sys
@@ -17,6 +18,7 @@ __all__ = [
     "_memory_broker_preview",
     "_memory_broker_score",
     "_memory_broker_compact_recall_item",
+    "_mark_memory_items_visible",
     "_memory_broker_response",
     "_memory_broker_catalog",
     "_memory_evidence_pack",
@@ -142,6 +144,77 @@ def _memory_runtime_unified_recall(
             if name in signature.parameters
         }
     return method(**kwargs)
+
+
+def _memory_visibility_event_id(
+    *,
+    runtime_context: Optional[dict[str, Any]],
+    mode: str,
+    query: str,
+    fact_ids: list[str],
+) -> str | None:
+    context = dict(runtime_context or {})
+    identity = str(
+        context.get("tool_call_id")
+        or context.get("toolCallId")
+        or context.get("run_id")
+        or context.get("runId")
+        or ""
+    ).strip()
+    if not identity:
+        return None
+    payload = json.dumps(
+        {
+            "identity": identity,
+            "mode": str(mode or "recall").strip().lower(),
+            "query": str(query or "").strip(),
+            "factIds": sorted({str(item or "").strip() for item in fact_ids if str(item or "").strip()}),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()[:40]
+    return f"memory-visible:{digest}"
+
+
+def _mark_memory_items_visible(
+    runtime: Any,
+    items: list[dict[str, Any]],
+    *,
+    mode: str,
+    query: str,
+    runtime_context: Optional[dict[str, Any]] = None,
+) -> int:
+    fact_ids = sorted(
+        {
+            str(item.get("id") or "").strip()
+            for item in list(items or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+    )
+    if not fact_ids:
+        return 0
+    marker = getattr(runtime, "mark_knowledge_injected", None)
+    if not callable(marker):
+        return 0
+    kwargs: dict[str, Any] = {"fact_ids": fact_ids}
+    event_id = _memory_visibility_event_id(
+        runtime_context=runtime_context,
+        mode=mode,
+        query=query,
+        fact_ids=fact_ids,
+    )
+    if event_id:
+        try:
+            signature = inspect.signature(marker)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is None or "event_id" in signature.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            kwargs["event_id"] = event_id
+    return int(marker(**kwargs) or 0)
 
 
 def _memory_broker_clamp_limit(limit: int | None, *, default: int = 5, maximum: int = 12) -> int:
@@ -712,7 +785,8 @@ def memory_broker(
     evidence pack across Memory Core, Research Experience, Workflow and Engineering proof.
     A no-match result is final for the current query. Continue the current task instead of
     retrying memory with near-duplicate wording in the same user turn.
-    This tool does not update or delete memory.
+    This tool does not update or delete memory. Read results may record a
+    deduplicated model-visible usage event for lifecycle observability.
     """
     normalized_mode = str(mode or "recall").strip().lower()
     normalized_detail = str(detail_level or "summary").strip().lower()
@@ -796,6 +870,20 @@ def memory_broker(
             for pack in packs:
                 if isinstance(pack, dict):
                     pack["scope"] = surface_scope
+            visible_items = [
+                item
+                for pack in packs
+                if isinstance(pack, dict)
+                for item in list(pack.get("selectedEvidence") or [])
+                if isinstance(item, dict)
+            ]
+            usage_marked_count = _mark_memory_items_visible(
+                runtime,
+                visible_items,
+                mode=normalized_mode,
+                query=search_text,
+                runtime_context=ownership.get("runtimeContext"),
+            )
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
@@ -806,6 +894,7 @@ def memory_broker(
                 rejectedDomains=rejected_domains,
                 summary=f"Routed memory query to {len(packs)} domain(s); selected {selected_count} evidence item(s).",
                 evidencePacks=packs,
+                usageMarkedCount=usage_marked_count,
                 omitted={"rawLedgers": "Use domain-specific broker/detail tool only when the compact evidence is insufficient."},
                 nextAction="Use selectedEvidence only when scope/confidence fits; follow recommendedNextAction per domain.",
             )
@@ -833,6 +922,13 @@ def memory_broker(
                 for item in results[:effective_limit]
                 if isinstance(item, dict)
             ]
+            usage_marked_count = _mark_memory_items_visible(
+                runtime,
+                items,
+                mode=normalized_mode,
+                query=search_text,
+                runtime_context=ownership.get("runtimeContext"),
+            )
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
@@ -841,6 +937,7 @@ def memory_broker(
                 scope=surface_scope,
                 summary=f"Found {len(items)} relevant memory item(s)." if items else "No matching prior memory.",
                 items=items,
+                usageMarkedCount=usage_marked_count,
                 nextAction="Use get_item/read_day/graph_neighbors if a result needs deeper verification." if items else None,
             )
 
@@ -863,14 +960,18 @@ def memory_broker(
             )
             exact = [item for item in results if str(item.get("id") or "") == search_text]
             selected = exact or results[:effective_limit]
-            runtime.mark_knowledge_injected(
-                fact_ids=[str(item.get("id") or "") for item in selected if isinstance(item, dict) and item.get("id")]
-            )
             items = [
                 _memory_broker_compact_recall_item(item, allowed_scopes=effective_scopes)
                 for item in selected
                 if isinstance(item, dict)
             ]
+            usage_marked_count = _mark_memory_items_visible(
+                runtime,
+                items,
+                mode=normalized_mode,
+                query=search_text,
+                runtime_context=ownership.get("runtimeContext"),
+            )
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
@@ -878,6 +979,7 @@ def memory_broker(
                 query=search_text,
                 summary=f"Loaded {len(items)} memory item(s)." if items else "No memory item matched.",
                 items=items,
+                usageMarkedCount=usage_marked_count,
                 nextAction="Treat no-match as memory insufficient; do not invent prior facts." if not items else "Use the item scope and confidence before acting on it.",
             )
 

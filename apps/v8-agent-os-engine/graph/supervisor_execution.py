@@ -1,4 +1,5 @@
 import sys
+import hashlib
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -80,6 +81,7 @@ def _safe_print(value) -> None:
 
 def _mark_materialized_memory_blocks(messages) -> None:
     fact_ids: set[str] = set()
+    block_contents: list[str] = []
     for message in messages:
         if not isinstance(message, SystemMessage):
             continue
@@ -87,6 +89,7 @@ def _mark_materialized_memory_blocks(messages) -> None:
         if str(context_block.get("type") or "").strip() != "memory_recall":
             continue
         metadata = dict(context_block.get("metadata") or {})
+        block_contents.append(str(getattr(message, "content", "") or ""))
         for fact_id in metadata.get("memory_ids") or []:
             normalized_id = str(fact_id or "").strip()
             if normalized_id:
@@ -95,7 +98,29 @@ def _mark_materialized_memory_blocks(messages) -> None:
         return
     from core.knowledge_db import knowledge_db
 
-    knowledge_db.mark_knowledge_injected(sorted(fact_ids))
+    runtime_context = get_runtime_context()
+    identity = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or ""
+    ).strip()
+    event_id = None
+    if identity:
+        payload = json.dumps(
+            {
+                "identity": identity,
+                "surface": "supervisor_memory_context",
+                "blocks": block_contents,
+                "factIds": sorted(fact_ids),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        event_id = f"memory-visible:{hashlib.sha256(payload.encode('utf-8', errors='ignore')).hexdigest()[:40]}"
+    if event_id:
+        knowledge_db.mark_knowledge_injected(sorted(fact_ids), event_id=event_id)
+    else:
+        knowledge_db.mark_knowledge_injected(sorted(fact_ids))
 
 
 def _tool_signature(message: AIMessage) -> str | None:

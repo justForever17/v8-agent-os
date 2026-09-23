@@ -25,6 +25,7 @@ def _sample_dataset():
                 [{"role": "user", "content": "I like Adidas shoes.", "has_answer": True}],
                 [{"role": "user", "content": "Actually I now prefer Nike shoes.", "has_answer": True}],
             ],
+            "answer_session_ids": ["s2"],
         },
         {
             "question_id": "sample_knowledge_update_1",
@@ -38,6 +39,7 @@ def _sample_dataset():
                 [{"role": "user", "content": "I am trying Cursor this month."}],
                 [{"role": "user", "content": "For daily work I settled on VS Code.", "has_answer": True}],
             ],
+            "answer_session_ids": ["s4"],
         },
         {
             "question_id": "sample_temporal_1_abs",
@@ -67,6 +69,7 @@ def test_loader_preserves_longmemeval_fields(tmp_path):
     ]
     assert instances[0].question_type == "single-session-preference"
     assert instances[0].haystack_dates == ["2026-01-30", "2026-04-30"]
+    assert instances[0].answer_session_ids == ["s2"]
 
 
 def test_harness_generates_official_compatible_jsonl(tmp_path):

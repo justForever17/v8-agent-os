@@ -78,6 +78,33 @@ def test_evidence_scores_usage_and_tombstone_audit_are_persistent(tmp_path: Path
     assert "admin-action:delete" in audit["evidence_refs_json"]
 
 
+def test_knowledge_usage_event_is_idempotent_per_fact_and_event(tmp_path: Path) -> None:
+    database = KnowledgeDB(tmp_path / "knowledge.db")
+    fact = database.write_knowledge(
+        fact="重复 materialization 不应重复计数",
+        scope="global",
+        fact_id="fact-usage-event",
+    )
+    fact_id = str(fact["factId"])
+
+    assert database.mark_knowledge_injected([fact_id], event_id="memory-visible:run-1") == 1
+    assert database.mark_knowledge_injected([fact_id], event_id="memory-visible:run-1") == 0
+    assert database.mark_knowledge_injected([fact_id], event_id="memory-visible:run-2") == 1
+
+    with database._conn() as conn:
+        row = conn.execute("SELECT usage_count FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+        events = conn.execute(
+            "SELECT event_id, fact_id FROM knowledge_usage_events WHERE fact_id = ? ORDER BY event_id",
+            (fact_id,),
+        ).fetchall()
+
+    assert row["usage_count"] == 2
+    assert [(item["event_id"], item["fact_id"]) for item in events] == [
+        ("memory-visible:run-1", fact_id),
+        ("memory-visible:run-2", fact_id),
+    ]
+
+
 def test_graph_relation_accepts_independent_evidence_and_survives_fact_tombstone(tmp_path: Path) -> None:
     database = KnowledgeDB(tmp_path / "knowledge.db")
     fact = database.write_knowledge(

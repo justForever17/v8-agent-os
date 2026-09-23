@@ -194,8 +194,14 @@ class KnowledgeService:
             knowledge_projection_service.process_outbox(limit=10)
         return deleted
 
-    def mark_knowledge_injected(self, *, fact_ids: List[str], verified: bool = False) -> int:
-        return knowledge_db.mark_knowledge_injected(fact_ids, verified=verified)
+    def mark_knowledge_injected(
+        self,
+        *,
+        fact_ids: List[str],
+        verified: bool = False,
+        event_id: Optional[str] = None,
+    ) -> int:
+        return knowledge_db.mark_knowledge_injected(fact_ids, verified=verified, event_id=event_id)
 
     def create_cleanup_plan(
         self,

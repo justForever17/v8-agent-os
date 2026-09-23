@@ -33,6 +33,7 @@ class LongMemEvalInstance:
     haystack_session_ids: list[str] = field(default_factory=list)
     haystack_dates: list[str] = field(default_factory=list)
     haystack_sessions: list[list[dict[str, Any]]] = field(default_factory=list)
+    answer_session_ids: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -246,37 +247,69 @@ class LongMemEvalV8Harness:
 
 
 @contextmanager
-def isolated_v8_memory_store() -> Iterator[memory_store_module.MemoryStore]:
+def isolated_v8_memory_store(
+    *,
+    memory_config: dict[str, Any] | None = None,
+    vector_store: Any | None = None,
+) -> Iterator[memory_store_module.MemoryStore]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         memory_root = root / "memory"
         knowledge_db = KnowledgeDB(db_path=root / "knowledge.db")
+        from core.knowledge_projection import knowledge_projection_service
+
+        projection_vector_store = vector_store or _NoopVectorStore()
+        config = {
+            "recall_strategy": "keyword",
+            "fts_enabled": True,
+            "graph_enabled": True,
+            "retrieval_threshold": 0.05,
+            "recall_top_k": 8,
+            "max_context_tokens": 6000,
+            "passive_summary_enabled": False,
+            "passive_memory_map_enabled": False,
+            "passive_recent_activity_teaser_enabled": False,
+            "passive_knowledge_graph_summary_enabled": True,
+        }
+        config.update(memory_config or {})
         with patch.object(memory_store_module, "CONFIG_DIR", root), patch.object(
             memory_store_module,
             "MEMORY_ROOT",
             memory_root,
         ), patch("core.knowledge_db.knowledge_db", knowledge_db), patch(
             "core.storage.storage.get_memory_config",
-            return_value={
-                "recall_strategy": "keyword",
-                "fts_enabled": True,
-                "graph_enabled": True,
-                "retrieval_threshold": 0.05,
-                "recall_top_k": 8,
-                "max_context_tokens": 6000,
-                "passive_summary_enabled": False,
-                "passive_memory_map_enabled": False,
-                "passive_recent_activity_teaser_enabled": False,
-                "passive_knowledge_graph_summary_enabled": True,
-            },
-        ), patch("core.vector_store.get_vector_store", return_value=_NoopVectorStore()):
+            return_value=config,
+        ), patch("core.vector_store.get_vector_store", return_value=projection_vector_store), patch.object(
+            knowledge_projection_service,
+            "db",
+            knowledge_db,
+        ), patch.object(
+            knowledge_projection_service,
+            "memory_root",
+            memory_root,
+        ), patch.object(
+            knowledge_projection_service,
+            "_root_vector_store",
+            None,
+        ), patch.object(
+            knowledge_projection_service,
+            "_get_vector_store",
+            return_value=projection_vector_store,
+        ):
             yield memory_store_module.MemoryStore()
 
 
 class _NoopVectorStore:
     collection = None
 
-    def add_documents(self, *_args: Any, **_kwargs: Any) -> None:
+    def add_documents(self, documents: Any, *_args: Any, **_kwargs: Any) -> list[str]:
+        return [
+            str(item.get("id") or "")
+            for item in list(documents or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+
+    def delete_by_ids(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
 
@@ -293,6 +326,7 @@ def _normalize_instance(row: dict[str, Any]) -> LongMemEvalInstance:
         haystack_session_ids=[str(item) for item in list(row.get("haystack_session_ids") or [])],
         haystack_dates=[str(item) for item in list(row.get("haystack_dates") or [])],
         haystack_sessions=[list(item or []) for item in list(row.get("haystack_sessions") or [])],
+        answer_session_ids=[str(item) for item in list(row.get("answer_session_ids") or [])],
         raw=dict(row),
     )
 

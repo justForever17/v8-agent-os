@@ -10,8 +10,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import core.knowledge_db as knowledge_db_module
 import core.storage as storage_module
 import core.vector_store as vector_store_module
+from core.knowledge_db import KnowledgeDB
 from core.memory_store import MemoryStore
 from core.vector_store import VectorStore
+from erc.runtime_context import bind_runtime_context
 from graph.supervisor_context import condense_passive_memory_query
 from graph.supervisor_execution import _mark_materialized_memory_blocks
 
@@ -368,3 +370,38 @@ def test_memory_usage_is_marked_only_after_memory_block_materialization(monkeypa
     )
 
     assert knowledge_db.mark_calls == [{"fact_ids": ["fact-a", "fact-b"], "verified": False}]
+
+
+def test_materialized_memory_usage_is_idempotent_for_one_runtime_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    database = KnowledgeDB(tmp_path / "knowledge.db")
+    fact = database.write_knowledge(
+        fact="memory context event idempotency",
+        scope="global",
+        fact_id="fact-materialized-event",
+    )
+    monkeypatch.setattr(knowledge_db_module, "knowledge_db", database)
+    messages = [
+        SystemMessage(
+            content="memory",
+            additional_kwargs={
+                "context_block": {
+                    "type": "memory_recall",
+                    "metadata": {"memory_ids": [str(fact["factId"])]},
+                }
+            },
+        )
+    ]
+
+    with bind_runtime_context(run_id="run-materialize"):
+        _mark_materialized_memory_blocks(messages)
+        _mark_materialized_memory_blocks(messages)
+
+    with database._conn() as conn:
+        row = conn.execute(
+            "SELECT usage_count FROM knowledge WHERE id = ?",
+            (str(fact["factId"]),),
+        ).fetchone()
+    assert row["usage_count"] == 1

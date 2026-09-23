@@ -327,6 +327,7 @@ jobs:
         timeout-minutes: 20
         run: |
           rm -f apps/v8-agent-os-engine/.playwright-browsers/DEGRADED.txt
+          export PLAYWRIGHT_BROWSERS_PATH="$PWD/apps/v8-agent-os-engine/.playwright-browsers"
           if [[ "${{ matrix.os }}" == "windows" ]]; then
             apps/v8-agent-os-engine/.python/python.exe -m playwright install chromium
           else

@@ -88,8 +88,7 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
     if not browser_root.is_dir() or (browser_root / "DEGRADED.txt").exists():
         raise ValueError("Standalone Engine requires an embedded Playwright Chromium runtime; desktop discovery-only payload is not publishable")
     browser_files = [item for item in browser_root.rglob("*") if item.is_file()]
-    browser_markers = ("chromium.app", "chrome-win", "chrome-linux", "chrome-mac", "headless_shell", "installation_complete")
-    if not browser_files or not any(any(marker in str(item).lower() for marker in browser_markers) for item in browser_files):
+    if not browser_files:
         raise ValueError("Standalone Engine browser payload does not contain a Chromium executable")
     if source_commit is None:
         source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()

@@ -58,3 +58,9 @@ test("Web and Phone animate only the terminal node of the active trace segment",
   assert.match(phone, /index === fallbackBlocks\.length - 1/);
   assert.doesNotMatch(phone, /isExecuting=\{assistantActive\}/);
 });
+
+test("Web reserves the assistant action row while a streamed message settles", () => {
+  const web = readText("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  assert.match(web, /\(!isLoading && message\.content\) \|\| \(isLoading && message\.content\)/);
+  assert.match(web, /isLoading \? \(\s*<div className="h-6" aria-hidden="true"/);
+});

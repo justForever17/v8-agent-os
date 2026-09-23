@@ -78,6 +78,26 @@ def _safe_print(value) -> None:
     print(_safe_console_text(value))
 
 
+def _mark_materialized_memory_blocks(messages) -> None:
+    fact_ids: set[str] = set()
+    for message in messages:
+        if not isinstance(message, SystemMessage):
+            continue
+        context_block = dict(getattr(message, "additional_kwargs", {}) or {}).get("context_block") or {}
+        if str(context_block.get("type") or "").strip() != "memory_recall":
+            continue
+        metadata = dict(context_block.get("metadata") or {})
+        for fact_id in metadata.get("memory_ids") or []:
+            normalized_id = str(fact_id or "").strip()
+            if normalized_id:
+                fact_ids.add(normalized_id)
+    if not fact_ids:
+        return
+    from core.knowledge_db import knowledge_db
+
+    knowledge_db.mark_knowledge_injected(sorted(fact_ids))
+
+
 def _tool_signature(message: AIMessage) -> str | None:
     tool_calls = list(getattr(message, "tool_calls", None) or [])
     if not tool_calls:
@@ -172,6 +192,7 @@ def prepare_supervisor_messages(
         keep_recent_override=5,
     )
     prepared = prepared_context.messages
+    _mark_materialized_memory_blocks(prepared)
     if prompt_segments:
         for index, message in enumerate(prepared):
             if not isinstance(message, SystemMessage):

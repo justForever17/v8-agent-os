@@ -26,7 +26,7 @@ REPLAY_TTL = 60
 
 
 def phone_pairing_origin(value: str) -> str:
-    """Validate an explicit Phone origin; never infer it from an Admin port."""
+    """Validate a Phone origin; private LAN HTTP is allowed, public origins require HTTPS."""
     value = str(value or "").strip().rstrip("/").removesuffix("/api")
     try:
         # Browser/Phone URL parsers treat backslashes as separators and strip
@@ -35,7 +35,7 @@ def phone_pairing_origin(value: str) -> str:
             return ""
         parsed = urlsplit(value)
         host = (parsed.hostname or "").rstrip(".").lower()
-        if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
             return ""
         # Accessing port also rejects malformed/out-of-range ports.
         _ = parsed.port
@@ -59,6 +59,10 @@ def phone_pairing_origin(value: str) -> str:
             address = getattr(address, "ipv4_mapped", None) or address
             if address.is_loopback or address.is_unspecified or address.is_link_local or address.is_multicast:
                 return ""
+            if parsed.scheme == "http" and not address.is_private:
+                return ""
+        elif parsed.scheme == "http":
+            return ""
         return value
     except (ValueError, UnicodeError):
         return ""
@@ -546,6 +550,7 @@ class ClientIdentityService:
         base = base_url.rstrip("/").removesuffix("/api")
         instance_id = self.instance()["instanceId"]
         gateway = configured_remote.get("phoneGateway") or {}
+        gateway_port = int(gateway.get("port") or 9532)
         active_id = remote.get("activeProfileId") or ""
         profiles, endpoints, warnings, seen = [], [], [], set()
         if not remote.get("enabled", True):
@@ -563,9 +568,25 @@ class ClientIdentityService:
         # derive a Phone endpoint by replacing an old Admin or internal port.
         append("current-engine", "manual_url", base, 0)
         public = approved_url(gateway.get("publicBaseUrl") or "")
+        lan_urls: list[str] = []
+        try:
+            from core.v8_link import _candidate_ips
+            for candidate in _candidate_ips():
+                if not candidate.get("private"):
+                    continue
+                address = str(candidate.get("address") or "").strip()
+                if not address:
+                    continue
+                host = f"[{address}]" if ":" in address and not address.startswith("[") else address
+                lan_urls.append(f"http://{host}:{gateway_port}")
+        except Exception:
+            lan_urls = []
+        lan_urls = list(dict.fromkeys(lan_urls))
         if remote.get("enabled", True) and gateway.get("enabled") is not False:
             append("phone-gateway", "manual_url", public, 10)
-        if not public:
+            for index, lan_url in enumerate(lan_urls):
+                append(f"phone-gateway-lan-{index}", "lan", lan_url, 11 + index)
+        if not public and not lan_urls:
             warnings.append("phone_gateway_public_url_not_configured")
         with self.database() as db:
             paired_origins = {row[0] for row in db.execute("SELECT DISTINCT base_url FROM client_pairing_tickets WHERE consumed_at IS NOT NULL AND revoked_at IS NULL")}
@@ -589,7 +610,7 @@ class ClientIdentityService:
             if remote.get("enabled", True) and item["enabled"]:
                 append(identifier, kind, phone, 20 + index)
         active = next((item for item in profiles if item["id"] == active_id and item["enabled"]), {})
-        pairing_base = active.get("phoneBaseUrl") or public
+        pairing_base = active.get("phoneBaseUrl") or public or (lan_urls[0] if lan_urls else "")
         pairing_reason = "remote_link_disabled" if not remote.get("enabled", True) else (
             "phone_gateway_disabled" if gateway.get("enabled") is False else (
                 "" if pairing_base else "pairing_reachable_https_required"))
@@ -598,7 +619,7 @@ class ClientIdentityService:
         return {"ok": True, "kind": "v8_client_link_manifest", "version": "2", "serverId": instance_id,
                 "instanceId": instance_id, "ownerMode": "single_owner", "clientGateway": "engine", "transportKind": active_kind, "activeProfileId": active_id,
                 "admin": {"baseUrl": base, "apiBaseUrl": base + "/api"},
-                "phoneGateway": {"enabled": gateway.get("enabled", True), "port": int(gateway.get("port") or 9532), "publicBaseUrl": public},
+                "phoneGateway": {"enabled": gateway.get("enabled", True), "port": gateway_port, "publicBaseUrl": public, "lanBaseUrls": lan_urls},
                 "pairing": pairing,
                 "endpoints": endpoints, "profiles": profiles, "capabilities": {"adminProxy": False, "pairing": True,
                     "publicRegistration": False, "phoneUpload": True, "artifactPreview": True, "runtimeEvents": True, "networkSupervisorPeers": True},

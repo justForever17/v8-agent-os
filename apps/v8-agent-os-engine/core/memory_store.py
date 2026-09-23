@@ -136,6 +136,8 @@ class MemoryStore:
     Layer 2: 知识库 (knowledge/areas/{scope}/items.json)
     Layer 3: 时序日志 (daily/YYYY/MM/YYYY-MM-DD.md)
     """
+
+    _RRF_K = 60
     
     def __init__(self):
         self.memory_path = MEMORY_ROOT / "MEMORY.md"
@@ -1443,6 +1445,26 @@ class MemoryStore:
             score = 0.0
         return max(0.0, min(score, 1.0))
 
+    def _normalize_recall_evidence_refs(self, value: Any) -> List[str]:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                value = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                value = [text]
+        if not isinstance(value, (list, tuple, set)):
+            return []
+        refs: List[str] = []
+        for item in value:
+            ref = str(item or "").strip()
+            if ref and ref not in refs:
+                refs.append(ref)
+            if len(refs) >= 8:
+                break
+        return refs
+
     def _normalize_fts_relevance(self, raw_rank: Any, *, position: int, total: int) -> float:
         try:
             rank_value = abs(float(raw_rank))
@@ -1451,6 +1473,28 @@ class MemoryStore:
         rank_score = 1.0 / (1.0 + rank_value)
         positional_score = max(0.0, 1.0 - (position / max(total, 1)))
         return max(0.0, min((rank_score * 0.7) + (positional_score * 0.3), 1.0))
+
+    def _apply_recall_fusion(
+        self,
+        pool: Dict[str, Dict[str, Any]],
+        *,
+        active_channels: List[str],
+    ) -> None:
+        channel_count = max(1, len(set(active_channels)))
+        normalization = channel_count / (self._RRF_K + 1)
+        for item in pool.values():
+            channel_ranks = item.get("channel_ranks") or {}
+            reciprocal_rank_sum = 0.0
+            for rank in channel_ranks.values():
+                try:
+                    normalized_rank = max(1, int(rank))
+                except (TypeError, ValueError):
+                    continue
+                reciprocal_rank_sum += 1.0 / (self._RRF_K + normalized_rank)
+            if reciprocal_rank_sum <= 0:
+                continue
+            fusion_score = max(0.0, min(reciprocal_rank_sum / normalization, 1.0))
+            item["fusion_score"] = fusion_score
 
     def _merge_recall_candidate(self, pool: Dict[str, Dict[str, Any]], candidate: Dict[str, Any]) -> None:
         candidate_id = str(candidate.get("id") or "").strip()
@@ -1466,7 +1510,22 @@ class MemoryStore:
             "final_relevance_score": self._normalize_recall_score(candidate.get("final_relevance_score")),
             "accepted": bool(candidate.get("accepted", False)),
             "reject_reason": str(candidate.get("reject_reason") or "").strip(),
+            "score_available": bool(candidate.get("score_available", True)),
+            "score_source": str(candidate.get("score_source") or "").strip(),
+            "channel_ranks": {},
+            "channel_scores": {},
+            "evidence_refs": self._normalize_recall_evidence_refs(candidate.get("evidence_refs")),
+            "lineage_id": str(candidate.get("lineage_id") or "").strip(),
+            "revision_no": candidate.get("revision_no"),
         }
+        channel = str(candidate.get("channel") or candidate.get("source") or "unknown").strip() or "unknown"
+        try:
+            channel_rank = max(1, int(candidate.get("channel_rank")))
+        except (TypeError, ValueError):
+            channel_rank = None
+        if channel_rank is not None:
+            normalized_candidate["channel_ranks"][channel] = channel_rank
+        normalized_candidate["channel_scores"][channel] = normalized_candidate["raw_relevance_score"]
         existing = pool.get(candidate_id)
         if existing is None:
             pool[candidate_id] = normalized_candidate
@@ -1481,6 +1540,30 @@ class MemoryStore:
             self._normalize_recall_score(existing.get("raw_relevance_score")),
             normalized_candidate["raw_relevance_score"],
         )
+        existing["score_available"] = bool(existing.get("score_available", True) or normalized_candidate["score_available"])
+        score_sources = {
+            item.strip()
+            for item in f"{existing.get('score_source', '')}+{normalized_candidate['score_source']}".split("+")
+            if item.strip()
+        }
+        existing["score_source"] = "+".join(sorted(score_sources))
+        for channel_name, channel_rank in normalized_candidate["channel_ranks"].items():
+            existing.setdefault("channel_ranks", {})[channel_name] = min(
+                int(channel_rank),
+                int(existing.get("channel_ranks", {}).get(channel_name, channel_rank)),
+            )
+        existing.setdefault("channel_scores", {}).update(normalized_candidate["channel_scores"])
+        evidence_refs = list(existing.get("evidence_refs") or [])
+        for ref in normalized_candidate["evidence_refs"]:
+            if ref not in evidence_refs:
+                evidence_refs.append(ref)
+            if len(evidence_refs) >= 8:
+                break
+        existing["evidence_refs"] = evidence_refs
+        if not existing.get("lineage_id") and normalized_candidate.get("lineage_id"):
+            existing["lineage_id"] = normalized_candidate["lineage_id"]
+        if not existing.get("revision_no") and normalized_candidate.get("revision_no") is not None:
+            existing["revision_no"] = normalized_candidate["revision_no"]
         if not str(existing.get("fact") or "").strip() and normalized_candidate["fact"]:
             existing["fact"] = normalized_candidate["fact"]
         if not str(existing.get("category") or "").strip():
@@ -1553,6 +1636,14 @@ class MemoryStore:
             "scopes": list(scopes or []),
             "allowed_scopes": list(allowed_scopes),
             "recall_strategy": recall_strategy,
+            "fusion_strategy": "rrf",
+            "rrf_k": self._RRF_K,
+            "fusion_channels": [
+                channel
+                for channel, enabled in (("vector", use_vector), ("fts5", use_fts))
+                if enabled
+            ],
+            "channel_candidate_counts": {},
             "threshold_snapshot": retrieval_threshold,
             "effective_acceptance_threshold": effective_acceptance_threshold,
             "seed_candidate_count": 0,
@@ -1575,7 +1666,16 @@ class MemoryStore:
                     top_k=max(effective_limit * 2, 6),
                     fetch_k=max(effective_limit * 4, 20),
                 )
-                for result in vector_results:
+                vector_candidate_count = 0
+                vector_score_sources: set[str] = set()
+                for channel_rank, result in enumerate(vector_results, start=1):
+                    score_available = bool(result.get("score_available", result.get("relevance_score") is not None))
+                    if not score_available:
+                        diagnostics["vector_degraded"] = True
+                        diagnostics.setdefault("vector_degraded_reasons", []).append(
+                            str(result.get("score_source") or "missing_score")
+                        )
+                        continue
                     fact_id = result["id"]
                     parent_id = result.get("metadata", {}).get("parent_id")
                     final_fact = result["text"]
@@ -1594,6 +1694,9 @@ class MemoryStore:
                         continue
                     if not self._is_injectable_knowledge(final_id):
                         continue
+                    vector_candidate_count += 1
+                    if result.get("score_source"):
+                        vector_score_sources.add(str(result["score_source"]))
                     self._merge_recall_candidate(
                         seed_candidates,
                         {
@@ -1602,9 +1705,18 @@ class MemoryStore:
                             "category": result.get("metadata", {}).get("category", "general"),
                             "scope": item_scope,
                             "source": "vector",
+                            "channel": "vector",
+                            "channel_rank": channel_rank,
                             "raw_relevance_score": result.get("relevance_score", 0.0),
+                            "score_available": score_available,
+                            "score_source": result.get("score_source") or "vector",
+                            "lineage_id": result.get("metadata", {}).get("lineage_id"),
+                            "revision_no": result.get("metadata", {}).get("revision_no"),
                         },
                     )
+                diagnostics["channel_candidate_counts"]["vector"] = vector_candidate_count
+                if vector_score_sources:
+                    diagnostics["vector_score_sources"] = sorted(vector_score_sources)
             except Exception as exc:
                 diagnostics["vector_error"] = str(exc)
                 diagnostics["vector_degraded"] = True
@@ -1612,8 +1724,44 @@ class MemoryStore:
 
         if use_fts:
             try:
-                fts_results = knowledge_db.fts_search(query, limit=max(effective_limit * 4, 8))
+                fts_limit = max(effective_limit * 4, 8)
+                # Query every allowed scope before the per-channel limit. A
+                # workspace query may still use global memories as fallback;
+                # excluding global here would silently drop that contract.
+                fts_query_scopes = list(dict.fromkeys(scope_chain)) or ["global"]
+                fts_by_id: Dict[str, Dict[str, Any]] = {}
+                for query_scope in fts_query_scopes:
+                    scoped_results = knowledge_db.fts_search(query, scope=query_scope, limit=fts_limit)
+                    for result in scoped_results:
+                        fact_id = str(result.get("id") or "").strip()
+                        if not fact_id:
+                            continue
+                        existing = fts_by_id.get(fact_id)
+                        if existing is None:
+                            fts_by_id[fact_id] = dict(result)
+                            continue
+                        try:
+                            existing_rank = abs(float(existing.get("relevance")))
+                        except (TypeError, ValueError):
+                            existing_rank = 9999.0
+                        try:
+                            candidate_rank = abs(float(result.get("relevance")))
+                        except (TypeError, ValueError):
+                            candidate_rank = 9999.0
+                        if candidate_rank < existing_rank:
+                            fts_by_id[fact_id] = dict(result)
+                fts_scope_order = [scope] + [item for item in scope_chain if item != scope]
+                fts_results = sorted(
+                    fts_by_id.values(),
+                    key=lambda item: (
+                        fts_scope_order.index(str(item.get("scope") or "global"))
+                        if str(item.get("scope") or "global") in fts_scope_order
+                        else len(scope_chain),
+                        abs(float(item.get("relevance", 9999.0) or 9999.0)),
+                    ),
+                )
                 total_fts = len(fts_results)
+                fts_candidate_count = 0
                 for index, result in enumerate(fts_results):
                     fact_id = result.get("id")
                     final_fact = result.get("fact", "")
@@ -1636,6 +1784,7 @@ class MemoryStore:
                                 final_id = parent_row[0]
                     if not self._is_injectable_knowledge(str(final_id or "")):
                         continue
+                    fts_candidate_count += 1
                     self._merge_recall_candidate(
                         seed_candidates,
                         {
@@ -1644,21 +1793,36 @@ class MemoryStore:
                             "category": result.get("category", "general"),
                             "scope": item_scope,
                             "source": "fts5",
+                            "channel": "fts5",
+                            "channel_rank": index + 1,
                             "raw_relevance_score": self._normalize_fts_relevance(
                                 result.get("relevance"),
                                 position=index,
                                 total=total_fts,
                             ),
+                            "score_available": True,
+                            "score_source": "fts_rank",
+                            "evidence_refs": result.get("evidence_refs_json"),
+                            "lineage_id": result.get("lineage_id"),
+                            "revision_no": result.get("revision_no"),
                         },
                     )
+                diagnostics["channel_candidate_counts"]["fts5"] = fts_candidate_count
+                diagnostics["fts_query_scopes"] = list(fts_query_scopes)
             except Exception as exc:
                 diagnostics["fts5_error"] = str(exc)
                 diagnostics["fts5_degraded"] = True
                 logger.warning(f"[MemoryStore] FTS5 search error in unified_recall: {exc}")
 
+        self._apply_recall_fusion(
+            seed_candidates,
+            active_channels=[channel for channel in ("vector", "fts5") if channel in diagnostics["fusion_channels"]],
+        )
+
         seed_items = sorted(
             seed_candidates.values(),
             key=lambda item: (
+                self._normalize_recall_score(item.get("fusion_score")),
                 self._normalize_recall_score(item.get("raw_relevance_score")),
                 str(item.get("source") or ""),
             ),
@@ -1699,6 +1863,9 @@ class MemoryStore:
                                 "scope": str(relation.get("scope") or "global"),
                                 "source": "graph",
                                 "raw_relevance_score": base_graph_score,
+                                "evidence_refs": relation.get("evidence_refs") or relation.get("evidenceRefs"),
+                                "lineage_id": relation.get("lineage_id") or relation.get("lineageId"),
+                                "revision_no": relation.get("revision_no") or relation.get("revisionNo"),
                             },
                         )
                 diagnostics["graph_candidate_count"] = sum(
@@ -1768,16 +1935,22 @@ class MemoryStore:
                     "raw_relevance_score": raw_score,
                     "final_relevance_score": final_score,
                     "relevance_score": final_score,
+                    "fusion_score": self._normalize_recall_score(item.get("fusion_score")),
                     "accepted": accepted,
                     "reject_reason": "" if accepted else "below_threshold",
                 }
             )
 
+        def _sort_key(item: Dict[str, Any]) -> tuple[float, float, float]:
+            final_score = self._normalize_recall_score(item.get("final_relevance_score"))
+            fusion_score = self._normalize_recall_score(item.get("fusion_score"))
+            raw_score = self._normalize_recall_score(item.get("raw_relevance_score"))
+            if reranked_scores:
+                return final_score, fusion_score, raw_score
+            return fusion_score, raw_score, final_score
+
         all_items.sort(
-            key=lambda item: (
-                self._normalize_recall_score(item.get("final_relevance_score")),
-                self._normalize_recall_score(item.get("raw_relevance_score")),
-            ),
+            key=_sort_key,
             reverse=True,
         )
 
@@ -1875,6 +2048,10 @@ class MemoryStore:
                     "scope": item.get("scope") or "global",
                     "source": item.get("source") or item.get("maintainer_source") or item.get("origin") or "memory_store",
                     "confidence": score,
+                    "fusionScore": item.get("fusion_score"),
+                    "evidenceRefs": self._normalize_recall_evidence_refs(item.get("evidence_refs"))[:8],
+                    "lineageId": item.get("lineage_id"),
+                    "revisionNo": item.get("revision_no"),
                     "recency": item.get("updated_at") or item.get("created_at") or item.get("timestamp"),
                     "whySelected": (
                         f"accepted_by_unified_recall(score={score:.3f}"
@@ -1898,6 +2075,10 @@ class MemoryStore:
                     "scope": item.get("scope") or "global",
                     "source": item.get("source") or item.get("maintainer_source") or item.get("origin") or "memory_store",
                     "confidence": _score(item),
+                    "fusionScore": item.get("fusion_score"),
+                    "evidenceRefs": self._normalize_recall_evidence_refs(item.get("evidence_refs"))[:8],
+                    "lineageId": item.get("lineage_id"),
+                    "revisionNo": item.get("revision_no"),
                     "doNotInjectReason": item.get("reject_reason") or "below_threshold_or_scope",
                 }
             )
@@ -1952,14 +2133,11 @@ class MemoryStore:
         }
 
     def unified_recall(self, query: str, limit: int = 5, scope: Optional[str] = None, scopes: Optional[List[str]] = None) -> List[Dict]:
-        from core.knowledge_db import knowledge_db
-
         preview = self._execute_unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
-        accepted = list(preview.get("accepted_items") or [])
-        knowledge_db.mark_knowledge_injected(
-            [str(item.get("id") or "") for item in accepted if isinstance(item, dict) and item.get("id")]
-        )
-        return accepted
+        # Retrieval acceptance is not proof that the provider saw or used the
+        # fact. Callers that materialize a verified memory surface (for
+        # example memory_broker.get_item) record usage at that boundary.
+        return list(preview.get("accepted_items") or [])
             
     # ==========================================
     # Layer 3: 时序日志 (daily/)

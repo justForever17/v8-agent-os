@@ -746,6 +746,57 @@ def test_provider_prewarm_task_failure_does_not_skip_graph_compile(
     asyncio.run(exercise())
 
 
+def test_hanging_provider_prewarm_does_not_block_graph_compile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stuck optional compatibility import must not move graph cost to chat."""
+
+    import main
+
+    async def exercise() -> None:
+        events: list[str] = []
+        configured = object()
+        release = asyncio.Event()
+
+        async def provider_prewarm() -> None:
+            events.append("provider:start")
+            await release.wait()
+
+        class Resolver:
+            resolve_engine_config_for_role = staticmethod(lambda _role: {"resolution": {}})
+            require_engine_config = staticmethod(lambda _resolved, *, role: configured)
+
+        class Runner:
+            async def build_graph(self, config):
+                assert config is configured
+                events.append("graph:build")
+                return object(), {"graphCacheHit": False, "graphBuildMs": 8.0}
+
+        class Scheduler:
+            async def run(self, coroutine, *, task_name: str):
+                assert task_name == "supervisor-graph-prewarm"
+                return await coroutine
+
+        def fake_import(name: str):
+            if name == "core.engine_config_resolver":
+                return Resolver
+            if name == "agents.runners.supervisor_runner":
+                return SimpleNamespace(supervisor_runner=Runner())
+            raise AssertionError(name)
+
+        monkeypatch.setattr(main, "_import_module", fake_import)
+        monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: Scheduler())
+        monkeypatch.setattr(main, "_SUPERVISOR_GRAPH_PREWARM_PROVIDER_TIMEOUT_SECONDS", 0.01)
+        provider_task = asyncio.create_task(provider_prewarm())
+        result = await main._prewarm_supervisor_graph(provider_task)
+        release.set()
+        await asyncio.sleep(0)
+
+        assert events == ["provider:start", "graph:build"]
+        assert result["ok"] is True
+        assert result["providerPrewarmErrorType"] == "TimeoutError"
+
+    asyncio.run(exercise())
+
+
 def test_provider_patch_install_failure_does_not_skip_graph_compile(monkeypatch: pytest.MonkeyPatch) -> None:
     import main
 

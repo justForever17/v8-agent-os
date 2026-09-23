@@ -277,7 +277,7 @@ PHONE_GATEWAY_ROUTES: tuple[PhoneGatewayRoute, ...] = (
 
 @dataclass(frozen=True)
 class PhoneGatewayConfig:
-    listen_host: str = "127.0.0.1"
+    listen_host: str = "0.0.0.0"
     listen_port: int = DEFAULT_PHONE_GATEWAY_PORT
     allowed_origins: tuple[str, ...] = (
         "capacitor://localhost",
@@ -286,8 +286,8 @@ class PhoneGatewayConfig:
     )
 
     def __post_init__(self) -> None:
-        if self.listen_host != "127.0.0.1":
-            raise ValueError("phone_gateway_must_listen_on_ipv4_loopback")
+        if self.listen_host not in {"0.0.0.0", "127.0.0.1"}:
+            raise ValueError("phone_gateway_invalid_listen_host")
         if not 1 <= int(self.listen_port) <= 65535:
             raise ValueError("phone_gateway_invalid_port")
         for origin in self.allowed_origins:

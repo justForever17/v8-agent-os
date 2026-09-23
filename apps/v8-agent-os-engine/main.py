@@ -168,6 +168,7 @@ async def _prewarm_provider_compatibility() -> None:
 
 
 _SUPERVISOR_GRAPH_PREWARM_PREREQUISITE_TIMEOUT_SECONDS = 1.5
+_SUPERVISOR_GRAPH_PREWARM_PROVIDER_TIMEOUT_SECONDS = 1.5
 _SUPERVISOR_GRAPH_PREWARM_FOLLOWUP_TIMEOUT_SECONDS = 30.0
 
 
@@ -187,7 +188,10 @@ async def _prewarm_supervisor_graph(
             # An optional prewarm rejection must never leave the first request
             # to pay the full cold graph compilation cost.
             try:
-                await provider_prewarm_task
+                await asyncio.wait_for(
+                    asyncio.shield(provider_prewarm_task),
+                    timeout=_SUPERVISOR_GRAPH_PREWARM_PROVIDER_TIMEOUT_SECONDS,
+                )
             except Exception as exc:
                 provider_prewarm_error_type = type(exc).__name__
                 print(

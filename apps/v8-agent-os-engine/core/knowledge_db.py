@@ -836,7 +836,7 @@ class KnowledgeDB:
         )
 
     def mark_knowledge_injected(self, fact_ids: List[str], *, verified: bool = False) -> int:
-        """Record actual Agent-surface use, never preview/search inspection."""
+        """Record materialized Agent-surface memory context, never preview/search inspection."""
         normalized_ids = sorted({str(item or "").strip() for item in fact_ids if str(item or "").strip()})
         if not normalized_ids:
             return 0

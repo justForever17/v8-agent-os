@@ -315,7 +315,7 @@ def test_legacy_sources_backfill_factual_evidence_and_verification_time(tmp_path
     assert observation["evidence_refs_json"] == fact["evidence_refs_json"]
 
 
-def test_actual_unified_recall_records_injection_usage(monkeypatch) -> None:
+def test_unified_recall_does_not_record_provider_usage(monkeypatch) -> None:
     store = memory_store_module.MemoryStore()
     captured: list[str] = []
     monkeypatch.setattr(
@@ -332,4 +332,4 @@ def test_actual_unified_recall_records_injection_usage(monkeypatch) -> None:
     result = store.unified_recall("测试注入")
 
     assert result == [{"id": "fact-used", "fact": "已注入"}]
-    assert captured == ["fact-used"]
+    assert captured == []

@@ -62,7 +62,37 @@ _PASSIVE_RAG_HINT_TOKENS = (
     "同一个 session",
     "队列消息",
 )
-
+_PASSIVE_QUERY_CONTINUITY_TOKENS = (
+    "it",
+    "this",
+    "that",
+    "they",
+    "them",
+    "earlier",
+    "previously",
+    "later",
+    "它",
+    "这个",
+    "那个",
+    "这件事",
+    "该方案",
+    "上次",
+    "之前",
+    "后来",
+    "当时",
+    "接着",
+    "继续",
+)
+_PASSIVE_QUERY_CONTINUITY_ENGLISH_TOKENS = {
+    "it",
+    "this",
+    "that",
+    "they",
+    "them",
+    "earlier",
+    "previously",
+    "later",
+}
 
 def has_explicit_recall_cue(user_query: str) -> bool:
     """Distinguish continuity requests from work *about* memory systems.
@@ -74,6 +104,73 @@ def has_explicit_recall_cue(user_query: str) -> bool:
 
     normalized_query = str(user_query or "").strip().casefold()
     return any(token.casefold() in normalized_query for token in _PASSIVE_RAG_HINT_TOKENS)
+
+
+def _message_text_for_query(message) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return " ".join(
+            str(item.get("text") or "").strip()
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and str(item.get("text") or "").strip()
+        ).strip()
+    return str(content or "").strip()
+
+
+def condense_passive_memory_query(messages, user_query: str) -> tuple[str, dict]:
+    original_query = str(user_query or "").strip()
+    diagnostics = {
+        "original_query": original_query,
+        "recall_query": original_query,
+        "rewrite_applied": False,
+        "rewrite_reason": "not_needed",
+        "source_turn_count": 0,
+    }
+    if not original_query:
+        diagnostics["rewrite_reason"] = "empty_query"
+        return original_query, diagnostics
+    normalized_query = original_query.casefold()
+    has_continuity_token = any(
+        re.search(rf"\b{re.escape(token)}\b", normalized_query)
+        for token in _PASSIVE_QUERY_CONTINUITY_ENGLISH_TOKENS
+    ) or any(
+        token.casefold() in normalized_query
+        for token in _PASSIVE_QUERY_CONTINUITY_TOKENS
+        if token.casefold() not in _PASSIVE_QUERY_CONTINUITY_ENGLISH_TOKENS
+    )
+    if not has_continuity_token:
+        return original_query, diagnostics
+
+    prior_turns: list[str] = []
+    for message in reversed(messages or []):
+        if not isinstance(message, HumanMessage):
+            continue
+        text = _message_text_for_query(message)
+        if not text or text == original_query:
+            continue
+        prior_turns.append(text[:280])
+        if len(prior_turns) >= 2:
+            break
+    if not prior_turns:
+        diagnostics["rewrite_reason"] = "no_prior_human_turn"
+        return original_query, diagnostics
+
+    current_marker = f"\n当前问题：{original_query}"
+    context_budget = max(0, 900 - len(current_marker))
+    context = "\n".join(reversed(prior_turns))[:context_budget]
+    condensed_query = f"{context}{current_marker}".strip()
+    diagnostics.update(
+        {
+            "recall_query": condensed_query,
+            "rewrite_applied": True,
+            "rewrite_reason": "continuity_context",
+            "source_turn_count": len(prior_turns),
+        }
+    )
+    return condensed_query, diagnostics
+
 
 _SUPERVISOR_OPERATING_CONTRACT = """[Supervisor Operating Contract]
 You are the V8OS internal intelligent supervisor: the user-facing coordinator, capable executor, and final synthesizer for this turn.
@@ -566,18 +663,33 @@ def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dic
         if not fact:
             continue
         clipped = (fact[:240] + "...") if len(fact) > 240 else fact
+        memory_id = str(item.get("id") or "").strip()
+        raw_evidence_refs = item.get("evidence_refs") or item.get("evidenceRefs") or []
+        if isinstance(raw_evidence_refs, str):
+            raw_evidence_refs = [raw_evidence_refs]
+        evidence_refs = [
+            str(ref).strip()
+            for ref in list(raw_evidence_refs)[:8]
+            if str(ref).strip()
+        ]
         facts.append(
             {
-                "id": item.get("id"),
+                "id": memory_id or item.get("id"),
                 "scope": item.get("scope"),
                 "category": item.get("category"),
                 "source": item.get("source"),
                 "raw_relevance_score": item.get("raw_relevance_score"),
                 "final_relevance_score": item.get("final_relevance_score"),
+                "fusion_score": item.get("fusion_score"),
+                "evidence_refs": evidence_refs,
+                "lineage_id": item.get("lineage_id") or item.get("lineageId"),
+                "revision_no": item.get("revision_no") or item.get("revisionNo"),
+                "memory_ref": f"memory://knowledge/{memory_id}" if memory_id else None,
                 "fact": clipped,
             }
         )
-        lines.append(f"- {clipped}")
+        citation = f" [memory:{memory_id}]" if memory_id else ""
+        lines.append(f"- {clipped}{citation}")
     if not lines:
         return None, []
     return (
@@ -588,6 +700,11 @@ def _build_memory_recall_block(items: list[dict]) -> tuple[dict | None, list[dic
             "metadata": {
                 "runtime_plane": "memory",
                 "fact_count": len(facts),
+                "memory_ids": [
+                    str(item.get("id") or "").strip()
+                    for item in facts
+                    if str(item.get("id") or "").strip()
+                ],
                 "top_scores": [
                     float(item.get("final_relevance_score") or 0.0)
                     for item in items
@@ -653,6 +770,12 @@ def _annotate_last_human_message(
             next_kwargs["context_adapter_blocks"] = next_blocks
             next_kwargs["memory_rag"] = {
                 "query": diagnostics.get("query"),
+                "recall_query": diagnostics.get("recall_query") or diagnostics.get("query"),
+                "query_rewrite": {
+                    "applied": bool(diagnostics.get("rewrite_applied")),
+                    "reason": diagnostics.get("rewrite_reason") or "",
+                    "source_turn_count": diagnostics.get("source_turn_count") or 0,
+                },
                 "facts": fact_bundle,
                 "scope_chain": diagnostics.get("scope_chain") or [],
                 "threshold": diagnostics.get("threshold"),
@@ -1524,6 +1647,7 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
     human_turns = sum(1 for message in messages if isinstance(message, HumanMessage))
     normalized_query = str(user_query or "").strip().lower()
     has_recall_cue = has_explicit_recall_cue(normalized_query)
+    recall_query, rewrite_diagnostics = condense_passive_memory_query(messages, user_query)
     try:
         retrieval_threshold = float(memory_config.get("retrieval_threshold"))
     except (TypeError, ValueError, KeyError):
@@ -1532,6 +1656,10 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
     passive_gate = max(retrieval_threshold, 0.35)
     diagnostics = {
         "query": user_query,
+        "recall_query": recall_query,
+        "rewrite_applied": bool(rewrite_diagnostics.get("rewrite_applied")),
+        "rewrite_reason": rewrite_diagnostics.get("rewrite_reason") or "not_needed",
+        "source_turn_count": rewrite_diagnostics.get("source_turn_count") or 0,
         "scope_chain": list(scope_chain or []),
         "threshold": passive_gate,
         "configured_threshold": retrieval_threshold,
@@ -1547,16 +1675,16 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
     if human_turns <= 1 and not has_recall_cue:
         diagnostics["reject_reason"] = "insufficient_conversational_continuity"
         return _annotate_last_human_message(messages, diagnostics=diagnostics)
-    if len(normalized_query) < 24 and not has_recall_cue:
+    if len(str(recall_query or "").strip()) < 24 and not has_recall_cue:
         diagnostics["reject_reason"] = "query_too_short_without_recall_cue"
         return _annotate_last_human_message(messages, diagnostics=diagnostics)
-    if len(scope_chain or []) <= 1 and len(normalized_query.split()) < 4 and not has_recall_cue:
+    if len(scope_chain or []) <= 1 and len(str(recall_query or "").split()) < 4 and not has_recall_cue:
         diagnostics["reject_reason"] = "scope_too_sparse_without_recall_cue"
         return _annotate_last_human_message(messages, diagnostics=diagnostics)
 
     try:
         rag_results = memory_runtime.unified_recall(
-            query=user_query,
+            query=recall_query,
             limit=passive_top_k,
             scopes=scope_chain,
         )

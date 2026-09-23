@@ -1266,7 +1266,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                     </div>
                 </div>
 
-                {(hasRecoverySurface || (!isLoading && message.content)) && (
+                {(hasRecoverySurface || (!isLoading && message.content) || (isLoading && message.content)) && (
                     <div className="border-t border-border/30 px-4 pb-3 pt-2.5 sm:px-5">
                         {hasRecoverySurface ? (
                             <ConversationRecoveryActions
@@ -1278,6 +1278,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                 compact
                                 renderActionRow={(actions) => renderRecoveryActionRow(actions, message.content)}
                             />
+                        ) : isLoading ? (
+                            <div className="h-6" aria-hidden="true" />
                         ) : (
                             <MessageActionButtons
                                 copied={isCopied}

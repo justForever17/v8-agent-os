@@ -186,6 +186,9 @@ def _memory_broker_compact_recall_item(
         "category": item.get("category") or item.get("source"),
         "confidence": _memory_broker_score(item),
         "updatedAt": item.get("updated_at") or item.get("updatedAt"),
+        "evidenceRefs": item.get("evidence_refs") or item.get("evidenceRefs"),
+        "lineageId": item.get("lineage_id") or item.get("lineageId"),
+        "revisionNo": item.get("revision_no") or item.get("revisionNo"),
         "whyMatched": item.get("match_reason") or item.get("source"),
         "text": _memory_broker_preview(item.get("text") or item.get("fact") or item.get("summary") or item.get("content")),
     }

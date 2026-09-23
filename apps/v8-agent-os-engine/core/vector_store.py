@@ -1,4 +1,5 @@
 import abc
+import math
 from typing import List, Dict, Any
 import logging
 import uuid
@@ -104,6 +105,19 @@ class VectorStore:
             return
         if ids:
             self.collection.delete(ids=ids)
+
+    def _query_collection_with_distances(self, query_embedding: List[float], n_results: int) -> dict:
+        try:
+            return self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                include=["documents", "metadatas", "distances"],
+            )
+        except (TypeError, ValueError):
+            return self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+            )
         
     def similarity_search_with_rerank(self, query: str, top_k: int = 3, fetch_k: int = 20) -> List[Dict[str, Any]]:
         """
@@ -122,17 +136,11 @@ class VectorStore:
 
         if not self.reranker_model:
             logger.warning("Reranker model not initialized. Performing regular search.")
-            top_k_results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k
-            )
+            top_k_results = self._query_collection_with_distances(query_embedding, top_k)
             return self._format_chroma_results(top_k_results)
 
         # 1. First-pass retrieval
-        chroma_res = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=fetch_k
-        )
+        chroma_res = self._query_collection_with_distances(query_embedding, fetch_k)
         
         if not chroma_res or not chroma_res["documents"] or not chroma_res["documents"][0]:
             return []
@@ -151,6 +159,11 @@ class VectorStore:
                 "documents": [docs[:top_k]],
                 "ids": [ids[:top_k]],
                 "metadatas": [metadatas[:top_k] if metadatas else [{} for _ in docs[:top_k]]],
+                "distances": [
+                    (chroma_res.get("distances") or [[]])[0][:top_k]
+                    if chroma_res.get("distances")
+                    else []
+                ],
             }
             return self._format_chroma_results(top_k_results)
         except Exception as exc:
@@ -159,6 +172,11 @@ class VectorStore:
                 "documents": [docs[:top_k]],
                 "ids": [ids[:top_k]],
                 "metadatas": [metadatas[:top_k] if metadatas else [{} for _ in docs[:top_k]]],
+                "distances": [
+                    (chroma_res.get("distances") or [[]])[0][:top_k]
+                    if chroma_res.get("distances")
+                    else []
+                ],
             }
             return self._format_chroma_results(top_k_results)
         
@@ -169,7 +187,9 @@ class VectorStore:
                 "id": ids[idx],
                 "text": docs[idx],
                 "metadata": metadatas[idx] if metadatas else {},
-                "relevance_score": res.get("relevance_score", 0.0)
+                "relevance_score": res.get("relevance_score", 0.0),
+                "score_available": res.get("relevance_score") is not None,
+                "score_source": "reranker",
             }
             reranked_facts.append(fact_data)
             
@@ -183,13 +203,30 @@ class VectorStore:
         docs = chroma_res["documents"][0]
         ids = chroma_res["ids"][0]
         metadatas = chroma_res["metadatas"][0] if chroma_res.get("metadatas") else [{} for _ in docs]
+        distances = chroma_res.get("distances") or []
+        distance_row = distances[0] if distances and distances[0] else []
         
         for i, doc in enumerate(docs):
+            distance = distance_row[i] if i < len(distance_row) else None
+            try:
+                normalized_distance = max(0.0, float(distance)) if distance is not None else None
+            except (TypeError, ValueError):
+                normalized_distance = None
+            if normalized_distance is not None and math.isfinite(normalized_distance):
+                relevance_score = 1.0 / (1.0 + normalized_distance)
+                score_available = True
+                score_source = "vector_distance"
+            else:
+                relevance_score = None
+                score_available = False
+                score_source = "missing_distance"
             out.append({
                 "id": ids[i],
                 "text": doc,
                 "metadata": metadatas[i],
-                "relevance_score": 0.0 # Unknown without reranker
+                "relevance_score": relevance_score,
+                "score_available": score_available,
+                "score_source": score_source,
             })
         return out
 

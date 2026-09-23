@@ -70,13 +70,14 @@ async def _request(
         return await client.request(method, path, headers=headers, content=content)
 
 
-def test_gateway_configuration_is_loopback_only() -> None:
+def test_gateway_configuration_supports_lan_and_loopback_bindings() -> None:
     config = PhoneGatewayConfig()
-    assert config.listen_host == "127.0.0.1"
+    assert config.listen_host == "0.0.0.0"
     assert not hasattr(config, "upstream_base_url")
 
-    with pytest.raises(ValueError, match="phone_gateway_must_listen_on_ipv4_loopback"):
-        PhoneGatewayConfig(listen_host="0.0.0.0")
+    assert PhoneGatewayConfig(listen_host="127.0.0.1").listen_host == "127.0.0.1"
+    with pytest.raises(ValueError, match="phone_gateway_invalid_listen_host"):
+        PhoneGatewayConfig(listen_host="192.168.1.8")
     with pytest.raises(ValueError, match="phone_gateway_origin_must_be_explicit"):
         PhoneGatewayConfig(allowed_origins=("*",))
 
@@ -521,7 +522,7 @@ def test_unbound_engine_is_compact_and_audited_without_trace() -> None:
     assert events[-1]["outcome"] == "phone_gateway_engine_unavailable"
 
 
-def test_server_lifecycle_binds_only_configured_loopback() -> None:
+def test_server_lifecycle_binds_configured_lan_host() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
@@ -530,7 +531,7 @@ def test_server_lifecycle_binds_only_configured_loopback() -> None:
         server = PhoneGatewayServer(PhoneGatewayConfig(listen_port=port))
         started = await server.start()
         assert started["state"] == "running"
-        assert started["listenOrigin"] == f"http://127.0.0.1:{port}"
+        assert started["listenOrigin"] == f"http://0.0.0.0:{port}"
         stopped = await server.stop()
         assert stopped["state"] == "stopped"
 

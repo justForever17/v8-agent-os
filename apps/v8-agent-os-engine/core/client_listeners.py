@@ -56,7 +56,7 @@ class ClientListeners:
         gateway = remote.get("phoneGateway") or {}
         if remote.get("enabled", True) and gateway.get("enabled", True):
             from core.remote_link.phone_gateway import PhoneGatewayConfig, PhoneGatewayServer
-            config = PhoneGatewayConfig(listen_port=int(gateway.get("port") or 9532))
+            config = PhoneGatewayConfig(listen_host=str(gateway.get("listenHost") or "0.0.0.0"), listen_port=int(gateway.get("port") or 9532))
             self.phone = PhoneGatewayServer(config, app=self.app)
             await self.phone.start()
         if sys.platform == "linux":

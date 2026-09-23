@@ -8,8 +8,9 @@
     --admin-motion-control: var(--v8-product-motion-control, 140ms);
     --admin-motion-panel: var(--v8-product-motion-panel, 180ms);
     --admin-ease-out: var(--v8-product-ease-out, cubic-bezier(.22, 1, .36, 1));
-    --v8-product-topbar-height: 48px;
-    --v8-product-topbar-content-height: 36px;
+    /* Admin and Chat share one Product Web host; keep the surface chrome on the same 35px grid. */
+    --v8-product-topbar-height: 35px;
+    --v8-product-topbar-content-height: 25px;
     font-size: 14px;
 }
 .admin-content { max-width: 1408px; width: 100%; margin-inline: auto; }

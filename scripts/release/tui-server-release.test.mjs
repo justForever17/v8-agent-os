@@ -414,6 +414,8 @@ test("desktop portable Engine public manifests carry the server startup profile 
   const builder = fs.readFileSync(path.join(ROOT, "scripts/desktop/build-engine-portable.py"), "utf8");
   const publicManifest = builder.match(/public\s*=\s*\{([\s\S]*?)\n\s*\}/)?.[1] || "";
   assert.match(publicManifest, /["']startupProfile["']\s*:\s*["']server["']/);
+  assert.match(builder, /staging\s*\/\s*ENGINE\s*\/\s*["']\.python["']\s*\/\s*["']v8os-runtime\.json["']/);
+  assert.doesNotMatch(builder, /\(staging\s*\/\s*python_relative\)\.parent\.joinpath\(["']v8os-runtime\.json["']\)/);
 });
 
 test("the workflow executes its package identity check for the actual hyphenated bin", t => {

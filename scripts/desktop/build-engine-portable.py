@@ -122,7 +122,11 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
         copy_tree(cli_root, staging / CLI)
         staged_receipt = dict(receipt)
         staged_receipt["profile"] = "server"
-        (staging / python_relative).parent.joinpath("v8os-runtime.json").write_text(
+        # The runtime receipt belongs to the Engine runtime root, independent
+        # of the interpreter layout (.python/python.exe vs .python/bin/python3).
+        # Writing beside the POSIX interpreter leaves the canonical receipt
+        # unchanged and makes the release verifier see the desktop profile.
+        (staging / ENGINE / ".python" / "v8os-runtime.json").write_text(
             json.dumps(staged_receipt, indent=2) + "\n", encoding="utf-8"
         )
         manifest = {

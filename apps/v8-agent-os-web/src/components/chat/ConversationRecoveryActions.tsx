@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { GitBranch, Pencil, Save, X } from "lucide-react";
 import { canReviseConversationMessage, createMessageRevisionDraft, describeRecoveryDescendants, messageRevisionVersion, readTranscriptIdentity, type ConversationMutationResult, type MessageRevisionDraft, type RecoveryMessage } from "@v8/session-realtime";
@@ -12,8 +12,10 @@ export type ConversationRecoveryProps = {
     sessionId: string; draftKey: string; transcriptRevision: number; busy: boolean;
     onCommitted: (result: ConversationMutationResult) => Promise<void>;
 };
-export function ConversationRecoveryActions({ message, hasDescendants, laterTurnCount, turnEnd, recovery }: {
+export function ConversationRecoveryActions({ message, hasDescendants, laterTurnCount, turnEnd, recovery, renderActionRow, compact = false }: {
     message: RecoveryMessage; hasDescendants: boolean; laterTurnCount: number; turnEnd: boolean; recovery: ConversationRecoveryProps;
+    renderActionRow?: (actions: ReactNode) => ReactNode;
+    compact?: boolean;
 }) {
     const t = useT(), router = useRouter();
     const mounted = useRef(true);
@@ -86,16 +88,30 @@ export function ConversationRecoveryActions({ message, hasDescendants, laterTurn
             setError(t(`conversationRecovery.${["conflict", "offline"].includes(code) ? code : "failed"}`));
         } finally { setSaving(false); }
     };
-    if (!allowed && !draft) return message.editedBy === "user" ? <p className="text-xs text-muted-foreground">{t("conversationRecovery.edited")}</p> : null;
-    return <div className="mt-2 space-y-2" data-testid="conversation-recovery">
-        <div className="flex min-h-8 items-center justify-end gap-2">
-            {message.editedBy === "user" && <span className="mr-auto text-xs text-muted-foreground">{t("conversationRecovery.edited")}</span>}
-            <Button variant="ghost" size="sm" disabled={saving || !allowed} aria-label={t("conversationRecovery.edit")} title={t("conversationRecovery.edit")}
-                onClick={() => void beginEdit()}>
-                <Pencil className="h-4 w-4" />{draft ? t("conversationRecovery.resumeDraft") : t("conversationRecovery.edit")}
-            </Button>
-            {turnEnd && <Button variant="ghost" size="sm" disabled={disabled} aria-label={t("conversationRecovery.branch")} onClick={() => void submit("branch", false)}><GitBranch className="h-4 w-4" />{t("conversationRecovery.branch")}</Button>}
-        </div>
+    const recoveryActions = (allowed || draft) ? <>
+        <Button variant="ghost" size="icon" className="h-6 w-6 rounded-none border-0 bg-transparent p-0 text-muted-foreground/70 shadow-none hover:bg-transparent hover:text-foreground" disabled={saving || !allowed} aria-label={draft ? t("conversationRecovery.resumeDraft") : t("conversationRecovery.edit")} title={draft ? t("conversationRecovery.resumeDraft") : t("conversationRecovery.edit")}
+            onClick={() => void beginEdit()}>
+            <Pencil className="h-3.5 w-3.5" />
+        </Button>
+        {turnEnd && <Button variant="ghost" size="icon" className="h-6 w-6 rounded-none border-0 bg-transparent p-0 text-muted-foreground/70 shadow-none hover:bg-transparent hover:text-foreground" disabled={disabled} aria-label={t("conversationRecovery.branch")} title={t("conversationRecovery.branch")} onClick={() => void submit("branch", false)}><GitBranch className="h-3.5 w-3.5" /></Button>}
+    </> : null;
+    if (!allowed && !draft && !renderActionRow) return message.editedBy === "user" ? <p className="text-xs text-muted-foreground">{t("conversationRecovery.edited")}</p> : null;
+    return <div className={compact ? "space-y-2" : "mt-2 space-y-2"} data-testid="conversation-recovery">
+        {renderActionRow ? (
+            <>
+                {message.editedBy === "user" && <span className="mr-2 text-xs text-muted-foreground">{t("conversationRecovery.edited")}</span>}
+                {renderActionRow(recoveryActions)}
+            </>
+        ) : (
+            <div className="flex min-h-8 items-center justify-end gap-2">
+                {message.editedBy === "user" && <span className="mr-auto text-xs text-muted-foreground">{t("conversationRecovery.edited")}</span>}
+                <Button variant="ghost" size="sm" disabled={saving || !allowed} aria-label={t("conversationRecovery.edit")} title={t("conversationRecovery.edit")}
+                    onClick={() => void beginEdit()}>
+                    <Pencil className="h-4 w-4" />{draft ? t("conversationRecovery.resumeDraft") : t("conversationRecovery.edit")}
+                </Button>
+                {turnEnd && <Button variant="ghost" size="sm" disabled={disabled} aria-label={t("conversationRecovery.branch")} onClick={() => void submit("branch", false)}><GitBranch className="h-4 w-4" />{t("conversationRecovery.branch")}</Button>}
+            </div>
+        )}
         {open && draft && <div className="space-y-2">
             <textarea aria-label={t("conversationRecovery.edit")} className="min-h-32 max-h-96 w-full resize-y rounded-md border bg-background p-3 font-mono text-sm" value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} />
             <div className="flex flex-wrap justify-end gap-2">

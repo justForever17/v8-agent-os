@@ -4,7 +4,7 @@
 import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, ChevronUp, Orbit, AtSign, FileText, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { useState, memo, useMemo, useCallback } from "react";
+import { useState, memo, useMemo, useCallback, type ReactNode } from "react";
 import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
 import { motion } from "framer-motion";
 import {
@@ -39,6 +39,7 @@ import { downloadArtifact } from "@/lib/artifact-download";
 import { createArtifactDocument, createSessionOverviewDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import { useT } from "@/components/providers/LocaleProvider";
+import { ConversationRecoveryActions, type ConversationRecoveryProps } from "./ConversationRecoveryActions";
 import { parseContentToBlocks } from "@/lib/chat/content-detector";
 import { CollaborationMicroStageScene, type CollaborationMicroStageDetailTarget } from "./collaboration/CollaborationMicroStageScene";
 import type { RuntimeStageActivity } from "@/lib/runtime-stage";
@@ -59,6 +60,12 @@ interface ChatMessageProps {
     runtimeActivities?: RuntimeStageActivity[];
     executionActive?: boolean;
     animateEntrance?: boolean;
+    recovery?: {
+        props: ConversationRecoveryProps;
+        hasDescendants: boolean;
+        laterTurnCount: number;
+        turnEnd: boolean;
+    };
 }
 
 interface MessageActionButtonsProps {
@@ -67,6 +74,9 @@ interface MessageActionButtonsProps {
     onDelete: () => void;
     copyLabel: string;
     deleteLabel: string;
+    extraActions?: ReactNode;
+    showCopy?: boolean;
+    showDelete?: boolean;
     className?: string;
 }
 
@@ -428,11 +438,16 @@ function MessageActionButtons({
     onDelete,
     copyLabel,
     deleteLabel,
+    extraActions,
+    showCopy = true,
+    showDelete = true,
     className,
 }: MessageActionButtonsProps) {
+    if (!extraActions && !showCopy && !showDelete) return null;
     return (
         <div className={cn("flex items-center justify-end gap-2", className)}>
-            <Button
+            {extraActions}
+            {showCopy && <Button
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 rounded-none border-0 bg-transparent p-0 text-muted-foreground/70 shadow-none hover:bg-transparent hover:text-foreground"
@@ -441,8 +456,8 @@ function MessageActionButtons({
                 title={copyLabel}
             >
                 {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
+            </Button>}
+            {showDelete && <Button
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 rounded-none border-0 bg-transparent p-0 text-muted-foreground/70 shadow-none hover:bg-transparent hover:text-destructive"
@@ -451,7 +466,7 @@ function MessageActionButtons({
                 title={deleteLabel}
             >
                 <Trash2 className="h-3.5 w-3.5" />
-            </Button>
+            </Button>}
         </div>
     );
 }
@@ -474,7 +489,7 @@ function AssistantActivityDots({ label }: { label: string }) {
     );
 }
 
-function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, supervisorProfile, runtimeActivities = [], executionActive = false, animateEntrance = false }: ChatMessageProps) {
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, supervisorProfile, runtimeActivities = [], executionActive = false, animateEntrance = false, recovery }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const workbenchSessionId = useWorkbenchStore((state) => state.sessionId);
@@ -539,6 +554,20 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         setIsCopied(true);
         setTimeout(() => setIsCopied(false), 2000);
     };
+    const hasRecoverySurface = Boolean(recovery && !isLoading && (message.role === "user" || message.role === "assistant"));
+    const renderRecoveryActionRow = (actions: ReactNode, content: string, className?: string) => (
+        <MessageActionButtons
+            copied={isCopied}
+            onCopy={() => handleCopy(content)}
+            onDelete={() => onDelete(message.id)}
+            copyLabel={copyLabel}
+            deleteLabel={deleteLabel}
+            extraActions={actions}
+            showCopy={Boolean(content) && !isLoading}
+            showDelete={Boolean(content) && !isLoading}
+            className={className}
+        />
+    );
 
     // Lightbox State
     const [viewerOpen, setViewerOpen] = useState(false);
@@ -957,7 +986,17 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                             </div>
                         ) : null}
 
-                        {!isLoading && (composerPresentation?.text || normalizedContent) && !isTool && (
+                        {!isTool && (hasRecoverySurface ? (
+                            <ConversationRecoveryActions
+                                message={message}
+                                recovery={recovery!.props}
+                                hasDescendants={recovery!.hasDescendants}
+                                laterTurnCount={recovery!.laterTurnCount}
+                                turnEnd={recovery!.turnEnd}
+                                compact
+                                renderActionRow={(actions) => renderRecoveryActionRow(actions, composerPresentation?.text || normalizedContent, "mt-3")}
+                            />
+                        ) : !isLoading && (composerPresentation?.text || normalizedContent) ? (
                             <MessageActionButtons
                                 copied={isCopied}
                                 onCopy={() => handleCopy(composerPresentation?.text || normalizedContent)}
@@ -966,7 +1005,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                 deleteLabel={deleteLabel}
                                 className="mt-3"
                             />
-                        )}
+                        ) : null)}
                     </div>
                 </div>
             </motion.div>
@@ -1227,15 +1266,27 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                     </div>
                 </div>
 
-                {!isLoading && message.content && (
+                {(hasRecoverySurface || (!isLoading && message.content)) && (
                     <div className="border-t border-border/30 px-4 pb-3 pt-2.5 sm:px-5">
-                        <MessageActionButtons
-                            copied={isCopied}
-                            onCopy={() => handleCopy(message.content)}
-                            onDelete={() => onDelete(message.id)}
-                            copyLabel={copyLabel}
-                            deleteLabel={deleteLabel}
-                        />
+                        {hasRecoverySurface ? (
+                            <ConversationRecoveryActions
+                                message={message}
+                                recovery={recovery!.props}
+                                hasDescendants={recovery!.hasDescendants}
+                                laterTurnCount={recovery!.laterTurnCount}
+                                turnEnd={recovery!.turnEnd}
+                                compact
+                                renderActionRow={(actions) => renderRecoveryActionRow(actions, message.content)}
+                            />
+                        ) : (
+                            <MessageActionButtons
+                                copied={isCopied}
+                                onCopy={() => handleCopy(message.content)}
+                                onDelete={() => onDelete(message.id)}
+                                copyLabel={copyLabel}
+                                deleteLabel={deleteLabel}
+                            />
+                        )}
                     </div>
                 )}
             </div>

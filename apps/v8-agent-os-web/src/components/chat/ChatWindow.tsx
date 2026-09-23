@@ -8,7 +8,7 @@ import { readDraft, setDraftField } from "@/lib/composer-drafts";
 import { useDraftHydrated, useDraftField } from "@/hooks/use-composer-draft";
 import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
-import { ConversationRecoveryActions, type ConversationRecoveryProps } from "./ConversationRecoveryActions";
+import type { ConversationRecoveryProps } from "./ConversationRecoveryActions";
 import { ChatTurnIndexEntry, TurnNavigator } from "./TurnNavigator";
 import { ContextReferencesHUD } from "./ContextReferencesHUD";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -353,13 +353,13 @@ export function ChatWindow({
                                             runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
                                             executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
                                             animateEntrance={Boolean(isLoading && index >= messages.length - 2)}
+                                            recovery={recovery ? {
+                                                props: recovery,
+                                                hasDescendants: index < messages.length - 1 || Number(m.turnPosition || 0) < totalTurnCount,
+                                                laterTurnCount: Math.max(0, totalTurnCount - Number(m.turnPosition || 0)) + (messages[index + 1]?.turnId === m.turnId ? 1 : 0),
+                                                turnEnd: messages[index + 1]?.turnId !== m.turnId,
+                                            } : undefined}
                                         />
-                                        {recovery && <div className={m.role === "assistant" ? "hidden peer-data-[assistant-state=content]:block" : undefined}>
-                                            <ConversationRecoveryActions message={m} recovery={recovery}
-                                            hasDescendants={index < messages.length - 1 || Number(m.turnPosition || 0) < totalTurnCount}
-                                            laterTurnCount={Math.max(0, totalTurnCount - Number(m.turnPosition || 0)) + (messages[index + 1]?.turnId === m.turnId ? 1 : 0)}
-                                            turnEnd={messages[index + 1]?.turnId !== m.turnId} />
-                                        </div>}
                                     </div>
                                 ))
                             )}

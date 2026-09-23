@@ -102,7 +102,7 @@ export function AdminLoginScreen({ bootstrapMode, ownerStateUnavailable = false 
 
     return (
         <div
-            className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-12"
+            className="flex min-h-0 min-w-0 flex-1 items-center justify-center bg-muted/20 px-4 py-12"
             data-v8os-owner-state-unavailable={ownerStateUnavailable ? "true" : "false"}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >

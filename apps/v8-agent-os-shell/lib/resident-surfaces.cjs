@@ -62,8 +62,36 @@ function createResidentSurfaces({ baseContents, createAdminView, attachView, get
       .finally(() => { entry.pending = null; });
     return entry.pending;
   }
+  async function prewarm(url) {
+    const target = new URL(url);
+    const adminRoute = target.pathname === '/login' || target.pathname === '/admin' || target.pathname.startsWith('/admin/');
+    const kind = adminRoute && target.origin === adminOrigin()
+      ? 'admin'
+      : target.origin === webOrigin() ? 'web' : null;
+    if (!kind || target.username || target.password) throw new Error('untrusted_surface_url');
+    const entry = get(kind);
+    visibility();
+    const current = entry.contents.getURL();
+    const sameOrigin = current && new URL(current).origin === target.origin;
+    if (entry.loaded && sameOrigin) return true;
+    if (entry.pending) return entry.pending;
+    entry.lastProductUrl = target.toString();
+    entry.pending = (async () => {
+      let targetUrl = target.toString();
+      do {
+        entry.pendingUrl = null;
+        entry.lastProductUrl = targetUrl;
+        await entry.contents.loadURL(targetUrl);
+        targetUrl = entry.pendingUrl;
+      } while (targetUrl && targetUrl !== entry.contents.getURL());
+      entry.loaded = true;
+      visibility();
+      return true;
+    })().finally(() => { entry.pending = null; });
+    return entry.pending;
+  }
   return {
-    open, broadcast, visibility, resize, entryFor,
+    open, prewarm, broadcast, visibility, resize, entryFor,
     activeContents: () => active.contents,
     owns(contents, url, allowStartup = false) {
       const entry = entryFor(contents);

@@ -21,6 +21,17 @@ test('thirty Web/Admin returns keep both documents and the last deep Admin route
   assert.equal(f.web.loads.length,1);
   assert.deepEqual(f.web.events.find(([channel])=>channel==='v8os-shell:navigate-session'),['v8os-shell:navigate-session',{sessionId:'session-b'}]);
 });
+test('Admin surface can be prewarmed offscreen so the first switch reuses its document', async () => {
+  const f = fixture();
+  await f.registry.open('http://127.0.0.1:22827/chat?id=session-a');
+  await f.registry.prewarm('http://127.0.0.1:22828/admin');
+  assert.equal(f.created(), 1);
+  assert.deepEqual(f.admin.loads, ['http://127.0.0.1:22828/admin']);
+  assert.equal(f.admin.visible, false);
+  await f.registry.open('http://127.0.0.1:22828/admin', { resume: true });
+  assert.equal(f.admin.loads.length, 1);
+  assert.equal(f.registry.activeContents(), f.admin);
+});
 test('one Product Web origin retains separate resident documents and unsent chat state', async () => {
   const f = fixture(22827);
   await f.registry.open('http://127.0.0.1:22827/chat?id=session-a');

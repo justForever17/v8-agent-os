@@ -805,6 +805,15 @@ async function performInitialSurfaceLoad() {
       );
     } else if (loaded) {
       reportSurfaceStage('product_navigation_completed', { expectedSurfaceKind });
+      if (expectedSurfaceKind === 'web') {
+        setTimeout(() => {
+          if (!quitting && coreServicesReady && residentSurfaces) {
+            void residentSurfaces.prewarm(`${adminBaseUrl}/admin`).catch((error) => {
+              console.warn('[v8os-shell] admin surface prewarm failed', error?.message || error);
+            });
+          }
+        }, 900);
+      }
     }
   } catch (error) {
     coreServicesReady = false;

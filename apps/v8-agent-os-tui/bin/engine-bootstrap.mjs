@@ -44,6 +44,10 @@ function pythonPathForTarget(target) {
     : `${ENGINE_DIR}/.python/bin/python3`;
 }
 
+export function runtimeProfileForManifest(manifest) {
+  return manifest?.runtimeProfile || (manifest?.target === 'linux-x64' ? 'server' : 'desktop');
+}
+
 function contained(root, relative) {
   if (typeof relative !== 'string' || !relative || /[\\:\x00-\x1f\x7f]/u.test(relative) || path.posix.isAbsolute(relative) || relative.split('/').includes('..')) throw new Error('Unsafe Engine asset path');
   const result = path.resolve(root, relative);
@@ -230,8 +234,9 @@ function configureRuntime(root) {
       .filter((entry, index, entries) => entry && entries.indexOf(entry) === index).join(path.delimiter);
     delete process.env.PYTHONHOME;
     delete process.env.PYTHONPATH;
-    process.env.ENGINE_INSTALL_PROFILE = manifest.runtimeProfile || 'desktop';
-    process.env.ENGINE_STARTUP_PROFILE = manifest.startupProfile || manifest.runtimeProfile || 'desktop';
+    const runtimeProfile = runtimeProfileForManifest(manifest);
+    process.env.ENGINE_INSTALL_PROFILE = runtimeProfile;
+    process.env.ENGINE_STARTUP_PROFILE = manifest.startupProfile || runtimeProfile;
     process.env.ENGINE_RELOAD = '0';
     if (!process.env.CREDENTIALS_DIRECTORY) process.env.V8_AGENT_OS_CREDENTIAL_KEY_FILE ||= path.join(stateRoot(), 'credentials', 'v8-agent-os-credential-key');
   }

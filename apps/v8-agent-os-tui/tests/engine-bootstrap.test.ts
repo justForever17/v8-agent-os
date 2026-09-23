@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import http from 'node:http';
 import { create, Header } from 'tar';
-import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime } from '../bin/engine-bootstrap.mjs';
+import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest } from '../bin/engine-bootstrap.mjs';
 
 const VERSION = '2026.09.22.1', TARGET = 'linux-x64', COMMIT = 'a'.repeat(40);
 const ROOT = `v8os-engine-${VERSION}-${TARGET}`;
@@ -61,6 +61,12 @@ test('desktop Engine manifests use the platform Python entrypoint', () => {
   assert.doesNotThrow(() => validateManifest({ ...manifest(), target: 'windows-x64', python: 'apps/v8-agent-os-engine/.python/python.exe' }, { version: VERSION, target: 'windows-x64', sourceCommit: COMMIT }));
   assert.doesNotThrow(() => validateManifest({ ...manifest(), target: 'macos-arm64', python: 'apps/v8-agent-os-engine/.python/bin/python3' }, { version: VERSION, target: 'macos-arm64', sourceCommit: COMMIT }));
   assert.throws(() => validateManifest({ ...manifest(), target: 'windows-x64' }, { version: VERSION, target: 'windows-x64', sourceCommit: COMMIT }), /entrypoints/);
+});
+
+test('legacy Linux server Engine manifests retain the server runtime profile', () => {
+  assert.equal(runtimeProfileForManifest({ target: 'linux-x64' }), 'server');
+  assert.equal(runtimeProfileForManifest({ target: 'windows-x64' }), 'desktop');
+  assert.equal(runtimeProfileForManifest({ target: 'linux-x64', runtimeProfile: 'desktop' }), 'desktop');
 });
 
 test('actual tar extraction installs the complete immutable runtime once under parallel starts', async t => {

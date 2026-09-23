@@ -410,6 +410,12 @@ test("workflows wire required TUI output and both clean Server OS legs without a
   assert.doesNotMatch(terminal, /continue-on-error|\|\| true/);
 });
 
+test("desktop portable Engine public manifests carry the server startup profile required by the publisher", () => {
+  const builder = fs.readFileSync(path.join(ROOT, "scripts/desktop/build-engine-portable.py"), "utf8");
+  const publicManifest = builder.match(/public\s*=\s*\{([\s\S]*?)\n\s*\}/)?.[1] || "";
+  assert.match(publicManifest, /["']startupProfile["']\s*:\s*["']server["']/);
+});
+
 test("the workflow executes its package identity check for the actual hyphenated bin", t => {
   const terminal = fs.readFileSync(path.join(ROOT, ".github/workflows/tui-build.yml"), "utf8");
   const script = terminal.match(/node - "\$\{archives\[0\]\}" <<'NODE'\r?\n([\s\S]*?)\r?\n\s+NODE/)[1];

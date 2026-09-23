@@ -162,6 +162,7 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
     public = {
         "schema": 1,
         "profile": "engine",
+        "startupProfile": "server",
         "version": version,
         "target": target,
         "sourceCommit": source_commit,

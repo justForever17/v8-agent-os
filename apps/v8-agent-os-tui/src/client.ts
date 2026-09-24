@@ -132,23 +132,20 @@ export class Client {
       }
       this.connection = '已连接';
       // A TUI launched from a directory has a deterministic workspace scope.
-      // The current process working directory always takes precedence over a
-      // stale workspace from another directory. Registration is idempotent.
-      const cwd = path.resolve(process.cwd());
-      if (this.view.workspace && this.view.workspace !== cwd) {
-        this.view.workspace = '';
-        this.view.sessionId = '';
-        this.defaultWorkspaceAttempted = false;
-      }
-      if (!this.defaultWorkspaceAttempted && !this.view.workspace) {
-        this.defaultWorkspaceAttempted = true;
-        try {
-          const registered = await this.api('/v1/projects', { method: 'POST', body: { name: path.basename(cwd) || cwd, workspacePath: cwd, workspaceTrustState: 'restricted', workspaceTrustSource: 'tui_cwd_discovery' } });
-          if (registered.workspaceTrustState === 'trusted' || registered.workspaceTrustState === 'restricted') {
-            this.view.workspace = cwd;
-            if (registered.workspaceTrustState !== 'trusted') this.notice = '当前目录已绑定但尚未信任，请在设置中确认工作区。';
-          }
-        } catch { this.notice = '当前目录待 Engine 确认；可在设置中选择工作区。'; }
+      // Registration is idempotent on Engine; failures leave setup available
+      // and never fabricate a trusted workspace locally.
+      if (!this.view.workspace) {
+        const cwd = path.resolve(process.cwd());
+        if (!this.defaultWorkspaceAttempted) {
+          this.defaultWorkspaceAttempted = true;
+          try {
+            const registered = await this.api('/v1/projects', { method: 'POST', body: { name: path.basename(cwd) || cwd, workspacePath: cwd, workspaceTrustState: 'restricted', workspaceTrustSource: 'tui_cwd_discovery' } });
+            if (registered.workspaceTrustState === 'trusted' || registered.workspaceTrustState === 'restricted') {
+              this.view.workspace = cwd;
+              if (registered.workspaceTrustState !== 'trusted') this.notice = '当前目录已绑定但尚未信任，请在设置中确认工作区。';
+            }
+          } catch { this.notice = '当前目录待 Engine 确认；可在设置中选择工作区。'; }
+        }
         this.save();
       }
       void this.refreshModelReadiness();

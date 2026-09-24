@@ -363,11 +363,18 @@ export function preparationManifest(manifest, args) {
     if (args[`enable-${name}`] !== true) throw new Error(`--enable-${name} takes no value`);
     const entry = planned.products[name] || { targets: name === "tui"
       ? { npm: { enabled: true, required: true } }
-      : { "linux-x64": { enabled: true, required: true }, "linux-arm64": { enabled: false, required: false, reason: "ARM dependency closure and package acceptance are pending." } } };
+      : { "linux-x64": { enabled: true, required: true, standalone: { enabled: true, required: true } }, "linux-arm64": { enabled: false, required: false, reason: "ARM dependency closure and package acceptance are pending." } } };
     entry.enabled = entry.required = true;
     delete entry.reason;
     const target = name === "tui" ? "npm" : "linux-x64";
-    entry.targets[target] = { enabled: true, required: true };
+    entry.targets[target] = {
+      ...entry.targets[target],
+      enabled: true,
+      required: true,
+      ...(name === "server" && target === "linux-x64"
+        ? { standalone: entry.targets[target]?.standalone || { enabled: true, required: true } }
+        : {}),
+    };
     planned.products[name] = entry;
   }
   validateReleaseManifest(planned);

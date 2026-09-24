@@ -32,6 +32,7 @@ test('suggestions project the canonical actions, never Send; query by alias, lab
   assert.equal(commandMatches(commands, '编辑器')[0].command, 'editor');
   assert.equal(commandMatches(commands, '快捷键')[0].command, 'help');
   assert.deepEqual(commandMatches(commands, 'not-a-command'), []);
+  assert.ok(visibleCommandMatches(commands, '').some(action => action.command === 'multiline'), 'multiline is a daily editing command and must be discoverable from the empty slash menu');
 });
 
 test('command search accepts a fuzzy subsequence without changing empty-query order', () => {

@@ -1069,7 +1069,7 @@ export class Surface {
     ], [{ label: '返回对话', run: () => this.close(true) }]);
   }
   commands(): Action[] { return [
-    { label: '发送', run: () => this.submit() }, { command: 'multiline', tier: 'view', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
+    { label: '发送', run: () => this.submit() }, { command: 'multiline', tier: 'daily', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
     { command: 'setup', tier: 'daily', description: '首次配置本机身份、模型与工作区', label: '快速配置 / Setup', navigation: true, run: () => this.setup() },
     { command: 'sessions', tier: 'daily', description: '搜索并恢复已有会话', label: '会话列表', navigation: true, run: () => this.sessions() }, { command: 'new', tier: 'daily', description: '保留当前草稿，进入新会话', label: '新建会话', run: () => this.newSession() },
     { command: 'task', tier: 'context', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() }, { command: 'inbox', tier: 'daily', description: '查看审批与待回答问题', label: '待处理', navigation: true, run: () => this.inbox() },
@@ -1086,7 +1086,7 @@ export class Surface {
     { command: 'bottom', tier: 'view', description: '恢复跟随最新输出', label: '回到底部', navigation: true, run: () => { this.following = true; this.unread = 0; this.page = null; } },
     { command: 'sidebar', tier: 'view', description: '显示或隐藏会话概览', label: '切换会话侧栏', navigation: true, run: () => { this.client.view.sidebar = !this.client.view.sidebar; this.client.save(); this.page = null; } },
     { command: 'details', tier: 'view', description: '显示或隐藏任务概览', label: '切换任务侧栏', navigation: true, run: () => { this.client.view.detail = !this.client.view.detail; this.client.save(); this.page = null; } },
-    { command: 'exit', tier: 'view', description: '退出界面，后台任务继续', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } },
+    { command: 'exit', tier: 'view', description: '退出终端并释放前台 Engine', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } },
     { command: 'language', tier: 'advanced', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
       { label: '中文（简体）', run: () => { this.setLocale('zh-CN'); this.page = null; } },
       { label: 'English', run: () => { this.setLocale('en-US'); this.page = null; } },

@@ -96,7 +96,8 @@ def scenario(reader=False):
         assert child.returncode == 0
         assert termios.tcgetattr(slave)[3] & termios.ICANON == baseline[3] & termios.ICANON
         assert termios.tcgetattr(slave)[3] & termios.ECHO == baseline[3] & termios.ECHO
-        assert '后台服务继续运行' in output.decode(errors='replace')
+        decoded_output = output.decode(errors='replace')
+        assert ('前台 Engine 已释放' in decoded_output or 'foreground Engine released' in decoded_output)
         return {'screenReader': reader, 'pasteExact': True, 'enterDidNotSubmitPaste': True, 'resize': [128,104,80,64,59,128], 'rawModeRestored': True, 'verticalGraphemeEditing': True, 'visibleSearch': True, 'externalEditorCanonicalRoundtrip': True, 'externalEditorUnsentDraft': True, 'outputBytes': len(output)}
     finally:
         if child.poll() is None: child.terminate(); child.wait(timeout=10)

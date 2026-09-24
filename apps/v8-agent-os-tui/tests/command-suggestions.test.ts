@@ -8,7 +8,7 @@ import { Client } from '../src/client.js';
 import { ViewStore } from '../src/persistence.js';
 import { Surface } from '../src/surface.js';
 import { editor, InputDecoder } from '../src/terminal.js';
-import { commandMatches, suggestionRows } from '../src/command-suggestions.js';
+import { commandMatches, suggestionRows, visibleCommandMatches } from '../src/command-suggestions.js';
 
 function make(t: any, transport: any = async () => ({})) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'v8-command-test-'));
@@ -73,13 +73,17 @@ test('Escape restores exact draft editor and scroll anchor; query is never persi
 });
 
 test('Tab completes only; Enter runs the explicit selected catalog action', async t => {
-  const { ui } = make(t); let invoked = 0;
+  const { client, ui } = make(t); let invoked = 0;
   ui.help = () => { invoked++; };
   await query(ui, 'he'); await ui.dispatch({ key: 'tab' });
   assert.equal(ui.suggestions!.query.text, 'help'); assert.equal(invoked, 0);
   await ui.dispatch({ key: 'enter' }); assert.equal(invoked, 1); assert.equal(ui.suggestions, null);
   await ui.dispatch({ key: 'text', text: '/' });
-  const count = commandMatches(ui.commands(), '').length;
+  const count = visibleCommandMatches(ui.commands(), '', {
+    active: client.active,
+    hasAttachments: client.draft.attachments.length > 0,
+    configured: client.ownerReady && Boolean(client.workspace),
+  }).length;
   for (let i = 0; i < count + 2; i++) await ui.dispatch({ key: 'down' });
   assert.equal(ui.suggestions!.selected, count - 1);
   await ui.dispatch({ key: 'enter' }); assert.equal(invoked, 2);

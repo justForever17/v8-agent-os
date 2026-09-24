@@ -11,9 +11,19 @@ import { suggestionRows } from './command-suggestions.js';
 import { localize, normalizeLocale } from './locale.js';
 import { resolveTheme, type ThemeTokens } from './theme.js';
 import { composerCursorPosition } from './composer-layout.js';
+import { welcomeTextRow, type WelcomeArtRow } from './welcome-art.js';
 export { messageText } from './presentation.js';
 
 const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN', localizeLines = false, tokens, theme }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US'; localizeLines?: boolean; tokens?: Array<keyof ThemeTokens | undefined>; theme?: ThemeTokens }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => { const token = tokens?.[i]; const value = theme && theme.ansi && token ? theme[token] : undefined; const color = typeof value === 'string' ? value : undefined; return <Text key={i} color={color} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localizeLines ? localize(lines[i] || ' ', locale) : (lines[i] || ' '), width)}</Text>; })}</Box>;
+
+const WelcomePad = ({ rows, height, width, theme }: { rows: readonly WelcomeArtRow[]; height: number; width: number; theme: ThemeTokens }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => {
+  const row = rows[i] || welcomeTextRow('');
+  if (row.width > width) return <Text key={i} wrap="truncate-end">{clip(row.raw, width)}</Text>;
+  return <Text key={i} wrap="truncate-end">{row.segments.map((segment, j) => {
+    const value = theme.ansi ? theme[segment.token] : undefined;
+    return <Text key={j} color={typeof value === 'string' ? value : undefined} bold={segment.token === 'selected' || segment.token === 'code'}>{segment.text}</Text>;
+  })}</Text>;
+})}</Box>;
 
 function App({ client, surface, dispatch }: { client: Client; surface: Surface; dispatch: (event: Input) => void }) {
   useSyncExternalStore(client.subscribe, client.getRevision);
@@ -51,6 +61,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   });
   let body: string[] = [];
   let bodyTokens: Array<keyof ThemeTokens | undefined> = [];
+  let welcomeRows: readonly WelcomeArtRow[] | undefined;
   let selectedRow = -1;
   const page = surface.page;
   if (page) {
@@ -74,7 +85,14 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     }
     body = viewport.rows.map(row => row.text);
     bodyTokens = viewport.rows.map(row => row.token);
-    if (!body.length) body = size.small ? ['小窗口模式', '', ...surface.welcomeLines(locale).slice(0, 4), 'F3 快速配置 · /setup 打开配置页'] : surface.welcomeLines(locale);
+    if (!body.length) {
+      const welcome = surface.welcomeProjection(locale, size.small, size.chat);
+      welcomeRows = size.small
+        ? [welcomeTextRow('小窗口模式', 'muted'), welcomeTextRow(''), ...welcome.rows.slice(0, 4), welcomeTextRow('F3 快速配置 · /setup 打开配置页', 'muted')]
+        : welcome.rows;
+      body = welcomeRows.map(row => row.raw);
+      bodyTokens = welcomeRows.map(row => row.segments[0]?.token);
+    }
   }
   const label = `${client.instance.name || 'V8OS'} · ${client.connection}${client.inbox.length ? ` · 待处理 ${client.inbox.length}` : ''} · 审批:${client.approvalBadge} · ${client.workspace || '未选择工作区'}`;
   surface.unread = pausedUpdates.update(client.messages, surface.following);
@@ -83,7 +101,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>
       {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${localize(statusLabel(s.status), locale)}`)]} locale={locale} localizeLines={true} theme={theme} /></Box>}
-      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} tokens={bodyTokens} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} theme={theme} />
+      {!page && welcomeRows ? <WelcomePad width={size.chat} height={historyHeight} rows={welcomeRows} theme={theme} /> : <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} tokens={bodyTokens} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} theme={theme} />}
       {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} theme={theme} /></Box>}
     </Box>
     <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>

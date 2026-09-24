@@ -4,12 +4,13 @@ import type { EditedDraft } from './external-editor.js';
 import { featurePacks, plugins } from './extension-pages.js';
 import { createPeerInvitation, consumePeerInvitation } from './peer-pages.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { commandMatches, type CommandEntry } from './command-suggestions.js';
+import { visibleCommandMatches, type CommandEntry } from './command-suggestions.js';
 import { type Locale } from './locale.js';
 import { parseAtReferences, workspaceReferencePath } from './mentions.js';
 import type { MentionCandidate, MentionGroup } from './mentions.js';
 import { mentionReplacement, mentionSuggestionRows, mentionTokenAt, moveMentionSelection, selectedMention, switchMentionGroup, type MentionSuggestionState } from './mention-suggestions.js';
 import { themeNames, type ThemeName } from './theme.js';
+import { welcomeArtProjection, welcomeTextRow, type WelcomeArtProjection, type WelcomeArtRow } from './welcome-art.js';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { buildQuestionAnswer, createQuestionDraft, normalizeQuestions, optionDetail, optionKey, optionLabel, questionAnswered, questionDetail, questionKey, questionTitle, requestSummary, type QuestionDraft } from './inbox.js';
@@ -121,14 +122,21 @@ export class Surface {
    * usable.  Qwen/Claude both make the first screen a product surface rather
    * than a blocking modal; actions are available through /setup and F3.
    */
-  welcomeLines(locale: Locale = this.client.view.locale || 'zh-CN'): string[] {
+  welcomeProjection(locale: Locale = this.client.view.locale || 'zh-CN', compact = false, columns = 80): { rows: WelcomeArtRow[]; lines: string[]; tokens: Array<WelcomeArtRow['segments'][number]['token'] | undefined>; screenReader: string } {
     const en = locale === 'en-US';
     const status = (ready: boolean, zhReady: string, zhPending: string, enReady: string, enPending: string) => `${ready ? '●' : '○'} ${en ? (ready ? enReady : enPending) : (ready ? zhReady : zhPending)}`;
     const engineReady = this.client.connection === '已连接';
     const ownerReady = this.client.ownerReady;
     const workspaceReady = Boolean(this.client.workspace);
     const modelReady = Boolean(this.client.modelReady || this.client.snapshot?.modelReady);
-    if (en) return [
+    const art: WelcomeArtProjection = welcomeArtProjection(columns, compact);
+    const content = compact ? [
+      '',
+      status(engineReady, 'Engine 已连接', 'Engine 未连接', 'Engine connected', 'Engine unavailable'),
+      status(ownerReady, '本机身份已初始化', '本机身份待初始化', 'Local identity initialized', 'Local identity needs setup'),
+      status(modelReady, 'Supervisor 模型已就绪', 'Supervisor 模型待配置', 'Supervisor model ready', 'Supervisor model needs setup'),
+      status(workspaceReady, `工作区：${this.client.workspace || '未选择'}`, '工作区待选择', `Workspace: ${this.client.workspace || 'not selected'}`, 'Workspace needs setup'),
+    ] : en ? [
       'V8 Agent OS',
       'A conversation-first terminal for your local Engine.',
       '',
@@ -139,8 +147,7 @@ export class Surface {
       '',
       ownerReady && workspaceReady && modelReady ? '输入消息并按 Enter 开始；按 / 查看操作。' : '按 F3 或输入 /setup 完成快速配置，草稿会保留。',
       'F3 快速配置 · F4 连接 Phone / Peer · F1 帮助 · Ctrl+D 退出',
-    ];
-    return [
+    ] : [
       'V8 Agent OS',
       '对话优先的本机终端，直接连接你的 V8OS Engine。',
       '',
@@ -152,6 +159,12 @@ export class Surface {
       ownerReady && workspaceReady && modelReady ? '输入消息并按 Enter 开始；按 / 查看操作。' : '按 F3 或输入 /setup 完成快速配置，草稿会保留。',
       'F3 快速配置 · F4 连接 Phone / Peer · F1 帮助 · Ctrl+D 退出',
     ];
+    const rows = [...art.rows, ...content.map(line => welcomeTextRow(line))];
+    return { rows, lines: rows.map(row => row.raw), tokens: rows.map(row => row.segments[0]?.token), screenReader: [art.screenReader, ...content.filter(Boolean)].join('. ') };
+  }
+
+  welcomeLines(locale: Locale = this.client.view.locale || 'zh-CN', compact = false, columns = 80): string[] {
+    return this.welcomeProjection(locale, compact, columns).lines;
   }
 
   async setup() {
@@ -344,10 +357,11 @@ export class Surface {
   setLocale(locale: Locale) { this.client.view.locale = locale; this.client.save(true); this.client.notice = locale === 'en-US' ? 'Language: English' : '界面语言：简体中文'; this.changed(); }
   private async suggestionInput(event: Input): Promise<boolean> {
     const menu = this.suggestions!;
-    // Keep the full catalog as the navigation source. The renderer projects a
-    // compact first page, while typing a query or continuing with Down still
-    // makes advanced/view actions discoverable without a second command owner.
-    const matches = commandMatches(this.commands(), menu.query.text);
+    const matches = visibleCommandMatches(this.commands(), menu.query.text, {
+      active: this.client.active,
+      hasAttachments: this.client.draft.attachments.length > 0,
+      configured: this.client.ownerReady && Boolean(this.client.workspace),
+    });
     if (event.key === 'escape' || event.key === 'ctrl-c' || event.key === 'backspace' && !menu.query.text) { this.suggestions = null; this.changed(); return true; }
     if (event.key === 'ctrl-p') { this.suggestions = null; this.palette(menu.query.text); return true; }
     if (event.key === 'enter') {

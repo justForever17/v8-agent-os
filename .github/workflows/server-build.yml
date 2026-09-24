@@ -107,18 +107,44 @@ jobs:
             -v "$node_home:$node_home:ro" -v "$python_home:$python_home:ro" \
             -e NODE_HOME="$node_home" -e PYTHON_HOME="$python_home" -e RUN_MEMORY_PACKS="${{ matrix.node }}" -e UBUNTU_VERSION="${{ matrix.ubuntu }}" \
             ubuntu:${{ matrix.ubuntu }} bash -euo pipefail -c '
-              apt-get update -qq
+              apt_update_with_retry() {
+                local attempt
+                for attempt in 1 2 3 4 5; do
+                  rm -rf /var/lib/apt/lists/*
+                  if apt-get update -qq; then return 0; fi
+                  sleep $((attempt * 4))
+                done
+                return 1
+              }
+              apt_install_with_retry() {
+                local attempt
+                for attempt in 1 2 3 4 5; do
+                  if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@"; then return 0; fi
+                  apt_update_with_retry
+                done
+                return 1
+              }
+              # Ubuntu mirrors can publish Release metadata and Packages.gz at
+              # different moments. Retry the index transaction instead of
+              # turning a transient mirror-sync mismatch into a release failure.
+              apt_update_with_retry
               if [[ "$UBUNTU_VERSION" == 22.04 ]]; then
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8 zlib1g libexpat1 util-linux passwd
+                apt_install_with_retry ca-certificates git libssl3 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8 zlib1g libexpat1 util-linux passwd
               else
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates git libssl3t64 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8t64 zlib1g libexpat1 util-linux passwd
+                apt_install_with_retry ca-certificates git libssl3t64 libffi8 libsqlite3-0 libbz2-1.0 liblzma5 libreadline8t64 zlib1g libexpat1 util-linux passwd
               fi
               export PATH="$NODE_HOME/bin:$PYTHON_HOME/bin:$PATH" LD_LIBRARY_PATH="$PYTHON_HOME/lib"
               "$PYTHON_HOME/bin/python" -m venv /tmp/browser-deps
               playwright_version=$(sed -n "s/^playwright==\([^ ]*\).*/\1/p" /package/apps/v8-agent-os-engine/requirements/server-linux-x64.lock)
               [[ -n "$playwright_version" ]]
               /tmp/browser-deps/bin/python -m pip install "playwright==$playwright_version"
-              /tmp/browser-deps/bin/python -m playwright install-deps chromium
+              install_deps_ok=0
+              for attempt in 1 2 3 4 5; do
+                if /tmp/browser-deps/bin/python -m playwright install-deps chromium; then install_deps_ok=1; break; fi
+                apt_update_with_retry
+                sleep $((attempt * 4))
+              done
+              [[ "$install_deps_ok" == 1 ]]
               useradd --create-home --shell /bin/bash server-test
               cp -a /package /home/server-test/package
               chown -R server-test:server-test /home/server-test/package

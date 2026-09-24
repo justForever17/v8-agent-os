@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import http from 'node:http';
 import { create, Header } from 'tar';
-import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest, validateRuntimeIdentity, acquireDesktopLease } from '../bin/engine-bootstrap.mjs';
+import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest, validateRuntimeIdentity, acquireDesktopLease, promoteStagedRuntime } from '../bin/engine-bootstrap.mjs';
 
 const VERSION = '2026.09.22.1', TARGET = 'linux-x64', COMMIT = 'a'.repeat(40);
 const ROOT = `v8os-engine-${VERSION}-${TARGET}`;
@@ -253,4 +253,17 @@ test('explicit service upgrade installs the matching archive before handing off 
   assert.deepEqual(receipt.args, ['service', 'upgrade', '--json', '--bundle', f.destination]);
   assert.equal(receipt.version, VERSION);
   assert.equal(receipt.runtime, path.join(f.destination, manifest().python));
+});
+
+test('promoteStagedRuntime atomically promotes staged Engine during installedRuntime discovery', async t => {
+  const f = await fixture(t);
+  const staged = path.join(f.dir, 'state/runtime/engine/.staging', VERSION, TARGET);
+  fs.cpSync(path.join(f.dir, ROOT), staged, { recursive: true });
+  put(path.join(staged, '.installed-receipt.json'), JSON.stringify({ schema: 1, version: VERSION, target: TARGET, sourceCommit: COMMIT, sha256: 'a'.repeat(64) }));
+
+  assert.equal(fs.existsSync(f.destination), false);
+  const found = installedRuntime({ version: VERSION, target: TARGET });
+  assert.equal(found, f.destination);
+  assert.equal(fs.existsSync(f.destination), true);
+  assert.equal(fs.existsSync(staged), false);
 });

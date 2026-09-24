@@ -546,7 +546,7 @@ export class Surface {
   }
   async sessions() {
     await this.client.listSessions();
-    this.open('会话', ['选择只恢复查看；后台任务继续运行。'], [
+    this.open('会话', ['选择只恢复查看；退出终端时会释放前台 Engine。'], [
       { label: '新建会话', run: () => this.newSession() },
       { label: '搜索会话', run: () => this.form('搜索会话', [{ key: 'q', label: '标题关键词', value: '' }], async v => { await this.client.listSessions(v.q); this.sessionResults(); }) },
       { label: '当前工作区', run: async () => { await this.client.listSessions('', false, true); this.sessionResults(); } },
@@ -1143,6 +1143,29 @@ export class Surface {
       else if (key === 'enter') { const action = page.actions[page.selected]; if (action && !action.disabled) await action.run(); }
       this.changed(); return;
     }
+    const pendingApproval = this.client.pendingApproval;
+    if (!this.page && !this.suggestions && !this.mentionSuggestions && pendingApproval && !this.input.text.trim()) {
+      if (key === 'text' && (text === 'y' || text === 'Y')) {
+        await this.client.decide(pendingApproval, 'approve');
+        this.client.notice = `已批准本次执行：${pendingApproval.tool || pendingApproval.name || '工具操作'}`;
+        this.changed(); return;
+      }
+      if (key === 'text' && (text === 'n' || text === 'N')) {
+        await this.client.decide(pendingApproval, 'reject');
+        this.client.notice = `已拒绝本次执行：${pendingApproval.tool || pendingApproval.name || '工具操作'}`;
+        this.changed(); return;
+      }
+      if (key === 'text' && (text === 'a' || text === 'A')) {
+        await this.client.decide(pendingApproval, 'approve');
+        this.client.approvalMode = 'minimal';
+        this.client.notice = `已批准并放行本次会话后续同类操作：${pendingApproval.tool || pendingApproval.name || '工具操作'}`;
+        this.changed(); return;
+      }
+      if (key === 'text' && (text === 'd' || text === 'D')) {
+        await this.inbox();
+        return;
+      }
+    }
     if (key === 'f2') await this.inbox();
     else if (key === 'f3') await (this.client.ownerReady && this.client.workspace ? this.settings() : this.setup());
     else if (key === 'f4') await this.connections();
@@ -1156,17 +1179,17 @@ export class Surface {
         const runId = String(this.client.run.id || this.client.run.runId || this.client.run.run_id || '');
         if (runId) await this.execute(() => this.client.interrupt(runId), false);
         else this.client.notice = '运行状态正在刷新，请稍后再按 Ctrl+C。';
-      } else if (this.input.text) {
+      } else if (this.input.text && this.input.text.trim().length > 0) {
         this.undo = this.input.text; this.input = editor(); this.client.setDraft(''); this.client.notice = '输入已清空；Ctrl+Z 撤销。';
       } else {
         const now = Date.now();
-        if (now - this.lastIdleInterrupt <= 1200) this.onExit();
-        else { this.lastIdleInterrupt = now; this.client.notice = '再次按 Ctrl+C 退出终端；后台任务继续。'; }
+        if (now - this.lastIdleInterrupt <= 2000) this.onExit();
+        else { this.lastIdleInterrupt = now; this.client.notice = '1.5 秒内再次按 Ctrl+C 或按 Ctrl+D 退出终端；前台 Engine 会随终端释放。'; }
       }
     }
     else if (key === 'ctrl-x') await this.externalEditor();
     else if (key === 'ctrl-z') { if (this.undo) { this.input = editor(this.undo); this.undo = ''; this.client.setDraft(this.input.text); } }
-    else if (key === 'ctrl-d' && !this.input.text) this.onExit();
+    else if (key === 'ctrl-d' && !this.input.text.trim()) this.onExit();
     else if (key === 'pageup') { this.following = false; this.scrollDelta -= 6; }
     else if (key === 'pagedown') { this.following = false; this.scrollDelta += 6; }
     else if (key === 'enter') {

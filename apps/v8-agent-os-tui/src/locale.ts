@@ -27,7 +27,7 @@ const exact: Record<string, string> = {
   '显式选择后续消息审批模式': 'Choose the approval mode for later messages', '只回读，避免重复发送': 'Read back state without resending',
   '读取更早的会话消息': 'Load older session messages', '恢复跟随最新输出': 'Follow the latest output',
   '显示或隐藏会话概览': 'Show or hide the session sidebar', '显示或隐藏任务概览': 'Show or hide the task sidebar',
-  '退出界面，后台任务继续': 'Exit the UI; background services continue', '快捷键与首次安装指导': 'Shortcuts and first-run help',
+  '退出界面，释放前台 Engine': 'Exit the UI and release the foreground Engine', '快捷键与首次安装指导': 'Shortcuts and first-run help',
   '切换并持久化 TUI 界面语言': 'Switch and persist the TUI language',
   'Tab 切换字段 · F9 保存/预览 · Esc 返回': 'Tab switch fields · F9 save/preview · Esc back',
   'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出': 'Enter send · F8 multiline · Ctrl+P commands · F1 help · Ctrl+D exit',

@@ -28,7 +28,11 @@ function managedService(options) {
   // only consulted when the caller explicitly opts into the persistent
   // service plane (or supplies a test/embedded manager).  This prevents a
   // desktop/TUI launch from silently starting a daemon that survives exit.
-  if (options.useManagedService === false || (options.lifecycle === "desktop" && !options.useManagedService && !options.serverService)) return null;
+  // A foreground surface must never attach to a service manager implicitly.
+  // `useManagedService: true` is reserved for an explicit control-plane call
+  // such as `v8os service ...`; passing a test manager alone is not an opt-in.
+  if (options.lifecycle === "desktop" && options.useManagedService !== true) return null;
+  if (options.useManagedService === false) return null;
   if (options.serverService) return options.serverService;
   const receipt = discoverServerServiceReceipt();
   return receipt ? { receipt, manager: createServerServiceManager() } : null;

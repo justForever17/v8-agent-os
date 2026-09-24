@@ -57,7 +57,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const inputOffset = Math.max(0, inputLayout.cursor.row + 1 - inputHeight);
   useEffect(() => {
     if (surface.page && !surface.page.fields && !operationMenu) { setCursorPosition(undefined); return; }
-    setCursorPosition(composerCursorPosition({ columns, historyHeight, overlayHeight: overlay.lines.length, inputRow: inputLayout.cursor.row, inputColumn: inputLayout.cursor.column, inputOffset, promptWidth: columns }));
+    setCursorPosition(composerCursorPosition({ columns, rows, inputHeight, historyHeight, overlayHeight: overlay.lines.length, inputRow: inputLayout.cursor.row, inputColumn: inputLayout.cursor.column, inputOffset, promptWidth: columns }));
   });
   let body: string[] = [];
   let bodyTokens: Array<keyof ThemeTokens | undefined> = [];
@@ -96,7 +96,9 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   }
   const label = `${client.instance.name || 'V8OS'} · ${client.connection}${client.inbox.length ? ` · 待处理 ${client.inbox.length}` : ''} · 审批:${client.approvalBadge} · ${client.workspace || '未选择工作区'}`;
   surface.unread = pausedUpdates.update(client.messages, surface.following);
-  const hint = mentionMenu ? (columns < 60 ? '←→分组 ↑↓选择 Tab补全 Enter确认 Esc取消' : '←→切换分组 · ↑↓选择 · Tab补全 · Enter确认 · Esc取消并恢复草稿') : menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
+  const hint = client.pendingApproval && !surface.page && !menu && !mentionMenu
+    ? (columns < 60 ? 'Y 批准 · N 拒绝 · A 放行 · D 详情' : '【安全审批拦截】Y 批准本次 · N 拒绝 · A 本会话允许 · D 详情')
+    : mentionMenu ? (columns < 60 ? '←→分组 ↑↓选择 Tab补全 Enter确认 Esc取消' : '←→切换分组 · ↑↓选择 · Tab补全 · Enter确认 · Esc取消并恢复草稿') : menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
     <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>
@@ -104,6 +106,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
       {!page && welcomeRows ? <WelcomePad width={size.chat} height={historyHeight} rows={welcomeRows} theme={theme} /> : <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} tokens={bodyTokens} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} theme={theme} />}
       {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} theme={theme} /></Box>}
     </Box>
+    {client.pendingApproval && !surface.page && <Text color="magenta" bold>{clip(localize(`[🛡️ 待审批: ${client.pendingApproval.tool || client.pendingApproval.name || client.pendingApproval.title || '操作'}] 按 Y 批准 · 按 N 拒绝 · 按 A 放行 · 按 D 详情`, locale), columns)}</Text>}
     <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>
     {showComposer && <Text>{clip(localize(page?.fields ? `编辑：${field!.label}` : operationMenu ? '操作菜单 · 输入筛选' : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, locale), columns)}</Text>}
     {showComposer && <Text dimColor>{'─'.repeat(columns)}</Text>}
@@ -196,9 +199,11 @@ export async function start(args: string[]) {
     editingAbort?.abort();
     process.stdout.write('\x1b[?2004l\x1b[?25h');
     try { client.stop(); } catch { process.exitCode = 1; }
-    process.stdout.write('\n终端已退出，后台服务继续运行。\n'); resolveExit();
+    process.stdout.write(client.view.locale === 'en-US'
+      ? '\nTerminal exited; foreground Engine released.\n'
+      : '\n终端已退出，前台 Engine 已释放。\n'); resolveExit();
   };
-  const interrupt = () => { if (editingAbort) editingAbort.abort(); else cleanup(); };
+  const interrupt = () => { if (editingAbort) editingAbort.abort(); else dispatch({ key: 'ctrl-c' }); };
   surface.onEditor = async text => {
     const command = process.env.VISUAL || process.env.EDITOR || '';
     editorArgv(command); // Refuse bad configuration before relinquishing the terminal.

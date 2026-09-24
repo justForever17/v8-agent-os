@@ -185,9 +185,25 @@ function inspectRuntime(root, expected = {}) {
   return { root: path.resolve(root), manifest };
 }
 
+export function promoteStagedRuntime({ version = releaseVersion(), target = targetForPlatform() } = {}) {
+  const stagedDir = path.join(runtimeRoot(), '.staging', version, target);
+  if (!fs.existsSync(stagedDir)) return '';
+  const destination = path.join(runtimeRoot(), version, target);
+  if (fs.existsSync(destination)) return destination;
+  try {
+    inspectRuntime(stagedDir, { version, target });
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.renameSync(stagedDir, destination);
+    return destination;
+  } catch {
+    return '';
+  }
+}
+
 export function installedRuntime({ version = releaseVersion(), target } = {}) {
   const explicit = process.env.V8OS_ENGINE_RUNTIME_DIR;
   if (explicit) return inspectRuntime(path.resolve(explicit)).root;
+  promoteStagedRuntime({ version, target });
   const destination = path.join(runtimeRoot(), version, target || targetForPlatform());
   if (!fs.existsSync(destination)) return '';
   const result = inspectRuntime(destination, { version, target });
@@ -396,6 +412,12 @@ export async function startEngine({ install = true, lifecycle = 'daemon', signal
   signal.throwIfAborted();
   const { results } = await core.startCoreComponentsWithRuntimePorts(['engine'], { mode: 'start', lifecycle });
   const result = results.find(item => item.id === 'engine');
+  if (result?.status === 'foreground_conflict') {
+    throw new Error('A background Engine is already running. The foreground TUI/desktop will not adopt it; stop it with `v8os stop` or use the explicit service control plane before retrying.');
+  }
+  if (result?.status === 'port_in_use' && lifecycle === 'desktop') {
+    throw new Error(`The foreground Engine port is already in use${result.port ? ` (${result.port})` : ''}. The TUI/desktop will not attach to an unrelated or systemd process; stop the owner or use the explicit service control plane before retrying.`);
+  }
   if (!['started', 'already_running'].includes(result?.status)) throw new Error(`Engine start failed: ${result?.status || 'no_receipt'}; see v8os logs`);
   try { await core.waitForCoreReadiness({ signal }); }
   catch (error) {

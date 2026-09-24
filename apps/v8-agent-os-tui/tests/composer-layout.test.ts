@@ -13,3 +13,11 @@ test('cursor remains inside the terminal after wide graphemes or a narrow resize
   assert.equal(point.x, 9);
   assert.ok(point.y >= 0);
 });
+
+test('bottom-anchored cursor locks to terminal prompt row regardless of dynamic upper content', () => {
+  const pos1 = composerCursorPosition({ columns: 80, rows: 24, inputHeight: 1, historyHeight: 10, overlayHeight: 0, inputRow: 0, inputColumn: 5, inputOffset: 0 });
+  assert.deepEqual(pos1, { x: 7, y: 22 });
+
+  const pos2 = composerCursorPosition({ columns: 80, rows: 24, inputHeight: 1, historyHeight: 6, overlayHeight: 4, inputRow: 0, inputColumn: 5, inputOffset: 0 });
+  assert.deepEqual(pos2, { x: 7, y: 22 });
+});

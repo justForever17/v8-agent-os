@@ -77,7 +77,7 @@ test("Core start/status/stop preserve an attached daemon and reject a replaced l
       assert.equal(started.profile.ports.engine, ${port});
       assert.equal(started.results[0].status, 'started');
       const attached = await core.startCoreComponents(['engine'], { lifecycle: 'desktop' });
-      assert.equal(attached[0].status, 'already_running');
+      assert.equal(attached[0].status, 'foreground_conflict');
       assert.equal(attached[0].lifecycle, 'daemon');
       assert.deepEqual(core.desktopOwnedIdentities(attached), {});
       assert.equal((await core.stopCoreComponents(['engine'], { expectedIdentities: {} }))[0].status, 'not_owned');
@@ -120,7 +120,7 @@ test("Core readiness requires readyz and the exact local state instance identity
   assert.equal(JSON.parse(await run(invoke, root)).code, "V8OS_ENGINE_READINESS_TIMEOUT");
 });
 
-test("Core routes an installed server through its existing service manager and keeps desktop detach harmless", async t => {
+test("explicit service opt-in routes through systemd even when the caller labels its surface desktop", async t => {
   const root = fixture(t);
   fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ systemBase: { bridge: { engineBaseUrl: "http://127.0.0.1:65321/v1" } } }));
   const result = await run(`
@@ -133,7 +133,7 @@ test("Core routes an installed server through its existing service manager and k
       calls.push(action);
       return { status: action === 'status' ? 'active' : action === 'start' ? 'started' : 'stopped', mainPid: 1234 };
     } } };
-    const started = await core.startCoreComponents(['engine'], { serverService, lifecycle: 'desktop' });
+    const started = await core.startCoreComponents(['engine'], { serverService, lifecycle: 'desktop', useManagedService: true });
     assert.equal(started[0].status, 'already_running');
     assert.equal(started[0].manager, 'systemd');
     assert.deepEqual(core.desktopOwnedIdentities(started), {});
@@ -163,7 +163,10 @@ test("desktop foreground launch does not start an installed systemd service", { 
     const core = await import(${JSON.stringify(coreUrl)});
     const calls = [];
     const serverService = { receipt: { port: ${port} }, manager: { perform: async action => { calls.push(action); return { status: 'active', mainPid: 1234 }; } } };
-    const started = await core.startCoreComponents(['engine'], { serverService, lifecycle: 'desktop', useManagedService: false });
+    // A foreground surface must not need a hidden useManagedService:false
+    // escape hatch: an injected service manager is ignored unless the caller
+    // explicitly opts into the persistent control plane.
+    const started = await core.startCoreComponents(['engine'], { serverService, lifecycle: 'desktop' });
     assert.equal(started[0].status, 'started');
     assert.equal(started[0].lifecycle, 'desktop');
     assert.deepEqual(calls, []);

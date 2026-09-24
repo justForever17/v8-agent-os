@@ -701,6 +701,16 @@ async function startComponent(id, options) {
     const state = readProcessState();
     const { record, runtimeDescriptor, identity } = await resolveCurrentManagedIdentity(id, state);
     if (identity.effectivePid) {
+      // Qwen's default interactive path owns its foreground runtime and only
+      // the explicit `serve` route owns a daemon.  Keep that same invariant
+      // across our Python Engine boundary: a TUI/desktop surface must never
+      // silently adopt a background process just because its PID is healthy.
+      // The caller can still use the explicit service control plane or stop
+      // the daemon before opening a foreground surface.
+      if (options.lifecycle === "desktop" && (record?.lifecycle || "daemon") !== "desktop") {
+        return { id, status: "foreground_conflict", reason: "background_engine_running",
+          pid: identity.effectivePid, recordIdentity: processRecordIdentity(record), lifecycle: record?.lifecycle || "daemon" };
+      }
       return { id, status: "already_running", pid: identity.effectivePid,
         recordIdentity: processRecordIdentity(record), lifecycle: record?.lifecycle || null };
     }

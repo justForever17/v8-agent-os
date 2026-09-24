@@ -1,10 +1,10 @@
 {
   "schema": 2,
   "release": {
-    "version": "2026.09.25.2",
+    "version": "2026.09.25.3",
     "channel": "preview",
-    "tag": "v8-os-v2026.09.25.2",
-    "updatedAt": "2026-09-24T18:08:34.984Z"
+    "tag": "v8-os-v2026.09.25.3",
+    "updatedAt": "2026-09-24T18:20:55.646Z"
   },
   "products": {
     "tui": {

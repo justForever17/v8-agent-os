@@ -1,6 +1,18 @@
 import path from 'node:path';
 
 export type AtReference = { raw: string; value: string; kind: 'file' | 'session' | 'mcp' | 'extension' | 'url' };
+export type MentionGroup = 'all' | 'files' | 'sessions' | 'mcp' | 'skills' | 'agents' | 'plugins';
+export type MentionCandidate = { group: Exclude<MentionGroup, 'all'>; value: string; label: string; description?: string; authorized?: boolean };
+
+export function mentionGroup(kind: AtReference['kind']): MentionGroup {
+  return kind === 'file' ? 'files' : kind === 'session' ? 'sessions' : kind === 'mcp' ? 'mcp' : 'all';
+}
+
+/** Projects already-authorized Engine/catalog rows into the @ picker. */
+export function groupMentionCandidates(candidates: MentionCandidate[], group: MentionGroup, query = '') {
+  const term = query.trim().toLocaleLowerCase();
+  return candidates.filter(item => (group === 'all' || item.group === group) && (!term || `${item.value} ${item.label} ${item.description || ''}`.toLocaleLowerCase().includes(term)));
+}
 
 /** Parse @ references without treating email addresses or ordinary prose as files. */
 export function parseAtReferences(text: string): AtReference[] {

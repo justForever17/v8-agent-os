@@ -1,10 +1,15 @@
 import stringWidth from 'string-width';
-import { safeText } from './terminal.js';
+import { graphemes, safeText } from './terminal.js';
+import type { MarkdownRender, MarkdownRow } from './markdown.js';
 
 /** Offset remains the pre-existing visible-grapheme offset. New anchors also
  * count hard line breaks, which disambiguates consecutive blank lines. */
 export type TranscriptAnchor = { messageId: string; offset: number; lineBreaks?: number };
-export type TranscriptRow = TranscriptAnchor & { text: string; lineBreaks: number };
+export type TranscriptRow = TranscriptAnchor & {
+  text: string; lineBreaks: number;
+  /** Optional Human Surface styling and provenance supplied by a projector. */
+  token?: MarkdownRow['token']; raw?: string; screenReader?: string;
+};
 type LayoutRow = TranscriptRow & { sourceStart: number };
 type Entry = { text: string; width: number; rows: LayoutRow[] };
 type Position = { message: number; row: number };
@@ -43,15 +48,19 @@ export class TranscriptLayout<Message = { id: string; content: string }> {
   private widths = new Map<string, number>();
   private cachedCharacters = 0;
   private readonly textOf: (message: Message) => string;
+  private readonly project?: (message: Message, width: number) => MarkdownRender;
   private readonly idOf: (message: Message) => string;
   private readonly maxCachedMessages: number;
   private readonly maxCachedCharacters: number;
 
   constructor(options: {
     textOf: (message: Message) => string; idOf?: (message: Message) => string;
+    /** Width-aware safe Human Surface projection. Raw text remains owned by textOf. */
+    project?: (message: Message, width: number) => MarkdownRender;
     maxCachedMessages?: number; maxCachedCharacters?: number;
   }) {
     this.textOf = options.textOf;
+    this.project = options.project;
     this.idOf = options.idOf || ((message: Message) => String((message as { id: string }).id));
     this.maxCachedMessages = Math.max(1, options.maxCachedMessages ?? 100);
     this.maxCachedCharacters = Math.max(1, options.maxCachedCharacters ?? 2_000_000);
@@ -90,13 +99,26 @@ export class TranscriptLayout<Message = { id: string; content: string }> {
     return rows;
   }
 
+  private wrapProjected(render: MarkdownRender, width: number, messageId: string): LayoutRow[] {
+    const rows: LayoutRow[] = []; let offset = 0, lineBreaks = 0, sourceStart = 0;
+    for (const projected of render.rows) {
+      const chunks = this.wrap(projected.text, width, messageId, 0, offset, lineBreaks);
+      for (const chunk of chunks) rows.push({ ...chunk, token: projected.token, raw: projected.raw, screenReader: projected.screenReader, sourceStart });
+      offset += graphemes(projected.text).length; sourceStart += projected.text.length + 1; lineBreaks++;
+    }
+    return rows.length ? rows : [{ text: '', messageId, offset: 0, lineBreaks: 0, sourceStart: 0 }];
+  }
+
   private entry(message: Message, width: number): Entry {
-    const id = this.idOf(message), text = safeText(this.textOf(message)), old = this.cache.get(id);
+    const id = this.idOf(message), projection = this.project?.(message, width);
+    const text = projection ? projection.rows.map(row => row.text).join('\n') : safeText(this.textOf(message));
+    const old = this.cache.get(id);
     if (old?.width === width && old.text === text) {
       this.cache.delete(id); this.cache.set(id, old); return old;
     }
     let rows: LayoutRow[];
-    if (old?.width === width) {
+    if (projection) rows = this.wrapProjected(projection, width, id);
+    else if (old?.width === width) {
       // Projection may append a trailing newline/tool summary after streaming
       // prose, so raw startsWith(old.text) alone misses real append updates.
       // Find the first changed code unit and keep only complete earlier rows.

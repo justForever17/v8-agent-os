@@ -16,6 +16,89 @@ const readJson = filename => JSON.parse(fs.readFileSync(filename, 'utf8').replac
 const optionalJson = filename => { try { return readJson(filename); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 export const stateRoot = () => path.resolve(process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), '.v8-agent-os'));
 const runtimeRoot = () => path.resolve(process.env.V8OS_ENGINE_RUNTIME_ROOT || path.join(stateRoot(), 'runtime', 'engine'));
+const releaseSourceCommit = () => packageJson.v8Release?.sourceCommit || process.env.V8OS_RELEASE_SOURCE_COMMIT || '';
+const desktopLeaseRoot = () => path.join(stateRoot(), 'runtime', 'cli', 'tui-leases');
+const desktopLeaseLock = () => path.join(desktopLeaseRoot(), '.lock');
+
+function pidAlive(pid) {
+  const numeric = Number(pid);
+  if (!Number.isInteger(numeric) || numeric <= 0) return false;
+  try { process.kill(numeric, 0); return true; }
+  catch (error) { return error?.code === 'EPERM'; }
+}
+
+async function withDesktopLeaseLock(callback) {
+  const lock = desktopLeaseLock();
+  fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid }), { flag: 'wx', mode: 0o600 });
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST' || Date.now() >= deadline) throw new Error('Timed out waiting for TUI Engine lifecycle lease');
+      let owner = null;
+      try { owner = optionalJson(path.join(lock, 'owner.json')); } catch { owner = null; }
+      if (!pidAlive(owner?.pid)) fs.rmSync(lock, { recursive: true, force: true });
+      else await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+  try { return await callback(); }
+  finally { fs.rmSync(lock, { recursive: true, force: true }); }
+}
+
+function sameEngineIdentity(left, right) {
+  if (!left || !right) return false;
+  const keys = ['pid', 'launchId', 'processStartToken'];
+  const comparable = keys.filter(key => left[key] !== undefined && right[key] !== undefined);
+  return comparable.length > 0 && comparable.every(key => String(left[key]) === String(right[key]));
+}
+
+function activeDesktopLeases(identity) {
+  const root = desktopLeaseRoot();
+  if (!fs.existsSync(root)) return [];
+  const active = [];
+  for (const name of fs.readdirSync(root)) {
+    if (!name.endsWith('.json')) continue;
+    const filename = path.join(root, name);
+    let lease = null;
+    try { lease = optionalJson(filename); } catch { fs.rmSync(filename, { force: true }); continue; }
+    if (!pidAlive(lease?.ownerPid)) { fs.rmSync(filename, { force: true }); continue; }
+    if (!identity || sameEngineIdentity(lease.engine, identity)) active.push({ filename, ...lease });
+  }
+  return active;
+}
+
+// TUI launches are leases rather than ownership transfers.  Multiple TUI
+// clients may attach to one desktop-lifecycle Engine; only the last live lease
+// may release that process.  Dead client leases are reclaimed by the next
+// holder, so a crash does not leave the Engine permanently pinned.
+export async function acquireDesktopLease({ identity, stop = async () => ({ status: 'stopped' }) } = {}) {
+  if (!identity?.pid) return null;
+  return withDesktopLeaseLock(async () => {
+    const root = desktopLeaseRoot();
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    activeDesktopLeases(identity);
+    const leaseId = crypto.randomUUID();
+    const filename = path.join(root, `${leaseId}.json`);
+    fs.writeFileSync(filename, JSON.stringify({ schema: 1, leaseId, ownerPid: process.pid, engine: identity }) + '\n', { flag: 'wx', mode: 0o600 });
+    let released = false;
+    return {
+      leaseId,
+      async release() {
+        if (released) return { status: 'lease_released' };
+        return withDesktopLeaseLock(async () => {
+          if (released) return { status: 'lease_released' };
+          fs.rmSync(filename, { force: true });
+          released = true;
+          if (activeDesktopLeases(identity).length) return { status: 'lease_retained' };
+          return stop();
+        });
+      },
+    };
+  });
+}
 
 export function releaseVersion(value = process.env.V8OS_RELEASE_VERSION || packageJson.v8Release?.version || packageJson.version) {
   const match = /^(20\d{2})\.(\d{1,2})\.(\d{1,2})[.-](\d{1,2})$/.exec(value);
@@ -46,6 +129,23 @@ function pythonPathForTarget(target) {
 
 export function runtimeProfileForManifest(manifest) {
   return manifest?.runtimeProfile || (manifest?.target === 'linux-x64' ? 'server' : 'desktop');
+}
+
+// A discovered daemon is an external lifecycle owner.  Its receipt proves
+// where it was installed, but it does not prove that it matches this npm
+// package.  Read the immutable bundle manifest before allowing the TUI to
+// reuse it; never stop or replace a shared service on an identity guess.
+export function validateRuntimeIdentity(root, { version = releaseVersion(), sourceCommit = releaseSourceCommit() } = {}) {
+  const resolved = path.resolve(root);
+  const manifestName = fs.existsSync(path.join(resolved, 'engine-manifest.json'))
+    ? 'engine-manifest.json' : 'server-manifest.json';
+  const manifest = optionalJson(path.join(resolved, manifestName));
+  if (!manifest || manifest.schema !== 1 || !['engine', 'server'].includes(manifest.profile)
+      || manifest.sourceDirty !== false || manifest.version !== version || manifest.sourceCommit !== sourceCommit
+      || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit || '')) {
+    throw new Error(`Engine identity mismatch for discovered service; expected ${version}/${sourceCommit || 'unknown'}. Stop or upgrade the managed service explicitly, then retry. Existing service and data were preserved.`);
+  }
+  return manifest;
 }
 
 function contained(root, relative) {
@@ -166,7 +266,7 @@ export async function installEngine({ version = releaseVersion(), target = targe
   if (existing) return { root: existing, installed: false };
   progress('Downloading Engine manifest / 正在获取引擎清单');
   const remote = validateManifest(await readManifest(process.env.V8OS_ENGINE_MANIFEST_URL || assetUrl(version, `V8OS-Engine-${version}-${target}.json`), signal), {
-    version, target, sourceCommit: packageJson.v8Release?.sourceCommit,
+    version, target, sourceCommit: releaseSourceCommit(),
   }, true);
   const destination = path.join(runtimeRoot(), version, target);
   fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
@@ -259,9 +359,14 @@ async function serviceReceipt() {
   return discoverServerServiceReceipt();
 }
 
-export async function startEngine({ install = true, signal = new AbortController().signal, progress = () => {} } = {}) {
+export async function startEngine({ install = true, lifecycle = 'daemon', signal = new AbortController().signal, progress = () => {} } = {}) {
   const service = await serviceReceipt();
+  if (service?.version && service.version !== releaseVersion()) {
+    throw new Error(`Engine service receipt is ${service.version}, but this npm release is ${releaseVersion()}; stop or explicitly upgrade the managed service before retrying. Existing service and data were preserved.`);
+  }
   let root = service?.bundleRoot || recordedRoot({ aliveOnly: true });
+  const discoveredRoot = Boolean(root);
+  if (discoveredRoot) validateRuntimeIdentity(root);
   if (root && !service) {
     const previous = await localControl(root);
     const status = (await previous.statusCoreComponents(['engine']))[0];
@@ -285,17 +390,33 @@ export async function startEngine({ install = true, signal = new AbortController
   }
   progress('Starting Engine / 正在启动引擎');
   signal.throwIfAborted();
-  const { results } = await core.startCoreComponentsWithRuntimePorts(['engine'], { mode: 'start' });
+  const { results } = await core.startCoreComponentsWithRuntimePorts(['engine'], { mode: 'start', lifecycle });
   const result = results.find(item => item.id === 'engine');
   if (!['started', 'already_running'].includes(result?.status)) throw new Error(`Engine start failed: ${result?.status || 'no_receipt'}; see v8os logs`);
   try { await core.waitForCoreReadiness({ signal }); }
   catch (error) {
+    let cleanupError;
     if (result.status === 'started' && result.recordIdentity) {
-      await core.stopCoreComponents(['engine'], { expectedIdentities: { engine: result.recordIdentity } });
+      try {
+        const cleanup = await core.stopCoreComponents(['engine'], { expectedIdentities: { engine: result.recordIdentity } });
+        const cleanupResult = cleanup?.find(item => item?.id === 'engine') || cleanup?.[0];
+        if (!['stopped', 'stale_state_removed', 'not_managed'].includes(cleanupResult?.status)) {
+          cleanupError = new Error(`Engine cleanup was not confirmed (${cleanupResult?.status || 'unknown'}: ${cleanupResult?.reason || 'no detail'}); no unverified process was force-killed`);
+        }
+      } catch (failure) { cleanupError = failure; }
     }
+    if (cleanupError) error = new Error(`${error instanceof Error ? error.message : String(error)}; ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
     throw error;
   }
-  return { ...result, runtimeRoot: root, baseUrl: origin };
+  const lease = lifecycle === 'desktop' && result.lifecycle === 'desktop' && result.recordIdentity
+    ? await acquireDesktopLease({
+      identity: result.recordIdentity,
+      stop: async () => (await core.stopCoreComponents(['engine'], {
+        expectedIdentities: { engine: result.recordIdentity },
+      }))[0],
+    })
+    : null;
+  return { ...result, lifecycle, runtimeRoot: root, baseUrl: origin, ...(lease ? { leaseId: lease.leaseId, release: lease.release } : {}) };
 }
 
 export async function statusEngine() {
@@ -311,13 +432,13 @@ export async function statusEngine() {
   return { ...result, status: result?.managed && result?.pidAlive ? 'running' : result?.pidAlive ? 'identity_unverified' : 'stopped', runtimeRoot: root, baseUrl: core.engineTargetOrigin() };
 }
 
-export async function stopEngine() {
+export async function stopEngine({ expectedIdentity } = {}) {
   let root = (await serviceReceipt())?.bundleRoot || recordedRoot();
   if (!root) { try { root = installedRuntime(); } catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; } }
   if (!root) root = rememberedDesktopRuntime();
   if (!root) return { id: 'engine', status: 'not_managed' };
   const core = await localControl(root);
-  return (await core.stopCoreComponents(['engine']))[0];
+  return (await core.stopCoreComponents(['engine'], expectedIdentity ? { expectedIdentities: { engine: expectedIdentity } } : {}))[0];
 }
 
 export async function runEngineCli(args, options = {}) {

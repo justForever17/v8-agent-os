@@ -5,19 +5,22 @@ import { Client } from './client.js';
 import { Surface } from './surface.js';
 import { editExternal, editorArgv } from './external-editor.js';
 import { clip, dimensions, editor, editorLayout, InputDecoder, safeText, wrap, type Input } from './terminal.js';
-import { messageText, readerMessageUpdate, statusLabel, PausedTranscriptUpdates } from './presentation.js';
+import { messageProjection, messageText, readerMessageUpdate, statusLabel, PausedTranscriptUpdates } from './presentation.js';
 import { TranscriptLayout } from './transcript-layout.js';
 import { suggestionRows } from './command-suggestions.js';
 import { localize, normalizeLocale } from './locale.js';
+import { resolveTheme, type ThemeTokens } from './theme.js';
+import { composerCursorPosition } from './composer-layout.js';
 export { messageText } from './presentation.js';
 
-const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN', localizeLines = false }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US'; localizeLines?: boolean }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => <Text key={i} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localizeLines ? localize(lines[i] || ' ', locale) : (lines[i] || ' '), width)}</Text>)}</Box>;
+const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN', localizeLines = false, tokens, theme }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US'; localizeLines?: boolean; tokens?: Array<keyof ThemeTokens | undefined>; theme?: ThemeTokens }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => { const token = tokens?.[i]; const value = theme && theme.ansi && token ? theme[token] : undefined; const color = typeof value === 'string' ? value : undefined; return <Text key={i} color={color} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localizeLines ? localize(lines[i] || ' ', locale) : (lines[i] || ' '), width)}</Text>; })}</Box>;
 
 function App({ client, surface, dispatch }: { client: Client; surface: Surface; dispatch: (event: Input) => void }) {
   useSyncExternalStore(client.subscribe, client.getRevision);
   const [, redraw] = useReducer(n => n + 1, 0);
   const { setCursorPosition } = useCursor();
-  const transcript = useMemo(() => new TranscriptLayout({ textOf: messageText }), [client.instance.instanceId, client.view.sessionId]);
+  const theme = resolveTheme(client.view.theme);
+  const transcript = useMemo(() => new TranscriptLayout({ textOf: messageText, project: (message, width) => messageProjection(message, width, theme) }), [client.instance.instanceId, client.view.sessionId, client.view.theme, theme.name]);
   const pausedUpdates = useMemo(() => new PausedTranscriptUpdates(), [client.instance.instanceId, client.view.sessionId]);
   surface.onChange = redraw;
   if (!client.busy && surface.input.text !== client.draft.text) surface.input = editor(client.draft.text);
@@ -25,6 +28,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const columns = process.stdout.columns || 80, rows = process.stdout.rows || 24;
   const size = dimensions(columns, rows, client.view.sidebar, client.view.detail);
   const menu = surface.suggestions;
+  const mentionMenu = surface.mentionSuggestions;
   const locale = client.view.locale || 'zh-CN';
   const operationMenu = surface.page?.title === '操作菜单';
   const editing = menu ? { ...menu.query, text: '/' + menu.query.text, cursor: menu.query.cursor + 1 } : operationMenu ? { ...surface.paletteEditor, text: '/' + surface.paletteEditor.text, cursor: surface.paletteEditor.cursor + 1 } : surface.page?.fields ? surface.formEditor : surface.input;
@@ -36,14 +40,17 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const inputLines = inputLayout.lines;
   const inputHeight = !showComposer ? 0 : size.small ? 1 : Math.max(1, Math.min(8, Math.floor(rows / 3), inputLines.length));
   const availableHistoryHeight = Math.max(1, rows - inputHeight - (showComposer ? 6 : 4));
-  const suggestions = menu ? suggestionRows(surface.commands(), menu.query.text, menu.selected, columns, Math.max(0, availableHistoryHeight - 2)) : { lines: [], selectedRow: -1 };
-  const historyHeight = availableHistoryHeight - suggestions.lines.length;
+  const suggestions = menu ? suggestionRows(surface.commands(), menu.query.text, menu.selected, columns, Math.max(0, availableHistoryHeight - 2), { active: client.active, hasAttachments: client.draft.attachments.length > 0, configured: client.ownerReady && Boolean(client.workspace) }) : { lines: [], selectedRow: -1 };
+  const mentionRows = mentionMenu ? surface.mentionRows(columns, Math.max(0, availableHistoryHeight - 2)) : { lines: [], selectedRow: -1 };
+  const overlay = mentionMenu ? mentionRows : suggestions;
+  const historyHeight = availableHistoryHeight - overlay.lines.length;
   const inputOffset = Math.max(0, inputLayout.cursor.row + 1 - inputHeight);
   useEffect(() => {
     if (surface.page && !surface.page.fields && !operationMenu) { setCursorPosition(undefined); return; }
-    setCursorPosition({ x: Math.min(columns - 1, 2 + inputLayout.cursor.column), y: 5 + historyHeight + suggestions.lines.length + inputLayout.cursor.row - inputOffset });
+    setCursorPosition(composerCursorPosition({ columns, historyHeight, overlayHeight: overlay.lines.length, inputRow: inputLayout.cursor.row, inputColumn: inputLayout.cursor.column, inputOffset, promptWidth: columns }));
   });
   let body: string[] = [];
+  let bodyTokens: Array<keyof ThemeTokens | undefined> = [];
   let selectedRow = -1;
   const page = surface.page;
   if (page) {
@@ -58,30 +65,31 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   } else {
     const saved = client.view.scroll[client.view.sessionId];
     const viewport = transcript.window(client.messages, { width: size.chat, height: historyHeight, anchor: saved,
-      following: surface.following, scrollDelta: menu ? 0 : surface.scrollDelta });
+      following: surface.following, scrollDelta: menu || mentionMenu ? 0 : surface.scrollDelta });
     // The temporary menu reduces visible history but never moves its saved anchor.
-    if (!menu) {
+    if (!menu && !mentionMenu) {
       surface.scrollDelta = 0; surface.following = viewport.following;
       if (viewport.following) surface.unread = 0;
       if (viewport.anchor) client.view.scroll[client.view.sessionId] = { ...viewport.anchor, following: viewport.following };
     }
     body = viewport.rows.map(row => row.text);
+    bodyTokens = viewport.rows.map(row => row.token);
     if (!body.length) body = size.small ? ['小窗口模式', '', ...surface.welcomeLines(locale).slice(0, 4), 'F3 快速配置 · /setup 打开配置页'] : surface.welcomeLines(locale);
   }
-  const label = `${client.instance.name || 'V8OS'} · ${client.connection}${client.inbox.length ? ` · 待处理 ${client.inbox.length}` : ''} · ${client.workspace || '未选择工作区'}`;
+  const label = `${client.instance.name || 'V8OS'} · ${client.connection}${client.inbox.length ? ` · 待处理 ${client.inbox.length}` : ''} · 审批:${client.approvalBadge} · ${client.workspace || '未选择工作区'}`;
   surface.unread = pausedUpdates.update(client.messages, surface.following);
-  const hint = menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
+  const hint = mentionMenu ? (columns < 60 ? '←→分组 ↑↓选择 Tab补全 Enter确认 Esc取消' : '←→切换分组 · ↑↓选择 · Tab补全 · Enter确认 · Esc取消并恢复草稿') : menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
     <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
     <Box height={historyHeight}>
-      {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${localize(statusLabel(s.status), locale)}`)]} locale={locale} localizeLines={true} /></Box>}
-      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} />
-      {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} /></Box>}
+      {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${localize(statusLabel(s.status), locale)}`)]} locale={locale} localizeLines={true} theme={theme} /></Box>}
+      <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} tokens={bodyTokens} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} theme={theme} />
+      {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} theme={theme} /></Box>}
     </Box>
     <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>
     {showComposer && <Text>{clip(localize(page?.fields ? `编辑：${field!.label}` : operationMenu ? '操作菜单 · 输入筛选' : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, locale), columns)}</Text>}
     {showComposer && <Text dimColor>{'─'.repeat(columns)}</Text>}
-    {menu && <Pad width={columns} height={suggestions.lines.length} lines={suggestions.lines} selected={suggestions.selectedRow} locale={locale} localizeLines={true} />}
+    {overlay.lines.length > 0 && <Pad width={columns} height={overlay.lines.length} lines={overlay.lines} selected={overlay.selectedRow} locale={locale} localizeLines={true} />}
     <Pad width={columns} height={inputHeight} lines={inputLines.slice(inputOffset, inputOffset + inputHeight).map((l, i) => `${i === 0 ? '> ' : '  '}${l}`)} />
     <Text dimColor>{clip(localize(hint, locale), columns)}</Text>
   </Box>;
@@ -103,8 +111,11 @@ export async function start(args: string[]) {
     if (!reader) return;
     const t = (value: unknown) => localize(value, client.view.locale || 'zh-CN');
     const page = surface.page;
-    if (surface.suggestions) {
-      const menu = surface.suggestions, rows = suggestionRows(surface.commands(), menu.query.text, menu.selected, 120, 8);
+    if (surface.mentionSuggestions) {
+      const rows = surface.mentionRows(120, 8);
+      process.stdout.write('\n' + safeText(rows.lines.map(t).join('\n')) + '\n' + t('←→切换分组，↑↓选择，Tab补全，Enter确认，Esc取消并恢复草稿') + ' > ' + safeText(surface.input.text));
+    } else if (surface.suggestions) {
+      const menu = surface.suggestions, rows = suggestionRows(surface.commands(), menu.query.text, menu.selected, 120, 8, { active: client.active, hasAttachments: client.draft.attachments.length > 0, configured: client.ownerReady && Boolean(client.workspace) });
       process.stdout.write('\n' + safeText(rows.lines.map(t).join('\n')) + '\n' + t('↑↓选择，Tab补全，Enter执行，Esc返回原草稿') + ' > /' + safeText(menu.query.text));
     } else if (page) {
       process.stdout.write('\n' + safeText([page.title, ...page.lines, ...(page.fields || []).map(f => `${f.label}：${f.secret ? '隐藏输入' : f.value}`), ...page.actions.map((a, i) => `${i + 1}. ${a.label}${a.disabled ? '（不可用）' : ''}`)].map(line => page.localizeLines === false ? line : t(line)).join('\n')) + '\n');
@@ -120,16 +131,17 @@ export async function start(args: string[]) {
       if (event.key === 'text' && /^\d+$/.test(event.text || '')) { number += event.text; process.stdout.write(event.text!); return; }
       if (event.key === 'enter' && number) { surface.page.selected = Math.max(0, Number(number) - 1); number = ''; }
     }
-    const previous = surface.page, previousSuggestions = surface.suggestions;
+    const previous = surface.page, previousSuggestions = surface.suggestions, previousMentionSuggestions = surface.mentionSuggestions;
     // Editing remains synchronous while network operations have one owner.
-    const actionKey = ['enter', 'f9', 'f1', 'f2', 'f3', 'f4', 'ctrl-p', 'ctrl-b', 'ctrl-t', 'ctrl-n', 'escape', 'ctrl-c'].includes(event.key);
+    const mentionActionKey = Boolean(previousMentionSuggestions) && ['left', 'right', 'up', 'down', 'pageup', 'pagedown'].includes(event.key);
+    const actionKey = ['enter', 'f9', 'f1', 'f2', 'f3', 'f4', 'ctrl-p', 'ctrl-b', 'ctrl-t', 'ctrl-n', 'escape', 'ctrl-c'].includes(event.key) || mentionActionKey;
     const work = surface.dispatch(event);
     void work.finally(() => {
       if (reader) {
         const secret = surface.page?.fields?.[surface.page.fieldIndex || 0]?.secret;
         if (event.key === 'text' || event.key === 'paste') process.stdout.write(secret ? '' : safeText(event.text));
         else if (event.key === 'backspace') process.stdout.write(secret ? '' : '\n当前输入 > ' + safeText(surface.page?.fields ? surface.formEditor.text : surface.input.text));
-        if (previous !== surface.page || previousSuggestions || surface.suggestions || actionKey || event.key === 'tab') echo();
+        if (previous !== surface.page || previousSuggestions || surface.suggestions || previousMentionSuggestions || surface.mentionSuggestions || actionKey || event.key === 'tab') echo();
       }
     });
   };

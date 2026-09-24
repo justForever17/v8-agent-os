@@ -1,4 +1,7 @@
 import { buildClientToolSurface, redactClientToolText } from '../../../packages/session-realtime/src/client-tool-surface.js';
+import { renderMarkdown } from './markdown.js';
+import type { ThemeName, ThemeTokens } from './theme.js';
+export { renderMarkdown } from './markdown.js';
 
 const statuses: Record<string, string> = {
   completed: '已完成', succeeded: '已完成', success: '已完成', failed: '失败', error: '失败',
@@ -46,6 +49,11 @@ export function messageText(message: any): string {
   const label = statusLabel(message.state || message.status);
   return `${message.role === 'user' ? '你' : message.agentName || '主理人'}${label ? ` · ${label}` : ''}\n${text}`
     + executionSummaries(message).map(line => `\n${line}`).join('') + '\n';
+}
+
+/** Human Surface contract for TranscriptLayout/main.tsx integration. */
+export function messageProjection(message: any, width: number, theme?: ThemeName | ThemeTokens) {
+  return renderMarkdown(messageText(message), { width, theme });
 }
 
 /** Linear readers append prose without replaying the whole message on every

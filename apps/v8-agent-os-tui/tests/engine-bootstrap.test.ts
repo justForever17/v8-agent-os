@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import http from 'node:http';
 import { create, Header } from 'tar';
-import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest } from '../bin/engine-bootstrap.mjs';
+import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest, validateRuntimeIdentity, acquireDesktopLease } from '../bin/engine-bootstrap.mjs';
 
 const VERSION = '2026.09.22.1', TARGET = 'linux-x64', COMMIT = 'a'.repeat(40);
 const ROOT = `v8os-engine-${VERSION}-${TARGET}`;
@@ -20,7 +20,7 @@ const hash = (filename: string) => createHash('sha256').update(fs.readFileSync(f
 
 async function fixture(t: any, mutate = (_manifest: any) => {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v8-engine-installer-'));
-  const keys = ['V8_AGENT_OS_HOME', 'V8OS_ENGINE_RUNTIME_ROOT', 'V8OS_ENGINE_RUNTIME_DIR', 'V8OS_ENGINE_MANIFEST_URL', 'V8OS_ENGINE_ARCHIVE'];
+  const keys = ['V8_AGENT_OS_HOME', 'V8OS_ENGINE_RUNTIME_ROOT', 'V8OS_ENGINE_RUNTIME_DIR', 'V8OS_ENGINE_MANIFEST_URL', 'V8OS_ENGINE_ARCHIVE', 'V8OS_RELEASE_SOURCE_COMMIT'];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
   t.after(() => { for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(dir, { recursive: true, force: true }); });
@@ -67,6 +67,69 @@ test('legacy Linux server Engine manifests retain the server runtime profile', (
   assert.equal(runtimeProfileForManifest({ target: 'linux-x64' }), 'server');
   assert.equal(runtimeProfileForManifest({ target: 'windows-x64' }), 'desktop');
   assert.equal(runtimeProfileForManifest({ target: 'linux-x64', runtimeProfile: 'desktop' }), 'desktop');
+});
+
+test('discovered daemon must match the npm release identity before reuse', async t => {
+  const f = await fixture(t);
+  await installEngine({ version: VERSION, target: TARGET });
+  assert.doesNotThrow(() => validateRuntimeIdentity(f.destination, { version: VERSION, sourceCommit: COMMIT }));
+  const manifestPath = path.join(f.destination, 'engine-manifest.json');
+  const original = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...original, sourceCommit: 'b'.repeat(40) }));
+  assert.throws(() => validateRuntimeIdentity(f.destination, { version: VERSION, sourceCommit: COMMIT }), /identity mismatch/);
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...original, version: '2026.09.22.2' }));
+  assert.throws(() => validateRuntimeIdentity(f.destination, { version: VERSION, sourceCommit: COMMIT }), /identity mismatch/);
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...original, sourceDirty: true }));
+  assert.throws(() => validateRuntimeIdentity(f.destination, { version: VERSION, sourceCommit: COMMIT }), /identity mismatch/);
+});
+
+test('desktop Engine is released only after the last live TUI lease', async t => {
+  const f = await fixture(t);
+  let stops = 0;
+  const stop = async () => { stops += 1; return { status: 'stopped' }; };
+  const first = await acquireDesktopLease({ identity: { pid: process.pid, launchId: 'engine' }, stop });
+  const second = await acquireDesktopLease({ identity: { pid: process.pid, launchId: 'engine' }, stop });
+  assert.equal((await first.release()).status, 'lease_retained');
+  assert.equal(stops, 0);
+  assert.equal((await second.release()).status, 'stopped');
+  assert.equal(stops, 1);
+  await t.test('stale lease is reclaimed', async () => {
+    const root = path.join(process.env.V8_AGENT_OS_HOME!, 'runtime/cli/tui-leases');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'stale.json'), JSON.stringify({ ownerPid: 99999999 }));
+    const lease = await acquireDesktopLease({ identity: { pid: process.pid, launchId: 'engine' }, stop });
+    assert.equal(fs.existsSync(path.join(root, 'stale.json')), false);
+    await lease.release();
+  });
+  await t.test('a replaced Engine identity cannot be pinned by an older TUI lease', async () => {
+    let oldStops = 0, newStops = 0;
+    const old = await acquireDesktopLease({ identity: { pid: process.pid, launchId: 'engine-old' }, stop: async () => { oldStops++; return { status: 'not_owned' }; } });
+    const current = await acquireDesktopLease({ identity: { pid: process.pid, launchId: 'engine-new' }, stop: async () => { newStops++; return { status: 'stopped' }; } });
+    assert.equal((await current.release()).status, 'stopped');
+    assert.equal(newStops, 1);
+    assert.equal(oldStops, 0);
+    await old.release();
+    assert.equal(oldStops, 1);
+  });
+});
+
+test('an older managed service is blocked before lifecycle control is contacted', async t => {
+  const f = await fixture(t);
+  const packageDir = path.join(f.dir, 'npm-service-identity');
+  put(path.join(packageDir, 'bin/engine-bootstrap.mjs'), fs.readFileSync(path.resolve('bin/engine-bootstrap.mjs'), 'utf8'));
+  put(path.join(packageDir, 'package.json'), JSON.stringify({ type: 'module', version: '2026.09.24-3', v8Release: { version: VERSION, sourceCommit: COMMIT } }));
+  fs.symlinkSync(path.resolve('node_modules'), path.join(packageDir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+  put(path.join(packageDir, 'dist/core-control.mjs'), `
+    export const discoverServerServiceReceipt = () => ({ bundleRoot: ${JSON.stringify(f.destination)}, version: '2026.09.21.1', port: 9530 });
+    export async function startCoreComponentsWithRuntimePorts() { throw new Error('lifecycle control must not be contacted'); }
+  `);
+  const script = `import { startEngine } from ${JSON.stringify(pathToFileURL(path.join(packageDir, 'bin/engine-bootstrap.mjs')).href)};
+    try { await startEngine({ install: false }); process.exitCode = 2; }
+    catch (error) { console.log(error.message); }`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: process.env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /service receipt is 2026\.09\.21\.1/);
+  assert.doesNotMatch(result.stdout, /lifecycle control must not be contacted/);
 });
 
 test('actual tar extraction installs the complete immutable runtime once under parallel starts', async t => {

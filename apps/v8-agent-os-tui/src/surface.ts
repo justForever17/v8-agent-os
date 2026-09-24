@@ -7,7 +7,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { commandMatches, type CommandEntry } from './command-suggestions.js';
 import { type Locale } from './locale.js';
 import { parseAtReferences, workspaceReferencePath } from './mentions.js';
-import { stat } from 'node:fs/promises';
+import type { MentionCandidate, MentionGroup } from './mentions.js';
+import { mentionReplacement, mentionSuggestionRows, mentionTokenAt, moveMentionSelection, selectedMention, switchMentionGroup, type MentionSuggestionState } from './mention-suggestions.js';
+import { themeNames, type ThemeName } from './theme.js';
+import { readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { buildQuestionAnswer, createQuestionDraft, normalizeQuestions, optionDetail, optionKey, optionLabel, questionAnswered, questionDetail, questionKey, questionTitle, requestSummary, type QuestionDraft } from './inbox.js';
 import { isSpecApproval, readSpecReview, specReviewMatches, type SpecReviewDocument } from './spec-review.js';
 
@@ -86,9 +90,12 @@ export class Surface {
   scrollDelta = 0; editorWidth = 78;
   busy = false; paletteQuery = ''; formEditor = editor(); private pageSerial = 0; private ticketId = '';
   suggestions: { query: Editor; selected: number; sessionId: string } | null = null;
+  mentionSuggestions: MentionSuggestionState | null = null;
+  private mentionRequest = 0;
   paletteEditor: Editor = editor();
   private questionDrafts = new Map<string, QuestionDraft>();
   private commandReturnGuard = false;
+  private lastIdleInterrupt = 0;
   private navigation = 0; private pendingOperations = new Map<symbol, { navigation: number; mutable: boolean }>(); private operation = new AsyncLocalStorage<number>();
   onExit: () => void = () => {}; onChange: () => void = () => {};
   onEditor: (text: string) => Promise<EditedDraft> = async () => { throw new Error('当前终端未提供外部编辑器入口。'); };
@@ -97,11 +104,12 @@ export class Surface {
     let instanceId = client.instance.instanceId;
     client.subscribe(() => {
       if (this.suggestions && this.suggestions.sessionId !== client.view.sessionId) this.suggestions = null;
+      if (this.mentionSuggestions && this.mentionSuggestions.sessionId !== client.view.sessionId) this.mentionSuggestions = null;
       if (instanceId === client.instance.instanceId) return;
       instanceId = client.instance.instanceId;
       this.invalidateNavigation();
       for (const field of this.page?.fields || []) if (field.secret) field.value = '';
-      this.page = null; this.suggestions = null; this.formEditor = editor(); this.input = editor(client.draft.text);
+      this.page = null; this.suggestions = null; this.mentionSuggestions = null; this.formEditor = editor(); this.input = editor(client.draft.text);
       this.following = client.view.scroll[client.view.sessionId]?.following ?? true;
       if (this.ticketId) { this.ticketId = ''; client.notice = '实例已切换，旧实例配对票据将在原有效期结束时失效。'; }
       this.changed();
@@ -188,9 +196,157 @@ export class Surface {
     this.suggestions = { query: editor(), selected: 0, sessionId: this.client.view.sessionId };
     this.changed();
   }
+  mentionRows(width: number, maxRows: number) {
+    return this.mentionSuggestions ? mentionSuggestionRows(this.mentionSuggestions, width, maxRows) : { lines: [] as string[], selectedRow: -1, count: 0 };
+  }
+  private async workspaceMentionCandidates(): Promise<MentionCandidate[]> {
+    const workspace = this.client.workspace;
+    if (!workspace) throw new Error('请先在设置中确认当前工作区');
+    const root = path.resolve(workspace), result: MentionCandidate[] = [], pending = [root];
+    const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', 'dist', 'build', '.v8-agent-os']);
+    while (pending.length && result.length < 1000) {
+      const directory = pending.shift()!;
+      const entries = await readdir(directory, { withFileTypes: true });
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (result.length >= 1000 || entry.name.startsWith('.') || ignored.has(entry.name) || entry.isSymbolicLink()) continue;
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) { pending.push(absolute); continue; }
+        if (!entry.isFile()) continue;
+        const relative = path.relative(root, absolute).split(path.sep).join('/');
+        if (!relative || relative.startsWith('../') || path.isAbsolute(relative)) continue;
+        result.push({ group: 'files', value: relative, label: relative, description: '当前工作区文件', authorized: true });
+      }
+    }
+    return result;
+  }
+  private async mentionCatalogCandidates(): Promise<{ candidates: MentionCandidate[]; errors: string[] }> {
+    const candidates: MentionCandidate[] = [], errors: string[] = [];
+    for (const session of this.client.sessions || []) {
+      const id = String(session?.id || '').trim();
+      if (!id) continue;
+      const title = String(session?.title || session?.name || '未命名会话').trim();
+      const workspace = String(session?.workspacePath || session?.workspace_path || '').trim();
+      candidates.push({ group: 'sessions', value: `session:${id}`, label: title, description: workspace && workspace !== this.client.workspace ? `跨工作区：${workspace}` : '当前工作区会话', authorized: workspace === this.client.workspace || !workspace });
+    }
+    const tasks: Array<[MentionGroup, Promise<any>]> = [
+      ['skills', this.client.api('/v1/skills/list')],
+      ['plugins', this.client.api('/v1/api/plugins/mentions')],
+      ['mcp', this.client.api('/v1/mcp/status')],
+    ];
+    const results = await Promise.allSettled(tasks.map(([, task]) => task));
+    for (let index = 0; index < results.length; index++) {
+      const group = tasks[index][0], result = results[index];
+      if (result.status === 'rejected') { errors.push(`${group} 目录暂不可用`); continue; }
+      const data = result.value || {};
+      if (group === 'skills') {
+        for (const item of Array.isArray(data.skills) ? data.skills : []) {
+          const value = String(item.name || item.id || '').trim(); if (!value) continue;
+          candidates.push({ group: 'skills', value: `skill:${value}`, label: value, description: item.description || 'Engine skill', authorized: true });
+        }
+        for (const item of Array.isArray(data.subagentFamilies) ? data.subagentFamilies : []) {
+          const value = String(item.familyId || item.id || item.name || '').trim(); if (!value) continue;
+          candidates.push({ group: 'agents', value: `agent:${value}`, label: item.displayName || item.name || value, description: item.description || 'Engine agent family', authorized: true });
+        }
+      } else if (group === 'plugins') {
+        for (const item of Array.isArray(data.items || data.plugins) ? (data.items || data.plugins) : []) {
+          const value = String(item.pluginId || item.id || '').trim(); if (!value) continue;
+          if (item.authorized === false) continue;
+          candidates.push({ group: 'plugins', value: `plugin:${value}`, label: item.displayName || item.name || value, description: item.description || 'Engine plugin', authorized: true });
+        }
+      } else {
+        const servers = Array.isArray(data.servers) ? data.servers : [];
+        for (const item of servers) {
+          const value = String(item.name || item.serverName || item.id || '').trim();
+          if (!value || item.authorized === false || item.enabled === false) continue;
+          candidates.push({ group: 'mcp', value: `mcp:${value}`, label: value, description: item.status || '授权的 MCP server', authorized: true });
+        }
+      }
+    }
+    return { candidates, errors };
+  }
+  private async sessionMentionCandidates(): Promise<MentionCandidate[]> {
+    if (!this.client.sessions.length && this.client.ownerReady) await this.client.listSessions('', false, true);
+    const result: MentionCandidate[] = [];
+    for (const session of this.client.sessions) {
+      const id = idOf(session), title = String(session.title || session.name || id);
+      if (id) result.push({ group: 'sessions', value: `session:${id}`, label: title, description: session.workspacePath || '当前可见会话', authorized: true });
+    }
+    return result;
+  }
+  private async loadMentionCandidates(request: number) {
+    const settled = await Promise.allSettled([this.workspaceMentionCandidates(), this.sessionMentionCandidates(), this.mentionCatalogCandidates()]);
+    if (!this.mentionSuggestions || request !== this.mentionRequest) return;
+    const candidates: MentionCandidate[] = [], errors: string[] = [];
+    const files = settled[0]; if (files.status === 'fulfilled') candidates.push(...files.value); else errors.push('文件目录暂不可用');
+    const sessions = settled[1]; if (sessions.status === 'fulfilled') candidates.push(...sessions.value); else errors.push('会话目录暂不可用');
+    const catalog = settled[2]; if (catalog.status === 'fulfilled') { candidates.push(...catalog.value.candidates); errors.push(...catalog.value.errors); } else errors.push('Engine 目录暂不可用');
+    this.mentionSuggestions = { ...this.mentionSuggestions, candidates, loading: false, error: errors.join('；') || undefined };
+    this.changed();
+  }
+  private openMentionAtCursor(originalText = this.input.text, originalCursor = this.input.cursor) {
+    const token = mentionTokenAt(this.input.text, this.input.cursor);
+    if (!token) return false;
+    const continuing = this.mentionSuggestions;
+    this.invalidateNavigation();
+    const request = ++this.mentionRequest;
+    this.mentionSuggestions = {
+      query: token.query, group: continuing?.group || (token.query.startsWith('.') ? 'files' : 'all'), selected: 0, candidates: continuing?.candidates || [], loading: !continuing,
+      triggerStart: token.start, triggerEnd: token.end,
+      originalText: continuing?.originalText ?? originalText, originalCursor: continuing?.originalCursor ?? originalCursor,
+      sessionId: this.client.view.sessionId,
+    };
+    if (!continuing) void this.loadMentionCandidates(request);
+    this.changed();
+    return true;
+  }
+  private closeMention(restore = false) {
+    const state = this.mentionSuggestions;
+    if (!state) return;
+    ++this.mentionRequest;
+    if (restore) {
+      this.input = { ...editor(state.originalText), cursor: state.originalCursor };
+      this.client.setDraft(state.originalText);
+    }
+    this.mentionSuggestions = null; this.changed();
+  }
+  private updateMentionQuery() {
+    const state = this.mentionSuggestions, token = mentionTokenAt(this.input.text, this.input.cursor);
+    if (!state || !token || token.start !== state.triggerStart) { if (state) this.closeMention(false); return; }
+    this.mentionSuggestions = { ...state, group: state.group === 'all' && token.query.startsWith('.') ? 'files' : state.group, query: token.query, triggerEnd: token.end, selected: 0 };
+  }
+  private async mentionInput(event: Input): Promise<boolean> {
+    const state = this.mentionSuggestions!;
+    if (event.key === 'escape' || event.key === 'ctrl-c') { this.closeMention(true); return true; }
+    if (event.key === 'left') { this.mentionSuggestions = switchMentionGroup(state, -1); this.changed(); return true; }
+    if (event.key === 'right') { this.mentionSuggestions = switchMentionGroup(state, 1); this.changed(); return true; }
+    if (event.key === 'up' || event.key === 'pageup') { this.mentionSuggestions = moveMentionSelection(state, event.key === 'pageup' ? -5 : -1); this.changed(); return true; }
+    if (event.key === 'down' || event.key === 'pagedown') { this.mentionSuggestions = moveMentionSelection(state, event.key === 'pagedown' ? 5 : 1); this.changed(); return true; }
+    if (event.key === 'tab' || event.key === 'enter') {
+      const candidate = selectedMention(state);
+      if (!candidate) { this.client.notice = state.loading ? '候选仍在读取，请稍候。' : '当前分组没有可确认的候选。'; this.changed(); return true; }
+      const replacement = mentionReplacement(this.input.text, state.triggerStart, state.triggerEnd, candidate.value);
+      this.input = editor(replacement.text); this.input.cursor = replacement.cursor; this.client.setDraft(this.input.text);
+      if (event.key === 'enter') this.closeMention(false); else {
+        this.mentionSuggestions = { ...state, query: candidate.value, triggerEnd: replacement.cursor, selected: 0 };
+        this.changed();
+      }
+      return true;
+    }
+    if (event.key === 'paste') { this.closeMention(false); return false; }
+    if (['text', 'backspace', 'delete', 'home', 'end', 'ctrl-u', 'ctrl-k', 'ctrl-w'].includes(event.key)) {
+      this.input = edit(this.input, event.key === 'text' ? 'insert' : event.key, event.text || '', this.editorWidth);
+      this.client.setDraft(this.input.text); this.updateMentionQuery(); this.changed(); return true;
+    }
+    this.closeMention(false);
+    return false;
+  }
   setLocale(locale: Locale) { this.client.view.locale = locale; this.client.save(true); this.client.notice = locale === 'en-US' ? 'Language: English' : '界面语言：简体中文'; this.changed(); }
   private async suggestionInput(event: Input): Promise<boolean> {
     const menu = this.suggestions!;
+    // Keep the full catalog as the navigation source. The renderer projects a
+    // compact first page, while typing a query or continuing with Down still
+    // makes advanced/view actions discoverable without a second command owner.
     const matches = commandMatches(this.commands(), menu.query.text);
     if (event.key === 'escape' || event.key === 'ctrl-c' || event.key === 'backspace' && !menu.query.text) { this.suggestions = null; this.changed(); return true; }
     if (event.key === 'ctrl-p') { this.suggestions = null; this.palette(menu.query.text); return true; }
@@ -220,6 +376,10 @@ export class Surface {
     this.changed(); return true;
   }
   async dispatch(event: Input) {
+    if (this.mentionSuggestions) {
+      const handled = await this.mentionInput(event);
+      if (handled) return;
+    }
     if (this.suggestions && await this.suggestionInput(event)) return;
     const pending = this.busy || this.client.busy;
     if (pending && event.key === 'ctrl-d') { this.invalidateNavigation(); this.onExit(); return; }
@@ -256,7 +416,7 @@ export class Surface {
   }
   open(title: string, lines: string[], actions: Action[] = []) {
     this.checkPage();
-    this.suggestions = null; this.pageSerial++; this.page = { title, lines, actions, selected: 0, offset: 0 }; this.changed();
+    this.suggestions = null; this.mentionSuggestions = null; ++this.mentionRequest; this.pageSerial++; this.page = { title, lines, actions, selected: 0, offset: 0 }; this.changed();
   }
   async close(force = false) {
     this.checkPage();
@@ -859,30 +1019,34 @@ export class Surface {
     ], [{ label: '返回对话', run: () => this.close(true) }]);
   }
   commands(): Action[] { return [
-    { label: '发送', run: () => this.submit() }, { command: 'multiline', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
-    { command: 'setup', description: '首次配置本机身份、模型与工作区', label: '快速配置 / Setup', navigation: true, run: () => this.setup() },
-    { command: 'sessions', description: '搜索并恢复已有会话', label: '会话列表', navigation: true, run: () => this.sessions() }, { command: 'new', description: '保留当前草稿，进入新会话', label: '新建会话', run: () => this.newSession() },
-    { command: 'task', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() }, { command: 'inbox', description: '查看审批与待回答问题', label: '待处理', navigation: true, run: () => this.inbox() },
-    { command: 'attach', description: '管理附件和生成产物', label: '附件 / 产物', navigation: true, run: () => this.attachments() }, { command: 'settings', description: '模型、工作区与预算配置', label: '设置', navigation: true, run: () => this.settings() },
-    { command: 'connect', description: '管理 Phone 与 Peer 连接', label: '连接', navigation: true, run: () => this.connections() }, { command: 'stop', description: '查看目标，再确认停止', label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
-    { command: 'retry', description: '核对 Engine 能力并确认重试', label: '重试当前任务', run: () => this.retryRun() },
-    { command: 'editor', description: '使用 VISUAL / EDITOR 编辑草稿', label: '外部编辑器 /editor', run: () => this.externalEditor() },
-    { command: 'approval', description: '显式选择后续消息审批模式', label: '本次会话审批模式', run: () => this.open('审批模式', ['默认沿用 Engine / 会话现有设置。显式选择仅作用于后续发送。', `当前选择：${this.client.approvalMode || '沿用 Engine'}`], [
+    { label: '发送', run: () => this.submit() }, { command: 'multiline', tier: 'view', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
+    { command: 'setup', tier: 'daily', description: '首次配置本机身份、模型与工作区', label: '快速配置 / Setup', navigation: true, run: () => this.setup() },
+    { command: 'sessions', tier: 'daily', description: '搜索并恢复已有会话', label: '会话列表', navigation: true, run: () => this.sessions() }, { command: 'new', tier: 'daily', description: '保留当前草稿，进入新会话', label: '新建会话', run: () => this.newSession() },
+    { command: 'task', tier: 'context', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() }, { command: 'inbox', tier: 'daily', description: '查看审批与待回答问题', label: '待处理', navigation: true, run: () => this.inbox() },
+    { command: 'attach', tier: 'context', description: '管理附件和生成产物', label: '附件 / 产物', navigation: true, run: () => this.attachments() }, { command: 'settings', tier: 'daily', description: '模型、工作区与预算配置', label: '设置', navigation: true, run: () => this.settings() },
+    { command: 'connect', tier: 'context', description: '管理 Phone 与 Peer 连接', label: '连接', navigation: true, run: () => this.connections() }, { command: 'stop', tier: 'context', description: '查看目标，再确认停止', label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
+    { command: 'retry', tier: 'context', description: '核对 Engine 能力并确认重试', label: '重试当前任务', run: () => this.retryRun() },
+    { command: 'editor', tier: 'advanced', description: '使用 VISUAL / EDITOR 编辑草稿', label: '外部编辑器 /editor', run: () => this.externalEditor() },
+    { command: 'approval', tier: 'advanced', description: '显式选择后续消息审批模式', label: '本次会话审批模式', run: () => this.open('审批模式', ['默认沿用 Engine / 会话现有设置。显式选择仅作用于后续发送。', `当前选择：${this.client.approvalMode || '沿用 Engine'}`], [
       { label: '返回', run: () => this.close(true) },
       ...([['', '沿用 Engine'], ['manual', '逐项审批'], ['reduced', '减少审批'], ['minimal', '免审（保留系统内核与凭据边界）']] as const).map(([mode, label]) => ({ label, run: () => { this.client.approvalMode = mode; this.client.notice = `后续消息审批模式：${label}`; this.page = null; } })),
     ]) },
-    { command: 'reconcile', description: '只回读，避免重复发送', label: '核对发送结果', run: async () => { await this.client.tick(); this.input = editor(this.client.draft.text); this.client.notice = this.client.draft.unknown ? 'Engine 尚未证明受理；仍禁止自动重发，可查看会话或保留草稿等待恢复。' : '已回读会话状态。'; await this.close(true); } },
-    { command: 'history', description: '读取更早的会话消息', label: '加载更早历史', run: async () => { await this.client.older(); this.following = false; this.anchor = 0; await this.close(true); } },
-    { command: 'bottom', description: '恢复跟随最新输出', label: '回到底部', navigation: true, run: () => { this.following = true; this.unread = 0; this.page = null; } },
-    { command: 'sidebar', description: '显示或隐藏会话概览', label: '切换会话侧栏', navigation: true, run: () => { this.client.view.sidebar = !this.client.view.sidebar; this.client.save(); this.page = null; } },
-    { command: 'details', description: '显示或隐藏任务概览', label: '切换任务侧栏', navigation: true, run: () => { this.client.view.detail = !this.client.view.detail; this.client.save(); this.page = null; } },
-    { command: 'exit', description: '退出界面，后台任务继续', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } },
-    { command: 'language', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
+    { command: 'reconcile', tier: 'advanced', description: '只回读，避免重复发送', label: '核对发送结果', run: async () => { await this.client.tick(); this.input = editor(this.client.draft.text); this.client.notice = this.client.draft.unknown ? 'Engine 尚未证明受理；仍禁止自动重发，可查看会话或保留草稿等待恢复。' : '已回读会话状态。'; await this.close(true); } },
+    { command: 'history', tier: 'view', description: '读取更早的会话消息', label: '加载更早历史', run: async () => { await this.client.older(); this.following = false; this.anchor = 0; await this.close(true); } },
+    { command: 'bottom', tier: 'view', description: '恢复跟随最新输出', label: '回到底部', navigation: true, run: () => { this.following = true; this.unread = 0; this.page = null; } },
+    { command: 'sidebar', tier: 'view', description: '显示或隐藏会话概览', label: '切换会话侧栏', navigation: true, run: () => { this.client.view.sidebar = !this.client.view.sidebar; this.client.save(); this.page = null; } },
+    { command: 'details', tier: 'view', description: '显示或隐藏任务概览', label: '切换任务侧栏', navigation: true, run: () => { this.client.view.detail = !this.client.view.detail; this.client.save(); this.page = null; } },
+    { command: 'exit', tier: 'view', description: '退出界面，后台任务继续', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } },
+    { command: 'language', tier: 'advanced', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
       { label: '中文（简体）', run: () => { this.setLocale('zh-CN'); this.page = null; } },
       { label: 'English', run: () => { this.setLocale('en-US'); this.page = null; } },
       { label: '返回对话', run: () => this.close(true) },
     ]) },
-    { command: 'help', description: '快捷键与首次安装指导', label: '帮助', navigation: true, run: () => this.help() },
+    { command: 'theme', tier: 'advanced', description: '切换本地终端视觉主题', label: '视觉主题 / Theme', navigation: true, run: () => this.open('视觉主题 / Theme', ['主题只影响当前 TUI；不会修改 Engine、Web 或 Phone 配置。NO_COLOR 会强制无色模式。', `当前：${this.client.view.theme}`], [
+      ...themeNames.map((theme: ThemeName) => ({ label: `${theme}${theme === this.client.view.theme ? ' · 当前' : ''}`, run: () => { this.client.view.theme = theme; this.client.save(true); this.client.notice = `视觉主题已切换：${theme}`; this.page = null; this.changed(); } })),
+      { label: '返回对话', run: () => this.close(true) },
+    ]) },
+    { command: 'help', tier: 'daily', description: '快捷键与首次安装指导', label: '帮助', navigation: true, run: () => this.help() },
   ]; }
   palette(query = '', preserveEditor = false) {
     this.paletteQuery = query;
@@ -893,6 +1057,7 @@ export class Surface {
   async handle(event: Input) {
     const { key, text = '' } = event;
     if (key === 'ctrl-p') { if (this.page) this.palette(); else this.suggest(); return; }
+    if (key === 'backtab' && !this.page && !this.suggestions) { this.client.cycleApprovalMode(); return; }
     if (key === 'escape' || key === 'ctrl-c' && this.page) { await this.close(); return; }
     if (key === 'f1') { this.help(); return; }
     if (this.page) {
@@ -936,7 +1101,19 @@ export class Surface {
     else if (key === 'ctrl-n') await this.newSession();
     else if (key === 'f8') this.multiline = !this.multiline;
     else if (key === 'f9') await this.submit();
-    else if (key === 'ctrl-c') { if (this.input.text) { this.undo = this.input.text; this.input = editor(); this.client.setDraft(''); this.client.notice = '输入已清空；Ctrl+Z 撤销。'; } else this.client.notice = 'Ctrl+D 退出终端；停止任务请选择菜单中的停止动作。'; }
+    else if (key === 'ctrl-c') {
+      if (this.client.active) {
+        const runId = String(this.client.run.id || this.client.run.runId || this.client.run.run_id || '');
+        if (runId) await this.execute(() => this.client.interrupt(runId), false);
+        else this.client.notice = '运行状态正在刷新，请稍后再按 Ctrl+C。';
+      } else if (this.input.text) {
+        this.undo = this.input.text; this.input = editor(); this.client.setDraft(''); this.client.notice = '输入已清空；Ctrl+Z 撤销。';
+      } else {
+        const now = Date.now();
+        if (now - this.lastIdleInterrupt <= 1200) this.onExit();
+        else { this.lastIdleInterrupt = now; this.client.notice = '再次按 Ctrl+C 退出终端；后台任务继续。'; }
+      }
+    }
     else if (key === 'ctrl-x') await this.externalEditor();
     else if (key === 'ctrl-z') { if (this.undo) { this.input = editor(this.undo); this.undo = ''; this.client.setDraft(this.input.text); } }
     else if (key === 'ctrl-d' && !this.input.text) this.onExit();
@@ -949,9 +1126,12 @@ export class Surface {
       else await this.submit();
     } else if (key === 'text' && text === '/' && !this.input.text) this.suggest();
     else {
+      const previousText = this.input.text, previousCursor = this.input.cursor;
       if (['text', 'backspace', 'delete', 'newline'].includes(key)) this.commandReturnGuard = false;
       this.input = edit(this.input, key === 'text' ? 'insert' : key === 'newline' ? 'insert' : key === 'ctrl-d' ? 'delete' : key, key === 'newline' ? '\n' : text, this.editorWidth);
       this.client.setDraft(this.input.text);
+      if (!this.mentionSuggestions && key === 'text' && text.includes('@')) this.openMentionAtCursor(previousText, previousCursor);
+      else if (this.mentionSuggestions) this.updateMentionQuery();
     }
     this.changed();
   }

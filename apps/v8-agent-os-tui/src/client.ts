@@ -29,8 +29,17 @@ export class Client {
   private owner: any = {};
   private targetOrigin = '';
   private initialization = 0;
+  private defaultWorkspaceAttempted = false;
   private lastIdentityCheck = 0;
   approvalMode: '' | 'manual' | 'reduced' | 'minimal' = '';
+  get approvalBadge() { return this.approvalMode || 'engine'; }
+  cycleApprovalMode(reverse = false) {
+    const modes = ['', 'manual', 'reduced', 'minimal'] as const;
+    const index = modes.indexOf(this.approvalMode);
+    this.approvalMode = modes[(index + (reverse ? modes.length - 1 : 1)) % modes.length];
+    this.notice = `后续消息审批模式：${this.approvalMode || '沿用 Engine'}`;
+    this.changed();
+  }
   private transportAbort = new AbortController();
   constructor(readonly store = new ViewStore(), readonly transport: Api = engineJson) { this.view = store.read(); }
   api: Api = async (route, options = {}) => {
@@ -119,8 +128,25 @@ export class Client {
         this.changed(); return;
       }
       this.connection = '已连接';
+      // A TUI launched from a directory has a deterministic workspace scope.
+      // Registration is idempotent on Engine; failures leave setup available
+      // and never fabricate a trusted workspace locally.
+      if (!this.view.workspace) {
+        const cwd = path.resolve(process.cwd());
+        if (!this.defaultWorkspaceAttempted) {
+          this.defaultWorkspaceAttempted = true;
+          try {
+            const registered = await this.api('/v1/projects', { method: 'POST', body: { name: path.basename(cwd) || cwd, workspacePath: cwd, workspaceTrustState: 'restricted', workspaceTrustSource: 'tui_cwd_discovery' } });
+            if (registered.workspaceTrustState === 'trusted' || registered.workspaceTrustState === 'restricted') {
+              this.view.workspace = cwd;
+              if (registered.workspaceTrustState !== 'trusted') this.notice = '当前目录已绑定但尚未信任，请在设置中确认工作区。';
+            }
+          } catch { this.notice = '当前目录待 Engine 确认；可在设置中选择工作区。'; }
+        }
+        this.save();
+      }
       void this.refreshModelReadiness();
-      await this.listSessions();
+      await this.listSessions('', false, true);
       if (this.view.sessionId) await this.attach(this.view.sessionId);
       else this.notice = '新建对话 · F3 配置模型与工作区 · Ctrl+P 查看操作';
     } catch (e: any) { if (e.staleView || initialization !== this.initialization) return; this.connection = '未连接'; this.notice = 'Engine 未连接。运行 v8os start 启动；首次安装见 F1 帮助。' + e.message; }

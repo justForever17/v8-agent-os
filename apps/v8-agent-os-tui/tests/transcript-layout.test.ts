@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TranscriptLayout, type TranscriptAnchor } from '../src/transcript-layout.js';
 import { graphemes, safeText, wrap } from '../src/terminal.js';
+import { renderMarkdown } from '../src/markdown.js';
 
 type Message = { id: string; content: string };
 const make = (options = {}) => new TranscriptLayout<Message>({ textOf: message => message.content, ...options });
@@ -116,4 +117,16 @@ test('following versus reading history remains distinct when messages arrive or 
   const deleted = layout.window(messages, { width: 80, height: 5, following: false, anchor });
   assert.equal(deleted.rows[0].text, 'line 0');
   assert.ok(!deleted.rows.some(row => row.text === 'line 3'));
+});
+
+test('width-aware Human Surface projection keeps rich row tokens and raw provenance', () => {
+  const layout = new TranscriptLayout<Message>({
+    textOf: message => message.content,
+    project: (message, width) => renderMarkdown(message.content, { width, theme: 'mono' }),
+  });
+  const result = layout.window([{ id: 'rich', content: '# 标题\n```\n中文代码\n```' }], { width: 8, height: 20 });
+  assert.equal(result.rows[0].token, 'selected');
+  assert.equal(result.rows.some(row => row.token === 'code'), true);
+  assert.equal(result.rows[0].raw, '# 标题');
+  assert.match(result.rows.find(row => row.token === 'code')!.screenReader || '', /中文代码|code/);
 });

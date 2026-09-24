@@ -78,7 +78,7 @@ function help() {
   v8os chat|sessions|config|inbox|workspace|service|logs ...
 
   Node.js 22+；首次运行会按当前平台下载并校验便携 Engine（Linux glibc x64、Windows x64/arm64、macOS x64/arm64）。
-首次启动自动下载对应版本，不需要宿主 Python。退出终端保留后台 Engine。
+首次启动自动下载对应版本，不需要宿主 Python。v8os tui 自己拉起的 Engine 会在终端退出时释放；已有 daemon/service 由原控制面继续管理。
 离线资产：V8OS_ENGINE_MANIFEST_URL=file:///...json 与 V8OS_ENGINE_ARCHIVE=/...tar.gz
 `, `V8OS terminal · Unified CLI + Engine
 Usage:
@@ -91,7 +91,7 @@ Usage:
   v8os chat|sessions|config|inbox|workspace|service|logs ...
 
   Requires Node.js 22+. The first run downloads and verifies a portable Engine for Linux glibc x64, Windows x64/arm64, or macOS x64/arm64.
-First start downloads the exact runtime; host Python is not required. Exiting TUI leaves Engine running.
+  First start downloads the exact runtime; host Python is not required. A runtime started by v8os tui is released on exit; an existing daemon/service remains owned by its control plane.
 Offline: V8OS_ENGINE_MANIFEST_URL=file:///...json and V8OS_ENGINE_ARCHIVE=/...tar.gz
 `));
 }
@@ -120,12 +120,38 @@ async function main() {
   if (command === 'install') { print(await installEngine(options)); return 0; }
   if (command === 'start' || command === 'restart') { print(await startEngine(options)); return 0; }
   if (command === 'tui') {
-    await startEngine(options);
-    process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
-    process.env.NODE_ENV ||= 'production';
-    if (args.includes('--no-color') || process.env.NO_COLOR !== undefined) process.env.FORCE_COLOR = '0';
-    const tuiArgs = (args[0] === 'tui' ? args.slice(1) : args).filter(arg => arg !== '--no-install');
-    await (await import('../dist/main.js')).start(tuiArgs); return 0;
+    let started;
+    let tuiError;
+    let releaseError;
+    try {
+      started = await startEngine({ ...options, lifecycle: 'desktop' });
+      process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
+      process.env.NODE_ENV ||= 'production';
+      if (args.includes('--no-color') || process.env.NO_COLOR !== undefined) process.env.FORCE_COLOR = '0';
+      const tuiArgs = (args[0] === 'tui' ? args.slice(1) : args).filter(arg => arg !== '--no-install');
+      await (await import('../dist/main.js')).start(tuiArgs);
+    } catch (error) { tuiError = error; }
+    finally {
+      // A TUI-owned Engine process is a short-lived lease.  A daemon/service
+      // started by another control-plane owner is retained by expected identity
+      // fencing and therefore cannot be stopped by this surface.
+      if (started?.release) {
+        try {
+          const released = await started.release();
+          if (!['stopped', 'lease_retained', 'not_owned'].includes(released?.status)) {
+            releaseError = new Error(`Engine lifecycle release incomplete: ${released?.status || 'unknown'}`);
+          }
+        } catch (error) {
+          releaseError = error instanceof Error ? error : new Error(String(error));
+        }
+      }
+    }
+    if (tuiError) {
+      if (releaseError) tuiError = new Error(`${tuiError instanceof Error ? tuiError.message : String(tuiError)}; ${releaseError.message}`);
+      throw tuiError;
+    }
+    if (releaseError) throw releaseError;
+    return 0;
   }
   // Service installation owns its lifecycle; help must never boot a daemon.
   if (!helpRequested && ['chat', 'acp', 'sessions', 'inbox', 'workspace', 'config'].includes(command)

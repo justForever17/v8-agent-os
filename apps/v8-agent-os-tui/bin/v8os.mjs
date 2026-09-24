@@ -78,7 +78,7 @@ function help() {
   v8os chat|sessions|config|inbox|workspace|service|logs ...
 
   Node.js 22+；首次运行会按当前平台下载并校验便携 Engine（Linux glibc x64、Windows x64/arm64、macOS x64/arm64）。
-首次启动自动下载对应版本，不需要宿主 Python。v8os tui 自己拉起的 Engine 会在终端退出时释放；已有 daemon/service 由原控制面继续管理。
+首次启动自动下载对应版本，不需要宿主 Python。v8os tui/桌面前台会话自己拉起的 Engine 会在退出时释放；systemd service 只有显式执行 v8os service start 才会启动，并由 service 控制面管理。
 离线资产：V8OS_ENGINE_MANIFEST_URL=file:///...json 与 V8OS_ENGINE_ARCHIVE=/...tar.gz
 `, `V8OS terminal · Unified CLI + Engine
 Usage:
@@ -91,7 +91,7 @@ Usage:
   v8os chat|sessions|config|inbox|workspace|service|logs ...
 
   Requires Node.js 22+. The first run downloads and verifies a portable Engine for Linux glibc x64, Windows x64/arm64, or macOS x64/arm64.
-  First start downloads the exact runtime; host Python is not required. A runtime started by v8os tui is released on exit; an existing daemon/service remains owned by its control plane.
+  First start downloads the exact runtime; host Python is not required. A runtime started by v8os tui or a desktop foreground surface is released on exit. systemd starts only through an explicit v8os service start and remains owned by that control plane.
 Offline: V8OS_ENGINE_MANIFEST_URL=file:///...json and V8OS_ENGINE_ARCHIVE=/...tar.gz
 `));
 }

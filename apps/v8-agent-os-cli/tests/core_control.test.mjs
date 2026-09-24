@@ -147,3 +147,32 @@ test("Core routes an installed server through its existing service manager and k
   `, root);
   assert.deepEqual(JSON.parse(result), ["status", "start", "status", "stop"]);
 });
+
+test("desktop foreground launch does not start an installed systemd service", { timeout: 45000 }, async t => {
+  const root = fixture(t);
+  const engine = path.join(root, "engine");
+  fs.mkdirSync(engine);
+  fs.writeFileSync(path.join(engine, "main.py"), "require('node:http').createServer((req,res)=>res.end('fixture')).listen(Number(process.env.ENGINE_PORT),'127.0.0.1');\n");
+  const reservation = net.createServer();
+  await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ systemBase: { bridge: { engineBaseUrl: `http://127.0.0.1:${port}` } } }));
+  const result = await run(`
+    import assert from 'node:assert/strict';
+    const core = await import(${JSON.stringify(coreUrl)});
+    const calls = [];
+    const serverService = { receipt: { port: ${port} }, manager: { perform: async action => { calls.push(action); return { status: 'active', mainPid: 1234 }; } } };
+    const started = await core.startCoreComponents(['engine'], { serverService, lifecycle: 'desktop', useManagedService: false });
+    assert.equal(started[0].status, 'started');
+    assert.equal(started[0].lifecycle, 'desktop');
+    assert.deepEqual(calls, []);
+    try {
+      const stopped = await core.stopCoreComponents(['engine'], { expectedIdentities: { engine: started[0].recordIdentity } });
+      assert.equal(stopped[0].status, 'stopped');
+    } finally {
+      await core.stopCoreComponents(['engine'], { expectedIdentities: { engine: started[0].recordIdentity } });
+    }
+  `, root, { V8_ENGINE_DIR: engine, V8_ENGINE_PYTHON: process.execPath });
+  assert.equal(result, '');
+});

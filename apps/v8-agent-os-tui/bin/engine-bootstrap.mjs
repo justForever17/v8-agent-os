@@ -360,7 +360,11 @@ async function serviceReceipt() {
 }
 
 export async function startEngine({ install = true, lifecycle = 'daemon', signal = new AbortController().signal, progress = () => {} } = {}) {
-  const service = await serviceReceipt();
+  // A foreground TUI/desktop owns a short-lived Engine lease.  Do not route
+  // that launch through the installed systemd unit: service start/stop is an
+  // explicit control-plane action and must never be a hidden side effect of
+  // opening or closing a UI. Persistent service launches keep the old path.
+  const service = lifecycle === 'desktop' ? null : await serviceReceipt();
   if (service?.version && service.version !== releaseVersion()) {
     throw new Error(`Engine service receipt is ${service.version}, but this npm release is ${releaseVersion()}; stop or explicitly upgrade the managed service before retrying. Existing service and data were preserved.`);
   }

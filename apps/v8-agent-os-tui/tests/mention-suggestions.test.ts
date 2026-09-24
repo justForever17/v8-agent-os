@@ -66,7 +66,10 @@ test('Surface opens an async @ popup, keeps catalog groups, and Esc restores the
   const ui = new Surface(client); ui.input = editor('草稿 '); client.setDraft(ui.input.text);
   await ui.dispatch({ key: 'text', text: '@' });
   assert.ok(ui.mentionSuggestions);
-  await new Promise(resolve => setTimeout(resolve, 10));
+  // The picker follows Qwen's loading contract: resource discovery is
+  // asynchronous and the UI renders a loading state until it settles. Tests
+  // observe that state transition instead of relying on a timing guess.
+  await ui.waitForMentionSuggestions();
   assert.ok(ui.mentionSuggestions!.candidates.some(item => item.group === 'files'));
   assert.ok(ui.mentionSuggestions!.candidates.some(item => item.group === 'sessions'));
   assert.ok(ui.mentionSuggestions!.candidates.some(item => item.group === 'skills'));

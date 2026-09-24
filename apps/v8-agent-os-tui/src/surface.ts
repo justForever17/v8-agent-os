@@ -93,6 +93,11 @@ export class Surface {
   suggestions: { query: Editor; selected: number; sessionId: string } | null = null;
   mentionSuggestions: MentionSuggestionState | null = null;
   private mentionRequest = 0;
+  // The picker intentionally loads resources in the background, like Qwen's
+  // completion surface. Keep the promise so callers/tests can observe the
+  // state transition instead of guessing with a timer.
+  private mentionLoad: Promise<void> | null = null;
+  private workspaceMentionCache = new Map<string, { expiresAt: number; candidates?: MentionCandidate[]; pending?: Promise<MentionCandidate[]> }>();
   paletteEditor: Editor = editor();
   private questionDrafts = new Map<string, QuestionDraft>();
   private commandReturnGuard = false;
@@ -212,26 +217,44 @@ export class Surface {
   mentionRows(width: number, maxRows: number) {
     return this.mentionSuggestions ? mentionSuggestionRows(this.mentionSuggestions, width, maxRows) : { lines: [] as string[], selectedRow: -1, count: 0 };
   }
+  async waitForMentionSuggestions() {
+    await this.mentionLoad;
+    return this.mentionSuggestions;
+  }
   private async workspaceMentionCandidates(): Promise<MentionCandidate[]> {
     const workspace = this.client.workspace;
     if (!workspace) throw new Error('请先在设置中确认当前工作区');
-    const root = path.resolve(workspace), result: MentionCandidate[] = [], pending = [root];
-    const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', 'dist', 'build', '.v8-agent-os']);
-    while (pending.length && result.length < 1000) {
-      const directory = pending.shift()!;
-      const entries = await readdir(directory, { withFileTypes: true });
-      entries.sort((a, b) => a.name.localeCompare(b.name));
-      for (const entry of entries) {
-        if (result.length >= 1000 || entry.name.startsWith('.') || ignored.has(entry.name) || entry.isSymbolicLink()) continue;
-        const absolute = path.join(directory, entry.name);
-        if (entry.isDirectory()) { pending.push(absolute); continue; }
-        if (!entry.isFile()) continue;
-        const relative = path.relative(root, absolute).split(path.sep).join('/');
-        if (!relative || relative.startsWith('../') || path.isAbsolute(relative)) continue;
-        result.push({ group: 'files', value: relative, label: relative, description: '当前工作区文件', authorized: true });
+    const root = path.resolve(workspace), cached = this.workspaceMentionCache.get(root);
+    if (cached?.candidates && cached.expiresAt > Date.now()) return cached.candidates;
+    if (cached?.pending) return cached.pending;
+    const pending = (async () => {
+      const result: MentionCandidate[] = [], directories = [root];
+      const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', 'dist', 'build', '.v8-agent-os']);
+      while (directories.length && result.length < 1000) {
+        const directory = directories.shift()!;
+        const entries = await readdir(directory, { withFileTypes: true });
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+        for (const entry of entries) {
+          if (result.length >= 1000 || entry.name.startsWith('.') || ignored.has(entry.name) || entry.isSymbolicLink()) continue;
+          const absolute = path.join(directory, entry.name);
+          if (entry.isDirectory()) { directories.push(absolute); continue; }
+          if (!entry.isFile()) continue;
+          const relative = path.relative(root, absolute).split(path.sep).join('/');
+          if (!relative || relative.startsWith('../') || path.isAbsolute(relative)) continue;
+          result.push({ group: 'files', value: relative, label: relative, description: '当前工作区文件', authorized: true });
+        }
       }
+      return result;
+    })();
+    this.workspaceMentionCache.set(root, { expiresAt: Date.now() + 30_000, pending });
+    try {
+      const result = await pending;
+      this.workspaceMentionCache.set(root, { expiresAt: Date.now() + 30_000, candidates: result });
+      return result;
+    } catch (error) {
+      this.workspaceMentionCache.delete(root);
+      throw error;
     }
-    return result;
   }
   private async mentionCatalogCandidates(): Promise<{ candidates: MentionCandidate[]; errors: string[] }> {
     const candidates: MentionCandidate[] = [], errors: string[] = [];
@@ -288,14 +311,23 @@ export class Surface {
     return result;
   }
   private async loadMentionCandidates(request: number) {
-    const settled = await Promise.allSettled([this.workspaceMentionCandidates(), this.sessionMentionCandidates(), this.mentionCatalogCandidates()]);
-    if (!this.mentionSuggestions || request !== this.mentionRequest) return;
-    const candidates: MentionCandidate[] = [], errors: string[] = [];
-    const files = settled[0]; if (files.status === 'fulfilled') candidates.push(...files.value); else errors.push('文件目录暂不可用');
-    const sessions = settled[1]; if (sessions.status === 'fulfilled') candidates.push(...sessions.value); else errors.push('会话目录暂不可用');
-    const catalog = settled[2]; if (catalog.status === 'fulfilled') { candidates.push(...catalog.value.candidates); errors.push(...catalog.value.errors); } else errors.push('Engine 目录暂不可用');
-    this.mentionSuggestions = { ...this.mentionSuggestions, candidates, loading: false, error: errors.join('；') || undefined };
-    this.changed();
+    const sources: MentionCandidate[][] = [[], [], []], errors: string[] = [];
+    let remaining = 3;
+    const publish = () => {
+      if (!this.mentionSuggestions || request !== this.mentionRequest) return;
+      const candidates = sources.flat();
+      this.mentionSuggestions = { ...this.mentionSuggestions, candidates, loading: remaining > 0, error: errors.join('；') || undefined };
+      this.changed();
+    };
+    const tasks = [this.workspaceMentionCandidates(), this.sessionMentionCandidates(), this.mentionCatalogCandidates()];
+    await Promise.all(tasks.map((task, index) => task.then(result => {
+      if (index === 2) {
+        const catalog = result as { candidates: MentionCandidate[]; errors: string[] };
+        sources[index] = catalog.candidates; errors.push(...catalog.errors);
+      } else sources[index] = result as MentionCandidate[];
+    }, () => {
+      errors.push(index === 0 ? '文件目录暂不可用' : index === 1 ? '会话目录暂不可用' : 'Engine 目录暂不可用');
+    }).finally(() => { remaining -= 1; publish(); })));
   }
   private openMentionAtCursor(originalText = this.input.text, originalCursor = this.input.cursor) {
     const token = mentionTokenAt(this.input.text, this.input.cursor);
@@ -309,7 +341,11 @@ export class Surface {
       originalText: continuing?.originalText ?? originalText, originalCursor: continuing?.originalCursor ?? originalCursor,
       sessionId: this.client.view.sessionId,
     };
-    if (!continuing) void this.loadMentionCandidates(request);
+    if (!continuing) {
+      this.mentionLoad = this.loadMentionCandidates(request).finally(() => {
+        if (request === this.mentionRequest) this.mentionLoad = null;
+      });
+    }
     this.changed();
     return true;
   }

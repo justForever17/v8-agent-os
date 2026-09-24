@@ -24,6 +24,11 @@ export { discoverServerServiceReceipt } from "./server_service.mjs";
 export const { desktopPetAvailability } = desktopPetPlatform;
 
 function managedService(options) {
+  // Foreground surfaces own the Engine lifetime.  An installed systemd unit is
+  // only consulted when the caller explicitly opts into the persistent
+  // service plane (or supplies a test/embedded manager).  This prevents a
+  // desktop/TUI launch from silently starting a daemon that survives exit.
+  if (options.useManagedService === false || (options.lifecycle === "desktop" && !options.useManagedService && !options.serverService)) return null;
   if (options.serverService) return options.serverService;
   const receipt = discoverServerServiceReceipt();
   return receipt ? { receipt, manager: createServerServiceManager() } : null;

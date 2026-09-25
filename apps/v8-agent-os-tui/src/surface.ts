@@ -1216,9 +1216,9 @@ export class Surface {
   }
   commands(): Action[] { return [
     { label: '发送', run: () => this.submit() },
+    { command: 'multiline', tier: 'daily', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
     { command: 'model', tier: 'daily', description: '模型管理中心、向导式注册与角色选项卡分配', label: '模型管理 /model', navigation: true, run: () => this.modelsHub() },
     { command: 'resume', tier: 'daily', description: '选择并恢复历史会话', label: '恢复会话 /resume', navigation: true, run: () => this.sessions() },
-    { command: 'multiline', tier: 'daily', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
     { command: 'new', tier: 'daily', description: '保留当前草稿，进入新会话', label: '新建会话 /new', run: () => this.newSession() },
     { command: 'clear', tier: 'daily', description: '清空当前上下文，进入全新会话', label: '清空会话 /clear', run: () => this.newSession() },
     { command: 'workspace', tier: 'daily', description: '选择并信任项目工作区', label: '工作区管理 /workspace', navigation: true, run: () => this.workspaceManager() },

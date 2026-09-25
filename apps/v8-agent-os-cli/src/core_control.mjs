@@ -20,6 +20,7 @@ import { isPortOpen } from "./ports.mjs";
 export { engineJson, engineTargetOrigin } from "./engine_client.mjs";
 export { initializeServerCredentials, defaultCredentialKeyPath } from "./credentials_commands.mjs";
 export { discoverServerServiceReceipt } from "./server_service.mjs";
+export { resolveProductOrigin } from "./product_origin.mjs";
 
 export const { desktopPetAvailability } = desktopPetPlatform;
 

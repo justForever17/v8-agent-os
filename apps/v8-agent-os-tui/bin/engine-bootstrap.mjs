@@ -338,9 +338,9 @@ export function rememberedDesktopRuntime() {
       || fs.existsSync(path.join(root, 'engine-manifest.json'))
       || fs.existsSync(path.join(root, 'server-manifest.json'))
       || !fs.existsSync(path.join(root, ENGINE_DIR, 'main.py'))
-      || !fs.existsSync(path.join(root, CLI_FILE))
-      || !fs.existsSync(path.join(root, 'apps/v8-agent-os-web'))) return '';
+      || !fs.existsSync(path.join(root, CLI_FILE))) return '';
   return root;
+
 }
 
 function configureRuntime(root) {

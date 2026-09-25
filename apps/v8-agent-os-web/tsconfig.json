@@ -29,8 +29,12 @@
       ],
       "@admin/*": [
         "./src/admin/*"
+      ],
+      "@core/*": [
+        "../v8-agent-os-cli/src/*"
       ]
     }
+
   },
   "include": [
     "next-env.d.ts",

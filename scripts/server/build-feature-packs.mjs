@@ -8,7 +8,8 @@ await build({
   outfile: path.resolve(process.argv[2]),
   bundle: true, platform: "node", format: "esm", target: "node20",
   alias: {
-    "@": path.join(root, "apps/v8-agent-os-web/src"),
     "@admin": path.join(root, "apps/v8-agent-os-web/src/admin"),
+    "@core": path.join(root, "apps/v8-agent-os-cli/src"),
   },
+
 });

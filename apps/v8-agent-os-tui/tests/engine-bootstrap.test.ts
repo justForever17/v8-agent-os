@@ -150,9 +150,10 @@ test('a stopped desktop remains discoverable while old portable versions cannot 
   const desktop = path.join(f.dir, 'desktop');
   put(path.join(desktop, 'apps/v8-agent-os-engine/main.py'), '# desktop engine');
   put(path.join(desktop, 'apps/v8-agent-os-cli/bin/v8os.mjs'), '// cli');
-  fs.mkdirSync(path.join(desktop, 'apps/v8-agent-os-web'));
+  assert.equal(fs.existsSync(path.join(desktop, 'apps/v8-agent-os-web')), false);
   put(path.join(process.env.V8_AGENT_OS_HOME!, 'runtime/cli/processes.json'), JSON.stringify({ version: 1, repoRoot: desktop, processes: {} }));
   assert.equal(rememberedDesktopRuntime(), desktop);
+
   put(path.join(desktop, 'engine-manifest.json'), JSON.stringify(manifest()));
   assert.equal(rememberedDesktopRuntime(), '');
 });

@@ -179,3 +179,13 @@ test("keyboard submission cannot outrun attachment persistence", () => {
   const run=new Function('uploading','composing', `let submitted=0;const isLoading=false,isCommandPickerOpen=false,isSkillPickerOpen=false;const showInlineNotice=()=>{},t=x=>x;${source};handleKeyDown({key:'Enter',nativeEvent:{isComposing:composing},preventDefault(){},currentTarget:{closest:()=>({requestSubmit:()=>submitted++})}});return submitted;`);
   assert.equal(run(true,false),0); assert.equal(run(false,true),0); assert.equal(run(false,false),1);
 });
+
+test("Next.js Edge Middleware is registered at src/middleware.ts and guards admin routes", () => {
+  assert.equal(fs.existsSync(path.resolve(repoRoot, "apps/v8-agent-os-web/src/proxy.ts")), false);
+  const middlewarePath = path.resolve(repoRoot, "apps/v8-agent-os-web/src/middleware.ts");
+  assert.equal(fs.existsSync(middlewarePath), true);
+  const middleware = readText("apps/v8-agent-os-web/src/middleware.ts");
+  assert.match(middleware, /export default auth;/);
+  assert.match(middleware, /matcher:\s*\["\/admin\/:path\*"\]/);
+});
+

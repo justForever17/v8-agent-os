@@ -1,4 +1,4 @@
-import { resolveProductOrigin } from "@/lib/server/product-origin";
+import { resolveProductOrigin } from "./product-origin";
 import crypto from "crypto";
 import fs from "fs";
 import os from "os";

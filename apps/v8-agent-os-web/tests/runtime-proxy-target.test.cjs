@@ -11,7 +11,8 @@ test('one Product Web host remains authoritative while the Engine target changes
  let bridge={adminBaseUrl:'http://127.0.0.1:9528',engineBaseUrl:a+'/v1'};
  const productOrigin={};
  const productSource=fs.readFileSync(path.resolve(__dirname,'../src/lib/server/product-origin.ts'),'utf8');
- vm.runInNewContext(ts.transpileModule(productSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports:productOrigin,process:{env:{V8_WEB_BASE_URL:'http://127.0.0.1:9527'}},URL});
+ const coreProductOrigin=require(path.resolve(__dirname,'../../v8-agent-os-cli/src/product_origin.mjs'));
+ vm.runInNewContext(ts.transpileModule(productSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports:productOrigin,process:{env:{V8_WEB_BASE_URL:'http://127.0.0.1:9527'}},URL,require(name){if(name==='@core/product_origin.mjs')return coreProductOrigin;throw new Error(name)}});
  const exports={};const source=fs.readFileSync(path.resolve(__dirname,'../src/lib/server/runtime-config.ts'),'utf8');
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,process:{env:{V8_WEB_BASE_URL:'http://127.0.0.1:9527'}},URL,require(name){if(name==='next/headers')return{cookies:async()=>({get:()=>undefined})};if(name==='@/lib/server/bridge-config')return{readCanonicalBridge:()=>bridge};if(name==='./product-origin')return productOrigin;throw new Error(name)}});
  assert.equal(await (await fetch(await exports.resolveEngineRootUrl())).text(),'A');

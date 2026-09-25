@@ -265,7 +265,10 @@ export async function start(args: string[]) {
     await client.initialize();
     if (requestedLocale && client.view.locale !== requestedLocale) { client.view.locale = requestedLocale; client.save(true); client.changed(); }
     if (requestedSession && client.instance.instanceId) await client.attach(requestedSession);
-    else if (client.instance.instanceId) await client.attach('');
+    else if (client.instance.instanceId) {
+      const hasUnsentDraft = Boolean(client.view.sessionId && client.draft.text && client.draft.text.trim().length > 0);
+      if (!hasUnsentDraft) await client.attach('');
+    }
     echo();
     void client.runLoop();
     await exited;

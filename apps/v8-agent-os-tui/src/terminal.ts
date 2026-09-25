@@ -46,7 +46,7 @@ export function editorLayout(state: Editor, width: number, secret = false) {
     }
   }
   positions.push({ row, column });
-  return { lines, positions, cursor: positions[Math.min(state.cursor, positions.length - 1)] };
+  return { lines, positions, cursor: positions[Math.max(0, Math.min(state.cursor, positions.length - 1))] || { row: 0, column: 0 } };
 }
 export function edit(state: Editor, action: string, value = '', width = Number.MAX_SAFE_INTEGER, secret = false): Editor {
   const parts = graphemes(state.text); let cursor = state.cursor;

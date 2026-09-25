@@ -45,7 +45,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const showComposer = !surface.page || Boolean(surface.page?.fields) || operationMenu;
   const field = surface.page?.fields?.[surface.page.fieldIndex || 0];
   const secret = Boolean(field?.secret);
-  surface.editorWidth = Math.max(1, columns - 2);
+  surface.editorWidth = Math.max(1, columns - 3);
   const inputLayout = editorLayout(editing, surface.editorWidth, secret);
   const inputLines = inputLayout.lines;
   const safeColumns = Math.max(1, columns - 1);
@@ -55,12 +55,23 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   const suggestions = menu ? suggestionRows(surface.commands(), menu.query.text, menu.selected, columns, Math.max(0, availableHistoryHeight - 2), { active: client.active, hasAttachments: client.draft.attachments.length > 0, configured: client.ownerReady && Boolean(client.workspace) }) : { lines: [], selectedRow: -1 };
   const mentionRows = mentionMenu ? surface.mentionRows(columns, Math.max(0, availableHistoryHeight - 2)) : { lines: [], selectedRow: -1 };
   const overlay = mentionMenu ? mentionRows : suggestions;
-  const historyHeight = availableHistoryHeight - overlay.lines.length;
+  const historyHeight = Math.max(0, availableHistoryHeight - overlay.lines.length);
   const inputOffset = Math.max(0, inputLayout.cursor.row + 1 - inputHeight);
-  useEffect(() => {
-    if (surface.page && !surface.page.fields && !operationMenu) { setCursorPosition(undefined); return; }
-    setCursorPosition(composerCursorPosition({ columns, rows, inputHeight, historyHeight, overlayHeight: overlay.lines.length, inputRow: inputLayout.cursor.row, inputColumn: inputLayout.cursor.column, inputOffset, promptWidth: columns }));
-  });
+  const targetCursor = (surface.page && !surface.page.fields && !operationMenu) || !showComposer
+    ? undefined
+    : composerCursorPosition({
+        columns,
+        rows,
+        inputHeight,
+        historyHeight,
+        overlayHeight: overlay.lines.length,
+        inputRow: inputLayout.cursor.row,
+        inputColumn: inputLayout.cursor.column,
+        inputOffset,
+        promptWidth: columns,
+        pendingRows: pendingHeight,
+      });
+  setCursorPosition(targetCursor);
   let body: string[] = [];
   let bodyTokens: Array<keyof ThemeTokens | undefined> = [];
   let welcomeRows: readonly WelcomeArtRow[] | undefined;

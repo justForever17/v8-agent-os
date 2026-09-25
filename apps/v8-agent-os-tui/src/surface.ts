@@ -88,7 +88,7 @@ function contextFacts(value: unknown, prefix = '', out: string[] = [], depth = 0
 }
 export class Surface {
   page: Page | null = null; input: Editor; multiline = false; undo = ''; anchor = 0; following = true; unread = 0;
-  scrollDelta = 0; editorWidth = 78;
+  scrollDelta = 0; editorWidth = 77;
   busy = false; paletteQuery = ''; formEditor = editor(); private pageSerial = 0; private ticketId = '';
   suggestions: { query: Editor; selected: number; sessionId: string } | null = null;
   mentionSuggestions: MentionSuggestionState | null = null;

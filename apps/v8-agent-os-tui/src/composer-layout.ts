@@ -19,6 +19,7 @@ export type ComposerCursorInput = {
   labelRows?: number;
   dividerRows?: number;
   promptWidth?: number;
+  pendingRows?: number;
 };
 
 export function composerCursorPosition(input: ComposerCursorInput) {
@@ -32,9 +33,10 @@ export function composerCursorPosition(input: ComposerCursorInput) {
   if (typeof input.rows === 'number' && input.rows > 0) {
     const hintRows = Math.max(0, input.hintRows ?? 1);
     const inputHeight = Math.max(1, input.inputHeight ?? 1);
-    const targetY = Math.max(0, input.rows - hintRows - inputHeight + currentRowOffset);
+    const maxRow = Math.max(0, input.rows - 1);
+    const targetY = Math.min(maxRow, Math.max(0, input.rows - hintRows - inputHeight + currentRowOffset));
     return {
-      x: Math.min(maxColumn, column),
+      x: Math.min(maxColumn, Math.max(0, column)),
       y: targetY,
     };
   }
@@ -42,13 +44,14 @@ export function composerCursorPosition(input: ComposerCursorInput) {
   // Fallback top-relative calculation for partial-tree mocks or isolated unit tests.
   const rowsBeforeInput = Math.max(0, input.headerRows ?? 2)
     + Math.max(0, input.historyHeight ?? 0)
+    + Math.max(0, input.pendingRows ?? 0)
     + Math.max(0, input.noticeRows ?? 1)
     + Math.max(0, input.labelRows ?? 1)
     + Math.max(0, input.dividerRows ?? 1)
     + Math.max(0, input.overlayHeight ?? 0);
 
   return {
-    x: Math.min(maxColumn, column),
+    x: Math.min(maxColumn, Math.max(0, column)),
     y: Math.max(0, rowsBeforeInput + currentRowOffset),
   };
 }

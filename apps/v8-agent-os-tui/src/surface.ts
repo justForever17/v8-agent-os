@@ -1263,6 +1263,9 @@ export class Surface {
   }
   async handle(event: Input) {
     const { key, text = '' } = event;
+    if (key !== 'ctrl-c') {
+      this.lastIdleInterrupt = 0;
+    }
     if (key === 'ctrl-p') { if (this.page) this.palette(); else this.suggest(); return; }
     if (key === 'backtab' && !this.page && !this.suggestions) { this.client.cycleApprovalMode(); return; }
     if (key === 'escape' || key === 'ctrl-c' && this.page) { await this.close(); return; }
@@ -1347,19 +1350,21 @@ export class Surface {
     else if (key === 'f9') await this.submit();
     else if (key === 'ctrl-c') {
       const now = Date.now();
-      if (now - this.lastIdleInterrupt <= 2000) {
+      if (this.lastIdleInterrupt && (now - this.lastIdleInterrupt <= 2000)) {
         this.onExit();
         return;
       }
-      this.lastIdleInterrupt = now;
       if (this.client.active) {
+        this.lastIdleInterrupt = now;
         const runId = String(this.client.run.id || this.client.run.runId || this.client.run.run_id || '');
         if (runId) await this.execute(() => this.client.interrupt(runId), false);
         this.client.notice = '已请求停止当前任务；2 秒内再次按 Ctrl+C 退出终端。';
       } else if (this.input.text && this.input.text.trim().length > 0) {
         this.undo = this.input.text; this.input = editor(); this.client.setDraft('');
-        this.client.notice = '输入已清空；2 秒内再次按 Ctrl+C 退出终端。';
+        this.lastIdleInterrupt = 0;
+        this.client.notice = '输入已清空；按 Ctrl+C 或 Ctrl+D 退出终端。';
       } else {
+        this.lastIdleInterrupt = now;
         this.client.notice = '2 秒内再次按 Ctrl+C 或按 Ctrl+D 退出终端；前台 Engine 会随终端释放。';
       }
     }
